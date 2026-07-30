@@ -51,8 +51,8 @@ code.15.id=RDB-C016
 code.15.message=partition and conflict keys must be computable from validated inputs
 code.15.help=derive aggregate keys only from root-key inputs and constants
 code.16.id=RDB-C017
-code.16.message=all command bindings must be statically colocated in one partition
-code.16.help=make all bindings use the same structural partition derivation
+code.16.message=command bindings must share one partition and writes one aggregate
+code.16.help=use one structural partition derivation and one aggregate for create/mutate bindings
 code.17.id=RDB-C018
 code.17.message=a required relationship must map stored fields to one complete same-partition target key
 code.17.help=map required non-optional fields to the complete target key in canonical order
@@ -72,8 +72,8 @@ code.22.id=RDB-C023
 code.22.message=checked executable IR construction rejected the compiled plan
 code.22.help=none
 code.23.id=RDB-C024
-code.23.message=a relationship change lacks a dominating exact target read and missing-target outcome
-code.23.help=read the complete referenced key before the mutable binding and declare its missing-target outcome
+code.23.message=a relationship change lacks a dominating exact target binding and missing-target outcome
+code.23.help=bind the complete referenced key before the mutable binding and declare its failure outcome
 code.24.id=RDB-C025
 code.24.message=a unique key must use required fields and begin with the complete partition route
 code.24.help=declare required key-compatible fields beginning with the canonical partition prefix
@@ -260,10 +260,10 @@ expected=RDB-C017
 kind=semantic
 count=1
 diagnostic.0.code=RDB-C017
-diagnostic.0.message=all command bindings must be statically colocated in one partition
+diagnostic.0.message=command bindings must share one partition and writes one aggregate
 diagnostic.0.primary=425..428
 diagnostic.0.related=none
-diagnostic.0.help=make all bindings use the same structural partition derivation
+diagnostic.0.help=use one structural partition derivation and one aggregate for create/mutate bindings
 
 [RDB-C018-invalid-relationship]
 expected=RDB-C018
@@ -330,10 +330,10 @@ expected=RDB-C024
 kind=semantic
 count=1
 diagnostic.0.code=RDB-C024
-diagnostic.0.message=a relationship change lacks a dominating exact target read and missing-target outcome
+diagnostic.0.message=a relationship change lacks a dominating exact target binding and missing-target outcome
 diagnostic.0.primary=236..242
 diagnostic.0.related=619..698
-diagnostic.0.help=read the complete referenced key before the mutable binding and declare its missing-target outcome
+diagnostic.0.help=bind the complete referenced key before the mutable binding and declare its failure outcome
 
 [RDB-C025-invalid-unique-key]
 expected=RDB-C025

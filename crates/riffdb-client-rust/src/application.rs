@@ -15,6 +15,8 @@ use crate::{
     generated::{GeneratedCommand, GeneratedQuery},
 };
 
+const MAX_GENERATED_TRANSPORT_BATCH_ITEMS: usize = 16;
+
 /// Application-only client facade.
 ///
 /// This type deliberately has no accessor for its kernel client. Stable
@@ -158,43 +160,155 @@ impl StableApplicationClient {
     {
         options.validate(commands.len())?;
         let total = commands.len();
-        let concurrency = options.concurrency;
-        let mut pending = stream::iter(
-            commands
-                .into_iter()
-                .enumerate()
-                .skip(options.checkpoint)
-                .map(|(index, command)| {
-                    let mut client = self.clone();
-                    let metadata = metadata.clone();
-                    async move {
-                        let result = client
-                            .execute_generated_command(&command, attempts, &metadata)
-                            .await;
-                        (index, result)
-                    }
-                }),
-        )
-        .buffer_unordered(concurrency);
+        let (transport_batch_size, transport_concurrency) =
+            generated_transport_batch_policy(options.concurrency);
+        let mut chunks = Vec::new();
+        let mut chunk = Vec::with_capacity(transport_batch_size);
+        for item in commands.into_iter().enumerate().skip(options.checkpoint) {
+            chunk.push(item);
+            if chunk.len() == transport_batch_size {
+                chunks.push(std::mem::replace(
+                    &mut chunk,
+                    Vec::with_capacity(transport_batch_size),
+                ));
+            }
+        }
+        if !chunk.is_empty() {
+            chunks.push(chunk);
+        }
+        let mut pending = stream::iter(chunks.into_iter().map(|chunk| {
+            let client = self.clone();
+            let metadata = metadata.clone();
+            async move {
+                client
+                    .execute_generated_transport_batch(chunk, attempts, &metadata)
+                    .await
+            }
+        }))
+        .buffer_unordered(transport_concurrency);
         let mut items = Vec::with_capacity(total - options.checkpoint);
         let mut completed = options.checkpoint;
         let mut checkpoint = options.checkpoint;
         let mut completed_after_checkpoint = BTreeSet::new();
-        while let Some((index, result)) = pending.next().await {
-            completed += 1;
-            completed_after_checkpoint.insert(index);
-            while completed_after_checkpoint.remove(&checkpoint) {
-                checkpoint += 1;
+        while let Some(completed_chunk) = pending.next().await {
+            for (index, result) in completed_chunk {
+                completed += 1;
+                completed_after_checkpoint.insert(index);
+                while completed_after_checkpoint.remove(&checkpoint) {
+                    checkpoint += 1;
+                }
+                items.push(GeneratedBatchItem { index, result });
+                report_progress(GeneratedBatchProgress {
+                    completed,
+                    total,
+                    checkpoint,
+                });
             }
-            items.push(GeneratedBatchItem { index, result });
-            report_progress(GeneratedBatchProgress {
-                completed,
-                total,
-                checkpoint,
-            });
         }
         items.sort_by_key(|item| item.index);
         Ok(GeneratedBatchResult { items, checkpoint })
+    }
+
+    async fn execute_generated_transport_batch<C: GeneratedCommand + Clone>(
+        &self,
+        commands: Vec<(usize, C)>,
+        attempts: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Vec<(
+        usize,
+        Result<TypedCommandResult<C::Outcome>, GeneratedExecutionError>,
+    )> {
+        let mut requests = Vec::with_capacity(commands.len());
+        let mut prepared = Vec::with_capacity(commands.len());
+        let mut completed = Vec::new();
+        for (index, command) in commands {
+            let generic = match command.idempotent_command() {
+                Ok(generic) => generic,
+                Err(error) => {
+                    completed.push((index, Err(GeneratedExecutionError::CommandShape(error))));
+                    continue;
+                }
+            };
+            let request_id = match generate_request_id() {
+                Ok(request_id) => request_id,
+                Err(error) => {
+                    completed.push((
+                        index,
+                        Err(GeneratedExecutionError::Client(
+                            ClientError::IdentifierGeneration(error),
+                        )),
+                    ));
+                    continue;
+                }
+            };
+            requests.push(generic.request(request_id));
+            prepared.push((index, command));
+        }
+        if prepared.is_empty() {
+            return completed;
+        }
+
+        let mut client = self.inner.clone();
+        let response = client
+            .execute_batch(
+                v1::ExecuteCommandBatchRequest { commands: requests },
+                metadata,
+            )
+            .await;
+        let Ok(response) = response else {
+            // Some siblings may already be durable when a transport or one
+            // item fails the aggregate RPC. Re-enter every item through the
+            // normal same-idempotency-key recovery path; committed items
+            // replay and uncertain items are resolved independently.
+            let recovered: Vec<_> = stream::iter(prepared.into_iter().map(|(index, command)| {
+                let mut client = self.clone();
+                let metadata = metadata.clone();
+                async move {
+                    let result = client
+                        .execute_generated_command(&command, attempts, &metadata)
+                        .await;
+                    (index, result)
+                }
+            }))
+            .buffer_unordered(MAX_GENERATED_TRANSPORT_BATCH_ITEMS)
+            .collect()
+            .await;
+            completed.extend(recovered);
+            return completed;
+        };
+
+        completed.extend(prepared.into_iter().zip(response.responses).map(
+            |((index, command), response)| {
+                let outcome = command
+                    .decode_outcome(&response)
+                    .map_err(GeneratedExecutionError::CommandShape);
+                (
+                    index,
+                    outcome.map(|outcome| typed_command_result(outcome, response)),
+                )
+            },
+        ));
+        completed
+    }
+}
+
+fn generated_transport_batch_policy(item_concurrency: usize) -> (usize, usize) {
+    let transport_concurrency = item_concurrency.div_ceil(MAX_GENERATED_TRANSPORT_BATCH_ITEMS);
+    let transport_batch_size = item_concurrency / transport_concurrency;
+    (transport_batch_size, transport_concurrency)
+}
+
+fn typed_command_result<T>(
+    outcome: T,
+    response: v1::ExecuteCommandResponse,
+) -> TypedCommandResult<T> {
+    TypedCommandResult {
+        outcome,
+        commit_sequence: (response.commit_sequence != 0).then_some(response.commit_sequence),
+        contract_version: response.contract_version,
+        replayed: response.status
+            == v1::execute_command_response::CompletionStatus::Replayed as i32,
+        outcome_uri: response.outcome_uri,
     }
 }
 
@@ -227,7 +341,7 @@ impl GeneratedBatchOptions {
 
     fn validate(self, item_count: usize) -> Result<(), GeneratedBatchError> {
         if self.concurrency == 0
-            || self.concurrency > 32
+            || self.concurrency > 64
             || item_count == 0
             || item_count > 4_096
             || self.checkpoint > item_count
@@ -1181,7 +1295,7 @@ mod tests {
 
     #[test]
     fn generated_batch_bounds_and_resume_checkpoint_are_closed() {
-        let options = GeneratedBatchOptions::new(32)
+        let options = GeneratedBatchOptions::new(64)
             .expect("maximum concurrency")
             .with_checkpoint(4_096);
         options.validate(4_096).expect("complete checkpoint");
@@ -1192,7 +1306,7 @@ mod tests {
             Err(GeneratedBatchError::InvalidBounds)
         );
         assert_eq!(
-            GeneratedBatchOptions::new(33),
+            GeneratedBatchOptions::new(65),
             Err(GeneratedBatchError::InvalidBounds)
         );
         assert_eq!(
@@ -1208,5 +1322,18 @@ mod tests {
                 .validate(4_097),
             Err(GeneratedBatchError::InvalidBounds)
         );
+    }
+
+    #[test]
+    fn generated_transport_batches_never_exceed_the_item_concurrency_bound() {
+        for item_concurrency in 1..=64 {
+            let (batch_size, transport_concurrency) =
+                generated_transport_batch_policy(item_concurrency);
+            assert!((1..=MAX_GENERATED_TRANSPORT_BATCH_ITEMS).contains(&batch_size));
+            assert!(transport_concurrency > 0);
+            assert!(batch_size * transport_concurrency <= item_concurrency);
+        }
+        assert_eq!(generated_transport_batch_policy(64), (16, 4));
+        assert_eq!(generated_transport_batch_policy(17), (8, 2));
     }
 }

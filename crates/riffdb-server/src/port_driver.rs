@@ -22,14 +22,14 @@ use crate::runtime_support::RuntimeRoutingState;
 /// This is deliberately independent of the 256-item commit-notification bound:
 /// notifications and admitted blocking operations have different ownership and
 /// backpressure semantics.
-pub(crate) const P1_BLOCKING_PORT_WORKER_THREADS: usize = 4;
+pub(crate) const P1_BLOCKING_PORT_WORKER_THREADS: usize = 8;
 
 /// Maximum permits, queued jobs, and executing P1 blocking port operations.
 ///
 /// The conservative bound limits synchronous storage/catalog pressure while
 /// retaining enough capacity for the P1 public RPC surface. It is not a commit
 /// subscription or notification capacity.
-pub(crate) const P1_MAX_BLOCKING_PORT_OPERATIONS: usize = 32;
+pub(crate) const P1_MAX_BLOCKING_PORT_OPERATIONS: usize = 64;
 
 type BlockingJob = Box<dyn FnOnce() + Send + 'static>;
 

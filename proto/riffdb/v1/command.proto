@@ -31,6 +31,17 @@ message ExecuteCommandResponse {
   optional string outcome_uri = 9;
 }
 
+// Bounded transport coalescing for ordinary independent commands. This is not
+// an atomic transaction: every item retains its own authorization,
+// idempotency, outcome, provenance, and audit lifecycle.
+message ExecuteCommandBatchRequest {
+  repeated ExecuteCommandRequest commands = 1;
+}
+
+message ExecuteCommandBatchResponse {
+  repeated ExecuteCommandResponse responses = 1;
+}
+
 message GetOutcomeRequest {
   bytes request_id = 1;
   string contract_lineage = 2;

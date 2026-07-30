@@ -279,6 +279,7 @@ const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("AdminService", "RevokeCapability", false),
     ("AdminService", "Stats", false),
     ("CommandService", "Execute", false),
+    ("CommandService", "ExecuteBatch", false),
     ("CommandService", "GetOutcome", false),
     ("CommitService", "GetCommit", false),
     ("CommitService", "ScanCommits", false),
@@ -1311,13 +1312,14 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
             } else {
                 "riffdb.v1"
             };
-            let input_type = if *method == "Execute" {
-                ".riffdb.v1.ExecuteCommandRequest".to_owned()
-            } else {
-                format!(".{package}.{method}Request")
+            let input_type = match *method {
+                "Execute" => ".riffdb.v1.ExecuteCommandRequest".to_owned(),
+                "ExecuteBatch" => ".riffdb.v1.ExecuteCommandBatchRequest".to_owned(),
+                _ => format!(".{package}.{method}Request"),
             };
             let output_type = match *method {
                 "Execute" => ".riffdb.v1.ExecuteCommandResponse".to_owned(),
+                "ExecuteBatch" => ".riffdb.v1.ExecuteCommandBatchResponse".to_owned(),
                 "SubscribeCommits" => ".riffdb.v1.CommitNotification".to_owned(),
                 _ => format!(".{package}.{method}Response"),
             };
@@ -1335,7 +1337,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
 
     if actual != expected {
         return Err(io::Error::other(format!(
-            "service inventory differs from the accepted five-service, twenty-five-RPC baseline: expected {expected:?}, found {actual:?}"
+            "service inventory differs from the accepted six-service, thirty-two-RPC baseline: expected {expected:?}, found {actual:?}"
         ))
         .into());
     }

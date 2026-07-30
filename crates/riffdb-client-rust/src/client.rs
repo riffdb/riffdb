@@ -283,6 +283,14 @@ impl RiffDbClient {
         v1::ExecuteCommandResponse
     );
     unary_exchange!(
+        execute_batch,
+        command,
+        execute_batch,
+        v1::ExecuteCommandBatchRequest,
+        v1::ExecuteCommandBatchResponse,
+        riffdb_proto::validate_execute_command_batch_exchange
+    );
+    unary_exchange!(
         get_outcome,
         command,
         get_outcome,

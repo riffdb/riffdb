@@ -79,7 +79,7 @@ use crate::startup::CheckedRedbStartup;
 use crate::storage::SharedRedbOperationalPorts;
 
 /// Fixed P1 coordinator admission bound, independent of transport and port-driver bounds.
-const P1_COORDINATOR_WORKLOAD_CAPACITY: u16 = 32;
+const P1_COORDINATOR_WORKLOAD_CAPACITY: u16 = 64;
 
 /// One checked secret-key snapshot shared by startup, maintenance, and a graph generation.
 pub(crate) struct ProductionDigestKeys {
@@ -456,6 +456,7 @@ impl ProductionGraphBuilder {
             hosted_service,
             hosted_request_ids,
             mcp_telemetry,
+            observability,
             projection_worker: Some(projection_worker),
             coordinator: Some(coordinator),
             blocking: Some(blocking),
@@ -518,12 +519,20 @@ pub(crate) struct RunningProductionGraph {
     hosted_service: Arc<dyn ApplicationService>,
     hosted_request_ids: ServerRequestIdSource,
     mcp_telemetry: Arc<dyn McpTelemetry>,
+    observability: Arc<Observability>,
     projection_worker: Option<RunningProjectionWorker>,
     coordinator: Option<RunningCommandCoordinator>,
     blocking: Option<BlockingPortDriver>,
 }
 
 impl RunningProductionGraph {
+    /// Exact successful command-completion groups by size, with no business labels.
+    pub(crate) fn write_completion_group_snapshot(
+        &self,
+    ) -> [u64; riffdb_observability::MAX_WRITE_GROUP_SIZE] {
+        self.observability.write_completion_group_snapshot()
+    }
+
     /// Returns the optional hosted-MCP dependencies over the shared lifecycle.
     pub(crate) fn hosted_mcp_dependencies(&self) -> Option<HostedMcpDependencies> {
         Some(HostedMcpDependencies {

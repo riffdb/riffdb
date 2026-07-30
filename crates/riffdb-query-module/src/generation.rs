@@ -721,7 +721,9 @@ fn emit_rust_command_outcome(
     let name = command.name();
     write!(
         output,
-        "#[derive(Clone, Debug, Eq, PartialEq)]\npub enum {name}Outcome {{"
+        "#[allow(clippy::large_enum_variant)]\n\
+         #[derive(Clone, Debug, Eq, PartialEq)]\n\
+         pub enum {name}Outcome {{"
     )
     .expect("string");
     for outcome in command.outcomes() {

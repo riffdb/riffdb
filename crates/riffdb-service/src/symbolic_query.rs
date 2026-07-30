@@ -2099,11 +2099,14 @@ fn application_query_target(
             };
             partition
         };
-        match &routed_partition {
-            Some(expected) if expected != &partition => return None,
-            Some(_) => {}
-            None => routed_partition = Some(partition),
-        };
+        // PartitionKey retains the aggregate owner as a namespace. A
+        // compiler-proved composite query may cross aggregate owners while
+        // every step is still routed by this exact canonical parameter. Keep
+        // the first key as the authorization route anchor; successful encoding
+        // through every aggregate schema proves the shared typed route value.
+        if routed_partition.is_none() {
+            routed_partition = Some(partition);
+        }
         let Ok(rows) = u16::try_from(step.maximum_rows()) else {
             return None;
         };

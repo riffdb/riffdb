@@ -21,6 +21,7 @@ service ContractService {
 
 service CommandService {
   rpc Execute(ExecuteCommandRequest) returns (ExecuteCommandResponse);
+  rpc ExecuteBatch(ExecuteCommandBatchRequest) returns (ExecuteCommandBatchResponse);
   rpc GetOutcome(GetOutcomeRequest) returns (GetOutcomeResponse);
 }
 

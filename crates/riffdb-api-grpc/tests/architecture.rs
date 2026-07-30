@@ -211,8 +211,9 @@ fn maintenance_is_exactly_three_additive_rpcs_and_never_an_mcp_surface() {
             .lines()
             .filter(|line| line.trim_start().starts_with("rpc "))
             .count(),
-        25
+        26
     );
+    assert_eq!(services.matches("rpc ExecuteBatch(").count(), 1);
     for rpc in [
         "rpc CreateOfflineBackup(",
         "rpc RestoreOfflineBackup(",

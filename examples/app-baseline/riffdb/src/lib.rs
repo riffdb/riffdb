@@ -1,7 +1,8 @@
 //! Public symbolic TicketDesk adapter against a live `riffdbd`.
 //!
 //! All application reads use named RiffQL queries. All mutations use symbolic
-//! command invocation. There is no GetEntity/ScanIndex/field-id path here.
+//! generated commands. Seed uses bounded client-side concurrency over one
+//! reusable HTTP/2 channel (same model as `riffdb command batch`).
 
 #![forbid(unsafe_code)]
 
@@ -9,28 +10,41 @@ mod server;
 
 use std::error::Error;
 use std::fmt;
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use riffdb_app_baseline_core::{
-    AppBackend, CommentRow, CommentSeed, LabelRow, OrganizationRow, ProjectMemberRow, ProjectRow,
-    SeedDataset, TicketDetailPage, TicketRow, TicketStatus, UserRow, UuidBytes, format_uuid,
+    AppBackend, CloseTicketWithCommentSeed, CommentRow, CommentSeed, LabelRow,
+    OpenTicketWithLabelsSeed, OrganizationRow, ProjectMemberRow, ProjectRow, SeedDataset,
+    SwapMemberRolesSeed, TicketDetailPage, TicketRow, TicketStatus, UserRow, UuidBytes, format_uuid,
 };
 use riffdb_client_rust::{
-    AttemptBudget, BearerCredential, CallMetadata, StableApplicationClient,
+    ApplicationClientError, AttemptBudget, BearerCredential, CallMetadata, GeneratedBatchError,
+    GeneratedBatchOptions, GeneratedBatchResult, StableApplicationClient,
 };
 use riffdb_ticketdesk::{
-    AddProjectMemberInput, AttachLabelInput, CreateCommentInput, CreateLabelInput,
-    CreateOrganizationInput, CreateProjectInput, CreateTicketInput, CreateUserInput, GetTicketParams,
-    GetTicketResult, GetUserParams, GetUserResult, ListCommentsParams, ListCommentsResult,
-    ListTicketsByAssigneeParams, ListTicketsByAssigneeResult, ListTicketsParams, ListTicketsResult,
-    ProjectMembersParams, ProjectMembersResult, TicketDeskClient, TicketPageParams, TicketPageResult,
+    AddProjectMemberInput, AttachLabelInput, CloseTicketWithCommentInput, CreateCommentInput,
+    CreateLabelInput, CreateOrganizationInput, CreateProjectInput, CreateTicketInput,
+    CreateUserInput, GetTicketParams, GetTicketResult, GetUserParams, GetUserResult,
+    ListCommentsParams, ListCommentsResult, ListTicketsByAssigneeParams,
+    ListTicketsByAssigneeResult, ListTicketsParams, ListTicketsResult, ProjectMembersParams,
+    OpenTicketWithLabelsInput, ProjectMembersResult, SwapMemberRolesInput, TicketDeskClient,
+    TicketPageParams, TicketPageResult,
 };
 use tonic::transport::Endpoint;
 
 pub use server::RiffDbServerSession;
 
+/// Default in-flight seed commands (bounded client concurrency, not a bulk RPC).
+const DEFAULT_SEED_CONCURRENCY: usize = 64;
+const MAX_SEED_CONCURRENCY: usize = 64;
+
 /// Public symbolic application backend.
 pub struct RiffDbPublicBackend {
-    client: TicketDeskClient,
+    transport: StableApplicationClient,
+    metadata: CallMetadata,
+    command_attempts: AttemptBudget,
 }
 
 impl RiffDbPublicBackend {
@@ -40,19 +54,25 @@ impl RiffDbPublicBackend {
             .map_err(|_| RiffDbError::Connection)?
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(60));
-        let client = StableApplicationClient::connect(endpoint)
+        let transport = StableApplicationClient::connect(endpoint)
             .await
             .map_err(|_| RiffDbError::Connection)?;
         let metadata = CallMetadata::authenticated(
             BearerCredential::new(bearer_token).map_err(|_| RiffDbError::Connection)?,
         );
         Ok(Self {
-            client: TicketDeskClient::new(
-                client,
-                metadata,
-                AttemptBudget::new(3).expect("positive command attempt budget"),
-            ),
+            transport,
+            metadata,
+            command_attempts: AttemptBudget::new(3).expect("positive command attempt budget"),
         })
+    }
+
+    fn ticketdesk(&self) -> TicketDeskClient {
+        TicketDeskClient::new(
+            self.transport.clone(),
+            self.metadata.clone(),
+            self.command_attempts,
+        )
     }
 }
 
@@ -62,13 +82,23 @@ fn block_on_runtime<T>(
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
         Err(_) => {
-            let runtime = tokio::runtime::Builder::new_current_thread()
+            // Multi-thread so concurrent seed tasks make progress under load.
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
                 .enable_all()
                 .build()
                 .map_err(|_| RiffDbError::Runtime)?;
             runtime.block_on(future)
         }
     }
+}
+
+fn seed_concurrency() -> usize {
+    std::env::var("RIFFDB_SEED_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(DEFAULT_SEED_CONCURRENCY)
+        .clamp(1, MAX_SEED_CONCURRENCY)
 }
 
 impl AppBackend for RiffDbPublicBackend {
@@ -80,121 +110,167 @@ impl AppBackend for RiffDbPublicBackend {
 
     fn seed(&mut self, dataset: &SeedDataset) -> Result<(), Self::Error> {
         block_on_runtime(async {
-            for org in &dataset.organizations {
-                self.client
-                    .create_organization(CreateOrganizationInput {
-                        name: org.name.clone(),
-                        organization_id: uuid_text(org.organization_id),
-                        idempotency_key: format!(
-                            "seed-org-{}",
-                            encode_short(org.organization_id)
-                        ),
-                    })
-                    .await
-                    .map_err(map_app)?;
+            let concurrency = seed_concurrency();
+            let total = dataset.organizations.len()
+                + dataset.users.len()
+                + dataset.projects.len()
+                + dataset.members.len()
+                + dataset.labels.len()
+                + dataset.tickets.len()
+                + dataset.comments.len()
+                + dataset.ticket_labels.len();
+            let progress = Arc::new(SeedProgress::new(total));
+            eprintln!(
+                "riffdb-seed-start\ttotal={total}\tconcurrency={concurrency}"
+            );
+
+            // Phases respect foreign-key order. Each phase uses bounded public
+            // transport batches; every item remains an ordinary independent
+            // generated command with its own durable lifecycle.
+            let options =
+                GeneratedBatchOptions::new(concurrency).map_err(map_generated_batch)?;
+            macro_rules! run_seed_batches {
+                ($phase:literal, $inputs:expr, $method:ident) => {{
+                    let inputs = $inputs;
+                    for chunk in inputs.chunks(4_096) {
+                        finish_generated_batch(
+                            &progress,
+                            $phase,
+                            self.ticketdesk()
+                                .$method(chunk.to_vec(), options)
+                                .await,
+                        )?;
+                    }
+                }};
             }
-            for user in &dataset.users {
-                self.client
-                    .create_user(CreateUserInput {
-                        email: user.email.clone(),
-                        display_name: user.display_name.clone(),
-                        user_id: uuid_text(user.user_id),
-                        idempotency_key: format!("seed-user-{}", encode_short(user.user_id)),
-                        organization_id: uuid_text(user.organization_id),
-                    })
-                    .await
-                    .map_err(map_app)?;
-            }
-            for project in &dataset.projects {
-                self.client
-                    .create_project(CreateProjectInput {
-                        name: project.name.clone(),
-                        project_id: uuid_text(project.project_id),
-                        idempotency_key: format!(
-                            "seed-project-{}",
-                            encode_short(project.project_id)
-                        ),
-                        organization_id: uuid_text(project.organization_id),
-                    })
-                    .await
-                    .map_err(map_app)?;
-            }
-            for member in &dataset.members {
-                self.client
-                    .add_project_member(AddProjectMemberInput {
-                        role: member.role.clone(),
-                        user_id: uuid_text(member.user_id),
-                        project_id: uuid_text(member.project_id),
-                        idempotency_key: format!(
-                            "seed-member-{}-{}",
-                            encode_short(member.project_id),
-                            encode_short(member.user_id)
-                        ),
-                        organization_id: uuid_text(member.organization_id),
-                    })
-                    .await
-                    .map_err(map_app)?;
-            }
-            for label in &dataset.labels {
-                self.client
-                    .create_label(CreateLabelInput {
-                        name: label.name.clone(),
-                        label_id: uuid_text(label.label_id),
-                        idempotency_key: format!("seed-label-{}", encode_short(label.label_id)),
-                        organization_id: uuid_text(label.organization_id),
-                    })
-                    .await
-                    .map_err(map_app)?;
-            }
-            for ticket in &dataset.tickets {
-                self.client
-                    .create_ticket(CreateTicketInput {
-                        title: ticket.title.clone(),
-                        status: status_name(ticket.status).to_owned(),
-                        ticket_id: uuid_text(ticket.ticket_id),
-                        project_id: uuid_text(ticket.project_id),
-                        assignee_id: uuid_text(ticket.assignee_id),
-                        reporter_id: uuid_text(ticket.reporter_id),
-                        idempotency_key: format!(
-                            "seed-ticket-{}",
-                            encode_short(ticket.ticket_id)
-                        ),
-                        organization_id: uuid_text(ticket.organization_id),
-                    })
-                    .await
-                    .map_err(map_app)?;
-            }
-            for comment in &dataset.comments {
-                self.client
-                    .create_comment(CreateCommentInput {
-                        body: comment.body.clone(),
-                        author_id: uuid_text(comment.author_id),
-                        ticket_id: uuid_text(comment.ticket_id),
-                        comment_id: uuid_text(comment.comment_id),
-                        idempotency_key: format!(
-                            "seed-comment-{}",
-                            encode_short(comment.comment_id)
-                        ),
-                        organization_id: uuid_text(comment.organization_id),
-                    })
-                    .await
-                    .map_err(map_app)?;
-            }
-            for link in &dataset.ticket_labels {
-                self.client
-                    .attach_label(AttachLabelInput {
-                        label_id: uuid_text(link.label_id),
-                        ticket_id: uuid_text(link.ticket_id),
-                        idempotency_key: format!(
-                            "seed-link-{}-{}",
-                            encode_short(link.ticket_id),
-                            encode_short(link.label_id)
-                        ),
-                        organization_id: uuid_text(link.organization_id),
-                    })
-                    .await
-                    .map_err(map_app)?;
-            }
+            let organizations = dataset
+                .organizations
+                .iter()
+                .map(|org| CreateOrganizationInput {
+                    name: org.name.clone(),
+                    organization_id: uuid_text(org.organization_id),
+                    idempotency_key: format!("seed-org-{}", encode_short(org.organization_id)),
+                })
+                .collect::<Vec<_>>();
+            run_seed_batches!(
+                "organization",
+                organizations,
+                create_organization_batch
+            );
+
+            let users = dataset
+                .users
+                .iter()
+                .map(|user| CreateUserInput {
+                    email: user.email.clone(),
+                    display_name: user.display_name.clone(),
+                    user_id: uuid_text(user.user_id),
+                    idempotency_key: format!("seed-user-{}", encode_short(user.user_id)),
+                    organization_id: uuid_text(user.organization_id),
+                })
+                .collect::<Vec<_>>();
+            run_seed_batches!("user", users, create_user_batch);
+
+            let projects = dataset
+                .projects
+                .iter()
+                .map(|project| CreateProjectInput {
+                    name: project.name.clone(),
+                    project_id: uuid_text(project.project_id),
+                    idempotency_key: format!(
+                        "seed-project-{}",
+                        encode_short(project.project_id)
+                    ),
+                    organization_id: uuid_text(project.organization_id),
+                })
+                .collect::<Vec<_>>();
+            run_seed_batches!("project", projects, create_project_batch);
+
+            let members = spread_conflict_domains(
+                &dataset.members,
+                |member| (member.organization_id, member.project_id),
+            )
+                .into_iter()
+                .map(|member| AddProjectMemberInput {
+                    role: member.role.clone(),
+                    user_id: uuid_text(member.user_id),
+                    project_id: uuid_text(member.project_id),
+                    idempotency_key: format!(
+                        "seed-member-{}-{}",
+                        encode_short(member.project_id),
+                        encode_short(member.user_id)
+                    ),
+                    organization_id: uuid_text(member.organization_id),
+                })
+                .collect::<Vec<_>>();
+            run_seed_batches!("member", members, add_project_member_batch);
+
+            let labels = dataset
+                .labels
+                .iter()
+                .map(|label| CreateLabelInput {
+                    name: label.name.clone(),
+                    label_id: uuid_text(label.label_id),
+                    idempotency_key: format!("seed-label-{}", encode_short(label.label_id)),
+                    organization_id: uuid_text(label.organization_id),
+                })
+                .collect::<Vec<_>>();
+            run_seed_batches!("label", labels, create_label_batch);
+
+            let tickets = dataset
+                .tickets
+                .iter()
+                .map(|ticket| CreateTicketInput {
+                    title: ticket.title.clone(),
+                    status: status_name(ticket.status).to_owned(),
+                    ticket_id: uuid_text(ticket.ticket_id),
+                    project_id: uuid_text(ticket.project_id),
+                    assignee_id: uuid_text(ticket.assignee_id),
+                    reporter_id: uuid_text(ticket.reporter_id),
+                    idempotency_key: format!("seed-ticket-{}", encode_short(ticket.ticket_id)),
+                    organization_id: uuid_text(ticket.organization_id),
+                })
+                .collect::<Vec<_>>();
+            run_seed_batches!("ticket", tickets, create_ticket_batch);
+
+            let comments = spread_conflict_domains(
+                &dataset.comments,
+                |comment| (comment.organization_id, comment.ticket_id),
+            )
+                .into_iter()
+                .map(|comment| CreateCommentInput {
+                    body: comment.body.clone(),
+                    author_id: uuid_text(comment.author_id),
+                    ticket_id: uuid_text(comment.ticket_id),
+                    comment_id: uuid_text(comment.comment_id),
+                    idempotency_key: format!(
+                        "seed-comment-{}",
+                        encode_short(comment.comment_id)
+                    ),
+                    organization_id: uuid_text(comment.organization_id),
+                })
+                .collect::<Vec<_>>();
+            run_seed_batches!("comment", comments, create_comment_batch);
+
+            let links = spread_conflict_domains(
+                &dataset.ticket_labels,
+                |link| (link.organization_id, link.ticket_id),
+            )
+                .into_iter()
+                .map(|link| AttachLabelInput {
+                    label_id: uuid_text(link.label_id),
+                    ticket_id: uuid_text(link.ticket_id),
+                    idempotency_key: format!(
+                        "seed-link-{}-{}",
+                        encode_short(link.ticket_id),
+                        encode_short(link.label_id)
+                    ),
+                    organization_id: uuid_text(link.organization_id),
+                })
+                .collect::<Vec<_>>();
+            run_seed_batches!("ticket_label", links, attach_label_batch);
+
+            progress.finish();
             Ok(())
         })
     }
@@ -206,7 +282,7 @@ impl AppBackend for RiffDbPublicBackend {
     ) -> Result<Option<TicketRow>, Self::Error> {
         block_on_runtime(async {
             match self
-                .client
+                .ticketdesk()
                 .get_ticket(GetTicketParams {
                     organization_id: uuid_text(organization_id),
                     ticket_id: uuid_text(ticket_id),
@@ -235,7 +311,7 @@ impl AppBackend for RiffDbPublicBackend {
     ) -> Result<Option<UserRow>, Self::Error> {
         block_on_runtime(async {
             match self
-                .client
+                .ticketdesk()
                 .get_user(GetUserParams {
                     organization_id: uuid_text(organization_id),
                     user_id: uuid_text(user_id),
@@ -263,7 +339,7 @@ impl AppBackend for RiffDbPublicBackend {
     ) -> Result<Vec<TicketRow>, Self::Error> {
         block_on_runtime(async {
             let ListTicketsResult::Found(found) = self
-                .client
+                .ticketdesk()
                 .list_tickets(ListTicketsParams {
                     organization_id: uuid_text(organization_id),
                     project_id: uuid_text(project_id),
@@ -299,7 +375,7 @@ impl AppBackend for RiffDbPublicBackend {
     ) -> Result<Vec<TicketRow>, Self::Error> {
         block_on_runtime(async {
             let ListTicketsByAssigneeResult::Found(found) = self
-                .client
+                .ticketdesk()
                 .list_tickets_by_assignee(ListTicketsByAssigneeParams {
                     organization_id: uuid_text(organization_id),
                     assignee_id: uuid_text(assignee_id),
@@ -335,7 +411,7 @@ impl AppBackend for RiffDbPublicBackend {
     ) -> Result<Vec<CommentRow>, Self::Error> {
         block_on_runtime(async {
             let ListCommentsResult::Found(found) = self
-                .client
+                .ticketdesk()
                 .list_comments(ListCommentsParams {
                     organization_id: uuid_text(organization_id),
                     ticket_id: uuid_text(ticket_id),
@@ -368,7 +444,7 @@ impl AppBackend for RiffDbPublicBackend {
     ) -> Result<Vec<ProjectMemberRow>, Self::Error> {
         block_on_runtime(async {
             let ProjectMembersResult::Found(found) = self
-                .client
+                .ticketdesk()
                 .project_members(ProjectMembersParams {
                     organization_id: uuid_text(organization_id),
                     project_id: uuid_text(project_id),
@@ -400,7 +476,7 @@ impl AppBackend for RiffDbPublicBackend {
     ) -> Result<Option<TicketDetailPage>, Self::Error> {
         block_on_runtime(async {
             match self
-                .client
+                .ticketdesk()
                 .ticket_page(TicketPageParams {
                     organization_id: uuid_text(organization_id),
                     ticket_id: uuid_text(ticket_id),
@@ -487,7 +563,7 @@ impl AppBackend for RiffDbPublicBackend {
 
     fn create_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error> {
         block_on_runtime(async {
-            self.client
+            self.ticketdesk()
                 .create_comment(CreateCommentInput {
                     body: comment.row.body.clone(),
                     author_id: uuid_text(comment.row.author_id),
@@ -501,6 +577,163 @@ impl AppBackend for RiffDbPublicBackend {
             Ok(())
         })
     }
+
+    fn close_ticket_with_comment(
+        &mut self,
+        input: &CloseTicketWithCommentSeed,
+    ) -> Result<(), Self::Error> {
+        block_on_runtime(async {
+            self.ticketdesk()
+                .close_ticket_with_comment(CloseTicketWithCommentInput {
+                    body: input.body.clone(),
+                    author_id: uuid_text(input.author_id),
+                    ticket_id: uuid_text(input.ticket_id),
+                    comment_id: uuid_text(input.comment_id),
+                    idempotency_key: input.idempotency_key.clone(),
+                    organization_id: uuid_text(input.organization_id),
+                })
+                .await
+                .map_err(map_app)?;
+            Ok(())
+        })
+    }
+
+    fn swap_member_roles(&mut self, input: &SwapMemberRolesSeed) -> Result<(), Self::Error> {
+        block_on_runtime(async {
+            self.ticketdesk()
+                .swap_member_roles(SwapMemberRolesInput {
+                    role_a: input.role_a.clone(),
+                    role_b: input.role_b.clone(),
+                    user_a: uuid_text(input.user_a),
+                    user_b: uuid_text(input.user_b),
+                    project_id: uuid_text(input.project_id),
+                    idempotency_key: input.idempotency_key.clone(),
+                    organization_id: uuid_text(input.organization_id),
+                })
+                .await
+                .map_err(map_app)?;
+            Ok(())
+        })
+    }
+
+    fn open_ticket_with_labels(
+        &mut self,
+        input: &OpenTicketWithLabelsSeed,
+    ) -> Result<(), Self::Error> {
+        block_on_runtime(async {
+            self.ticketdesk()
+                .open_ticket_with_labels(OpenTicketWithLabelsInput {
+                    title: input.title.clone(),
+                    label_a: uuid_text(input.label_a),
+                    label_b: uuid_text(input.label_b),
+                    ticket_id: uuid_text(input.ticket_id),
+                    project_id: uuid_text(input.project_id),
+                    assignee_id: uuid_text(input.assignee_id),
+                    reporter_id: uuid_text(input.reporter_id),
+                    idempotency_key: input.idempotency_key.clone(),
+                    organization_id: uuid_text(input.organization_id),
+                })
+                .await
+                .map_err(map_app)?;
+            Ok(())
+        })
+    }
+}
+
+fn spread_conflict_domains<T, K: Ord>(items: &[T], key: impl Fn(&T) -> K) -> Vec<&T> {
+    let mut lanes = BTreeMap::<K, VecDeque<&T>>::new();
+    for item in items {
+        lanes.entry(key(item)).or_default().push_back(item);
+    }
+    let mut spread = Vec::with_capacity(items.len());
+    loop {
+        let mut added = false;
+        for lane in lanes.values_mut() {
+            if let Some(item) = lane.pop_front() {
+                spread.push(item);
+                added = true;
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+    spread
+}
+
+fn finish_generated_batch<T>(
+    progress: &SeedProgress,
+    phase: &'static str,
+    result: Result<GeneratedBatchResult<T>, GeneratedBatchError>,
+) -> Result<(), RiffDbError> {
+    let result = result.map_err(map_generated_batch)?;
+    for item in result.items {
+        item.result
+            .map_err(ApplicationClientError::from)
+            .map_err(map_app)?;
+        progress.tick(phase);
+    }
+    Ok(())
+}
+
+fn map_generated_batch(error: GeneratedBatchError) -> RiffDbError {
+    RiffDbError::Rpc(error.to_string())
+}
+
+struct SeedProgress {
+    total: usize,
+    completed: AtomicUsize,
+    started: std::time::Instant,
+    last_report_ms: AtomicUsize,
+}
+
+impl SeedProgress {
+    fn new(total: usize) -> Self {
+        Self {
+            total,
+            completed: AtomicUsize::new(0),
+            started: std::time::Instant::now(),
+            last_report_ms: AtomicUsize::new(0),
+        }
+    }
+
+    fn tick(&self, phase: &str) {
+        let completed = self.completed.fetch_add(1, Ordering::Relaxed) + 1;
+        let overall_ms = self.started.elapsed().as_millis() as usize;
+        let last = self.last_report_ms.load(Ordering::Relaxed);
+        if completed == self.total || overall_ms.saturating_sub(last) >= 2_000 {
+            if self
+                .last_report_ms
+                .compare_exchange(last, overall_ms, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+                || completed == self.total
+            {
+                let overall_ops = if overall_ms == 0 {
+                    0.0
+                } else {
+                    (completed as f64) * 1000.0 / (overall_ms as f64)
+                };
+                eprintln!(
+                    "riffdb-seed-progress\tphase={phase}\tcompleted={completed}/{}\toverall_ms={overall_ms}\trate_ops_s={overall_ops:.1}",
+                    self.total
+                );
+            }
+        }
+    }
+
+    fn finish(&self) {
+        let completed = self.completed.load(Ordering::Relaxed);
+        let overall_ms = self.started.elapsed().as_millis();
+        let overall_ops = if overall_ms == 0 {
+            0.0
+        } else {
+            (completed as f64) * 1000.0 / (overall_ms as f64)
+        };
+        eprintln!(
+            "riffdb-seed-progress\tphase=done\tcompleted={completed}/{}\toverall_ms={overall_ms}\trate_ops_s={overall_ops:.1}",
+            self.total
+        );
+    }
 }
 
 fn uuid_text(bytes: UuidBytes) -> String {
@@ -512,9 +745,7 @@ fn parse_uuid(text: &str) -> Result<UuidBytes, RiffDbError> {
         return Err(RiffDbError::Decode);
     }
     let mut out = [0_u8; 16];
-    let hex = |i: usize| {
-        u8::from_str_radix(&text[i..i + 2], 16).map_err(|_| RiffDbError::Decode)
-    };
+    let hex = |i: usize| u8::from_str_radix(&text[i..i + 2], 16).map_err(|_| RiffDbError::Decode);
     let positions = [0, 2, 4, 6, 9, 11, 14, 16, 19, 21, 24, 26, 28, 30, 32, 34];
     for (index, start) in positions.into_iter().enumerate() {
         out[index] = hex(start)?;
@@ -546,7 +777,29 @@ fn encode_short(bytes: UuidBytes) -> String {
     )
 }
 
-fn map_app(error: riffdb_client_rust::ApplicationClientError) -> RiffDbError {
+fn map_app(error: ApplicationClientError) -> RiffDbError {
+    // Prefer the versioned application-error object (WP-315): code, category,
+    // recovery action, operation identity, and optional safe context only.
+    if let Some(semantic) = error.semantic_error() {
+        let mut detail = format!(
+            "application {} category={} recovery={} operation={}",
+            semantic.code().as_str(),
+            semantic.category().as_str(),
+            semantic.recovery_action().as_str(),
+            semantic.operation().as_str(),
+        );
+        if let Some(symbol) = semantic.context().operation_symbol() {
+            detail.push_str(" symbol=");
+            detail.push_str(symbol);
+        }
+        detail.push_str(": ");
+        detail.push_str(semantic.safe_message());
+        if let Some(incident) = semantic.incident_id() {
+            detail.push_str(" incident=");
+            detail.push_str(&incident.to_string());
+        }
+        return RiffDbError::Rpc(detail);
+    }
     RiffDbError::Rpc(format!("{error:?}"))
 }
 

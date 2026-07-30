@@ -859,6 +859,10 @@ messages
   riffdb.v1.ExactContractSelection fields=2
     1 contract_lineage optional string
     2 contract_version optional uint64
+  riffdb.v1.ExecuteCommandBatchRequest fields=1
+    1 commands repeated .riffdb.v1.ExecuteCommandRequest
+  riffdb.v1.ExecuteCommandBatchResponse fields=1
+    1 responses repeated .riffdb.v1.ExecuteCommandResponse
   riffdb.v1.ExecuteCommandRequest fields=4
     1 request_id optional bytes
     2 command_name optional string
@@ -1692,6 +1696,7 @@ services
     GetOfflineMaintenanceOperation .riffdb.v1.GetOfflineMaintenanceOperationRequest -> .riffdb.v1.GetOfflineMaintenanceOperationResponse (unary)
   riffdb.v1.CommandService
     Execute .riffdb.v1.ExecuteCommandRequest -> .riffdb.v1.ExecuteCommandResponse (unary)
+    ExecuteBatch .riffdb.v1.ExecuteCommandBatchRequest -> .riffdb.v1.ExecuteCommandBatchResponse (unary)
     GetOutcome .riffdb.v1.GetOutcomeRequest -> .riffdb.v1.GetOutcomeResponse (unary)
   riffdb.v1.CommitService
     GetCommit .riffdb.v1.GetCommitRequest -> .riffdb.v1.GetCommitResponse (unary)

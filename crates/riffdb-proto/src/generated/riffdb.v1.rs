@@ -1105,6 +1105,16 @@ pub mod execute_command_response {
         }
     }
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecuteCommandBatchRequest {
+    #[prost(message, repeated, tag = "1")]
+    pub commands: ::prost::alloc::vec::Vec<ExecuteCommandRequest>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecuteCommandBatchResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub responses: ::prost::alloc::vec::Vec<ExecuteCommandResponse>,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetOutcomeRequest {
     #[prost(bytes = "vec", tag = "1")]

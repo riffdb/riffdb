@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.42
+**Version:** 0.43
 **Status:** Application-platform implementation handoff
 **Date:** 29 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -78,6 +78,7 @@
 | 0.40 | 2026-07-29 | Applied accepted ADR-0056 after the maintainer directed implementation of the complete Agent Application Alpha phase. WP-305 through WP-340 may begin in dependency order; their exact public/durable/grammar fixtures retain the human review checkpoints named by the accepted record. |
 | 0.41 | 2026-07-29 | Applied accepted ADR-0057 after four sealed Terra evaluations failed the application-authoring gate: authors own symbolic intent, the compiler owns an exact lock and every derived identity, diagnostics remain source-spanned and bounded, scaffolding supports an existing empty repository, TypeScript and builder MCP become complete public paths, public-only rehearsals and canaries precede campaign 02, and growing-database command degradation receives an independent durability-preserving gate. |
 | 0.42 | 2026-07-29 | Applied accepted ADR-0058 and planned WP-364: redb retains `Immediate` two-phase durability behind one typed FIFO writer scheduler; production uses bounded group durability; command `Started` plus `Pending` admission and successful command graph plus terminal audit become two atomic transitions; every grouped command retains independent identity, outcome, provenance, audit, acknowledgement, and uncertainty recovery. |
+| 0.43 | 2026-07-29 | Applied accepted ADR-0059 and planned WP-366: commands may carry compiler-proven same-partition observations across aggregates while every create/mutate binding remains in exactly one mutation aggregate; conflict keys derive only from that aggregate; external reads remain exact transaction-current dependencies; and the public TicketDesk seed plus unary mutation must demonstrate same-run PostgreSQL write parity within 2x. |
 
 ### Normative language
 
@@ -5147,7 +5148,7 @@ reaches its first write within 30 minutes and first page-shaped read within
 
 **P4 work-package members:** WP-305, WP-310, WP-315, WP-320, WP-325,
 WP-330, WP-335, WP-340, WP-345, WP-350, WP-355, WP-360, WP-362,
-WP-365, and WP-370.
+WP-364, WP-365, WP-366, and WP-370.
 
 ## 20.5 Stage A — single-node alpha hardening
 
@@ -5328,6 +5329,7 @@ earlier deadline governs unless a reviewed reconciliation changes both sources.
 | `ADR-0056` | Accepted | Agent Application Alpha before operational/distributed alpha; complete generated bindings, symbolic roles, structured application errors, command batches, canonical scaffolding, TypeScript parity, evidence-driven RiffQL growth, and sealed independent evaluation | WP-305 through WP-340 |
 | `ADR-0057` | Accepted | Compiler-owned exact application lock, bounded authoring diagnostics, empty-directory scaffold, complete public authoring kit, TypeScript/builder-MCP parity, durability-preserving performance investigation, rehearsals, canaries, and campaign 02 | WP-345 through WP-370 |
 | `ADR-0058` | Accepted | Bounded typed FIFO writer scheduling, production group durability over redb `Immediate`, two-transition audited commands, complete-outcome release proof, and independent grouped uncertainty | WP-364 |
+| `ADR-0059` | Accepted | Same-partition cross-aggregate read dependencies, exactly one mutation aggregate, mutation-only conflict keys, exact commit-time read revalidation, effective group evidence, and same-run PostgreSQL write parity | WP-366 |
 
 ## 22.2 Decisions to resolve before implementation reaches the named gate
 
@@ -5806,6 +5808,19 @@ ADR-0055.
   without a p99 scheduler wait above 2 ms or starvation. A miss blocks Agent
   Application Alpha and MUST NOT be repaired by weaker durability, audit,
   authorization, atomicity, or response-release semantics.
+- `PERF-005`: A command MAY observe entities owned by multiple aggregates only
+  when the compiler proves that every binding is in one identical partition.
+  Every `create` and `mutate` binding MUST remain in exactly one mutation
+  aggregate, and only that aggregate derives logical conflict keys. External
+  observations MUST remain explicit and MUST be revalidated exactly inside the
+  authoritative commit transaction; cross-partition reads and multi-aggregate
+  writes MUST be rejected. Server evidence MUST report the bounded effective
+  completion-group-size distribution without high-cardinality labels. On the
+  checked profile, the full public-command TicketDesk seed and representative
+  unary mutation p50 MUST each complete within twice the same-run PostgreSQL
+  result under unchanged redb `Immediate` durability and audit semantics. A
+  miss blocks Agent Application Alpha and MUST NOT be waived through direct
+  storage/import writes or weaker safety.
 
 The milestone is complete only when WP-205 through WP-300 pass their package
 acceptance commands and an independent fresh-agent TicketDesk run satisfies

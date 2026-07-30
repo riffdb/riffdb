@@ -53,8 +53,7 @@ contract TicketDesk version 1 {
   }
 
   entity Comment {
-    key (organization_id: uuid, comment_id: uuid)
-    field ticket_id: uuid
+    key (organization_id: uuid, ticket_id: uuid, comment_id: uuid)
     field author_id: uuid
     field body: string<256>
     field created_at: timestamp
@@ -80,17 +79,37 @@ contract TicketDesk version 1 {
     reference label (organization_id, label_id) -> Label(organization_id, label_id)
   }
 
-  aggregate OrganizationRoot {
+  aggregate Organizations {
     root Organization
-    child AppUser
-    child Project
-    child ProjectMember
-    child Ticket
-    child Comment
-    child Label
-    child TicketLabel
     partition_by organization_id
     conflict_key (organization_id)
+  }
+
+  aggregate Users {
+    root AppUser
+    partition_by organization_id
+    conflict_key (organization_id, user_id)
+  }
+
+  aggregate Projects {
+    root Project
+    child ProjectMember
+    partition_by organization_id
+    conflict_key (organization_id, project_id)
+  }
+
+  aggregate Tickets {
+    root Ticket
+    child Comment
+    child TicketLabel
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+
+  aggregate Labels {
+    root Label
+    partition_by organization_id
+    conflict_key (organization_id, label_id)
   }
 
   command CreateOrganization {
@@ -195,9 +214,8 @@ contract TicketDesk version 1 {
       else TicketMissing { ticket_id: ticket_id }
     read AppUser(organization_id, author_id) as author
       else AuthorMissing { user_id: author_id }
-    create Comment(organization_id, comment_id) as comment
+    create Comment(organization_id, ticket_id, comment_id) as comment
       else CommentExists { comment_id: comment_id }
-    set comment.ticket_id = ticket_id
     set comment.author_id = author_id
     set comment.body = body
     set comment.created_at = tx.time
@@ -233,5 +251,93 @@ contract TicketDesk version 1 {
       else LinkExists { ticket_id: ticket_id, label_id: label_id }
     set link.created_at = tx.time
     return Created { link: link }
+  }
+
+  // Multi-entity application transaction: close a ticket and leave an audit note
+  // in one atomic command (validated reads + mutate + create).
+  command CloseTicketWithComment {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input ticket_id: uuid
+    input author_id: uuid
+    input comment_id: uuid
+    input body: string<256>
+    idempotency_key idempotency_key
+    read Ticket(organization_id, ticket_id) as ticket_view
+      else TicketMissing { ticket_id: ticket_id }
+    mutate Ticket(organization_id, ticket_id) as ticket
+      else TicketGone { ticket_id: ticket_id }
+    read AppUser(organization_id, author_id) as author
+      else AuthorMissing { user_id: author_id }
+    create Comment(organization_id, ticket_id, comment_id) as comment
+      else CommentExists { comment_id: comment_id }
+    set ticket.status = TicketStatus.Closed
+    set ticket.updated_at = tx.time
+    set comment.author_id = author_id
+    set comment.body = body
+    set comment.created_at = tx.time
+    return Closed { ticket: ticket, comment: comment }
+  }
+
+  // Multi-entity application transaction: update two membership rows together.
+  command SwapMemberRoles {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input project_id: uuid
+    input user_a: uuid
+    input user_b: uuid
+    input role_a: string<32>
+    input role_b: string<32>
+    idempotency_key idempotency_key
+    mutate ProjectMember(organization_id, project_id, user_a) as member_a
+      else MemberAMissing { user_id: user_a }
+    mutate ProjectMember(organization_id, project_id, user_b) as member_b
+      else MemberBMissing { user_id: user_b }
+    set member_a.role = role_a
+    set member_b.role = role_b
+    return Swapped { member_a: member_a, member_b: member_b }
+  }
+
+  // One aggregate command for the page-level operation measured against one
+  // PostgreSQL transaction. External project/user/label rows are exact
+  // same-partition observations; Ticket and both links share one ticket
+  // mutation aggregate.
+  command OpenTicketWithLabels {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input ticket_id: uuid
+    input project_id: uuid
+    input reporter_id: uuid
+    input assignee_id: uuid
+    input title: string<128>
+    input label_a: uuid
+    input label_b: uuid
+    idempotency_key idempotency_key
+    read Project(organization_id, project_id) as project
+      else ProjectMissing { project_id: project_id }
+    read AppUser(organization_id, reporter_id) as reporter
+      else ReporterMissing { user_id: reporter_id }
+    read AppUser(organization_id, assignee_id) as assignee
+      else AssigneeMissing { user_id: assignee_id }
+    read Label(organization_id, label_a) as first_label
+      else LabelMissing { label_id: label_a }
+    read Label(organization_id, label_b) as second_label
+      else LabelMissing { label_id: label_b }
+    create Ticket(organization_id, ticket_id) as ticket
+      else TicketExists { ticket_id: ticket_id }
+    create TicketLabel(organization_id, ticket_id, label_a) as first_link
+      else LinkExists { ticket_id: ticket_id, label_id: label_a }
+    create TicketLabel(organization_id, ticket_id, label_b) as second_link
+      else LinkExists { ticket_id: ticket_id, label_id: label_b }
+    set ticket.project_id = project_id
+    set ticket.reporter_id = reporter_id
+    set ticket.assignee_id = assignee_id
+    set ticket.status = TicketStatus.Open
+    set ticket.title = title
+    set ticket.created_at = tx.time
+    set ticket.updated_at = tx.time
+    set first_link.created_at = tx.time
+    set second_link.created_at = tx.time
+    return Created { ticket: ticket, first_link: first_link, second_link: second_link }
   }
 }

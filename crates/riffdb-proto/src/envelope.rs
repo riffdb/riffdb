@@ -2,7 +2,7 @@
 
 use std::{error::Error, fmt};
 
-use crc::{CRC_32_ISCSI, Crc};
+use crc::{CRC_32_ISCSI, Crc, Table};
 use prost::Message;
 use riffdb_types::SchemaHash;
 
@@ -21,7 +21,7 @@ pub const MAX_RECORD_TYPE_BYTES: usize = 256;
 /// Maximum number of entries accepted in one closed record registry.
 pub const MAX_REGISTERED_RECORD_SCHEMAS: usize = 256;
 
-const CRC_32C: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
+const CRC_32C: Crc<u32, Table<16>> = Crc::<u32, Table<16>>::new(&CRC_32_ISCSI);
 
 /// Safe semantic failures returned by a record-specific payload validator.
 ///

@@ -16,8 +16,8 @@ use riffdb_projection::{
     validate_and_recover_projection_generation,
 };
 use riffdb_storage_api::{
-    AuthoritativeScanReader, CheckedProjectionSchema, CommitScanPageV1, CommitScanRequest,
-    ProjectionApplyResult, ProjectionControlResult, ProjectionFailureCodeV1,
+    AuthoritativeScanReader, CatalogRepository, CheckedProjectionSchema, CommitScanPageV1,
+    CommitScanRequest, ProjectionApplyResult, ProjectionControlResult, ProjectionFailureCodeV1,
     ProjectionGenerationPosition, ProjectionLifecycleV1, ProjectionQueryReader,
     ProjectionRecoveryPageLimit, StorageError, StorageScanLimit, StoredProjectionControlV1,
 };
@@ -168,6 +168,7 @@ impl fmt::Debug for RunningProjectionWorker {
 #[derive(Default)]
 struct ProjectionWorkerState {
     validated: BTreeSet<ProjectionIdentity>,
+    active: Option<ActiveCatalogSnapshot>,
 }
 
 fn run_projection_pass(
@@ -175,9 +176,20 @@ fn run_projection_pass(
     notifier: &ProjectionNotifier,
     state: &mut ProjectionWorkerState,
 ) -> Result<(), ProjectionWorkerError> {
-    let Some(active) =
-        ActiveCatalogSnapshot::read(storage).map_err(ProjectionWorkerError::Catalog)?
-    else {
+    let pointer = storage
+        .read_active_catalog()
+        .map_err(ProjectionWorkerError::Storage)?;
+    let active = match (pointer.as_ref(), state.active.as_ref()) {
+        (Some(pointer), Some(active)) if active.pointer() == pointer => Some(active.clone()),
+        (None, None) => None,
+        _ => {
+            let active =
+                ActiveCatalogSnapshot::read(storage).map_err(ProjectionWorkerError::Catalog)?;
+            state.active = active.clone();
+            active
+        }
+    };
+    let Some(active) = active else {
         let registry =
             ProjectionSchemaRegistry::new(Vec::new()).map_err(ProjectionWorkerError::Projection)?;
         notifier

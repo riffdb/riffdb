@@ -1323,12 +1323,20 @@ fn validate_relationship(
             kind: "relationship target must be complete primary key",
         });
     }
-    let source_owner = ownership.get(&source.id()).copied();
-    if source_owner.is_none() || source_owner != ownership.get(&target.id()).copied() {
-        return Err(IrValidationError::InvalidReference {
-            kind: "relationship crosses partition owner",
-        });
-    }
+    let source_owner =
+        ownership
+            .get(&source.id())
+            .copied()
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "relationship source aggregate owner",
+            })?;
+    let target_owner =
+        ownership
+            .get(&target.id())
+            .copied()
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "relationship target aggregate owner",
+            })?;
     for (source_field, target_field) in relationship
         .source_fields
         .iter()
@@ -1356,24 +1364,166 @@ fn validate_relationship(
             });
         }
     }
-    let owner = aggregates
+    let source_aggregate = aggregates
         .iter()
-        .find(|aggregate| Some(aggregate.id()) == source_owner)
+        .find(|aggregate| aggregate.id() == source_owner)
         .ok_or(IrValidationError::InvalidReference {
-            kind: "relationship aggregate",
+            kind: "relationship source aggregate",
         })?;
-    let root = entities
-        .get(&owner.root())
+    let target_aggregate = aggregates
+        .iter()
+        .find(|aggregate| aggregate.id() == target_owner)
         .ok_or(IrValidationError::InvalidReference {
-            kind: "relationship aggregate root",
+            kind: "relationship target aggregate",
         })?;
-    let route_len = root.primary_key_fields().len();
-    if relationship.source_fields.get(..route_len) != source.primary_key_fields().get(..route_len) {
+    let source_root =
+        entities
+            .get(&source_aggregate.root())
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "relationship source aggregate root",
+            })?;
+    let target_root =
+        entities
+            .get(&target_aggregate.root())
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "relationship target aggregate root",
+            })?;
+    if !relationship_partition_templates_match(
+        relationship,
+        source,
+        target,
+        source_aggregate,
+        target_aggregate,
+        source_root,
+        target_root,
+    )? {
         return Err(IrValidationError::InvalidReference {
             kind: "relationship partition route",
         });
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn relationship_partition_templates_match(
+    relationship: &RelationshipSchema,
+    source: &EntitySchema,
+    target: &EntitySchema,
+    source_aggregate: &AggregateSchema,
+    target_aggregate: &AggregateSchema,
+    source_root: &EntitySchema,
+    target_root: &EntitySchema,
+) -> Result<bool, IrValidationError> {
+    let source_arena = source_aggregate.keys().expressions();
+    let target_arena = target_aggregate.keys().expressions();
+    let mut pending = vec![(
+        source_aggregate.keys().partition_expression(),
+        target_aggregate.keys().partition_expression(),
+    )];
+    let mut visited = BTreeSet::new();
+    while let Some((source_id, target_id)) = pending.pop() {
+        if !visited.insert((source_id, target_id)) {
+            continue;
+        }
+        checked_len(
+            "relationship partition expression pairs",
+            visited.len(),
+            crate::MAX_EXPRESSION_NODES,
+        )?;
+        let source_node =
+            source_arena
+                .get(source_id)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "relationship source partition expression",
+                })?;
+        let target_node =
+            target_arena
+                .get(target_id)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "relationship target partition expression",
+                })?;
+        if source_node.result_type() != target_node.result_type() {
+            return Ok(false);
+        }
+        match (source_node.kind(), target_node.kind()) {
+            (ExpressionKind::Constant(left), ExpressionKind::Constant(right)) if left == right => {}
+            (
+                ExpressionKind::SchemaField {
+                    entity_type: left_entity,
+                    field: left_field,
+                },
+                ExpressionKind::SchemaField {
+                    entity_type: right_entity,
+                    field: right_field,
+                },
+            ) => {
+                if *left_entity != source_root.id() || *right_entity != target_root.id() {
+                    return Ok(false);
+                }
+                let Some(left_position) = source_root
+                    .primary_key_fields()
+                    .iter()
+                    .position(|candidate| candidate == left_field)
+                else {
+                    return Ok(false);
+                };
+                let Some(source_partition_field) =
+                    source.primary_key_fields().get(left_position).copied()
+                else {
+                    return Ok(false);
+                };
+                let Some(right_position) = target_root
+                    .primary_key_fields()
+                    .iter()
+                    .position(|candidate| candidate == right_field)
+                else {
+                    return Ok(false);
+                };
+                let Some(target_partition_field) =
+                    target.primary_key_fields().get(right_position).copied()
+                else {
+                    return Ok(false);
+                };
+                let Some(mapped_position) = relationship
+                    .target_fields
+                    .iter()
+                    .position(|field| *field == target_partition_field)
+                else {
+                    return Ok(false);
+                };
+                if relationship.source_fields[mapped_position] != source_partition_field {
+                    return Ok(false);
+                }
+            }
+            (
+                ExpressionKind::Unary {
+                    operator: left_operator,
+                    operand: left_operand,
+                },
+                ExpressionKind::Unary {
+                    operator: right_operator,
+                    operand: right_operand,
+                },
+            ) if left_operator == right_operator => pending.push((*left_operand, *right_operand)),
+            (
+                ExpressionKind::Binary {
+                    operator: left_operator,
+                    left: left_left,
+                    right: left_right,
+                },
+                ExpressionKind::Binary {
+                    operator: right_operator,
+                    left: right_left,
+                    right: right_right,
+                },
+            ) if left_operator == right_operator => {
+                pending.push((*left_left, *right_left));
+                pending.push((*left_right, *right_right));
+            }
+            _ => return Ok(false),
+        }
+    }
+    Ok(true)
 }
 
 fn validate_unique_key(
@@ -1431,13 +1581,69 @@ fn validate_unique_key(
         .ok_or(IrValidationError::InvalidReference {
             kind: "unique key aggregate root",
         })?;
-    let route_len = root.primary_key_fields().len();
-    if unique.fields.get(..route_len) != source.primary_key_fields().get(..route_len) {
+    let route = aggregate_partition_route_fields(owner, root, source)?;
+    if unique.fields.get(..route.len()) != Some(route.as_slice()) {
         return Err(IrValidationError::InvalidKey {
             reason: "unique key lacks complete canonical partition prefix",
         });
     }
     Ok(())
+}
+
+fn aggregate_partition_route_fields(
+    aggregate: &AggregateSchema,
+    root: &EntitySchema,
+    entity: &EntitySchema,
+) -> Result<Vec<FieldId>, IrValidationError> {
+    let mut dependencies = BTreeSet::new();
+    let mut pending = vec![aggregate.keys().partition_expression()];
+    let mut visited = BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        checked_len(
+            "aggregate partition dependency nodes",
+            visited.len(),
+            crate::MAX_EXPRESSION_NODES,
+        )?;
+        let node =
+            aggregate
+                .keys()
+                .expressions()
+                .get(id)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "aggregate partition expression",
+                })?;
+        match node.kind() {
+            ExpressionKind::SchemaField { entity_type, field } if *entity_type == root.id() => {
+                dependencies.insert(*field);
+            }
+            ExpressionKind::Unary { operand, .. } => pending.push(*operand),
+            ExpressionKind::Binary { left, right, .. } => {
+                pending.push(*right);
+                pending.push(*left);
+            }
+            ExpressionKind::Constant(_) => {}
+            _ => {
+                return Err(IrValidationError::InvalidDependency {
+                    reason: "aggregate partition expression is not root-key computable",
+                });
+            }
+        }
+    }
+    root.primary_key_fields()
+        .iter()
+        .enumerate()
+        .filter(|(_, field)| dependencies.contains(field))
+        .map(|(position, _)| {
+            entity.primary_key_fields().get(position).copied().ok_or(
+                IrValidationError::InvalidKey {
+                    reason: "entity key lacks aggregate partition dependency prefix",
+                },
+            )
+        })
+        .collect()
 }
 
 fn validate_child_key_prefix(

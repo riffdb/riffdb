@@ -4662,6 +4662,85 @@ work_packages:
   exit_gate: All public-only rehearsals and failure recoveries pass, both fresh canaries meet every official threshold,
     every first-success metric carries exact RiffDB identity evidence, and campaign 01 remains byte-identical.
   human_review_triggers: *id001
+- id: WP-366
+  name: Same-partition aggregate concurrency and PostgreSQL write parity
+  depends_on:
+  - WP-364
+  objective: Recover ordinary application write concurrency by permitting exact same-partition observations across
+    aggregates while retaining one mutation aggregate, static conflict ownership, transaction-current dependency
+    validation, redb Immediate durability, and the complete command/audit protocol.
+  requirements:
+  - PERF-005
+  required_adrs:
+  - ADR-0002
+  - ADR-0003
+  - ADR-0004
+  - ADR-0005
+  - ADR-0007
+  - ADR-0016
+  - ADR-0023
+  - ADR-0058
+  - ADR-0059
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - SPEC.md
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-contract-compiler/**
+  - crates/riffdb-contract-ir/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-service/**
+  - crates/riffdb-server/**
+  - crates/riffdb-observability/**
+  - crates/riffdb-api-grpc/**
+  - crates/riffdb-proto/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-client-rust/**
+  - clients/typescript/**
+  - examples/app-baseline/**
+  - fixtures/application-manifests/**
+  - fixtures/query-modules/**
+  - fixtures/proto/**
+  - fixtures/performance/**
+  - tests/command_semantics/**
+  - tests/grpc/**
+  - scripts/check-generated
+  - scripts/generate-query-clients
+  - scripts/generate-proto
+  - benchmarks/run-app-baseline
+  - docs/performance/**
+  deliverables:
+  - Compiler locality analysis and lowering that accept same-partition external reads, reject cross-partition reads and
+    multi-aggregate create/mutate bindings, anchor locality on the mutation aggregate, and derive conflicts only from it
+  - TicketDesk aggregate model whose ticket/comment/label-link and project/member atomic operations retain one aggregate
+    while independent application records acquire fine-grained conflict keys
+  - Fixed-cardinality server evidence for effective completion-group sizes 1 through 16 with no sensitive or
+    high-cardinality labels
+  - Bounded public command-batch transport whose items retain independent authorization, idempotency, outcomes,
+    provenance, audit lifecycle, uncertainty recovery, and non-atomic semantics
+  - Full same-run public TicketDesk versus PostgreSQL report satisfying the seed and representative unary mutation
+    two-times parity gates under unchanged redb Immediate durability
+  - Compiler, command semantic, grouping, crash, uncertainty, generation, formatting, and lint evidence
+  acceptance_commands:
+  - cargo test -p riffdb-contract-compiler --all-features
+  - cargo test -p riffdb-commit --all-features
+  - cargo test -p riffdb-server --all-features
+  - cargo test -p riffdb-commit --test command_concurrency --test lost_response_replay --all-features
+  - ./scripts/generate-query-clients --check
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - ./benchmarks/run-app-baseline --full --assert-write-parity
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Compiler proofs preserve one mutation aggregate and exact same-partition external-read revalidation;
+    TicketDesk retains its atomic application operations while producing compatible effective groups; and the full
+    same-run public seed plus unary mutation p50 are each no more than twice PostgreSQL with unchanged durability,
+    authorization, idempotency, provenance, audit, and uncertainty semantics.
+  human_review_triggers: *id001
 - id: WP-370
   name: Agent Application Alpha sealed evaluation campaign 02
   depends_on:

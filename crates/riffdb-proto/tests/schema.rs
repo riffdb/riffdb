@@ -452,7 +452,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 31);
+    assert_eq!(methods.len(), 32);
     let descriptor_order = descriptors
         .file
         .iter()
@@ -493,7 +493,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
     );
     assert_eq!(
         descriptor_order["CommandService"],
-        vec!["Execute", "GetOutcome"]
+        vec!["Execute", "ExecuteBatch", "GetOutcome"]
     );
     assert_eq!(
         descriptor_order["QueryService"],
@@ -612,7 +612,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        159
+        161
     );
     assert_eq!(
         messages

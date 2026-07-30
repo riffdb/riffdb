@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use postgres::{Client, Config, NoTls, Row};
 use riffdb_app_baseline_core::{
-    AppBackend, CommentRow, CommentSeed, LabelRow, OrganizationRow, ProjectMemberRow, ProjectRow,
-    SeedDataset, TicketDetailPage, TicketRow, TicketStatus, UserRow, UuidBytes, format_uuid,
+    AppBackend, CloseTicketWithCommentSeed, CommentRow, CommentSeed, LabelRow, OpenTicketWithLabelsSeed,
+    OrganizationRow, ProjectMemberRow, ProjectRow, SeedDataset, SwapMemberRolesSeed,
+    TicketDetailPage, TicketRow, TicketStatus, UserRow, UuidBytes, format_uuid,
 };
 
 /// Digest-pinned image used by the baseline runner.
@@ -514,6 +515,155 @@ impl AppBackend for PostgresAppBackend {
                 ],
             )
             .map_err(db_err)?;
+        Ok(())
+    }
+
+    fn close_ticket_with_comment(
+        &mut self,
+        input: &CloseTicketWithCommentSeed,
+    ) -> Result<(), Self::Error> {
+        let mut client = self.connect()?;
+        let mut tx = client.transaction().map_err(db_err)?;
+        // Existence checks mirror RiffDB relationship validation before mutate/create.
+        let ticket_ok: i64 = tx
+            .query_one(
+                "SELECT COUNT(*)::bigint FROM ticket
+                 WHERE organization_id = $1::text::uuid AND ticket_id = $2::text::uuid",
+                &[
+                    &format_uuid(input.organization_id),
+                    &format_uuid(input.ticket_id),
+                ],
+            )
+            .map_err(db_err)?
+            .get(0);
+        if ticket_ok == 0 {
+            return Err(PostgresError::Decode);
+        }
+        let author_ok: i64 = tx
+            .query_one(
+                "SELECT COUNT(*)::bigint FROM app_user
+                 WHERE organization_id = $1::text::uuid AND user_id = $2::text::uuid",
+                &[
+                    &format_uuid(input.organization_id),
+                    &format_uuid(input.author_id),
+                ],
+            )
+            .map_err(db_err)?
+            .get(0);
+        if author_ok == 0 {
+            return Err(PostgresError::Decode);
+        }
+        tx.execute(
+            "UPDATE ticket SET status = 'closed'
+             WHERE organization_id = $1::text::uuid AND ticket_id = $2::text::uuid",
+            &[
+                &format_uuid(input.organization_id),
+                &format_uuid(input.ticket_id),
+            ],
+        )
+        .map_err(db_err)?;
+        tx.execute(
+            "INSERT INTO comment(organization_id, comment_id, ticket_id, author_id, body)
+             VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5)
+             ON CONFLICT (organization_id, comment_id) DO NOTHING",
+            &[
+                &format_uuid(input.organization_id),
+                &format_uuid(input.comment_id),
+                &format_uuid(input.ticket_id),
+                &format_uuid(input.author_id),
+                &input.body,
+            ],
+        )
+        .map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    fn swap_member_roles(&mut self, input: &SwapMemberRolesSeed) -> Result<(), Self::Error> {
+        let mut client = self.connect()?;
+        let mut tx = client.transaction().map_err(db_err)?;
+        let updated_a = tx
+            .execute(
+                "UPDATE project_member SET role = $4
+                 WHERE organization_id = $1::text::uuid
+                   AND project_id = $2::text::uuid
+                   AND user_id = $3::text::uuid",
+                &[
+                    &format_uuid(input.organization_id),
+                    &format_uuid(input.project_id),
+                    &format_uuid(input.user_a),
+                    &input.role_a,
+                ],
+            )
+            .map_err(db_err)?;
+        let updated_b = tx
+            .execute(
+                "UPDATE project_member SET role = $4
+                 WHERE organization_id = $1::text::uuid
+                   AND project_id = $2::text::uuid
+                   AND user_id = $3::text::uuid",
+                &[
+                    &format_uuid(input.organization_id),
+                    &format_uuid(input.project_id),
+                    &format_uuid(input.user_b),
+                    &input.role_b,
+                ],
+            )
+            .map_err(db_err)?;
+        if updated_a == 0 || updated_b == 0 {
+            return Err(PostgresError::Decode);
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    fn open_ticket_with_labels(
+        &mut self,
+        input: &OpenTicketWithLabelsSeed,
+    ) -> Result<(), Self::Error> {
+        let mut client = self.connect()?;
+        let mut tx = client.transaction().map_err(db_err)?;
+        tx.execute(
+            "INSERT INTO ticket(
+                 organization_id, ticket_id, project_id, reporter_id, assignee_id, status, title
+             ) VALUES (
+                 $1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5::text::uuid,
+                 'open', $6
+             )
+             ON CONFLICT (organization_id, ticket_id) DO NOTHING",
+            &[
+                &format_uuid(input.organization_id),
+                &format_uuid(input.ticket_id),
+                &format_uuid(input.project_id),
+                &format_uuid(input.reporter_id),
+                &format_uuid(input.assignee_id),
+                &input.title,
+            ],
+        )
+        .map_err(db_err)?;
+        tx.execute(
+            "INSERT INTO ticket_label(organization_id, ticket_id, label_id)
+             VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid)
+             ON CONFLICT (organization_id, ticket_id, label_id) DO NOTHING",
+            &[
+                &format_uuid(input.organization_id),
+                &format_uuid(input.ticket_id),
+                &format_uuid(input.label_a),
+            ],
+        )
+        .map_err(db_err)?;
+        tx.execute(
+            "INSERT INTO ticket_label(organization_id, ticket_id, label_id)
+             VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid)
+             ON CONFLICT (organization_id, ticket_id, label_id) DO NOTHING",
+            &[
+                &format_uuid(input.organization_id),
+                &format_uuid(input.ticket_id),
+                &format_uuid(input.label_b),
+            ],
+        )
+        .map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
         Ok(())
     }
 }

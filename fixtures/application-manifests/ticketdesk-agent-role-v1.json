@@ -1,8 +1,8 @@
 {
   "application": "ticketdesk",
-  "application_manifest_hash": "c18f88f1190e87008a7575d72517f92895f61c789046c91985eecc79b0570bea",
+  "application_manifest_hash": "4bd2fd882276366f8dae10e3a32fa6d7973564debd84d05101323f58b1f1c887",
   "contract": {
-    "bundle_hash": "23e9b5b207414e2753e4d914b1b94ecd786181be08028ace9d4f3cc0b6f4944c",
+    "bundle_hash": "7d6659df2fd59e3a37ddb8cc59b36cf7e887f388576c48f4251134f5d6588f83",
     "lineage": "TicketDesk",
     "version": 1
   },
@@ -50,6 +50,10 @@
     },
     {
       "kind": "command",
+      "name": "CloseTicketWithComment"
+    },
+    {
+      "kind": "command",
       "name": "CreateComment"
     },
     {
@@ -71,12 +75,20 @@
     {
       "kind": "command",
       "name": "CreateUser"
+    },
+    {
+      "kind": "command",
+      "name": "OpenTicketWithLabels"
+    },
+    {
+      "kind": "command",
+      "name": "SwapMemberRoles"
     }
   ],
   "query_module_hashes": [
-    "459c4d8733fdf33426905f6fb1eda5100683902f979b363ed3017479937f6f37"
+    "142a519b77d6e833d4bd86c6f38bd65c3ebc014fa5601bf6089b51b21337815c"
   ],
   "role": "TicketDeskAgent",
-  "role_hash": "a32cd7864d9b17772b961567a8873f1067ec248db6338a4bbdbc2d5eabcc6f16",
+  "role_hash": "2c5659b12d4d69492de911e75a307f972aa14e96cbe9909d456d73d149e3c347",
   "tenant_scope": "global"
 }

@@ -13,6 +13,7 @@ use riffdb_catalog::{
     TransactionCurrentMaterialization,
 };
 use riffdb_conflict::{CancellationToken, ConflictError, ConflictManager, MutationLease};
+use riffdb_contract_ir::BindingMode;
 use riffdb_runtime::{ExecutionFault, ExecutionResult, TransactionContext, execute_command};
 use riffdb_storage_api::{
     AdmissionLookupResultV1, AdmissionRepository, CandidateValidationRejection,
@@ -87,6 +88,21 @@ impl PendingCommandAttempts {
 
     pub(crate) fn raw_conflict_keys(&self) -> &[ConflictKey] {
         &self.raw_conflict_keys
+    }
+
+    pub(crate) fn binding_accesses(
+        &self,
+    ) -> impl Iterator<Item = (BindingMode, &riffdb_storage_api::EntityTarget)> {
+        self.resolved_plan
+            .plan()
+            .bindings()
+            .iter()
+            .zip(self.snapshot_request.binding_targets())
+            .map(|(binding, target)| (binding.mode(), target))
+    }
+
+    pub(crate) fn root_validation_targets(&self) -> &[riffdb_storage_api::EntityTarget] {
+        self.snapshot_request.root_validation_targets()
     }
 }
 

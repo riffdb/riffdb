@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use riffdb_contract_ir::{BinaryOperator, ExpressionKind, UnaryOperator};
+use riffdb_contract_ir::{BinaryOperator, BindingMode, ExpressionKind, UnaryOperator};
 use riffdb_contract_syntax::Span;
 use riffdb_types::{AggregateTypeId, EntityTypeId, FieldId, encode_canonical_value};
 
@@ -71,7 +71,7 @@ pub(crate) fn analyze_locality(
     }
 
     for command in &hir.commands {
-        let mut command_aggregate = None;
+        let mut mutation_aggregate = None;
         let mut partition_fingerprint = None;
         for binding in &command.bindings {
             let Some((aggregate_id, _)) = owners.get(&binding.entity_id).copied() else {
@@ -81,16 +81,17 @@ pub(crate) fn analyze_locality(
                 ));
                 continue;
             };
-            if let Some(expected) = command_aggregate {
-                if expected != aggregate_id {
-                    diagnostics.push(CompilerDiagnostic::new(
-                        CompilerDiagnosticCode::CrossPartitionMutation,
-                        binding.entity_span,
-                    ));
-                    continue;
+            if matches!(binding.mode, BindingMode::Create | BindingMode::Mutate) {
+                if let Some(expected) = mutation_aggregate {
+                    if expected != aggregate_id {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::CrossPartitionMutation,
+                            binding.entity_span,
+                        ));
+                    }
+                } else {
+                    mutation_aggregate = Some(aggregate_id);
                 }
-            } else {
-                command_aggregate = Some(aggregate_id);
             }
             validate_input_only_binding(command, binding, &mut diagnostics);
             let Some(aggregate) = hir.aggregate(aggregate_id) else {
@@ -531,6 +532,113 @@ contract Example version 1 {
 }
 "#;
         analyze(source).expect("single partition is provable");
+    }
+
+    #[test]
+    fn same_partition_external_read_and_one_mutation_aggregate_pass() {
+        let source = r#"
+contract Example version 1 {
+  entity Account { key (tenant: uuid, account_id: uuid) }
+  entity Entry { key (tenant: uuid, entry_id: uuid) }
+  aggregate Accounts {
+    root Account
+    partition_by tenant
+    conflict_key (tenant, account_id)
+  }
+  aggregate Entries {
+    root Entry
+    partition_by tenant
+    conflict_key (tenant, entry_id)
+  }
+  command CreateEntry {
+    input request_key: string<16>
+    input tenant: uuid
+    input account_id: uuid
+    input entry_id: uuid
+    idempotency_key request_key
+    read Account(tenant, account_id) as account else MissingAccount {}
+    create Entry(tenant, entry_id) as entry else EntryExists {}
+    return Created { entry: entry }
+  }
+}
+"#;
+        analyze(source).expect("external read is an exact same-partition dependency");
+    }
+
+    #[test]
+    fn cross_partition_external_read_rejects() {
+        let source = r#"
+contract Example version 1 {
+  entity Account { key (tenant: uuid, account_id: uuid) }
+  entity Entry { key (tenant: uuid, entry_id: uuid) }
+  aggregate Accounts {
+    root Account
+    partition_by tenant
+    conflict_key (tenant, account_id)
+  }
+  aggregate Entries {
+    root Entry
+    partition_by tenant
+    conflict_key (tenant, entry_id)
+  }
+  command CreateEntry {
+    input request_key: string<16>
+    input account_tenant: uuid
+    input entry_tenant: uuid
+    input account_id: uuid
+    input entry_id: uuid
+    idempotency_key request_key
+    read Account(account_tenant, account_id) as account else MissingAccount {}
+    create Entry(entry_tenant, entry_id) as entry else EntryExists {}
+    return Created { entry: entry }
+  }
+}
+"#;
+        let diagnostics = analyze(source).expect_err("cross-partition external read rejects");
+        assert!(diagnostics.as_slice().iter().any(|diagnostic| {
+            diagnostic.code() == CompilerDiagnosticCode::CrossPartitionMutation
+        }));
+    }
+
+    #[test]
+    fn same_partition_writes_to_two_aggregates_reject() {
+        let source = r#"
+contract Example version 1 {
+  entity Account { key (tenant: uuid, account_id: uuid) }
+  entity Entry { key (tenant: uuid, entry_id: uuid) }
+  aggregate Accounts {
+    root Account
+    partition_by tenant
+    conflict_key (tenant, account_id)
+  }
+  aggregate Entries {
+    root Entry
+    partition_by tenant
+    conflict_key (tenant, entry_id)
+  }
+  command ChangeBoth {
+    input request_key: string<16>
+    input tenant: uuid
+    input account_id: uuid
+    input entry_id: uuid
+    idempotency_key request_key
+    mutate Account(tenant, account_id) as account else MissingAccount {}
+    mutate Entry(tenant, entry_id) as entry else MissingEntry {}
+    return Changed { account: account, entry: entry }
+  }
+}
+"#;
+        let diagnostics = analyze(source).expect_err("two mutation aggregates reject");
+        let diagnostic = diagnostics
+            .as_slice()
+            .iter()
+            .find(|diagnostic| diagnostic.code() == CompilerDiagnosticCode::CrossPartitionMutation)
+            .expect("mutation aggregate diagnostic");
+        let start = source.find("Entry(tenant").expect("second mutation");
+        assert_eq!(
+            diagnostic.primary_span(),
+            Span::new(start, start + 5).expect("span")
+        );
     }
 
     #[test]

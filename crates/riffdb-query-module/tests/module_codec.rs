@@ -65,8 +65,15 @@ fn generated_mcp_tools_are_module_pinned_name_addressed_and_domain_shaped() {
     assert!(!tools[0].result_schema.contains("entity_type_id"));
 
     let commands = generate_mcp_commands(&module, &bundle).expect("commands");
-    assert_eq!(commands.len(), 8);
+    assert_eq!(commands.len(), 11);
     assert_eq!(commands[0].name, "ticketdesk.add_project_member");
+    for expected in [
+        "ticketdesk.close_ticket_with_comment",
+        "ticketdesk.open_ticket_with_labels",
+        "ticketdesk.swap_member_roles",
+    ] {
+        assert!(commands.iter().any(|command| command.name == expected));
+    }
     assert!(commands[0].input_schema.contains("idempotency_key"));
     assert!(commands[0].result_schema.contains("\"outcome\""));
     assert!(

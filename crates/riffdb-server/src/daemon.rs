@@ -1606,6 +1606,7 @@ async fn supervise_ready_process(
     if let Some(hosted_mcp) = hosted_mcp.as_mut() {
         hosted_mcp.begin_shutdown();
     }
+    let write_completion_groups = graph.write_completion_group_snapshot();
     let notification_stop_failed = graph.begin_transport_shutdown().is_err();
     let transport_result = match &trigger {
         ReadyProcessTrigger::Transport(completion) => classify_transport_completion(completion),
@@ -1635,6 +1636,17 @@ async fn supervise_ready_process(
     } else {
         graph.shutdown().await
     };
+    if graph_result.is_ok() {
+        let counts = write_completion_groups
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let stdout = io::stdout();
+        let mut stdout = stdout.lock();
+        let _ = writeln!(stdout, "riffdb-write-completion-groups-v1\t{counts}");
+        let _ = stdout.flush();
+    }
     if maintenance_shutdown {
         recovery.reached(MaintenanceRecoveryBoundary::DatabaseClosed);
     }
