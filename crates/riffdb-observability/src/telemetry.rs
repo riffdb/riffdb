@@ -176,7 +176,7 @@ impl Observability {
         std::array::from_fn(|index| self.write_completion_groups[index].load(Ordering::Relaxed))
     }
 
-    /// Returns dispatch counts in full, barrier, window, receiver-closed order.
+    /// Returns dispatch counts in full, barrier, queue-drained, receiver-closed order.
     #[must_use]
     pub fn command_group_dispatch_snapshot(
         &self,
@@ -513,7 +513,7 @@ const fn command_group_dispatch_reason_index(reason: CommitGroupDispatchReason) 
     match reason {
         CommitGroupDispatchReason::Full => 0,
         CommitGroupDispatchReason::Barrier => 1,
-        CommitGroupDispatchReason::WindowElapsed => 2,
+        CommitGroupDispatchReason::QueueDrained => 2,
         CommitGroupDispatchReason::ReceiverClosed => 3,
     }
 }

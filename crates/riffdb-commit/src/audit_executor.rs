@@ -6,7 +6,7 @@ use std::num::NonZeroU16;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use std::{error::Error, fmt, panic, thread};
 
 use riffdb_storage_api::{
@@ -290,7 +290,6 @@ const LIFECYCLE_FENCED: u8 = 2;
 const LIFECYCLE_STOPPED: u8 = 3;
 const SUBMISSION_GATE_CLOSED: usize = 1 << (usize::BITS - 1);
 const SUBMISSION_COUNT_MASK: usize = !SUBMISSION_GATE_CLOSED;
-const COMMAND_GROUP_WINDOW: Duration = Duration::from_micros(200);
 const MAX_QUEUED_COMMAND_BYTES: usize = 32 * 1_024 * 1_024;
 const QUEUED_COMMAND_BYTE_UNIT: usize = 1_024;
 
@@ -996,8 +995,6 @@ impl fmt::Debug for ReadOnlyExecutionReceipt {
     }
 }
 
-const IDEMPOTENCY_INSPECTION_GROUP_WINDOW: Duration = Duration::from_micros(200);
-
 struct DirectIdempotencyInspectionMessage {
     preparation: PreparedCommandIdempotencyInspection,
     completion:
@@ -1014,53 +1011,34 @@ impl DirectIdempotencyInspectionBatcher {
         repository: Arc<dyn AdmissionLookupRepository + Send + Sync>,
         lifecycle: ActorLifecyclePublisher,
     ) -> Option<Self> {
-        let runtime = runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .ok()?;
         let (sender, mut receiver) = mpsc::channel::<DirectIdempotencyInspectionMessage>(
             riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS * 2,
         );
         thread::Builder::new()
             .name("riffdb-idempotency-reader".to_owned())
             .spawn(move || {
-                runtime.block_on(async move {
-                    while let Some(first) = receiver.recv().await {
-                        let mut group = vec![first];
-                        let deadline =
-                            tokio::time::Instant::now() + IDEMPOTENCY_INSPECTION_GROUP_WINDOW;
-                        loop {
-                            while group.len() < riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
-                                match receiver.try_recv() {
-                                    Ok(message) => group.push(message),
-                                    Err(_) => break,
-                                }
-                            }
-                            if group.len() == riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
-                                || tokio::time::Instant::now() >= deadline
-                            {
-                                break;
-                            }
-                            match tokio::time::timeout_at(deadline, receiver.recv()).await {
-                                Ok(Some(message)) => group.push(message),
-                                Ok(None) | Err(_) => break,
-                            }
-                        }
-
-                        let (preparations, completions): (Vec<_>, Vec<_>) = group
-                            .into_iter()
-                            .map(|message| (message.preparation, message.completion))
-                            .unzip();
-                        let results = inspect_command_idempotency_group(
-                            repository.as_ref(),
-                            &lifecycle,
-                            preparations,
-                        );
-                        for (completion, result) in completions.into_iter().zip(results) {
-                            let _receiver_may_be_dropped = completion.send(result);
+                while let Some(first) = receiver.blocking_recv() {
+                    let mut group = vec![first];
+                    while group.len() < riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
+                        match receiver.try_recv() {
+                            Ok(message) => group.push(message),
+                            Err(_) => break,
                         }
                     }
-                });
+
+                    let (preparations, completions): (Vec<_>, Vec<_>) = group
+                        .into_iter()
+                        .map(|message| (message.preparation, message.completion))
+                        .unzip();
+                    let results = inspect_command_idempotency_group(
+                        repository.as_ref(),
+                        &lifecycle,
+                        preparations,
+                    );
+                    for (completion, result) in completions.into_iter().zip(results) {
+                        let _receiver_may_be_dropped = completion.send(result);
+                    }
+                }
             })
             .ok()?;
         Some(Self { sender })
@@ -1345,7 +1323,6 @@ impl RunningCommandCoordinator {
             .try_reserve_owned()
             .map_err(|_| CoordinatorStartError::ShutdownCapacityUnavailable)?;
         let runtime = runtime::Builder::new_current_thread()
-            .enable_time()
             .build()
             .map_err(|_| CoordinatorStartError::RuntimeUnavailable)?;
         let lifecycle = Arc::new(AtomicU8::new(LIFECYCLE_ACCEPTING));
@@ -2023,7 +2000,7 @@ impl CommandCoordinatorActor {
                     let mut group =
                         vec![(*preparation, command_id, ingress, enqueued_at, completion)];
                     let collection_started = Instant::now();
-                    let reason = self.collect_command_group(&mut group, &mut pending).await;
+                    let reason = self.collect_command_group(&mut group, &mut pending);
                     self.telemetry
                         .record(CommitTelemetryEvent::CommandGroupDispatched {
                             reason,
@@ -2244,31 +2221,27 @@ impl CommandCoordinatorActor {
         }
     }
 
-    async fn collect_command_group(
+    fn collect_command_group(
         &mut self,
         group: &mut Vec<CommandGroupItem>,
         pending: &mut VecDeque<CoordinatorMessage>,
     ) -> CommitGroupDispatchReason {
-        let deadline = tokio::time::Instant::now() + COMMAND_GROUP_WINDOW;
-        loop {
-            while let Ok(message) = self.receiver.try_recv() {
-                pending.push_back(message);
+        let receiver_closed = loop {
+            match self.receiver.try_recv() {
+                Ok(message) => pending.push_back(message),
+                Err(mpsc::error::TryRecvError::Empty) => break false,
+                Err(mpsc::error::TryRecvError::Disconnected) => break true,
             }
-            let barrier = select_pending_commands(group, pending);
-            if barrier {
-                return CommitGroupDispatchReason::Barrier;
-            }
-            if group.len() == riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
-                return CommitGroupDispatchReason::Full;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return CommitGroupDispatchReason::WindowElapsed;
-            }
-            match tokio::time::timeout_at(deadline, self.receiver.recv()).await {
-                Ok(Some(message)) => pending.push_back(message),
-                Ok(None) => return CommitGroupDispatchReason::ReceiverClosed,
-                Err(_) => return CommitGroupDispatchReason::WindowElapsed,
-            }
+        };
+        let barrier = select_pending_commands(group, pending);
+        if barrier {
+            CommitGroupDispatchReason::Barrier
+        } else if group.len() == riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
+            CommitGroupDispatchReason::Full
+        } else if receiver_closed {
+            CommitGroupDispatchReason::ReceiverClosed
+        } else {
+            CommitGroupDispatchReason::QueueDrained
         }
     }
 

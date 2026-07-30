@@ -901,7 +901,7 @@ const fn commit_group_dispatch_reason_tag(reason: CommitGroupDispatchReason) -> 
     match reason {
         CommitGroupDispatchReason::Full => 1,
         CommitGroupDispatchReason::Barrier => 2,
-        CommitGroupDispatchReason::WindowElapsed => 3,
+        CommitGroupDispatchReason::QueueDrained => 3,
         CommitGroupDispatchReason::ReceiverClosed => 4,
     }
 }
