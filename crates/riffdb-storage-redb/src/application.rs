@@ -226,37 +226,61 @@ impl AdmissionRepository for RedbOperationalPorts {
         &self,
         request: AdmissionRequestV1,
     ) -> Result<AdmissionResultV1, StorageError> {
+        let mut results = self.admit_or_resolve_group(vec![request])?;
+        results
+            .pop()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
+    }
+
+    fn admit_or_resolve_group(
+        &self,
+        requests: Vec<AdmissionRequestV1>,
+    ) -> Result<Vec<AdmissionResultV1>, StorageError> {
+        if requests.is_empty() || requests.len() > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+        {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
         let access = self.begin_write()?;
         let transaction = access.transaction()?;
-        let matches = matching_admissions(transaction, request.lookup_candidates())?;
-        if matches.len() > 1 {
+        let mut created_any = false;
+        let mut results = Vec::with_capacity(requests.len());
+        for request in requests {
+            let matches = matching_admissions(transaction, request.lookup_candidates())?;
+            if matches.len() > 1 {
+                results.push(AdmissionResultV1::MultipleMatches);
+                continue;
+            }
+            if let Some(existing) = matches.first() {
+                results.push(admission_result(existing, request.proposed_pending()));
+                continue;
+            }
+            if !plan_bundle_exists(transaction, request.proposed_pending().plan())? {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            let key = identity_key(request.proposed_pending().identity())?;
+            let encoded = encode_pending_admission_v1(request.proposed_pending())?;
+            let mut table = transaction
+                .open_table(IDEMPOTENCY_PENDING)
+                .map_err(table_error)?;
+            if table
+                .insert(encode_idempotency_key(&key), encoded.as_bytes())
+                .map_err(precommit_storage_error)?
+                .is_some()
+            {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            drop(table);
+            created_any = true;
+            results.push(AdmissionResultV1::Created(
+                request.proposed_pending().clone(),
+            ));
+        }
+        if created_any {
+            access.commit_for(RedbTestOperation::Admission)?;
+        } else {
             access.abort()?;
-            return Ok(AdmissionResultV1::MultipleMatches);
         }
-        if let Some(existing) = matches.first() {
-            let result = admission_result(existing, request.proposed_pending());
-            access.abort()?;
-            return Ok(result);
-        }
-        if !plan_bundle_exists(transaction, request.proposed_pending().plan())? {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        let key = identity_key(request.proposed_pending().identity())?;
-        let encoded = encode_pending_admission_v1(request.proposed_pending())?;
-        let mut table = transaction
-            .open_table(IDEMPOTENCY_PENDING)
-            .map_err(table_error)?;
-        if table
-            .insert(encode_idempotency_key(&key), encoded.as_bytes())
-            .map_err(precommit_storage_error)?
-            .is_some()
-        {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        drop(table);
-        let created = request.proposed_pending().clone();
-        access.commit_for(RedbTestOperation::Admission)?;
-        Ok(AdmissionResultV1::Created(created))
+        Ok(results)
     }
 
     fn lookup_admission(

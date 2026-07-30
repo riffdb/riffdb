@@ -9,8 +9,9 @@ use riffdb_types::{
 };
 
 use crate::{
-    EncodedPageItem, MAX_SCAN_PAGE_BYTES, MAX_SERVICE_AUDIT_BYTES, StorageError, StorageScanLimit,
-    StorageValueError, checked_encoded_page_content,
+    EncodedPageItem, MAX_GROUPED_WRITE_TRANSITIONS, MAX_SCAN_PAGE_BYTES, MAX_SERVICE_AUDIT_BYTES,
+    StorageError, StorageErrorKind, StorageScanLimit, StorageValueError,
+    checked_encoded_page_content,
 };
 
 /// Stable authenticated identity retained in an administration audit record.
@@ -620,6 +621,25 @@ pub trait ServiceAuditAppendRepository {
         &mut self,
         intent: &ServiceAuditAppendIntentV1,
     ) -> Result<ServiceAuditAppendResult, StorageError>;
+
+    /// Appends a bounded FIFO group in one physical durable transition.
+    ///
+    /// Results retain input order and independent lifecycle classification.
+    /// Production repositories override this method atomically. The default is
+    /// a conformance adapter for small test repositories and rejects groups
+    /// larger than the production scheduler ceiling.
+    fn append_service_audit_group(
+        &mut self,
+        intents: &[ServiceAuditAppendIntentV1],
+    ) -> Result<Vec<ServiceAuditAppendResult>, StorageError> {
+        if intents.is_empty() || intents.len() > MAX_GROUPED_WRITE_TRANSITIONS {
+            return Err(StorageError::new(StorageErrorKind::LimitExceeded, None));
+        }
+        intents
+            .iter()
+            .map(|intent| self.append_service_audit(intent))
+            .collect()
+    }
 }
 
 /// Least-authority ordered administration-audit read port.

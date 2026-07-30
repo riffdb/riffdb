@@ -17,7 +17,8 @@ use crate::{
     ProvenanceIdSourceError,
     command_admission::{
         CommandAdmissionError, CommandAdmissionResult, UncertainCommandAdmissionResolution,
-        reduce_command_admission, resolve_uncertain_command_admission,
+        reduce_command_admission, reduce_command_admission_group,
+        resolve_uncertain_command_admission,
     },
     command_attempt::{
         CommandAttemptError, CommandAttemptResolution, EvaluatedCommandAttempt,
@@ -331,6 +332,128 @@ where
         port, conflicts, provenance, durability, lifecycle, telemetry, state,
     )
     .await
+}
+
+/// Owns a bounded FIFO group through one shared physical admission transition.
+#[allow(clippy::too_many_arguments)]
+#[allow(dead_code, reason = "WP-364 interface-first grouped actor integration")]
+pub(super) async fn drive_command_execution_group<P>(
+    port: &P,
+    conflicts: &dyn ConflictManager,
+    admission_clock: &dyn AdmissionClock,
+    provenance: &dyn ProvenanceIdSource,
+    durability: CoordinatorDurability,
+    lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
+    preparations: Vec<CommandExecutionPreparation>,
+) -> Vec<Result<CommandExecutionResult, CommandExecutionError>>
+where
+    P: AdmissionRepository
+        + SnapshotReader
+        + ApplicationCommandTransactionPort
+        + ExecutionFailureTransitionPort,
+{
+    let admissions = reduce_command_admission_group(port, admission_clock, preparations);
+    let mut results = Vec::with_capacity(admissions.len());
+    for admission in admissions {
+        let candidate = match admission {
+            Ok(CommandAdmissionResult::Execute(candidate)) => candidate,
+            Ok(CommandAdmissionResult::Outcome(outcome)) => {
+                telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
+                    observation: CommitIdempotencyObservation::Hit,
+                });
+                results.push(terminal_continuation(committed_replay(outcome), lifecycle));
+                continue;
+            }
+            Ok(CommandAdmissionResult::ExecutionFailed(failure)) => {
+                telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
+                    observation: CommitIdempotencyObservation::Hit,
+                });
+                results.push(terminal_continuation(
+                    execution_failure(failure.code()),
+                    lifecycle,
+                ));
+                continue;
+            }
+            Ok(CommandAdmissionResult::PreparationChanged) => {
+                telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
+                    observation: CommitIdempotencyObservation::Hit,
+                });
+                results.push(Ok(CommandExecutionResult::PreparationChanged));
+                continue;
+            }
+            Ok(CommandAdmissionResult::InputMismatch) => {
+                telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
+                    observation: CommitIdempotencyObservation::Mismatch,
+                });
+                results.push(Ok(CommandExecutionResult::InputMismatch));
+                continue;
+            }
+            Err(CommandAdmissionError::AdmissionStatusUnknown(uncertain)) => {
+                let write = uncertain.cause().clone();
+                lifecycle.fence();
+                let resolution = resolve_uncertain_command_admission(port, *uncertain);
+                telemetry.record(CommitTelemetryEvent::UncertaintyResolved {
+                    stage: CommitUncertaintyStage::Admission,
+                    resolution: admission_uncertainty_resolution(&resolution),
+                });
+                let result = match resolution {
+                    UncertainCommandAdmissionResolution::ProvenPending(candidate) => {
+                        drop(candidate);
+                        Err(CommandExecutionError::with_storage(
+                            CommandExecutionErrorKind::StorageUnavailable,
+                            write,
+                        ))
+                    }
+                    UncertainCommandAdmissionResolution::Outcome(outcome) => {
+                        terminal_continuation(committed_replay(outcome), lifecycle)
+                    }
+                    UncertainCommandAdmissionResolution::ExecutionFailed(failure) => {
+                        terminal_continuation(execution_failure(failure.code()), lifecycle)
+                    }
+                    UncertainCommandAdmissionResolution::OutcomeUnknown(failure) => {
+                        Err(CommandExecutionError::uncertain(
+                            failure.admission_error().clone(),
+                            failure.lookup_error().cloned(),
+                        ))
+                    }
+                    UncertainCommandAdmissionResolution::Integrity => {
+                        terminal_continuation(internal_defect(lifecycle), lifecycle)
+                    }
+                };
+                results.push(result);
+                continue;
+            }
+            Err(CommandAdmissionError::Recheck(IdempotencyRecheckError::Storage(error)))
+            | Err(CommandAdmissionError::AdmissionWrite(error)) => {
+                results.push(Err(storage_error(error, lifecycle)));
+                continue;
+            }
+            Err(CommandAdmissionError::Clock(error)) => {
+                results.push(Err(admission_clock_failure(error)));
+                continue;
+            }
+            Err(CommandAdmissionError::Recheck(IdempotencyRecheckError::Integrity(_)))
+            | Err(CommandAdmissionError::Integrity) => {
+                results.push(terminal_continuation(internal_defect(lifecycle), lifecycle));
+                continue;
+            }
+        };
+        let state = match PendingCommandAttempts::from_admission(candidate) {
+            Ok(state) => state,
+            Err(error) => {
+                results.push(Err(command_attempt_failure(error, lifecycle)));
+                continue;
+            }
+        };
+        results.push(
+            drive_pending_command_attempts(
+                port, conflicts, provenance, durability, lifecycle, telemetry, state,
+            )
+            .await,
+        );
+    }
+    results
 }
 
 async fn drive_pending_command_attempts<P>(

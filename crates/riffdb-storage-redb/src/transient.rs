@@ -40,6 +40,7 @@ pub(crate) enum TransientIndexDelta {
         request_id: RequestId,
         sequence: AdministrationSequence,
     },
+    ServiceAuditGroupAppended(Vec<(RequestId, AdministrationSequence)>),
     PendingOutboxInserted(Vec<EventId>),
     PendingOutboxMembership {
         event_id: EventId,
@@ -109,6 +110,16 @@ impl TransientIndexes {
                     return;
                 };
                 if insert_service_audit(index, request_id, sequence).is_err() {
+                    self.service_audit_sequences = None;
+                }
+            }
+            TransientIndexDelta::ServiceAuditGroupAppended(records) => {
+                let Some(index) = self.service_audit_sequences.as_mut() else {
+                    return;
+                };
+                if records.into_iter().any(|(request_id, sequence)| {
+                    insert_service_audit(index, request_id, sequence).is_err()
+                }) {
                     self.service_audit_sequences = None;
                 }
             }

@@ -95,6 +95,14 @@ pub(crate) fn append_administration_audit(
     clock: &dyn AdministrationClock,
     input: &dyn AdministrationAuditInputView,
 ) -> Result<(), AdministrationAuditExecutionError> {
+    let intent = prepare_administration_audit(clock, input)?;
+    append_prepared_administration_audit(repository, &intent)
+}
+
+fn prepare_administration_audit(
+    clock: &dyn AdministrationClock,
+    input: &dyn AdministrationAuditInputView,
+) -> Result<ServiceAuditAppendIntentV1, AdministrationAuditExecutionError> {
     let timestamp = clock
         .now()
         .map_err(AdministrationAuditExecutionError::Clock)?;
@@ -104,7 +112,7 @@ pub(crate) fn append_administration_audit(
         *input.capability_id(),
         *input.capability_revision(),
     );
-    let intent = ServiceAuditAppendIntentV1::new(
+    ServiceAuditAppendIntentV1::new(
         *input.request_id(),
         timestamp,
         *input.operation(),
@@ -115,10 +123,15 @@ pub(crate) fn append_administration_audit(
         input.approval_id().cloned(),
         *input.link(),
     )
-    .map_err(AdministrationAuditExecutionError::InvalidInput)?;
+    .map_err(AdministrationAuditExecutionError::InvalidInput)
+}
 
+fn append_prepared_administration_audit(
+    repository: &mut dyn ServiceAuditAppendRepository,
+    intent: &ServiceAuditAppendIntentV1,
+) -> Result<(), AdministrationAuditExecutionError> {
     match repository
-        .append_service_audit(&intent)
+        .append_service_audit(intent)
         .map_err(AdministrationAuditExecutionError::Storage)?
     {
         ServiceAuditAppendResult::Appended(_) => Ok(()),
@@ -126,6 +139,73 @@ pub(crate) fn append_administration_audit(
             Err(AdministrationAuditExecutionError::PhaseConflict)
         }
     }
+}
+
+fn append_administration_audit_group(
+    repository: &mut dyn ServiceAuditAppendRepository,
+    clock: &dyn AdministrationClock,
+    inputs: &[Box<dyn AdministrationAuditInputView>],
+) -> Vec<Result<(), AdministrationAuditExecutionError>> {
+    if inputs.len() <= 1 {
+        return inputs
+            .iter()
+            .map(|input| append_administration_audit(repository, clock, input.as_ref()))
+            .collect();
+    }
+    let mut outputs = (0..inputs.len()).map(|_| None).collect::<Vec<_>>();
+    let mut prepared = Vec::with_capacity(inputs.len());
+    for (index, input) in inputs.iter().enumerate() {
+        match prepare_administration_audit(clock, input.as_ref()) {
+            Ok(intent) => prepared.push((index, intent)),
+            Err(error) => outputs[index] = Some(Err(error)),
+        }
+    }
+    if prepared.is_empty() {
+        return outputs
+            .into_iter()
+            .map(|output| {
+                output.unwrap_or(Err(AdministrationAuditExecutionError::CoordinatorStopped))
+            })
+            .collect();
+    }
+    let intents = prepared
+        .iter()
+        .map(|(_, intent)| intent.clone())
+        .collect::<Vec<_>>();
+    match repository.append_service_audit_group(&intents) {
+        Ok(results) if results.len() == prepared.len() => {
+            for ((index, _), result) in prepared.into_iter().zip(results) {
+                outputs[index] = Some(match result {
+                    ServiceAuditAppendResult::Appended(_) => Ok(()),
+                    ServiceAuditAppendResult::PhaseConflict => {
+                        Err(AdministrationAuditExecutionError::PhaseConflict)
+                    }
+                });
+            }
+        }
+        Ok(_) => {
+            let error = StorageError::new(
+                riffdb_storage_api::StorageErrorKind::InvariantViolation,
+                None,
+            );
+            for (index, _) in prepared {
+                outputs[index] = Some(Err(AdministrationAuditExecutionError::Storage(
+                    error.clone(),
+                )));
+            }
+        }
+        Err(error) => {
+            for (index, _) in prepared {
+                outputs[index] = Some(Err(AdministrationAuditExecutionError::Storage(
+                    error.clone(),
+                )));
+            }
+        }
+    }
+    outputs
+        .into_iter()
+        .map(|output| output.unwrap_or(Err(AdministrationAuditExecutionError::CoordinatorStopped)))
+        .collect()
 }
 
 const LIFECYCLE_ACCEPTING: u8 = 0;
@@ -1212,12 +1292,26 @@ enum CoordinatorMessage {
 
 type LocalCommandFuture<'a> =
     Pin<Box<dyn Future<Output = Result<CommandExecutionResult, CommandExecutionError>> + 'a>>;
+type AuditGroupItem = (
+    Box<dyn AdministrationAuditInputView>,
+    oneshot::Sender<Result<(), AdministrationAuditExecutionError>>,
+);
 
 trait CoordinatorActorOperations: Send {
     fn append_audit(
         &mut self,
         input: &dyn AdministrationAuditInputView,
     ) -> Result<(), AdministrationAuditExecutionError>;
+
+    fn append_audit_group(
+        &mut self,
+        inputs: &[Box<dyn AdministrationAuditInputView>],
+    ) -> Vec<Result<(), AdministrationAuditExecutionError>> {
+        inputs
+            .iter()
+            .map(|input| self.append_audit(input.as_ref()))
+            .collect()
+    }
 
     fn drive_command(&mut self, preparation: CommandExecutionPreparation)
     -> LocalCommandFuture<'_>;
@@ -1296,6 +1390,17 @@ where
             &mut self.repository,
             self.administration_clock.as_ref(),
             input,
+        )
+    }
+
+    fn append_audit_group(
+        &mut self,
+        inputs: &[Box<dyn AdministrationAuditInputView>],
+    ) -> Vec<Result<(), AdministrationAuditExecutionError>> {
+        append_administration_audit_group(
+            &mut self.repository,
+            self.administration_clock.as_ref(),
+            inputs,
         )
     }
 
@@ -1547,13 +1652,34 @@ struct CommandCoordinatorActor {
 
 impl CommandCoordinatorActor {
     async fn run(mut self) {
-        while let Some(message) = self.receiver.recv().await {
+        let mut deferred = None;
+        loop {
+            let message = match deferred.take() {
+                Some(message) => message,
+                None => match self.receiver.recv().await {
+                    Some(message) => message,
+                    None => break,
+                },
+            };
             // This local must drop before `message` so a panic publishes the
             // terminal lifecycle before any completion sender wakes its caller.
             let _panic_guard = ActorMessagePanicGuard::new(self.lifecycle.clone());
             match message {
                 CoordinatorMessage::AdministrationAudit { input, completion } => {
-                    self.execute_audit(input, completion);
+                    let mut group = vec![(input, completion)];
+                    while group.len() < riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
+                        match self.receiver.try_recv() {
+                            Ok(CoordinatorMessage::AdministrationAudit { input, completion }) => {
+                                group.push((input, completion));
+                            }
+                            Ok(message) => {
+                                deferred = Some(message);
+                                break;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    self.execute_audit_group(group);
                     if self.reject_after_published_terminal_state().await {
                         break;
                     }
@@ -1798,6 +1924,32 @@ impl CommandCoordinatorActor {
             Err(_) => self.lifecycle.stop(),
         }
         let _receiver_may_be_dropped = completion.send(result);
+    }
+
+    fn execute_audit_group(&mut self, group: Vec<AuditGroupItem>) {
+        let (inputs, completions): (Vec<_>, Vec<_>) = group.into_iter().unzip();
+        let results = self.operations.append_audit_group(&inputs);
+        if results.len() != completions.len() {
+            self.lifecycle.stop();
+            for completion in completions {
+                let _receiver_may_be_dropped =
+                    completion.send(Err(AdministrationAuditExecutionError::CoordinatorStopped));
+            }
+            return;
+        }
+        for (completion, result) in completions.into_iter().zip(results) {
+            match &result {
+                Ok(()) => {}
+                Err(AdministrationAuditExecutionError::Storage(error))
+                    if error.kind()
+                        == riffdb_storage_api::StorageErrorKind::CommitStatusUnknown =>
+                {
+                    self.lifecycle.fence();
+                }
+                Err(_) => self.lifecycle.stop(),
+            }
+            let _receiver_may_be_dropped = completion.send(result);
+        }
     }
 
     async fn execute_command(
@@ -2274,6 +2426,7 @@ mod tests {
 
     struct RecordingRepository {
         calls: usize,
+        group_calls: usize,
         intent: Option<ServiceAuditAppendIntentV1>,
         behavior: AppendBehavior,
     }
@@ -2293,6 +2446,32 @@ mod tests {
                     ),
                 )),
                 AppendBehavior::PhaseConflict => Ok(ServiceAuditAppendResult::PhaseConflict),
+                AppendBehavior::Fail(error) => Err(error.clone()),
+            }
+        }
+
+        fn append_service_audit_group(
+            &mut self,
+            intents: &[ServiceAuditAppendIntentV1],
+        ) -> Result<Vec<ServiceAuditAppendResult>, StorageError> {
+            self.group_calls += 1;
+            match &self.behavior {
+                AppendBehavior::Append => intents
+                    .iter()
+                    .enumerate()
+                    .map(|(index, intent)| {
+                        let sequence = AdministrationSequence::new(
+                            u64::try_from(index + 1).expect("small test group"),
+                        )
+                        .expect("nonzero sequence");
+                        Ok(ServiceAuditAppendResult::Appended(
+                            StoredServiceAuditRecordV1::from_intent(sequence, intent),
+                        ))
+                    })
+                    .collect(),
+                AppendBehavior::PhaseConflict => {
+                    Ok(vec![ServiceAuditAppendResult::PhaseConflict; intents.len()])
+                }
                 AppendBehavior::Fail(error) => Err(error.clone()),
             }
         }
@@ -2393,6 +2572,7 @@ mod tests {
     fn repository(behavior: AppendBehavior) -> RecordingRepository {
         RecordingRepository {
             calls: 0,
+            group_calls: 0,
             intent: None,
             behavior,
         }
@@ -2426,6 +2606,24 @@ mod tests {
         assert_eq!(intent.targets(), &input.targets);
         assert_eq!(intent.approval_id(), input.approval_id.as_ref());
         assert_eq!(intent.link(), input.link);
+    }
+
+    #[test]
+    fn compatible_audits_lower_once_each_and_use_one_repository_group() {
+        let first = input();
+        let mut second = input();
+        second.request_id = RequestId::from_bytes(uuid_bytes(0x41)).expect("request UUIDv7");
+        let inputs: Vec<Box<dyn AdministrationAuditInputView>> =
+            vec![Box::new(first), Box::new(second)];
+        let clock = clock(Ok(Timestamp::new(19, 0).expect("timestamp")));
+        let mut repository = repository(AppendBehavior::Append);
+
+        let results = append_administration_audit_group(&mut repository, &clock, &inputs);
+
+        assert_eq!(results, vec![Ok(()), Ok(())]);
+        assert_eq!(clock.calls.load(Ordering::Relaxed), 2);
+        assert_eq!(repository.calls, 0);
+        assert_eq!(repository.group_calls, 1);
     }
 
     #[test]

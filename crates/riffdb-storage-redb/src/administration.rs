@@ -1,5 +1,6 @@
 //! Redb catalog, audit, and capability administration ports.
 
+use std::collections::BTreeSet;
 use std::num::NonZeroU64;
 
 use redb::{ReadableTable, ReadableTableMetadata};
@@ -1135,64 +1136,104 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
         &mut self,
         intent: &ServiceAuditAppendIntentV1,
     ) -> Result<ServiceAuditAppendResult, StorageError> {
+        let mut results = self.append_service_audit_group(std::slice::from_ref(intent))?;
+        results
+            .pop()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
+    }
+
+    fn append_service_audit_group(
+        &mut self,
+        intents: &[ServiceAuditAppendIntentV1],
+    ) -> Result<Vec<ServiceAuditAppendResult>, StorageError> {
+        if intents.is_empty()
+            || intents.len() > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+            || intents
+                .iter()
+                .map(ServiceAuditAppendIntentV1::request_id)
+                .collect::<BTreeSet<_>>()
+                .len()
+                != intents.len()
+        {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
         let access = self.begin_write()?;
         let transaction = access.transaction()?;
         let allocator = validate_administration_tail(transaction)?;
-        let audit = transaction.open_table(AUDIT).map_err(table_error)?;
-        let sequences = access.service_audit_sequences(intent.request_id())?;
-        let lifecycle = service_lifecycle(&audit, intent.request_id(), &sequences)?;
-        drop(audit);
-
-        let phase_allowed = match lifecycle {
-            None => match intent.phase() {
-                ServiceAuditPhaseV1::Started => {
-                    intent.principal().is_some() && intent.link() == ServiceAuditLinkV1::None
+        let mut allowed = Vec::with_capacity(intents.len());
+        for intent in intents {
+            let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+            let sequences = access.service_audit_sequences(intent.request_id())?;
+            let lifecycle = service_lifecycle(&audit, intent.request_id(), &sequences)?;
+            drop(audit);
+            let phase_allowed = match lifecycle {
+                None => match intent.phase() {
+                    ServiceAuditPhaseV1::Started => {
+                        intent.principal().is_some() && intent.link() == ServiceAuditLinkV1::None
+                    }
+                    ServiceAuditPhaseV1::Denied
+                    | ServiceAuditPhaseV1::Cancelled
+                    | ServiceAuditPhaseV1::Failed => {
+                        intent.principal().is_some() && intent.link() == ServiceAuditLinkV1::None
+                    }
+                    _ => false,
+                },
+                Some(ServiceLifecycle::Standalone)
+                | Some(ServiceLifecycle::Started { terminal: true, .. }) => false,
+                Some(ServiceLifecycle::Started {
+                    record: started,
+                    terminal: false,
+                }) => {
+                    intent.phase() != ServiceAuditPhaseV1::Started
+                        && started.request_id() == intent.request_id()
+                        && started.operation() == intent.operation()
+                        && started.principal() == intent.principal()
+                        && started.ingress() == intent.ingress()
+                        && started.targets() == intent.targets()
+                        && started.approval_id() == intent.approval_id()
+                        && (started.principal().is_some()
+                            || (intent.phase() == ServiceAuditPhaseV1::Succeeded
+                                && intent.link() == started.link()))
                 }
-                ServiceAuditPhaseV1::Denied
-                | ServiceAuditPhaseV1::Cancelled
-                | ServiceAuditPhaseV1::Failed => {
-                    intent.principal().is_some() && intent.link() == ServiceAuditLinkV1::None
-                }
-                _ => false,
-            },
-            Some(ServiceLifecycle::Standalone)
-            | Some(ServiceLifecycle::Started { terminal: true, .. }) => false,
-            Some(ServiceLifecycle::Started {
-                record: started,
-                terminal: false,
-            }) => {
-                intent.phase() != ServiceAuditPhaseV1::Started
-                    && started.request_id() == intent.request_id()
-                    && started.operation() == intent.operation()
-                    && started.principal() == intent.principal()
-                    && started.ingress() == intent.ingress()
-                    && started.targets() == intent.targets()
-                    && started.approval_id() == intent.approval_id()
-                    && (started.principal().is_some()
-                        || (intent.phase() == ServiceAuditPhaseV1::Succeeded
-                            && intent.link() == started.link()))
-            }
-        };
-        if !phase_allowed || !service_link_is_valid(transaction, intent)? {
-            access.abort()?;
-            return Ok(ServiceAuditAppendResult::PhaseConflict);
+            };
+            allowed.push(phase_allowed && service_link_is_valid(transaction, intent)?);
         }
 
-        let (assigned, next) = allocate_sequences(allocator, 1)?;
-        let record = StoredServiceAuditRecordV1::from_intent(assigned[0], intent);
-        append_audit_record(
-            transaction,
-            &StoredAdministrationAuditRecordV1::Service(record.clone()),
-        )?;
+        let append_count = u8::try_from(allowed.iter().filter(|allowed| **allowed).count())
+            .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+        if append_count == 0 {
+            access.abort()?;
+            return Ok(vec![ServiceAuditAppendResult::PhaseConflict; intents.len()]);
+        }
+        let (assigned, next) = allocate_sequences(allocator, append_count)?;
+        let mut assigned = assigned.into_iter();
+        let mut results = Vec::with_capacity(intents.len());
+        let mut index_delta = Vec::with_capacity(usize::from(append_count));
+        for (intent, allowed) in intents.iter().zip(allowed) {
+            if !allowed {
+                results.push(ServiceAuditAppendResult::PhaseConflict);
+                continue;
+            }
+            let sequence = assigned
+                .next()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+            let record = StoredServiceAuditRecordV1::from_intent(sequence, intent);
+            append_audit_record(
+                transaction,
+                &StoredAdministrationAuditRecordV1::Service(record.clone()),
+            )?;
+            index_delta.push((intent.request_id(), sequence));
+            results.push(ServiceAuditAppendResult::Appended(record));
+        }
+        if assigned.next().is_some() {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
         write_administration_allocator(transaction, allocator, next)?;
         access.commit_for_with_delta(
             RedbTestOperation::ServiceAudit,
-            Some(TransientIndexDelta::ServiceAuditAppended {
-                request_id: intent.request_id(),
-                sequence: assigned[0],
-            }),
+            Some(TransientIndexDelta::ServiceAuditGroupAppended(index_delta)),
         )?;
-        Ok(ServiceAuditAppendResult::Appended(record))
+        Ok(results)
     }
 }
 
@@ -2073,6 +2114,30 @@ mod tests {
             ServiceAuditLinkV1::None,
         )
         .expect("audit intent")
+    }
+
+    #[test]
+    fn service_audit_group_assigns_fifo_sequences_in_one_transition() {
+        let (_path, mut ports) = initialized_ports("audit-group");
+        let intents = [denied_audit(10), denied_audit(11), denied_audit(12)];
+
+        let results = ports
+            .append_service_audit_group(&intents)
+            .expect("append audit group");
+
+        let sequences = results
+            .into_iter()
+            .zip(&intents)
+            .map(|(result, intent)| match result {
+                ServiceAuditAppendResult::Appended(record) => {
+                    assert_eq!(record.request_id(), intent.request_id());
+                    record.administration_sequence().get()
+                }
+                ServiceAuditAppendResult::PhaseConflict => panic!("fresh request must append"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sequences, vec![1, 2, 3]);
+        assert_eq!(audit_count(&ports), 3);
     }
 
     #[test]
