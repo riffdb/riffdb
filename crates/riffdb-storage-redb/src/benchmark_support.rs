@@ -42,7 +42,7 @@ pub enum EngineDurability {
     None,
     /// One-phase immediate durability.
     ImmediateOnePhase,
-    /// Production RiffDB mechanics: two-phase immediate durability.
+    /// Hardened RiffDB recovery-oracle mechanics: two-phase immediate durability.
     ImmediateTwoPhase,
 }
 
@@ -192,7 +192,8 @@ impl ServiceAuditGrowthSample {
     }
 
     /// Time spent in the repository, including transaction-current reads,
-    /// record encoding, table work, and two immediate durable commits per
+    /// record encoding, table work, and two standard one-phase immediate
+    /// durable commits per
     /// request lifecycle.
     #[must_use]
     pub const fn append(self) -> Duration {
@@ -208,8 +209,8 @@ impl ServiceAuditGrowthSample {
 
 /// Persistent benchmark-only handle to the real service-audit repository.
 ///
-/// Construction uses the same immediate, two-phase operational adapter as the
-/// server. It intentionally bypasses only the startup evidence orchestration:
+/// Construction uses the same standard one-phase immediate operational adapter
+/// as the server. It intentionally bypasses only startup evidence orchestration:
 /// benchmark setup creates a new empty database whose complete state is known.
 pub struct ServiceAuditGrowthHarness {
     path: std::path::PathBuf,

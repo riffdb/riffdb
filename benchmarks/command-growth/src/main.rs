@@ -36,7 +36,8 @@ fn run() -> Result<bool, ()> {
     let preflight_passed = env::var(PREFLIGHT_ENVIRONMENT).as_deref() == Ok(PREFLIGHT_EVIDENCE);
     if (configuration.assert_perf_003
         || configuration.assert_group_mechanics
-        || configuration.assert_perf_008)
+        || configuration.assert_perf_008
+        || configuration.assert_perf_009)
         && !preflight_passed
     {
         return Err(());
@@ -51,7 +52,7 @@ fn run() -> Result<bool, ()> {
     };
 
     println!(
-        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"configuration\",\"workload\":\"service_audit_started_failed_pair\",\"acknowledgement_durability\":\"sync\",\"engine_durability\":\"immediate_two_phase\",\"durable_commits_per_command\":2,\"group_commands\":1,\"window_commands\":{window},\"semantic_preflight\":\"{}\"}}",
+        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"configuration\",\"workload\":\"service_audit_started_failed_pair\",\"acknowledgement_durability\":\"sync\",\"redb_commit_profile\":\"standard\",\"engine_durability\":\"immediate_one_phase\",\"durable_commits_per_command\":2,\"group_commands\":1,\"window_commands\":{window},\"semantic_preflight\":\"{}\"}}",
         if preflight_passed {
             "passed"
         } else {
@@ -114,15 +115,31 @@ fn run() -> Result<bool, ()> {
         comparison.commands,
         comparison.group_commands,
     );
+    let standard_vs_hardened_basis_points = comparison
+        .standard_elapsed_ns
+        .checked_mul(10_000)
+        .ok_or(())?
+        / comparison.hardened_elapsed_ns.max(1);
+    let perf_009_passed = preflight_passed
+        && comparison.standard_elapsed_ns > 0
+        && comparison.hardened_elapsed_ns > 0;
+    println!(
+        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"commit_profile_summary\",\"standard_profile\":\"immediate_one_phase\",\"hardened_profile\":\"immediate_two_phase\",\"standard_elapsed_ns\":{},\"hardened_elapsed_ns\":{},\"standard_vs_hardened_basis_points\":{standard_vs_hardened_basis_points},\"semantic_contract\":\"acknowledgement_survives_crash\",\"perf_009_passed\":{perf_009_passed}}}",
+        comparison.standard_elapsed_ns,
+        comparison.hardened_elapsed_ns,
+    );
     let group_gate_requested =
         configuration.assert_group_mechanics || configuration.assert_perf_008;
     Ok((!configuration.assert_perf_003 || passed)
-        && (!group_gate_requested || perf_004_passed))
+        && (!group_gate_requested || perf_004_passed)
+        && (!configuration.assert_perf_009 || perf_009_passed))
 }
 
 struct GroupComparison {
     sync_elapsed_ns: u64,
     group_elapsed_ns: u64,
+    standard_elapsed_ns: u64,
+    hardened_elapsed_ns: u64,
     commands: usize,
     group_commands: usize,
 }
@@ -131,6 +148,8 @@ fn run_mechanics_comparison(root: &Path, checked: bool) -> Result<GroupCompariso
     let commands = if checked { 128 } else { 32 };
     let mut sync_elapsed_ns = None;
     let mut group_elapsed_ns = None;
+    let mut standard_elapsed_ns = None;
+    let mut hardened_elapsed_ns = None;
     for (ordinal, (durability, group)) in [
         (EngineDurability::None, 1),
         (EngineDurability::ImmediateOnePhase, 1),
@@ -145,8 +164,11 @@ fn run_mechanics_comparison(root: &Path, checked: bool) -> Result<GroupCompariso
         let profile = EngineMechanicsProfile::new(durability, group).map_err(|_| ())?;
         let sample = run_engine_mechanics_window(&path, 1, commands, profile).map_err(|_| ())?;
         let elapsed_ns = u64::try_from(sample.elapsed().as_nanos()).map_err(|_| ())?;
-        if durability == EngineDurability::ImmediateTwoPhase && group == 1 {
+        if durability == EngineDurability::ImmediateOnePhase && group == 1 {
+            standard_elapsed_ns = Some(elapsed_ns);
+        } else if durability == EngineDurability::ImmediateTwoPhase && group == 1 {
             sync_elapsed_ns = Some(elapsed_ns);
+            hardened_elapsed_ns = Some(elapsed_ns);
         } else if durability == EngineDurability::ImmediateTwoPhase && group == 16 {
             group_elapsed_ns = Some(elapsed_ns);
         }
@@ -165,6 +187,8 @@ fn run_mechanics_comparison(root: &Path, checked: bool) -> Result<GroupCompariso
     Ok(GroupComparison {
         sync_elapsed_ns: sync_elapsed_ns.ok_or(())?,
         group_elapsed_ns: group_elapsed_ns.ok_or(())?,
+        standard_elapsed_ns: standard_elapsed_ns.ok_or(())?,
+        hardened_elapsed_ns: hardened_elapsed_ns.ok_or(())?,
         commands,
         group_commands: 16,
     })
@@ -185,6 +209,7 @@ struct Configuration {
     assert_perf_003: bool,
     assert_group_mechanics: bool,
     assert_perf_008: bool,
+    assert_perf_009: bool,
 }
 
 impl Configuration {
@@ -193,6 +218,7 @@ impl Configuration {
         let mut assert_perf_003 = false;
         let mut assert_group_mechanics = false;
         let mut assert_perf_008 = false;
+        let mut assert_perf_009 = false;
         for argument in env::args().skip(1) {
             match argument.as_str() {
                 "--smoke" => checked = false,
@@ -214,6 +240,10 @@ impl Configuration {
                     assert_group_mechanics = true;
                     assert_perf_008 = true;
                 }
+                "--assert-perf-009" => {
+                    checked = true;
+                    assert_perf_009 = true;
+                }
                 _ => return Err(()),
             }
         }
@@ -222,6 +252,7 @@ impl Configuration {
             assert_perf_003,
             assert_group_mechanics,
             assert_perf_008,
+            assert_perf_009,
         })
     }
 }

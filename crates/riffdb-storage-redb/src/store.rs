@@ -39,11 +39,33 @@ pub(crate) struct SharedRedb {
     pub(crate) database: Database,
     #[allow(dead_code, reason = "WP-070 offline backup consumes the source path")]
     path: PathBuf,
+    application_commit_profile: RedbCommitProfile,
     mutation_gate: ExclusiveGate,
     write_fenced: AtomicBool,
     durable_commit_epoch: AtomicU64,
     test_controller: Option<RedbTestController>,
     transient_indexes: Mutex<TransientIndexState>,
+}
+
+/// Closed redb durability profiles for authoritative application writes.
+///
+/// Both profiles retain `Durability::Immediate` and the same RiffDB
+/// acknowledgement contract. `Standard` uses redb's checksummed one-phase
+/// commit slots and assumes a non-Byzantine host and storage stack. `Hardened`
+/// adds redb's optional two-phase commit defense for a stronger local threat
+/// model. This is a process composition choice, never a command input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RedbCommitProfile {
+    /// Immediate one-phase commits with checksummed commit slots.
+    Standard,
+    /// Immediate two-phase commits for the stronger local recovery oracle.
+    Hardened,
+}
+
+impl RedbCommitProfile {
+    const fn uses_two_phase(self) -> bool {
+        matches!(self, Self::Hardened)
+    }
 }
 
 impl SharedRedb {
@@ -151,8 +173,20 @@ enum LayoutState {
 
 impl RedbStore {
     /// Opens an existing redb file or creates an empty redb container.
+    ///
+    /// Authoritative application writes use [`RedbCommitProfile::Standard`].
+    /// Initialization and migration retain their independently hardened
+    /// durability boundary.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
-        Self::open_inner(path.as_ref(), None)
+        Self::open_inner(path.as_ref(), RedbCommitProfile::Standard, None)
+    }
+
+    /// Opens a database with an explicit process-wide application commit profile.
+    pub fn open_with_commit_profile(
+        path: impl AsRef<Path>,
+        application_commit_profile: RedbCommitProfile,
+    ) -> Result<Self, StorageError> {
+        Self::open_inner(path.as_ref(), application_commit_profile, None)
     }
 
     /// Opens a database with one closed process-test failpoint controller.
@@ -161,11 +195,22 @@ impl RedbStore {
         path: impl AsRef<Path>,
         controller: RedbTestController,
     ) -> Result<Self, StorageError> {
-        Self::open_inner(path.as_ref(), Some(controller))
+        Self::open_inner(path.as_ref(), RedbCommitProfile::Standard, Some(controller))
+    }
+
+    /// Opens a database with one explicit profile and process-test controller.
+    #[doc(hidden)]
+    pub fn open_with_test_controller_and_commit_profile(
+        path: impl AsRef<Path>,
+        application_commit_profile: RedbCommitProfile,
+        controller: RedbTestController,
+    ) -> Result<Self, StorageError> {
+        Self::open_inner(path.as_ref(), application_commit_profile, Some(controller))
     }
 
     fn open_inner(
         path: &Path,
+        application_commit_profile: RedbCommitProfile,
         test_controller: Option<RedbTestController>,
     ) -> Result<Self, StorageError> {
         let path = path.to_path_buf();
@@ -174,6 +219,7 @@ impl RedbStore {
             shared: Arc::new(SharedRedb {
                 database,
                 path,
+                application_commit_profile,
                 mutation_gate: ExclusiveGate::default(),
                 write_fenced: AtomicBool::new(false),
                 durable_commit_epoch: AtomicU64::new(0),
@@ -259,7 +305,7 @@ impl RedbOperationalPorts {
             .database
             .begin_write()
             .map_err(transaction_error)?;
-        transaction.set_two_phase_commit(true);
+        transaction.set_two_phase_commit(self.shared.application_commit_profile.uses_two_phase());
         transaction
             .set_durability(Durability::Immediate)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
@@ -705,6 +751,27 @@ mod tests {
     fn database_id(seed: u8) -> DatabaseId {
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [seed; 10])
             .expect("valid deterministic UUIDv7")
+    }
+
+    #[test]
+    fn application_commit_profile_defaults_to_standard_and_can_be_hardened() {
+        let standard_path = TestDatabasePath::new("standard-commit-profile");
+        let standard = RedbStore::open(&standard_path.0).expect("open standard store");
+        assert_eq!(
+            standard.shared.application_commit_profile,
+            RedbCommitProfile::Standard
+        );
+        assert!(!standard.shared.application_commit_profile.uses_two_phase());
+
+        let hardened_path = TestDatabasePath::new("hardened-commit-profile");
+        let hardened =
+            RedbStore::open_with_commit_profile(&hardened_path.0, RedbCommitProfile::Hardened)
+                .expect("open hardened store");
+        assert_eq!(
+            hardened.shared.application_commit_profile,
+            RedbCommitProfile::Hardened
+        );
+        assert!(hardened.shared.application_commit_profile.uses_two_phase());
     }
 
     #[test]

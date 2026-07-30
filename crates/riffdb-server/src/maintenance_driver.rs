@@ -26,8 +26,8 @@ use riffdb_storage_api::{
     StartupValidationInputs, StorageError, StorageErrorKind, StorageValueError,
 };
 use riffdb_storage_redb::{
-    RedbMaintenanceOperationEvidence, RedbMaintenanceStorage, RedbSealedStagedRestore,
-    RedbStagedRestore,
+    RedbCommitProfile, RedbMaintenanceOperationEvidence, RedbMaintenanceStorage,
+    RedbSealedStagedRestore, RedbStagedRestore,
 };
 use riffdb_types::{
     Audience, Environment, OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
@@ -43,13 +43,14 @@ use crate::maintenance_lifecycle::{
 use crate::maintenance_recovery_controller::{
     MaintenanceRecoveryBoundary, MaintenanceRecoveryController,
 };
-use crate::startup::{CheckedRedbStartup, open_redb_startup};
+use crate::startup::{CheckedRedbStartup, open_redb_startup_with_commit_profile};
 use crate::storage::SharedRedbOperationalPorts;
 
 /// Production dependencies needed only while a private staged database is open.
 pub(crate) struct MaintenanceDriverDependencies<'a> {
     startup_inputs: StartupValidationInputs,
     database_ids: DatabaseIdCandidateSource,
+    application_commit_profile: RedbCommitProfile,
     capability_keys: Arc<CapabilityDigestKeyProvider>,
     environment: Environment,
     grpc_audience: Audience,
@@ -66,6 +67,7 @@ impl<'a> MaintenanceDriverDependencies<'a> {
     pub(crate) fn new(
         startup_inputs: StartupValidationInputs,
         database_ids: DatabaseIdCandidateSource,
+        application_commit_profile: RedbCommitProfile,
         capability_keys: Arc<CapabilityDigestKeyProvider>,
         environment: Environment,
         grpc_audience: Audience,
@@ -78,6 +80,7 @@ impl<'a> MaintenanceDriverDependencies<'a> {
         Self {
             startup_inputs,
             database_ids,
+            application_commit_profile,
             capability_keys,
             environment,
             grpc_audience,
@@ -840,10 +843,11 @@ fn complete_post_publication_validation(
     }
     mark_lifecycle_validating(lifecycle, receipt.operation_id())?;
 
-    let startup = open_redb_startup(
+    let startup = open_redb_startup_with_commit_profile(
         storage.configured_database_file(),
         dependencies.startup_inputs.clone(),
         &dependencies.database_ids,
+        dependencies.application_commit_profile,
     )
     .map_err(|_| DriverFault::Validation)?;
     let expected_database_id = match receipt.operation_kind() {
@@ -883,10 +887,11 @@ fn validate_and_authorize_stage(
     input_hash: riffdb_types::OfflineMaintenanceInputHash,
     dependencies: &MaintenanceDriverDependencies<'_>,
 ) -> Result<PreparedStagedRestore, DriverFault> {
-    let staged_startup = open_redb_startup(
+    let staged_startup = open_redb_startup_with_commit_profile(
         stage.staged_database_file(),
         dependencies.startup_inputs.clone(),
         &dependencies.database_ids,
+        dependencies.application_commit_profile,
     )
     .map_err(|_| DriverFault::Validation)?;
     if staged_startup.database_id() != stage.manifest_identity().database_id() {
