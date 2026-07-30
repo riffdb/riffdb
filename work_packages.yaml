@@ -88,6 +88,7 @@ gates:
   - WP-355
   - WP-360
   - WP-362
+  - WP-364
   - WP-365
   - WP-370
 work_packages:
@@ -4514,11 +4515,93 @@ work_packages:
     committed commands per second on the checked profile, with unchanged configured durability, complete crash/replay
     evidence, and an accepted ADR for any scheduling, engine-durability, or atomic-layout change.
   human_review_triggers: *id001
+- id: WP-364
+  name: Bounded group durability and two-transition audited commands
+  depends_on:
+  - WP-362
+  objective: Amortize redb Immediate durability across independently safe command transitions and reduce a normal
+    successful application command from four durable transitions to two without weakening authorization, audit,
+    idempotency, provenance, atomicity, uncertainty recovery, or acknowledgement.
+  requirements:
+  - PERF-004
+  required_adrs:
+  - ADR-0003
+  - ADR-0004
+  - ADR-0005
+  - ADR-0006
+  - ADR-0007
+  - ADR-0009
+  - ADR-0012
+  - ADR-0021
+  - ADR-0023
+  - ADR-0057
+  - ADR-0058
+  allowed_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - SPEC.md
+  - work_packages.yaml
+  - adr/**
+  - crates/riffdb-storage-api/**
+  - crates/riffdb-storage-memory/**
+  - crates/riffdb-storage-redb/**
+  - crates/riffdb-commit/**
+  - crates/riffdb-service/**
+  - crates/riffdb-server/**
+  - crates/riffdb-client-rust/**
+  - crates/riffdb-query-module/**
+  - crates/riffdb-cli/**
+  - crates/riffdb-observability/**
+  - crates/riffdb-testkit/**
+  - clients/typescript/**
+  - benchmarks/command-growth/**
+  - fixtures/performance/**
+  - fixtures/application-parity/**
+  - scripts/benchmark-command-growth
+  - scripts/check-application-bindings
+  - scripts/check-application-boundary
+  - docs/getting-started/**
+  - docs/performance/**
+  - docs/agent-application-alpha.md
+  deliverables:
+  - One typed FIFO online-writer scheduler with a 16-transition, 200-microsecond, 16-MiB grouping policy and explicit
+    Sync oracle
+  - Production Group durability over unchanged redb Immediate two-phase commits, with independent per-command
+    acknowledgement and idempotent unknown-commit resolution
+  - Atomic fresh-policy-authorized Started plus Pending admission and atomic successful command graph plus linked
+    terminal audit, guarded by a private complete-outcome release proof
+  - Generated Rust and TypeScript bounded batch helpers with typed per-item outcomes, stable idempotency, progress,
+    checkpoint, and backpressure over the ordinary symbolic command path
+  - Deterministic fairness, cancellation, bounds, sequence, crash, reopen, replay, audit, provenance, and uncertainty
+    tests plus comparative Sync and Group performance evidence satisfying PERF-004
+  acceptance_commands:
+  - cargo test -p riffdb-storage-api --all-features
+  - cargo test -p riffdb-storage-memory --all-features
+  - cargo test -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-commit --all-features
+  - cargo test -p riffdb-service --all-features
+  - cargo test -p riffdb-server --all-features
+  - cargo test -p riffdb-client-rust --all-features
+  - cargo test -p riffdb-query-module --all-features
+  - cargo test -p riffdb-cli --all-features
+  - cargo test --manifest-path benchmarks/command-growth/Cargo.toml --workspace
+  - ./scripts/benchmark-command-growth --assert-perf-004
+  - ./scripts/check-application-bindings
+  - ./scripts/check-application-boundary
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Production commands use bounded Group durability and retain independent semantic results; a newly
+    executed successful command has exactly two durable transitions; crash and unknown-commit tests preserve every
+    command and audit invariant; generated batches expose no bulk-write escape hatch; and checked evidence satisfies
+    PERF-004 against the explicit Sync oracle.
+  human_review_triggers: *id001
 - id: WP-365
   name: Public-only rehearsal, qualified evidence, and canary gate
   depends_on:
   - WP-360
   - WP-362
+  - WP-364
   objective: Prove the repaired application-authoring product through sealed public-only four-way rehearsals and two
     fresh canary agents before spending another official four-agent campaign.
   requirements:
