@@ -1,6 +1,7 @@
 //! Dormant redb handle, identity probe, and atomic initialization.
 
 use std::collections::BTreeSet;
+use std::ops::Bound::{Excluded, Unbounded};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -8,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use redb::{
     Database, Durability, MultimapTableHandle, ReadTransaction, ReadableDatabase, ReadableTable,
-    TableHandle, WriteTransaction,
+    TableDefinition, TableHandle, WriteTransaction,
 };
 use riffdb_storage_api::{
     ApplicationSequenceAllocator, DatabaseIdentityProbe, DatabaseIdentityProbePort,
@@ -16,9 +17,10 @@ use riffdb_storage_api::{
     StorageFormatVersion,
     proto_codec::{
         decode_administration_sequence_allocator_v1, decode_application_sequence_allocator_v1,
-        decode_database_identity_v1, decode_storage_format_version_v1,
+        decode_database_identity_v1, decode_record_registry_v2, decode_storage_format_version_v1,
         encode_administration_sequence_allocator_v1, encode_application_sequence_allocator_v1,
-        encode_database_identity_v1, encode_storage_format_version_v1,
+        encode_database_identity_v1, encode_record_registry_v2, encode_storage_format_version_v1,
+        transcode_durable_record_to_v2,
     },
 };
 use riffdb_types::DatabaseId;
@@ -30,8 +32,9 @@ use crate::error::{
 use crate::gate::{ExclusiveGate, ExclusiveLease};
 use crate::hooks::{RedbTestController, RedbTestOperation};
 use crate::layout::{
-    META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
-    META_DATABASE_ID, META_FORMAT_VERSION, META_KEYS, TABLE_NAMES, create_all_tables,
+    BYTE_TABLES, META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE,
+    META_CAPABILITY_BOOTSTRAP, META_DATABASE_ID, META_FORMAT_VERSION, META_KEYS,
+    META_RECORD_REGISTRY, TABLE_NAMES, create_all_tables,
 };
 use crate::transient::{TransientIndexDelta, TransientIndexState, TransientIndexes};
 
@@ -171,6 +174,9 @@ enum LayoutState {
     Initialized,
 }
 
+const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
+const FORMAT_MIGRATION_MAX_BYTES: usize = 4 * 1024 * 1024;
+
 impl RedbStore {
     /// Opens an existing redb file or creates an empty redb container.
     ///
@@ -215,7 +221,7 @@ impl RedbStore {
     ) -> Result<Self, StorageError> {
         let path = path.to_path_buf();
         let database = Database::create(&path).map_err(database_error)?;
-        Ok(Self {
+        let store = Self {
             shared: Arc::new(SharedRedb {
                 database,
                 path,
@@ -226,7 +232,111 @@ impl RedbStore {
                 test_controller,
                 transient_indexes: Mutex::new(TransientIndexState::Dormant),
             }),
-        })
+        };
+        store.ensure_current_storage_format()?;
+        Ok(store)
+    }
+
+    fn ensure_current_storage_format(&self) -> Result<(), StorageError> {
+        let transaction = self
+            .shared
+            .database
+            .begin_read()
+            .map_err(transaction_error)?;
+        if classify_read_layout(&transaction)? == LayoutState::Empty {
+            return Ok(());
+        }
+        let metadata = transaction.open_table(META).map_err(table_error)?;
+        let encoded_format = metadata
+            .get(META_FORMAT_VERSION)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let format = *decode_storage_format_version_v1(encoded_format.value())
+            .map_err(crate::error::codec_error)?
+            .value();
+        let registry = metadata
+            .get(META_RECORD_REGISTRY)
+            .map_err(precommit_storage_error)?;
+        match format {
+            StorageFormatVersion::V1 if registry.is_some() => {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            StorageFormatVersion::V2 => {
+                let registry = registry
+                    .as_ref()
+                    .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
+                let observed = decode_record_registry_v2(registry.value())
+                    .map_err(crate::error::codec_error)?;
+                if observed.value()
+                    != &riffdb_storage_api::proto_codec::current_record_registry_digest()
+                {
+                    return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+                }
+            }
+            StorageFormatVersion::V1 => {}
+            _ => return Err(storage_error(StorageErrorKind::IncompatibleFormat)),
+        }
+        drop(registry);
+        drop(encoded_format);
+        drop(metadata);
+        drop(transaction);
+
+        let require_compact = format == StorageFormatVersion::V2;
+        migrate_string_table(&self.shared, META, require_compact)?;
+        for table in BYTE_TABLES {
+            migrate_byte_table(&self.shared, table, require_compact)?;
+        }
+        if require_compact {
+            return Ok(());
+        }
+
+        let mut transaction = self
+            .shared
+            .database
+            .begin_write()
+            .map_err(transaction_error)?;
+        transaction.set_two_phase_commit(true);
+        transaction
+            .set_durability(Durability::Immediate)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let mut metadata = transaction.open_table(META).map_err(table_error)?;
+        if metadata
+            .get(META_RECORD_REGISTRY)
+            .map_err(precommit_storage_error)?
+            .is_some()
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        let current_format = metadata
+            .get(META_FORMAT_VERSION)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        if *decode_storage_format_version_v1(current_format.value())
+            .map_err(crate::error::codec_error)?
+            .value()
+            != StorageFormatVersion::V1
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        drop(current_format);
+        let format = encode_storage_format_version_v1(StorageFormatVersion::V2)
+            .map_err(crate::error::codec_error)?;
+        let registry = encode_record_registry_v2(
+            riffdb_storage_api::proto_codec::current_record_registry_digest(),
+        )
+        .map_err(crate::error::codec_error)?;
+        metadata
+            .insert(META_FORMAT_VERSION, format.as_bytes())
+            .map_err(precommit_storage_error)?;
+        metadata
+            .insert(META_RECORD_REGISTRY, registry.as_bytes())
+            .map_err(precommit_storage_error)?;
+        drop(metadata);
+        self.shared
+            .before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+        self.shared.commit_durable(transaction)?;
+        self.shared
+            .after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)
     }
 
     /// Returns the database path for an offline adapter after exclusivity is proven.
@@ -255,6 +365,168 @@ impl RedbStore {
         Self {
             shared: Arc::clone(&self.shared),
         }
+    }
+}
+
+fn migrate_string_table(
+    shared: &SharedRedb,
+    definition: TableDefinition<&str, &[u8]>,
+    require_compact: bool,
+) -> Result<(), StorageError> {
+    let mut after: Option<String> = None;
+    loop {
+        let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+        transaction.set_two_phase_commit(true);
+        transaction
+            .set_durability(Durability::Immediate)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let mut table = transaction.open_table(definition).map_err(table_error)?;
+        let mut replacements = Vec::new();
+        let mut last = None;
+        let mut scanned_rows = 0usize;
+        let mut scanned_bytes = 0usize;
+        let mut reached_end = true;
+        {
+            let mut rows = match after.as_deref() {
+                Some(after) => table
+                    .range::<&str>((Excluded(after), Unbounded))
+                    .map_err(precommit_storage_error)?,
+                None => table.iter().map_err(precommit_storage_error)?,
+            };
+            for row in &mut rows {
+                let (key, value) = row.map_err(precommit_storage_error)?;
+                let key = key.value().to_owned();
+                let original = value.value();
+                scanned_rows = scanned_rows.saturating_add(1);
+                let compact =
+                    transcode_durable_record_to_v2(original).map_err(crate::error::codec_error)?;
+                if require_compact && compact.as_bytes() != original {
+                    return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+                }
+                scanned_bytes = scanned_bytes
+                    .checked_add(original.len())
+                    .and_then(|total| total.checked_add(compact.as_bytes().len()))
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                if compact.as_bytes() != original {
+                    replacements.push((key.clone(), compact.into_bytes()));
+                }
+                last = Some(key);
+                if scanned_rows >= FORMAT_MIGRATION_MAX_ROWS
+                    || scanned_bytes >= FORMAT_MIGRATION_MAX_BYTES
+                {
+                    reached_end = false;
+                    break;
+                }
+            }
+        }
+        let changed = !replacements.is_empty();
+        for (key, value) in replacements {
+            table
+                .insert(key.as_str(), value.as_slice())
+                .map_err(precommit_storage_error)?;
+        }
+        drop(table);
+        if changed {
+            shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+            shared.commit_durable(transaction)?;
+            shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+        } else {
+            transaction.abort().map_err(precommit_storage_error)?;
+        }
+        if reached_end {
+            return Ok(());
+        }
+        after = last;
+    }
+}
+
+fn migrate_byte_table(
+    shared: &SharedRedb,
+    definition: TableDefinition<&[u8], &[u8]>,
+    require_compact: bool,
+) -> Result<(), StorageError> {
+    let derived_and_rebuildable = matches!(
+        definition.name(),
+        "outbox_status" | "projection_state" | "projection_frontier" | "projection_applied"
+    );
+    let mut after: Option<Vec<u8>> = None;
+    loop {
+        let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+        transaction.set_two_phase_commit(true);
+        transaction
+            .set_durability(Durability::Immediate)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let mut table = transaction.open_table(definition).map_err(table_error)?;
+        let mut replacements = Vec::new();
+        let mut last = None;
+        let mut scanned_rows = 0usize;
+        let mut scanned_bytes = 0usize;
+        let mut reached_end = true;
+        {
+            let mut rows = match after.as_deref() {
+                Some(after) => table
+                    .range::<&[u8]>((Excluded(after), Unbounded))
+                    .map_err(precommit_storage_error)?,
+                None => table.iter().map_err(precommit_storage_error)?,
+            };
+            for row in &mut rows {
+                let (key, value) = row.map_err(precommit_storage_error)?;
+                let key = key.value().to_vec();
+                let original = value.value();
+                scanned_rows = scanned_rows.saturating_add(1);
+                scanned_bytes = scanned_bytes
+                    .checked_add(original.len())
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                let compact = match transcode_durable_record_to_v2(original) {
+                    Ok(compact) => compact,
+                    Err(_) if derived_and_rebuildable => {
+                        last = Some(key);
+                        if scanned_rows >= FORMAT_MIGRATION_MAX_ROWS
+                            || scanned_bytes >= FORMAT_MIGRATION_MAX_BYTES
+                        {
+                            reached_end = false;
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(error) => return Err(crate::error::codec_error(error)),
+                };
+                if require_compact && !derived_and_rebuildable && compact.as_bytes() != original {
+                    return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+                }
+                scanned_bytes = scanned_bytes
+                    .checked_add(compact.as_bytes().len())
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                if compact.as_bytes() != original {
+                    replacements.push((key.clone(), compact.into_bytes()));
+                }
+                last = Some(key);
+                if scanned_rows >= FORMAT_MIGRATION_MAX_ROWS
+                    || scanned_bytes >= FORMAT_MIGRATION_MAX_BYTES
+                {
+                    reached_end = false;
+                    break;
+                }
+            }
+        }
+        let changed = !replacements.is_empty();
+        for (key, value) in replacements {
+            table
+                .insert(key.as_slice(), value.as_slice())
+                .map_err(precommit_storage_error)?;
+        }
+        drop(table);
+        if changed {
+            shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+            shared.commit_durable(transaction)?;
+            shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+        } else {
+            transaction.abort().map_err(precommit_storage_error)?;
+        }
+        if reached_end {
+            return Ok(());
+        }
+        after = last;
     }
 }
 
@@ -616,8 +888,12 @@ fn write_initial_metadata(
     transaction: &redb::WriteTransaction,
     database_id: DatabaseId,
 ) -> Result<(), StorageError> {
-    let format = encode_storage_format_version_v1(StorageFormatVersion::V1)
+    let format = encode_storage_format_version_v1(StorageFormatVersion::V2)
         .map_err(crate::error::codec_error)?;
+    let registry = encode_record_registry_v2(
+        riffdb_storage_api::proto_codec::current_record_registry_digest(),
+    )
+    .map_err(crate::error::codec_error)?;
     let identity = encode_database_identity_v1(database_id).map_err(crate::error::codec_error)?;
     let application =
         encode_application_sequence_allocator_v1(ApplicationSequenceAllocator::initial())
@@ -639,6 +915,9 @@ fn write_initial_metadata(
         .map_err(precommit_storage_error)?;
     table
         .insert(META_ADMINISTRATION_SEQUENCE, administration.as_bytes())
+        .map_err(precommit_storage_error)?;
+    table
+        .insert(META_RECORD_REGISTRY, registry.as_bytes())
         .map_err(precommit_storage_error)?;
     Ok(())
 }
@@ -693,6 +972,15 @@ where
                 )
                 .map_err(crate::error::codec_error)?;
             }
+            META_RECORD_REGISTRY => {
+                let observed =
+                    decode_record_registry_v2(value.value()).map_err(crate::error::codec_error)?;
+                if observed.value()
+                    != &riffdb_storage_api::proto_codec::current_record_registry_digest()
+                {
+                    return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+                }
+            }
             _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
         }
     }
@@ -702,6 +990,7 @@ where
         META_DATABASE_ID,
         META_APPLICATION_SEQUENCE,
         META_ADMINISTRATION_SEQUENCE,
+        META_RECORD_REGISTRY,
     ] {
         if !seen.contains(required) {
             return Err(storage_error(StorageErrorKind::CorruptData));
@@ -802,6 +1091,117 @@ mod tests {
                 .probe_database_identity()
                 .expect("probe reopened identity"),
             DatabaseIdentityProbe::Existing(expected)
+        );
+    }
+
+    #[test]
+    fn mixed_v1_v2_framing_resumes_and_publishes_registry_last() {
+        let path = TestDatabasePath::new("format-v2-migration");
+        let expected = database_id(0x19);
+        let mut store = RedbStore::open(&path.0).expect("open empty store");
+        store
+            .initialize_database(expected)
+            .expect("initialize current database");
+
+        let mut transaction = store
+            .shared
+            .database
+            .begin_write()
+            .expect("begin legacy fixture");
+        transaction
+            .set_durability(Durability::Immediate)
+            .expect("set fixture durability");
+        let mut metadata = transaction.open_table(META).expect("open metadata");
+        let legacy_identity = {
+            let identity = metadata
+                .get(META_DATABASE_ID)
+                .expect("read identity")
+                .expect("identity exists");
+            riffdb_storage_api::proto_codec::transcode_durable_record_to_v1(identity.value())
+                .expect("identity transcodes")
+                .into_bytes()
+        };
+        let legacy_format = riffdb_storage_api::proto_codec::transcode_durable_record_to_v1(
+            encode_storage_format_version_v1(StorageFormatVersion::V1)
+                .expect("legacy semantic format encodes")
+                .as_bytes(),
+        )
+        .expect("format transcodes")
+        .into_bytes();
+        metadata
+            .insert(META_DATABASE_ID, legacy_identity.as_slice())
+            .expect("install legacy identity");
+        metadata
+            .insert(META_FORMAT_VERSION, legacy_format.as_slice())
+            .expect("install legacy format");
+        metadata
+            .remove(META_RECORD_REGISTRY)
+            .expect("remove final registry marker");
+        drop(metadata);
+        transaction.commit().expect("commit mixed fixture");
+        drop(store);
+
+        let reopened = RedbStore::open(&path.0).expect("resume format migration");
+        assert_eq!(
+            reopened
+                .probe_database_identity()
+                .expect("probe migrated identity"),
+            DatabaseIdentityProbe::Existing(expected)
+        );
+        let read = reopened
+            .shared
+            .database
+            .begin_read()
+            .expect("read migrated metadata");
+        let metadata = read.open_table(META).expect("open migrated metadata");
+        for row in metadata.iter().expect("iterate migrated metadata") {
+            let (_, value) = row.expect("read migrated row");
+            assert!(value.value().starts_with(b"RDB2"));
+        }
+        let registry = metadata
+            .get(META_RECORD_REGISTRY)
+            .expect("read registry")
+            .expect("registry published");
+        assert_eq!(
+            *decode_record_registry_v2(registry.value())
+                .expect("decode registry")
+                .value(),
+            riffdb_storage_api::proto_codec::current_record_registry_digest()
+        );
+    }
+
+    #[test]
+    fn current_format_rejects_unknown_compact_identity_before_probe() {
+        let path = TestDatabasePath::new("unknown-compact-tag");
+        let mut store = RedbStore::open(&path.0).expect("open empty store");
+        store
+            .initialize_database(database_id(0x1a))
+            .expect("initialize current database");
+        let transaction = store
+            .shared
+            .database
+            .begin_write()
+            .expect("begin corruption fixture");
+        let mut metadata = transaction.open_table(META).expect("open metadata");
+        let mut identity = metadata
+            .get(META_DATABASE_ID)
+            .expect("read identity")
+            .expect("identity exists")
+            .value()
+            .to_vec();
+        identity[5] = u8::MAX;
+        metadata
+            .insert(META_DATABASE_ID, identity.as_slice())
+            .expect("install unknown tag");
+        drop(metadata);
+        transaction.commit().expect("commit corruption fixture");
+        drop(store);
+
+        assert_eq!(
+            RedbStore::open(&path.0)
+                .expect_err("unknown compact identity must fail")
+                .kind(),
+            StorageErrorKind::IncompatibleFormat
         );
     }
 

@@ -1,5 +1,3 @@
-use prost::Message;
-use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{
     AggregateTypeId, CanonicalRecord, CanonicalValue, ContractBundleHash, ContractLineage,
     ContractVersion, EntityKeyBuilder, EntityTypeId, FieldId, IndexEntryKey, IndexEntryKeyBuilder,
@@ -69,24 +67,24 @@ fn migration_factory_rejects_wrong_keys_types_and_tampered_envelopes() {
         DurableCodecErrorKind::UnexpectedRecordType,
     );
 
-    let mut checksum = wire::StoredEnvelope::decode(envelope.as_bytes()).expect("outer envelope");
-    checksum.payload_crc32c ^= 1;
+    let mut checksum = envelope.as_bytes().to_vec();
+    checksum[12] ^= 1;
     assert_kind(
-        decode_index_migration_row(current.key(), &checksum.encode_to_vec()),
+        decode_index_migration_row(current.key(), &checksum),
         DurableCodecErrorKind::CorruptData,
     );
 
-    let mut hash = wire::StoredEnvelope::decode(envelope.as_bytes()).expect("outer envelope");
-    hash.schema_hash[0] ^= 1;
+    let mut tag = envelope.as_bytes().to_vec();
+    tag[5] = u8::MAX;
     assert_kind(
-        decode_index_migration_row(current.key(), &hash.encode_to_vec()),
+        decode_index_migration_row(current.key(), &tag),
         DurableCodecErrorKind::IncompatibleFormat,
     );
 
-    let mut version = wire::StoredEnvelope::decode(envelope.as_bytes()).expect("outer envelope");
-    version.storage_format_version += 1;
+    let mut version = envelope.as_bytes().to_vec();
+    version[4] = version[4].saturating_add(1);
     assert_kind(
-        decode_index_migration_row(current.key(), &version.encode_to_vec()),
+        decode_index_migration_row(current.key(), &version),
         DurableCodecErrorKind::IncompatibleFormat,
     );
 

@@ -62,6 +62,13 @@ copied_codec!(
     decode_storage_format_version_v1
 );
 copied_codec!(
+    encode_record_registry_v2,
+    decode_record_registry_v2,
+    riffdb_types::SchemaHash,
+    encode_record_registry_v2,
+    decode_record_registry_v2
+);
+copied_codec!(
     encode_database_identity_v1,
     decode_database_identity_v1,
     riffdb_types::DatabaseId,
@@ -489,7 +496,7 @@ mod tests {
     }
 
     fn fixture_envelope(record_type: &str) -> Vec<u8> {
-        let fixture = include_str!("../../../fixtures/proto/durable-wire-vectors.txt");
+        let fixture = include_str!("../../../fixtures/proto/durable-wire-vectors-v2.txt");
         let line = fixture
             .lines()
             .find(|line| line.split('\t').next() == Some(record_type))

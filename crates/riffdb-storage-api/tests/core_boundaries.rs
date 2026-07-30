@@ -379,7 +379,7 @@ fn pre_evaluation_context_enforces_the_exact_non_runtime_reserve() {
 #[test]
 fn initial_metadata_contains_only_canonical_initial_six_category_values() {
     let metadata = RetainedMetadataV1::initial(database_id());
-    assert_eq!(metadata.storage_format_version().get(), 1);
+    assert_eq!(metadata.storage_format_version().get(), 2);
     assert_eq!(metadata.database_id(), database_id());
     assert_eq!(
         metadata.application_sequence(),

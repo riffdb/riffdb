@@ -4,24 +4,25 @@
 //! codec remains responsible for semantic DTO reconstruction and validation.
 
 use prost::Message;
-use riffdb_types::SchemaHash;
+use riffdb_types::{SchemaHash, hash_schema};
 
 use crate::durable_wire::DurablePreflightError;
 use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 31;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 32;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 29;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 30;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
-const LEGACY_SCHEMA_HASH_BYTES: &[u8; WRITABLE_RECORD_SCHEMA_COUNT * 32] = include_bytes!(concat!(
+const LEGACY_RECORD_SCHEMA_COUNT: usize = 29;
+const LEGACY_SCHEMA_HASH_BYTES: &[u8; LEGACY_RECORD_SCHEMA_COUNT * 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-schema-hashes.bin"
 ));
-const LEGACY_RECORD_BOUND_BYTES: &[u8; WRITABLE_RECORD_SCHEMA_COUNT * 8] = include_bytes!(concat!(
+const LEGACY_RECORD_BOUND_BYTES: &[u8; LEGACY_RECORD_SCHEMA_COUNT * 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-record-bounds.bin"
 ));
@@ -32,6 +33,14 @@ const INDEX_V2_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
 const INDEX_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-index-v2-record-bound.bin"
+));
+const REGISTRY_V2_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-registry-v2-schema-hash.bin"
+));
+const REGISTRY_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-registry-v2-record-bound.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
@@ -68,6 +77,19 @@ const fn index_v2_record_bound(offset: usize) -> usize {
         INDEX_V2_RECORD_BOUND_BYTES[offset + 1],
         INDEX_V2_RECORD_BOUND_BYTES[offset + 2],
         INDEX_V2_RECORD_BOUND_BYTES[offset + 3],
+    ]) as usize
+}
+
+const fn registry_v2_schema_hash() -> SchemaHash {
+    SchemaHash::from_bytes(*REGISTRY_V2_SCHEMA_HASH_BYTES)
+}
+
+const fn registry_v2_record_bound(offset: usize) -> usize {
+    u32::from_be_bytes([
+        REGISTRY_V2_RECORD_BOUND_BYTES[offset],
+        REGISTRY_V2_RECORD_BOUND_BYTES[offset + 1],
+        REGISTRY_V2_RECORD_BOUND_BYTES[offset + 2],
+        REGISTRY_V2_RECORD_BOUND_BYTES[offset + 3],
     ]) as usize
 }
 
@@ -128,10 +150,11 @@ macro_rules! current_schema {
             preflight_payload::<$index>,
             validate_payload::<$index, $message>,
         )
+        .with_compact_identity(($index + 1) as u8, if $index == 17 { 2 } else { 1 })
     };
 }
 
-const CURRENT_V1_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHEMA_COUNT] = [
+const CURRENT_V1_RECORD_SCHEMAS: [RecordSchema<'static>; LEGACY_RECORD_SCHEMA_COUNT] = [
     current_schema!(
         0,
         "StoredStorageFormatVersionV1",
@@ -206,7 +229,18 @@ const INDEX_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
     index_v2_record_bound(4),
     preflight_payload::<29>,
     validate_payload::<29, v1::StoredIndexEntryV2>,
-);
+)
+.with_compact_identity(9, 2);
+
+const REGISTRY_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredRecordRegistryV2",
+    registry_v2_schema_hash(),
+    registry_v2_record_bound(0),
+    registry_v2_record_bound(4),
+    preflight_payload::<30>,
+    validate_payload::<30, v1::StoredRecordRegistryV2>,
+)
+.with_compact_identity(30, 1);
 
 mod sealed {
     pub trait WritableRecordMessage {}
@@ -270,6 +304,14 @@ impl WritableRecordMessage for v1::StoredIndexEntryV2 {
     }
 }
 
+impl sealed::WritableRecordMessage for v1::StoredRecordRegistryV2 {}
+
+impl WritableRecordMessage for v1::StoredRecordRegistryV2 {
+    fn record_schema() -> &'static RecordSchema<'static> {
+        &REGISTRY_V2_RECORD_SCHEMA
+    }
+}
+
 /// Encodes one sealed generated message after the same allocation-free shape preflight.
 pub fn encode_current_message<M: WritableRecordMessage>(
     message: &M,
@@ -284,7 +326,8 @@ const PRE_WP280_CAPABILITY_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::
     legacy_record_bound(17, 4),
     validate_pre_wp280_capability_payload,
     validate_pre_wp280_capability_payload,
-);
+)
+.with_compact_identity(18, 1);
 
 /// Readable durable schemas in immutable compatibility order.
 pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHEMA_COUNT] = [
@@ -318,6 +361,7 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     CURRENT_V1_RECORD_SCHEMAS[27],
     CURRENT_V1_RECORD_SCHEMAS[28],
     INDEX_V2_RECORD_SCHEMA,
+    REGISTRY_V2_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
 ];
 
@@ -352,6 +396,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     CURRENT_V1_RECORD_SCHEMAS[26],
     CURRENT_V1_RECORD_SCHEMAS[27],
     CURRENT_V1_RECORD_SCHEMAS[28],
+    REGISTRY_V2_RECORD_SCHEMA,
 ];
 
 /// Current durable schemas. `current` is exactly synonymous with writable roles.
@@ -403,5 +448,55 @@ pub fn current_record_schema(record_type: &str) -> Option<&'static RecordSchema<
 /// Returns the conservative maximum complete envelope size for a current type.
 #[must_use]
 pub fn maximum_current_envelope_bytes(record_type: &str) -> Option<usize> {
-    current_record_schema(record_type).map(RecordSchema::max_envelope_bytes)
+    current_record_schema(record_type).map(|schema| {
+        crate::envelope::maximum_encoded_compact_record_bytes(schema, schema.max_payload_bytes())
+            .expect("generated compact record bound is valid")
+    })
+}
+
+/// Returns the immutable digest of every readable compact tag/revision binding.
+#[must_use]
+pub fn record_registry_digest() -> SchemaHash {
+    let mut schemas = READABLE_RECORD_SCHEMAS.iter().collect::<Vec<_>>();
+    schemas.sort_by_key(|schema| (schema.compact_tag(), schema.schema_revision()));
+    let mut canonical = Vec::with_capacity(schemas.len() * 48);
+    canonical.extend_from_slice(b"riffdb-compact-record-registry-v2\0");
+    canonical.extend_from_slice(
+        &u16::try_from(schemas.len())
+            .expect("registry count fits u16")
+            .to_be_bytes(),
+    );
+    for schema in schemas {
+        canonical.push(schema.compact_tag());
+        canonical.extend_from_slice(&schema.schema_revision().to_be_bytes());
+        canonical.extend_from_slice(
+            &u16::try_from(schema.record_type().len())
+                .expect("record type bound fits u16")
+                .to_be_bytes(),
+        );
+        canonical.extend_from_slice(schema.record_type().as_bytes());
+        canonical.extend_from_slice(schema.schema_hash().as_bytes());
+    }
+    hash_schema(&canonical)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_registry_record_is_itself_registered_and_canonical() {
+        let message = v1::StoredRecordRegistryV2 {
+            registry_digest: record_registry_digest().as_bytes().to_vec(),
+        };
+        let encoded = encode_current_message(&message).expect("registry record encodes");
+        let decoded = readable_record_registry()
+            .decode(&encoded)
+            .expect("registry record decodes");
+        assert_eq!(
+            decoded.record_type(),
+            "riffdb.storage.v1.StoredRecordRegistryV2"
+        );
+        assert_eq!(decoded.payload(), message.encode_to_vec());
+    }
 }

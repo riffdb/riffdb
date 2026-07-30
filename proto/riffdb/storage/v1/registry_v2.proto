@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// Binds one storage-format-v2 database to the exact closed durable-record
+// registry understood by the writer that initialized or migrated it.
+message StoredRecordRegistryV2 {
+  bytes registry_digest = 1;
+}

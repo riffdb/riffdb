@@ -496,7 +496,7 @@ fn sizing_charge<M: prost::Message>(
 ) -> Result<usize, DurableCodecError> {
     let schema = riffdb_proto::durable::current_record_schema(record_type)
         .ok_or_else(DurableCodecError::invariant)?;
-    riffdb_proto::envelope::maximum_encoded_envelope_bytes(schema, value.encoded_len())
+    riffdb_proto::envelope::maximum_encoded_compact_record_bytes(schema, value.encoded_len())
         .map_err(DurableCodecError::from_encode_envelope)
 }
 

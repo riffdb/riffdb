@@ -265,14 +265,22 @@ fn every_registered_semantic_record_round_trips_in_registry_order() {
 
 #[test]
 fn emit_semantic_wire_vectors_for_fixture_regeneration() {
-    let fixture = semantic_wire_fixture();
-    print!("{fixture}");
+    let legacy_fixture = semantic_wire_fixture(DurableVectorFormat::LegacyV1);
+    let compact_fixture = semantic_wire_fixture(DurableVectorFormat::CompactV2);
+    print!("{legacy_fixture}");
     if let Some(path) = std::env::var_os("RIFFDB_DURABLE_VECTOR_OUTPUT") {
         let path = std::path::PathBuf::from(path);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("create vector parent directory");
         }
-        std::fs::write(path, fixture).expect("write semantic wire fixture");
+        std::fs::write(path, legacy_fixture).expect("write semantic wire fixture");
+    }
+    if let Some(path) = std::env::var_os("RIFFDB_DURABLE_V2_VECTOR_OUTPUT") {
+        let path = std::path::PathBuf::from(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create V2 vector parent directory");
+        }
+        std::fs::write(path, compact_fixture).expect("write compact semantic wire fixture");
     }
     if let Some(path) = std::env::var_os("RIFFDB_DURABLE_INDEX_V2_VECTOR_OUTPUT") {
         let path = std::path::PathBuf::from(path);
@@ -286,8 +294,12 @@ fn emit_semantic_wire_vectors_for_fixture_regeneration() {
 #[test]
 fn checked_in_semantic_wire_vectors_are_current() {
     assert_eq!(
-        semantic_wire_fixture(),
+        semantic_wire_fixture(DurableVectorFormat::LegacyV1),
         include_str!("../../../../../fixtures/proto/durable-wire-vectors.txt")
+    );
+    assert_eq!(
+        semantic_wire_fixture(DurableVectorFormat::CompactV2),
+        include_str!("../../../../../fixtures/proto/durable-wire-vectors-v2.txt")
     );
     assert_eq!(
         index_v2_wire_fixture(),
@@ -295,17 +307,32 @@ fn checked_in_semantic_wire_vectors_are_current() {
     );
 }
 
-fn semantic_wire_fixture() -> String {
-    let mut fixture = String::from("riffdb-durable-wire-vectors-v1\nrecords\t26\n");
+#[derive(Clone, Copy)]
+enum DurableVectorFormat {
+    LegacyV1,
+    CompactV2,
+}
+
+fn semantic_wire_fixture(format: DurableVectorFormat) -> String {
+    let heading = match format {
+        DurableVectorFormat::LegacyV1 => "riffdb-durable-wire-vectors-v1",
+        DurableVectorFormat::CompactV2 => "riffdb-durable-wire-vectors-v2",
+    };
+    let mut fixture = format!("{heading}\nrecords\t26\n");
     for (name, envelope) in semantic_wire_vectors() {
         let decoded = riffdb_proto::durable::readable_record_registry()
             .decode(envelope.as_bytes())
             .expect("sample envelope decodes");
-        let line = format!(
-            "{name}\t{}\t{}\n",
-            hex(decoded.payload()),
-            hex(envelope.as_bytes())
-        );
+        let encoded = match format {
+            DurableVectorFormat::LegacyV1 => {
+                let schema = riffdb_proto::durable::readable_record_schema(name)
+                    .expect("sample schema is readable");
+                riffdb_proto::envelope::encode_v1(schema, decoded.payload())
+                    .expect("legacy fixture payload remains encodable")
+            }
+            DurableVectorFormat::CompactV2 => envelope.as_bytes().to_vec(),
+        };
+        let line = format!("{name}\t{}\t{}\n", hex(decoded.payload()), hex(&encoded));
         fixture.push_str(&line);
     }
     fixture
@@ -317,11 +344,15 @@ fn index_v2_wire_fixture() -> String {
     let decoded = riffdb_proto::durable::readable_record_registry()
         .decode(envelope.as_bytes())
         .expect("V2 sample envelope decodes");
+    let schema = riffdb_proto::durable::readable_record_schema(decoded.record_type())
+        .expect("V2 schema is readable");
+    let legacy = riffdb_proto::envelope::encode_v1(schema, decoded.payload())
+        .expect("V2 semantic payload remains legacy encodable");
     format!(
         "riffdb-durable-index-v2-wire-vector-v1\n{}\t{}\t{}\n",
         decoded.record_type(),
         hex(decoded.payload()),
-        hex(envelope.as_bytes())
+        hex(&legacy)
     )
 }
 

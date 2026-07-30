@@ -1,5 +1,5 @@
 use riffdb_proto::storage::v1 as wire;
-use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId};
+use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId, SchemaHash};
 
 use crate::{
     AdministrationSequenceAllocator, ApplicationSequenceAllocator, EncodedPageItem,
@@ -14,6 +14,13 @@ const FORMAT: &str = "riffdb.storage.v1.StoredStorageFormatVersionV1";
 const DATABASE: &str = "riffdb.storage.v1.StoredDatabaseIdentityV1";
 pub(super) const APPLICATION: &str = "riffdb.storage.v1.StoredApplicationSequenceAllocatorV1";
 const ADMINISTRATION: &str = "riffdb.storage.v1.StoredAdministrationSequenceAllocatorV1";
+const RECORD_REGISTRY: &str = "riffdb.storage.v1.StoredRecordRegistryV2";
+
+/// Returns the exact registry digest required by current storage-format V2.
+#[must_use]
+pub fn current_record_registry_digest() -> SchemaHash {
+    riffdb_proto::durable::record_registry_digest()
+}
 
 /// Encodes the supported durable storage-format metadata record.
 pub fn encode_storage_format_version_v1(
@@ -34,6 +41,27 @@ pub fn decode_storage_format_version_v1(
     decode_message::<wire::StoredStorageFormatVersionV1, _, _>(FORMAT, encoded, |value| {
         StorageFormatVersion::from_supported(value.storage_format_version)
             .ok_or_else(DurableCodecError::corrupt)
+    })
+}
+
+/// Encodes the exact compact durable-record registry digest.
+pub fn encode_record_registry_v2(
+    value: SchemaHash,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    encode_message(
+        RECORD_REGISTRY,
+        &wire::StoredRecordRegistryV2 {
+            registry_digest: value.as_bytes().to_vec(),
+        },
+    )
+}
+
+/// Decodes the exact compact durable-record registry digest.
+pub fn decode_record_registry_v2(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<SchemaHash>, DurableCodecError> {
+    decode_message::<wire::StoredRecordRegistryV2, _, _>(RECORD_REGISTRY, encoded, |value| {
+        Ok(SchemaHash::from_bytes(fixed(value.registry_digest)?))
     })
 }
 
