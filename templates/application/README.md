@@ -7,6 +7,12 @@ bind `{{ROLE_NAME}}`, regenerate the checked application bindings, seed through
 `CreateItem`, and start watch mode.
 
 Handwritten code belongs in `src/`. Files below `generated/` are compiler-owned.
+`riffdb.application.json` contains symbolic author intent.
+`riffdb.application.lock.json` and everything below `generated/` are
+compiler-owned; update them only with `riffdb application lock --write`, verify
+with `riffdb application lock --check`, and reproduce bindings with
+`riffdb application generate --locked`.
+
 Application code must use generated named queries and symbolic commands; kernel
 gRPC requests, numeric schema IDs, field masks, encoded keys, and handwritten
 transport adapters are rejected by the application-boundary check.

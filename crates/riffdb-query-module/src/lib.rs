@@ -2,8 +2,10 @@
 
 //! Immutable, exact-contract query modules with a strict canonical codec.
 
+mod application_lock;
 mod application_manifest;
 mod application_role;
+mod application_source;
 mod generation;
 
 pub use application_manifest::{
@@ -15,6 +17,12 @@ pub use application_manifest::{
 pub use application_role::{
     ApplicationRoleError, ApplicationRoleErrorKind, ApplicationRoleOperation,
     ApplicationRoleOperationKind, CompiledApplicationRole, compile_application_role,
+};
+pub use application_source::{
+    APPLICATION_SOURCE_SCHEMA_V1, ApplicationSourceContract, ApplicationSourceError,
+    ApplicationSourceErrorKind, ApplicationSourceGeneration, ApplicationSourceManifest,
+    ApplicationSourceQuery, ApplicationSourceQueryModule, ApplicationSourceRole,
+    ApplicationSourceTenantScope, MAX_APPLICATION_SOURCE_BYTES,
 };
 pub use generation::{
     GeneratedMcpCommand, GeneratedMcpTool, McpToolGenerationError, generate_mcp_commands,
@@ -637,3 +645,8 @@ impl<'a> Reader<'a> {
         }
     }
 }
+pub use application_lock::{
+    APPLICATION_LOCK_SCHEMA_V1, APPLICATION_ROLE_DEFINITION_FORMAT_V1, ApplicationLock,
+    ApplicationLockError, ApplicationLockErrorKind, GeneratedApplicationArtifact,
+    GeneratedApplicationArtifactKind, MAX_APPLICATION_LOCK_BYTES,
+};

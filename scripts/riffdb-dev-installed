@@ -32,8 +32,8 @@ done
     exit 2
 }
 application_root="$(cd "$application_root" && pwd)"
-application_manifest="$application_root/riffdb.application.json"
-[[ -f "$application_manifest" ]] || {
+application_source="$application_root/riffdb.application.json"
+[[ -f "$application_source" ]] || {
     echo "application root has no riffdb.application.json" >&2
     exit 2
 }
@@ -71,7 +71,9 @@ for tool in cargo date find jq mkfifo mktemp od rg sort stat timeout tr; do
     }
 done
 
-"$riffdb" application generate "$application_manifest"
+"$riffdb" application lock "$application_source" --write
+"$riffdb" application generate "$application_source" --locked
+application_manifest="$application_root/generated/riffdb.application.exact.json"
 "$boundary_check" "$application_root"
 contract="$application_root/$(jq -er '.contract.source' "$application_manifest")"
 query_source="$application_root/$(jq -er '.query_modules[0].queries[0].source' "$application_manifest")"
@@ -290,14 +292,16 @@ while kill -0 "$server_pid" 2>/dev/null; do
     next_contract_stamp="$(stat -c '%Y:%s' "$contract")"
     next_query_stamp="$(find "$queries" -maxdepth 1 -type f -name '*.riffq' -printf '%f:%T@:%s\n' | sort)"
     if [[ "$next_contract_stamp" != "$contract_stamp" ]]; then
-        "$riffdb" application generate "$application_manifest"
+        "$riffdb" application lock "$application_source" --write
+        "$riffdb" application generate "$application_source" --locked
         "$boundary_check" "$application_root"
         "${operator[@]}" contract deploy "$contract" >/dev/null
         contract_stamp="$next_contract_stamp"
     fi
     if [[ "$next_query_stamp" != "$query_stamp" ]]; then
         ((module_version += 1))
-        "$riffdb" application generate "$application_manifest"
+        "$riffdb" application lock "$application_source" --write
+        "$riffdb" application generate "$application_source" --locked
         "$boundary_check" "$application_root"
         "${operator[@]}" query deploy "$queries" \
             --module-name "$module_name" \
