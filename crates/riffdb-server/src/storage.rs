@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use riffdb_query_executor::{
     QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryOwnedSnapshot, QueryParameters,
@@ -114,7 +114,7 @@ impl QueryExecutionPort for SharedRedbOperationalPorts {
         let guard = self
             .cell
             .inner
-            .lock()
+            .read()
             .map_err(|_| QueryExecutionError::BackendUnavailable)?;
         QueryExecutionPort::execute_query_page(&*guard, program, parameters, prior)
     }
@@ -132,7 +132,7 @@ impl fmt::Debug for SharedRedbOperationalPorts {
     reason = "used through the WP-130 private bridge once the hosted process graph is constructed"
 )]
 struct SharedStorageCell<T> {
-    inner: Arc<Mutex<T>>,
+    inner: Arc<RwLock<T>>,
 }
 
 #[allow(
@@ -142,7 +142,7 @@ struct SharedStorageCell<T> {
 impl<T> SharedStorageCell<T> {
     fn new(value: T) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(value)),
+            inner: Arc::new(RwLock::new(value)),
         }
     }
 
@@ -150,7 +150,7 @@ impl<T> SharedStorageCell<T> {
         &self,
         operation: impl FnOnce(&T) -> Result<R, StorageError>,
     ) -> Result<R, StorageError> {
-        let guard = self.inner.lock().map_err(|_| poisoned_storage_bridge())?;
+        let guard = self.inner.read().map_err(|_| poisoned_storage_bridge())?;
         operation(&guard)
     }
 
@@ -158,7 +158,7 @@ impl<T> SharedStorageCell<T> {
         &self,
         operation: impl FnOnce(&mut T) -> Result<R, StorageError>,
     ) -> Result<R, StorageError> {
-        let mut guard = self.inner.lock().map_err(|_| poisoned_storage_bridge())?;
+        let mut guard = self.inner.write().map_err(|_| poisoned_storage_bridge())?;
         operation(&mut guard)
     }
 }
@@ -240,7 +240,7 @@ impl CurrentCatalogViewState {
 }
 
 struct CurrentCatalogView {
-    state: Mutex<CurrentCatalogViewState>,
+    state: RwLock<CurrentCatalogViewState>,
 }
 
 impl CurrentCatalogView {
@@ -257,12 +257,16 @@ impl CurrentCatalogView {
             state.install_rebuilt(active, bundle)?;
         }
         Ok(Self {
-            state: Mutex::new(state),
+            state: RwLock::new(state),
         })
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, CurrentCatalogViewState>, StorageError> {
-        self.state.lock().map_err(|_| poisoned_storage_bridge())
+    fn read(&self) -> Result<RwLockReadGuard<'_, CurrentCatalogViewState>, StorageError> {
+        self.state.read().map_err(|_| poisoned_storage_bridge())
+    }
+
+    fn write(&self) -> Result<RwLockWriteGuard<'_, CurrentCatalogViewState>, StorageError> {
+        self.state.write().map_err(|_| poisoned_storage_bridge())
     }
 }
 
@@ -378,7 +382,7 @@ impl CurrentCapabilityViewState {
 }
 
 struct CurrentCapabilityView {
-    state: Mutex<CurrentCapabilityViewState>,
+    state: RwLock<CurrentCapabilityViewState>,
 }
 
 impl CurrentCapabilityView {
@@ -398,12 +402,16 @@ impl CurrentCapabilityView {
             }
         }
         Ok(Self {
-            state: Mutex::new(state),
+            state: RwLock::new(state),
         })
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, CurrentCapabilityViewState>, StorageError> {
-        self.state.lock().map_err(|_| poisoned_storage_bridge())
+    fn read(&self) -> Result<RwLockReadGuard<'_, CurrentCapabilityViewState>, StorageError> {
+        self.state.read().map_err(|_| poisoned_storage_bridge())
+    }
+
+    fn write(&self) -> Result<RwLockWriteGuard<'_, CurrentCapabilityViewState>, StorageError> {
+        self.state.write().map_err(|_| poisoned_storage_bridge())
     }
 }
 
@@ -450,6 +458,14 @@ impl AdmissionRepository for SharedRedbOperationalPorts {
     ) -> Result<AdmissionLookupResultV1, StorageError> {
         self.cell
             .with_ref(|ports| AdmissionRepository::lookup_admission(ports, candidates))
+    }
+
+    fn lookup_admission_group(
+        &self,
+        candidates: Vec<IdempotencyLookupCandidatesV1>,
+    ) -> Result<Vec<AdmissionLookupResultV1>, StorageError> {
+        self.cell
+            .with_ref(|ports| AdmissionRepository::lookup_admission_group(ports, candidates))
     }
 }
 
@@ -517,7 +533,7 @@ impl CatalogAdministrationRepository for SharedRedbOperationalPorts {
         &mut self,
         intent: &CatalogActivationIntentV1,
     ) -> Result<CatalogActivationResult, StorageError> {
-        let mut view = self.catalog.lock()?;
+        let mut view = self.catalog.write()?;
         let result = self
             .cell
             .with_mut(|ports| CatalogAdministrationRepository::activate_catalog(ports, intent))?;
@@ -640,7 +656,7 @@ impl CapabilityCreateAwaitingDecision for SharedCapabilityCreateAwaiting {
         intent: CapabilityCreateIntentV1,
     ) -> Result<CapabilityCreateResult, StorageError> {
         let Self { inner, storage } = self;
-        let mut view = storage.capabilities.lock()?;
+        let mut view = storage.capabilities.write()?;
         if !view.records.contains_key(&intent.capability_id())
             && view.records.len() == MAX_CURRENT_CAPABILITY_VIEW_RECORDS
         {
@@ -701,7 +717,7 @@ impl CapabilityRevokeAwaitingDecision for SharedCapabilityRevokeAwaiting {
         intent: CapabilityRevokeIntentV1,
     ) -> Result<CapabilityRevokeResult, StorageError> {
         let Self { inner, storage } = self;
-        let mut view = storage.capabilities.lock()?;
+        let mut view = storage.capabilities.write()?;
         let result = inner.commit_revoke(intent)?;
         let capability_id = match result {
             CapabilityRevokeResult::Revoked { capability_id, .. }
@@ -732,7 +748,7 @@ impl CapabilityBootstrapAdministrationRepository for SharedRedbOperationalPorts 
         &mut self,
         intent: &CapabilityBootstrapIntentV1,
     ) -> Result<CapabilityBootstrapResult, StorageError> {
-        let mut view = self.capabilities.lock()?;
+        let mut view = self.capabilities.write()?;
         if !view.records.contains_key(&intent.capability_id())
             && view.records.len() == MAX_CURRENT_CAPABILITY_VIEW_RECORDS
         {
@@ -765,7 +781,7 @@ impl CapabilityBootstrapAdministrationRepository for SharedRedbOperationalPorts 
 
 impl CatalogRepository for SharedRedbOperationalPorts {
     fn read_active_catalog(&self) -> Result<Option<ActiveCatalogPointerV1>, StorageError> {
-        Ok(self.catalog.lock()?.active.clone())
+        Ok(self.catalog.read()?.active.clone())
     }
 
     fn read_contract_bundle(
@@ -775,7 +791,7 @@ impl CatalogRepository for SharedRedbOperationalPorts {
     ) -> Result<Option<StoredContractBundleV1>, StorageError> {
         if let Some(bundle) = self
             .catalog
-            .lock()?
+            .read()?
             .active_bundle(lineage, contract_version)
         {
             return Ok(Some(bundle));
@@ -791,17 +807,20 @@ impl CapabilityReader for SharedRedbOperationalPorts {
         &self,
         capability_id: CapabilityId,
     ) -> Result<Option<StoredCapabilityRecordV1>, StorageError> {
-        let mut view = self.capabilities.lock()?;
-        if let Some(record) = view.records.get(&capability_id) {
+        if let Some(record) = self.capabilities.read()?.records.get(&capability_id) {
             return Ok(Some(record.clone()));
         }
         let record = self
             .cell
             .with_ref(|ports| CapabilityReader::read_capability(ports, capability_id))?;
-        if let Some(record) = record.as_ref()
-            && let Err(error) = view.publish(record.clone())
-        {
-            return Err(self.current_view_failure(error));
+        if let Some(record) = record.as_ref() {
+            let mut view = self.capabilities.write()?;
+            if let Some(current) = view.records.get(&capability_id) {
+                return Ok(Some(current.clone()));
+            }
+            if let Err(error) = view.publish(record.clone()) {
+                return Err(self.current_view_failure(error));
+            }
         }
         Ok(record)
     }
@@ -810,13 +829,16 @@ impl CapabilityReader for SharedRedbOperationalPorts {
         &self,
         candidates: &[CapabilityTokenDigest],
     ) -> Result<CapabilityLookupResult, StorageError> {
-        let mut view = self.capabilities.lock()?;
-        if let Some(cached) = view.resolve(candidates) {
+        if let Some(cached) = self.capabilities.read()?.resolve(candidates) {
             return Ok(cached);
         }
         let result = self
             .cell
             .with_ref(|ports| CapabilityReader::resolve_capability_digests(ports, candidates))?;
+        let mut view = self.capabilities.write()?;
+        if let Some(cached) = view.resolve(candidates) {
+            return Ok(cached);
+        }
         if let Err(error) = view.note_lookup(candidates, &result) {
             return Err(self.current_view_failure(error));
         }
@@ -903,6 +925,10 @@ impl FilteredAuthoritativeScanReader for SharedRedbOperationalPorts {
 }
 
 impl OutboxRepository for SharedRedbOperationalPorts {
+    fn has_undelivered_outbox(&self) -> Result<bool, StorageError> {
+        self.cell.with_ref(OutboxRepository::has_undelivered_outbox)
+    }
+
     fn read_outbox_status(
         &self,
         event_id: EventId,
@@ -1041,7 +1067,6 @@ impl ProjectionRecoveryRepository for SharedRedbOperationalPorts {
 mod tests {
     use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
     use std::sync::Barrier;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
 
     use riffdb_storage_api::{
@@ -1196,40 +1221,27 @@ mod tests {
     }
 
     #[test]
-    fn cloned_cells_serialize_calls_without_sleeps() {
-        const WORKERS: usize = 8;
-
+    fn cloned_cells_allow_concurrent_read_calls_without_sleeps() {
         let cell = SharedStorageCell::new(());
-        let start = Arc::new(Barrier::new(WORKERS + 1));
-        let active = Arc::new(AtomicUsize::new(0));
-        let maximum = Arc::new(AtomicUsize::new(0));
-        let mut workers = Vec::with_capacity(WORKERS);
-
-        for _ in 0..WORKERS {
-            let cell = cell.clone();
-            let start = Arc::clone(&start);
-            let active = Arc::clone(&active);
-            let maximum = Arc::clone(&maximum);
-            workers.push(thread::spawn(move || {
-                start.wait();
-                cell.with_ref(|()| {
-                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
-                    maximum.fetch_max(now, Ordering::SeqCst);
-                    thread::yield_now();
-                    active.fetch_sub(1, Ordering::SeqCst);
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let worker_cell = cell.clone();
+        let worker_entered = Arc::clone(&entered);
+        let worker_release = Arc::clone(&release);
+        let worker = thread::spawn(move || {
+            worker_cell
+                .with_ref(|()| {
+                    worker_entered.wait();
+                    worker_release.wait();
                     Ok(())
                 })
-                .expect("serialized operation");
-            }));
-        }
+                .expect("first read");
+        });
 
-        start.wait();
-        for worker in workers {
-            worker.join().expect("worker completed");
-        }
-
-        assert_eq!(maximum.load(Ordering::SeqCst), 1);
-        assert_eq!(active.load(Ordering::SeqCst), 0);
+        entered.wait();
+        cell.with_ref(|()| Ok(())).expect("concurrent read");
+        release.wait();
+        worker.join().expect("worker completed");
     }
 
     #[test]
@@ -1257,7 +1269,7 @@ mod tests {
             .expect("begin owned state");
 
         assert!(
-            bridge.inner.try_lock().is_ok(),
+            bridge.inner.try_write().is_ok(),
             "the outer guard must be gone when an owned state is returned"
         );
         assert_eq!(state.advance().expect("advance owned state"), 1);
@@ -1277,7 +1289,7 @@ mod tests {
         let poisoner = cell.clone();
 
         let result = thread::spawn(move || {
-            let _guard = poisoner.inner.lock().expect("initial lock");
+            let _guard = poisoner.inner.write().expect("initial lock");
             panic!("poison test cell");
         })
         .join();

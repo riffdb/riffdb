@@ -1,5 +1,7 @@
 //! Actor-owned completion of admitted command attempts.
 
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
 use std::{error::Error, fmt, time::Instant};
 
 use riffdb_conflict::{ConflictError, ConflictManager};
@@ -25,8 +27,9 @@ use crate::{
         resolve_uncertain_command_admission,
     },
     command_attempt::{
-        CommandAttemptError, CommandAttemptResolution, EvaluatedCommandAttempt,
-        ExecutionFaultAttempt, PendingCommandAttempts, RolledBackCandidateDisposition,
+        AcquiredCommandAttempt, CommandAttemptError, CommandAttemptResolution,
+        EvaluatedCommandAttempt, ExecutionFaultAttempt, PendingCommandAttempts,
+        RolledBackCandidateDisposition, acquire_command_attempt, evaluate_acquired_command_attempt,
         evaluate_next_command_attempt,
     },
     command_execution_failure::{
@@ -85,6 +88,126 @@ type RepeatableCommandGroupFuture<'a> = std::pin::Pin<
     >,
 >;
 
+const MAX_PARALLEL_EVALUATION_WORKERS: usize = 8;
+const MAX_QUEUED_EVALUATIONS: usize = riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
+
+trait CommandEvaluationReadPort: AdmissionRepository + SnapshotReader + Send + Sync + 'static {}
+
+impl<T> CommandEvaluationReadPort for T where
+    T: AdmissionRepository + SnapshotReader + Send + Sync + 'static
+{
+}
+
+struct CommandEvaluationTask {
+    ordinal: usize,
+    acquired: AcquiredCommandAttempt,
+    completion: mpsc::Sender<(usize, Result<CommandAttemptResolution, CommandAttemptError>)>,
+}
+
+/// Fixed-size read/evaluation workers with an admission-ordinal reorder buffer.
+pub(super) struct CommandEvaluationPool {
+    sender: Option<mpsc::SyncSender<CommandEvaluationTask>>,
+    workers: Vec<thread::JoinHandle<()>>,
+}
+
+impl CommandEvaluationPool {
+    pub(super) fn new<Repository>(repository: Repository) -> Result<Self, ()>
+    where
+        Repository: AdmissionRepository + SnapshotReader + Send + Sync + 'static,
+    {
+        let worker_count = thread::available_parallelism()
+            .map_or(2, std::num::NonZeroUsize::get)
+            .clamp(2, MAX_PARALLEL_EVALUATION_WORKERS);
+        let repository: Arc<dyn CommandEvaluationReadPort> = Arc::new(repository);
+        let (sender, receiver) =
+            mpsc::sync_channel::<CommandEvaluationTask>(MAX_QUEUED_EVALUATIONS);
+        let receiver = Arc::new(Mutex::new(receiver));
+        let mut workers = Vec::with_capacity(worker_count);
+        for index in 0..worker_count {
+            let repository = Arc::clone(&repository);
+            let receiver = Arc::clone(&receiver);
+            let worker = thread::Builder::new()
+                .name(format!("riffdb-command-prepare-{index}"))
+                .spawn(move || {
+                    loop {
+                        let task = {
+                            let Ok(receiver) = receiver.lock() else {
+                                return;
+                            };
+                            let Ok(task) = receiver.recv() else {
+                                return;
+                            };
+                            task
+                        };
+                        let result = evaluate_acquired_command_attempt(
+                            task.acquired,
+                            repository.as_ref(),
+                            repository.as_ref(),
+                        );
+                        let _coordinator_may_have_stopped =
+                            task.completion.send((task.ordinal, result));
+                    }
+                })
+                .map_err(|_| ())?;
+            workers.push(worker);
+        }
+        Ok(Self {
+            sender: Some(sender),
+            workers,
+        })
+    }
+
+    fn evaluate(
+        &self,
+        acquired: Vec<AcquiredCommandAttempt>,
+    ) -> Vec<Result<CommandAttemptResolution, CommandAttemptError>> {
+        let count = acquired.len();
+        let (completion, receiver) = mpsc::channel();
+        let Some(sender) = self.sender.as_ref() else {
+            return (0..count)
+                .map(|_| Err(CommandAttemptError::Integrity))
+                .collect();
+        };
+        for (ordinal, acquired) in acquired.into_iter().enumerate() {
+            if sender
+                .send(CommandEvaluationTask {
+                    ordinal,
+                    acquired,
+                    completion: completion.clone(),
+                })
+                .is_err()
+            {
+                return (0..count)
+                    .map(|_| Err(CommandAttemptError::Integrity))
+                    .collect();
+            }
+        }
+        drop(completion);
+        let mut ordered = (0..count).map(|_| None).collect::<Vec<_>>();
+        for _ in 0..count {
+            let Ok((ordinal, result)) = receiver.recv() else {
+                break;
+            };
+            if let Some(slot) = ordered.get_mut(ordinal) {
+                *slot = Some(result);
+            }
+        }
+        ordered
+            .into_iter()
+            .map(|result| result.unwrap_or(Err(CommandAttemptError::Integrity)))
+            .collect()
+    }
+}
+
+impl Drop for CommandEvaluationPool {
+    fn drop(&mut self) {
+        self.sender.take();
+        for worker in self.workers.drain(..) {
+            let _worker_may_have_panicked = worker.join();
+        }
+    }
+}
+
 pub(super) trait RepeatableCommandBatchPort:
     AdmissionRepository
     + AuditedAdmissionRepository
@@ -102,6 +225,7 @@ pub(super) trait RepeatableCommandBatchPort:
         durability: CoordinatorDurability,
         lifecycle: &'a dyn CommandExecutionLifecycle,
         telemetry: &'a dyn CommitTelemetry,
+        evaluation_pool: Option<&'a CommandEvaluationPool>,
         preparations: Vec<CommandExecutionPreparation>,
     ) -> RepeatableCommandGroupFuture<'a>;
 }
@@ -136,6 +260,7 @@ where
         durability: CoordinatorDurability,
         lifecycle: &'a dyn CommandExecutionLifecycle,
         telemetry: &'a dyn CommitTelemetry,
+        evaluation_pool: Option<&'a CommandEvaluationPool>,
         preparations: Vec<CommandExecutionPreparation>,
     ) -> RepeatableCommandGroupFuture<'a> {
         Box::pin(drive_command_execution_group(
@@ -147,6 +272,7 @@ where
             durability,
             lifecycle,
             telemetry,
+            evaluation_pool,
             preparations,
         ))
     }
@@ -452,6 +578,7 @@ pub(super) async fn drive_command_execution_group<P>(
     durability: CoordinatorDurability,
     lifecycle: &dyn CommandExecutionLifecycle,
     telemetry: &dyn CommitTelemetry,
+    evaluation_pool: Option<&CommandEvaluationPool>,
     preparations: Vec<CommandExecutionPreparation>,
 ) -> Vec<Result<CommandExecutionResult, CommandExecutionError>>
 where
@@ -500,6 +627,7 @@ where
                 durability,
                 lifecycle,
                 telemetry,
+                evaluation_pool,
                 group,
             )
             .await;
@@ -696,6 +824,138 @@ fn exact_accesses_are_compatible(
         && !reads.iter().any(|target| prior_writes.contains(target))
 }
 
+enum ParallelEvaluationPreparation {
+    Ready(Vec<(usize, EvaluatedCommandAttempt)>),
+    Complete(Vec<(usize, Result<CommandExecutionResult, CommandExecutionError>)>),
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_parallel_compatible_group<P>(
+    port: &P,
+    conflicts: &dyn ConflictManager,
+    administration_clock: &dyn crate::AdministrationClock,
+    provenance: &dyn ProvenanceIdSource,
+    durability: CoordinatorDurability,
+    lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
+    pool: &CommandEvaluationPool,
+    pending: Vec<(usize, PendingCommandAttempts)>,
+) -> ParallelEvaluationPreparation
+where
+    P: AdmissionRepository
+        + SnapshotReader
+        + ApplicationCommandTransactionPort
+        + ExecutionFailureTransitionPort,
+{
+    let mut pending = std::collections::VecDeque::from(pending);
+    let mut acquired = Vec::with_capacity(pending.len());
+    let mut indices = Vec::with_capacity(pending.len());
+    while let Some((index, state)) = pending.pop_front() {
+        match acquire_command_attempt(state, conflicts).await {
+            Ok(attempt) => {
+                indices.push(index);
+                acquired.push(attempt);
+            }
+            Err(error) => {
+                let error = command_attempt_failure(error, lifecycle);
+                let terminal_state = group_peer_terminal_error(&error);
+                let mut completed = vec![(index, Err(error))];
+                if let Some(terminal_state) = terminal_state {
+                    completed.extend(indices.into_iter().zip(acquired).map(|(index, attempt)| {
+                        drop(attempt);
+                        (index, Err(group_peer_error(terminal_state)))
+                    }));
+                    completed.extend(pending.into_iter().map(|(index, state)| {
+                        drop(state);
+                        (index, Err(group_peer_error(terminal_state)))
+                    }));
+                } else {
+                    let mut fallback = indices
+                        .into_iter()
+                        .zip(acquired)
+                        .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation()))
+                        .collect::<Vec<_>>();
+                    fallback.extend(pending);
+                    completed.extend(
+                        drive_pending_items(
+                            port,
+                            conflicts,
+                            administration_clock,
+                            provenance,
+                            durability,
+                            lifecycle,
+                            telemetry,
+                            fallback,
+                        )
+                        .await,
+                    );
+                }
+                return ParallelEvaluationPreparation::Complete(completed);
+            }
+        }
+    }
+
+    let evaluated = pool.evaluate(acquired);
+    if evaluated
+        .iter()
+        .all(|result| matches!(result, Ok(CommandAttemptResolution::Evaluated(_))))
+    {
+        return ParallelEvaluationPreparation::Ready(
+            indices
+                .into_iter()
+                .zip(evaluated)
+                .filter_map(|(index, result)| match result {
+                    Ok(CommandAttemptResolution::Evaluated(attempt)) => Some((index, attempt)),
+                    _ => None,
+                })
+                .collect(),
+        );
+    }
+
+    let mut completed = Vec::new();
+    let mut fallback = Vec::new();
+    let mut terminal_state = None;
+    for (index, result) in indices.into_iter().zip(evaluated) {
+        match result {
+            Ok(CommandAttemptResolution::Evaluated(attempt)) => {
+                fallback.push((index, attempt.into_pending_without_commit()));
+            }
+            Ok(resolution) => {
+                let continuation =
+                    continuation_from_attempt_resolution(port, lifecycle, telemetry, resolution);
+                terminal_state = terminal_state.or_else(|| group_peer_terminal(&continuation));
+                completed.push((index, terminal_continuation(continuation, lifecycle)));
+            }
+            Err(error) => {
+                let error = command_attempt_failure(error, lifecycle);
+                terminal_state = terminal_state.or_else(|| group_peer_terminal_error(&error));
+                completed.push((index, Err(error)));
+            }
+        }
+    }
+    if let Some(terminal_state) = terminal_state {
+        completed.extend(fallback.into_iter().map(|(index, state)| {
+            drop(state);
+            (index, Err(group_peer_error(terminal_state)))
+        }));
+    } else {
+        completed.extend(
+            drive_pending_items(
+                port,
+                conflicts,
+                administration_clock,
+                provenance,
+                durability,
+                lifecycle,
+                telemetry,
+                fallback,
+            )
+            .await,
+        );
+    }
+    ParallelEvaluationPreparation::Complete(completed)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn drive_compatible_pending_group<P>(
     port: &P,
@@ -705,6 +965,7 @@ async fn drive_compatible_pending_group<P>(
     durability: CoordinatorDurability,
     lifecycle: &dyn CommandExecutionLifecycle,
     telemetry: &dyn CommitTelemetry,
+    evaluation_pool: Option<&CommandEvaluationPool>,
     pending: Vec<(usize, PendingCommandAttempts)>,
 ) -> Vec<(usize, Result<CommandExecutionResult, CommandExecutionError>)>
 where
@@ -729,7 +990,29 @@ where
     let mut pending = std::collections::VecDeque::from(pending);
     let mut evaluated = Vec::with_capacity(pending.len());
     let mut completed = Vec::new();
-    while let Some((index, state)) = pending.pop_front() {
+    if let Some(pool) = evaluation_pool {
+        let owned_pending = pending.into_iter().collect();
+        match prepare_parallel_compatible_group(
+            port,
+            conflicts,
+            administration_clock,
+            provenance,
+            durability,
+            lifecycle,
+            telemetry,
+            pool,
+            owned_pending,
+        )
+        .await
+        {
+            ParallelEvaluationPreparation::Ready(prepared) => evaluated = prepared,
+            ParallelEvaluationPreparation::Complete(completed) => return completed,
+        }
+        pending = std::collections::VecDeque::new();
+    }
+    while evaluation_pool.is_none()
+        && let Some((index, state)) = pending.pop_front()
+    {
         match evaluate_next_command_attempt(state, port, port, conflicts).await {
             Ok(CommandAttemptResolution::Evaluated(attempt)) => evaluated.push((index, attempt)),
             Ok(resolution) => {

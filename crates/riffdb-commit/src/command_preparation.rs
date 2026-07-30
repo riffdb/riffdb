@@ -9,11 +9,66 @@ use riffdb_idempotency::PreparedIdempotencyRecheckV1;
 use riffdb_invariant::InputDerivedCommandFacts;
 use riffdb_policy::{AuthorizedCommandExecution, CommandExecutionClass};
 use riffdb_types::{
-    CanonicalRecord, CommandId, DatabaseId, Environment, RequestId, ServiceAuditLinkV1,
-    ServiceAuditPhaseV1, ServiceIngressKindV1, ServiceOperationV1,
+    CanonicalRecord, CanonicalValue, CommandId, DatabaseId, Environment, RequestId,
+    ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceIngressKindV1, ServiceOperationV1,
 };
 
 use crate::AdministrationAuditInputView;
+
+const QUEUED_PREPARATION_FIXED_BYTES: usize = 4 * 1_024;
+const QUEUED_BYTE_UNIT: usize = 1_024;
+
+pub(crate) fn queued_preparation_units(input: &CanonicalRecord) -> u32 {
+    let retained = QUEUED_PREPARATION_FIXED_BYTES
+        .saturating_add(canonical_record_retained_bytes(input))
+        .div_ceil(QUEUED_BYTE_UNIT)
+        .max(1);
+    u32::try_from(retained).unwrap_or(u32::MAX)
+}
+
+fn canonical_record_retained_bytes(record: &CanonicalRecord) -> usize {
+    record.fields().iter().fold(0usize, |total, (_, value)| {
+        total.saturating_add(8).saturating_add(match value {
+            CanonicalValue::String(value) => value.len(),
+            CanonicalValue::Bytes(value) => value.len(),
+            CanonicalValue::List(values) => values.values().iter().fold(0usize, |total, value| {
+                total.saturating_add(canonical_value_retained_bytes(value))
+            }),
+            CanonicalValue::Record(record) => canonical_record_retained_bytes(record),
+            CanonicalValue::Null
+            | CanonicalValue::Bool(_)
+            | CanonicalValue::I64(_)
+            | CanonicalValue::U64(_)
+            | CanonicalValue::Decimal(_)
+            | CanonicalValue::Money(_)
+            | CanonicalValue::Timestamp(_)
+            | CanonicalValue::Date(_)
+            | CanonicalValue::Uuid(_)
+            | CanonicalValue::Enum { .. } => 32,
+        })
+    })
+}
+
+fn canonical_value_retained_bytes(value: &CanonicalValue) -> usize {
+    match value {
+        CanonicalValue::String(value) => value.len(),
+        CanonicalValue::Bytes(value) => value.len(),
+        CanonicalValue::List(values) => values.values().iter().fold(0usize, |total, value| {
+            total.saturating_add(canonical_value_retained_bytes(value))
+        }),
+        CanonicalValue::Record(record) => canonical_record_retained_bytes(record),
+        CanonicalValue::Null
+        | CanonicalValue::Bool(_)
+        | CanonicalValue::I64(_)
+        | CanonicalValue::U64(_)
+        | CanonicalValue::Decimal(_)
+        | CanonicalValue::Money(_)
+        | CanonicalValue::Timestamp(_)
+        | CanonicalValue::Date(_)
+        | CanonicalValue::Uuid(_)
+        | CanonicalValue::Enum { .. } => 32,
+    }
+}
 
 /// Cloneable process-local authority to cancel one command request.
 ///
@@ -265,6 +320,10 @@ impl CommandExecutionPreparation {
         (self.resolved_plan.reference().command_id(), self.ingress)
     }
 
+    pub(crate) fn queued_byte_units(&self) -> u32 {
+        queued_preparation_units(&self.normalized_input)
+    }
+
     #[allow(dead_code)] // Consumed by the next coordinator admission slice.
     pub(crate) fn into_parts(self) -> CommandExecutionPreparationParts {
         let (deadline, cancellation) = self.control.into_parts();
@@ -305,6 +364,8 @@ pub(crate) struct CommandExecutionPreparationParts {
 mod tests {
     use std::time::Duration;
 
+    use riffdb_types::FieldId;
+
     use super::*;
 
     #[test]
@@ -323,6 +384,23 @@ mod tests {
         assert_eq!(
             format!("{handle:?}"),
             "CommandCancellationHandle([REDACTED])"
+        );
+    }
+
+    #[test]
+    fn queued_preparation_charge_is_independent_of_item_capacity_and_rounds_up() {
+        let empty = CanonicalRecord::new(Vec::new()).expect("empty canonical record");
+        assert_eq!(queued_preparation_units(&empty), 4);
+
+        let with_string = CanonicalRecord::new(vec![(
+            FieldId::new(1).expect("field ID"),
+            CanonicalValue::string("x".repeat(2 * 1_024)).expect("bounded string"),
+        )])
+        .expect("canonical record");
+        assert_eq!(
+            queued_preparation_units(&with_string),
+            7,
+            "four fixed KiB plus the field identity and payload round up independently"
         );
     }
 }

@@ -78,8 +78,13 @@ use crate::server_generation::{ProductionServerGenerationSource, ServerGeneratio
 use crate::startup::CheckedRedbStartup;
 use crate::storage::SharedRedbOperationalPorts;
 
-/// Fixed P1 coordinator admission bound, independent of transport and port-driver bounds.
-const P1_COORDINATOR_WORKLOAD_CAPACITY: u16 = 64;
+/// Fixed P1 coordinator admission bound, independent of the 64-command
+/// transaction ceiling and the reserved shutdown slot.
+///
+/// Two complete maximum groups may queue while the actor owns one physical
+/// transition. Retained command byte bounds remain enforced by the public
+/// request and storage transaction ceilings.
+const P1_COORDINATOR_WORKLOAD_CAPACITY: u16 = 128;
 
 /// One checked secret-key snapshot shared by startup, maintenance, and a graph generation.
 pub(crate) struct ProductionDigestKeys {
@@ -372,7 +377,9 @@ impl ProductionGraphBuilder {
             coordinator.administration_audit_executor(),
             coordinator.control_plane_executor(),
             coordinator.command_executor(),
-            coordinator.command_idempotency_inspector(idempotency_digests),
+            coordinator
+                .command_idempotency_inspector(idempotency_digests)
+                .with_direct_repository(Arc::new(storage.clone())),
         );
         let diagnostics = Arc::new(ProductionObservabilityDiagnostics::new(
             runtime.clone(),

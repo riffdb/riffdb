@@ -16,6 +16,7 @@ use crate::{
 };
 
 const MAX_GENERATED_TRANSPORT_BATCH_ITEMS: usize = 16;
+const MAX_GENERATED_BATCH_CONCURRENCY: usize = 128;
 
 /// Application-only client facade.
 ///
@@ -354,7 +355,7 @@ impl GeneratedBatchOptions {
 
     fn validate(self, item_count: usize) -> Result<(), GeneratedBatchError> {
         if self.concurrency == 0
-            || self.concurrency > 64
+            || self.concurrency > MAX_GENERATED_BATCH_CONCURRENCY
             || item_count == 0
             || item_count > 4_096
             || self.checkpoint > item_count
@@ -1394,7 +1395,7 @@ mod tests {
 
     #[test]
     fn generated_batch_bounds_and_resume_checkpoint_are_closed() {
-        let options = GeneratedBatchOptions::new(64)
+        let options = GeneratedBatchOptions::new(128)
             .expect("maximum concurrency")
             .with_checkpoint(4_096);
         options.validate(4_096).expect("complete checkpoint");
@@ -1405,7 +1406,7 @@ mod tests {
             Err(GeneratedBatchError::InvalidBounds)
         );
         assert_eq!(
-            GeneratedBatchOptions::new(65),
+            GeneratedBatchOptions::new(129),
             Err(GeneratedBatchError::InvalidBounds)
         );
         assert_eq!(
@@ -1425,7 +1426,7 @@ mod tests {
 
     #[test]
     fn generated_transport_batches_never_exceed_the_item_concurrency_bound() {
-        for item_concurrency in 1..=64 {
+        for item_concurrency in 1..=MAX_GENERATED_BATCH_CONCURRENCY {
             let (batch_size, transport_concurrency) =
                 generated_transport_batch_policy(item_concurrency);
             assert!((1..=MAX_GENERATED_TRANSPORT_BATCH_ITEMS).contains(&batch_size));
@@ -1433,6 +1434,7 @@ mod tests {
             assert!(batch_size * transport_concurrency <= item_concurrency);
         }
         assert_eq!(generated_transport_batch_policy(64), (16, 4));
+        assert_eq!(generated_transport_batch_policy(128), (16, 8));
         assert_eq!(generated_transport_batch_policy(17), (8, 2));
     }
 }

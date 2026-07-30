@@ -2,9 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
-use std::marker::PhantomData;
 use std::pin::Pin;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::task::{Context, Poll, Waker};
@@ -438,13 +436,12 @@ impl ConflictManager for ShardedConflictManager {
     }
 }
 
-/// An exclusive, non-cloneable, non-serializable mutation capability.
+/// An exclusive, transferable, non-cloneable, non-serializable mutation capability.
 ///
-/// The `Rc` marker deliberately makes this value neither `Send` nor `Sync`:
-/// the coordinator that consumes a grant cannot transfer it to another task or
-/// thread. Dropping it releases every key exactly once.
+/// Transfer to a bounded preparation worker preserves unique ownership;
+/// dropping it on either worker or coordinator releases every key exactly once.
 ///
-/// ```compile_fail
+/// ```
 /// use riffdb_conflict::MutationLease;
 /// fn require_send<T: Send>() {}
 /// require_send::<MutationLease>();
@@ -457,14 +454,12 @@ impl ConflictManager for ShardedConflictManager {
 /// ```
 pub struct MutationLease {
     core: Option<LeaseCore>,
-    not_transferable: PhantomData<Rc<()>>,
 }
 
 impl MutationLease {
     fn new(inner: Arc<Inner>, waiter: Arc<Waiter>) -> Self {
         Self {
             core: Some(LeaseCore { inner, waiter }),
-            not_transferable: PhantomData,
         }
     }
 
@@ -1487,6 +1482,28 @@ mod tests {
     };
 
     const LONG_DEADLINE: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn unique_lease_transfers_to_a_worker_and_releases_exactly_once() {
+        fn assert_send<T: Send>() {}
+        assert_send::<super::MutationLease>();
+
+        let manager = manager();
+        let conflict_key = key(41);
+        let lease = block_on(manager.acquire_mut(
+            vec![conflict_key.clone()],
+            deadline(),
+            CancellationToken::new(),
+        ))
+        .expect("initial lease");
+        thread::spawn(move || lease.release())
+            .join()
+            .expect("worker releases lease");
+        let successor =
+            block_on(manager.acquire_mut(vec![conflict_key], deadline(), CancellationToken::new()))
+                .expect("released key is reacquired");
+        successor.release();
+    }
 
     #[test]
     fn configuration_is_checked_and_bounded() {

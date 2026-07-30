@@ -1,7 +1,6 @@
 //! Mechanical payload-free outbox status adapter for the shared service.
 
 use std::fmt;
-use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -14,7 +13,7 @@ use riffdb_service::{
     OutboxStatusPortError, OutboxStatusRequest, OutboxStatusSnapshot, PortAdmissionError,
     PortFuture, RequestControl,
 };
-use riffdb_storage_api::{OutboxPageLimit, StorageErrorKind};
+use riffdb_storage_api::{OutboxPageLimit, OutboxRepository, StorageErrorKind};
 use riffdb_types::CommitSequence;
 
 use crate::notifications::FirstCommitNotificationHub;
@@ -46,13 +45,9 @@ impl NoDestinationOutboxHealth {
         }
     }
 
-    /// Refreshes the cache from one bounded payload-free exact source page.
-    pub(crate) fn refresh(&self, source: &impl OutboxStatusSource) {
-        let limit = OutboxPageLimit::new(NonZeroU16::MIN)
-            .expect("the fixed no-destination health page is valid");
-        let degraded = source
-            .read_outbox_status_page(OutboxStatusPageRequest::new(None, limit))
-            .map_or(true, |page| !page.items().is_empty());
+    /// Refreshes the cache from exact commit-coupled undelivered membership.
+    pub(crate) fn refresh(&self, source: &impl OutboxRepository) {
+        let degraded = source.has_undelivered_outbox().unwrap_or(true);
         self.state.store(u8::from(degraded), Ordering::Release);
     }
 
@@ -104,6 +99,19 @@ impl ApplicationCommitNotificationSink for ServerCommitNotificationSink {
     ) -> Result<(), ApplicationCommitNotificationError> {
         self.authoritative.publish_first_commit(sequence)?;
         self.outbox.refresh(&self.storage);
+        Ok(())
+    }
+
+    fn publish_first_commit_group(
+        &self,
+        sequences: &[CommitSequence],
+    ) -> Result<(), ApplicationCommitNotificationError> {
+        for sequence in sequences {
+            self.authoritative.publish_first_commit(*sequence)?;
+        }
+        if !sequences.is_empty() {
+            self.outbox.refresh(&self.storage);
+        }
         Ok(())
     }
 }

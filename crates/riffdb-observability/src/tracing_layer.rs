@@ -14,8 +14,8 @@ use riffdb_auth::{AuthenticationDefect, AuthenticationRejection};
 use riffdb_catalog::CatalogTelemetryEvent;
 use riffdb_commit::{
     CommandExecutionErrorKind, CommitCallTerminal, CommitCommandTerminal,
-    CommitIdempotencyObservation, CommitTelemetryEvent, CommitUncertaintyResolution,
-    CommitUncertaintyStage,
+    CommitGroupDispatchReason, CommitIdempotencyObservation, CommitTelemetryEvent,
+    CommitUncertaintyResolution, CommitUncertaintyStage,
 };
 use riffdb_conflict::ConflictEventKind;
 use riffdb_policy::{AuthorizationDefect, PolicyCode};
@@ -265,6 +265,12 @@ impl TraceRecord {
 
     pub(crate) const fn commit(event: CommitTelemetryEvent) -> Self {
         let (detail_tag, value) = match event {
+            CommitTelemetryEvent::CommandGroupDispatched {
+                reason, elapsed, ..
+            } => (
+                70 + commit_group_dispatch_reason_tag(reason),
+                saturating_duration_microseconds(elapsed),
+            ),
             CommitTelemetryEvent::StorageQueueCompleted {
                 ingress, elapsed, ..
             } => (ingress.tag(), saturating_duration_microseconds(elapsed)),
@@ -888,6 +894,15 @@ const fn catalog_event_tag(event: CatalogTelemetryEvent) -> u8 {
         CatalogTelemetryEvent::NotificationDelivered => 3,
         CatalogTelemetryEvent::NotificationFailed => 4,
         CatalogTelemetryEvent::NoCatalogChange => 5,
+    }
+}
+
+const fn commit_group_dispatch_reason_tag(reason: CommitGroupDispatchReason) -> u8 {
+    match reason {
+        CommitGroupDispatchReason::Full => 1,
+        CommitGroupDispatchReason::Barrier => 2,
+        CommitGroupDispatchReason::WindowElapsed => 3,
+        CommitGroupDispatchReason::ReceiverClosed => 4,
     }
 }
 

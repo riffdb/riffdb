@@ -73,9 +73,33 @@ pub enum CommitIdempotencyObservation {
     Mismatch,
 }
 
+/// Closed reason the coordinator stopped filling one command group.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CommitGroupDispatchReason {
+    /// The maximum safe command count was selected.
+    Full,
+    /// A non-deferrable message fixed the ordering boundary.
+    Barrier,
+    /// The bounded oldest-item collection window elapsed.
+    WindowElapsed,
+    /// Every sender was closed while the actor drained accepted work.
+    ReceiverClosed,
+}
+
 /// One closed semantic observation from the sole-writer command path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommitTelemetryEvent {
+    /// The scheduler dispatched one ordered command group.
+    CommandGroupDispatched {
+        /// Closed reason collection stopped.
+        reason: CommitGroupDispatchReason,
+        /// Commands selected into the group.
+        selected: u16,
+        /// Accepted messages retained in actor-local order after selection.
+        deferred: u16,
+        /// Time spent collecting after receiving the oldest groupable command.
+        elapsed: Duration,
+    },
     /// An accepted command reached the actor after waiting in the bounded queue.
     StorageQueueCompleted {
         /// Exact command identity from the checked executable-plan reference.

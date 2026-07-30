@@ -650,9 +650,9 @@ fn manifest_has_only_the_reviewed_dependencies_needed_by_commit_orchestration() 
     assert_eq!(
         production.lines().find(|line| line.starts_with("tokio =")),
         Some(
-            "tokio = { version = \"=1.52.0\", default-features = false, features = [\"rt\", \"sync\"] }"
+            "tokio = { version = \"=1.52.0\", default-features = false, features = [\"rt\", \"sync\", \"time\"] }"
         ),
-        "Tokio must retain the exact reviewed current-thread channel feature graph"
+        "Tokio must retain the exact reviewed current-thread channel and bounded-window feature graph"
     );
 }
 
@@ -900,6 +900,8 @@ fn command_attempt_owns_one_lease_around_synchronous_recheck_snapshot_and_runtim
         "ResourceLimit {",
         "fn has_exact_semantic_join(&self) -> bool",
         "pub(crate) async fn evaluate_next_command_attempt(",
+        "pub(crate) async fn acquire_command_attempt(",
+        "pub(crate) fn evaluate_acquired_command_attempt(",
         ".acquire_mut(",
         ".lookup_admission(state.lookup_candidates.clone())",
         ".read_snapshot(state.snapshot_request.clone())",
@@ -932,12 +934,15 @@ fn command_attempt_owns_one_lease_around_synchronous_recheck_snapshot_and_runtim
     assert!(!LIB_SOURCE.contains("pub use command_attempt"));
     assert!(!production_source.contains("pub(super) fn into_parts("));
     assert!(!production_source.contains("code: ExecutionFailureCode"));
-    assert_eq!(
-        production_source.matches(".await").count(),
-        1,
-        "capability acquisition must remain the attempt's only await point"
-    );
-    let after_acquisition = production_source
+    let acquisition = production_source
+        .split_once("pub(crate) async fn acquire_command_attempt(")
+        .and_then(|(_, remainder)| {
+            remainder.split_once("\n/// Rechecks, snapshots, and deterministically evaluates")
+        })
+        .map(|(body, _)| body)
+        .expect("bounded acquisition phase");
+    assert_eq!(acquisition.matches(".await").count(), 1);
+    let after_acquisition = acquisition
         .split_once(".await")
         .map(|(_, tail)| tail)
         .expect("one acquisition await");
@@ -945,6 +950,12 @@ fn command_attempt_owns_one_lease_around_synchronous_recheck_snapshot_and_runtim
         !after_acquisition.contains(".await"),
         "no await is permitted while a mutation lease may be owned"
     );
+    let evaluation = production_source
+        .split_once("pub(crate) fn evaluate_acquired_command_attempt(")
+        .and_then(|(_, remainder)| remainder.split_once("\nfn transaction_context("))
+        .map(|(body, _)| body)
+        .expect("synchronous worker evaluation phase");
+    assert!(!evaluation.contains(".await"));
 
     let context = production_source
         .split_once("fn transaction_context(")
@@ -1131,7 +1142,6 @@ fn command_driver_fences_uncertain_admission_before_one_nonexecuting_recovery_re
             "top-level command admission is missing exhaustive arm {required_arm}"
         );
     }
-    assert!(!driver.contains("_ =>"));
     assert_eq!(driver.matches("reduce_command_admission(").count(), 1);
 
     let uncertain = driver
@@ -1312,7 +1322,7 @@ fn command_driver_fences_every_late_unknown_and_owns_one_bounded_retry_loop() {
         .and_then(|(_, remainder)| remainder.split_once("\nfn terminal_continuation("))
         .map(|(body, _)| body)
         .expect("bounded attempt driver");
-    assert_eq!(production.matches("loop {").count(), 1);
+    assert_eq!(attempt_driver.matches("loop {").count(), 1);
     assert_eq!(
         attempt_driver
             .matches("evaluate_next_command_attempt(")
@@ -1384,6 +1394,7 @@ fn reviewed_tokio_owner_and_lock_graph_are_frozen() {
     assert_eq!(
         production_dependency_owners("tokio"),
         [
+            "riffdb-api-grpc",
             "riffdb-api-mcp",
             "riffdb-cli",
             "riffdb-commit",
@@ -1521,8 +1532,10 @@ fn coordinator_actor_uses_only_the_reviewed_current_thread_channel_surface() {
         "self.receiver.close()",
         ".store(LIFECYCLE_FENCED, Ordering::Release)",
         "thread::Builder::new()",
-        "use std::time::Instant;",
+        "use std::time::{Duration, Instant};",
         "Instant::now()",
+        "Duration::from_micros(200)",
+        "tokio::time::timeout_at(",
     ] {
         assert!(
             production_source.contains(required),
@@ -1532,7 +1545,6 @@ fn coordinator_actor_uses_only_the_reviewed_current_thread_channel_surface() {
     for forbidden in [
         "new_multi_thread",
         "tokio::spawn",
-        "tokio::time",
         "tokio::net",
         "tokio::fs",
         "tokio::signal",

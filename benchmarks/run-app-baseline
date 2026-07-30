@@ -6,7 +6,7 @@ export TZ=UTC
 
 usage() {
     printf '%s\n' \
-        'usage: benchmarks/run-app-baseline [--smoke|--full] [--samples N] [--warmup N] [--assert-write-parity] [--skip-postgres] [--skip-riffdb]' >&2
+        'usage: benchmarks/run-app-baseline [--smoke|--full] [--samples N] [--warmup N] [--concurrent-clients N] [--concurrent-operations N] [--output PATH] [--assert-write-parity|--assert-all-parity] [--skip-postgres] [--skip-riffdb]' >&2
     exit 2
 }
 
@@ -19,6 +19,10 @@ warmup=
 skip_postgres=0
 skip_riffdb=0
 assert_write_parity=0
+assert_all_parity=0
+concurrent_clients=
+concurrent_operations=
+output=
 while (($#)); do
     case "$1" in
         --smoke) mode=smoke; shift ;;
@@ -33,16 +37,32 @@ while (($#)); do
             warmup="$2"
             shift 2
             ;;
+        --concurrent-clients)
+            (($# >= 2)) || usage
+            concurrent_clients="$2"
+            shift 2
+            ;;
+        --concurrent-operations)
+            (($# >= 2)) || usage
+            concurrent_operations="$2"
+            shift 2
+            ;;
+        --output)
+            (($# >= 2)) || usage
+            output="$2"
+            shift 2
+            ;;
         --skip-postgres) skip_postgres=1; shift ;;
         --skip-riffdb) skip_riffdb=1; shift ;;
         --assert-write-parity) assert_write_parity=1; shift ;;
+        --assert-all-parity) assert_all_parity=1; shift ;;
         *) usage ;;
     esac
 done
 
 out_dir=target/app-baseline
 mkdir -p "$out_dir"
-report="$repo_root/$out_dir/report-v1.json"
+report="${output:-$repo_root/$out_dir/report-v1.json}"
 
 postgres_container="riffdb-app-baseline-$$"
 postgres_started=0
@@ -61,9 +81,12 @@ else
 fi
 [[ -n "$samples" ]] && extra_args+=(--samples "$samples")
 [[ -n "$warmup" ]] && extra_args+=(--warmup "$warmup")
+[[ -n "$concurrent_clients" ]] && extra_args+=(--concurrent-clients "$concurrent_clients")
+[[ -n "$concurrent_operations" ]] && extra_args+=(--concurrent-operations "$concurrent_operations")
 ((skip_postgres)) && extra_args+=(--skip-postgres)
 ((skip_riffdb)) && extra_args+=(--skip-riffdb)
 ((assert_write_parity)) && extra_args+=(--assert-write-parity)
+((assert_all_parity)) && extra_args+=(--assert-all-parity)
 
 if ((skip_postgres == 0)); then
     if [[ -z "${RIFFDB_APP_BASELINE_POSTGRES_URL:-}" ]]; then

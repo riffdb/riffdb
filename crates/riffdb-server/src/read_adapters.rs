@@ -203,6 +203,8 @@ impl QueryModulePlanCache {
 
 /// Catalog-owned semantic reads driven on the retained blocking worker set.
 pub(crate) struct ServerCatalogReadPort {
+    active_storage: SharedRedbOperationalPorts,
+    active_cache: Arc<Mutex<ActiveCatalogView>>,
     active: BlockingPortExecutor<(), Option<ActiveCatalogSnapshot>, CatalogError>,
     contract_version:
         BlockingPortExecutor<ContractVersionRequest, Option<ValidatedContractBundle>, CatalogError>,
@@ -225,9 +227,11 @@ impl ServerCatalogReadPort {
     pub(crate) fn new(storage: SharedRedbOperationalPorts, driver: &BlockingPortDriver) -> Self {
         let active_cache = Arc::new(Mutex::new(ActiveCatalogView::default()));
         let active_storage = storage.clone();
-        let active_view = Arc::clone(&active_cache);
-        let active =
-            driver.executor(move |()| read_active_catalog_cached(&active_storage, &active_view));
+        let reserved_active_storage = storage.clone();
+        let reserved_active_cache = Arc::clone(&active_cache);
+        let active = driver.executor(move |()| {
+            read_active_catalog_cached(&reserved_active_storage, &reserved_active_cache)
+        });
 
         let historical = Arc::new(Mutex::new(HistoricalContractView::default()));
         let version_storage = storage.clone();
@@ -333,6 +337,8 @@ impl ServerCatalogReadPort {
         );
 
         Self {
+            active_storage,
+            active_cache,
             active,
             contract_version,
             executable_plan,
@@ -345,9 +351,10 @@ impl ServerCatalogReadPort {
 impl CatalogReadPort for ServerCatalogReadPort {
     fn prepare_active_catalog(
         &self,
-        control: &RequestControl,
+        _control: &RequestControl,
     ) -> PortFuture<'_, Option<ActiveCatalogSnapshot>, CatalogError> {
-        submit_catalog(self.active.reserve(control), ())
+        let result = read_active_catalog_cached(&self.active_storage, &self.active_cache);
+        Box::pin(async move { result })
     }
 
     fn prepare_contract_version(

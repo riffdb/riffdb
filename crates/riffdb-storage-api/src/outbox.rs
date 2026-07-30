@@ -1030,6 +1030,20 @@ pub enum OutboxStatusReadResultV1 {
 
 /// Specialized synchronous derived delivery-state repository.
 pub trait OutboxRepository {
+    /// Returns whether any reciprocal authoritative intent remains undelivered.
+    ///
+    /// The default uses the bounded status scan. Stores with an exact
+    /// commit-coupled transient membership index may answer without reopening
+    /// and decoding the authoritative rows.
+    fn has_undelivered_outbox(&self) -> Result<bool, StorageError> {
+        let limit = OutboxPageLimit::new(std::num::NonZeroU16::MIN)
+            .map_err(|_| StorageError::new(crate::StorageErrorKind::InvariantViolation, None))?;
+        self.scan_undelivered_outbox_statuses(UndeliveredOutboxStatusScanRequestV1::initial(
+            None, limit,
+        ))
+        .map(|page| !page.items().is_empty())
+    }
+
     /// Reads exact status only after proving the authoritative intent exists.
     fn read_outbox_status(
         &self,

@@ -2006,19 +2006,18 @@ fn deploy_preparation_cancellation_and_panic_each_select_one_terminal() {
 }
 
 #[test]
-fn execute_and_revoke_panics_after_intrinsic_classification_append_standalone_failed() {
+fn active_execute_uses_its_exact_snapshot_while_revoke_panics_remain_contained() {
     run_async(async move {
         let mut command = ServiceHarness::command();
         command.panic_executable_plan_resolution();
-        let (context, _cancellation) = command.context(0x67);
-        let failure = command
-            .service
-            .execute_command(context, command.execute_command_request())
-            .await
-            .expect_err("plan-resolution panic after mutation classification is contained");
-        assert_internal_with_incident(&failure);
+        let committed = execute_journaled(&command, 0x67).await;
+        assert_eq!(committed.completion(), JournaledCompletion::Committed);
         command.stop_coordinator();
-        assert_eq!(command.audit_phases(0x67), [ServiceAuditPhaseV1::Failed]);
+        assert_eq!(
+            command.audit_phases(0x67),
+            [ServiceAuditPhaseV1::Started, ServiceAuditPhaseV1::Succeeded],
+            "the exact active snapshot carries the plan without a second lower lookup"
+        );
 
         let mut revoke_read = ServiceHarness::new(ReadCommitMode::ImmediateNotFound, true);
         revoke_read.panic_revoke_target_read();

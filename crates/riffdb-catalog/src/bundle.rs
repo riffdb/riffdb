@@ -1,6 +1,6 @@
 //! Checked immutable bundles and exact executable-plan resolution.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ use riffdb_contract_ir::{
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, CatalogRepository, ExecutablePlanRef, StoredContractBundleV1,
 };
-use riffdb_types::{ContractBundleHash, ContractLineage, ContractVersion};
+use riffdb_types::{CommandId, ContractBundleHash, ContractLineage, ContractVersion, PlanHash};
 
 use crate::lineage::LineageMaterializationProof;
 use crate::{CatalogError, CatalogErrorKind};
@@ -109,7 +109,7 @@ impl ValidatedContractBundle {
             .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
         Ok(ResolvedExecutablePlan {
             reference: reference.clone(),
-            plan: plan.clone(),
+            plan: Arc::new(plan.clone()),
             bundle: self.clone(),
             lineage_proof,
             executing_ordinal,
@@ -133,7 +133,7 @@ impl fmt::Debug for ValidatedContractBundle {
 #[derive(Clone)]
 pub struct ResolvedExecutablePlan {
     reference: ExecutablePlanRef,
-    plan: CommandPlan,
+    plan: Arc<CommandPlan>,
     bundle: ValidatedContractBundle,
     lineage_proof: Arc<LineageMaterializationProof>,
     executing_ordinal: u16,
@@ -148,8 +148,8 @@ impl ResolvedExecutablePlan {
 
     /// Checked executable command plan.
     #[must_use]
-    pub const fn plan(&self) -> &CommandPlan {
-        &self.plan
+    pub fn plan(&self) -> &CommandPlan {
+        self.plan.as_ref()
     }
 
     /// Bundle whose canonical bytes own this plan.
@@ -188,6 +188,7 @@ pub struct ActiveCatalogSnapshot {
     pointer: ActiveCatalogPointerV1,
     bundle: ValidatedContractBundle,
     lineage_proof: Arc<LineageMaterializationProof>,
+    active_plans: Arc<BTreeMap<CommandId, Arc<CommandPlan>>>,
 }
 
 impl ActiveCatalogSnapshot {
@@ -207,10 +208,17 @@ impl ActiveCatalogSnapshot {
                 CatalogErrorKind::InvalidHistoricalEvidence,
             ));
         }
+        let active_plans = bundle
+            .bundle()
+            .commands()
+            .iter()
+            .map(|plan| (plan.command_id(), Arc::new(plan.clone())))
+            .collect();
         Ok(Some(Self {
             pointer,
             bundle,
             lineage_proof,
+            active_plans: Arc::new(active_plans),
         }))
     }
 
@@ -230,6 +238,8 @@ impl ActiveCatalogSnapshot {
         &self.lineage_proof
     }
 
+    /// Resolves one exact plan through this already validated active lineage
+    /// proof without rereading or redecoding the catalog.
     pub(crate) fn resolve_plan(
         &self,
         reference: &ExecutablePlanRef,
@@ -241,7 +251,34 @@ impl ActiveCatalogSnapshot {
                 reference.contract_bundle_hash(),
             )
             .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
+        if usize::from(ordinal) + 1 == self.lineage_proof.bundle_count()
+            && let Some(plan) = self.active_plans.get(&reference.command_id())
+            && plan.plan_hash() == reference.command_plan_hash()
+        {
+            return Ok(ResolvedExecutablePlan {
+                reference: reference.clone(),
+                plan: Arc::clone(plan),
+                bundle: bundle.clone(),
+                lineage_proof: Arc::clone(&self.lineage_proof),
+                executing_ordinal: ordinal,
+            });
+        }
         bundle.resolve_plan_with_proof(reference, Arc::clone(&self.lineage_proof), ordinal)
+    }
+
+    /// Resolves a command owned by this exact active bundle.
+    pub fn resolve_active_command(
+        &self,
+        command_id: CommandId,
+        command_plan_hash: PlanHash,
+    ) -> Result<ResolvedExecutablePlan, CatalogError> {
+        self.resolve_plan(&ExecutablePlanRef::new(
+            self.pointer.lineage().clone(),
+            self.pointer.contract_version(),
+            self.pointer.bundle_hash(),
+            command_id,
+            command_plan_hash,
+        ))
     }
 }
 

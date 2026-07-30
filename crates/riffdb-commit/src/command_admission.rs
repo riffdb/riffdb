@@ -396,16 +396,16 @@ where
                             AuditedAdmissionRequestV1::new(recheck, started)
                                 .map_err(crate::AdministrationAuditExecutionError::InvalidInput)
                         });
-                        outputs[index] = Some(match request {
-                            Ok(request) => {
-                                match repository.admit_or_resolve_audited_group(vec![request]) {
-                                    Ok(results) if results.len() == 1 => Ok(result),
-                                    Ok(_) => Err(CommandAdmissionError::Integrity),
-                                    Err(error) => Err(CommandAdmissionError::AdmissionWrite(error)),
-                                }
+                        match request {
+                            Ok(request) => audited.push((
+                                index,
+                                PreparedAuditedAdmission::Complete(Box::new(result)),
+                                request,
+                            )),
+                            Err(_) => {
+                                outputs[index] = Some(Err(CommandAdmissionError::Integrity));
                             }
-                            Err(_) => Err(CommandAdmissionError::Integrity),
-                        });
+                        }
                     }
                     (Some(_), None) => {
                         outputs[index] = Some(Err(CommandAdmissionError::Integrity));
@@ -423,7 +423,11 @@ where
                         AuditedAdmissionRequestV1::new(prepared.request.clone(), started)
                             .map_err(crate::AdministrationAuditExecutionError::InvalidInput)
                     }) {
-                        Ok(request) => audited.push((index, prepared, request)),
+                        Ok(request) => audited.push((
+                            index,
+                            PreparedAuditedAdmission::Vacant(prepared),
+                            request,
+                        )),
                         Err(_) => outputs[index] = Some(Err(CommandAdmissionError::Integrity)),
                     }
                 } else {
@@ -465,8 +469,13 @@ where
         match repository.admit_or_resolve_audited_group(requests) {
             Ok(results) if results.len() == audited.len() => {
                 for ((index, prepared, _), result) in audited.into_iter().zip(results) {
-                    let (admission, _) = result.into_parts();
-                    outputs[index] = Some(complete_vacant_admission(*prepared, admission, true));
+                    outputs[index] = Some(match prepared {
+                        PreparedAuditedAdmission::Vacant(prepared) => {
+                            let (admission, _) = result.into_parts();
+                            complete_vacant_admission(*prepared, admission, true)
+                        }
+                        PreparedAuditedAdmission::Complete(result) => Ok(*result),
+                    });
                 }
             }
             Ok(_) => {
@@ -476,8 +485,14 @@ where
             }
             Err(error) => {
                 for (index, prepared, _) in audited {
-                    outputs[index] =
-                        Some(Err(vacant_admission_write_error(*prepared, error.clone())));
+                    outputs[index] = Some(Err(match prepared {
+                        PreparedAuditedAdmission::Vacant(prepared) => {
+                            vacant_admission_write_error(*prepared, error.clone())
+                        }
+                        PreparedAuditedAdmission::Complete(_) => {
+                            CommandAdmissionError::AdmissionWrite(error.clone())
+                        }
+                    }));
                 }
             }
         }
@@ -576,6 +591,11 @@ struct PreparedVacantAdmission {
     recovery_candidates: IdempotencyLookupCandidatesV1,
     pending: StoredPendingAdmissionV1,
     execution_candidate: Box<CommandExecutionCandidate>,
+}
+
+enum PreparedAuditedAdmission {
+    Vacant(Box<PreparedVacantAdmission>),
+    Complete(Box<CommandAdmissionResult>),
 }
 
 fn prepare_command_admission_with_hash(

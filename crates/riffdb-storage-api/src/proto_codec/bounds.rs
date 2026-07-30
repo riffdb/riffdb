@@ -232,20 +232,30 @@ pub fn command_write_set_upper_bound_v1(
     let read_dependencies = storage_result(StoredReadDependenciesV1::from_live(
         evaluated.read_dependencies(),
     ))?;
+    let identity = identity_to_proto(pending.identity());
+    let plan = plan_to_proto(plan);
+    let canonical_input_hash = pending.canonical_input_hash().as_bytes().to_vec();
+    let actor = super::actor_to_proto(pending.actor());
+    let logical_time = timestamp_to_proto(pending.logical_time().timestamp());
+    let partition_hash = intent.partition_hash().as_bytes().to_vec();
+    let conflict_hashes = hashes_to_proto(intent.conflict_hashes());
+    let admitted_claims = claims_to_proto(pending.provenance_claims());
+    let admission_request_id = pending.admission_request_id().as_bytes().to_vec();
+    let provenance_id = intent.provenance_id().as_bytes().to_vec();
 
     let outcome = wire::StoredOutcomeV1 {
-        identity: Some(identity_to_proto(pending.identity())),
+        identity: Some(identity.clone()),
         commit_sequence: MAXIMUM_WIDTH_U64,
-        admission_request_id: pending.admission_request_id().as_bytes().to_vec(),
-        plan: Some(plan_to_proto(plan)),
-        canonical_input_hash: pending.canonical_input_hash().as_bytes().to_vec(),
-        actor: Some(super::actor_to_proto(pending.actor())),
-        logical_time: Some(timestamp_to_proto(pending.logical_time().timestamp())),
-        partition_hash: intent.partition_hash().as_bytes().to_vec(),
-        conflict_hashes: hashes_to_proto(intent.conflict_hashes()),
+        admission_request_id: admission_request_id.clone(),
+        plan: Some(plan.clone()),
+        canonical_input_hash: canonical_input_hash.clone(),
+        actor: Some(actor.clone()),
+        logical_time: Some(logical_time),
+        partition_hash: partition_hash.clone(),
+        conflict_hashes: conflict_hashes.clone(),
         declared_outcome: Some(declared_outcome_to_proto(evaluated.outcome())),
-        admitted_claims: Some(claims_to_proto(pending.provenance_claims())),
-        provenance_id: intent.provenance_id().as_bytes().to_vec(),
+        admitted_claims: Some(admitted_claims.clone()),
+        provenance_id: provenance_id.clone(),
         durability_mode: durability_to_proto(DurabilityMode::Memory),
         partition_key: pending.partition_key().as_bytes().to_vec(),
     };
@@ -257,30 +267,30 @@ pub fn command_write_set_upper_bound_v1(
         })
         .collect::<Vec<_>>();
     let provenance = wire::StoredProvenanceRecordV1 {
-        provenance_id: intent.provenance_id().as_bytes().to_vec(),
+        provenance_id: provenance_id.clone(),
         commit_sequence: MAXIMUM_WIDTH_U64,
-        identity: Some(identity_to_proto(pending.identity())),
-        admission_request_id: pending.admission_request_id().as_bytes().to_vec(),
-        plan: Some(plan_to_proto(plan)),
-        canonical_input_hash: pending.canonical_input_hash().as_bytes().to_vec(),
-        actor: Some(super::actor_to_proto(pending.actor())),
-        logical_time: Some(timestamp_to_proto(pending.logical_time().timestamp())),
-        partition_hash: intent.partition_hash().as_bytes().to_vec(),
-        conflict_hashes: hashes_to_proto(intent.conflict_hashes()),
+        identity: Some(identity),
+        admission_request_id: admission_request_id.clone(),
+        plan: Some(plan.clone()),
+        canonical_input_hash: canonical_input_hash.clone(),
+        actor: Some(actor.clone()),
+        logical_time: Some(logical_time),
+        partition_hash: partition_hash.clone(),
+        conflict_hashes: conflict_hashes.clone(),
         outcome_id: evaluated.outcome().outcome_id().get(),
         affected_entities,
         event_ids: event_ids.clone(),
-        admitted_claims: Some(claims_to_proto(pending.provenance_claims())),
+        admitted_claims: Some(admitted_claims),
     };
     let commit = wire::StoredCommitRecordV1 {
         commit_sequence: MAXIMUM_WIDTH_U64,
-        admission_request_id: pending.admission_request_id().as_bytes().to_vec(),
-        plan: Some(plan_to_proto(plan)),
-        canonical_input_hash: pending.canonical_input_hash().as_bytes().to_vec(),
-        actor: Some(super::actor_to_proto(pending.actor())),
-        logical_time: Some(timestamp_to_proto(pending.logical_time().timestamp())),
-        partition_hash: intent.partition_hash().as_bytes().to_vec(),
-        conflict_hashes: hashes_to_proto(intent.conflict_hashes()),
+        admission_request_id,
+        plan: Some(plan),
+        canonical_input_hash,
+        actor: Some(actor),
+        logical_time: Some(logical_time),
+        partition_hash,
+        conflict_hashes,
         read_dependencies: Some(dependencies_to_proto(&read_dependencies)),
         mutations: evaluated
             .mutations()
@@ -293,7 +303,7 @@ pub fn command_write_set_upper_bound_v1(
             .collect(),
         events: event_messages.clone(),
         declared_outcome: Some(declared_outcome_to_proto(evaluated.outcome())),
-        provenance_id: intent.provenance_id().as_bytes().to_vec(),
+        provenance_id,
         outbox_event_ids: event_ids,
         durability_mode: durability_to_proto(DurabilityMode::Memory),
     };

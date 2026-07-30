@@ -12,8 +12,9 @@ use riffdb_api_mcp::{
 };
 use riffdb_auth::{AuthenticationRejection, AuthenticationTelemetry, AuthenticationTelemetryEvent};
 use riffdb_commit::{
-    CommitCallTerminal, CommitCommandTerminal, CommitIdempotencyObservation, CommitTelemetry,
-    CommitTelemetryEvent, CommitUncertaintyResolution, CommitUncertaintyStage,
+    CommitCallTerminal, CommitCommandTerminal, CommitGroupDispatchReason,
+    CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
+    CommitUncertaintyResolution, CommitUncertaintyStage,
 };
 use riffdb_errors::{IncidentIdSource, IncidentIdSourceError, InternalError};
 use riffdb_observability::{
@@ -428,11 +429,24 @@ fn owner_adapters_map_closed_events_to_required_metrics_and_traces() {
     );
     CommitTelemetry::record(
         &observability,
+        CommitTelemetryEvent::CommandGroupDispatched {
+            reason: CommitGroupDispatchReason::Full,
+            selected: 64,
+            deferred: 3,
+            elapsed: Duration::from_micros(200),
+        },
+    );
+    CommitTelemetry::record(
+        &observability,
         CommitTelemetryEvent::StorageQueueCompleted {
             command_id: CommandId::first(),
             ingress: ServiceIngressKindV1::Grpc,
             elapsed: Duration::from_micros(11),
         },
+    );
+    assert_eq!(
+        observability.command_group_dispatch_snapshot(),
+        ([1, 0, 0, 0], 64, 3)
     );
     CommitTelemetry::record(
         &observability,
@@ -592,7 +606,7 @@ fn owner_adapters_map_closed_events_to_required_metrics_and_traces() {
             .iter()
             .filter(|kind| **kind == TraceKind::Commit)
             .count(),
-        5
+        6
     );
     assert_eq!(
         trace_kinds

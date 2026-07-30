@@ -22,7 +22,7 @@ use riffdb_storage_api::{
     ProvenanceIdCollision, ReadDependencies, ReadDependency, StagedBatchMetrics, StorageError,
     StorageErrorKind, StorageValueError, StoredAdmissionStateV1, StoredExecutionFailedV1,
     StoredPendingAdmissionV1, TransactionCurrentState, TransactionCurrentStateBuilder,
-    UniqueIndexOccupancy, UniqueOccupancyKind, ValidationReadRequest, derive_event_hash_v1,
+    UniqueIndexOccupancy, UniqueOccupancyKind, ValidationReadRequest,
     encode_atomic_command_record_set_v1,
 };
 use riffdb_types::ProvenanceId;
@@ -313,12 +313,32 @@ impl AdmissionRepository for RedbOperationalPorts {
         &self,
         candidates: IdempotencyLookupCandidatesV1,
     ) -> Result<AdmissionLookupResultV1, StorageError> {
-        let transaction = self.begin_read()?;
-        match matching_admissions(&transaction, &candidates)?.as_slice() {
-            [] => Ok(AdmissionLookupResultV1::NotFound),
-            [value] => Ok(AdmissionLookupResultV1::Found(Box::new(value.clone()))),
-            [_, ..] => Ok(AdmissionLookupResultV1::MultipleMatches),
+        let mut results = self.lookup_admission_group(vec![candidates])?;
+        results
+            .pop()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
+    }
+
+    fn lookup_admission_group(
+        &self,
+        candidates: Vec<IdempotencyLookupCandidatesV1>,
+    ) -> Result<Vec<AdmissionLookupResultV1>, StorageError> {
+        if candidates.is_empty()
+            || candidates.len() > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+        {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
+        let transaction = self.begin_read()?;
+        candidates
+            .iter()
+            .map(
+                |candidate| match matching_admissions(&transaction, candidate)?.as_slice() {
+                    [] => Ok(AdmissionLookupResultV1::NotFound),
+                    [value] => Ok(AdmissionLookupResultV1::Found(Box::new(value.clone()))),
+                    [_, ..] => Ok(AdmissionLookupResultV1::MultipleMatches),
+                },
+            )
+            .collect()
     }
 }
 
@@ -707,19 +727,6 @@ macro_rules! impl_candidate_chain {
                 {
                     return Err(storage_error(StorageErrorKind::InvariantViolation));
                 }
-                for event in records.events() {
-                    if derive_event_hash_v1(
-                        event.event_id(),
-                        event.event_type_id(),
-                        event.payload(),
-                    )
-                    .map_err(invariant_value)?
-                        != event.event_hash()
-                    {
-                        return Err(storage_error(StorageErrorKind::InvariantViolation));
-                    }
-                }
-
                 // Canonical encoding and the complete reservation proof precede
                 // every physical write for this candidate.
                 let encoded = encode_atomic_command_record_set_v1(&records).map_err(codec_error)?;

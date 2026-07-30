@@ -671,11 +671,34 @@ impl Error for CommandAttemptError {
 /// move-only lease remains bundled with every value that may proceed toward a
 /// durable transition and is released by drop on every replay or error path.
 pub(crate) async fn evaluate_next_command_attempt(
-    mut state: PendingCommandAttempts,
+    state: PendingCommandAttempts,
     admission: &dyn AdmissionRepository,
     snapshots: &dyn SnapshotReader,
     conflicts: &dyn ConflictManager,
 ) -> Result<CommandAttemptResolution, CommandAttemptError> {
+    let acquired = acquire_command_attempt(state, conflicts).await?;
+    evaluate_acquired_command_attempt(acquired, admission, snapshots)
+}
+
+/// One uniquely owned conflict grant acquired in stable admission order.
+pub(crate) struct AcquiredCommandAttempt {
+    state: PendingCommandAttempts,
+    lease: riffdb_conflict::MutationLease,
+}
+
+impl AcquiredCommandAttempt {
+    pub(crate) fn into_pending_without_evaluation(self) -> PendingCommandAttempts {
+        let Self { state, lease } = self;
+        drop(lease);
+        state
+    }
+}
+
+/// Acquires the compiler-derived conflict capability without reading state.
+pub(crate) async fn acquire_command_attempt(
+    state: PendingCommandAttempts,
+    conflicts: &dyn ConflictManager,
+) -> Result<AcquiredCommandAttempt, CommandAttemptError> {
     if state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1 {
         return Err(CommandAttemptError::RetryBudgetExhausted);
     }
@@ -691,6 +714,19 @@ pub(crate) async fn evaluate_next_command_attempt(
         .map_err(map_conflict_error)?;
 
     check_request_control(state.deadline, &state.cancellation)?;
+    Ok(AcquiredCommandAttempt { state, lease })
+}
+
+/// Rechecks, snapshots, and deterministically evaluates an acquired attempt.
+///
+/// This synchronous phase may run on a bounded preparation worker. It performs
+/// no authoritative write and returns the unique lease with its checked result.
+pub(crate) fn evaluate_acquired_command_attempt(
+    acquired: AcquiredCommandAttempt,
+    admission: &dyn AdmissionRepository,
+    snapshots: &dyn SnapshotReader,
+) -> Result<CommandAttemptResolution, CommandAttemptError> {
+    let AcquiredCommandAttempt { mut state, lease } = acquired;
     let durable = admission
         .lookup_admission(state.lookup_candidates.clone())
         .map_err(CommandAttemptError::PendingRecheck)?;
