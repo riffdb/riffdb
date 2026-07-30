@@ -24,6 +24,7 @@ use riffdb_storage_api::{
 use riffdb_types::{CanonicalRecord, ConflictKey, ExecutionFailureCode, ProvenanceId, RequestId};
 
 use crate::command_admission::CommandExecutionCandidate;
+use crate::command_preparation::AuditedCommandLifecycle;
 
 /// Maximum snapshot-materialization attempt slots in one outer invocation.
 pub(crate) const MAX_COMMAND_EVALUATION_ATTEMPTS_V1: usize = 3;
@@ -40,6 +41,7 @@ pub(crate) struct PendingCommandAttempts {
     invocation_request_id: RequestId,
     deadline: Instant,
     cancellation: CancellationToken,
+    audited_lifecycle: Option<AuditedCommandLifecycle>,
     completed_attempts: usize,
 }
 
@@ -60,6 +62,7 @@ impl PendingCommandAttempts {
             invocation_request_id,
             deadline,
             cancellation,
+            audited_lifecycle,
         ) = (*candidate).into_acquisition_parts();
         Ok(Self {
             resolved_plan,
@@ -71,6 +74,7 @@ impl PendingCommandAttempts {
             invocation_request_id,
             deadline,
             cancellation,
+            audited_lifecycle,
             completed_attempts: 0,
         })
     }
@@ -79,6 +83,10 @@ impl PendingCommandAttempts {
     #[allow(dead_code)] // Semantic-test inspection of the bounded retry state.
     pub(crate) const fn completed_attempts(&self) -> usize {
         self.completed_attempts
+    }
+
+    pub(crate) fn raw_conflict_keys(&self) -> &[ConflictKey] {
+        &self.raw_conflict_keys
     }
 }
 
@@ -123,6 +131,22 @@ pub(crate) struct EvaluatedCommandAttempt {
 }
 
 impl EvaluatedCommandAttempt {
+    /// Releases a completed, uncommitted evaluation back to its exact pending
+    /// retry state. This is used only when a compatible physical group must be
+    /// abandoned before any storage commit is attempted.
+    pub(super) fn into_pending_without_commit(self) -> PendingCommandAttempts {
+        let Self {
+            state,
+            lease,
+            snapshot,
+            evaluated,
+        } = self;
+        drop(evaluated);
+        drop(snapshot);
+        drop(lease);
+        state
+    }
+
     /// Rechecks advisory request control at the final pre-transaction safe point.
     pub(super) fn recheck_request_control(&self) -> Result<(), CommandAttemptError> {
         check_request_control(self.state.deadline, &self.state.cancellation)
@@ -146,6 +170,10 @@ impl EvaluatedCommandAttempt {
 
     pub(super) const fn evaluated(&self) -> &EvaluatedCommand {
         &self.evaluated
+    }
+
+    pub(super) fn audited_lifecycle(&self) -> Option<&AuditedCommandLifecycle> {
+        self.state.audited_lifecycle.as_ref()
     }
 
     /// Proves all independently checked values still belong to the one admitted
@@ -234,6 +262,10 @@ impl ProvenanceBoundCommandAttempt {
 
     pub(super) const fn lookup_candidates(&self) -> &IdempotencyLookupCandidatesV1 {
         &self.attempt.state.lookup_candidates
+    }
+
+    pub(super) fn audited_lifecycle(&self) -> Option<&AuditedCommandLifecycle> {
+        self.attempt.audited_lifecycle()
     }
 
     pub(super) fn has_exact_semantic_join(&self) -> bool {
@@ -1176,6 +1208,7 @@ contract AttemptMaterialization version {version} {{
             invocation_request_id: request_id(2),
             deadline: future_deadline(),
             cancellation: CancellationToken::new(),
+            audited_lifecycle: None,
             completed_attempts: 0,
         }
     }
@@ -1301,6 +1334,7 @@ contract AttemptMaterialization version {version} {{
                 invocation_request_id: request_id(2),
                 deadline: future_deadline(),
                 cancellation: CancellationToken::new(),
+                audited_lifecycle: None,
                 completed_attempts: 0,
             },
             snapshot,

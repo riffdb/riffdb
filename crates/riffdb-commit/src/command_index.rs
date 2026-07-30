@@ -386,6 +386,18 @@ enum RetainedCheckedAttemptAuthority {
 }
 
 impl RetainedCheckedCommitCandidate {
+    pub(super) fn audited_lifecycle(
+        &self,
+    ) -> Option<&crate::command_preparation::AuditedCommandLifecycle> {
+        match &self.authority {
+            RetainedCheckedAttemptAuthority::Validated(checked) => {
+                checked.attempt().audited_lifecycle()
+            }
+            #[cfg(test)]
+            RetainedCheckedAttemptAuthority::Fixture { .. } => None,
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn entry_mutations(&self) -> &[IndexEntryMutationV1] {
         &self.entry_mutations
@@ -446,6 +458,12 @@ impl RetainedCheckedCommitCandidate {
             #[cfg(test)]
             RetainedCheckedAttemptAuthority::Fixture { .. } => Err(()),
         }
+    }
+
+    /// Releases retained semantic evidence after the enclosing uncommitted
+    /// storage batch has been rolled back.
+    pub(super) fn into_pending_after_group_rollback(self) -> Result<PendingCommandAttempts, ()> {
+        self.into_pending_after_proven_noncommit()
     }
 
     #[cfg(test)]

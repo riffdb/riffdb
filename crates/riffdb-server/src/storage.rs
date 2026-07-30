@@ -11,7 +11,8 @@ use riffdb_query_ir::QueryAccessProgramV1;
 use riffdb_service::{AuthoritativeReadinessFailure, ServiceHealthHooks};
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1,
-    AdmissionResultV1, ApplicationCommandTransactionPort, AuthoritativeIndexScanPage,
+    AdmissionResultV1, ApplicationCommandTransactionPort, AuditedAdmissionRepository,
+    AuditedAdmissionRequestV1, AuditedAdmissionResultV1, AuthoritativeIndexScanPage,
     AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader,
     CapabilityAdministrationTransactionPort, CapabilityBootstrapAdministrationRepository,
     CapabilityBootstrapIntentV1, CapabilityBootstrapResult, CapabilityCreateAwaitingDecision,
@@ -435,12 +436,31 @@ impl AdmissionRepository for SharedRedbOperationalPorts {
             .with_ref(|ports| AdmissionRepository::admit_or_resolve(ports, request))
     }
 
+    fn admit_or_resolve_group(
+        &self,
+        requests: Vec<AdmissionRequestV1>,
+    ) -> Result<Vec<AdmissionResultV1>, StorageError> {
+        self.cell
+            .with_ref(|ports| AdmissionRepository::admit_or_resolve_group(ports, requests))
+    }
+
     fn lookup_admission(
         &self,
         candidates: IdempotencyLookupCandidatesV1,
     ) -> Result<AdmissionLookupResultV1, StorageError> {
         self.cell
             .with_ref(|ports| AdmissionRepository::lookup_admission(ports, candidates))
+    }
+}
+
+impl AuditedAdmissionRepository for SharedRedbOperationalPorts {
+    fn admit_or_resolve_audited_group(
+        &self,
+        requests: Vec<AuditedAdmissionRequestV1>,
+    ) -> Result<Vec<AuditedAdmissionResultV1>, StorageError> {
+        self.cell.with_ref(|ports| {
+            AuditedAdmissionRepository::admit_or_resolve_audited_group(ports, requests)
+        })
     }
 }
 
@@ -480,6 +500,15 @@ impl ServiceAuditAppendRepository for SharedRedbOperationalPorts {
     ) -> Result<ServiceAuditAppendResult, StorageError> {
         self.cell
             .with_mut(|ports| ServiceAuditAppendRepository::append_service_audit(ports, intent))
+    }
+
+    fn append_service_audit_group(
+        &mut self,
+        intents: &[ServiceAuditAppendIntentV1],
+    ) -> Result<Vec<ServiceAuditAppendResult>, StorageError> {
+        self.cell.with_mut(|ports| {
+            ServiceAuditAppendRepository::append_service_audit_group(ports, intents)
+        })
     }
 }
 

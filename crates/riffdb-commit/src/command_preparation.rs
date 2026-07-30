@@ -9,8 +9,11 @@ use riffdb_idempotency::PreparedIdempotencyRecheckV1;
 use riffdb_invariant::InputDerivedCommandFacts;
 use riffdb_policy::{AuthorizedCommandExecution, CommandExecutionClass};
 use riffdb_types::{
-    CanonicalRecord, CommandId, DatabaseId, Environment, RequestId, ServiceIngressKindV1,
+    CanonicalRecord, CommandId, DatabaseId, Environment, RequestId, ServiceAuditLinkV1,
+    ServiceAuditPhaseV1, ServiceIngressKindV1, ServiceOperationV1,
 };
+
+use crate::AdministrationAuditInputView;
 
 /// Cloneable process-local authority to cancel one command request.
 ///
@@ -142,6 +145,18 @@ pub struct CommandExecutionPreparation {
     request_id: RequestId,
     ingress: ServiceIngressKindV1,
     control: CommandRequestControl,
+    audited_lifecycle: Option<AuditedCommandLifecycle>,
+}
+
+pub(crate) struct AuditedCommandLifecycle {
+    pub(crate) started: Box<dyn AdministrationAuditInputView>,
+    pub(crate) release: CompleteOutcomeReleaseProof,
+}
+
+/// Private compiler-and-policy-owned proof that a successful command response
+/// needs no post-commit policy or size decision.
+pub(crate) struct CompleteOutcomeReleaseProof {
+    _private: (),
 }
 
 impl CommandExecutionPreparation {
@@ -215,7 +230,35 @@ impl CommandExecutionPreparation {
             request_id,
             ingress,
             control,
+            audited_lifecycle: None,
         })
+    }
+
+    /// Attaches the exact service start record after the final policy allow.
+    ///
+    /// The complete-outcome proof is minted only from the same resolved plan
+    /// and authorization already sealed into this preparation.
+    pub fn with_audited_lifecycle(
+        mut self,
+        started: Box<dyn AdministrationAuditInputView>,
+    ) -> Result<Self, CommandExecutionPreparationError> {
+        if self.audited_lifecycle.is_some()
+            || started.request_id() != &self.request_id
+            || started.operation() != &ServiceOperationV1::ExecuteCommand
+            || started.phase() != &ServiceAuditPhaseV1::Started
+            || started.link() != &ServiceAuditLinkV1::None
+            || started.principal_id() != self.authorization.actor().principal_id()
+            || *started.actor_kind() != self.authorization.actor().actor_kind()
+            || started.approval_id() != self.authorization.provenance().approval_id()
+            || self.resolved_plan.plan().outcomes().is_empty()
+        {
+            return Err(CommandExecutionPreparationError::proof_mismatch());
+        }
+        self.audited_lifecycle = Some(AuditedCommandLifecycle {
+            started,
+            release: CompleteOutcomeReleaseProof { _private: () },
+        });
+        Ok(self)
     }
 
     pub(crate) fn telemetry_identity(&self) -> (CommandId, ServiceIngressKindV1) {
@@ -234,6 +277,7 @@ impl CommandExecutionPreparation {
             request_id: self.request_id,
             deadline,
             cancellation,
+            audited_lifecycle: self.audited_lifecycle,
         }
     }
 }
@@ -254,6 +298,7 @@ pub(crate) struct CommandExecutionPreparationParts {
     pub(crate) request_id: RequestId,
     pub(crate) deadline: Instant,
     pub(crate) cancellation: CancellationToken,
+    pub(crate) audited_lifecycle: Option<AuditedCommandLifecycle>,
 }
 
 #[cfg(test)]

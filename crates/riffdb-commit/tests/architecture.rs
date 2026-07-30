@@ -538,9 +538,11 @@ fn durable_graph_construction_requires_checked_input_and_retains_attempt_through
         "StatusUnknown(Box<UncertainCommandCommit>)",
         "pub(super) struct UncertainCommandCommit",
         "lookup_candidates: IdempotencyLookupCandidatesV1",
-        "pub(super) fn commit(self) -> CheckedCommandCommitResult",
-        "let result = staged.commit(durability_mode)",
-        "finish_checked_commit(candidate, expected_outcome, durability_mode, result)",
+        "pub(super) fn commit(\n        self,",
+        "pub(super) fn commit_group(",
+        ".commit_with_service_audits(durability_mode, terminals)",
+        "None => staged.commit(durability_mode)",
+        "finish_checked_commit(",
         "batch.outcomes() == std::slice::from_ref(&expected_outcome)",
         "CheckedCommandCommitResult::StatusUnknown(Box::new(UncertainCommandCommit",
         "pub(super) fn resolve_uncertain_command_commit(",
@@ -578,10 +580,7 @@ fn durable_graph_construction_requires_checked_input_and_retains_attempt_through
     );
     let stage_transition = production
         .split_once("let (staged, candidate) = match candidate.stage(records)")
-        .and_then(|(_, rest)| {
-            rest.split_once("\n    Ok(CheckedStagedCommand")
-                .map(|(body, _)| body)
-        })
+        .and_then(|(_, rest)| rest.split_once("\n    Ok((").map(|(body, _)| body))
         .expect("checked stage transition");
     assert!(stage_transition.contains("StorageErrorKind::CommitStatusUnknown"));
     assert!(stage_transition.contains("CheckedCommandStageError::InternalDefect"));
@@ -1304,8 +1303,8 @@ fn command_driver_fences_every_late_unknown_and_owns_one_bounded_retry_loop() {
         production
             .matches("::StatusUnknown(uncertain) => {")
             .count(),
-        2,
-        "only the two post-admission durable transitions may become status-unknown"
+        3,
+        "single and grouped completion plus execution-failure transitions may become status-unknown"
     );
 
     let attempt_driver = production

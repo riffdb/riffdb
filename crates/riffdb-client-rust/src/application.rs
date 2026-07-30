@@ -1,9 +1,10 @@
 //! Name-addressed application requests that hide the kernel wire model.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;
 
+use futures_util::{StreamExt, stream};
 use riffdb_errors::{ApplicationError, ApplicationErrorContext, ApplicationOperation};
 use riffdb_proto::{app::v1 as app_v1, v1};
 use tonic::transport::{Channel, Endpoint};
@@ -118,7 +119,166 @@ impl StableApplicationClient {
             outcome_uri: response.outcome_uri,
         })
     }
+
+    /// Executes a bounded collection of ordinary generated commands with
+    /// backpressure and independently ordered per-item results.
+    pub async fn execute_generated_command_batch<C>(
+        &self,
+        commands: Vec<C>,
+        options: GeneratedBatchOptions,
+        attempts: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<GeneratedBatchResult<C::Outcome>, GeneratedBatchError>
+    where
+        C: GeneratedCommand + Clone,
+    {
+        self.execute_generated_command_batch_with_progress(
+            commands,
+            options,
+            attempts,
+            metadata,
+            |_| {},
+        )
+        .await
+    }
+
+    /// Executes a bounded generated-command batch and reports completion plus
+    /// the largest contiguous, safely resumable input checkpoint.
+    pub async fn execute_generated_command_batch_with_progress<C, F>(
+        &self,
+        commands: Vec<C>,
+        options: GeneratedBatchOptions,
+        attempts: AttemptBudget,
+        metadata: &CallMetadata,
+        mut report_progress: F,
+    ) -> Result<GeneratedBatchResult<C::Outcome>, GeneratedBatchError>
+    where
+        C: GeneratedCommand + Clone,
+        F: FnMut(GeneratedBatchProgress),
+    {
+        options.validate(commands.len())?;
+        let total = commands.len();
+        let concurrency = options.concurrency;
+        let mut pending = stream::iter(
+            commands
+                .into_iter()
+                .enumerate()
+                .skip(options.checkpoint)
+                .map(|(index, command)| {
+                    let mut client = self.clone();
+                    let metadata = metadata.clone();
+                    async move {
+                        let result = client
+                            .execute_generated_command(&command, attempts, &metadata)
+                            .await;
+                        (index, result)
+                    }
+                }),
+        )
+        .buffer_unordered(concurrency);
+        let mut items = Vec::with_capacity(total - options.checkpoint);
+        let mut completed = options.checkpoint;
+        let mut checkpoint = options.checkpoint;
+        let mut completed_after_checkpoint = BTreeSet::new();
+        while let Some((index, result)) = pending.next().await {
+            completed += 1;
+            completed_after_checkpoint.insert(index);
+            while completed_after_checkpoint.remove(&checkpoint) {
+                checkpoint += 1;
+            }
+            items.push(GeneratedBatchItem { index, result });
+            report_progress(GeneratedBatchProgress {
+                completed,
+                total,
+                checkpoint,
+            });
+        }
+        items.sort_by_key(|item| item.index);
+        Ok(GeneratedBatchResult { items, checkpoint })
+    }
 }
+
+/// Bounds for generated command batches.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GeneratedBatchOptions {
+    /// Maximum simultaneously in-flight ordinary command calls.
+    pub concurrency: usize,
+    /// Contiguous input prefix already represented by a retained checkpoint.
+    pub checkpoint: usize,
+}
+
+impl GeneratedBatchOptions {
+    /// Constructs a checked batch policy.
+    pub fn new(concurrency: usize) -> Result<Self, GeneratedBatchError> {
+        let value = Self {
+            concurrency,
+            checkpoint: 0,
+        };
+        value.validate(1)?;
+        Ok(value)
+    }
+
+    /// Resumes after a previously reported contiguous input checkpoint.
+    #[must_use]
+    pub const fn with_checkpoint(mut self, checkpoint: usize) -> Self {
+        self.checkpoint = checkpoint;
+        self
+    }
+
+    fn validate(self, item_count: usize) -> Result<(), GeneratedBatchError> {
+        if self.concurrency == 0
+            || self.concurrency > 32
+            || item_count == 0
+            || item_count > 4_096
+            || self.checkpoint > item_count
+        {
+            return Err(GeneratedBatchError::InvalidBounds);
+        }
+        Ok(())
+    }
+}
+
+/// One independently completed generated command at its stable input offset.
+pub struct GeneratedBatchItem<T> {
+    /// Zero-based position in the complete input collection.
+    pub index: usize,
+    /// Typed command result or its independent public execution failure.
+    pub result: Result<TypedCommandResult<T>, GeneratedExecutionError>,
+}
+
+/// Bounded progress safe to persist without command inputs or outcomes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GeneratedBatchProgress {
+    /// Number of inputs covered by the initial checkpoint or completed now.
+    pub completed: usize,
+    /// Total number of inputs in the bound collection.
+    pub total: usize,
+    /// Largest contiguous completed input prefix, safe for exact resume.
+    pub checkpoint: usize,
+}
+
+/// Stable per-item generated batch result and resumable item checkpoint.
+pub struct GeneratedBatchResult<T> {
+    /// Newly executed, input-ordered independent outcomes and original offsets.
+    pub items: Vec<GeneratedBatchItem<T>>,
+    /// Largest contiguous completed input prefix.
+    pub checkpoint: usize,
+}
+
+/// Failure before a generated batch can submit any item.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GeneratedBatchError {
+    /// Item count or concurrency exceeded the public bounds.
+    InvalidBounds,
+}
+
+impl fmt::Display for GeneratedBatchError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("generated command batch bounds are invalid")
+    }
+}
+
+impl std::error::Error for GeneratedBatchError {}
 
 /// A bounded application value addressed only by contract names.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1017,5 +1177,36 @@ mod tests {
             ),
             Err(ApplicationClientError::InvalidResponse)
         ));
+    }
+
+    #[test]
+    fn generated_batch_bounds_and_resume_checkpoint_are_closed() {
+        let options = GeneratedBatchOptions::new(32)
+            .expect("maximum concurrency")
+            .with_checkpoint(4_096);
+        options.validate(4_096).expect("complete checkpoint");
+        assert_eq!(options.checkpoint, 4_096);
+
+        assert_eq!(
+            GeneratedBatchOptions::new(0),
+            Err(GeneratedBatchError::InvalidBounds)
+        );
+        assert_eq!(
+            GeneratedBatchOptions::new(33),
+            Err(GeneratedBatchError::InvalidBounds)
+        );
+        assert_eq!(
+            GeneratedBatchOptions::new(1)
+                .expect("options")
+                .with_checkpoint(2)
+                .validate(1),
+            Err(GeneratedBatchError::InvalidBounds)
+        );
+        assert_eq!(
+            GeneratedBatchOptions::new(1)
+                .expect("options")
+                .validate(4_097),
+            Err(GeneratedBatchError::InvalidBounds)
+        );
     }
 }

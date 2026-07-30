@@ -57,6 +57,28 @@ The checkpoint is also the stable receipt. It is replaced atomically after each
 completed item. A killed client may lose only knowledge of a completion, never
 the server's idempotency identity; replay recovers the already durable result.
 
+Generated Rust and TypeScript clients expose the same bounded policy for every
+symbolic command. Rust emits `create_ticket_batch(inputs, options)` and returns
+input-ordered independent item results plus a checkpoint. TypeScript emits
+`createTicketBatch(inputs, { concurrency, checkpoint })`; it uses a bounded
+worker pool and records either the typed result or the public error for each
+item. Both reject zero items, more than 4,096 items, and concurrency outside
+`1..=32` before submitting work.
+
+Both bindings report a monotonically increasing completed count and the largest
+contiguous input checkpoint. Completion may arrive out of order, but a reported
+checkpoint advances only after every earlier item has an independent result.
+Persist that checkpoint and pass it back when resuming; skipped inputs are never
+resubmitted, while any uncertain later item still retains its original
+idempotency key.
+
+Generated batch methods do not introduce a second protocol. They call the
+ordinary generated command method for every item, preserve the idempotency key
+already declared in each typed input, and never claim collection atomicity.
+Consequently the server may physically group compatible durable transitions
+while every caller still receives an independent outcome and uncertainty
+classification.
+
 ## Why this is not a server batch RPC
 
 The existing unary application-command protocol already multiplexes requests

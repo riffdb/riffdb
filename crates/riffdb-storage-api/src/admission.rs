@@ -2,8 +2,9 @@
 
 use crate::{
     IdempotencyIdentity, MAX_READABLE_DIGEST_KEYS, PreEvaluationCommitContext, ReadDependencies,
-    ReadSnapshot, StorageError, StorageValueError, StoredExecutionFailedV1, StoredOutcomeV1,
-    StoredPendingAdmissionV1, TransactionCurrentState, ValidationReadRequest,
+    ReadSnapshot, ServiceAuditAppendIntentV1, StorageError, StorageValueError,
+    StoredExecutionFailedV1, StoredOutcomeV1, StoredPendingAdmissionV1, StoredServiceAuditRecordV1,
+    TransactionCurrentState, ValidationReadRequest,
 };
 use riffdb_types::ExecutionFailureCode;
 
@@ -129,6 +130,99 @@ pub enum AdmissionResultV1 {
     InputMismatch,
     /// More than one digest candidate resolved to durable state.
     MultipleMatches,
+}
+
+/// One checked command admission paired with its mandatory `Started` audit.
+///
+/// Storage accepts this closed value rather than a transaction callback so the
+/// only compound transition available to callers is the reviewed
+/// audit-plus-idempotency admission operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuditedAdmissionRequestV1 {
+    admission: AdmissionRequestV1,
+    started: ServiceAuditAppendIntentV1,
+}
+
+impl AuditedAdmissionRequestV1 {
+    /// Joins an exact admission with one principal-authenticated start record.
+    pub fn new(
+        admission: AdmissionRequestV1,
+        started: ServiceAuditAppendIntentV1,
+    ) -> Result<Self, StorageValueError> {
+        if started.phase() != riffdb_types::ServiceAuditPhaseV1::Started
+            || started.link() != riffdb_types::ServiceAuditLinkV1::None
+            || started.principal().is_none()
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self { admission, started })
+    }
+
+    /// Borrows the exact idempotency admission.
+    #[must_use]
+    pub const fn admission(&self) -> &AdmissionRequestV1 {
+        &self.admission
+    }
+
+    /// Borrows the mandatory start audit.
+    #[must_use]
+    pub const fn started(&self) -> &ServiceAuditAppendIntentV1 {
+        &self.started
+    }
+
+    /// Consumes this compound request.
+    #[must_use]
+    pub fn into_parts(self) -> (AdmissionRequestV1, ServiceAuditAppendIntentV1) {
+        (self.admission, self.started)
+    }
+}
+
+/// Independent semantic result of one item in an audited admission group.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuditedAdmissionResultV1 {
+    admission: AdmissionResultV1,
+    started: StoredServiceAuditRecordV1,
+}
+
+impl AuditedAdmissionResultV1 {
+    /// Constructs a result only after both records committed atomically.
+    pub fn new(
+        admission: AdmissionResultV1,
+        started: StoredServiceAuditRecordV1,
+    ) -> Result<Self, StorageValueError> {
+        if started.phase() != riffdb_types::ServiceAuditPhaseV1::Started {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self { admission, started })
+    }
+
+    /// Borrows the independently resolved admission state.
+    #[must_use]
+    pub const fn admission(&self) -> &AdmissionResultV1 {
+        &self.admission
+    }
+
+    /// Borrows the durably appended start record.
+    #[must_use]
+    pub const fn started(&self) -> &StoredServiceAuditRecordV1 {
+        &self.started
+    }
+
+    /// Consumes the result.
+    #[must_use]
+    pub fn into_parts(self) -> (AdmissionResultV1, StoredServiceAuditRecordV1) {
+        (self.admission, self.started)
+    }
+}
+
+/// Closed compound repository for audited command admission.
+pub trait AuditedAdmissionRepository {
+    /// Atomically appends every `Started` row and resolves every corresponding
+    /// admission in FIFO order.
+    fn admit_or_resolve_audited_group(
+        &self,
+        requests: Vec<AuditedAdmissionRequestV1>,
+    ) -> Result<Vec<AuditedAdmissionResultV1>, StorageError>;
 }
 
 /// Narrow synchronous pending-admission repository.

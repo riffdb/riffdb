@@ -29,8 +29,10 @@ pub use riffdb_proto::v1;
 
 pub use application::{
     ApplicationCardinality, ApplicationClientError, ApplicationCommand, ApplicationCommandResult,
-    ApplicationContract, ApplicationRecord, ApplicationResultField, ApplicationValue, NamedQuery,
-    NamedQueryResult, QueryOptions, StableApplicationClient, TypedCommandResult, TypedQueryResult,
+    ApplicationContract, ApplicationRecord, ApplicationResultField, ApplicationValue,
+    GeneratedBatchError, GeneratedBatchItem, GeneratedBatchOptions, GeneratedBatchProgress,
+    GeneratedBatchResult, NamedQuery, NamedQueryResult, QueryOptions, StableApplicationClient,
+    TypedCommandResult, TypedQueryResult,
 };
 pub use capability::{
     BootstrapCapabilityCreateTemplate, CapabilityCreateTemplateError,

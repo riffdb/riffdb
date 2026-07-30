@@ -6,15 +6,16 @@ use riffdb_storage_api::{
     AbandonedCandidate, AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1,
     AdmissionResultV1, AffectedEpochCurrentState, AffectedEpochCurrentStateBuilder,
     AffectedIndexEpochTargets, ApplicationCommandTransactionPort, AssignedCommandSequence,
-    AtomicCommandRecordSet, AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest,
-    AuthoritativePointReader, AuthoritativeScanReader, CandidateAdmissionResult,
-    CandidateCapacityResult, CandidateStartResult, CandidateValidationRejection,
-    CommandCandidateAdmission, CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
-    CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
-    CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
-    CommitIntent, CommitScanPageV1, CommitScanRequest, CommittedBatchV1, CurrentRangeObservation,
-    DurabilityMode, EmptyCommandBatch, EncodedPageItem, EntityObservation, EntityTarget,
-    ExecutionFailureAdmissionRechecked, ExecutionFailureAdmissionResult,
+    AtomicCommandRecordSet, AuditedAdmissionRepository, AuditedAdmissionRequestV1,
+    AuditedAdmissionResultV1, AuditedCommittedBatchV1, AuthoritativeIndexScanPage,
+    AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader,
+    CandidateAdmissionResult, CandidateCapacityResult, CandidateStartResult,
+    CandidateValidationRejection, CommandCandidateAdmission, CommandCandidateAffectedEpochRead,
+    CommandCandidateAwaitingCapacity, CommandCandidateAwaitingValidation,
+    CommandCandidateCapacityReserved, CommandCandidateSequenceAssigned, CommandCandidateStateRead,
+    CommandWriteSetPlanV1, CommitIntent, CommitScanPageV1, CommitScanRequest, CommittedBatchV1,
+    CurrentRangeObservation, DurabilityMode, EmptyCommandBatch, EncodedPageItem, EntityObservation,
+    EntityTarget, ExecutionFailureAdmissionRechecked, ExecutionFailureAdmissionResult,
     ExecutionFailureAwaitingDecision, ExecutionFailureTransitionPort,
     ExecutionFailureTransitionRequestV1, ExpectedEntityState, FilteredAuthoritativeIndexScanPage,
     FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader,
@@ -31,6 +32,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
+use crate::administration::append_service_audit_in_state;
 use crate::startup::persisted_evidence_order_key;
 use crate::state::{
     CommitAdmissionIndexRow, CommittedAdmissionIndexRow, EntityCommitIndexRow,
@@ -275,6 +277,45 @@ impl NonEmptyCommandBatch for MemoryNonEmptyBatch {
             Ok(())
         })?;
         Ok(committed)
+    }
+
+    fn commit_with_service_audits(
+        self,
+        durability: DurabilityMode,
+        terminals: Vec<riffdb_storage_api::ServiceAuditAppendIntentV1>,
+    ) -> Result<AuditedCommittedBatchV1, StorageError> {
+        if self.core.staged.len() != terminals.len()
+            || terminals.is_empty()
+            || self
+                .core
+                .staged
+                .iter()
+                .any(|records| !records.matches_durability_mode(durability))
+        {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let outcomes = self
+            .core
+            .staged
+            .iter()
+            .map(|records| records.stored_outcome().clone())
+            .collect();
+        let committed = CommittedBatchV1::new(outcomes, durability).map_err(invariant_value)?;
+        let BatchCore {
+            access, overlay, ..
+        } = self.core;
+        access.write(move |state| {
+            let mut candidate = state.clone();
+            overlay.publish(&mut candidate);
+            let mut terminal_records = Vec::with_capacity(terminals.len());
+            for terminal in &terminals {
+                terminal_records.push(append_service_audit_in_state(&mut candidate, terminal)?);
+            }
+            let audited = AuditedCommittedBatchV1::new(committed, terminal_records)
+                .map_err(invariant_value)?;
+            *state = candidate;
+            Ok(audited)
+        })
     }
 
     fn rollback(self) {}
@@ -556,51 +597,7 @@ impl AdmissionRepository for MemoryOperationalPorts {
         request: AdmissionRequestV1,
     ) -> Result<AdmissionResultV1, StorageError> {
         let access = self.acquire()?;
-        access.write(|state| {
-            let matches = matching_admissions(&state.admissions, request.lookup_candidates())?;
-            if matches.len() > 1 {
-                return Ok(AdmissionResultV1::MultipleMatches);
-            }
-            if let Some(existing) = matches.first() {
-                return Ok(admission_result(existing, request.proposed_pending()));
-            }
-            if !plan_bundle_exists(state, request.proposed_pending().plan()) {
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
-            let key = identity_key(request.proposed_pending().identity())?;
-            let Err(position) =
-                admission_position(&state.admissions, request.proposed_pending().identity())?
-            else {
-                return Err(storage_error(StorageErrorKind::CorruptData));
-            };
-            let pending = request.proposed_pending().clone();
-            let plan_key = crate::state::plan_evidence_order_key(pending.plan());
-            let plan_insert =
-                match unique_binary_search_by(&state.historical_plan_references, |row| {
-                    row.order_key.cmp(&plan_key)
-                })? {
-                    Ok(index)
-                        if state.historical_plan_references[index].plan == *pending.plan() =>
-                    {
-                        None
-                    }
-                    Ok(_) => return Err(storage_error(StorageErrorKind::CorruptData)),
-                    Err(index) => Some(index),
-                };
-            state
-                .admissions
-                .insert(position, StoredAdmissionStateV1::Pending(pending.clone()));
-            if let Some(index) = plan_insert {
-                state.historical_plan_references.insert(
-                    index,
-                    HistoricalPlanReferenceRow::new(
-                        pending.plan().clone(),
-                        HistoricalPlanReferenceSource::Admission(key),
-                    ),
-                );
-            }
-            Ok(AdmissionResultV1::Created(pending))
-        })
+        access.write(|state| admit_or_resolve_in_state(state, &request))
     }
 
     fn lookup_admission(
@@ -614,6 +611,84 @@ impl AdmissionRepository for MemoryOperationalPorts {
                 [_, ..] => Ok(AdmissionLookupResultV1::MultipleMatches),
             },
         )
+    }
+}
+
+fn admit_or_resolve_in_state(
+    state: &mut MemoryState,
+    request: &AdmissionRequestV1,
+) -> Result<AdmissionResultV1, StorageError> {
+    let matches = matching_admissions(&state.admissions, request.lookup_candidates())?;
+    if matches.len() > 1 {
+        return Ok(AdmissionResultV1::MultipleMatches);
+    }
+    if let Some(existing) = matches.first() {
+        return Ok(admission_result(existing, request.proposed_pending()));
+    }
+    if !plan_bundle_exists(state, request.proposed_pending().plan()) {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    let key = identity_key(request.proposed_pending().identity())?;
+    let Err(position) =
+        admission_position(&state.admissions, request.proposed_pending().identity())?
+    else {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    };
+    let pending = request.proposed_pending().clone();
+    let plan_key = crate::state::plan_evidence_order_key(pending.plan());
+    let plan_insert = match unique_binary_search_by(&state.historical_plan_references, |row| {
+        row.order_key.cmp(&plan_key)
+    })? {
+        Ok(index) if state.historical_plan_references[index].plan == *pending.plan() => None,
+        Ok(_) => return Err(storage_error(StorageErrorKind::CorruptData)),
+        Err(index) => Some(index),
+    };
+    state
+        .admissions
+        .insert(position, StoredAdmissionStateV1::Pending(pending.clone()));
+    if let Some(index) = plan_insert {
+        state.historical_plan_references.insert(
+            index,
+            HistoricalPlanReferenceRow::new(
+                pending.plan().clone(),
+                HistoricalPlanReferenceSource::Admission(key),
+            ),
+        );
+    }
+    Ok(AdmissionResultV1::Created(pending))
+}
+
+impl AuditedAdmissionRepository for MemoryOperationalPorts {
+    fn admit_or_resolve_audited_group(
+        &self,
+        requests: Vec<AuditedAdmissionRequestV1>,
+    ) -> Result<Vec<AuditedAdmissionResultV1>, StorageError> {
+        if requests.is_empty() || requests.len() > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+        {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        let access = self.acquire()?;
+        access.write(|state| {
+            let mut candidate = state.clone();
+            let mut outputs = Vec::with_capacity(requests.len());
+            for request in requests {
+                let (admission, started) = request.into_parts();
+                let proposed_request_id = admission.proposed_pending().admission_request_id();
+                let started = append_service_audit_in_state(&mut candidate, &started)?;
+                let admission = admit_or_resolve_in_state(&mut candidate, &admission)?;
+                if matches!(admission, AdmissionResultV1::Created(_))
+                    && started.request_id() != proposed_request_id
+                {
+                    return Err(storage_error(StorageErrorKind::InvariantViolation));
+                }
+                outputs.push(
+                    AuditedAdmissionResultV1::new(admission, started)
+                        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?,
+                );
+            }
+            *state = candidate;
+            Ok(outputs)
+        })
     }
 }
 

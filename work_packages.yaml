@@ -4562,6 +4562,7 @@ work_packages:
   - benchmarks/command-growth/**
   - fixtures/performance/**
   - fixtures/application-parity/**
+  - fixtures/query-modules/**
   - scripts/benchmark-command-growth
   - scripts/check-application-bindings
   - scripts/check-application-boundary

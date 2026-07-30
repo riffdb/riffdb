@@ -339,8 +339,9 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
          use std::collections::BTreeMap;\n\
          use riffdb_client_rust::generated::{{GeneratedCommand, GeneratedCommandError, GeneratedQuery}};\n\
          use riffdb_client_rust::{{ApplicationCardinality, ApplicationClientError, ApplicationContract, \
-         ApplicationRecord, ApplicationValue, AttemptBudget, CallMetadata, IdempotentCommand, NamedQuery, \
-         NamedQueryResult, QueryOptions, StableApplicationClient, TypedCommandResult, TypedQueryResult, v1}};\n\
+         ApplicationRecord, ApplicationValue, AttemptBudget, CallMetadata, GeneratedBatchError, GeneratedBatchOptions, \
+         GeneratedBatchProgress, GeneratedBatchResult, IdempotentCommand, NamedQuery, NamedQueryResult, QueryOptions, \
+         StableApplicationClient, TypedCommandResult, TypedQueryResult, v1}};\n\
          use riffdb_client_rust::v1::value::Kind as WireKind;\n"
     )
     .expect("string");
@@ -895,6 +896,22 @@ fn emit_rust_client_facade(output: &mut String, module: &QueryModule, commands: 
             function = snake(name)
         )
         .expect("string");
+        writeln!(
+            output,
+            "    pub async fn {function}_batch(&self, inputs: Vec<{name}Input>, options: GeneratedBatchOptions) \
+             -> Result<GeneratedBatchResult<{name}Outcome>, GeneratedBatchError> {{\n\
+             \x20       self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await\n    }}\n",
+            function = snake(name)
+        )
+        .expect("string");
+        writeln!(
+            output,
+            "    pub async fn {function}_batch_with_progress<F>(&self, inputs: Vec<{name}Input>, options: GeneratedBatchOptions, progress: F) \
+             -> Result<GeneratedBatchResult<{name}Outcome>, GeneratedBatchError>\n    where\n        F: FnMut(GeneratedBatchProgress),\n    {{\n\
+             \x20       self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await\n    }}\n",
+            function = snake(name)
+        )
+        .expect("string");
     }
     writeln!(output, "}}\n").expect("string");
 }
@@ -1121,6 +1138,10 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
          export interface TypedCommandResult<T> {{ readonly outcome: T; readonly commitSequence?: bigint; \
          readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; }}\n\
          export interface QueryOptions {{ readonly cursor?: string; readonly readAfterCommit?: bigint; }}\n\
+         export interface CommandBatchProgress {{ readonly completed: number; readonly total: number; readonly checkpoint: number; }}\n\
+         export interface CommandBatchOptions {{ readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }}\n\
+         export interface CommandBatchItem<T> {{ readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }}\n\
+         export interface CommandBatchResult<T> {{ readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }}\n\
          export interface ApplicationTransport {{\n  executeNamedQuery<P, R>(request: NamedQueryRequest<P, R>, options?: QueryOptions): Promise<TypedQueryResult<R>>;\n  \
          executeCommand<I, R>(request: CommandRequest<I, R>, attemptBudget: number): Promise<TypedCommandResult<R>>;\n}}\n"
     )
@@ -1431,6 +1452,22 @@ fn emit_typescript_client_facade(
              throw new Error(\"RiffDB application identity mismatch\");\n    return result;\n  }}\n",
             function = camel(name),
             constant = screaming_snake(name),
+        )
+        .expect("string");
+        writeln!(
+            output,
+            "  public async {function}Batch(inputs: ReadonlyArray<{name}Input>, options: CommandBatchOptions): Promise<CommandBatchResult<{name}Outcome>> {{\n    \
+             if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 \
+             || inputs.length < 1 || inputs.length > 4096) throw new Error(\"invalid command batch bounds\");\n    \
+             const start = options.checkpoint ?? 0;\n    if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error(\"invalid command batch checkpoint\");\n    \
+             const items: CommandBatchItem<{name}Outcome>[] = [];\n    let next = start;\n    let completed = start;\n    let checkpoint = start;\n    const completedAfterCheckpoint = new Set<number>();\n    \
+             const worker = async (): Promise<void> => {{ while (true) {{ const index = next++; if (index >= inputs.length) return; \
+             try {{ items.push({{ index, result: await this.{function}(inputs[index]!) }}); }} catch (error) {{ items.push({{ index, error }}); }} \
+             completed += 1; completedAfterCheckpoint.add(index); while (completedAfterCheckpoint.delete(checkpoint)) checkpoint += 1; \
+             options.onProgress?.({{ completed, total: inputs.length, checkpoint }}); }} }};\n    \
+             await Promise.all(Array.from({{ length: Math.min(options.concurrency, inputs.length - start) }}, worker));\n    \
+             items.sort((left, right) => left.index - right.index);\n    return {{ items, checkpoint }};\n  }}\n",
+            function = camel(name),
         )
         .expect("string");
     }

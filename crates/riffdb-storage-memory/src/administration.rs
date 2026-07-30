@@ -836,6 +836,23 @@ fn prepare_service_audit_append(
     Ok(AdministrationPreparation::Apply(Box::new(mutation)))
 }
 
+pub(crate) fn append_service_audit_in_state(
+    state: &mut MemoryState,
+    intent: &ServiceAuditAppendIntentV1,
+) -> Result<StoredServiceAuditRecordV1, StorageError> {
+    match prepare_service_audit_append(state, intent)? {
+        AdministrationPreparation::Apply(mutation) => match (*mutation).apply(state) {
+            ServiceAuditAppendResult::Appended(record) => Ok(record),
+            ServiceAuditAppendResult::PhaseConflict => {
+                Err(storage_error(StorageErrorKind::InvariantViolation))
+            }
+        },
+        AdministrationPreparation::NoChange(_) => {
+            Err(storage_error(StorageErrorKind::InvariantViolation))
+        }
+    }
+}
+
 fn service_link_is_valid(state: &MemoryState, intent: &ServiceAuditAppendIntentV1) -> bool {
     match intent.link() {
         ServiceAuditLinkV1::None => true,
