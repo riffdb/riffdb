@@ -2,6 +2,21 @@
 
 Date: 2026-07-30
 
+## Superseded: numbers below predate the harness correction
+
+The `app-baseline` harness was corrected on 2026-07-30 to give every measured
+write sample a distinct write identity on both backends. Before that
+correction, RiffDB write samples 2-9 replayed a stable idempotency key and
+therefore measured the idempotency-replay path rather than a new durable
+write, and the PostgreSQL side's `ON CONFLICT` inserts no-oped behind a
+per-call connection.
+
+Consequently the interactive-scenario table and the claim that "Every measured
+interactive read and write beats PostgreSQL" in this note are **not valid
+evidence** and must be regenerated with the corrected harness before being
+cited anywhere. The safety-boundary and fixed-amplification sections below
+describe engine behaviour and remain accurate.
+
 This note records the full same-run `app-baseline` result after the
 same-partition aggregate, catalog-cache, grouped-audit, CRC, and bounded batch
 changes. It is engineering evidence, not a publication benchmark.
