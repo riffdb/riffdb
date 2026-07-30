@@ -18,13 +18,13 @@ use riffdb_invariant::{
 };
 use riffdb_storage_api::{
     ApplicationCommandTransactionPort, AtomicCommandRecordSet, CandidateAdmissionResult,
-    CandidateCapacityResult, CandidateValidationRejection, CommandCandidateAdmission,
-    CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
+    CandidateCapacityResult, CandidateStartResult, CandidateValidationRejection,
+    CommandCandidateAdmission, CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
     CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
     CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
     EmptyCommandBatch, EntityMutation, EntityObservation, EntityTarget, EvaluatedCommand,
-    ExecutablePlanRef, ReadDependencies, ReadDependency, StorageError, StoredEntityRecordV1,
-    StoredExecutionFailedV1, StoredOutcomeV1, TransactionCurrentState,
+    ExecutablePlanRef, NonEmptyCommandBatch, ReadDependencies, ReadDependency, StorageError,
+    StoredEntityRecordV1, StoredExecutionFailedV1, StoredOutcomeV1, TransactionCurrentState,
 };
 use riffdb_types::{CanonicalRecord, CanonicalValue, FieldId, LogicalTime};
 
@@ -104,6 +104,41 @@ where
         Ok(candidate) => candidate,
         Err(error) => return CommandCandidateChainStart::StorageFailure(error),
     };
+    finish_bound_command_candidate(candidate, attempt)
+}
+
+/// Appends one exact attempt to an already nonempty physical batch. Any
+/// non-ready result consumes and rolls back the prior batch; retained semantic
+/// evidence is owned separately by the group orchestrator.
+pub(super) fn begin_bound_command_candidate_on_prior<B>(
+    prior: B,
+    attempt: ProvenanceBoundCommandAttempt,
+) -> CommandCandidateChainStart<
+    <<B as NonEmptyCommandBatch>::Candidate as CommandCandidateAdmission>::StateRead,
+>
+where
+    B: NonEmptyCommandBatch,
+{
+    let candidate = match prior.begin_candidate(attempt.storage_intent()) {
+        Ok(CandidateStartResult::Started(candidate)) => candidate,
+        Ok(CandidateStartResult::BatchFull { prior, intent }) => {
+            drop(prior);
+            drop(intent);
+            drop(attempt);
+            return CommandCandidateChainStart::Integrity;
+        }
+        Err(error) => return CommandCandidateChainStart::StorageFailure(error),
+    };
+    finish_bound_command_candidate(candidate, attempt)
+}
+
+fn finish_bound_command_candidate<C>(
+    candidate: C,
+    attempt: ProvenanceBoundCommandAttempt,
+) -> CommandCandidateChainStart<C::StateRead>
+where
+    C: CommandCandidateAdmission,
+{
     let rechecked = match candidate.recheck_admission() {
         Ok(rechecked) => rechecked,
         Err(error) => return CommandCandidateChainStart::StorageFailure(error),

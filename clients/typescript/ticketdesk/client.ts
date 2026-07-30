@@ -122,6 +122,10 @@ export interface CommandRequest<I, R> { readonly contractLineage: typeof CONTRAC
 export interface TypedQueryResult<T> { readonly identity: QueryResponseIdentity; readonly value: T; readonly applicationHead: bigint; readonly nextCursor?: string; }
 export interface TypedCommandResult<T> { readonly outcome: T; readonly commitSequence?: bigint; readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; }
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; }
+export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
+export interface CommandBatchOptions { readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }
+export interface CommandBatchItem<T> { readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }
+export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }
 export interface ApplicationTransport {
   executeNamedQuery<P, R>(request: NamedQueryRequest<P, R>, options?: QueryOptions): Promise<TypedQueryResult<R>>;
   executeCommand<I, R>(request: CommandRequest<I, R>, attemptBudget: number): Promise<TypedCommandResult<R>>;
@@ -482,10 +486,40 @@ export class TicketDeskClient {
     return result;
   }
 
+  public async addProjectMemberBatch(inputs: ReadonlyArray<AddProjectMemberInput>, options: CommandBatchOptions): Promise<CommandBatchResult<AddProjectMemberOutcome>> {
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    const start = options.checkpoint ?? 0;
+    if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
+    const items: CommandBatchItem<AddProjectMemberOutcome>[] = [];
+    let next = start;
+    let completed = start;
+    let checkpoint = start;
+    const completedAfterCheckpoint = new Set<number>();
+    const worker = async (): Promise<void> => { while (true) { const index = next++; if (index >= inputs.length) return; try { items.push({ index, result: await this.addProjectMember(inputs[index]!) }); } catch (error) { items.push({ index, error }); } completed += 1; completedAfterCheckpoint.add(index); while (completedAfterCheckpoint.delete(checkpoint)) checkpoint += 1; options.onProgress?.({ completed, total: inputs.length, checkpoint }); } };
+    await Promise.all(Array.from({ length: Math.min(options.concurrency, inputs.length - start) }, worker));
+    items.sort((left, right) => left.index - right.index);
+    return { items, checkpoint };
+  }
+
   public async attachLabel(input: AttachLabelInput): Promise<TypedCommandResult<AttachLabelOutcome>> {
     const result = await this.transport.executeCommand<AttachLabelInput, AttachLabelOutcome>(attachLabel(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== ATTACH_LABEL_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async attachLabelBatch(inputs: ReadonlyArray<AttachLabelInput>, options: CommandBatchOptions): Promise<CommandBatchResult<AttachLabelOutcome>> {
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    const start = options.checkpoint ?? 0;
+    if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
+    const items: CommandBatchItem<AttachLabelOutcome>[] = [];
+    let next = start;
+    let completed = start;
+    let checkpoint = start;
+    const completedAfterCheckpoint = new Set<number>();
+    const worker = async (): Promise<void> => { while (true) { const index = next++; if (index >= inputs.length) return; try { items.push({ index, result: await this.attachLabel(inputs[index]!) }); } catch (error) { items.push({ index, error }); } completed += 1; completedAfterCheckpoint.add(index); while (completedAfterCheckpoint.delete(checkpoint)) checkpoint += 1; options.onProgress?.({ completed, total: inputs.length, checkpoint }); } };
+    await Promise.all(Array.from({ length: Math.min(options.concurrency, inputs.length - start) }, worker));
+    items.sort((left, right) => left.index - right.index);
+    return { items, checkpoint };
   }
 
   public async createComment(input: CreateCommentInput): Promise<TypedCommandResult<CreateCommentOutcome>> {
@@ -494,10 +528,40 @@ export class TicketDeskClient {
     return result;
   }
 
+  public async createCommentBatch(inputs: ReadonlyArray<CreateCommentInput>, options: CommandBatchOptions): Promise<CommandBatchResult<CreateCommentOutcome>> {
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    const start = options.checkpoint ?? 0;
+    if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
+    const items: CommandBatchItem<CreateCommentOutcome>[] = [];
+    let next = start;
+    let completed = start;
+    let checkpoint = start;
+    const completedAfterCheckpoint = new Set<number>();
+    const worker = async (): Promise<void> => { while (true) { const index = next++; if (index >= inputs.length) return; try { items.push({ index, result: await this.createComment(inputs[index]!) }); } catch (error) { items.push({ index, error }); } completed += 1; completedAfterCheckpoint.add(index); while (completedAfterCheckpoint.delete(checkpoint)) checkpoint += 1; options.onProgress?.({ completed, total: inputs.length, checkpoint }); } };
+    await Promise.all(Array.from({ length: Math.min(options.concurrency, inputs.length - start) }, worker));
+    items.sort((left, right) => left.index - right.index);
+    return { items, checkpoint };
+  }
+
   public async createLabel(input: CreateLabelInput): Promise<TypedCommandResult<CreateLabelOutcome>> {
     const result = await this.transport.executeCommand<CreateLabelInput, CreateLabelOutcome>(createLabel(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_LABEL_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async createLabelBatch(inputs: ReadonlyArray<CreateLabelInput>, options: CommandBatchOptions): Promise<CommandBatchResult<CreateLabelOutcome>> {
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    const start = options.checkpoint ?? 0;
+    if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
+    const items: CommandBatchItem<CreateLabelOutcome>[] = [];
+    let next = start;
+    let completed = start;
+    let checkpoint = start;
+    const completedAfterCheckpoint = new Set<number>();
+    const worker = async (): Promise<void> => { while (true) { const index = next++; if (index >= inputs.length) return; try { items.push({ index, result: await this.createLabel(inputs[index]!) }); } catch (error) { items.push({ index, error }); } completed += 1; completedAfterCheckpoint.add(index); while (completedAfterCheckpoint.delete(checkpoint)) checkpoint += 1; options.onProgress?.({ completed, total: inputs.length, checkpoint }); } };
+    await Promise.all(Array.from({ length: Math.min(options.concurrency, inputs.length - start) }, worker));
+    items.sort((left, right) => left.index - right.index);
+    return { items, checkpoint };
   }
 
   public async createOrganization(input: CreateOrganizationInput): Promise<TypedCommandResult<CreateOrganizationOutcome>> {
@@ -506,10 +570,40 @@ export class TicketDeskClient {
     return result;
   }
 
+  public async createOrganizationBatch(inputs: ReadonlyArray<CreateOrganizationInput>, options: CommandBatchOptions): Promise<CommandBatchResult<CreateOrganizationOutcome>> {
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    const start = options.checkpoint ?? 0;
+    if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
+    const items: CommandBatchItem<CreateOrganizationOutcome>[] = [];
+    let next = start;
+    let completed = start;
+    let checkpoint = start;
+    const completedAfterCheckpoint = new Set<number>();
+    const worker = async (): Promise<void> => { while (true) { const index = next++; if (index >= inputs.length) return; try { items.push({ index, result: await this.createOrganization(inputs[index]!) }); } catch (error) { items.push({ index, error }); } completed += 1; completedAfterCheckpoint.add(index); while (completedAfterCheckpoint.delete(checkpoint)) checkpoint += 1; options.onProgress?.({ completed, total: inputs.length, checkpoint }); } };
+    await Promise.all(Array.from({ length: Math.min(options.concurrency, inputs.length - start) }, worker));
+    items.sort((left, right) => left.index - right.index);
+    return { items, checkpoint };
+  }
+
   public async createProject(input: CreateProjectInput): Promise<TypedCommandResult<CreateProjectOutcome>> {
     const result = await this.transport.executeCommand<CreateProjectInput, CreateProjectOutcome>(createProject(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_PROJECT_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async createProjectBatch(inputs: ReadonlyArray<CreateProjectInput>, options: CommandBatchOptions): Promise<CommandBatchResult<CreateProjectOutcome>> {
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    const start = options.checkpoint ?? 0;
+    if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
+    const items: CommandBatchItem<CreateProjectOutcome>[] = [];
+    let next = start;
+    let completed = start;
+    let checkpoint = start;
+    const completedAfterCheckpoint = new Set<number>();
+    const worker = async (): Promise<void> => { while (true) { const index = next++; if (index >= inputs.length) return; try { items.push({ index, result: await this.createProject(inputs[index]!) }); } catch (error) { items.push({ index, error }); } completed += 1; completedAfterCheckpoint.add(index); while (completedAfterCheckpoint.delete(checkpoint)) checkpoint += 1; options.onProgress?.({ completed, total: inputs.length, checkpoint }); } };
+    await Promise.all(Array.from({ length: Math.min(options.concurrency, inputs.length - start) }, worker));
+    items.sort((left, right) => left.index - right.index);
+    return { items, checkpoint };
   }
 
   public async createTicket(input: CreateTicketInput): Promise<TypedCommandResult<CreateTicketOutcome>> {
@@ -518,10 +612,40 @@ export class TicketDeskClient {
     return result;
   }
 
+  public async createTicketBatch(inputs: ReadonlyArray<CreateTicketInput>, options: CommandBatchOptions): Promise<CommandBatchResult<CreateTicketOutcome>> {
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    const start = options.checkpoint ?? 0;
+    if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
+    const items: CommandBatchItem<CreateTicketOutcome>[] = [];
+    let next = start;
+    let completed = start;
+    let checkpoint = start;
+    const completedAfterCheckpoint = new Set<number>();
+    const worker = async (): Promise<void> => { while (true) { const index = next++; if (index >= inputs.length) return; try { items.push({ index, result: await this.createTicket(inputs[index]!) }); } catch (error) { items.push({ index, error }); } completed += 1; completedAfterCheckpoint.add(index); while (completedAfterCheckpoint.delete(checkpoint)) checkpoint += 1; options.onProgress?.({ completed, total: inputs.length, checkpoint }); } };
+    await Promise.all(Array.from({ length: Math.min(options.concurrency, inputs.length - start) }, worker));
+    items.sort((left, right) => left.index - right.index);
+    return { items, checkpoint };
+  }
+
   public async createUser(input: CreateUserInput): Promise<TypedCommandResult<CreateUserOutcome>> {
     const result = await this.transport.executeCommand<CreateUserInput, CreateUserOutcome>(createUser(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_USER_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async createUserBatch(inputs: ReadonlyArray<CreateUserInput>, options: CommandBatchOptions): Promise<CommandBatchResult<CreateUserOutcome>> {
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    const start = options.checkpoint ?? 0;
+    if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
+    const items: CommandBatchItem<CreateUserOutcome>[] = [];
+    let next = start;
+    let completed = start;
+    let checkpoint = start;
+    const completedAfterCheckpoint = new Set<number>();
+    const worker = async (): Promise<void> => { while (true) { const index = next++; if (index >= inputs.length) return; try { items.push({ index, result: await this.createUser(inputs[index]!) }); } catch (error) { items.push({ index, error }); } completed += 1; completedAfterCheckpoint.add(index); while (completedAfterCheckpoint.delete(checkpoint)) checkpoint += 1; options.onProgress?.({ completed, total: inputs.length, checkpoint }); } };
+    await Promise.all(Array.from({ length: Math.min(options.concurrency, inputs.length - start) }, worker));
+    items.sort((left, right) => left.index - right.index);
+    return { items, checkpoint };
   }
 
 }

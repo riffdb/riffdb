@@ -8,13 +8,13 @@ use riffdb_storage_api::{
     AbandonedCandidate, AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1,
     AdmissionResultV1, AffectedEpochCurrentState, AffectedEpochCurrentStateBuilder,
     AffectedIndexEpochTargets, ApplicationCommandTransactionPort, ApplicationSequenceAllocator,
-    AssignedCommandSequence, AtomicCommandRecordSet, CandidateAdmissionResult,
-    CandidateCapacityResult, CandidateStartResult, CandidateValidationRejection,
-    CommandCandidateAdmission, CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
-    CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
-    CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
-    CommitIntent, CommittedBatchV1, CurrentRangeObservation, DurabilityMode, EmptyCommandBatch,
-    EntityObservation, EntityTarget, ExecutionFailureAdmissionRechecked,
+    AssignedCommandSequence, AtomicCommandRecordSet, AuditedCommittedBatchV1,
+    CandidateAdmissionResult, CandidateCapacityResult, CandidateStartResult,
+    CandidateValidationRejection, CommandCandidateAdmission, CommandCandidateAffectedEpochRead,
+    CommandCandidateAwaitingCapacity, CommandCandidateAwaitingValidation,
+    CommandCandidateCapacityReserved, CommandCandidateSequenceAssigned, CommandCandidateStateRead,
+    CommandWriteSetPlanV1, CommitIntent, CommittedBatchV1, CurrentRangeObservation, DurabilityMode,
+    EmptyCommandBatch, EntityObservation, EntityTarget, ExecutionFailureAdmissionRechecked,
     ExecutionFailureAdmissionResult, ExecutionFailureAwaitingDecision,
     ExecutionFailureTransitionPort, ExecutionFailureTransitionRequestV1, ExpectedEntityState,
     IdempotencyIdentity, IdempotencyIdentityKey, IdempotencyLookupCandidatesV1,
@@ -27,6 +27,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::ProvenanceId;
 
+use crate::administration::stage_service_audit_in_write;
 use crate::codec::{
     IdempotencyRecordV1, decode_application_sequence_allocator_v1, decode_entity_record_v1,
     decode_idempotency_record_v1, decode_index_epoch_v1, decode_pending_admission_v1,
@@ -218,6 +219,58 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
         Ok(committed)
     }
 
+    fn commit_with_service_audits(
+        self,
+        durability: DurabilityMode,
+        terminals: Vec<riffdb_storage_api::ServiceAuditAppendIntentV1>,
+    ) -> Result<AuditedCommittedBatchV1, StorageError> {
+        if durability == DurabilityMode::Memory
+            || self.core.staged.len() != terminals.len()
+            || terminals.is_empty()
+            || self
+                .core
+                .staged
+                .iter()
+                .any(|records| !records.matches_durability_mode(durability))
+        {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let outcomes = self
+            .core
+            .staged
+            .iter()
+            .map(|records| records.stored_outcome().clone())
+            .collect();
+        let committed = CommittedBatchV1::new(outcomes, durability).map_err(invariant_value)?;
+        let mut terminal_records = Vec::with_capacity(terminals.len());
+        for terminal in &terminals {
+            terminal_records.push(stage_service_audit_in_write(&self.core.access, terminal)?);
+        }
+        let audited = AuditedCommittedBatchV1::new(committed, terminal_records.clone())
+            .map_err(invariant_value)?;
+        let pending_events = self
+            .core
+            .staged
+            .iter()
+            .flat_map(|records| records.events().iter().map(|event| event.event_id()))
+            .collect::<Vec<_>>();
+        let mut deltas = terminal_records
+            .iter()
+            .map(|terminal| TransientIndexDelta::ServiceAuditAppended {
+                request_id: terminal.request_id(),
+                sequence: terminal.administration_sequence(),
+            })
+            .collect::<Vec<_>>();
+        if !pending_events.is_empty() {
+            deltas.push(TransientIndexDelta::PendingOutboxInserted(pending_events));
+        }
+        self.core.access.commit_for_with_delta(
+            RedbTestOperation::CommandBatch,
+            Some(TransientIndexDelta::Composite(deltas)),
+        )?;
+        Ok(audited)
+    }
+
     fn rollback(self) {}
 }
 
@@ -245,35 +298,9 @@ impl AdmissionRepository for RedbOperationalPorts {
         let mut created_any = false;
         let mut results = Vec::with_capacity(requests.len());
         for request in requests {
-            let matches = matching_admissions(transaction, request.lookup_candidates())?;
-            if matches.len() > 1 {
-                results.push(AdmissionResultV1::MultipleMatches);
-                continue;
-            }
-            if let Some(existing) = matches.first() {
-                results.push(admission_result(existing, request.proposed_pending()));
-                continue;
-            }
-            if !plan_bundle_exists(transaction, request.proposed_pending().plan())? {
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
-            let key = identity_key(request.proposed_pending().identity())?;
-            let encoded = encode_pending_admission_v1(request.proposed_pending())?;
-            let mut table = transaction
-                .open_table(IDEMPOTENCY_PENDING)
-                .map_err(table_error)?;
-            if table
-                .insert(encode_idempotency_key(&key), encoded.as_bytes())
-                .map_err(precommit_storage_error)?
-                .is_some()
-            {
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
-            drop(table);
-            created_any = true;
-            results.push(AdmissionResultV1::Created(
-                request.proposed_pending().clone(),
-            ));
+            let (result, created) = stage_admission(transaction, &request)?;
+            created_any |= created;
+            results.push(result);
         }
         if created_any {
             access.commit_for(RedbTestOperation::Admission)?;
@@ -294,6 +321,42 @@ impl AdmissionRepository for RedbOperationalPorts {
             [_, ..] => Ok(AdmissionLookupResultV1::MultipleMatches),
         }
     }
+}
+
+pub(crate) fn stage_admission(
+    transaction: &redb::WriteTransaction,
+    request: &AdmissionRequestV1,
+) -> Result<(AdmissionResultV1, bool), StorageError> {
+    let matches = matching_admissions(transaction, request.lookup_candidates())?;
+    if matches.len() > 1 {
+        return Ok((AdmissionResultV1::MultipleMatches, false));
+    }
+    if let Some(existing) = matches.first() {
+        return Ok((
+            admission_result(existing, request.proposed_pending()),
+            false,
+        ));
+    }
+    if !plan_bundle_exists(transaction, request.proposed_pending().plan())? {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    let key = identity_key(request.proposed_pending().identity())?;
+    let encoded = encode_pending_admission_v1(request.proposed_pending())?;
+    let mut table = transaction
+        .open_table(IDEMPOTENCY_PENDING)
+        .map_err(table_error)?;
+    if table
+        .insert(encode_idempotency_key(&key), encoded.as_bytes())
+        .map_err(precommit_storage_error)?
+        .is_some()
+    {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    drop(table);
+    Ok((
+        AdmissionResultV1::Created(request.proposed_pending().clone()),
+        true,
+    ))
 }
 
 impl ExecutionFailureTransitionPort for RedbOperationalPorts {

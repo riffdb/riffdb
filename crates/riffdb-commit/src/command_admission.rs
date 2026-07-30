@@ -12,8 +12,9 @@ use riffdb_invariant::InputDerivedCommandFacts;
 use riffdb_policy::AuthorizedCommandExecution;
 use riffdb_storage_api::{
     AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1, AdmissionResultV1,
-    EntityTarget, IdempotencyLookupCandidatesV1, PreEvaluationCommitContext, SnapshotRequest,
-    StorageError, StorageErrorKind, StoredAdmissionStateV1, StoredAdmittedProvenanceClaimsV1,
+    AuditedAdmissionRepository, AuditedAdmissionRequestV1, EntityTarget,
+    IdempotencyLookupCandidatesV1, PreEvaluationCommitContext, SnapshotRequest, StorageError,
+    StorageErrorKind, StoredAdmissionStateV1, StoredAdmittedProvenanceClaimsV1,
     StoredExecutionFailedV1, StoredOutcomeV1, StoredPendingAdmissionV1,
 };
 use riffdb_types::{
@@ -21,7 +22,10 @@ use riffdb_types::{
     MAX_COMMAND_CONFLICT_KEYS_V1, RequestId, hash_conflict_key, hash_partition_key,
 };
 
-use crate::{AdmissionClock, AdmissionClockError, CommandExecutionPreparation};
+use crate::{
+    AdmissionClock, AdmissionClockError, CommandExecutionPreparation,
+    command_preparation::AuditedCommandLifecycle,
+};
 
 /// Closed result of the transaction-adjacent command admission reducer.
 pub(crate) enum CommandAdmissionResult {
@@ -205,6 +209,7 @@ pub(crate) struct CommandExecutionCandidate {
     invocation_request_id: RequestId,
     deadline: Instant,
     cancellation: CancellationToken,
+    audited_lifecycle: Option<AuditedCommandLifecycle>,
 }
 
 impl CommandExecutionCandidate {
@@ -248,6 +253,7 @@ impl CommandExecutionCandidate {
         RequestId,
         Instant,
         CancellationToken,
+        Option<AuditedCommandLifecycle>,
     ) {
         (
             self.resolved_plan,
@@ -258,6 +264,7 @@ impl CommandExecutionCandidate {
             self.invocation_request_id,
             self.deadline,
             self.cancellation,
+            self.audited_lifecycle,
         )
     }
 
@@ -290,6 +297,10 @@ impl CommandExecutionCandidate {
         .map_err(|_| CommandAdmissionError::Integrity)?;
         Ok(self)
     }
+
+    fn audited_lifecycle(&self) -> Option<&AuditedCommandLifecycle> {
+        self.audited_lifecycle.as_ref()
+    }
 }
 
 impl fmt::Debug for CommandExecutionCandidate {
@@ -307,6 +318,7 @@ struct LoweredPreparation {
     invocation_request_id: RequestId,
     deadline: Instant,
     cancellation: CancellationToken,
+    audited_lifecycle: Option<AuditedCommandLifecycle>,
 }
 
 struct AdmissionPreparationParts {
@@ -317,6 +329,7 @@ struct AdmissionPreparationParts {
     request_id: RequestId,
     deadline: Instant,
     cancellation: CancellationToken,
+    audited_lifecycle: Option<AuditedCommandLifecycle>,
 }
 
 /// Reduces one exact command preparation to replay, retry, or execution state.
@@ -331,14 +344,17 @@ pub(crate) fn reduce_command_admission(
     reduce_command_admission_with_hash(repository, clock, preparation, &hash_conflict_key)
 }
 
-/// Reduces a bounded FIFO group and shares only the physical Pending transition.
-///
-/// Every returned item retains its original identity and independent result.
-pub(crate) fn reduce_command_admission_group(
-    repository: &dyn AdmissionRepository,
-    clock: &dyn AdmissionClock,
+/// Reduces a bounded FIFO group while atomically pairing every audited vacant
+/// admission with its mandatory `Started` row.
+pub(crate) fn reduce_audited_command_admission_group<P>(
+    repository: &P,
+    admission_clock: &dyn AdmissionClock,
+    administration_clock: &dyn crate::AdministrationClock,
     preparations: Vec<CommandExecutionPreparation>,
-) -> Vec<Result<CommandAdmissionResult, CommandAdmissionError>> {
+) -> Vec<Result<CommandAdmissionResult, CommandAdmissionError>>
+where
+    P: AdmissionRepository + AuditedAdmissionRepository,
+{
     if preparations.is_empty()
         || preparations.len() > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
     {
@@ -354,37 +370,112 @@ pub(crate) fn reduce_command_admission_group(
     }
     let count = preparations.len();
     let mut outputs = (0..count).map(|_| None).collect::<Vec<_>>();
-    let mut vacant = Vec::new();
+    let mut ordinary = Vec::new();
+    let mut audited = Vec::new();
     for (index, preparation) in preparations.into_iter().enumerate() {
         match prepare_command_admission_with_hash(
             preparation,
             repository,
-            clock,
+            admission_clock,
             &hash_conflict_key,
         ) {
-            Ok(PreparedCommandAdmission::Complete(result)) => outputs[index] = Some(Ok(*result)),
-            Ok(PreparedCommandAdmission::Vacant(prepared)) => vacant.push((index, prepared)),
+            Ok(PreparedCommandAdmission::Complete(prepared)) => {
+                let PreparedCompleteAdmission {
+                    result,
+                    audited_lifecycle,
+                    audit_recheck,
+                } = *prepared;
+                match (audited_lifecycle, audit_recheck) {
+                    (None, _) => outputs[index] = Some(Ok(result)),
+                    (Some(lifecycle), Some(recheck)) => {
+                        let request = crate::audit_executor::prepare_administration_audit(
+                            administration_clock,
+                            lifecycle.started.as_ref(),
+                        )
+                        .and_then(|started| {
+                            AuditedAdmissionRequestV1::new(recheck, started)
+                                .map_err(crate::AdministrationAuditExecutionError::InvalidInput)
+                        });
+                        outputs[index] = Some(match request {
+                            Ok(request) => {
+                                match repository.admit_or_resolve_audited_group(vec![request]) {
+                                    Ok(results) if results.len() == 1 => Ok(result),
+                                    Ok(_) => Err(CommandAdmissionError::Integrity),
+                                    Err(error) => Err(CommandAdmissionError::AdmissionWrite(error)),
+                                }
+                            }
+                            Err(_) => Err(CommandAdmissionError::Integrity),
+                        });
+                    }
+                    (Some(_), None) => {
+                        outputs[index] = Some(Err(CommandAdmissionError::Integrity));
+                    }
+                }
+            }
+            Ok(PreparedCommandAdmission::Vacant(prepared)) => {
+                let lifecycle = prepared.execution_candidate.audited_lifecycle();
+                if let Some(lifecycle) = lifecycle {
+                    match crate::audit_executor::prepare_administration_audit(
+                        administration_clock,
+                        lifecycle.started.as_ref(),
+                    )
+                    .and_then(|started| {
+                        AuditedAdmissionRequestV1::new(prepared.request.clone(), started)
+                            .map_err(crate::AdministrationAuditExecutionError::InvalidInput)
+                    }) {
+                        Ok(request) => audited.push((index, prepared, request)),
+                        Err(_) => outputs[index] = Some(Err(CommandAdmissionError::Integrity)),
+                    }
+                } else {
+                    ordinary.push((index, prepared));
+                }
+            }
             Err(error) => outputs[index] = Some(Err(error)),
         }
     }
-    if !vacant.is_empty() {
-        let requests = vacant
+    if !ordinary.is_empty() {
+        let requests = ordinary
             .iter()
             .map(|(_, prepared)| prepared.request.clone())
             .collect();
         match repository.admit_or_resolve_group(requests) {
-            Ok(results) if results.len() == vacant.len() => {
-                for ((index, prepared), result) in vacant.into_iter().zip(results) {
+            Ok(results) if results.len() == ordinary.len() => {
+                for ((index, prepared), result) in ordinary.into_iter().zip(results) {
                     outputs[index] = Some(complete_vacant_admission(*prepared, result, true));
                 }
             }
             Ok(_) => {
-                for (index, _) in vacant {
+                for (index, _) in ordinary {
                     outputs[index] = Some(Err(CommandAdmissionError::Integrity));
                 }
             }
             Err(error) => {
-                for (index, prepared) in vacant {
+                for (index, prepared) in ordinary {
+                    outputs[index] =
+                        Some(Err(vacant_admission_write_error(*prepared, error.clone())));
+                }
+            }
+        }
+    }
+    if !audited.is_empty() {
+        let requests = audited
+            .iter()
+            .map(|(_, _, request)| request.clone())
+            .collect();
+        match repository.admit_or_resolve_audited_group(requests) {
+            Ok(results) if results.len() == audited.len() => {
+                for ((index, prepared, _), result) in audited.into_iter().zip(results) {
+                    let (admission, _) = result.into_parts();
+                    outputs[index] = Some(complete_vacant_admission(*prepared, admission, true));
+                }
+            }
+            Ok(_) => {
+                for (index, _, _) in audited {
+                    outputs[index] = Some(Err(CommandAdmissionError::Integrity));
+                }
+            }
+            Err(error) => {
+                for (index, prepared, _) in audited {
                     outputs[index] =
                         Some(Err(vacant_admission_write_error(*prepared, error.clone())));
                 }
@@ -458,7 +549,7 @@ fn reduce_command_admission_with_hash(
     conflict_hasher: &dyn Fn(&[u8]) -> ConflictKeyHash,
 ) -> Result<CommandAdmissionResult, CommandAdmissionError> {
     match prepare_command_admission_with_hash(preparation, repository, clock, conflict_hasher)? {
-        PreparedCommandAdmission::Complete(result) => Ok(*result),
+        PreparedCommandAdmission::Complete(prepared) => Ok(prepared.result),
         PreparedCommandAdmission::Vacant(prepared) => {
             let result = repository.admit_or_resolve(prepared.request.clone());
             match result {
@@ -470,8 +561,14 @@ fn reduce_command_admission_with_hash(
 }
 
 enum PreparedCommandAdmission {
-    Complete(Box<CommandAdmissionResult>),
+    Complete(Box<PreparedCompleteAdmission>),
     Vacant(Box<PreparedVacantAdmission>),
+}
+
+struct PreparedCompleteAdmission {
+    result: CommandAdmissionResult,
+    audited_lifecycle: Option<AuditedCommandLifecycle>,
+    audit_recheck: Option<AdmissionRequestV1>,
 }
 
 struct PreparedVacantAdmission {
@@ -496,6 +593,7 @@ fn prepare_command_admission_with_hash(
         request_id,
         deadline,
         cancellation,
+        audited_lifecycle,
     } = preparation.into_parts();
     let parts = AdmissionPreparationParts {
         resolved_plan,
@@ -505,6 +603,7 @@ fn prepare_command_admission_with_hash(
         request_id,
         deadline,
         cancellation,
+        audited_lifecycle,
     };
     let rechecked = IdempotencyRecheckExecutor::new(repository)
         .recheck(idempotency)
@@ -518,30 +617,54 @@ fn prepare_command_admission_with_hash(
         }
         IdempotencyRecheckResultV1::Pending(pending) => {
             resume_pending(parts, pending, conflict_hasher)
-                .map(Box::new)
+                .map(|result| {
+                    Box::new(PreparedCompleteAdmission {
+                        result,
+                        audited_lifecycle: None,
+                        audit_recheck: None,
+                    })
+                })
                 .map(PreparedCommandAdmission::Complete)
         }
         IdempotencyRecheckResultV1::Outcome(outcome) => {
             if outcome.partition_key() != parts.input_facts.partition_key() {
                 return Err(CommandAdmissionError::Integrity);
             }
+            let audit_recheck = admission_request_from_outcome(&outcome)?;
             Ok(PreparedCommandAdmission::Complete(Box::new(
-                CommandAdmissionResult::Outcome(outcome),
+                PreparedCompleteAdmission {
+                    result: CommandAdmissionResult::Outcome(outcome),
+                    audited_lifecycle: parts.audited_lifecycle,
+                    audit_recheck: Some(audit_recheck),
+                },
             )))
         }
         IdempotencyRecheckResultV1::ExecutionFailed(failure) => {
             if failure.pending().partition_key() != parts.input_facts.partition_key() {
                 return Err(CommandAdmissionError::Integrity);
             }
+            let audit_recheck = admission_request_from_pending(failure.pending().clone())?;
             Ok(PreparedCommandAdmission::Complete(Box::new(
-                CommandAdmissionResult::ExecutionFailed(failure),
+                PreparedCompleteAdmission {
+                    result: CommandAdmissionResult::ExecutionFailed(failure),
+                    audited_lifecycle: parts.audited_lifecycle,
+                    audit_recheck: Some(audit_recheck),
+                },
             )))
         }
         IdempotencyRecheckResultV1::PreparationChanged => Ok(PreparedCommandAdmission::Complete(
-            Box::new(CommandAdmissionResult::PreparationChanged),
+            Box::new(PreparedCompleteAdmission {
+                result: CommandAdmissionResult::PreparationChanged,
+                audited_lifecycle: parts.audited_lifecycle,
+                audit_recheck: None,
+            }),
         )),
         IdempotencyRecheckResultV1::InputMismatch => Ok(PreparedCommandAdmission::Complete(
-            Box::new(CommandAdmissionResult::InputMismatch),
+            Box::new(PreparedCompleteAdmission {
+                result: CommandAdmissionResult::InputMismatch,
+                audited_lifecycle: parts.audited_lifecycle,
+                audit_recheck: None,
+            }),
         )),
     }
 }
@@ -595,6 +718,45 @@ fn prepare_vacant(
         pending,
         execution_candidate,
     })
+}
+
+fn admission_request_from_outcome(
+    outcome: &StoredOutcomeV1,
+) -> Result<AdmissionRequestV1, CommandAdmissionError> {
+    let pending = StoredPendingAdmissionV1::new(
+        outcome.identity().clone(),
+        outcome.canonical_input_hash(),
+        outcome.admission_request_id(),
+        outcome.plan().clone(),
+        outcome.logical_time(),
+        outcome.actor().clone(),
+        outcome.partition_key().clone(),
+        outcome.admitted_claims().clone(),
+    )
+    .map_err(|_| CommandAdmissionError::Integrity)?;
+    let context = PreEvaluationCommitContext::new(
+        pending,
+        outcome.partition_hash(),
+        outcome.conflict_hashes().to_vec(),
+    )
+    .map_err(|_| CommandAdmissionError::Integrity)?;
+    let candidates = IdempotencyLookupCandidatesV1::new(vec![outcome.identity().clone()])
+        .map_err(|_| CommandAdmissionError::Integrity)?;
+    AdmissionRequestV1::new(candidates, &context).map_err(|_| CommandAdmissionError::Integrity)
+}
+
+fn admission_request_from_pending(
+    pending: StoredPendingAdmissionV1,
+) -> Result<AdmissionRequestV1, CommandAdmissionError> {
+    let candidates = IdempotencyLookupCandidatesV1::new(vec![pending.identity().clone()])
+        .map_err(|_| CommandAdmissionError::Integrity)?;
+    let context = PreEvaluationCommitContext::new(
+        pending.clone(),
+        hash_partition_key(pending.partition_key().as_bytes()),
+        Vec::new(),
+    )
+    .map_err(|_| CommandAdmissionError::Integrity)?;
+    AdmissionRequestV1::new(candidates, &context).map_err(|_| CommandAdmissionError::Integrity)
 }
 
 fn complete_vacant_admission(
@@ -680,6 +842,7 @@ fn lower_preparation(
         invocation_request_id: parts.request_id,
         deadline: parts.deadline,
         cancellation: parts.cancellation,
+        audited_lifecycle: parts.audited_lifecycle,
     })
 }
 
@@ -696,6 +859,7 @@ fn candidate(
         invocation_request_id: lowered.invocation_request_id,
         deadline: lowered.deadline,
         cancellation: lowered.cancellation,
+        audited_lifecycle: lowered.audited_lifecycle,
     }
 }
 

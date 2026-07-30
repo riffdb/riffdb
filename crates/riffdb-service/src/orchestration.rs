@@ -628,6 +628,35 @@ impl BegunInvocation {
         &self.initial_authorization
     }
 
+    pub(crate) fn compound_started_input(
+        &self,
+        context: &RequestContext,
+    ) -> Result<ServiceAuditInput, AuditAppendFailure> {
+        if self.operation != ServiceOperationV1::ExecuteCommand || !self.started {
+            return Err(AuditAppendFailure);
+        }
+        ServiceAuditInput::new(
+            context,
+            self.operation,
+            ServiceAuditPhaseV1::Started,
+            self.targets.clone(),
+            self.approval_id.clone(),
+            ServiceAuditLinkV1::None,
+        )
+        .map_err(|_| AuditAppendFailure)
+    }
+
+    pub(crate) fn confirm_compound_success(
+        &self,
+        link: ServiceAuditLinkV1,
+    ) -> Result<(), AuditAppendFailure> {
+        self.lifecycle
+            .begin_terminal(ServiceAuditPhaseV1::Succeeded, link)
+            .map_err(|_| AuditAppendFailure)?;
+        self.lifecycle.finish_terminal(true);
+        Ok(())
+    }
+
     /// Separates a one-use policy proof from the invocation's terminal-audit authority.
     pub(crate) fn into_initial_authorization_and_completion(
         self,
@@ -1019,6 +1048,31 @@ impl RiffDbServiceInner {
         targets: ServiceAuditTargetsV1,
         scope: AuditScope,
     ) -> ServiceResult<BegunInvocation> {
+        self.begin_invocation_with_start(context, request, targets, scope, false)
+            .await
+    }
+
+    pub(crate) async fn begin_compound_command_invocation(
+        &self,
+        context: &RequestContext,
+        request: OperationRequest,
+        targets: ServiceAuditTargetsV1,
+    ) -> ServiceResult<BegunInvocation> {
+        if request.operation() != ServiceOperationV1::ExecuteCommand {
+            return Err(self.internal_failure(request.operation(), InternalDefect::ProofMismatch));
+        }
+        self.begin_invocation_with_start(context, request, targets, AuditScope::Intrinsic, true)
+            .await
+    }
+
+    async fn begin_invocation_with_start(
+        &self,
+        context: &RequestContext,
+        request: OperationRequest,
+        targets: ServiceAuditTargetsV1,
+        scope: AuditScope,
+        defer_command_start: bool,
+    ) -> ServiceResult<BegunInvocation> {
         let operation = request.operation();
         if scope == AuditScope::Intrinsic {
             self.classify_intrinsic_prestart(context, operation, targets.clone())?;
@@ -1125,18 +1179,19 @@ impl RiffDbServiceInner {
             lifecycle
                 .prepare_start(operation, panic_terminal)
                 .map_err(|_| self.internal_failure(operation, InternalDefect::ProofMismatch))?;
-            if self
-                .append_audit(
-                    context,
-                    operation,
-                    ServiceAuditPhaseV1::Started,
-                    targets.clone(),
-                    approval_id.clone(),
-                    ServiceAuditLinkV1::None,
-                    AuditAppendControl::Invocation,
-                )
-                .await
-                .is_err()
+            if !defer_command_start
+                && self
+                    .append_audit(
+                        context,
+                        operation,
+                        ServiceAuditPhaseV1::Started,
+                        targets.clone(),
+                        approval_id.clone(),
+                        ServiceAuditLinkV1::None,
+                        AuditAppendControl::Invocation,
+                    )
+                    .await
+                    .is_err()
             {
                 lifecycle.fail_start();
                 self.note_audit_failure(operation);

@@ -36,6 +36,7 @@ pub(crate) enum TransientIndexState {
 }
 
 pub(crate) enum TransientIndexDelta {
+    Composite(Vec<TransientIndexDelta>),
     ServiceAuditAppended {
         request_id: RequestId,
         sequence: AdministrationSequence,
@@ -102,6 +103,11 @@ impl TransientIndexes {
 
     pub(crate) fn apply(&mut self, delta: TransientIndexDelta) {
         match delta {
+            TransientIndexDelta::Composite(deltas) => {
+                for delta in deltas {
+                    self.apply(delta);
+                }
+            }
             TransientIndexDelta::ServiceAuditAppended {
                 request_id,
                 sequence,

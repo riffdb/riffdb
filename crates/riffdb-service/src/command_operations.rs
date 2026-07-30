@@ -616,7 +616,7 @@ async fn execute_mutation(
         if begun.is_none() {
             begun = Some(
                 service
-                    .begin_invocation(context, operation, targets.clone(), AuditScope::Intrinsic)
+                    .begin_compound_command_invocation(context, operation, targets.clone())
                     .await?,
             );
         }
@@ -799,6 +799,23 @@ async fn execute_mutation(
                 .await);
             }
         };
+        let started = match invocation.compound_started_input(context) {
+            Ok(started) => started,
+            Err(_) => {
+                let failure = service.internal_failure(
+                    ServiceOperationV1::ExecuteCommand,
+                    InternalDefect::ProofMismatch,
+                );
+                return Err(finish_failure(
+                    service,
+                    context,
+                    invocation,
+                    failure,
+                    TerminalKind::Ordinary,
+                )
+                .await);
+            }
+        };
         let preparation = match CommandExecutionPreparation::new(
             service.identity.database_id(),
             service.identity.environment(),
@@ -810,7 +827,9 @@ async fn execute_mutation(
             context.request_id(),
             context.ingress(),
             control,
-        ) {
+        )
+        .and_then(|preparation| preparation.with_audited_lifecycle(Box::new(started)))
+        {
             Ok(preparation) => preparation,
             Err(_) => {
                 let failure = service.internal_failure(
@@ -870,9 +889,21 @@ async fn execute_mutation(
                         .await);
                     }
                 };
+                let first_commit = result.completion() == JournaledCompletion::Committed;
                 let result = ExecuteCommandResult::Journaled(result);
                 let pending = PendingTerminalResponse::new(result, link, ensure_response_budget);
-                finish_success(service, context, invocation, pending.terminal(), true).await?;
+                if first_commit {
+                    invocation
+                        .confirm_compound_success(pending.terminal())
+                        .map_err(|_| {
+                            service.internal_failure(
+                                ServiceOperationV1::ExecuteCommand,
+                                InternalDefect::ProofMismatch,
+                            )
+                        })?;
+                } else {
+                    finish_success(service, context, invocation, pending.terminal(), true).await?;
+                }
                 return pending.into_response();
             }
             Ok(CoordinatorCommandResult::ExecutionFailed(code)) => {

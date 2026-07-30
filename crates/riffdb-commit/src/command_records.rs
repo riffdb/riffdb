@@ -15,6 +15,7 @@ use riffdb_storage_api::{
 use riffdb_types::{EntityVersion, EventId};
 
 use crate::{
+    command_attempt::PendingCommandAttempts,
     command_index::{
         CheckedCandidateStage, CheckedCommitCandidate, RetainedCheckedCommitCandidate,
     },
@@ -117,6 +118,16 @@ pub(super) enum CheckedCommandCommitResult {
     Integrity,
 }
 
+pub(super) enum CheckedCommandGroupCommitResult {
+    Committed(Vec<CommittedOutcome>),
+    ProvenAbort {
+        cause: StorageError,
+        retries: Vec<PendingCommandAttempts>,
+    },
+    StatusUnknown(Vec<UncertainCommandCommit>),
+    Integrity,
+}
+
 /// Move-only same-attempt evidence retained after an uncertain engine commit.
 pub(super) struct UncertainCommandCommit {
     cause: StorageError,
@@ -175,26 +186,211 @@ impl fmt::Debug for ProvenNonCommitCommand {
 /// mutation capability. Later commit orchestration must consume this wrapper.
 pub(super) struct CheckedStagedCommand<S> {
     staged: S,
+    entries: Vec<CheckedStagedCommandEntry>,
+    durability_mode: DurabilityMode,
+}
+
+pub(super) struct CheckedStagedCommandEntry {
     candidate: RetainedCheckedCommitCandidate,
     expected_outcome: StoredOutcomeV1,
-    durability_mode: DurabilityMode,
+}
+
+impl CheckedStagedCommandEntry {
+    pub(super) fn into_retry(self) -> Result<PendingCommandAttempts, ()> {
+        self.candidate.into_pending_after_group_rollback()
+    }
 }
 
 impl<S> CheckedStagedCommand<S>
 where
     S: NonEmptyCommandBatch,
 {
-    /// Commits with the exact mode already embedded in the staged graph while
-    /// retaining the attempt capability until the storage call returns.
-    pub(super) fn commit(self) -> CheckedCommandCommitResult {
+    pub(super) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(super) fn audited_starts(
+        &self,
+    ) -> impl Iterator<Item = Option<&dyn crate::AdministrationAuditInputView>> {
+        self.entries.iter().map(|entry| {
+            entry.candidate.audited_lifecycle().map(|lifecycle| {
+                let _proof = &lifecycle.release;
+                lifecycle.started.as_ref() as &dyn crate::AdministrationAuditInputView
+            })
+        })
+    }
+
+    pub(super) fn terminal_links(
+        &self,
+    ) -> impl Iterator<Item = riffdb_types::ServiceAuditLinkV1> + '_ {
+        self.entries
+            .iter()
+            .map(|entry| riffdb_types::ServiceAuditLinkV1::Command {
+                commit_sequence: entry.expected_outcome.commit_sequence(),
+                provenance_id: entry.expected_outcome.provenance_id(),
+            })
+    }
+
+    pub(super) fn into_storage_and_entries(
+        self,
+    ) -> (S, Vec<CheckedStagedCommandEntry>, DurabilityMode) {
+        (self.staged, self.entries, self.durability_mode)
+    }
+
+    pub(super) fn from_appended(
+        staged: S,
+        mut entries: Vec<CheckedStagedCommandEntry>,
+        entry: CheckedStagedCommandEntry,
+        durability_mode: DurabilityMode,
+    ) -> Self {
+        entries.push(entry);
+        Self {
+            staged,
+            entries,
+            durability_mode,
+        }
+    }
+
+    pub(super) fn rollback_into_retries(self) -> Result<Vec<PendingCommandAttempts>, ()> {
         let Self {
             staged,
-            candidate,
-            expected_outcome,
+            entries,
+            durability_mode: _,
+        } = self;
+        staged.rollback();
+        entries
+            .into_iter()
+            .map(|entry| entry.candidate.into_pending_after_group_rollback())
+            .collect()
+    }
+
+    pub(super) fn audited_start(&self) -> Option<&dyn crate::AdministrationAuditInputView> {
+        self.entries
+            .first()?
+            .candidate
+            .audited_lifecycle()
+            .map(|lifecycle| {
+                let _proof = &lifecycle.release;
+                lifecycle.started.as_ref()
+            })
+    }
+
+    pub(super) fn terminal_link(&self) -> riffdb_types::ServiceAuditLinkV1 {
+        let expected_outcome = &self
+            .entries
+            .first()
+            .expect("checked staged command is nonempty")
+            .expected_outcome;
+        riffdb_types::ServiceAuditLinkV1::Command {
+            commit_sequence: expected_outcome.commit_sequence(),
+            provenance_id: expected_outcome.provenance_id(),
+        }
+    }
+
+    /// Commits with the exact mode already embedded in the staged graph while
+    /// retaining the attempt capability until the storage call returns.
+    pub(super) fn commit(
+        self,
+        terminal: Option<riffdb_storage_api::ServiceAuditAppendIntentV1>,
+    ) -> CheckedCommandCommitResult {
+        let Self {
+            staged,
+            entries,
             durability_mode,
         } = self;
-        let result = staged.commit(durability_mode);
-        finish_checked_commit(candidate, expected_outcome, durability_mode, result)
+        if entries.len() != 1 {
+            drop(staged);
+            drop(entries);
+            return CheckedCommandCommitResult::Integrity;
+        }
+        let entry = entries
+            .into_iter()
+            .next()
+            .expect("checked staged command is nonempty");
+        let result = match terminal {
+            Some(terminal) => staged
+                .commit_with_service_audit(durability_mode, terminal)
+                .map(|audited| audited.into_parts().0),
+            None => staged.commit(durability_mode),
+        };
+        finish_checked_commit(
+            entry.candidate,
+            entry.expected_outcome,
+            durability_mode,
+            result,
+        )
+    }
+
+    pub(super) fn commit_group(
+        self,
+        terminals: Option<Vec<riffdb_storage_api::ServiceAuditAppendIntentV1>>,
+    ) -> CheckedCommandGroupCommitResult {
+        let Self {
+            staged,
+            entries,
+            durability_mode,
+        } = self;
+        if entries.len() < 2
+            || terminals
+                .as_ref()
+                .is_some_and(|terminals| entries.len() != terminals.len())
+        {
+            drop(staged);
+            drop(entries);
+            return CheckedCommandGroupCommitResult::Integrity;
+        }
+        let expected = entries
+            .iter()
+            .map(|entry| entry.expected_outcome.clone())
+            .collect::<Vec<_>>();
+        let committed = match terminals {
+            Some(terminals) => staged
+                .commit_with_service_audits(durability_mode, terminals)
+                .map(|audited| audited.into_parts().0),
+            None => staged.commit(durability_mode),
+        };
+        match committed {
+            Ok(batch)
+                if batch.durability_mode() == durability_mode
+                    && batch.outcomes() == expected.as_slice() =>
+            {
+                let outcomes = entries
+                    .into_iter()
+                    .map(|entry| {
+                        drop(entry.candidate);
+                        CommittedOutcome::first_commit(entry.expected_outcome)
+                    })
+                    .collect();
+                CheckedCommandGroupCommitResult::Committed(outcomes)
+            }
+            Ok(_) => {
+                drop(entries);
+                CheckedCommandGroupCommitResult::Integrity
+            }
+            Err(cause) if cause.kind() == StorageErrorKind::CommitStatusUnknown => {
+                let uncertain = entries
+                    .into_iter()
+                    .map(|entry| UncertainCommandCommit {
+                        cause: cause.clone(),
+                        lookup_candidates: entry.candidate.lookup_candidates().clone(),
+                        expected_outcome: entry.expected_outcome,
+                        candidate: entry.candidate,
+                        durability_mode,
+                    })
+                    .collect();
+                CheckedCommandGroupCommitResult::StatusUnknown(uncertain)
+            }
+            Err(cause) => {
+                let retries = entries
+                    .into_iter()
+                    .map(|entry| entry.candidate.into_pending_after_group_rollback())
+                    .collect::<Result<Vec<_>, _>>();
+                match retries {
+                    Ok(retries) => CheckedCommandGroupCommitResult::ProvenAbort { cause, retries },
+                    Err(()) => CheckedCommandGroupCommitResult::Integrity,
+                }
+            }
+        }
     }
 }
 
@@ -339,6 +535,32 @@ where
     S: CommandCandidateSequenceAssigned,
     S::Prior: EmptyCommandBatch,
 {
+    let (staged, entry) = stage_checked_candidate(candidate, durability_mode)?;
+    Ok(CheckedStagedCommand {
+        staged,
+        entries: vec![entry],
+        durability_mode,
+    })
+}
+
+pub(super) fn build_and_stage_checked_candidate_on_prior<S>(
+    candidate: CheckedCommitCandidate<S>,
+    durability_mode: DurabilityMode,
+) -> Result<(S::Staged, CheckedStagedCommandEntry), CheckedCommandStageError>
+where
+    S: CommandCandidateSequenceAssigned,
+    S::Prior: NonEmptyCommandBatch,
+{
+    stage_checked_candidate(candidate, durability_mode)
+}
+
+fn stage_checked_candidate<S>(
+    candidate: CheckedCommitCandidate<S>,
+    durability_mode: DurabilityMode,
+) -> Result<(S::Staged, CheckedStagedCommandEntry), CheckedCommandStageError>
+where
+    S: CommandCandidateSequenceAssigned,
+{
     let input = match CheckedRecordGraphInput::from_assigned_candidate(&candidate) {
         Ok(input) => input,
         Err(error) => {
@@ -372,12 +594,13 @@ where
             ));
         }
     };
-    Ok(CheckedStagedCommand {
+    Ok((
         staged,
-        candidate,
-        expected_outcome,
-        durability_mode,
-    })
+        CheckedStagedCommandEntry {
+            candidate,
+            expected_outcome,
+        },
+    ))
 }
 
 /// Derives the complete successful-command graph from one reserved write plan.

@@ -10,6 +10,7 @@ publish.workspace = true
 default = []
 
 [dependencies]
+futures-util = { version = "=0.3.33", default-features = false, features = ["async-await", "std"] }
 getrandom = { version = "=0.3.4", default-features = false }
 riffdb-api-grpc = { version = "0.1.0", path = "../riffdb-api-grpc", default-features = false, features = ["client"] }
 riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false }

@@ -513,7 +513,7 @@ impl HistoricalPlanReferenceRow {
 /// Moving a keyed table to `BTreeMap` remains a private optimization if memory
 /// mutation cost becomes material; no public or durable contract depends on it.
 #[allow(dead_code)]
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct MemoryState {
     pub(crate) metadata: MemoryMetadataSlot,
     pub(crate) catalog_bundles: Vec<CatalogBundleRow>,

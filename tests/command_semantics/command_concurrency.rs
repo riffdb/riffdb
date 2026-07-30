@@ -11,14 +11,137 @@ use riffdb_commit::{
     CommittedOutcomeDisposition, CoordinatorLifecycleState,
 };
 use riffdb_storage_api::AuthoritativePointReader;
+use riffdb_storage_api::{ApplicationCommandTransactionPort, EmptyCommandBatch};
+use riffdb_storage_redb::{RedbTestController, RedbTestOperation, RedbTestPhase};
 use riffdb_types::{CommitSequence, ExecutionFailureCode};
 
 use support::{
     BudgetDatabase, CountingProvenanceSource, FailingApplicationCommitNotifications,
     FixedAdmissionClock, IncrementingProvenanceSource, PanickingApplicationCommitNotifications,
     RecordingApplicationCommitNotifications, UniqueUserDatabase, command_timestamp, runtime,
-    start_coordinator_with_notifications,
+    start_coordinator_with_notifications, start_group_coordinator_with_notifications,
 };
+
+#[test]
+fn disjoint_commands_share_two_immediate_transitions_and_keep_independent_results() {
+    let database = UniqueUserDatabase::create("grouped-disjoint");
+    let controller = RedbTestController::observe_index_migration();
+    let ports = database.open_with_controller(controller.clone());
+    let organization =
+        database.prepare_organization_for(&ports, [0x80; 16], "group-blocker", 0x80, 0x90);
+    let first = database.prepare_organization_for(&ports, [0x81; 16], "group-first", 0x81, 0x91);
+    let second = database.prepare_organization_for(&ports, [0x82; 16], "group-second", 0x82, 0x92);
+    let blocker = ports.begin_empty_batch().expect("hold writer admission");
+    let admission_clock = Arc::new(FixedAdmissionClock::new(command_timestamp()));
+    let provenance_source = Arc::new(IncrementingProvenanceSource::new(0xa1));
+    let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
+    let coordinator = start_group_coordinator_with_notifications(
+        ports,
+        Arc::clone(&admission_clock),
+        provenance_source,
+        notifications.clone(),
+    );
+    let executor = coordinator.command_executor();
+
+    let (first, second) = runtime().block_on(async {
+        let organization = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve organization")
+            .submit(organization)
+            .expect("submit organization");
+        for _ in 0..10_000 {
+            if admission_clock.calls() == 1 {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            admission_clock.calls(),
+            1,
+            "organization reached the explicit admission-clock hook"
+        );
+
+        let first = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve first grouped command")
+            .submit(first)
+            .expect("submit first grouped command");
+        let second = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve second grouped command")
+            .submit(second)
+            .expect("submit second grouped command");
+        blocker.rollback();
+
+        assert!(matches!(
+            organization
+                .completion()
+                .await
+                .expect("organization completion"),
+            CommandExecutionResult::Committed(_)
+        ));
+        (
+            first.completion().await.expect("first grouped completion"),
+            second
+                .completion()
+                .await
+                .expect("second grouped completion"),
+        )
+    });
+
+    let CommandExecutionResult::Committed(first) = first else {
+        panic!("first disjoint command commits");
+    };
+    let CommandExecutionResult::Committed(second) = second else {
+        panic!("second disjoint command commits");
+    };
+    assert_ne!(
+        first.stored_outcome().identity(),
+        second.stored_outcome().identity()
+    );
+    assert_ne!(
+        first.stored_outcome().provenance_id(),
+        second.stored_outcome().provenance_id()
+    );
+    assert_eq!(
+        first.stored_outcome().durability_mode(),
+        riffdb_storage_api::DurabilityMode::Group
+    );
+    assert_eq!(
+        second.stored_outcome().durability_mode(),
+        riffdb_storage_api::DurabilityMode::Group
+    );
+    assert_eq!(
+        notifications.sequences(),
+        vec![
+            CommitSequence::first(),
+            CommitSequence::new(2).expect("second sequence"),
+            CommitSequence::new(3).expect("third sequence"),
+        ]
+    );
+
+    drop(executor);
+    coordinator.shutdown().expect("drain grouped coordinator");
+    let transitions = controller
+        .events()
+        .into_iter()
+        .filter(|event| event.phase() == RedbTestPhase::BeforeEngineCommit)
+        .map(|event| event.operation())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        transitions,
+        vec![
+            RedbTestOperation::Admission,
+            RedbTestOperation::CommandBatch,
+            RedbTestOperation::Admission,
+            RedbTestOperation::CommandBatch,
+        ],
+        "one independent command plus two disjoint commands use four physical transitions"
+    );
+}
 
 #[test]
 fn equal_key_commands_commit_once_and_replay_exactly() {

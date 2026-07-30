@@ -19,6 +19,7 @@ const CHECKED_WINDOW: usize = 128;
 const SMOKE_WINDOW: usize = 32;
 const PERF_MIN_COMMANDS_PER_SECOND: u64 = 50;
 const PERF_MIN_RETAINED_BASIS_POINTS: u64 = 5_000;
+const PERF_MAX_GROUP_VS_SYNC_BASIS_POINTS: u64 = 7_500;
 const PREFLIGHT_ENVIRONMENT: &str = "RIFFDB_COMMAND_GROWTH_PREFLIGHT";
 const PREFLIGHT_EVIDENCE: &str = "semantic-crash-v1";
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
@@ -33,7 +34,7 @@ fn main() -> ExitCode {
 fn run() -> Result<bool, ()> {
     let configuration = Configuration::parse()?;
     let preflight_passed = env::var(PREFLIGHT_ENVIRONMENT).as_deref() == Ok(PREFLIGHT_EVIDENCE);
-    if configuration.assert_perf_003 && !preflight_passed {
+    if (configuration.assert_perf_003 || configuration.assert_perf_004) && !preflight_passed {
         return Err(());
     }
     let root = TempRoot::new()?;
@@ -89,7 +90,7 @@ fn run() -> Result<bool, ()> {
         "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"recovery\",\"retained_commands\":{},\"engine_reopen_ns\":{recovery_ns}}}",
         next_command.saturating_sub(1)
     );
-    run_mechanics_comparison(root.path(), configuration.checked)?;
+    let comparison = run_mechanics_comparison(root.path(), configuration.checked)?;
     let first_rate = first_rate.ok_or(())?;
     let retained_basis_points = final_rate.checked_mul(10_000).ok_or(())? / first_rate.max(1);
     let passed = final_rate >= PERF_MIN_COMMANDS_PER_SECOND
@@ -97,11 +98,33 @@ fn run() -> Result<bool, ()> {
     println!(
         "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"summary\",\"first_commands_per_second\":{first_rate},\"final_commands_per_second\":{final_rate},\"retained_basis_points\":{retained_basis_points},\"minimum_commands_per_second\":{PERF_MIN_COMMANDS_PER_SECOND},\"minimum_retained_basis_points\":{PERF_MIN_RETAINED_BASIS_POINTS},\"perf_003_passed\":{passed}}}"
     );
-    Ok(!configuration.assert_perf_003 || passed)
+    let group_basis_points = comparison.group_elapsed_ns.checked_mul(10_000).ok_or(())?
+        / comparison.sync_elapsed_ns.max(1);
+    let perf_004_passed = comparison.group_commands == 16
+        && comparison.commands >= 32
+        && group_basis_points <= PERF_MAX_GROUP_VS_SYNC_BASIS_POINTS;
+    println!(
+        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"group_summary\",\"sync_elapsed_ns\":{},\"group_elapsed_ns\":{},\"commands\":{},\"group_commands\":{},\"group_vs_sync_basis_points\":{group_basis_points},\"maximum_group_vs_sync_basis_points\":{PERF_MAX_GROUP_VS_SYNC_BASIS_POINTS},\"engine_durability\":\"immediate_two_phase\",\"perf_004_passed\":{perf_004_passed}}}",
+        comparison.sync_elapsed_ns,
+        comparison.group_elapsed_ns,
+        comparison.commands,
+        comparison.group_commands,
+    );
+    Ok((!configuration.assert_perf_003 || passed)
+        && (!configuration.assert_perf_004 || perf_004_passed))
 }
 
-fn run_mechanics_comparison(root: &Path, checked: bool) -> Result<(), ()> {
+struct GroupComparison {
+    sync_elapsed_ns: u64,
+    group_elapsed_ns: u64,
+    commands: usize,
+    group_commands: usize,
+}
+
+fn run_mechanics_comparison(root: &Path, checked: bool) -> Result<GroupComparison, ()> {
     let commands = if checked { 128 } else { 32 };
+    let mut sync_elapsed_ns = None;
+    let mut group_elapsed_ns = None;
     for (ordinal, (durability, group)) in [
         (EngineDurability::None, 1),
         (EngineDurability::ImmediateOnePhase, 1),
@@ -115,19 +138,30 @@ fn run_mechanics_comparison(root: &Path, checked: bool) -> Result<(), ()> {
         initialize_engine_mechanics(&path).map_err(|_| ())?;
         let profile = EngineMechanicsProfile::new(durability, group).map_err(|_| ())?;
         let sample = run_engine_mechanics_window(&path, 1, commands, profile).map_err(|_| ())?;
+        let elapsed_ns = u64::try_from(sample.elapsed().as_nanos()).map_err(|_| ())?;
+        if durability == EngineDurability::ImmediateTwoPhase && group == 1 {
+            sync_elapsed_ns = Some(elapsed_ns);
+        } else if durability == EngineDurability::ImmediateTwoPhase && group == 16 {
+            group_elapsed_ns = Some(elapsed_ns);
+        }
         println!(
             "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"mechanics_comparison\",\"engine_durability\":\"{}\",\"group_commands\":{},\"commands\":{},\"elapsed_ns\":{},\"admission_table_page_work_ns\":{},\"admission_commit_and_flush_ns\":{},\"terminal_table_page_work_ns\":{},\"terminal_commit_and_flush_ns\":{}}}",
             durability.label(),
             profile.group_commands(),
             commands,
-            sample.elapsed().as_nanos(),
+            elapsed_ns,
             sample.admission_work().as_nanos(),
             sample.admission_commit().as_nanos(),
             sample.terminal_work().as_nanos(),
             sample.terminal_commit().as_nanos()
         );
     }
-    Ok(())
+    Ok(GroupComparison {
+        sync_elapsed_ns: sync_elapsed_ns.ok_or(())?,
+        group_elapsed_ns: group_elapsed_ns.ok_or(())?,
+        commands,
+        group_commands: 16,
+    })
 }
 
 fn commands_per_second(commands: usize, elapsed_ns: u64) -> Result<u64, ()> {
@@ -143,12 +177,14 @@ fn commands_per_second(commands: usize, elapsed_ns: u64) -> Result<u64, ()> {
 struct Configuration {
     checked: bool,
     assert_perf_003: bool,
+    assert_perf_004: bool,
 }
 
 impl Configuration {
     fn parse() -> Result<Self, ()> {
         let mut checked = false;
         let mut assert_perf_003 = false;
+        let mut assert_perf_004 = false;
         for argument in env::args().skip(1) {
             match argument.as_str() {
                 "--smoke" => checked = false,
@@ -157,12 +193,17 @@ impl Configuration {
                     checked = true;
                     assert_perf_003 = true;
                 }
+                "--assert-perf-004" => {
+                    checked = true;
+                    assert_perf_004 = true;
+                }
                 _ => return Err(()),
             }
         }
         Ok(Self {
             checked,
             assert_perf_003,
+            assert_perf_004,
         })
     }
 }

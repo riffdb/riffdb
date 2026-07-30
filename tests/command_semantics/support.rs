@@ -205,6 +205,7 @@ impl UniqueUserDatabase {
         self.prepare_user_command(
             ports,
             "CreateUser",
+            ORGANIZATION_ID,
             user_id,
             email,
             caller_key,
@@ -225,6 +226,30 @@ impl UniqueUserDatabase {
         self.prepare_user_command(
             ports,
             "ChangeEmail",
+            ORGANIZATION_ID,
+            user_id,
+            email,
+            caller_key,
+            digest_seed,
+            request_seed,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_for_organization(
+        &self,
+        ports: &RedbOperationalPorts,
+        organization_id: [u8; 16],
+        user_id: [u8; 16],
+        email: &str,
+        caller_key: &str,
+        digest_seed: u8,
+        request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        self.prepare_user_command(
+            ports,
+            "CreateUser",
+            organization_id,
             user_id,
             email,
             caller_key,
@@ -238,6 +263,7 @@ impl UniqueUserDatabase {
         &self,
         ports: &RedbOperationalPorts,
         command_name: &str,
+        organization_id: [u8; 16],
         user_id: [u8; 16],
         email: &str,
         caller_key: &str,
@@ -261,7 +287,7 @@ impl UniqueUserDatabase {
                     "idempotency_key",
                     CanonicalValue::string(caller_key).expect("bounded caller key"),
                 ),
-                ("organization_id", CanonicalValue::Uuid(ORGANIZATION_ID)),
+                ("organization_id", CanonicalValue::Uuid(organization_id)),
                 ("user_id", CanonicalValue::Uuid(user_id)),
                 (
                     "email",
@@ -325,6 +351,17 @@ impl UniqueUserDatabase {
         &self,
         ports: &RedbOperationalPorts,
     ) -> CommandExecutionPreparation {
+        self.prepare_organization_for(ports, ORGANIZATION_ID, "create-organization", 0x60, 0x50)
+    }
+
+    pub(crate) fn prepare_organization_for(
+        &self,
+        ports: &RedbOperationalPorts,
+        organization_id: [u8; 16],
+        caller_key_text: &str,
+        digest_seed: u8,
+        request_seed: u8,
+    ) -> CommandExecutionPreparation {
         let plan = self.command_plan("CreateOrganization");
         let reference = ExecutablePlanRef::new(
             self.checked_bundle.lineage().clone(),
@@ -335,7 +372,6 @@ impl UniqueUserDatabase {
         );
         let resolved = resolve_executable_plan(ports, &reference)
             .expect("deployed CreateOrganization plan resolves");
-        let caller_key_text = "create-organization";
         let input = input_record(
             plan.input().record(),
             [
@@ -343,7 +379,7 @@ impl UniqueUserDatabase {
                     "idempotency_key",
                     CanonicalValue::string(caller_key_text).expect("bounded caller key"),
                 ),
-                ("organization_id", CanonicalValue::Uuid(ORGANIZATION_ID)),
+                ("organization_id", CanonicalValue::Uuid(organization_id)),
             ],
         );
         let facts = derive_input_command_facts(plan, input.clone())
@@ -357,8 +393,9 @@ impl UniqueUserDatabase {
             reference.contract_lineage().clone(),
             reference.command_id(),
         );
-        let lookup = prepare_idempotency_lookup(&scope, &caller_key, &FixedDigestProvider(0x60))
-            .expect("prepare organization caller-key lookup");
+        let lookup =
+            prepare_idempotency_lookup(&scope, &caller_key, &FixedDigestProvider(digest_seed))
+                .expect("prepare organization caller-key lookup");
         let idempotency = IdempotencyInspectionExecutor::new(ports)
             .inspect(lookup)
             .expect("inspect organization idempotency state")
@@ -389,7 +426,7 @@ impl UniqueUserDatabase {
             idempotency,
             facts,
             authorization,
-            request_id(0x50),
+            request_id(request_seed),
             riffdb_types::ServiceIngressKindV1::Grpc,
             control,
         )
@@ -780,6 +817,43 @@ pub(crate) fn start_coordinator_with_notifications<P>(
 where
     P: ProvenanceIdSource + 'static,
 {
+    start_coordinator_with_durability(
+        ports,
+        admission_clock,
+        provenance_source,
+        notifications,
+        CoordinatorDurability::Sync,
+    )
+}
+
+pub(crate) fn start_group_coordinator_with_notifications<P>(
+    ports: RedbOperationalPorts,
+    admission_clock: Arc<FixedAdmissionClock>,
+    provenance_source: Arc<P>,
+    notifications: Arc<dyn ApplicationCommitNotificationSink>,
+) -> RunningCommandCoordinator
+where
+    P: ProvenanceIdSource + 'static,
+{
+    start_coordinator_with_durability(
+        ports,
+        admission_clock,
+        provenance_source,
+        notifications,
+        CoordinatorDurability::Group,
+    )
+}
+
+fn start_coordinator_with_durability<P>(
+    ports: RedbOperationalPorts,
+    admission_clock: Arc<FixedAdmissionClock>,
+    provenance_source: Arc<P>,
+    notifications: Arc<dyn ApplicationCommitNotificationSink>,
+    durability: CoordinatorDurability,
+) -> RunningCommandCoordinator
+where
+    P: ProvenanceIdSource + 'static,
+{
     let conflicts: Arc<dyn ConflictManager> = Arc::new(
         ShardedConflictManager::new(ConflictManagerConfig::default())
             .expect("start conflict manager"),
@@ -792,7 +866,7 @@ where
     let provenance_source: Arc<dyn ProvenanceIdSource> = provenance_source;
     RunningCommandCoordinator::start(
         CoordinatorWorkloadCapacity::new(8).expect("nonzero coordinator capacity"),
-        CoordinatorDurability::Sync,
+        durability,
         ports,
         conflicts,
         admission_clock,

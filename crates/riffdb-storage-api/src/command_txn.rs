@@ -115,8 +115,93 @@ pub trait NonEmptyCommandBatch: Sized {
     /// A mismatch aborts the complete batch without committing any record.
     fn commit(self, durability: DurabilityMode) -> Result<CommittedBatchV1, StorageError>;
 
+    /// Durably commits the command graph and its exact linked terminal audit in
+    /// one authoritative transition.
+    ///
+    /// This closed operation is available only to the audited application
+    /// command path. The default keeps reference test doubles source
+    /// compatible while failing closed; production backends must override it.
+    fn commit_with_service_audit(
+        self,
+        durability: DurabilityMode,
+        terminal: crate::ServiceAuditAppendIntentV1,
+    ) -> Result<AuditedCommittedBatchV1, StorageError> {
+        self.commit_with_service_audits(durability, vec![terminal])
+    }
+
+    /// Durably commits every command graph and its corresponding terminal
+    /// audit in one authoritative transition.
+    ///
+    /// Inputs and results are in command-sequence order. The operation is
+    /// deliberately all-or-nothing at the storage boundary while callers retain
+    /// independent application identities and acknowledgements.
+    fn commit_with_service_audits(
+        self,
+        _durability: DurabilityMode,
+        _terminals: Vec<crate::ServiceAuditAppendIntentV1>,
+    ) -> Result<AuditedCommittedBatchV1, StorageError> {
+        Err(StorageError::new(
+            crate::StorageErrorKind::InvariantViolation,
+            None,
+        ))
+    }
+
     /// Rolls back every staged command without a commit attempt.
     fn rollback(self);
+}
+
+/// Result proving one command batch and linked terminal audit committed
+/// atomically.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuditedCommittedBatchV1 {
+    batch: CommittedBatchV1,
+    terminals: Vec<crate::StoredServiceAuditRecordV1>,
+}
+
+impl AuditedCommittedBatchV1 {
+    /// Joins the two storage-returned results after exact link validation.
+    pub fn new(
+        batch: CommittedBatchV1,
+        terminals: Vec<crate::StoredServiceAuditRecordV1>,
+    ) -> Result<Self, crate::StorageValueError> {
+        if batch.outcomes().len() != terminals.len()
+            || terminals.is_empty()
+            || terminals
+                .iter()
+                .any(|terminal| terminal.phase() != riffdb_types::ServiceAuditPhaseV1::Succeeded)
+        {
+            return Err(crate::StorageValueError::IdentityMismatch);
+        }
+        for (outcome, terminal) in batch.outcomes().iter().zip(&terminals) {
+            if terminal.link()
+                != (riffdb_types::ServiceAuditLinkV1::Command {
+                    commit_sequence: outcome.commit_sequence(),
+                    provenance_id: outcome.provenance_id(),
+                })
+            {
+                return Err(crate::StorageValueError::IdentityMismatch);
+            }
+        }
+        Ok(Self { batch, terminals })
+    }
+
+    /// Borrows the committed command result.
+    #[must_use]
+    pub const fn batch(&self) -> &CommittedBatchV1 {
+        &self.batch
+    }
+
+    /// Borrows the linked terminal audit.
+    #[must_use]
+    pub fn terminals(&self) -> &[crate::StoredServiceAuditRecordV1] {
+        &self.terminals
+    }
+
+    /// Consumes the compound result.
+    #[must_use]
+    pub fn into_parts(self) -> (CommittedBatchV1, Vec<crate::StoredServiceAuditRecordV1>) {
+        (self.batch, self.terminals)
+    }
 }
 
 /// Closed result when attempting to add a candidate to one prior batch state.

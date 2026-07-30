@@ -5,8 +5,12 @@ use std::{error::Error, fmt, time::Instant};
 use riffdb_conflict::{ConflictError, ConflictManager};
 use riffdb_idempotency::IdempotencyRecheckError;
 use riffdb_storage_api::{
-    AdmissionRepository, ApplicationCommandTransactionPort, DurabilityMode,
-    ExecutionFailureTransitionPort, SnapshotReader, StorageError, StorageErrorKind,
+    AdmissionRepository, ApplicationCommandTransactionPort, AuditedAdmissionRepository,
+    CommandCandidateAdmission, CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
+    CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
+    CommandCandidateSequenceAssigned, CommandCandidateStateRead, DurabilityMode,
+    ExecutionFailureTransitionPort, NonEmptyCommandBatch, SnapshotReader, StorageError,
+    StorageErrorKind,
 };
 use riffdb_types::ExecutionFailureCode;
 
@@ -17,7 +21,7 @@ use crate::{
     ProvenanceIdSourceError,
     command_admission::{
         CommandAdmissionError, CommandAdmissionResult, UncertainCommandAdmissionResolution,
-        reduce_command_admission, reduce_command_admission_group,
+        reduce_audited_command_admission_group, reduce_command_admission,
         resolve_uncertain_command_admission,
     },
     command_attempt::{
@@ -35,15 +39,118 @@ use crate::{
         CheckedReserveDecision, derive_checked_command_indexes,
     },
     command_records::{
-        CheckedCommandCommitResult, CheckedCommandStageError, UncertainCommandCommitResolution,
-        build_and_stage_checked_candidate, resolve_uncertain_command_commit,
+        CheckedCommandCommitResult, CheckedCommandGroupCommitResult, CheckedCommandStageError,
+        CheckedStagedCommand, CheckedStagedCommandEntry, UncertainCommandCommitResolution,
+        build_and_stage_checked_candidate, build_and_stage_checked_candidate_on_prior,
+        resolve_uncertain_command_commit,
     },
     command_validation::{
         CheckedCandidateDecision, CommandCandidateChainStart, TransactionCurrentAttemptDecision,
-        begin_bound_command_candidate, validate_checked_transaction_current,
+        begin_bound_command_candidate, begin_bound_command_candidate_on_prior,
+        validate_checked_transaction_current,
     },
     read_only_execution::{ReadOnlyExecutionCoreError, ReadOnlyExecutionCoreErrorKind},
 };
+
+type BatchCandidate<B> = <B as NonEmptyCommandBatch>::Candidate;
+type BatchStateRead<B> = <BatchCandidate<B> as CommandCandidateAdmission>::StateRead;
+type BatchAwaitingValidation<B> =
+    <BatchStateRead<B> as CommandCandidateStateRead>::AwaitingValidation;
+type BatchAffectedRead<B> =
+    <BatchAwaitingValidation<B> as CommandCandidateAwaitingValidation>::AffectedEpochRead;
+type BatchAwaitingCapacity<B> =
+    <BatchAffectedRead<B> as CommandCandidateAffectedEpochRead>::AwaitingCapacity;
+type BatchCapacityReserved<B> =
+    <BatchAwaitingCapacity<B> as CommandCandidateAwaitingCapacity>::CapacityReserved;
+type BatchSequenceAssigned<B> =
+    <BatchCapacityReserved<B> as CommandCandidateCapacityReserved>::SequenceAssigned;
+type EmptyCandidate<P> =
+    <<P as ApplicationCommandTransactionPort>::EmptyBatch as riffdb_storage_api::EmptyCommandBatch>::Candidate;
+type EmptyStateRead<P> = <EmptyCandidate<P> as CommandCandidateAdmission>::StateRead;
+type EmptyAwaitingValidation<P> =
+    <EmptyStateRead<P> as CommandCandidateStateRead>::AwaitingValidation;
+type EmptyAffectedRead<P> =
+    <EmptyAwaitingValidation<P> as CommandCandidateAwaitingValidation>::AffectedEpochRead;
+type EmptyAwaitingCapacity<P> =
+    <EmptyAffectedRead<P> as CommandCandidateAffectedEpochRead>::AwaitingCapacity;
+type EmptyCapacityReserved<P> =
+    <EmptyAwaitingCapacity<P> as CommandCandidateAwaitingCapacity>::CapacityReserved;
+type EmptySequenceAssigned<P> =
+    <EmptyCapacityReserved<P> as CommandCandidateCapacityReserved>::SequenceAssigned;
+type FirstStagedBatch<P> = <EmptySequenceAssigned<P> as CommandCandidateSequenceAssigned>::Staged;
+type RepeatableCommandGroupFuture<'a> = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Vec<Result<CommandExecutionResult, CommandExecutionError>>>
+            + 'a,
+    >,
+>;
+
+pub(super) trait RepeatableCommandBatchPort:
+    AdmissionRepository
+    + AuditedAdmissionRepository
+    + SnapshotReader
+    + ApplicationCommandTransactionPort
+    + ExecutionFailureTransitionPort
+{
+    #[allow(clippy::too_many_arguments)]
+    fn drive_repeatable_group<'a>(
+        &'a self,
+        conflicts: &'a dyn ConflictManager,
+        admission_clock: &'a dyn AdmissionClock,
+        administration_clock: &'a dyn crate::AdministrationClock,
+        provenance: &'a dyn ProvenanceIdSource,
+        durability: CoordinatorDurability,
+        lifecycle: &'a dyn CommandExecutionLifecycle,
+        telemetry: &'a dyn CommitTelemetry,
+        preparations: Vec<CommandExecutionPreparation>,
+    ) -> RepeatableCommandGroupFuture<'a>;
+}
+
+impl<P> RepeatableCommandBatchPort for P
+where
+    P: AdmissionRepository
+        + AuditedAdmissionRepository
+        + SnapshotReader
+        + ApplicationCommandTransactionPort
+        + ExecutionFailureTransitionPort,
+    FirstStagedBatch<P>: NonEmptyCommandBatch,
+    BatchCandidate<FirstStagedBatch<P>>: CommandCandidateAdmission<Prior = FirstStagedBatch<P>>,
+    BatchStateRead<FirstStagedBatch<P>>: CommandCandidateStateRead<Prior = FirstStagedBatch<P>>,
+    BatchAwaitingValidation<FirstStagedBatch<P>>:
+        CommandCandidateAwaitingValidation<Prior = FirstStagedBatch<P>>,
+    BatchAffectedRead<FirstStagedBatch<P>>:
+        CommandCandidateAffectedEpochRead<Prior = FirstStagedBatch<P>>,
+    BatchAwaitingCapacity<FirstStagedBatch<P>>:
+        CommandCandidateAwaitingCapacity<Prior = FirstStagedBatch<P>>,
+    BatchCapacityReserved<FirstStagedBatch<P>>:
+        CommandCandidateCapacityReserved<Prior = FirstStagedBatch<P>>,
+    BatchSequenceAssigned<FirstStagedBatch<P>>:
+        CommandCandidateSequenceAssigned<Prior = FirstStagedBatch<P>, Staged = FirstStagedBatch<P>>,
+{
+    fn drive_repeatable_group<'a>(
+        &'a self,
+        conflicts: &'a dyn ConflictManager,
+        admission_clock: &'a dyn AdmissionClock,
+        administration_clock: &'a dyn crate::AdministrationClock,
+        provenance: &'a dyn ProvenanceIdSource,
+        durability: CoordinatorDurability,
+        lifecycle: &'a dyn CommandExecutionLifecycle,
+        telemetry: &'a dyn CommitTelemetry,
+        preparations: Vec<CommandExecutionPreparation>,
+    ) -> RepeatableCommandGroupFuture<'a> {
+        Box::pin(drive_command_execution_group(
+            self,
+            conflicts,
+            admission_clock,
+            administration_clock,
+            provenance,
+            durability,
+            lifecycle,
+            telemetry,
+            preparations,
+        ))
+    }
+}
 
 /// Explicit production durability selected when the coordinator is constructed.
 ///
@@ -329,7 +436,7 @@ where
     let state = PendingCommandAttempts::from_admission(candidate)
         .map_err(|error| command_attempt_failure(error, lifecycle))?;
     drive_pending_command_attempts(
-        port, conflicts, provenance, durability, lifecycle, telemetry, state,
+        port, conflicts, provenance, None, durability, lifecycle, telemetry, state,
     )
     .await
 }
@@ -340,6 +447,7 @@ pub(super) async fn drive_command_execution_group<P>(
     port: &P,
     conflicts: &dyn ConflictManager,
     admission_clock: &dyn AdmissionClock,
+    administration_clock: &dyn crate::AdministrationClock,
     provenance: &dyn ProvenanceIdSource,
     durability: CoordinatorDurability,
     lifecycle: &dyn CommandExecutionLifecycle,
@@ -348,117 +456,626 @@ pub(super) async fn drive_command_execution_group<P>(
 ) -> Vec<Result<CommandExecutionResult, CommandExecutionError>>
 where
     P: AdmissionRepository
+        + AuditedAdmissionRepository
         + SnapshotReader
         + ApplicationCommandTransactionPort
         + ExecutionFailureTransitionPort,
+    FirstStagedBatch<P>: NonEmptyCommandBatch,
+    BatchCandidate<FirstStagedBatch<P>>: CommandCandidateAdmission<Prior = FirstStagedBatch<P>>,
+    BatchStateRead<FirstStagedBatch<P>>: CommandCandidateStateRead<Prior = FirstStagedBatch<P>>,
+    BatchAwaitingValidation<FirstStagedBatch<P>>:
+        CommandCandidateAwaitingValidation<Prior = FirstStagedBatch<P>>,
+    BatchAffectedRead<FirstStagedBatch<P>>:
+        CommandCandidateAffectedEpochRead<Prior = FirstStagedBatch<P>>,
+    BatchAwaitingCapacity<FirstStagedBatch<P>>:
+        CommandCandidateAwaitingCapacity<Prior = FirstStagedBatch<P>>,
+    BatchCapacityReserved<FirstStagedBatch<P>>:
+        CommandCandidateCapacityReserved<Prior = FirstStagedBatch<P>>,
+    BatchSequenceAssigned<FirstStagedBatch<P>>:
+        CommandCandidateSequenceAssigned<Prior = FirstStagedBatch<P>, Staged = FirstStagedBatch<P>>,
 {
-    let admissions = reduce_command_admission_group(port, admission_clock, preparations);
-    let mut results = Vec::with_capacity(admissions.len());
-    for admission in admissions {
-        let candidate = match admission {
-            Ok(CommandAdmissionResult::Execute(candidate)) => candidate,
-            Ok(CommandAdmissionResult::Outcome(outcome)) => {
-                telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
-                    observation: CommitIdempotencyObservation::Hit,
-                });
-                results.push(terminal_continuation(committed_replay(outcome), lifecycle));
-                continue;
-            }
-            Ok(CommandAdmissionResult::ExecutionFailed(failure)) => {
-                telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
-                    observation: CommitIdempotencyObservation::Hit,
-                });
-                results.push(terminal_continuation(
-                    execution_failure(failure.code()),
+    let admissions = reduce_audited_command_admission_group(
+        port,
+        admission_clock,
+        administration_clock,
+        preparations,
+    );
+    let count = admissions.len();
+    let mut results = (0..count).map(|_| None).collect::<Vec<_>>();
+    let mut pending = Vec::new();
+    for (index, admission) in admissions.into_iter().enumerate() {
+        match lower_admission_result(port, lifecycle, telemetry, admission) {
+            Ok(state) => pending.push((index, state)),
+            Err(result) => results[index] = Some(result),
+        }
+    }
+
+    if pending.len() > 1 && compatible_command_group(&pending) {
+        let grouped = drive_compatible_pending_group(
+            port,
+            conflicts,
+            administration_clock,
+            provenance,
+            durability,
+            lifecycle,
+            telemetry,
+            pending,
+        )
+        .await;
+        for (index, result) in grouped {
+            results[index] = Some(result);
+        }
+    } else {
+        for (index, state) in pending {
+            results[index] = Some(
+                drive_pending_command_attempts(
+                    port,
+                    conflicts,
+                    provenance,
+                    Some(administration_clock),
+                    durability,
                     lifecycle,
-                ));
-                continue;
+                    telemetry,
+                    state,
+                )
+                .await,
+            );
+        }
+    }
+    results
+        .into_iter()
+        .map(|result| {
+            result.unwrap_or_else(|| terminal_continuation(internal_defect(lifecycle), lifecycle))
+        })
+        .collect()
+}
+
+fn lower_admission_result<P>(
+    port: &P,
+    lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
+    admission: Result<CommandAdmissionResult, CommandAdmissionError>,
+) -> Result<PendingCommandAttempts, Result<CommandExecutionResult, CommandExecutionError>>
+where
+    P: AdmissionRepository,
+{
+    let candidate = match admission {
+        Ok(CommandAdmissionResult::Execute(candidate)) => candidate,
+        Ok(CommandAdmissionResult::Outcome(outcome)) => {
+            telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
+                observation: CommitIdempotencyObservation::Hit,
+            });
+            return Err(terminal_continuation(committed_replay(outcome), lifecycle));
+        }
+        Ok(CommandAdmissionResult::ExecutionFailed(failure)) => {
+            telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
+                observation: CommitIdempotencyObservation::Hit,
+            });
+            return Err(terminal_continuation(
+                execution_failure(failure.code()),
+                lifecycle,
+            ));
+        }
+        Ok(CommandAdmissionResult::PreparationChanged) => {
+            telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
+                observation: CommitIdempotencyObservation::Hit,
+            });
+            return Err(Ok(CommandExecutionResult::PreparationChanged));
+        }
+        Ok(CommandAdmissionResult::InputMismatch) => {
+            telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
+                observation: CommitIdempotencyObservation::Mismatch,
+            });
+            return Err(Ok(CommandExecutionResult::InputMismatch));
+        }
+        Err(CommandAdmissionError::AdmissionStatusUnknown(uncertain)) => {
+            let write = uncertain.cause().clone();
+            lifecycle.fence();
+            let resolution = resolve_uncertain_command_admission(port, *uncertain);
+            telemetry.record(CommitTelemetryEvent::UncertaintyResolved {
+                stage: CommitUncertaintyStage::Admission,
+                resolution: admission_uncertainty_resolution(&resolution),
+            });
+            return Err(match resolution {
+                UncertainCommandAdmissionResolution::ProvenPending(candidate) => {
+                    drop(candidate);
+                    Err(CommandExecutionError::with_storage(
+                        CommandExecutionErrorKind::StorageUnavailable,
+                        write,
+                    ))
+                }
+                UncertainCommandAdmissionResolution::Outcome(outcome) => {
+                    terminal_continuation(committed_replay(outcome), lifecycle)
+                }
+                UncertainCommandAdmissionResolution::ExecutionFailed(failure) => {
+                    terminal_continuation(execution_failure(failure.code()), lifecycle)
+                }
+                UncertainCommandAdmissionResolution::OutcomeUnknown(failure) => {
+                    Err(CommandExecutionError::uncertain(
+                        failure.admission_error().clone(),
+                        failure.lookup_error().cloned(),
+                    ))
+                }
+                UncertainCommandAdmissionResolution::Integrity => {
+                    terminal_continuation(internal_defect(lifecycle), lifecycle)
+                }
+            });
+        }
+        Err(CommandAdmissionError::Recheck(IdempotencyRecheckError::Storage(error)))
+        | Err(CommandAdmissionError::AdmissionWrite(error)) => {
+            return Err(Err(storage_error(error, lifecycle)));
+        }
+        Err(CommandAdmissionError::Clock(error)) => {
+            return Err(Err(admission_clock_failure(error)));
+        }
+        Err(CommandAdmissionError::Recheck(IdempotencyRecheckError::Integrity(_)))
+        | Err(CommandAdmissionError::Integrity) => {
+            return Err(terminal_continuation(internal_defect(lifecycle), lifecycle));
+        }
+    };
+    PendingCommandAttempts::from_admission(candidate)
+        .map_err(|error| Err(command_attempt_failure(error, lifecycle)))
+}
+
+fn compatible_command_group(pending: &[(usize, PendingCommandAttempts)]) -> bool {
+    let mut keys = std::collections::BTreeSet::new();
+    pending.iter().all(|(_, state)| {
+        state
+            .raw_conflict_keys()
+            .iter()
+            .all(|key| keys.insert(key.clone()))
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn drive_compatible_pending_group<P>(
+    port: &P,
+    conflicts: &dyn ConflictManager,
+    administration_clock: &dyn crate::AdministrationClock,
+    provenance: &dyn ProvenanceIdSource,
+    durability: CoordinatorDurability,
+    lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
+    pending: Vec<(usize, PendingCommandAttempts)>,
+) -> Vec<(usize, Result<CommandExecutionResult, CommandExecutionError>)>
+where
+    P: AdmissionRepository
+        + SnapshotReader
+        + ApplicationCommandTransactionPort
+        + ExecutionFailureTransitionPort,
+    FirstStagedBatch<P>: NonEmptyCommandBatch,
+    BatchCandidate<FirstStagedBatch<P>>: CommandCandidateAdmission<Prior = FirstStagedBatch<P>>,
+    BatchStateRead<FirstStagedBatch<P>>: CommandCandidateStateRead<Prior = FirstStagedBatch<P>>,
+    BatchAwaitingValidation<FirstStagedBatch<P>>:
+        CommandCandidateAwaitingValidation<Prior = FirstStagedBatch<P>>,
+    BatchAffectedRead<FirstStagedBatch<P>>:
+        CommandCandidateAffectedEpochRead<Prior = FirstStagedBatch<P>>,
+    BatchAwaitingCapacity<FirstStagedBatch<P>>:
+        CommandCandidateAwaitingCapacity<Prior = FirstStagedBatch<P>>,
+    BatchCapacityReserved<FirstStagedBatch<P>>:
+        CommandCandidateCapacityReserved<Prior = FirstStagedBatch<P>>,
+    BatchSequenceAssigned<FirstStagedBatch<P>>:
+        CommandCandidateSequenceAssigned<Prior = FirstStagedBatch<P>, Staged = FirstStagedBatch<P>>,
+{
+    let mut pending = std::collections::VecDeque::from(pending);
+    let mut evaluated = Vec::with_capacity(pending.len());
+    let mut completed = Vec::new();
+    while let Some((index, state)) = pending.pop_front() {
+        match evaluate_next_command_attempt(state, port, port, conflicts).await {
+            Ok(CommandAttemptResolution::Evaluated(attempt)) => evaluated.push((index, attempt)),
+            Ok(resolution) => {
+                let continuation =
+                    continuation_from_attempt_resolution(port, lifecycle, telemetry, resolution);
+                let terminal_state = group_peer_terminal(&continuation);
+                completed.push((index, terminal_continuation(continuation, lifecycle)));
+                if let Some(terminal_state) = terminal_state {
+                    completed.extend(evaluated.into_iter().map(|(index, attempt)| {
+                        drop(attempt);
+                        (index, Err(group_peer_error(terminal_state)))
+                    }));
+                    completed.extend(pending.into_iter().map(|(index, state)| {
+                        drop(state);
+                        (index, Err(group_peer_error(terminal_state)))
+                    }));
+                    return completed;
+                }
+                let mut fallback = evaluated
+                    .into_iter()
+                    .map(|(index, attempt)| (index, attempt.into_pending_without_commit()))
+                    .collect::<Vec<_>>();
+                fallback.extend(pending);
+                completed.extend(
+                    drive_pending_items(
+                        port,
+                        conflicts,
+                        administration_clock,
+                        provenance,
+                        durability,
+                        lifecycle,
+                        telemetry,
+                        fallback,
+                    )
+                    .await,
+                );
+                return completed;
             }
-            Ok(CommandAdmissionResult::PreparationChanged) => {
-                telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
-                    observation: CommitIdempotencyObservation::Hit,
+            Err(error) => {
+                let error = command_attempt_failure(error, lifecycle);
+                let terminal_state = group_peer_terminal_error(&error);
+                completed.push((index, Err(error)));
+                if let Some(terminal_state) = terminal_state {
+                    completed.extend(evaluated.into_iter().map(|(index, attempt)| {
+                        drop(attempt);
+                        (index, Err(group_peer_error(terminal_state)))
+                    }));
+                    completed.extend(pending.into_iter().map(|(index, state)| {
+                        drop(state);
+                        (index, Err(group_peer_error(terminal_state)))
+                    }));
+                    return completed;
+                }
+                let mut fallback = evaluated
+                    .into_iter()
+                    .map(|(index, attempt)| (index, attempt.into_pending_without_commit()))
+                    .collect::<Vec<_>>();
+                fallback.extend(pending);
+                completed.extend(
+                    drive_pending_items(
+                        port,
+                        conflicts,
+                        administration_clock,
+                        provenance,
+                        durability,
+                        lifecycle,
+                        telemetry,
+                        fallback,
+                    )
+                    .await,
+                );
+                return completed;
+            }
+        }
+    }
+
+    let mut evaluated = std::collections::VecDeque::from(evaluated);
+    let (first_index, first) = evaluated
+        .pop_front()
+        .expect("compatible command group is nonempty");
+    let mut staged = match stage_first_evaluated_command(
+        port, provenance, durability, lifecycle, telemetry, first,
+    ) {
+        Ok(staged) => staged,
+        Err(continuation) => {
+            let terminal_state = group_peer_terminal(&continuation);
+            completed.push((first_index, terminal_continuation(continuation, lifecycle)));
+            if let Some(terminal_state) = terminal_state {
+                completed.extend(evaluated.into_iter().map(|(index, attempt)| {
+                    drop(attempt);
+                    (index, Err(group_peer_error(terminal_state)))
+                }));
+                return completed;
+            }
+            let fallback = evaluated
+                .into_iter()
+                .map(|(index, attempt)| (index, attempt.into_pending_without_commit()))
+                .collect();
+            completed.extend(
+                drive_pending_items(
+                    port,
+                    conflicts,
+                    administration_clock,
+                    provenance,
+                    durability,
+                    lifecycle,
+                    telemetry,
+                    fallback,
+                )
+                .await,
+            );
+            return completed;
+        }
+    };
+    let mut staged_indices = vec![first_index];
+
+    while let Some((index, attempt)) = evaluated.pop_front() {
+        let (prior, entries, durability_mode) = staged.into_storage_and_entries();
+        match append_evaluated_command(
+            port, prior, provenance, durability, lifecycle, telemetry, attempt,
+        ) {
+            Ok((storage, entry)) => {
+                staged =
+                    CheckedStagedCommand::from_appended(storage, entries, entry, durability_mode);
+                staged_indices.push(index);
+            }
+            Err(continuation) => {
+                let terminal_state = group_peer_terminal(&continuation);
+                completed.push((index, terminal_continuation(continuation, lifecycle)));
+                if let Some(terminal_state) = terminal_state {
+                    drop(entries);
+                    completed.extend(
+                        staged_indices
+                            .into_iter()
+                            .map(|index| (index, Err(group_peer_error(terminal_state)))),
+                    );
+                    completed.extend(evaluated.into_iter().map(|(index, attempt)| {
+                        drop(attempt);
+                        (index, Err(group_peer_error(terminal_state)))
+                    }));
+                    return completed;
+                }
+                let previous = entries
+                    .into_iter()
+                    .zip(staged_indices)
+                    .map(|(entry, index)| entry.into_retry().map(|state| (index, state)))
+                    .collect::<Result<Vec<_>, _>>();
+                let mut fallback = match previous {
+                    Ok(previous) => previous,
+                    Err(()) => {
+                        lifecycle.stop();
+                        return completed;
+                    }
+                };
+                fallback.extend(
+                    evaluated
+                        .into_iter()
+                        .map(|(index, attempt)| (index, attempt.into_pending_without_commit())),
+                );
+                completed.extend(
+                    drive_pending_items(
+                        port,
+                        conflicts,
+                        administration_clock,
+                        provenance,
+                        durability,
+                        lifecycle,
+                        telemetry,
+                        fallback,
+                    )
+                    .await,
+                );
+                return completed;
+            }
+        }
+    }
+
+    let terminals = {
+        let audited_count = staged.audited_starts().filter(Option::is_some).count();
+        if audited_count == 0 {
+            Ok(None)
+        } else if audited_count != staged.len() {
+            Err(())
+        } else {
+            let mut terminals = Vec::with_capacity(staged.len());
+            let prepared = staged
+                .audited_starts()
+                .zip(staged.terminal_links())
+                .try_for_each(|(started, link)| {
+                    let started = started.ok_or(())?;
+                    let terminal = crate::audit_executor::prepare_command_terminal_audit(
+                        administration_clock,
+                        started,
+                        link,
+                    )
+                    .map_err(|_| ())?;
+                    terminals.push(terminal);
+                    Ok::<(), ()>(())
                 });
-                results.push(Ok(CommandExecutionResult::PreparationChanged));
-                continue;
-            }
-            Ok(CommandAdmissionResult::InputMismatch) => {
-                telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
-                    observation: CommitIdempotencyObservation::Mismatch,
-                });
-                results.push(Ok(CommandExecutionResult::InputMismatch));
-                continue;
-            }
-            Err(CommandAdmissionError::AdmissionStatusUnknown(uncertain)) => {
+            prepared.map(|()| Some(terminals))
+        }
+    };
+    let terminals = match terminals {
+        Ok(terminals) => terminals,
+        Err(()) => {
+            drop(staged.rollback_into_retries());
+            lifecycle.stop();
+            completed.extend(staged_indices.into_iter().map(|index| {
+                (
+                    index,
+                    Err(CommandExecutionError::without_detail(
+                        CommandExecutionErrorKind::InternalDefect,
+                    )),
+                )
+            }));
+            return completed;
+        }
+    };
+
+    let batch_size = staged.len();
+    let commit_started_at = Instant::now();
+    let commit_result = staged.commit_group(terminals);
+    telemetry.record(CommitTelemetryEvent::CommitCallCompleted {
+        terminal: group_commit_call_terminal(&commit_result),
+        elapsed: commit_started_at.elapsed(),
+        batch_size: u16::try_from(batch_size).expect("group cap fits u16"),
+        synchronous: durability == CoordinatorDurability::Sync,
+    });
+    match commit_result {
+        CheckedCommandGroupCommitResult::Committed(outcomes) => {
+            completed.extend(
+                staged_indices
+                    .into_iter()
+                    .zip(outcomes)
+                    .map(|(index, outcome)| {
+                        (index, Ok(CommandExecutionResult::Committed(outcome)))
+                    }),
+            );
+        }
+        CheckedCommandGroupCommitResult::ProvenAbort { cause, retries } => {
+            drop(retries);
+            completed.extend(staged_indices.into_iter().map(|index| {
+                (
+                    index,
+                    Err(CommandExecutionError::with_storage(
+                        CommandExecutionErrorKind::StorageUnavailable,
+                        cause.clone(),
+                    )),
+                )
+            }));
+        }
+        CheckedCommandGroupCommitResult::StatusUnknown(uncertain) => {
+            lifecycle.fence();
+            for (index, uncertain) in staged_indices.into_iter().zip(uncertain) {
                 let write = uncertain.cause().clone();
-                lifecycle.fence();
-                let resolution = resolve_uncertain_command_admission(port, *uncertain);
+                let resolution = resolve_uncertain_command_commit(port, Box::new(uncertain));
                 telemetry.record(CommitTelemetryEvent::UncertaintyResolved {
-                    stage: CommitUncertaintyStage::Admission,
-                    resolution: admission_uncertainty_resolution(&resolution),
+                    stage: CommitUncertaintyStage::CommandCommit,
+                    resolution: command_uncertainty_resolution(&resolution),
                 });
                 let result = match resolution {
-                    UncertainCommandAdmissionResolution::ProvenPending(candidate) => {
-                        drop(candidate);
+                    UncertainCommandCommitResolution::Committed(outcome) => {
+                        Ok(CommandExecutionResult::Committed(outcome))
+                    }
+                    UncertainCommandCommitResolution::ExecutionFailureReplay(failure) => {
+                        Ok(CommandExecutionResult::ExecutionFailed(failure.code()))
+                    }
+                    UncertainCommandCommitResolution::ProvenNotCommitted(proven) => {
+                        drop(proven.into_retry_state());
                         Err(CommandExecutionError::with_storage(
                             CommandExecutionErrorKind::StorageUnavailable,
                             write,
                         ))
                     }
-                    UncertainCommandAdmissionResolution::Outcome(outcome) => {
-                        terminal_continuation(committed_replay(outcome), lifecycle)
+                    UncertainCommandCommitResolution::OutcomeUnknown {
+                        uncertain,
+                        lookup_error,
+                    } => {
+                        drop(uncertain);
+                        Err(CommandExecutionError::uncertain(write, Some(lookup_error)))
                     }
-                    UncertainCommandAdmissionResolution::ExecutionFailed(failure) => {
-                        terminal_continuation(execution_failure(failure.code()), lifecycle)
-                    }
-                    UncertainCommandAdmissionResolution::OutcomeUnknown(failure) => {
-                        Err(CommandExecutionError::uncertain(
-                            failure.admission_error().clone(),
-                            failure.lookup_error().cloned(),
+                    UncertainCommandCommitResolution::Integrity => {
+                        lifecycle.stop();
+                        Err(CommandExecutionError::without_detail(
+                            CommandExecutionErrorKind::InternalDefect,
                         ))
                     }
-                    UncertainCommandAdmissionResolution::Integrity => {
-                        terminal_continuation(internal_defect(lifecycle), lifecycle)
-                    }
                 };
-                results.push(result);
-                continue;
+                completed.push((index, result));
             }
-            Err(CommandAdmissionError::Recheck(IdempotencyRecheckError::Storage(error)))
-            | Err(CommandAdmissionError::AdmissionWrite(error)) => {
-                results.push(Err(storage_error(error, lifecycle)));
-                continue;
-            }
-            Err(CommandAdmissionError::Clock(error)) => {
-                results.push(Err(admission_clock_failure(error)));
-                continue;
-            }
-            Err(CommandAdmissionError::Recheck(IdempotencyRecheckError::Integrity(_)))
-            | Err(CommandAdmissionError::Integrity) => {
-                results.push(terminal_continuation(internal_defect(lifecycle), lifecycle));
-                continue;
-            }
-        };
-        let state = match PendingCommandAttempts::from_admission(candidate) {
-            Ok(state) => state,
-            Err(error) => {
-                results.push(Err(command_attempt_failure(error, lifecycle)));
-                continue;
-            }
-        };
-        results.push(
+        }
+        CheckedCommandGroupCommitResult::Integrity => {
+            lifecycle.stop();
+            completed.extend(staged_indices.into_iter().map(|index| {
+                (
+                    index,
+                    Err(CommandExecutionError::without_detail(
+                        CommandExecutionErrorKind::InternalDefect,
+                    )),
+                )
+            }));
+        }
+    }
+    completed
+}
+
+fn group_peer_terminal(
+    continuation: &CommandDriverContinuation,
+) -> Option<CommandExecutionErrorKind> {
+    match continuation {
+        CommandDriverContinuation::Failed(error) => group_peer_terminal_error(error),
+        CommandDriverContinuation::Complete(_) | CommandDriverContinuation::Retry(_) => None,
+    }
+}
+
+fn group_peer_terminal_error(error: &CommandExecutionError) -> Option<CommandExecutionErrorKind> {
+    match error.kind() {
+        CommandExecutionErrorKind::OutcomeUnknown
+        | CommandExecutionErrorKind::CoordinatorFenced => {
+            Some(CommandExecutionErrorKind::CoordinatorFenced)
+        }
+        CommandExecutionErrorKind::InternalDefect
+        | CommandExecutionErrorKind::CoordinatorStopped => {
+            Some(CommandExecutionErrorKind::CoordinatorStopped)
+        }
+        CommandExecutionErrorKind::Cancelled
+        | CommandExecutionErrorKind::DeadlineExceeded
+        | CommandExecutionErrorKind::RetryBudgetExhausted
+        | CommandExecutionErrorKind::StorageUnavailable => None,
+    }
+}
+
+fn group_peer_error(kind: CommandExecutionErrorKind) -> CommandExecutionError {
+    if kind == CommandExecutionErrorKind::CoordinatorFenced {
+        CommandExecutionError::coordinator_fenced()
+    } else {
+        CommandExecutionError::coordinator_stopped()
+    }
+}
+
+fn continuation_from_attempt_resolution<P>(
+    port: &P,
+    lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
+    resolution: CommandAttemptResolution,
+) -> CommandDriverContinuation
+where
+    P: ExecutionFailureTransitionPort + AdmissionRepository,
+{
+    match resolution {
+        CommandAttemptResolution::Evaluated(attempt) => {
+            drop(attempt);
+            internal_defect(lifecycle)
+        }
+        CommandAttemptResolution::ExecutionFault(attempt) => {
+            continue_execution_fault(port, lifecycle, telemetry, attempt)
+        }
+        CommandAttemptResolution::OutcomeReplay(outcome) => {
+            telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
+                observation: CommitIdempotencyObservation::Hit,
+            });
+            committed_replay(outcome)
+        }
+        CommandAttemptResolution::ExecutionFailureReplay(failure) => {
+            telemetry.record(CommitTelemetryEvent::IdempotencyObserved {
+                observation: CommitIdempotencyObservation::Hit,
+            });
+            execution_failure(failure.code())
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn drive_pending_items<P>(
+    port: &P,
+    conflicts: &dyn ConflictManager,
+    administration_clock: &dyn crate::AdministrationClock,
+    provenance: &dyn ProvenanceIdSource,
+    durability: CoordinatorDurability,
+    lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
+    pending: Vec<(usize, PendingCommandAttempts)>,
+) -> Vec<(usize, Result<CommandExecutionResult, CommandExecutionError>)>
+where
+    P: AdmissionRepository
+        + SnapshotReader
+        + ApplicationCommandTransactionPort
+        + ExecutionFailureTransitionPort,
+{
+    let mut results = Vec::with_capacity(pending.len());
+    for (index, state) in pending {
+        results.push((
+            index,
             drive_pending_command_attempts(
-                port, conflicts, provenance, durability, lifecycle, telemetry, state,
+                port,
+                conflicts,
+                provenance,
+                Some(administration_clock),
+                durability,
+                lifecycle,
+                telemetry,
+                state,
             )
             .await,
-        );
+        ));
     }
     results
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn drive_pending_command_attempts<P>(
     port: &P,
     conflicts: &dyn ConflictManager,
     provenance: &dyn ProvenanceIdSource,
+    administration_clock: Option<&dyn crate::AdministrationClock>,
     durability: CoordinatorDurability,
     lifecycle: &dyn CommandExecutionLifecycle,
     telemetry: &dyn CommitTelemetry,
@@ -476,7 +1093,13 @@ where
             .map_err(|error| command_attempt_failure(error, lifecycle))?;
         let continuation = match resolution {
             CommandAttemptResolution::Evaluated(attempt) => continue_evaluated_command(
-                port, provenance, durability, lifecycle, telemetry, attempt,
+                port,
+                provenance,
+                administration_clock,
+                durability,
+                lifecycle,
+                telemetry,
+                attempt,
             ),
             CommandAttemptResolution::ExecutionFault(attempt) => {
                 continue_execution_fault(port, lifecycle, telemetry, attempt)
@@ -546,6 +1169,17 @@ const fn commit_call_terminal(result: &CheckedCommandCommitResult) -> CommitCall
     }
 }
 
+const fn group_commit_call_terminal(
+    result: &CheckedCommandGroupCommitResult,
+) -> CommitCallTerminal {
+    match result {
+        CheckedCommandGroupCommitResult::Committed(_) => CommitCallTerminal::Committed,
+        CheckedCommandGroupCommitResult::ProvenAbort { .. } => CommitCallTerminal::ProvenAbort,
+        CheckedCommandGroupCommitResult::StatusUnknown(_) => CommitCallTerminal::StatusUnknown,
+        CheckedCommandGroupCommitResult::Integrity => CommitCallTerminal::Integrity,
+    }
+}
+
 const fn command_uncertainty_resolution(
     resolution: &UncertainCommandCommitResolution,
 ) -> CommitUncertaintyResolution {
@@ -586,6 +1220,7 @@ const fn execution_failure_uncertainty_resolution(
 pub(super) fn continue_evaluated_command<P>(
     port: &P,
     provenance: &dyn ProvenanceIdSource,
+    administration_clock: Option<&dyn crate::AdministrationClock>,
     durability: CoordinatorDurability,
     lifecycle: &dyn CommandExecutionLifecycle,
     telemetry: &dyn CommitTelemetry,
@@ -683,8 +1318,22 @@ where
         }
         Err(CheckedCommandStageError::InternalDefect(_)) => return internal_defect(lifecycle),
     };
+    let terminal = match (staged.audited_start(), administration_clock) {
+        (Some(started), Some(clock)) => {
+            match crate::audit_executor::prepare_command_terminal_audit(
+                clock,
+                started,
+                staged.terminal_link(),
+            ) {
+                Ok(terminal) => Some(terminal),
+                Err(_) => return internal_defect(lifecycle),
+            }
+        }
+        (None, _) => None,
+        (Some(_), None) => return internal_defect(lifecycle),
+    };
     let commit_started_at = Instant::now();
-    let commit_result = staged.commit();
+    let commit_result = staged.commit(terminal);
     telemetry.record(CommitTelemetryEvent::CommitCallCompleted {
         terminal: commit_call_terminal(&commit_result),
         elapsed: commit_started_at.elapsed(),
@@ -734,6 +1383,216 @@ where
         }
         CheckedCommandCommitResult::Integrity => internal_defect(lifecycle),
     }
+}
+
+fn stage_first_evaluated_command<P>(
+    port: &P,
+    provenance: &dyn ProvenanceIdSource,
+    durability: CoordinatorDurability,
+    lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
+    attempt: EvaluatedCommandAttempt,
+) -> Result<CheckedStagedCommand<FirstStagedBatch<P>>, CommandDriverContinuation>
+where
+    P: ApplicationCommandTransactionPort
+        + ExecutionFailureTransitionPort
+        + riffdb_storage_api::AdmissionRepository,
+{
+    if let Err(error) = attempt.recheck_request_control() {
+        return Err(CommandDriverContinuation::Failed(command_attempt_failure(
+            error, lifecycle,
+        )));
+    }
+    let provenance_id = provenance
+        .next_provenance_id()
+        .map_err(|error| CommandDriverContinuation::Failed(provenance_source_failure(error)))?;
+    let attempt = attempt
+        .bind_provenance(provenance_id)
+        .map_err(|_| internal_defect(lifecycle))?;
+    let bound = match begin_bound_command_candidate(port, attempt) {
+        CommandCandidateChainStart::Ready(bound) => bound,
+        CommandCandidateChainStart::OutcomeReplay(outcome) => {
+            return Err(committed_replay(outcome));
+        }
+        CommandCandidateChainStart::ExecutionFailureReplay(failure) => {
+            return Err(execution_failure(failure.code()));
+        }
+        CommandCandidateChainStart::InputMismatch => {
+            return Err(CommandDriverContinuation::Complete(
+                CommandExecutionResult::InputMismatch,
+            ));
+        }
+        CommandCandidateChainStart::StorageFailure(error) => {
+            return Err(proven_storage_failure(error, lifecycle));
+        }
+        CommandCandidateChainStart::Integrity => return Err(internal_defect(lifecycle)),
+    };
+    let current = match bound.read_transaction_current() {
+        TransactionCurrentAttemptDecision::Ready(current) => current,
+        TransactionCurrentAttemptDecision::DependencyChanged(changed) => {
+            return Err(after_rollback(
+                port,
+                lifecycle,
+                telemetry,
+                changed.reject_storage_and_rollback(),
+            ));
+        }
+        TransactionCurrentAttemptDecision::StorageFailure(error) => {
+            return Err(proven_storage_failure(error, lifecycle));
+        }
+        TransactionCurrentAttemptDecision::Integrity => return Err(internal_defect(lifecycle)),
+    };
+    let validated = match validate_checked_transaction_current(current) {
+        Ok(CheckedCandidateDecision::Validated(validated)) => validated,
+        Ok(CheckedCandidateDecision::Rejected(rejected)) => {
+            return Err(after_rollback(
+                port,
+                lifecycle,
+                telemetry,
+                rejected.reject_storage_and_rollback(),
+            ));
+        }
+        Err(_) => return Err(internal_defect(lifecycle)),
+    };
+    let indexed =
+        derive_checked_command_indexes(validated).map_err(|_| internal_defect(lifecycle))?;
+    let indexed = match indexed.read_affected_epoch_current() {
+        CheckedAffectedEpochDecision::Ready(indexed) => indexed,
+        CheckedAffectedEpochDecision::Rejected(rejected) => {
+            return Err(after_rollback(port, lifecycle, telemetry, rejected));
+        }
+        CheckedAffectedEpochDecision::StorageFailure(error) => {
+            return Err(proven_storage_failure(error, lifecycle));
+        }
+    };
+    let reserved = resolve_checked_reserve_decision(indexed.reserve_capacity(), lifecycle)?;
+    let assigned = match reserved.assign_sequence() {
+        CheckedAssignDecision::Assigned(assigned) => assigned,
+        CheckedAssignDecision::StorageFailure(error) => {
+            return Err(proven_storage_failure(error, lifecycle));
+        }
+        CheckedAssignDecision::Integrity => return Err(internal_defect(lifecycle)),
+    };
+    build_and_stage_checked_candidate(assigned, durability.storage_mode()).map_err(|error| {
+        match error {
+            CheckedCommandStageError::Storage(error) => proven_storage_failure(error, lifecycle),
+            CheckedCommandStageError::InternalDefect(_) => internal_defect(lifecycle),
+        }
+    })
+}
+
+fn append_evaluated_command<P, B>(
+    port: &P,
+    prior: B,
+    provenance: &dyn ProvenanceIdSource,
+    durability: CoordinatorDurability,
+    lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
+    attempt: EvaluatedCommandAttempt,
+) -> Result<(B, CheckedStagedCommandEntry), CommandDriverContinuation>
+where
+    P: ExecutionFailureTransitionPort + riffdb_storage_api::AdmissionRepository,
+    B: NonEmptyCommandBatch,
+    BatchCandidate<B>: CommandCandidateAdmission<Prior = B>,
+    BatchStateRead<B>: CommandCandidateStateRead<Prior = B>,
+    BatchAwaitingValidation<B>: CommandCandidateAwaitingValidation<Prior = B>,
+    BatchAffectedRead<B>: CommandCandidateAffectedEpochRead<Prior = B>,
+    BatchAwaitingCapacity<B>: CommandCandidateAwaitingCapacity<Prior = B>,
+    BatchCapacityReserved<B>: CommandCandidateCapacityReserved<Prior = B>,
+    BatchSequenceAssigned<B>: CommandCandidateSequenceAssigned<Prior = B, Staged = B>,
+{
+    if let Err(error) = attempt.recheck_request_control() {
+        drop(prior);
+        return Err(CommandDriverContinuation::Failed(command_attempt_failure(
+            error, lifecycle,
+        )));
+    }
+    let provenance_id = match provenance.next_provenance_id() {
+        Ok(provenance_id) => provenance_id,
+        Err(error) => {
+            drop(prior);
+            return Err(CommandDriverContinuation::Failed(
+                provenance_source_failure(error),
+            ));
+        }
+    };
+    let attempt = match attempt.bind_provenance(provenance_id) {
+        Ok(attempt) => attempt,
+        Err(_) => {
+            drop(prior);
+            return Err(internal_defect(lifecycle));
+        }
+    };
+    let bound = match begin_bound_command_candidate_on_prior(prior, attempt) {
+        CommandCandidateChainStart::Ready(bound) => bound,
+        CommandCandidateChainStart::OutcomeReplay(outcome) => {
+            return Err(committed_replay(outcome));
+        }
+        CommandCandidateChainStart::ExecutionFailureReplay(failure) => {
+            return Err(execution_failure(failure.code()));
+        }
+        CommandCandidateChainStart::InputMismatch => {
+            return Err(CommandDriverContinuation::Complete(
+                CommandExecutionResult::InputMismatch,
+            ));
+        }
+        CommandCandidateChainStart::StorageFailure(error) => {
+            return Err(proven_storage_failure(error, lifecycle));
+        }
+        CommandCandidateChainStart::Integrity => return Err(internal_defect(lifecycle)),
+    };
+    let current = match bound.read_transaction_current() {
+        TransactionCurrentAttemptDecision::Ready(current) => current,
+        TransactionCurrentAttemptDecision::DependencyChanged(changed) => {
+            return Err(after_rollback(
+                port,
+                lifecycle,
+                telemetry,
+                changed.reject_storage_and_rollback(),
+            ));
+        }
+        TransactionCurrentAttemptDecision::StorageFailure(error) => {
+            return Err(proven_storage_failure(error, lifecycle));
+        }
+        TransactionCurrentAttemptDecision::Integrity => return Err(internal_defect(lifecycle)),
+    };
+    let validated = match validate_checked_transaction_current(current) {
+        Ok(CheckedCandidateDecision::Validated(validated)) => validated,
+        Ok(CheckedCandidateDecision::Rejected(rejected)) => {
+            return Err(after_rollback(
+                port,
+                lifecycle,
+                telemetry,
+                rejected.reject_storage_and_rollback(),
+            ));
+        }
+        Err(_) => return Err(internal_defect(lifecycle)),
+    };
+    let indexed =
+        derive_checked_command_indexes(validated).map_err(|_| internal_defect(lifecycle))?;
+    let indexed = match indexed.read_affected_epoch_current() {
+        CheckedAffectedEpochDecision::Ready(indexed) => indexed,
+        CheckedAffectedEpochDecision::Rejected(rejected) => {
+            return Err(after_rollback(port, lifecycle, telemetry, rejected));
+        }
+        CheckedAffectedEpochDecision::StorageFailure(error) => {
+            return Err(proven_storage_failure(error, lifecycle));
+        }
+    };
+    let reserved = resolve_checked_reserve_decision(indexed.reserve_capacity(), lifecycle)?;
+    let assigned = match reserved.assign_sequence() {
+        CheckedAssignDecision::Assigned(assigned) => assigned,
+        CheckedAssignDecision::StorageFailure(error) => {
+            return Err(proven_storage_failure(error, lifecycle));
+        }
+        CheckedAssignDecision::Integrity => return Err(internal_defect(lifecycle)),
+    };
+    build_and_stage_checked_candidate_on_prior(assigned, durability.storage_mode()).map_err(
+        |error| match error {
+            CheckedCommandStageError::Storage(error) => proven_storage_failure(error, lifecycle),
+            CheckedCommandStageError::InternalDefect(_) => internal_defect(lifecycle),
+        },
+    )
 }
 
 fn resolve_checked_reserve_decision<C>(

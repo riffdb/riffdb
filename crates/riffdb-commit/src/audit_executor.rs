@@ -10,10 +10,11 @@ use std::{error::Error, fmt, panic, thread};
 
 use riffdb_storage_api::{
     AdmissionRepository, ApplicationCommandTransactionPort, AuditPrincipalV1,
-    CapabilityAdministrationTransactionPort, CapabilityBootstrapAdministrationRepository,
-    CatalogAdministrationRepository, ExecutionFailureTransitionPort,
-    QueryModuleAdministrationRepository, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
-    ServiceAuditAppendResult, SnapshotReader, StorageError, StorageValueError,
+    AuditedAdmissionRepository, CapabilityAdministrationTransactionPort,
+    CapabilityBootstrapAdministrationRepository, CatalogAdministrationRepository,
+    ExecutionFailureTransitionPort, QueryModuleAdministrationRepository,
+    ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
+    SnapshotReader, StorageError, StorageValueError,
 };
 use tokio::runtime;
 use tokio::sync::{mpsc, oneshot};
@@ -29,7 +30,7 @@ use crate::{
     ProvenanceIdSource,
     command_execution::{
         CommandExecutionError, CommandExecutionLifecycle, CommandExecutionResult,
-        CoordinatorDurability, drive_command_execution, drive_command_execution_group,
+        CoordinatorDurability, RepeatableCommandBatchPort, drive_command_execution,
     },
     control_plane::{
         CapabilityBootstrapExecutionResult, CapabilityBootstrapPreparation,
@@ -99,7 +100,7 @@ pub(crate) fn append_administration_audit(
     append_prepared_administration_audit(repository, &intent)
 }
 
-fn prepare_administration_audit(
+pub(crate) fn prepare_administration_audit(
     clock: &dyn AdministrationClock,
     input: &dyn AdministrationAuditInputView,
 ) -> Result<ServiceAuditAppendIntentV1, AdministrationAuditExecutionError> {
@@ -122,6 +123,43 @@ fn prepare_administration_audit(
         input.targets().clone(),
         input.approval_id().cloned(),
         *input.link(),
+    )
+    .map_err(AdministrationAuditExecutionError::InvalidInput)
+}
+
+pub(crate) fn prepare_command_terminal_audit(
+    clock: &dyn AdministrationClock,
+    started: &dyn AdministrationAuditInputView,
+    link: riffdb_types::ServiceAuditLinkV1,
+) -> Result<ServiceAuditAppendIntentV1, AdministrationAuditExecutionError> {
+    if started.operation() != &riffdb_types::ServiceOperationV1::ExecuteCommand
+        || started.phase() != &riffdb_types::ServiceAuditPhaseV1::Started
+        || started.link() != &riffdb_types::ServiceAuditLinkV1::None
+        || !matches!(link, riffdb_types::ServiceAuditLinkV1::Command { .. })
+    {
+        return Err(AdministrationAuditExecutionError::InvalidInput(
+            riffdb_storage_api::StorageValueError::IdentityMismatch,
+        ));
+    }
+    let timestamp = clock
+        .now()
+        .map_err(AdministrationAuditExecutionError::Clock)?;
+    let principal = AuditPrincipalV1::new(
+        started.principal_id().clone(),
+        *started.actor_kind(),
+        *started.capability_id(),
+        *started.capability_revision(),
+    );
+    ServiceAuditAppendIntentV1::new(
+        *started.request_id(),
+        timestamp,
+        *started.operation(),
+        riffdb_types::ServiceAuditPhaseV1::Succeeded,
+        principal,
+        *started.ingress(),
+        started.targets().clone(),
+        started.approval_id().cloned(),
+        link,
     )
     .map_err(AdministrationAuditExecutionError::InvalidInput)
 }
@@ -985,6 +1023,7 @@ pub struct RunningCommandCoordinator {
 impl RunningCommandCoordinator {
     /// Starts one dedicated current-thread actor owning the authoritative repository.
     #[allow(clippy::too_many_arguments)]
+    #[allow(private_bounds)] // Sealed blanket proof; callers supply ordinary storage ports.
     pub fn start<Repository>(
         workload_capacity: CoordinatorWorkloadCapacity,
         durability: CoordinatorDurability,
@@ -998,8 +1037,10 @@ impl RunningCommandCoordinator {
     ) -> Result<Self, CoordinatorStartError>
     where
         Repository: AdmissionRepository
+            + AuditedAdmissionRepository
             + SnapshotReader
             + ApplicationCommandTransactionPort
+            + RepeatableCommandBatchPort
             + ExecutionFailureTransitionPort
             + ServiceAuditAppendRepository
             + CatalogAdministrationRepository
@@ -1025,6 +1066,7 @@ impl RunningCommandCoordinator {
 
     /// Starts the coordinator with one least-authority semantic telemetry sink.
     #[allow(clippy::too_many_arguments)]
+    #[allow(private_bounds)] // Sealed blanket proof; callers supply ordinary storage ports.
     pub fn start_with_telemetry<Repository>(
         workload_capacity: CoordinatorWorkloadCapacity,
         durability: CoordinatorDurability,
@@ -1039,8 +1081,10 @@ impl RunningCommandCoordinator {
     ) -> Result<Self, CoordinatorStartError>
     where
         Repository: AdmissionRepository
+            + AuditedAdmissionRepository
             + SnapshotReader
             + ApplicationCommandTransactionPort
+            + RepeatableCommandBatchPort
             + ExecutionFailureTransitionPort
             + ServiceAuditAppendRepository
             + CatalogAdministrationRepository
@@ -1394,8 +1438,10 @@ struct ProductionCoordinatorOperations<Repository> {
 impl<Repository> CoordinatorActorOperations for ProductionCoordinatorOperations<Repository>
 where
     Repository: AdmissionRepository
+        + AuditedAdmissionRepository
         + SnapshotReader
         + ApplicationCommandTransactionPort
+        + RepeatableCommandBatchPort
         + ExecutionFailureTransitionPort
         + ServiceAuditAppendRepository
         + CatalogAdministrationRepository
@@ -1458,16 +1504,16 @@ where
         &mut self,
         preparations: Vec<CommandExecutionPreparation>,
     ) -> LocalCommandGroupFuture<'_> {
-        Box::pin(drive_command_execution_group(
-            &self.repository,
+        self.repository.drive_repeatable_group(
             self.conflicts.as_ref(),
             self.admission_clock.as_ref(),
+            self.administration_clock.as_ref(),
             self.provenance_source.as_ref(),
             self.durability,
             &self.lifecycle,
             self.telemetry.as_ref(),
             preparations,
-        ))
+        )
     }
 
     fn inspect_idempotency(
