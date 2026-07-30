@@ -71,3 +71,11 @@ publishable because the report schema records observed outcomes while the gate
 checker enforces release thresholds. See
 `release/evidence/agent-application-alpha-gate-v1.json` for the aggregate
 `not_eligible` decision.
+
+The first WP-365 canary attempt is also retained under
+`runs/wp365-blog-rust-terra-02` and
+`runs/wp365-orders-typescript-terra-02`. Both are honest failures from sealed
+bundle `0e19842b...`: the public development workflow did not keep a reachable
+generated application attached, and Blog additionally deferred a valid
+whole-query role-bound rejection until live binding. These files are not
+selected as passing evidence and must not be rewritten by a later canary.

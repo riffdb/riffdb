@@ -1,0 +1,13 @@
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":0,"kind":"start"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":1000,"kind":"tool","operation":"riffdb.new"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":2000,"kind":"compiler_failure","code":"RDB-S008"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":3000,"kind":"compiler_failure","code":"RDB-S004"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":4000,"kind":"compiler_failure","code":"RDB-C004"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":5000,"kind":"compiler_failure","code":"RDB-C002"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":6000,"kind":"compiler_failure","code":"RDB-C008"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":7000,"kind":"compiler_failure","code":"RDB-QS004","operation":"OrderDetail"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":8000,"kind":"unsupported_shape","code":"RDB-QP007","operation":"OrderDetail"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":9000,"kind":"tool","operation":"check-application-boundary"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":10000,"kind":"runtime_failure","code":"dev_ready_unreachable","operation":"riffdb.dev"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":11000,"kind":"rating"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":12000,"kind":"complete"}

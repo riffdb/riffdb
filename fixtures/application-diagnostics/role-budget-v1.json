@@ -1,0 +1,1 @@
+{"diagnostics":[{"cause":"limit_exceeded","code":"RDB-AR007","file_change":"no_files_changed","fixes":["reduce_input"],"path":"riffdb.application.json","retry":"correct_source","span":null,"stage":"role","summary":"named query aggregate index-scan bound exceeds 500 rows","symbol_path":["SafeAppApplication","ItemPage"]}],"version":1}

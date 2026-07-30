@@ -569,6 +569,25 @@ impl AuthoringDiagnostics {
         )?])
     }
 
+    /// Reports a named query whose complete worst-case index-scan work cannot
+    /// be represented by the stable application-role scan bound.
+    pub fn role_query_scan_budget(
+        path: AuthoringSourcePath,
+        role: &str,
+        query: &str,
+    ) -> Result<Self, AuthoringDiagnosticBoundsError> {
+        Self::new(vec![diagnostic_value(
+            AuthoringStage::Role,
+            AuthoringDiagnosticCode("RDB-AR007"),
+            path,
+            None,
+            vec![role.to_owned(), query.to_owned()],
+            "named query aggregate index-scan bound exceeds 500 rows",
+            AuthoringCause::LimitExceeded,
+            vec![AuthoringFix::ReduceInput],
+        )?])
+    }
+
     /// Creates one closed filesystem diagnostic.
     pub fn filesystem(
         path: AuthoringSourcePath,

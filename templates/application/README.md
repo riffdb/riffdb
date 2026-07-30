@@ -10,13 +10,17 @@ Then use the complete authoring loop:
 riffdb application check
 riffdb application lock --write
 riffdb application lock --check
-riffdb dev --seed
+riffdb dev --seed --run
 ```
 
 The first command is read-only. `lock --write` is the explicit review point for
 new compiler-derived plans, identities, authority, and generated artifacts.
-`riffdb dev --seed` deploys that exact generation, binds `{{ROLE_NAME}}`, seeds
-through `CreateItem`, and starts watch mode.
+`riffdb dev --seed --run` deploys that exact generation, binds
+`{{ROLE_NAME}}`, seeds through `CreateItem`, and runs this repository's Rust or
+TypeScript application with the scoped development credential. Rust runners
+may complete as one-shot checks; TypeScript web runners remain attached until
+you stop them. Use `riffdb dev --seed --watch` when you want contract/query
+regeneration without starting the application process.
 
 Handwritten code belongs in `src/`. Files below `generated/` are compiler-owned.
 `riffdb.application.json` contains symbolic author intent.

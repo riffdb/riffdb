@@ -3,7 +3,12 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-agent-alpha-package.XXXXXX")"
+typescript_run_pid=
 cleanup() {
+    if [[ -n "$typescript_run_pid" ]] && kill -0 "$typescript_run_pid" 2>/dev/null; then
+        kill -TERM "$typescript_run_pid" 2>/dev/null || true
+        wait "$typescript_run_pid" 2>/dev/null || true
+    fi
     rm -rf "$work_root"
 }
 trap cleanup EXIT INT TERM
@@ -44,6 +49,53 @@ done
 
 cmp "$repo_root/crates/riffdb-contract-syntax/LANGUAGE.md" \
     "$bundle/docs/contracts/LANGUAGE.md"
+
+rust_run_root="$work_root/rust-run"
+"$bundle/bin/riffdb" new run-rust --language rust --directory "$rust_run_root" >/dev/null
+rust_run_output="$(
+    cd "$rust_run_root"
+    "$bundle/bin/riffdb" dev --seed --run
+)"
+rg -q '^riffdb-dev-ready-v1' <<<"$rust_run_output"
+rg -q '^Welcome to run-rust$' <<<"$rust_run_output"
+
+typescript_run_root="$work_root/typescript-run"
+"$bundle/bin/riffdb" new run-typescript --language typescript \
+    --directory "$typescript_run_root" >/dev/null
+typescript_run_log="$work_root/typescript-run.stdout"
+typescript_run_error="$work_root/typescript-run.stderr"
+(
+    cd "$typescript_run_root"
+    "$bundle/bin/riffdb" dev --seed --run
+) >"$typescript_run_log" 2>"$typescript_run_error" &
+typescript_run_pid=$!
+typescript_ready="$(
+    set +o pipefail
+    timeout 60s tail -n +1 -F "$typescript_run_log" \
+        | rg --line-buffered -m1 '^riffdb-app-ready-v1'
+)"
+typescript_port="${typescript_ready#*$'\t'}"
+[[ "$typescript_port" =~ ^[0-9]+$ ]] || {
+    cat "$typescript_run_log" >&2
+    cat "$typescript_run_error" >&2
+    echo "installed TypeScript application returned invalid readiness" >&2
+    exit 1
+}
+typescript_response="$(
+    curl --fail --silent --show-error "http://127.0.0.1:$typescript_port/item"
+)"
+jq -e '
+  .outcome == "Created"
+  and .title == "TypeScript generated web application"
+  and (.applicationHead | test("^[1-9][0-9]*$"))
+  and (.readAfterCommit | test("^[1-9][0-9]*$"))
+' <<<"$typescript_response" >/dev/null || {
+    printf '%s\n' "$typescript_response" >&2
+    exit 1
+}
+kill -TERM "$typescript_run_pid"
+wait "$typescript_run_pid" 2>/dev/null || true
+typescript_run_pid=
 
 mkdir "$work_root/existing-empty"
 (

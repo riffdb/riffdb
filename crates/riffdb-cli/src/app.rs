@@ -227,6 +227,7 @@ pub async fn run() -> ExitCode {
     if let TopLevel::Dev {
         role,
         watch,
+        run,
         seed,
         seed_dir,
         seed_concurrency,
@@ -236,6 +237,7 @@ pub async fn run() -> ExitCode {
         return run_dev(
             role,
             *watch,
+            *run,
             *seed,
             seed_dir.as_deref(),
             seed_concurrency,
@@ -286,6 +288,7 @@ fn emit_scaffold_failure(
 fn run_dev(
     role: &str,
     watch: bool,
+    run: bool,
     seed: bool,
     seed_dir: Option<&std::ffi::OsStr>,
     seed_concurrency: &str,
@@ -314,6 +317,9 @@ fn run_dev(
     }
     if watch {
         command.arg("--watch");
+    }
+    if run {
+        command.arg("--run");
     }
     if seed {
         command.arg("--seed");

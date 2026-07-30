@@ -33,6 +33,18 @@ regeneration:
 cargo run -p riffdb-cli -- dev --watch
 ```
 
+Use `--run` instead when the application repository should execute against the
+disposable server:
+
+```bash
+riffdb dev --seed --run
+```
+
+The workflow accepts exactly one repository runner (`Cargo.toml` or
+`package.json`), passes it the scoped application connection directly, streams
+its stdout, and tears down the server when the runner exits or is interrupted.
+It does not grant the child operator or kernel authority.
+
 Use `--role ticketdesk-agent` for the separately named agent allowlist. It
 still receives no ad-hoc query or kernel authority. Use
 `--role ticketdesk-kernel` only for low-level diagnosis; it receives no

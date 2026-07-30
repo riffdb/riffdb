@@ -46,6 +46,9 @@ pub(crate) enum TopLevel {
         role: String,
         #[arg(long)]
         watch: bool,
+        /// Runs the repository's generated application against the local server.
+        #[arg(long, conflicts_with_all = ["watch", "acceptance"])]
+        run: bool,
         #[arg(long)]
         seed: bool,
         #[arg(long, value_name = "DIRECTORY")]
@@ -546,6 +549,17 @@ mod tests {
                 ..
             } if role == "ticketdesk-application" && seed_concurrency == "4"
         ));
+        let run = Cli::try_parse_from(["riffdb", "dev", "--seed", "--run"])
+            .expect("accepted generated application run");
+        assert!(matches!(
+            run.command,
+            TopLevel::Dev {
+                run: true,
+                seed: true,
+                ..
+            }
+        ));
+        assert!(Cli::try_parse_from(["riffdb", "dev", "--run", "--watch"]).is_err());
     }
 
     #[test]
