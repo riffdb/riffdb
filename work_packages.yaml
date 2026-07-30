@@ -1,4 +1,4 @@
-spec_version: '0.41'
+spec_version: '0.44'
 product: RiffDB
 repository: riffdb
 status: application-platform-implementation
@@ -4632,11 +4632,16 @@ work_packages:
   allowed_paths:
   - Cargo.toml
   - Cargo.lock
+  - adr/0055-safe-application-surface-and-declared-integrity.md
+  - crates/riffdb-cli/**
+  - crates/riffdb-diagnostics/**
+  - crates/riffdb-query-module/**
   - evaluations/agent-application-alpha/**
   - examples/agent-alpha/**
   - contracts/agent-alpha/**
   - queries/agent-alpha/**
   - fixtures/agent-alpha/**
+  - fixtures/application-diagnostics/**
   - fixtures/query-modules/**
   - fixtures/performance/**
   - release/agent-application-alpha/**
@@ -4647,6 +4652,11 @@ work_packages:
   - scripts/check-application-bindings
   - scripts/check-application-boundary
   - scripts/generate-query-clients
+  - scripts/riffdb-dev
+  - scripts/riffdb-dev-acceptance
+  - scripts/riffdb-dev-installed
+  - scripts/riffdb-new-acceptance
+  - templates/application/**
   - docs/getting-started/**
   - docs/riffql/**
   - docs/agent-application-alpha.md

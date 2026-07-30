@@ -47,19 +47,17 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-campaign_one="$repo_root/evaluations/agent-application-alpha/runs"
 campaign_one_manifest="$repo_root/evaluations/agent-application-alpha/campaigns/campaign-01.json"
+: >"$work_root/campaign-01.before"
 while IFS=$'\t' read -r relative expected; do
     actual="$(sha256sum "$repo_root/$relative" | cut -d' ' -f1)"
     [[ "$actual" == "$expected" ]] || {
         echo "campaign 01 immutable evidence does not match its selection manifest: $relative" >&2
         exit 1
     }
+    printf '%s  %s\n' "$actual" "$relative" >>"$work_root/campaign-01.before"
 done < <(jq -r '.runs[] | .report, .events | [.path, .sha256] | @tsv' \
     "$campaign_one_manifest")
-find "$campaign_one" -mindepth 2 -maxdepth 2 -type f \
-    \( -name report.json -o -name events.jsonl \) -print0 \
-    | sort -z | xargs -0 sha256sum >"$work_root/campaign-01.before"
 [[ "$(wc -l <"$work_root/campaign-01.before")" == "8" ]] || {
     echo "campaign 01 immutable evidence inventory is incomplete" >&2
     exit 1
@@ -547,9 +545,12 @@ for domain in blog orders; do
     done
 done
 
-find "$campaign_one" -mindepth 2 -maxdepth 2 -type f \
-    \( -name report.json -o -name events.jsonl \) -print0 \
-    | sort -z | xargs -0 sha256sum >"$work_root/campaign-01.after"
+: >"$work_root/campaign-01.after"
+while IFS=$'\t' read -r relative _expected; do
+    actual="$(sha256sum "$repo_root/$relative" | cut -d' ' -f1)"
+    printf '%s  %s\n' "$actual" "$relative" >>"$work_root/campaign-01.after"
+done < <(jq -r '.runs[] | .report, .events | [.path, .sha256] | @tsv' \
+    "$campaign_one_manifest")
 cmp "$work_root/campaign-01.before" "$work_root/campaign-01.after" >/dev/null || {
     echo "campaign 01 evidence changed during rehearsal" >&2
     exit 1

@@ -81,12 +81,20 @@ The complete vector is appended to the canonical access-program bytes before
 the `riffdb.query-plan/v1` hash is computed. Changing any component therefore
 changes plan identity and invalidates substitution.
 
-The current compatible capability record has one `max_scan_rows` field. WP-285
-interprets it as the whole-query allowance for each row/work dimension instead
-of allowing every step to reuse it. The projected-value allowance is that row
-budget multiplied by the existing maximum visible-field count, and encoded
-bytes retain the fixed 4 MiB service ceiling. This closes cumulative work
-amplification without changing durable capability or public gRPC bytes.
+The current compatible capability record has one `max_scan_rows` field. It is
+the whole-query aggregate allowance for index-scan rows; every scan step is
+summed and no step may independently reuse it. Point reads, dependent keys, and
+retained intermediate rows have separate conservative ceilings derived as that
+scan bound times the fixed maximum query-step count. Projected values add the
+existing maximum visible-field multiplier, and encoded bytes retain the fixed
+4 MiB service ceiling. The exact plan cost is still authorized once and
+consumed as execution fuel, so these derived ceilings do not create ambient or
+unmetered read authority.
+
+A `Limit` parameter is charged at its complete 500-row type range. Therefore,
+two index scans each controlled by an independent `Limit` parameter require
+1,000 aggregate scan rows and fail role derivation. Fixed `take` bounds let a
+multi-collection page divide the 500-row aggregate deliberately.
 
 At runtime the executor creates a move-only fuel value from the exact program
 cost. It decrements fuel for every access step, backend-reported scanned row,

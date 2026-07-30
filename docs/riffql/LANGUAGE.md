@@ -33,6 +33,15 @@ every target must exist. An empty source produces an empty list; a missing
 target selects the declared `else` outcome. Collection-as-scalar use, non-key
 fan-out, nested per-row collections, and Cartesian products are rejected.
 
+The source collection must be a complete ordered set of target keys: its
+`order by` is exactly the consumed field, ascending. If the source model allows
+the same target key more than once and therefore needs a tie-breaker such as
+`line_id`, it is not a dependent-key set and is rejected with `RDB-QP007`.
+Model one line per product when that is the domain invariant, denormalize the
+small immutable display field onto the line, or use a separately justified
+projection. RiffDB does not silently deduplicate, reorder, or issue per-row
+reads because each would change declared cardinality or hide work.
+
 ```riffql
 query OpenTickets($tenant: TenantId, $limit: Limit = 25) {
     many tickets from Ticket
@@ -61,6 +70,12 @@ The parser accepts at most 1 MiB of UTF-8 source, 131,072 tokens/AST nodes,
 32 nesting levels, 4,096 bindings, and 1,024 items in any local collection.
 Diagnostics are value-free and use stable `RDB-QS001` through `RDB-QS009`
 codes.
+
+A `Limit` parameter is statically charged at its full 500-row range, not at its
+default. The index-scan maxima of all bindings in one query are cumulative.
+Pages with multiple collections should use fixed `take` values whose complete
+scan total is at most 500. This is checked again while deriving every symbolic
+application role; `RDB-AR007` names the role and query before a lock is written.
 
 ## Accepted application-profile target
 

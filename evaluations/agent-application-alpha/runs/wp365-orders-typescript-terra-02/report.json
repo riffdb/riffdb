@@ -1,0 +1,35 @@
+{
+  "schema": "riffdb-agent-application-alpha-run/v1",
+  "run_id": "wp365-orders-typescript-terra-02",
+  "bundle_hash": "0e19842becd95abb090b939034f0f2a651fcbdc306be79890e63937c19985a40",
+  "agent_identity": "terra-wp365-orders-typescript-02",
+  "domain": "orders",
+  "language": "typescript",
+  "independent": true,
+  "fresh_context": true,
+  "human_interventions": 0,
+  "kernel_attempts": 0,
+  "kernel_successes": 0,
+  "handwritten_glue_lines": 0,
+  "compiler_failures": 21,
+  "runtime_failures": 1,
+  "unsupported_shapes": [
+    {
+      "code": "RDB-QP007",
+      "operation": "OrderDetail",
+      "reason": "The documented bounded line-to-product dependent batch was rejected by the public compiler."
+    }
+  ],
+  "first_write_seconds": null,
+  "first_page_read_seconds": null,
+  "time_to_complete_seconds": 1200,
+  "source_access": {
+    "riffdb_implementation": false,
+    "ticketdesk": false
+  },
+  "boundary_passed": true,
+  "golden_passed": false,
+  "rating": 4.0,
+  "explanation": "The symbolic TypeScript application compiled, regenerated typed operations, and passed the bundled boundary checker. Public compiler diagnostics were useful, but a documented bounded dependent batch was rejected. More importantly, the public development command emitted readiness then exited without a reachable service, so the required generated HTTP write and fenced page read could not be exercised. This is a failed runtime canary rather than a qualified success.",
+  "transcript_sha256": "4fe58719089047b3e26ecd7aa91566575507d633ba1c0a1560635d7a0eac4ca4"
+}

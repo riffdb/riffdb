@@ -39,6 +39,9 @@ The main correction codes are deliberately executable concepts:
 - `supply_partition_route`: add the complete same-partition route.
 - `add_index`: add the bounded index identified by query explain.
 - `add_bound`: declare explicit positive cardinality/work bounds.
+- `reduce_input`: reduce a complete worst-case input or query-work bound. For
+  `RDB-AR007`, replace unconstrained `Limit` parameters on a multi-collection
+  page with fixed `take` limits whose aggregate index-scan bound is at most 500.
 - `narrow_role`: remove or correct unsafe symbolic authority.
 - `write_lock`: review the symbolic/authority diff, then run
   `riffdb application lock --write`.

@@ -5,6 +5,8 @@
 - **Exact text accepted:** 2026-07-29
 - **Acceptance reference:** Maintainer agreement in the current Codex session
   with the recommended safe-application product rule
+- **Clarified:** 2026-07-30 for aggregate scan authority versus separately
+  fuel-metered bounded hydration work
 - **Requires:** ADR-0002, ADR-0003, ADR-0007, ADR-0009, ADR-0013,
   ADR-0016, ADR-0027, ADR-0035, ADR-0038, ADR-0051, ADR-0052,
   ADR-0053, and ADR-0054
@@ -41,6 +43,28 @@ surface escape hatches that prevent the stronger claim that the normal way to
 use RiffDB is safe by construction.
 
 ## Decision
+
+### Aggregate scan authority and bounded hydration
+
+The compatible capability field `max_scan_rows` is the whole-query aggregate
+index-scan ceiling. Every index-scan step is summed into the plan cost; a
+capability at 500 never authorizes two 500-row scans in one query.
+
+Point reads, dependent-key hydration, retained intermediate rows, and projected
+values are separate cost-vector dimensions. Their authorization ceilings are
+derived from `max_scan_rows * MAX_APPLICATION_QUERY_STEPS` (and, for projected
+values, the existing visible-field bound), while the exact compiled plan cost
+is consumed as move-only execution fuel. Each compiler-derived entity access
+must still fit `max_scan_rows`, every step is independently bounded, and the
+fixed step/result-byte ceilings remain in force. This permits a bounded page to
+hydrate several relationships without misclassifying every point read as an
+index scan; it does not permit an unbounded or hidden access.
+
+Role compilation derives `max_scan_rows` from the greatest aggregate
+index-scan cost of its named queries. A query above 500 is rejected before lock
+publication and role binding. Defaults do not narrow a `Limit` parameter's
+500-row type range; multi-collection pages must use fixed `take` bounds when
+their complete parameter ranges would exceed the aggregate ceiling.
 
 ### Closed application operation profile
 

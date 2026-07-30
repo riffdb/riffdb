@@ -1,7 +1,7 @@
 {
   "schema": "riffdb-agent-application-alpha-rehearsal/v1",
   "work_package": "WP-365",
-  "bundle_hash": "0e19842becd95abb090b939034f0f2a651fcbdc306be79890e63937c19985a40",
+  "bundle_hash": "b72679d6d7ea66dc08e59ff547a9e5af7789f7638c862619365713618437ce11",
   "public_only": true,
   "campaign_01_immutable": true,
   "recoveries": {
@@ -24,7 +24,7 @@
   "runs": [
     {
       "schema": "riffdb-agent-application-alpha-rehearsal-run/v1",
-      "bundle_hash": "0e19842becd95abb090b939034f0f2a651fcbdc306be79890e63937c19985a40",
+      "bundle_hash": "b72679d6d7ea66dc08e59ff547a9e5af7789f7638c862619365713618437ce11",
       "domain": "blog",
       "language": "rust",
       "public_only": true,
@@ -52,7 +52,7 @@
     },
     {
       "schema": "riffdb-agent-application-alpha-rehearsal-run/v1",
-      "bundle_hash": "0e19842becd95abb090b939034f0f2a651fcbdc306be79890e63937c19985a40",
+      "bundle_hash": "b72679d6d7ea66dc08e59ff547a9e5af7789f7638c862619365713618437ce11",
       "domain": "blog",
       "language": "typescript",
       "public_only": true,
@@ -80,7 +80,7 @@
     },
     {
       "schema": "riffdb-agent-application-alpha-rehearsal-run/v1",
-      "bundle_hash": "0e19842becd95abb090b939034f0f2a651fcbdc306be79890e63937c19985a40",
+      "bundle_hash": "b72679d6d7ea66dc08e59ff547a9e5af7789f7638c862619365713618437ce11",
       "domain": "orders",
       "language": "rust",
       "public_only": true,
@@ -108,7 +108,7 @@
     },
     {
       "schema": "riffdb-agent-application-alpha-rehearsal-run/v1",
-      "bundle_hash": "0e19842becd95abb090b939034f0f2a651fcbdc306be79890e63937c19985a40",
+      "bundle_hash": "b72679d6d7ea66dc08e59ff547a9e5af7789f7638c862619365713618437ce11",
       "domain": "orders",
       "language": "typescript",
       "public_only": true,

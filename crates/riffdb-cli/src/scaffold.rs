@@ -10,12 +10,13 @@ use riffdb_diagnostics::{
     AuthoringDiagnostics, AuthoringSourcePath, FileChangeDisposition, FilesystemDiagnosticClass,
 };
 use riffdb_query_module::{
-    ApplicationLock, ApplicationManifest, ApplicationSourceManifest, GeneratedApplicationArtifact,
-    GeneratedApplicationArtifactKind, GeneratedMcpCommand, GeneratedMcpTool, NamedQuerySource,
-    QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
-    compile_application_role, generate_mcp_commands, generate_mcp_tools, generate_rust_client,
-    generate_typescript_client,
+    ApplicationLock, ApplicationManifest, ApplicationSourceManifest, ApplicationSourceTenantScope,
+    GeneratedApplicationArtifact, GeneratedApplicationArtifactKind, GeneratedMcpCommand,
+    GeneratedMcpTool, NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName,
+    QueryModuleVersion, compile_application_role, generate_mcp_commands, generate_mcp_tools,
+    generate_rust_client, generate_typescript_client,
 };
+use riffdb_types::TenantId;
 use serde_json::json;
 
 const CONTRACT_TEMPLATE: &str = include_str!("../../../templates/application/contract.riff");
@@ -309,6 +310,31 @@ fn compile_symbolic_application(
     let exact = source
         .exact_manifest(&contract, &modules)
         .map_err(|error| application_source_diagnostic(source_path, error.kind()))?;
+    for role in source.roles() {
+        let tenant = match role.tenant_scope() {
+            ApplicationSourceTenantScope::Global => None,
+            ApplicationSourceTenantScope::Tenant => {
+                Some(TenantId::new("application-check").map_err(|_| ScaffoldError::CompileRole)?)
+            }
+        };
+        compile_application_role(&exact, role.name(), tenant, &contract, &modules).map_err(
+            |error| {
+                let over_budget_query = (error.kind()
+                    == riffdb_query_module::ApplicationRoleErrorKind::RequirementLimit)
+                    .then(|| {
+                        role.queries().iter().find_map(|query_name| {
+                            modules
+                                .iter()
+                                .find_map(|module| module.query(query_name))
+                                .filter(|query| query.program().cost().scanned_index_rows() > 500)
+                                .map(|query| query.name())
+                        })
+                    })
+                    .flatten();
+                role_diagnostic(source_path, role.name(), over_budget_query, error.kind())
+            },
+        )?;
+    }
     let [module] = modules.as_slice() else {
         return Err(ScaffoldError::Manifest);
     };
@@ -412,6 +438,20 @@ fn query_diagnostic(path: &str, error: &riffdb_query_module::QueryModuleError) -
         .ok()
         .and_then(|path| AuthoringDiagnostics::from_query_module(path, error).ok())
         .map_or(ScaffoldError::CompileQuery, ScaffoldError::Authoring)
+}
+
+fn role_diagnostic(
+    path: &Path,
+    role: &str,
+    query: Option<&str>,
+    kind: riffdb_query_module::ApplicationRoleErrorKind,
+) -> ScaffoldError {
+    diagnostic_path(path)
+        .and_then(|path| match query {
+            Some(query) => AuthoringDiagnostics::role_query_scan_budget(path, role, query).ok(),
+            None => AuthoringDiagnostics::from_role(path, kind, Some(role)).ok(),
+        })
+        .map_or(ScaffoldError::CompileRole, ScaffoldError::Authoring)
 }
 
 fn filesystem_diagnostic(
@@ -1627,6 +1667,97 @@ mod tests {
         );
         assert!(!json.contains("SECRET_VALUE"));
         assert!(!json.contains("contract SafeApp"));
+        fs::remove_dir_all(base).expect("cleanup");
+    }
+
+    #[test]
+    fn application_check_rejects_a_role_whose_complete_scan_budget_is_unsafe() {
+        let base = std::env::temp_dir().join(format!(
+            "riffdb-role-budget-test-{}-{}",
+            std::process::id(),
+            "complete-scan"
+        ));
+        if base.exists() {
+            fs::remove_dir_all(&base).expect("remove prior test directory");
+        }
+        create_application("safe-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
+        fs::write(
+            base.join("riffdb/contract.riff"),
+            br#"contract SafeApp version 1 {
+  entity Item {
+    key (tenant_id: uuid, item_id: uuid)
+    field title: string<128>
+    field created_at: timestamp
+    index by_tenant (tenant_id, item_id)
+  }
+
+  aggregate ItemRoot {
+    root Item
+    partition_by tenant_id
+    conflict_key (tenant_id)
+  }
+
+  command CreateItem {
+    input idempotency_key: string<128>
+    input tenant_id: uuid
+    input item_id: uuid
+    input title: string<128>
+    idempotency_key idempotency_key
+    create Item(tenant_id, item_id) as item
+      else ItemExists { item_id: item_id }
+    set item.title = title
+    set item.created_at = tx.time
+    return Created { item: item }
+  }
+}
+"#,
+        )
+        .expect("write bounded contract");
+        fs::write(
+            base.join("riffdb/queries/item_page.riffq"),
+            br#"query ItemPage(
+    $tenant_id: Item.tenant_id,
+    $first_limit: Limit = 25,
+    $second_limit: Limit = 25,
+) {
+    many first from Item
+        where tenant_id == $tenant_id
+        order by item_id asc
+        take $first_limit
+
+    many second from Item
+        where tenant_id == $tenant_id
+        order by item_id asc
+        take $second_limit
+
+    return Found {
+        first: first { item_id title }
+        second: second { item_id title }
+    }
+
+    outcomes Found
+}
+"#,
+        )
+        .expect("write unsafe complete budget");
+
+        let error = check_application(&base.join("riffdb.application.json"))
+            .expect_err("complete worst-case scan exceeds the role bound");
+        let diagnostics = error.diagnostics().expect("structured role diagnostic");
+        let [diagnostic] = diagnostics.as_slice() else {
+            panic!("role failure returns exactly one diagnostic");
+        };
+        assert_eq!(diagnostic.stage().as_str(), "role");
+        assert_eq!(diagnostic.code().as_str(), "RDB-AR007");
+        assert_eq!(diagnostic.symbol_path(), ["SafeAppApplication", "ItemPage"]);
+        assert_eq!(
+            diagnostics.render_json().expect("JSON"),
+            include_str!("../../../fixtures/application-diagnostics/role-budget-v1.json")
+        );
+        assert_eq!(
+            diagnostics.render_human().expect("human"),
+            include_str!("../../../fixtures/application-diagnostics/role-budget-v1.txt")
+        );
         fs::remove_dir_all(base).expect("cleanup");
     }
 

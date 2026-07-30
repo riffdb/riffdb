@@ -9,7 +9,7 @@ $ riffdb new order-desk
 created application `order-desk` at order-desk
 
 $ cd order-desk
-$ riffdb dev --seed
+$ riffdb dev --seed --run
 generated exact application bindings
 application boundary check passed
 riffdb-dev-seed-v1  1  application-manifest
@@ -105,6 +105,16 @@ all bindings, checks the application boundary, executes seed JSONL
 through ordinary idempotent commands, and shuts down its child on failure or
 interrupt. Credentials live only in a mode-protected temporary directory.
 
+With `--run`, the same product-owned workflow starts the repository's generated
+application after readiness. A repository must contain exactly one supported
+runner: `Cargo.toml` for Rust or `package.json` for TypeScript. RiffDB passes
+the loopback endpoint and scoped application credential directly to that child;
+the application does not need to parse the readiness line or keep a separate
+bootstrap process alive. Rust one-shot runners exit normally. TypeScript web
+runners remain attached and may print `riffdb-app-ready-v1` before accepting
+requests. Application stdout is caller-owned output and is streamed directly,
+not copied into RiffDB diagnostics or logs.
+
 A release installation places the reviewed `riffdb-dev` workflow beside the
 `riffdb` and `riffdbd` binaries. That installed workflow takes precedence over
 an application-local script, so opening an unfamiliar repository cannot
@@ -141,6 +151,33 @@ application role. The normal scaffold has no kernel dependency, feature, role,
 credential, MCP tool, or documentation path. Kernel access is an explicit
 source-repository operational workflow and must not reuse an application
 credential.
+
+## Whole-query bounds
+
+`Limit` means a caller may request any page size through the 500-row service
+ceiling. The compiler therefore charges a `take $limit` binding as 500 rows,
+even when the parameter has a smaller default. Index-scan charges from every
+binding in one named query are added before a role is accepted.
+
+For a page with several independently bounded collections, use reviewed fixed
+limits whose aggregate index-scan maximum is at most 500:
+
+```riffql
+many comments from Comment
+    where site_id == $site_id && post_id == post.post_id
+    order by created_at asc, comment_id asc
+    take 100 after $comments_after
+
+many post_tags from PostTag
+    where site_id == $site_id && post_id == post.post_id
+    order by tag_id asc
+    take 50
+```
+
+`riffdb application check` performs this role derivation before writing a lock
+or starting a server. `RDB-AR007` names the role and query when its aggregate
+worst-case scan exceeds the stable bound. RiffDB never replaces this rejection
+with a hidden scan, partial result, or larger ambient grant.
 
 ## Product safety rule
 

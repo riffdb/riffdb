@@ -7,6 +7,7 @@ installation_root="$(cd "$script_dir/.." && pwd)"
 application_root=
 role=application
 watch=0
+run=0
 acceptance=0
 seed_dir=
 seed_builtin=0
@@ -16,16 +17,22 @@ while (($#)); do
         --role) role="${2:-}"; shift 2 ;;
         --application-root) application_root="${2:-}"; shift 2 ;;
         --watch) watch=1; shift ;;
+        --run) run=1; shift ;;
         --acceptance) acceptance=1; shift ;;
         --seed-dir) seed_dir="${2:-}"; shift 2 ;;
         --seed) seed_builtin=1; shift ;;
         --seed-concurrency) seed_concurrency="${2:-}"; shift 2 ;;
         *)
-            echo "usage: riffdb-dev [--application-root DIR] [--role application|ROLE] [--watch] [--seed] [--seed-dir DIR] [--seed-concurrency 1..8] [--acceptance]" >&2
+            echo "usage: riffdb-dev [--application-root DIR] [--role application|ROLE] [--watch|--run] [--seed] [--seed-dir DIR] [--seed-concurrency 1..8] [--acceptance]" >&2
             exit 2
             ;;
     esac
 done
+
+if ((run && (watch || acceptance))); then
+    echo "--run cannot be combined with --watch or --acceptance" >&2
+    exit 2
+fi
 
 [[ -n "$application_root" ]] || {
     echo "installed riffdb dev requires an application root" >&2
@@ -261,6 +268,37 @@ fi
 
 printf 'riffdb-dev-ready-v1\t%s\t%s\t%s\n' \
     "$endpoint" "$work_root/profile.credential" "$role_symbol"
+
+if ((run)); then
+    if [[ -f "$application_root/Cargo.toml" && -f "$application_root/package.json" ]]; then
+        echo "application root contains ambiguous Rust and TypeScript runners" >&2
+        exit 2
+    fi
+    if [[ -f "$application_root/Cargo.toml" ]]; then
+        app_patch="patch.crates-io.riffdb-client-rust.path=\"$rust_sdk\""
+        CARGO_TARGET_DIR="$work_root/application-target" \
+            cargo run --quiet --offline \
+            --manifest-path "$application_root/Cargo.toml" \
+            --config "$app_patch" \
+            -- "$endpoint" "$work_root/profile.credential"
+    elif [[ -f "$application_root/package.json" ]]; then
+        for tool in node npm; do
+            command -v "$tool" >/dev/null 2>&1 || {
+                echo "required TypeScript runner tool is missing: $tool" >&2
+                exit 1
+            }
+        done
+        (
+            cd "$application_root"
+            npm run --silent build
+            npm run --silent start -- "$endpoint" "$work_root/profile.credential" "$riffdb"
+        )
+    else
+        echo "application root has no supported Rust or TypeScript runner" >&2
+        exit 2
+    fi
+    exit 0
+fi
 
 if ((acceptance)); then
     if [[ -f "$application_root/Cargo.toml" ]]; then

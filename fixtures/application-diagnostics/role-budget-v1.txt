@@ -1,0 +1,6 @@
+RDB-AR007 [role] named query aggregate index-scan bound exceeds 500 rows
+  --> riffdb.application.json
+  symbol: SafeAppApplication.ItemPage
+  cause: limit_exceeded
+  fixes: reduce_input
+  files: no_files_changed; retry: correct_source
