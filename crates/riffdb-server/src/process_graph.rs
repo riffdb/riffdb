@@ -84,7 +84,24 @@ use crate::storage::SharedRedbOperationalPorts;
 /// Two complete maximum groups may queue while the actor owns one physical
 /// transition. Retained command byte bounds remain enforced by the public
 /// request and storage transaction ceilings.
+///
+/// Override with `RIFFDB_P1_COORDINATOR_WORKLOAD_CAPACITY` (1..=4096) for
+/// saturation evidence harnesses only; production deployments leave the env
+/// unset so the compiled default applies.
 const P1_COORDINATOR_WORKLOAD_CAPACITY: u16 = 128;
+
+fn p1_coordinator_workload_capacity() -> u16 {
+    const ENV: &str = "RIFFDB_P1_COORDINATOR_WORKLOAD_CAPACITY";
+    match std::env::var(ENV) {
+        Ok(raw) => {
+            let parsed = raw
+                .parse::<u16>()
+                .unwrap_or(P1_COORDINATOR_WORKLOAD_CAPACITY);
+            parsed.clamp(1, 4096)
+        }
+        Err(_) => P1_COORDINATOR_WORKLOAD_CAPACITY,
+    }
+}
 
 /// One checked secret-key snapshot shared by startup, maintenance, and a graph generation.
 #[derive(Clone)]
@@ -335,7 +352,7 @@ impl ProductionGraphBuilder {
             }
         };
         let coordinator_capacity =
-            CoordinatorWorkloadCapacity::new(P1_COORDINATOR_WORKLOAD_CAPACITY)
+            CoordinatorWorkloadCapacity::new(p1_coordinator_workload_capacity())
                 .expect("the fixed P1 coordinator workload capacity is nonzero");
         let coordinator = match RunningCommandCoordinator::start_with_telemetry(
             coordinator_capacity,

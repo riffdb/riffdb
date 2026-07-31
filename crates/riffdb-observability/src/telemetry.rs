@@ -332,6 +332,9 @@ impl ServiceTelemetry for Observability {
                 return;
             }
             ServiceTelemetryEvent::CapacityRejected { stage, .. } => {
+                // Stage-only counter (bounded cardinality). Operation × terminal
+                // is already captured by ServiceOperationTerminal(Overloaded);
+                // operation/ingress on this event are for the safe trace path.
                 self.metrics
                     .increment(MetricKey::ServiceCapacityRejected(stage));
                 return;

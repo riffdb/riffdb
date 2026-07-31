@@ -75,6 +75,11 @@ high-cardinality labels.
   deadlines.
 - Load evidence must demonstrate that at saturation, all rejections carry the
   typed code and accepted-work latency stays bounded.
+- **Deviation D3 (Package S):** read-only commands share the same service-edge
+  capacity contract and therefore surface typed `RDB-CAPACITY-0101` shedding
+  (admission precedes read-only audit start). Pre-S read-only capacity
+  exhaustion collapsed into storage unavailability; clients that treated all
+  read failures as storage faults must now treat Overloaded as retryable.
 
 ## Rejected alternatives
 
