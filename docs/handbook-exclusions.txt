@@ -1,0 +1,4 @@
+# Internal history and maintainer evidence are intentionally outside the public handbook.
+agent-application-alpha.md
+performance/**
+superpowers/**

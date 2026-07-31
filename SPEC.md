@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.53
+**Version:** 0.54
 **Status:** Application-platform implementation handoff
 **Date:** 31 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -89,6 +89,7 @@
 | 0.51 | 2026-07-31 | Applied accepted ADR-0074 and planned WP-394 through WP-398: a Python 3.13+ generated application client backed by the existing Rust stable client, exact sync/async and value/error/retry parity, explicit application source/lock V2 migration, reproducible manylinux wheels and source distribution, and a new Python parity gate. Database semantics and transport trust decisions remain first-party Rust; target-language generated application bindings are the narrow accepted `SYS-002` exception. |
 | 0.52 | 2026-07-31 | Applied accepted ADR-0075 and planned WP-399: successor application locks compile against the exact active parent through a read-only authorized preview, lock V3 pins canonical bundle bytes as a checked artifact, deployment proves exact parent and candidate identities before mutation, exact already-active retries remain idempotent, and application check can no longer report a stale lock as exact. |
 | 0.53 | 2026-07-31 | Corrected the post-WP-399 role-reconciliation boundary and planned WP-400: locked role compilation consumes the pinned parent-aware bundle instead of recompiling successor source as genesis, every local role/query preflight completes before the first remote mutation, widened authority still requires explicit credential replacement, and CLI operation labels no longer describe successor locking as deployment. |
+| 0.54 | 2026-07-31 | Defined the public documentation handbook, its reproducible static build and generated-reference boundaries, progressive application and operator learning paths, and the same-change documentation maintenance requirement through WP-401 to WP-404. |
 
 ### Normative language
 
@@ -489,6 +490,61 @@ transport/protocol/kernel imports and prove equivalent Rust, TypeScript, and
 Python identities, values, queries, commands, batches, errors, uncertainty,
 authorization, and two-database routing. Prior sealed evaluation evidence MUST
 remain immutable.
+
+## 4.7 Public documentation handbook
+
+`HBK-001` The repository MUST publish one searchable, navigable static handbook
+from the checked-in `docs/` sources. The same sources MUST build locally and in
+CI without a hosted documentation service.
+
+`HBK-002` Public documentation MUST describe implemented behavior, clearly mark
+the project as a proof of concept, and link compatibility, security, and known
+limitations from the primary learning paths. Proposed and deferred behavior
+MUST NOT be presented as available.
+
+`HBK-003` The application-builder path MUST progress from a minimal entity and
+command through TicketDesk and the PostgreSQL comparison. It MUST explain how
+contract-first commands prevent the demonstrated unsafe mutation patterns
+without broadening the POC language or query scope.
+
+`HBK-004` Rust, TypeScript, Python, CLI, gRPC, and MCP documentation MUST retain
+one shared application-service boundary. MCP MUST be described and tested as a
+policy-filtered transport, never as a privileged storage path.
+
+`HBK-005` Operator documentation MUST cover user and system installation,
+configuration, multi-database hosting, credentials, health, backup, restore,
+upgrade, pre-alpha reset, troubleshooting, security, and removal using current
+public commands and configuration.
+
+`HBK-006` Concept and reference documentation MUST explain contracts, command
+execution, idempotency, conflict domains, provenance, durable effects,
+projection frontiers, RiffQL, public values, errors, and compatibility at the
+level needed to build and operate a POC application.
+
+`HBK-007` Generated CLI reference, architecture diagrams, compatibility
+fixtures, and public API documentation MUST be derived from their authoritative
+sources or checked for freshness. Published Rust API documentation MUST include
+only the stable public client crate, not internal authority-bearing crates.
+
+`HBK-008` Handbook tools and versions MUST be pinned. The published site MUST
+have no analytics, externally hosted runtime dependency, user credential, or
+environment-specific generated content.
+
+`HBK-009` The default theme MUST be responsive, keyboard navigable, readable in
+light and dark modes, and preserve meaningful image alternative text and code
+overflow behavior.
+
+`HBK-010` CI MUST reject a handbook that does not build, contains stale generated
+references, broken internal links or fragments, failing tested snippets, an
+unlisted public page, or an external runtime asset. A successful main-branch
+build MUST produce the exact static artifact used for GitHub Pages publication.
+
+`HBK-011` A change to public behavior, contract language, protocol, CLI,
+configuration, installation, operations, compatibility, or SDK behavior MUST
+update the affected handbook page in the same change. Pull requests MUST state
+their documentation impact, and generated handbook artifacts MUST remain
+reproducible.
+
 | gRPC API | Programmatic application and administration protocol | Alternative semantics |
 | MCP API | Dynamic tools, resources, prompts, progress, cancellation, and agent-safe result shaping | Direct storage access |
 | CLI | Local operator and demo workflows over public APIs | Hidden privileged mutation path |
@@ -6478,6 +6534,7 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `EVL-*` | Additive contract evolution and deployment diagnostics |
 | `SAI-*` | Exact successor application identity before mutation |
 | `PYD-*` | Python generated application driver, packaging, and language parity |
+| `HBK-*` | Public handbook, generated references, publication, and documentation maintenance |
 | `DSL-*` | Contract language restrictions |
 | `OUT-*` | Typed outcome and idempotency behavior |
 | `TXN-*` | Command execution, conflict ownership, and validation |
