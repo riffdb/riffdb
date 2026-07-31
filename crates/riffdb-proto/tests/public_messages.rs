@@ -1398,15 +1398,13 @@ fn batch_validate_structure_rejects_partial_legacy_field_and_length_mismatch() {
 
 #[test]
 fn batch_preflight_rejects_unset_oneof_double_arm_and_overflow() {
-    // Unset oneof: empty item message.
-    let unset = v1::ExecuteCommandBatchResponse {
-        responses: Vec::new(),
-        items: vec![v1::ExecuteCommandBatchItem { result: None }],
-    };
-    // Structure rejects unset; preflight of an empty nested item is only the
-    // root repeated envelope — decode then structure covers unset oneof.
+    // Unset oneof via hand-built wire: empty nested item under field 2.
+    let mut unset_bytes = Vec::new();
+    // field 2 (items), empty length-delimited message
+    unset_bytes.push(0x12);
+    prost::encoding::encode_varint(0, &mut unset_bytes);
     assert_eq!(
-        validate_public_message(&unset),
+        decode_public_message::<v1::ExecuteCommandBatchResponse>(&unset_bytes),
         Err(PublicWireError::MissingRequiredField)
     );
 
@@ -1432,7 +1430,7 @@ fn batch_preflight_rejects_unset_oneof_double_arm_and_overflow() {
         Err(PublicWireError::MalformedEncoding)
     );
 
-    // More than 16 items.
+    // More than 16 items with both fields populated.
     let too_many = v1::ExecuteCommandBatchResponse {
         responses: (0..17).map(|_| batch_read_only_response()).collect(),
         items: (0..17)
@@ -1446,6 +1444,30 @@ fn batch_preflight_rejects_unset_oneof_double_arm_and_overflow() {
     let encoded_overflow = too_many.encode_to_vec();
     assert_eq!(
         decode_public_message::<v1::ExecuteCommandBatchResponse>(&encoded_overflow),
+        Err(PublicWireError::PreflightLimitExceeded)
+    );
+
+    // More than 16 items with only the items field populated (mixed-error shape).
+    let items_only_overflow = v1::ExecuteCommandBatchResponse {
+        responses: Vec::new(),
+        items: (0..17)
+            .map(|index| {
+                if index == 0 {
+                    batch_item_error(ApplicationErrorCode::Overloaded)
+                } else {
+                    batch_item_response(batch_read_only_response())
+                }
+            })
+            .collect(),
+    };
+    assert_eq!(
+        validate_public_message(&items_only_overflow),
+        Err(PublicWireError::TooManyItems)
+    );
+    assert_eq!(
+        decode_public_message::<v1::ExecuteCommandBatchResponse>(
+            &items_only_overflow.encode_to_vec()
+        ),
         Err(PublicWireError::PreflightLimitExceeded)
     );
 }
