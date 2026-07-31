@@ -436,18 +436,6 @@ pub fn measure_clean_startup(path: &Path) -> Result<Duration, EngineBenchmarkErr
     Ok(started.elapsed())
 }
 
-/// Unclean recovery: process-kill shape via `std::process` child that opens the
-/// DB and exits with `_exit(0)` without running destructors, then full drain.
-pub fn measure_unclean_recovery(path: &Path) -> Result<Duration, EngineBenchmarkError> {
-    // Fork a helper open+exit: when not available (single-process), fall back to
-    // full drain after a hard reopen. The clean drain still exercises the same
-    // structural+historical path; PERF-014 stays off by default until CI records
-    // true kill-without-close samples.
-    let started = Instant::now();
-    drain_startup_evidence(path)?;
-    Ok(started.elapsed())
-}
-
 fn drain_startup_evidence(path: &Path) -> Result<(), EngineBenchmarkError> {
     use riffdb_storage_api::{
         EvidencePageLimit, HistoricalEvidenceCursor, HistoricalEvidencePage,
