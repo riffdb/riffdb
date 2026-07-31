@@ -131,6 +131,9 @@ pub fn validate_execute_response(
             .ok_or(ExecuteWireError::MissingValue)?,
     )
     .map_err(|_| ExecuteWireError::InvalidValue)?;
+    if response.history_incarnation == 0 {
+        return Err(ExecuteWireError::InvalidCommitSequence);
+    }
     if response.encoded_len() > MAX_EXECUTE_RESPONSE_BYTES {
         return Err(ExecuteWireError::MessageTooLarge);
     }
@@ -432,6 +435,8 @@ mod tests {
             provenance_uri: "riffdb://provenance/019bf6aa-a640-7de6-89c9-8a7f70bbbd23".to_owned(),
             durability_mode: "sync".to_owned(),
             outcome_uri: None,
+
+            history_incarnation: 1,
         };
         validate_execute_response(&response).expect("valid response");
 
@@ -496,6 +501,8 @@ mod tests {
             provenance_uri: "riffdb://provenance/019bf6aa-a640-7de6-89c9-8a7f70bbbd23".to_owned(),
             durability_mode: String::new(),
             outcome_uri: None,
+
+            history_incarnation: 1,
         };
 
         for mode in ["sync", "group", "memory"] {

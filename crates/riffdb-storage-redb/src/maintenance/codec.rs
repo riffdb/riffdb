@@ -67,6 +67,13 @@ pub(super) fn encode_receipt(
             }
         }
     }
+    match receipt.published_history_incarnation() {
+        None => output.u8(0)?,
+        Some(incarnation) => {
+            output.u8(1)?;
+            output.u64(incarnation)?;
+        }
+    }
 
     output.u8(u8::try_from(receipt.transitions().len()).map_err(|_| limit_exceeded())?)?;
     for transition in receipt.transitions() {
@@ -94,6 +101,25 @@ pub(super) fn decode_receipt(encoded: &[u8]) -> Result<OfflineMaintenanceReceipt
         return Err(corrupt());
     }
 
+    // Prefer post-fence (presence-tagged published incarnation). Fall through to
+    // pre-fence on any post-fence parse/canonicalization mismatch so mid-upgrade
+    // receipts remain resumable.
+    if let Ok(receipt) = decode_receipt_body(body, true)
+        && encode_receipt(&receipt)? == encoded
+    {
+        return Ok(receipt);
+    }
+    let receipt = decode_receipt_body(body, false)?;
+    if encode_receipt_pre_fence(&receipt)? != encoded {
+        return Err(corrupt());
+    }
+    Ok(receipt)
+}
+
+fn decode_receipt_body(
+    body: &[u8],
+    include_published_incarnation: bool,
+) -> Result<OfflineMaintenanceReceiptV1, StorageError> {
     let mut input = Decoder::new(body);
     if input.bytes(RECEIPT_MAGIC.len())? != RECEIPT_MAGIC {
         return Err(incompatible());
@@ -145,6 +171,21 @@ pub(super) fn decode_receipt(encoded: &[u8]) -> Result<OfflineMaintenanceReceipt
         }
         _ => return Err(corrupt()),
     };
+    let published_history_incarnation = if include_published_incarnation {
+        match input.u8()? {
+            0 => None,
+            1 => {
+                let incarnation = input.u64()?;
+                if incarnation < 1 {
+                    return Err(corrupt());
+                }
+                Some(incarnation)
+            }
+            _ => return Err(corrupt()),
+        }
+    } else {
+        None
+    };
 
     let transition_count = usize::from(input.u8()?);
     if transition_count == 0 || transition_count > MAX_OFFLINE_MAINTENANCE_RECEIPT_TRANSITIONS_V1 {
@@ -167,7 +208,7 @@ pub(super) fn decode_receipt(encoded: &[u8]) -> Result<OfflineMaintenanceReceipt
     }
     input.finish()?;
 
-    let receipt = OfflineMaintenanceReceiptV1::from_canonical_parts(
+    OfflineMaintenanceReceiptV1::from_canonical_parts(
         operation_id,
         operation_kind,
         backup_name,
@@ -177,13 +218,71 @@ pub(super) fn decode_receipt(encoded: &[u8]) -> Result<OfflineMaintenanceReceipt
         source_database_id,
         staged_database_id,
         manifest_identity,
+        published_history_incarnation,
         transitions,
     )
-    .map_err(value_error)?;
-    if encode_receipt(&receipt)? != encoded {
+    .map_err(value_error)
+}
+
+fn encode_receipt_pre_fence(
+    receipt: &OfflineMaintenanceReceiptV1,
+) -> Result<Vec<u8>, StorageError> {
+    if receipt.published_history_incarnation().is_some() {
         return Err(corrupt());
     }
-    Ok(receipt)
+    let mut output = Encoder::new();
+    output.bytes(RECEIPT_MAGIC)?;
+    output.u32(RECEIPT_FORMAT_VERSION)?;
+    output.bytes(receipt.operation_id().as_bytes())?;
+    output.u8(operation_kind_tag(receipt.operation_kind()))?;
+    output.framed_u16(receipt.backup_name().as_bytes())?;
+    output.bytes(receipt.input_hash().as_bytes())?;
+    output.u8(confirmation_tag(receipt.replacement_confirmation()))?;
+
+    let admission = receipt.admission();
+    output.u8(admission.actor_kind().tag())?;
+    output.framed_u16(admission.principal_id().as_str().as_bytes())?;
+    output.bytes(admission.capability_id().as_bytes())?;
+    match admission.approval_id() {
+        None => output.u8(0)?,
+        Some(approval_id) => {
+            output.u8(1)?;
+            output.framed_u16(approval_id.as_bytes())?;
+        }
+    }
+
+    output.optional_database_id(receipt.source_database_id())?;
+    output.optional_database_id(receipt.staged_database_id())?;
+    match receipt.manifest_identity() {
+        None => output.u8(0)?,
+        Some(identity) => {
+            if identity.manifest_checksum().as_bytes().len() != SHA256_BYTES {
+                return Err(corrupt());
+            }
+            output.u8(1)?;
+            output.framed_u16(identity.manifest_checksum().as_bytes())?;
+            output.bytes(identity.database_id().as_bytes())?;
+            match identity.included_application_frontier() {
+                None => output.u8(0)?,
+                Some(sequence) => {
+                    output.u8(1)?;
+                    output.u64(sequence.get())?;
+                }
+            }
+        }
+    }
+
+    output.u8(u8::try_from(receipt.transitions().len()).map_err(|_| limit_exceeded())?)?;
+    for transition in receipt.transitions() {
+        output.u8(transition.receipt_phase().tag())?;
+        output.u8(transition.failure().map_or(0, |failure| failure.tag()))?;
+    }
+
+    let mut bytes = output.finish();
+    let checksum = Sha256::digest(&bytes);
+    reserve_bytes(&bytes, checksum.len())?;
+    bytes.extend_from_slice(&checksum);
+    Ok(bytes)
 }
 
 const fn operation_kind_tag(kind: OfflineMaintenanceOperationKind) -> u8 {

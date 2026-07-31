@@ -963,3 +963,86 @@ fn invalid_or_phase_conflicting_audit_attempt_stops_readiness() {
     running.shutdown().expect("join stopped coordinator");
     assert_eq!(probe.calls.load(Ordering::Relaxed), 1);
 }
+
+#[test]
+fn try_reserve_capacity_returns_overloaded_when_channel_is_full_without_blocking() {
+    let probe = Probe::new();
+    let running = RunningCommandCoordinator::start_audit_only(
+        capacity(1),
+        RecordingRepository::appending(probe),
+        TestClock::fixed(fixed_timestamp()),
+    )
+    .expect("start coordinator");
+    let command = running.command_executor();
+    // Workload capacity 1 + shutdown slot = channel 2; one hold fills the sole workload slot.
+    let held = command
+        .try_reserve_capacity()
+        .expect("first non-blocking reservation");
+    assert!(matches!(
+        command.try_reserve_capacity(),
+        Err(CommandExecutionAdmissionError::Overloaded)
+    ));
+    // Concurrent try must not park: a second call still fails immediately.
+    assert!(matches!(
+        command.try_reserve_capacity(),
+        Err(CommandExecutionAdmissionError::Overloaded)
+    ));
+    drop(held);
+    let released = command
+        .try_reserve_capacity()
+        .expect("released slot is available again");
+    drop(released);
+    running.shutdown().expect("clean shutdown");
+}
+
+#[test]
+fn try_acquire_retained_bytes_returns_overloaded_when_budget_is_exhausted() {
+    let probe = Probe::new();
+    let running = RunningCommandCoordinator::start_audit_only(
+        capacity(2),
+        RecordingRepository::appending(probe),
+        TestClock::fixed(fixed_timestamp()),
+    )
+    .expect("start coordinator");
+    let command = running.command_executor();
+    // Exhaust the independent retained-byte semaphore in one shot.
+    let total_units = u32::try_from(MAX_QUEUED_COMMAND_BYTES / QUEUED_COMMAND_BYTE_UNIT)
+        .expect("byte budget fits u32");
+    let held = command
+        .try_acquire_retained_bytes(total_units)
+        .expect("full budget is available at start");
+    assert!(matches!(
+        command.try_acquire_retained_bytes(1),
+        Err(CommandExecutionAdmissionError::Overloaded)
+    ));
+    drop(held);
+    let recovered = command
+        .try_acquire_retained_bytes(1)
+        .expect("budget returns on drop");
+    drop(recovered);
+    running.shutdown().expect("clean shutdown");
+}
+
+#[test]
+fn undersized_pre_admitted_byte_permit_is_internal_defect_not_silent_accept() {
+    let probe = Probe::new();
+    let running = RunningCommandCoordinator::start_audit_only(
+        capacity(1),
+        RecordingRepository::appending(probe),
+        TestClock::fixed(fixed_timestamp()),
+    )
+    .expect("start coordinator");
+    let command = running.command_executor();
+    let permit = command.try_reserve_capacity().expect("queue slot");
+    let byte_permit = command
+        .try_acquire_retained_bytes(1)
+        .expect("one retained unit");
+    let mut permit = permit.with_retained_bytes(byte_permit, 1);
+    assert!(matches!(
+        permit.take_retained_byte_permit(4),
+        Err(CommandExecutionAdmissionError::PermitUnitMismatch)
+    ));
+    // Queue slot remains held until the permit drops; drop without accept.
+    drop(permit);
+    running.shutdown().expect("clean shutdown");
+}

@@ -297,6 +297,7 @@ impl PublicGrpcMcpBackend {
                         v1::GetCommitRequest {
                             request_id: invocation.request_id.to_vec(),
                             commit_sequence: expected_sequence,
+                            observed_history_incarnation: None,
                         },
                         &self.metadata,
                     )
@@ -1749,6 +1750,7 @@ mod tests {
             state: Some(v1::discovery_catalog_fence::State::NoActiveContract(
                 v1::Unit {},
             )),
+            history_incarnation: 1,
         }
     }
 

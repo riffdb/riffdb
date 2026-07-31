@@ -127,6 +127,10 @@ pub fn public_error_from_proto(
         (DomainKind::InternalDefect, None) => DomainPublicError::internal_defect(
             incident_id.ok_or(PublicErrorWireError::MissingInternalIncident)?,
         ),
+        (DomainKind::HistoryIncarnationMismatch, None) => {
+            DomainPublicError::history_incarnation_mismatch()
+        }
+        (DomainKind::Overloaded, None) => DomainPublicError::overloaded(),
         _ => return Err(PublicErrorWireError::InconsistentBoundary),
     };
 
@@ -209,6 +213,8 @@ const fn proto_kind(kind: DomainKind) -> v1::PublicErrorKind {
         DomainKind::OutcomeUnknown => v1::PublicErrorKind::OutcomeUnknown,
         DomainKind::InternalDefect => v1::PublicErrorKind::InternalDefect,
         DomainKind::CommandExecutionFailed => v1::PublicErrorKind::CommandExecutionFailed,
+        DomainKind::HistoryIncarnationMismatch => v1::PublicErrorKind::HistoryIncarnationMismatch,
+        DomainKind::Overloaded => v1::PublicErrorKind::Overloaded,
     }
 }
 
@@ -225,6 +231,10 @@ fn domain_kind(value: i32) -> Result<DomainKind, PublicErrorWireError> {
         Ok(v1::PublicErrorKind::OutcomeUnknown) => Ok(DomainKind::OutcomeUnknown),
         Ok(v1::PublicErrorKind::InternalDefect) => Ok(DomainKind::InternalDefect),
         Ok(v1::PublicErrorKind::CommandExecutionFailed) => Ok(DomainKind::CommandExecutionFailed),
+        Ok(v1::PublicErrorKind::HistoryIncarnationMismatch) => {
+            Ok(DomainKind::HistoryIncarnationMismatch)
+        }
+        Ok(v1::PublicErrorKind::Overloaded) => Ok(DomainKind::Overloaded),
         Ok(v1::PublicErrorKind::Unspecified) | Err(_) => Err(PublicErrorWireError::UnknownKind),
     }
 }
@@ -370,6 +380,8 @@ mod tests {
             DomainPublicError::command_execution_failed(
                 DomainExecutionFailureCode::ArithmeticFault,
             ),
+            DomainPublicError::history_incarnation_mismatch(),
+            DomainPublicError::overloaded(),
         ]
     }
 

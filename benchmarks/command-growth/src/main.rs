@@ -10,16 +10,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use riffdb_storage_redb::benchmark_support::{
     EngineDurability, EngineMechanicsProfile, ServiceAuditGrowthHarness,
-    initialize_engine_mechanics, measure_engine_reopen, run_engine_mechanics_window,
+    initialize_engine_mechanics, measure_clean_startup, measure_engine_reopen,
+    run_engine_mechanics_window,
 };
 
-const CHECKED_CHECKPOINTS: [u64; 5] = [0, 256, 1_024, 2_048, 4_096];
+const CHECKED_CHECKPOINTS: [u64; 6] = [0, 1_024, 4_096, 16_384, 32_768, 65_536];
 const SMOKE_CHECKPOINTS: [u64; 3] = [0, 64, 256];
 const CHECKED_WINDOW: usize = 128;
 const SMOKE_WINDOW: usize = 32;
 const PERF_MIN_COMMANDS_PER_SECOND: u64 = 50;
 const PERF_MIN_RETAINED_BASIS_POINTS: u64 = 5_000;
 const PERF_MAX_GROUP_VS_SYNC_BASIS_POINTS: u64 = 7_500;
+const PERF_013_MAX_GROWTH_RATIO: u64 = 32;
+const PERF_013_MAX_STARTUP_NS: u64 = 30_000_000_000;
 const PREFLIGHT_ENVIRONMENT: &str = "RIFFDB_COMMAND_GROWTH_PREFLIGHT";
 const PREFLIGHT_EVIDENCE: &str = "semantic-crash-v1";
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
@@ -38,7 +41,8 @@ fn run() -> Result<bool, ()> {
         || configuration.assert_group_mechanics
         || configuration.assert_perf_008
         || configuration.assert_perf_009
-        || configuration.assert_perf_012)
+        || configuration.assert_perf_012
+        || configuration.assert_perf_013)
         && !preflight_passed
     {
         return Err(());
@@ -64,6 +68,8 @@ fn run() -> Result<bool, ()> {
     let mut next_command = 1_u64;
     let mut first_rate = None;
     let mut final_rate = 0_u64;
+    let mut startup_at_4096_ns = None;
+    let mut startup_at_65536_ns = None;
     for checkpoint in checkpoints {
         while next_command.saturating_sub(1) < *checkpoint {
             let remaining = checkpoint.saturating_sub(next_command.saturating_sub(1));
@@ -87,6 +93,22 @@ fn run() -> Result<bool, ()> {
             sample.preparation().as_nanos(),
             sample.file_bytes()
         );
+
+        // Per-checkpoint clean startup wall time (full structural+historical drain).
+        // Drop the live harness so open is exclusive, measure, then reopen.
+        drop(harness);
+        let startup_ns =
+            u64::try_from(measure_clean_startup(&path).map_err(|_| ())?.as_nanos()).map_err(|_| ())?;
+        println!(
+            "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"startup\",\"retained_commands\":{checkpoint},\"startup_ns\":{startup_ns}}}"
+        );
+        if *checkpoint == 4_096 {
+            startup_at_4096_ns = Some(startup_ns);
+        }
+        if *checkpoint == 65_536 {
+            startup_at_65536_ns = Some(startup_ns);
+        }
+        harness = ServiceAuditGrowthHarness::reopen(&path).map_err(|_| ())?;
     }
 
     drop(harness);
@@ -136,10 +158,23 @@ fn run() -> Result<bool, ()> {
     );
     let group_gate_requested =
         configuration.assert_group_mechanics || configuration.assert_perf_008;
+    let perf_013_passed = match (startup_at_4096_ns, startup_at_65536_ns) {
+        (Some(at_4096), Some(at_65536)) => {
+            let ratio = at_65536 / at_4096.max(1);
+            ratio <= PERF_013_MAX_GROWTH_RATIO && at_65536 <= PERF_013_MAX_STARTUP_NS
+        }
+        _ => !configuration.assert_perf_013,
+    };
+    println!(
+        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"startup_summary\",\"startup_at_4096_ns\":{},\"startup_at_65536_ns\":{},\"max_growth_ratio\":{PERF_013_MAX_GROWTH_RATIO},\"max_startup_ns\":{PERF_013_MAX_STARTUP_NS},\"perf_013_passed\":{perf_013_passed}}}",
+        startup_at_4096_ns.unwrap_or(0),
+        startup_at_65536_ns.unwrap_or(0),
+    );
     Ok((!configuration.assert_perf_003 || passed)
         && (!group_gate_requested || perf_004_passed)
         && (!configuration.assert_perf_009 || perf_009_passed)
-        && (!configuration.assert_perf_012 || perf_012_passed))
+        && (!configuration.assert_perf_012 || perf_012_passed)
+        && (!configuration.assert_perf_013 || perf_013_passed))
 }
 
 struct GroupComparison {
@@ -218,6 +253,7 @@ struct Configuration {
     assert_perf_008: bool,
     assert_perf_009: bool,
     assert_perf_012: bool,
+    assert_perf_013: bool,
 }
 
 impl Configuration {
@@ -228,6 +264,7 @@ impl Configuration {
         let mut assert_perf_008 = false;
         let mut assert_perf_009 = false;
         let mut assert_perf_012 = false;
+        let mut assert_perf_013 = false;
         for argument in env::args().skip(1) {
             match argument.as_str() {
                 "--smoke" => checked = false,
@@ -257,6 +294,10 @@ impl Configuration {
                     checked = true;
                     assert_perf_012 = true;
                 }
+                "--assert-perf-013" => {
+                    checked = true;
+                    assert_perf_013 = true;
+                }
                 _ => return Err(()),
             }
         }
@@ -267,6 +308,7 @@ impl Configuration {
             assert_perf_008,
             assert_perf_009,
             assert_perf_012,
+            assert_perf_013,
         })
     }
 }
@@ -316,7 +358,7 @@ mod tests {
             .copied()
             .max()
             .expect("checked checkpoints");
-        assert!(maximum <= 4_096);
+        assert!(maximum <= 65_536);
         assert!(u64::try_from(CHECKED_WINDOW).expect("window") <= maximum);
     }
 }

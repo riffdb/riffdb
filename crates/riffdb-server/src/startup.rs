@@ -513,10 +513,11 @@ mod tests {
 
     use riffdb_storage_api::{
         ActiveCatalogPointerV1, CapabilityBootstrapMarkerV1, DormantPortBundle,
-        HistoricalBundleEvidence, HistoricalEvidenceCursor, HistoricalEvidenceEnd,
-        HistoricalEvidencePage, OpenSessionId, ReadableCapabilityDigestInventory,
-        ReadableDigestKey, ReadableIdempotencyDigestInventory, StorageErrorKind,
-        StorageFormatVersion, StructuralFinding, StructuralFindingCode, StructuralFindingScope,
+        HISTORY_INCARNATION_INITIAL, HistoricalBundleEvidence, HistoricalEvidenceCursor,
+        HistoricalEvidenceEnd, HistoricalEvidencePage, OpenSessionId,
+        ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+        StorageErrorKind, StorageFormatVersion, StructuralFinding, StructuralFindingCode,
+        StructuralFindingScope,
     };
     use riffdb_types::{
         AdministrationSequence, CapabilityId, CommitSequence, DigestKeyId, Timestamp,
@@ -581,6 +582,7 @@ mod tests {
             database_id,
             application,
             administration,
+            HISTORY_INCARNATION_INITIAL,
             active,
             marker,
         )

@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use redb::{
-    Durability, MultimapTableHandle, ReadTransaction, ReadableDatabase, ReadableTable,
-    ReadableTableMetadata, TableDefinition, TableHandle,
+    Durability, MultimapTableHandle, Range, ReadOnlyTable, ReadTransaction, ReadableDatabase,
+    ReadableTable, ReadableTableMetadata, TableDefinition, TableHandle,
 };
 use riffdb_catalog::{
     CatalogIndexMigrationApplied, CatalogIndexMigrationBackend, CatalogIndexMigrationBundleRequest,
@@ -39,20 +39,26 @@ use crate::gate::ExclusiveLease;
 use crate::hooks::RedbTestOperation;
 use crate::keys;
 use crate::layout::{
-    AUDIT, CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS,
-    CONTRACT_BUNDLES, ENTITIES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS, META,
-    META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
-    META_DATABASE_ID, META_FORMAT_VERSION, META_KEYS, META_RECORD_REGISTRY, OUTBOX, OUTBOX_STATUS,
+    AUDIT, AUDIT_BY_REQUEST, CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY,
+    COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS,
+    META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
+    META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
+    META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, OUTBOX, OUTBOX_STATUS,
     PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE,
     QUERY_MODULES, SECONDARY_INDEXES, TABLE_NAMES,
 };
-use crate::store::{PRE_INDEX_GENERATION_REGISTRY_DIGEST, RedbDormantPorts, RedbStore, SharedRedb};
+use crate::store::{
+    PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST, PRE_HISTORY_INCARNATION_REGISTRY_DIGEST,
+    PRE_INDEX_GENERATION_REGISTRY_DIGEST, RedbDormantPorts, RedbStore, SharedRedb,
+};
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
-const STRUCTURAL_TABLE_COUNT: usize = 21;
+const STRUCTURAL_TABLE_COUNT: usize = 22;
 
 fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
     digest == riffdb_storage_api::proto_codec::current_record_registry_digest()
+        || digest == riffdb_types::SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST)
+        || digest == riffdb_types::SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST)
 }
 
@@ -93,6 +99,55 @@ pub struct RedbStartupIndexMigrationPort {
     substitute_before_apply: Option<riffdb_storage_api::StoredIndexEntryV2>,
 }
 
+/// Persistent forward-only structural table cursors (linear scan).
+struct StructuralCursors {
+    /// Table phase: 0 = META, 1.. = BYTE_TABLES[phase-1] / structural phase+1 for inspect.
+    phase: usize,
+    consumed_in_phase: u64,
+    meta: Option<Range<'static, &'static str, &'static [u8]>>,
+    bytes: Option<Range<'static, &'static [u8], &'static [u8]>>,
+}
+
+/// Compact locator for one historical evidence item; page serve re-materializes
+/// by point lookup (no retained canonical payloads).
+#[derive(Clone, Debug)]
+enum EvidenceLocator {
+    Bundle(Vec<u8>),
+    PlanReference(riffdb_storage_api::ExecutablePlanRef),
+    ActiveCatalog,
+    PersistedKeyEntity(Vec<u8>),
+    IndexMigration(Vec<u8>),
+    PersistedKeyEpoch(Vec<u8>),
+    CapabilityPartition {
+        capability_id: riffdb_types::CapabilityId,
+        entry_ordinal: usize,
+    },
+}
+
+impl EvidenceLocator {
+    fn retained_bytes(&self) -> usize {
+        match self {
+            Self::Bundle(key)
+            | Self::PersistedKeyEntity(key)
+            | Self::IndexMigration(key)
+            | Self::PersistedKeyEpoch(key) => key.len().saturating_add(8),
+            Self::PlanReference(plan) => plan
+                .contract_lineage()
+                .as_bytes()
+                .len()
+                .saturating_add(8 + 32 + 4 + 32 + 8),
+            Self::ActiveCatalog => 8,
+            Self::CapabilityPartition { .. } => 16 + 8 + 8,
+        }
+    }
+}
+
+struct HistoricalEvidencePlan {
+    /// Sorted unique (order_key, compact locator) pairs — no payload retention.
+    entries: Vec<(Vec<u8>, EvidenceLocator)>,
+    next_index: usize,
+}
+
 /// One exclusive startup session bound to a single immutable redb snapshot.
 pub struct RedbStructuralEvidenceSession {
     shared: Arc<SharedRedb>,
@@ -111,6 +166,10 @@ pub struct RedbStructuralEvidenceSession {
     historical_finished: bool,
     authoritative_finding_seen: bool,
     saw_v1_index: bool,
+    /// Held for the structural evidence pass only; must not outlive the session.
+    structural_read: Option<ReadTransaction>,
+    structural_cursors: Option<StructuralCursors>,
+    historical_plan: Option<HistoricalEvidencePlan>,
 }
 
 impl fmt::Debug for RedbStructuralEvidenceSession {
@@ -407,7 +466,6 @@ impl StructuralEvidenceOpen for RedbStore {
             .begin_read()
             .map_err(transaction_error)?;
         let snapshot = collect_startup_snapshot(&transaction)?;
-        drop(transaction);
         if self.shared.durable_commit_epoch() != durable_commit_epoch {
             return Err(corrupt());
         }
@@ -430,6 +488,10 @@ impl StructuralEvidenceOpen for RedbStore {
             historical_finished: false,
             authoritative_finding_seen: false,
             saw_v1_index: false,
+            // Hold one read transaction for the structural pass (savepoint pin).
+            structural_read: Some(transaction),
+            structural_cursors: None,
+            historical_plan: None,
         })
     }
 }
@@ -459,9 +521,11 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         if cursor.position() > self.structural_total {
             return Err(invariant());
         }
-        let transaction = self.open_snapshot_read()?;
+        self.ensure_structural_continuity()?;
         if cursor.position() == self.structural_total {
             self.structural_finished = true;
+            self.structural_cursors = None;
+            self.structural_read = None;
             return Ok(StructuralEvidencePage::ExactEnd(
                 RedbStructuralEvidenceEnd { cursor },
             ));
@@ -478,13 +542,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 .position()
                 .checked_add(offset)
                 .ok_or_else(limit_exceeded)?;
-            if let Some(finding) = inspect_structural_item(
-                &transaction,
-                &self.inputs,
-                self.database_id,
-                &self.structural_counts,
-                position,
-            )? {
+            if let Some(finding) = self.inspect_structural_forward(position)? {
                 if finding.scope() == StructuralFindingScope::Authoritative {
                     self.authoritative_finding_seen = true;
                 }
@@ -506,24 +564,36 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         if self.historical_finished || cursor != self.next_historical {
             return Err(invariant());
         }
-        let transaction = self.open_snapshot_read()?;
+        // Structural pin is released once structural finishes; historical uses fresh reads.
+        if self.historical_plan.is_none() {
+            let transaction = self.open_snapshot_read()?;
+            self.historical_plan =
+                Some(build_historical_evidence_plan(&transaction, &self.inputs)?);
+        }
         let requested = usize::try_from(limit.get()).map_err(|_| limit_exceeded())?;
+        {
+            let plan = self.historical_plan.as_ref().ok_or_else(invariant)?;
+            if plan.next_index >= plan.entries.len() {
+                self.historical_finished = true;
+                return Ok(HistoricalEvidencePage::ExactEnd(
+                    RedbHistoricalEvidenceEnd { cursor },
+                ));
+            }
+        }
+        let transaction = self.open_snapshot_read()?;
         let mut evidence = Vec::new();
         let mut bytes = 0usize;
         let mut migration_rows = 0usize;
         let mut migration_evidence_bytes = 0usize;
         let mut migration_instruction_bytes = 0usize;
         let mut last_key = self.last_historical_key.clone();
-        let mut exhausted = false;
-        while evidence.len() < requested {
-            let Some(candidate) =
-                select_next_historical(&transaction, &self.inputs, last_key.as_deref())?
-            else {
-                exhausted = true;
-                break;
-            };
+        let plan = self.historical_plan.as_mut().ok_or_else(invariant)?;
+        while evidence.len() < requested && plan.next_index < plan.entries.len() {
+            let order_key = plan.entries[plan.next_index].0.clone();
+            let item =
+                materialize_historical_evidence(&transaction, &plan.entries[plan.next_index].1)?;
             let next_bytes = bytes
-                .checked_add(historical_semantic_bytes(&candidate.evidence)?)
+                .checked_add(historical_semantic_bytes(&item)?)
                 .ok_or_else(limit_exceeded)?;
             if next_bytes > riffdb_storage_api::MAX_HISTORICAL_EVIDENCE_PAGE_BYTES {
                 if evidence.is_empty() {
@@ -531,7 +601,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 }
                 break;
             }
-            if let HistoricalSemanticEvidence::IndexMigrationRow(row) = &candidate.evidence {
+            if let HistoricalSemanticEvidence::IndexMigrationRow(row) = &item {
                 let next_rows = migration_rows.checked_add(1).ok_or_else(limit_exceeded)?;
                 let next_evidence_bytes = migration_evidence_bytes
                     .checked_add(row.evidence_page_charge())
@@ -553,19 +623,17 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 migration_instruction_bytes = next_instruction_bytes;
             }
             bytes = next_bytes;
-            last_key = Some(candidate.key);
+            last_key = Some(order_key);
             if matches!(
-                &candidate.evidence,
+                &item,
                 HistoricalSemanticEvidence::IndexMigrationRow(row) if row.row().is_v1()
             ) {
                 self.saw_v1_index = true;
             }
-            evidence.push(candidate.evidence);
+            evidence.push(item);
+            plan.next_index = plan.next_index.checked_add(1).ok_or_else(limit_exceeded)?;
         }
         if evidence.is_empty() {
-            if !exhausted {
-                return Err(invariant());
-            }
             self.historical_finished = true;
             return Ok(HistoricalEvidencePage::ExactEnd(
                 RedbHistoricalEvidenceEnd { cursor },
@@ -686,15 +754,292 @@ impl RedbStructuralEvidenceSession {
             .database
             .begin_read()
             .map_err(transaction_error)?;
-        let snapshot = collect_startup_snapshot(&transaction)?;
-        if snapshot.retained_metadata != self.retained_metadata
-            || snapshot.structural_counts != self.structural_counts
-            || snapshot.structural_total != self.structural_total
-            || self.shared.durable_commit_epoch() != self.durable_commit_epoch
-        {
+        self.verify_structural_continuity(&transaction)?;
+        if self.shared.durable_commit_epoch() != self.durable_commit_epoch {
             return Err(corrupt());
         }
         Ok(transaction)
+    }
+
+    fn ensure_structural_continuity(&self) -> Result<(), StorageError> {
+        if self.shared.durable_commit_epoch() != self.durable_commit_epoch {
+            return Err(corrupt());
+        }
+        let Some(transaction) = self.structural_read.as_ref() else {
+            return Err(invariant());
+        };
+        self.verify_structural_continuity(transaction)
+    }
+
+    fn verify_structural_continuity(
+        &self,
+        transaction: &ReadTransaction,
+    ) -> Result<(), StorageError> {
+        self.verify_structural_counts(transaction)?;
+        let metadata = read_retained_metadata(transaction)?;
+        if metadata != self.retained_metadata {
+            return Err(corrupt());
+        }
+        Ok(())
+    }
+
+    fn verify_structural_counts(&self, transaction: &ReadTransaction) -> Result<(), StorageError> {
+        let meta = transaction.open_table(META).map_err(table_error)?;
+        let mut counts = [0u64; STRUCTURAL_TABLE_COUNT];
+        counts[0] = meta.len().map_err(precommit_storage_error)?;
+        drop(meta);
+        for (index, definition) in [
+            CONTRACT_BUNDLES,
+            CATALOG_ACTIVE,
+            QUERY_MODULES,
+            QUERY_MODULE_ACTIVE,
+            ENTITIES,
+            SECONDARY_INDEXES,
+            INDEX_EPOCHS,
+            IDEMPOTENCY,
+            IDEMPOTENCY_PENDING,
+            COMMITS,
+            PROVENANCE,
+            EVENTS,
+            OUTBOX,
+            OUTBOX_STATUS,
+            PROJECTION_STATE,
+            PROJECTION_FRONTIER,
+            PROJECTION_APPLIED,
+            CAPABILITIES,
+            CAPABILITY_TOKENS,
+            AUDIT,
+            AUDIT_BY_REQUEST,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            counts[index + 1] = table_len(transaction, definition)?;
+        }
+        if counts != self.structural_counts {
+            return Err(corrupt());
+        }
+        Ok(())
+    }
+
+    fn inspect_structural_forward(
+        &mut self,
+        position: u64,
+    ) -> Result<Option<StructuralFinding>, StorageError> {
+        // Positions are always requested in strictly ascending order by the page loop.
+        if position == 0 {
+            let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+            return inspect_header(transaction, self.database_id);
+        }
+        if self.structural_cursors.is_none() {
+            self.structural_cursors = Some(StructuralCursors {
+                phase: 0,
+                consumed_in_phase: 0,
+                meta: None,
+                bytes: None,
+            });
+        }
+        let (phase, index, key, value) = self.next_structural_row_raw()?;
+        // Sanity: absolute position maps to this phase/index.
+        let mut relative = position - 1;
+        let mut expected_phase = 0usize;
+        for (phase_idx, count) in self.structural_counts.iter().copied().enumerate() {
+            if relative < count {
+                expected_phase = phase_idx;
+                break;
+            }
+            relative = relative.checked_sub(count).ok_or_else(invariant)?;
+        }
+        if phase != expected_phase || index != relative {
+            return Err(invariant());
+        }
+        let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+        if phase == 0 {
+            let key = std::str::from_utf8(&key).map_err(|_| corrupt())?;
+            return Ok(inspect_meta_row(key, &value, self.database_id));
+        }
+        inspect_table_row_from_bytes(
+            transaction,
+            &self.inputs,
+            self.database_id,
+            phase,
+            index,
+            &key,
+            &value,
+        )
+    }
+
+    fn next_structural_row_raw(&mut self) -> Result<(usize, u64, Vec<u8>, Vec<u8>), StorageError> {
+        loop {
+            let phase = {
+                let cursors = self.structural_cursors.as_ref().ok_or_else(invariant)?;
+                cursors.phase
+            };
+            if phase >= STRUCTURAL_TABLE_COUNT {
+                return Err(invariant());
+            }
+            if phase == 0 {
+                let need_open = self
+                    .structural_cursors
+                    .as_ref()
+                    .ok_or_else(invariant)?
+                    .meta
+                    .is_none();
+                if need_open {
+                    let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+                    let table: ReadOnlyTable<&'static str, &'static [u8]> =
+                        transaction.open_table(META).map_err(table_error)?;
+                    let range = table.range::<&str>(..).map_err(precommit_storage_error)?;
+                    self.structural_cursors.as_mut().ok_or_else(invariant)?.meta = Some(range);
+                }
+                let next = {
+                    let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
+                    cursors
+                        .meta
+                        .as_mut()
+                        .ok_or_else(invariant)?
+                        .next()
+                        .transpose()
+                        .map_err(precommit_storage_error)?
+                };
+                if let Some((key, value)) = next {
+                    let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
+                    let index = cursors.consumed_in_phase;
+                    cursors.consumed_in_phase = cursors
+                        .consumed_in_phase
+                        .checked_add(1)
+                        .ok_or_else(limit_exceeded)?;
+                    return Ok((
+                        0,
+                        index,
+                        key.value().as_bytes().to_vec(),
+                        value.value().to_vec(),
+                    ));
+                }
+                let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
+                cursors.meta = None;
+                cursors.phase = 1;
+                cursors.consumed_in_phase = 0;
+                continue;
+            }
+            let need_open = self
+                .structural_cursors
+                .as_ref()
+                .ok_or_else(invariant)?
+                .bytes
+                .is_none();
+            if need_open {
+                let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+                let table: ReadOnlyTable<&'static [u8], &'static [u8]> = match phase {
+                    1 => transaction
+                        .open_table(CONTRACT_BUNDLES)
+                        .map_err(table_error)?,
+                    2 => transaction
+                        .open_table(CATALOG_ACTIVE)
+                        .map_err(table_error)?,
+                    3 => transaction.open_table(QUERY_MODULES).map_err(table_error)?,
+                    4 => transaction
+                        .open_table(QUERY_MODULE_ACTIVE)
+                        .map_err(table_error)?,
+                    5 => transaction.open_table(ENTITIES).map_err(table_error)?,
+                    6 => transaction
+                        .open_table(SECONDARY_INDEXES)
+                        .map_err(table_error)?,
+                    7 => transaction.open_table(INDEX_EPOCHS).map_err(table_error)?,
+                    8 => transaction.open_table(IDEMPOTENCY).map_err(table_error)?,
+                    9 => transaction
+                        .open_table(IDEMPOTENCY_PENDING)
+                        .map_err(table_error)?,
+                    10 => transaction.open_table(COMMITS).map_err(table_error)?,
+                    11 => transaction.open_table(PROVENANCE).map_err(table_error)?,
+                    12 => transaction.open_table(EVENTS).map_err(table_error)?,
+                    13 => transaction.open_table(OUTBOX).map_err(table_error)?,
+                    14 => transaction.open_table(OUTBOX_STATUS).map_err(table_error)?,
+                    15 => transaction
+                        .open_table(PROJECTION_STATE)
+                        .map_err(table_error)?,
+                    16 => transaction
+                        .open_table(PROJECTION_FRONTIER)
+                        .map_err(table_error)?,
+                    17 => transaction
+                        .open_table(PROJECTION_APPLIED)
+                        .map_err(table_error)?,
+                    18 => transaction.open_table(CAPABILITIES).map_err(table_error)?,
+                    19 => transaction
+                        .open_table(CAPABILITY_TOKENS)
+                        .map_err(table_error)?,
+                    20 => transaction.open_table(AUDIT).map_err(table_error)?,
+                    21 => transaction
+                        .open_table(AUDIT_BY_REQUEST)
+                        .map_err(table_error)?,
+                    _ => return Err(invariant()),
+                };
+                let range = table.range::<&[u8]>(..).map_err(precommit_storage_error)?;
+                self.structural_cursors
+                    .as_mut()
+                    .ok_or_else(invariant)?
+                    .bytes = Some(range);
+            }
+            let next = {
+                let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
+                cursors
+                    .bytes
+                    .as_mut()
+                    .ok_or_else(invariant)?
+                    .next()
+                    .transpose()
+                    .map_err(precommit_storage_error)?
+            };
+            if let Some((key, value)) = next {
+                let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
+                let index = cursors.consumed_in_phase;
+                let phase = cursors.phase;
+                cursors.consumed_in_phase = cursors
+                    .consumed_in_phase
+                    .checked_add(1)
+                    .ok_or_else(limit_exceeded)?;
+                return Ok((phase, index, key.value().to_vec(), value.value().to_vec()));
+            }
+            let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
+            cursors.bytes = None;
+            cursors.phase = cursors.phase.checked_add(1).ok_or_else(invariant)?;
+            cursors.consumed_in_phase = 0;
+        }
+    }
+}
+
+fn inspect_table_row_from_bytes(
+    transaction: &ReadTransaction,
+    inputs: &StartupValidationInputs,
+    database_id: DatabaseId,
+    phase: usize,
+    index: u64,
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    match phase {
+        1 => inspect_bundle_row(transaction, key, value),
+        2 => inspect_active_row(transaction, key, value),
+        3 => inspect_query_module_row(transaction, key, value),
+        4 => inspect_active_query_module_row(transaction, key, value),
+        5 => inspect_entity_row(transaction, key, value),
+        6 => inspect_index_row(transaction, key, value),
+        7 => inspect_epoch_row(transaction, key, value),
+        8 => inspect_terminal_row(transaction, inputs, database_id, key, value),
+        9 => inspect_pending_row(transaction, inputs, database_id, key, value),
+        10 => inspect_commit_row(transaction, index, key, value),
+        11 => inspect_provenance_row(transaction, key, value),
+        12 => inspect_event_row(transaction, key, value),
+        13 => inspect_outbox_row(transaction, key, value),
+        14 => inspect_outbox_status_row(transaction, key, value),
+        15 => inspect_projection_state_row(transaction, key, value),
+        16 => inspect_projection_control_row(transaction, key, value),
+        17 => inspect_projection_apply_row(transaction, key, value),
+        18 => inspect_capability_row(transaction, inputs, database_id, key, value),
+        19 => inspect_capability_lookup_row(transaction, key, value),
+        20 => inspect_audit_row(transaction, index, key, value),
+        21 => inspect_audit_by_request_row(transaction, key, value),
+        _ => Err(invariant()),
     }
 }
 
@@ -741,6 +1086,7 @@ fn collect_startup_snapshot(
         table_len(transaction, CAPABILITIES)?,
         table_len(transaction, CAPABILITY_TOKENS)?,
         table_len(transaction, AUDIT)?,
+        table_len(transaction, AUDIT_BY_REQUEST)?,
     ];
     let total = counts.iter().try_fold(1u64, |total, count| {
         total.checked_add(*count).ok_or_else(limit_exceeded)
@@ -781,6 +1127,11 @@ fn read_retained_metadata(
     if !startup_registry_is_supported(registry) {
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     }
+    let history_incarnation = required_meta_value(
+        &meta,
+        META_HISTORY_INCARNATION,
+        codec::decode_history_incarnation_v1,
+    )?;
     let bootstrap = meta
         .get(META_CAPABILITY_BOOTSTRAP)
         .map_err(precommit_storage_error)?
@@ -816,6 +1167,7 @@ fn read_retained_metadata(
         database_id,
         application,
         administration,
+        history_incarnation,
         active,
         bootstrap,
     )
@@ -875,126 +1227,6 @@ fn table_len(
         .map_err(table_error)?
         .len()
         .map_err(precommit_storage_error)
-}
-
-fn inspect_structural_item(
-    transaction: &ReadTransaction,
-    inputs: &StartupValidationInputs,
-    database_id: DatabaseId,
-    counts: &[u64; STRUCTURAL_TABLE_COUNT],
-    position: u64,
-) -> Result<Option<StructuralFinding>, StorageError> {
-    if position == 0 {
-        return inspect_header(transaction, database_id);
-    }
-    let mut relative = position - 1;
-    for (phase, count) in counts.iter().copied().enumerate() {
-        if relative < count {
-            return inspect_table_row(transaction, inputs, database_id, phase, relative);
-        }
-        relative = relative.checked_sub(count).ok_or_else(invariant)?;
-    }
-    Err(invariant())
-}
-
-fn nth_meta_entry(
-    transaction: &ReadTransaction,
-    index: u64,
-) -> Result<(String, Vec<u8>), StorageError> {
-    let table = transaction.open_table(META).map_err(table_error)?;
-    let mut iterator = table.iter().map_err(precommit_storage_error)?;
-    let mut current = 0u64;
-    for entry in &mut iterator {
-        let (key, value) = entry.map_err(precommit_storage_error)?;
-        if current == index {
-            return Ok((key.value().to_owned(), value.value().to_vec()));
-        }
-        current = current.checked_add(1).ok_or_else(limit_exceeded)?;
-    }
-    Err(invariant())
-}
-
-fn nth_bytes_entry(
-    transaction: &ReadTransaction,
-    definition: TableDefinition<&'static [u8], &'static [u8]>,
-    index: u64,
-) -> Result<(Vec<u8>, Vec<u8>), StorageError> {
-    let table = transaction.open_table(definition).map_err(table_error)?;
-    let mut iterator = table.iter().map_err(precommit_storage_error)?;
-    let mut current = 0u64;
-    for entry in &mut iterator {
-        let (key, value) = entry.map_err(precommit_storage_error)?;
-        if current == index {
-            return Ok((key.value().to_vec(), value.value().to_vec()));
-        }
-        current = current.checked_add(1).ok_or_else(limit_exceeded)?;
-    }
-    Err(invariant())
-}
-
-struct HistoricalCandidate {
-    key: Vec<u8>,
-    evidence: HistoricalSemanticEvidence,
-}
-
-fn inspect_table_row(
-    transaction: &ReadTransaction,
-    inputs: &StartupValidationInputs,
-    database_id: DatabaseId,
-    phase: usize,
-    index: u64,
-) -> Result<Option<StructuralFinding>, StorageError> {
-    if phase == 0 {
-        let (key, value) = nth_meta_entry(transaction, index)?;
-        return Ok(inspect_meta_row(&key, &value, database_id));
-    }
-    let definition = match phase {
-        1 => CONTRACT_BUNDLES,
-        2 => CATALOG_ACTIVE,
-        3 => QUERY_MODULES,
-        4 => QUERY_MODULE_ACTIVE,
-        5 => ENTITIES,
-        6 => SECONDARY_INDEXES,
-        7 => INDEX_EPOCHS,
-        8 => IDEMPOTENCY,
-        9 => IDEMPOTENCY_PENDING,
-        10 => COMMITS,
-        11 => PROVENANCE,
-        12 => EVENTS,
-        13 => OUTBOX,
-        14 => OUTBOX_STATUS,
-        15 => PROJECTION_STATE,
-        16 => PROJECTION_FRONTIER,
-        17 => PROJECTION_APPLIED,
-        18 => CAPABILITIES,
-        19 => CAPABILITY_TOKENS,
-        20 => AUDIT,
-        _ => return Err(invariant()),
-    };
-    let (key, value) = nth_bytes_entry(transaction, definition, index)?;
-    match phase {
-        1 => inspect_bundle_row(transaction, &key, &value),
-        2 => inspect_active_row(transaction, &key, &value),
-        3 => inspect_query_module_row(transaction, &key, &value),
-        4 => inspect_active_query_module_row(transaction, &key, &value),
-        5 => inspect_entity_row(transaction, &key, &value),
-        6 => inspect_index_row(transaction, &key, &value),
-        7 => inspect_epoch_row(transaction, &key, &value),
-        8 => inspect_terminal_row(transaction, inputs, database_id, &key, &value),
-        9 => inspect_pending_row(transaction, inputs, database_id, &key, &value),
-        10 => inspect_commit_row(transaction, index, &key, &value),
-        11 => inspect_provenance_row(transaction, &key, &value),
-        12 => inspect_event_row(transaction, &key, &value),
-        13 => inspect_outbox_row(transaction, &key, &value),
-        14 => inspect_outbox_status_row(transaction, &key, &value),
-        15 => inspect_projection_state_row(transaction, &key, &value),
-        16 => inspect_projection_control_row(transaction, &key, &value),
-        17 => inspect_projection_apply_row(transaction, &key, &value),
-        18 => inspect_capability_row(transaction, inputs, database_id, &key, &value),
-        19 => inspect_capability_lookup_row(transaction, &key, &value),
-        20 => inspect_audit_row(transaction, index, &key, &value),
-        _ => Err(invariant()),
-    }
 }
 
 fn inspect_header(
@@ -1105,6 +1337,9 @@ fn inspect_meta_row(key: &str, value: &[u8], database_id: DatabaseId) -> Option<
         META_CAPABILITY_BOOTSTRAP => {
             decoded(codec::decode_capability_bootstrap_marker_v1(value)).is_ok()
         }
+        META_HISTORY_INCARNATION => decoded(codec::decode_history_incarnation_v1(value))
+            .is_ok_and(|incarnation| incarnation >= 1),
+        META_INDEX_EPOCH_ROWS_REPAIRED => value == [1u8].as_slice(),
         _ => false,
     };
     (!valid).then(|| authoritative(StructuralFindingCode::MalformedRecord))
@@ -1789,47 +2024,114 @@ fn inspect_audit_row(
             }
         }
         riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(record) => {
-            (!service_lifecycle_is_reciprocal(transaction, record)?)
-                .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch))
+            // Index existence is checked first so a Service row without a durable
+            // AUDIT_BY_REQUEST peer reports MissingCrossLink (reciprocity), while
+            // lifecycle validation uses the same index for O(k) per request
+            // (k ≤ 2 under the fused-audit write gate) instead of a full AUDIT scan.
+            if !service_audit_request_index_exists(transaction, record.request_id(), sequence)? {
+                Some(authoritative(StructuralFindingCode::MissingCrossLink))
+            } else if !service_lifecycle_is_reciprocal(transaction, record)? {
+                Some(authoritative(StructuralFindingCode::CrossLinkMismatch))
+            } else {
+                None
+            }
         }
     };
     Ok(finding)
 }
 
-fn select_next_historical(
+fn service_audit_request_index_exists(
+    transaction: &ReadTransaction,
+    request_id: riffdb_types::RequestId,
+    sequence: riffdb_types::AdministrationSequence,
+) -> Result<bool, StorageError> {
+    let table = transaction
+        .open_table(AUDIT_BY_REQUEST)
+        .map_err(table_error)?;
+    let key = keys::encode_audit_by_request_key(request_id, sequence);
+    let Some(value) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
+        return Ok(false);
+    };
+    let index = match decoded(codec::decode_service_audit_request_index_v1(value.value())) {
+        Ok(value) => value,
+        Err(_) => return Ok(false),
+    };
+    Ok(index.request_id() == request_id && index.administration_sequence() == sequence)
+}
+
+fn inspect_audit_by_request_row(
+    transaction: &ReadTransaction,
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let Ok((request_id, sequence)) = keys::decode_audit_by_request_key(key) else {
+        return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
+    };
+    let index = match decoded(codec::decode_service_audit_request_index_v1(value)) {
+        Ok(value) => value,
+        Err(code) => return Ok(Some(authoritative(code))),
+    };
+    if index.request_id() != request_id || index.administration_sequence() != sequence {
+        return Ok(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        )));
+    }
+    let audit_key = keys::encode_audit_key(sequence);
+    let audit = get_decoded(
+        transaction,
+        AUDIT,
+        audit_key.as_slice(),
+        codec::decode_administration_audit_record_v1,
+    )?;
+    Ok((!matches!(
+        audit,
+        Ok(Some(riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(record)))
+            if record.request_id() == request_id
+                && record.administration_sequence() == sequence
+    ))
+    .then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
+}
+
+const MAX_STARTUP_EVIDENCE_INDEX_BYTES: usize = 512 * 1024 * 1024;
+
+fn build_historical_evidence_plan(
     transaction: &ReadTransaction,
     inputs: &StartupValidationInputs,
-    after: Option<&[u8]>,
-) -> Result<Option<HistoricalCandidate>, StorageError> {
-    let mut selected = None;
-    scan_bundle_candidates(transaction, after, &mut selected)?;
-    scan_plan_candidates(transaction, after, &mut selected)?;
-    scan_active_candidate(transaction, after, &mut selected)?;
-    scan_persisted_key_candidates(transaction, after, &mut selected)?;
-    scan_capability_partition_candidates(transaction, inputs, after, &mut selected)?;
-    Ok(selected)
+) -> Result<HistoricalEvidencePlan, StorageError> {
+    let mut ordered: std::collections::BTreeMap<Vec<u8>, EvidenceLocator> =
+        std::collections::BTreeMap::new();
+    let mut index_bytes = 0usize;
+    let mut insert = |order_key: Vec<u8>, locator: EvidenceLocator| -> Result<(), StorageError> {
+        if ordered.contains_key(&order_key) {
+            return Ok(());
+        }
+        let charge = order_key
+            .len()
+            .checked_add(locator.retained_bytes())
+            .ok_or_else(limit_exceeded)?;
+        index_bytes = index_bytes.checked_add(charge).ok_or_else(limit_exceeded)?;
+        if index_bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
+            return Err(limit_exceeded());
+        }
+        ordered.insert(order_key, locator);
+        Ok(())
+    };
+
+    collect_bundle_locators(transaction, &mut insert)?;
+    collect_plan_locators(transaction, &mut insert)?;
+    collect_active_catalog_locator(transaction, &mut insert)?;
+    collect_persisted_key_locators(transaction, &mut insert)?;
+    collect_capability_partition_locators(transaction, inputs, &mut insert)?;
+
+    Ok(HistoricalEvidencePlan {
+        entries: ordered.into_iter().collect(),
+        next_index: 0,
+    })
 }
 
-fn consider_candidate(
-    selected: &mut Option<HistoricalCandidate>,
-    after: Option<&[u8]>,
-    candidate: HistoricalCandidate,
-) {
-    if after.is_some_and(|after| candidate.key.as_slice() <= after) {
-        return;
-    }
-    if selected
-        .as_ref()
-        .is_none_or(|current| candidate.key < current.key)
-    {
-        *selected = Some(candidate);
-    }
-}
-
-fn scan_bundle_candidates(
+fn collect_bundle_locators(
     transaction: &ReadTransaction,
-    after: Option<&[u8]>,
-    selected: &mut Option<HistoricalCandidate>,
+    insert: &mut dyn FnMut(Vec<u8>, EvidenceLocator) -> Result<(), StorageError>,
 ) -> Result<(), StorageError> {
     let table = transaction
         .open_table(CONTRACT_BUNDLES)
@@ -1853,16 +2155,25 @@ fn scan_bundle_candidates(
             HistoricalBundleBytes::new(bundle.canonical_bytes().to_vec())
                 .map_err(value_error_as_storage)?,
         ));
-        consider_evidence(selected, after, evidence);
+        insert(
+            historical_order_key(&evidence),
+            EvidenceLocator::Bundle(key.value().to_vec()),
+        )?;
     }
     Ok(())
 }
 
-fn scan_plan_candidates(
+fn collect_plan_locators(
     transaction: &ReadTransaction,
-    after: Option<&[u8]>,
-    selected: &mut Option<HistoricalCandidate>,
+    insert: &mut dyn FnMut(Vec<u8>, EvidenceLocator) -> Result<(), StorageError>,
 ) -> Result<(), StorageError> {
+    let mut push_plan = |plan: riffdb_storage_api::ExecutablePlanRef| -> Result<(), StorageError> {
+        let evidence = HistoricalSemanticEvidence::PlanReference(plan.clone());
+        insert(
+            historical_order_key(&evidence),
+            EvidenceLocator::PlanReference(plan),
+        )
+    };
     let terminal = transaction.open_table(IDEMPOTENCY).map_err(table_error)?;
     for entry in terminal.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
@@ -1878,7 +2189,7 @@ fn scan_plan_candidates(
         if identity.storage_key().ok().as_ref() != Some(&physical) {
             return Err(corrupt());
         }
-        consider_plan(selected, after, plan.clone());
+        push_plan(plan.clone())?;
     }
     let pending = transaction
         .open_table(IDEMPOTENCY_PENDING)
@@ -1891,7 +2202,7 @@ fn scan_plan_candidates(
         if record.identity().storage_key().ok().as_ref() != Some(&physical) {
             return Err(corrupt());
         }
-        consider_plan(selected, after, record.plan().clone());
+        push_plan(record.plan().clone())?;
     }
     let commits = transaction.open_table(COMMITS).map_err(table_error)?;
     let events = transaction.open_table(EVENTS).map_err(table_error)?;
@@ -1906,7 +2217,7 @@ fn scan_plan_candidates(
         if record.commit_sequence() != sequence {
             return Err(corrupt());
         }
-        consider_plan(selected, after, record.plan().clone());
+        push_plan(record.plan().clone())?;
     }
     let provenance = transaction.open_table(PROVENANCE).map_err(table_error)?;
     for entry in provenance.iter().map_err(precommit_storage_error)? {
@@ -1917,15 +2228,14 @@ fn scan_plan_candidates(
         if record.provenance_id() != id {
             return Err(corrupt());
         }
-        consider_plan(selected, after, record.plan().clone());
+        push_plan(record.plan().clone())?;
     }
     Ok(())
 }
 
-fn scan_active_candidate(
+fn collect_active_catalog_locator(
     transaction: &ReadTransaction,
-    after: Option<&[u8]>,
-    selected: &mut Option<HistoricalCandidate>,
+    insert: &mut dyn FnMut(Vec<u8>, EvidenceLocator) -> Result<(), StorageError>,
 ) -> Result<(), StorageError> {
     let active = read_active_pointer(transaction)?.map_err(|_| corrupt())?;
     let evidence = HistoricalSemanticEvidence::ActiveCatalog(active.map(|active| {
@@ -1935,14 +2245,15 @@ fn scan_active_candidate(
             active.bundle_hash(),
         )
     }));
-    consider_evidence(selected, after, evidence);
-    Ok(())
+    insert(
+        historical_order_key(&evidence),
+        EvidenceLocator::ActiveCatalog,
+    )
 }
 
-fn scan_persisted_key_candidates(
+fn collect_persisted_key_locators(
     transaction: &ReadTransaction,
-    after: Option<&[u8]>,
-    selected: &mut Option<HistoricalCandidate>,
+    insert: &mut dyn FnMut(Vec<u8>, EvidenceLocator) -> Result<(), StorageError>,
 ) -> Result<(), StorageError> {
     let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
     for entry in entities.iter().map_err(precommit_storage_error)? {
@@ -1953,13 +2264,13 @@ fn scan_persisted_key_candidates(
         if record.target().key() != &physical {
             return Err(corrupt());
         }
-        consider_evidence(
-            selected,
-            after,
-            HistoricalSemanticEvidence::PersistedKey(
-                HistoricalPersistedKeyEvidenceV1::from_entity(&record),
-            ),
+        let evidence = HistoricalSemanticEvidence::PersistedKey(
+            HistoricalPersistedKeyEvidenceV1::from_entity(&record),
         );
+        insert(
+            historical_order_key(&evidence),
+            EvidenceLocator::PersistedKeyEntity(key.value().to_vec()),
+        )?;
     }
     let indexes = transaction
         .open_table(SECONDARY_INDEXES)
@@ -1968,11 +2279,11 @@ fn scan_persisted_key_candidates(
         let (key, value) = entry.map_err(precommit_storage_error)?;
         let physical = keys::decode_index_entry_key(key.value()).map_err(|_| corrupt())?;
         let record = codec::decode_index_migration_row(&physical, value.value())?;
-        consider_evidence(
-            selected,
-            after,
-            HistoricalSemanticEvidence::IndexMigrationRow(record),
-        );
+        let evidence = HistoricalSemanticEvidence::IndexMigrationRow(record);
+        insert(
+            historical_order_key(&evidence),
+            EvidenceLocator::IndexMigration(key.value().to_vec()),
+        )?;
     }
     let epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
     for entry in epochs.iter().map_err(precommit_storage_error)? {
@@ -1983,13 +2294,13 @@ fn scan_persisted_key_candidates(
             if record.target() != &physical {
                 return Err(corrupt());
             }
-            consider_evidence(
-                selected,
-                after,
-                HistoricalSemanticEvidence::PersistedKey(
-                    HistoricalPersistedKeyEvidenceV1::from_legacy_index_epoch(&record),
-                ),
+            let evidence = HistoricalSemanticEvidence::PersistedKey(
+                HistoricalPersistedKeyEvidenceV1::from_legacy_index_epoch(&record),
             );
+            insert(
+                historical_order_key(&evidence),
+                EvidenceLocator::PersistedKeyEpoch(key.value().to_vec()),
+            )?;
         } else {
             let physical = keys::decode_partition_index_key(key.value()).map_err(|_| corrupt())?;
             let record =
@@ -1997,23 +2308,22 @@ fn scan_persisted_key_candidates(
             if record.target() != &physical {
                 return Err(corrupt());
             }
-            consider_evidence(
-                selected,
-                after,
-                HistoricalSemanticEvidence::PersistedKey(
-                    HistoricalPersistedKeyEvidenceV1::from_index_epoch(&record),
-                ),
+            let evidence = HistoricalSemanticEvidence::PersistedKey(
+                HistoricalPersistedKeyEvidenceV1::from_index_epoch(&record),
             );
+            insert(
+                historical_order_key(&evidence),
+                EvidenceLocator::PersistedKeyEpoch(key.value().to_vec()),
+            )?;
         }
     }
     Ok(())
 }
 
-fn scan_capability_partition_candidates(
+fn collect_capability_partition_locators(
     transaction: &ReadTransaction,
     inputs: &StartupValidationInputs,
-    after: Option<&[u8]>,
-    selected: &mut Option<HistoricalCandidate>,
+    insert: &mut dyn FnMut(Vec<u8>, EvidenceLocator) -> Result<(), StorageError>,
 ) -> Result<(), StorageError> {
     let capabilities = transaction.open_table(CAPABILITIES).map_err(table_error)?;
     for entry in capabilities.iter().map_err(precommit_storage_error)? {
@@ -2038,41 +2348,145 @@ fn scan_capability_partition_candidates(
                 ordinal,
             )
             .map_err(value_error_as_storage)?;
-            consider_evidence(
-                selected,
-                after,
-                HistoricalSemanticEvidence::CapabilityPartition(evidence),
-            );
+            let order_key =
+                historical_order_key(&HistoricalSemanticEvidence::CapabilityPartition(evidence));
+            insert(
+                order_key,
+                EvidenceLocator::CapabilityPartition {
+                    capability_id: physical,
+                    entry_ordinal: ordinal,
+                },
+            )?;
         }
     }
     Ok(())
 }
 
-fn consider_plan(
-    selected: &mut Option<HistoricalCandidate>,
-    after: Option<&[u8]>,
-    plan: riffdb_storage_api::ExecutablePlanRef,
-) {
-    consider_evidence(
-        selected,
-        after,
-        HistoricalSemanticEvidence::PlanReference(plan),
-    );
-}
-
-fn consider_evidence(
-    selected: &mut Option<HistoricalCandidate>,
-    after: Option<&[u8]>,
-    evidence: HistoricalSemanticEvidence,
-) {
-    consider_candidate(
-        selected,
-        after,
-        HistoricalCandidate {
-            key: historical_order_key(&evidence),
-            evidence,
-        },
-    );
+fn materialize_historical_evidence(
+    transaction: &ReadTransaction,
+    locator: &EvidenceLocator,
+) -> Result<HistoricalSemanticEvidence, StorageError> {
+    match locator {
+        EvidenceLocator::Bundle(key) => {
+            let table = transaction
+                .open_table(CONTRACT_BUNDLES)
+                .map_err(table_error)?;
+            let value = table
+                .get(key.as_slice())
+                .map_err(precommit_storage_error)?
+                .ok_or_else(corrupt)?;
+            let (lineage, version) =
+                keys::decode_contract_bundle_key(key).map_err(|_| corrupt())?;
+            let bundle =
+                decoded(codec::decode_contract_bundle_v1(value.value())).map_err(|_| corrupt())?;
+            if bundle.lineage() != &lineage
+                || bundle.contract_version() != version
+                || hash_contract_bundle(bundle.canonical_bytes()) != bundle.bundle_hash()
+            {
+                return Err(corrupt());
+            }
+            Ok(HistoricalSemanticEvidence::Bundle(
+                HistoricalBundleEvidence::new(
+                    lineage,
+                    version,
+                    bundle.bundle_hash(),
+                    HistoricalBundleBytes::new(bundle.canonical_bytes().to_vec())
+                        .map_err(value_error_as_storage)?,
+                ),
+            ))
+        }
+        EvidenceLocator::PlanReference(plan) => {
+            Ok(HistoricalSemanticEvidence::PlanReference(plan.clone()))
+        }
+        EvidenceLocator::ActiveCatalog => {
+            let active = read_active_pointer(transaction)?.map_err(|_| corrupt())?;
+            Ok(HistoricalSemanticEvidence::ActiveCatalog(active.map(
+                |active| {
+                    HistoricalActiveCatalogEvidence::new(
+                        active.lineage().clone(),
+                        active.contract_version(),
+                        active.bundle_hash(),
+                    )
+                },
+            )))
+        }
+        EvidenceLocator::PersistedKeyEntity(key) => {
+            let table = transaction.open_table(ENTITIES).map_err(table_error)?;
+            let value = table
+                .get(key.as_slice())
+                .map_err(precommit_storage_error)?
+                .ok_or_else(corrupt)?;
+            let physical = keys::decode_entity_key(key).map_err(|_| corrupt())?;
+            let record =
+                decoded(codec::decode_entity_record_v1(value.value())).map_err(|_| corrupt())?;
+            if record.target().key() != &physical {
+                return Err(corrupt());
+            }
+            Ok(HistoricalSemanticEvidence::PersistedKey(
+                HistoricalPersistedKeyEvidenceV1::from_entity(&record),
+            ))
+        }
+        EvidenceLocator::IndexMigration(key) => {
+            let table = transaction
+                .open_table(SECONDARY_INDEXES)
+                .map_err(table_error)?;
+            let value = table
+                .get(key.as_slice())
+                .map_err(precommit_storage_error)?
+                .ok_or_else(corrupt)?;
+            let physical = keys::decode_index_entry_key(key).map_err(|_| corrupt())?;
+            let record = codec::decode_index_migration_row(&physical, value.value())?;
+            Ok(HistoricalSemanticEvidence::IndexMigrationRow(record))
+        }
+        EvidenceLocator::PersistedKeyEpoch(key) => {
+            let table = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
+            let value = table
+                .get(key.as_slice())
+                .map_err(precommit_storage_error)?
+                .ok_or_else(corrupt)?;
+            if let Ok(record) = decoded(codec::decode_legacy_index_epoch_v1(value.value())) {
+                let physical = keys::decode_index_range_prefix_key(key).map_err(|_| corrupt())?;
+                if record.target() != &physical {
+                    return Err(corrupt());
+                }
+                Ok(HistoricalSemanticEvidence::PersistedKey(
+                    HistoricalPersistedKeyEvidenceV1::from_legacy_index_epoch(&record),
+                ))
+            } else {
+                let physical = keys::decode_partition_index_key(key).map_err(|_| corrupt())?;
+                let record =
+                    decoded(codec::decode_index_epoch_v1(value.value())).map_err(|_| corrupt())?;
+                if record.target() != &physical {
+                    return Err(corrupt());
+                }
+                Ok(HistoricalSemanticEvidence::PersistedKey(
+                    HistoricalPersistedKeyEvidenceV1::from_index_epoch(&record),
+                ))
+            }
+        }
+        EvidenceLocator::CapabilityPartition {
+            capability_id,
+            entry_ordinal,
+        } => {
+            let table = transaction.open_table(CAPABILITIES).map_err(table_error)?;
+            let key = keys::encode_capability_key(*capability_id);
+            let value = table
+                .get(key.as_slice())
+                .map_err(precommit_storage_error)?
+                .ok_or_else(corrupt)?;
+            let capability = decoded(codec::decode_capability_record_v1(value.value()))
+                .map_err(|_| corrupt())?;
+            if capability.capability_id() != *capability_id {
+                return Err(corrupt());
+            }
+            let evidence = HistoricalCapabilityPartitionEvidenceV1::from_capability_entry(
+                &capability,
+                *entry_ordinal,
+            )
+            .map_err(value_error_as_storage)?;
+            Ok(HistoricalSemanticEvidence::CapabilityPartition(evidence))
+        }
+    }
 }
 
 fn historical_order_key(evidence: &HistoricalSemanticEvidence) -> Vec<u8> {
@@ -3208,26 +3622,61 @@ fn service_lifecycle_is_reciprocal(
     transaction: &ReadTransaction,
     target: &riffdb_storage_api::StoredServiceAuditRecordV1,
 ) -> Result<bool, StorageError> {
-    let table = transaction.open_table(AUDIT).map_err(table_error)?;
+    // Linear in the number of service-audit rows for this request_id (bounded by
+    // the fused-audit write gate to ≤2), not in total AUDIT table size. Peers are
+    // discovered via the durable AUDIT_BY_REQUEST prefix range, then point-loaded
+    // from AUDIT. Lifecycle matching rules are unchanged.
+    let index = transaction
+        .open_table(AUDIT_BY_REQUEST)
+        .map_err(table_error)?;
+    let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+    let prefix = keys::encode_audit_by_request_prefix(target.request_id());
     let mut lifecycle = None;
     let mut target_seen = false;
-    for entry in table.iter().map_err(precommit_storage_error)? {
-        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
-        let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
-            return Ok(false);
-        };
-        let Ok(record) = decoded(codec::decode_administration_audit_record_v1(value.value()))
+    let scan = index
+        .range::<&[u8]>((Included(prefix.as_slice()), Unbounded))
+        .map_err(precommit_storage_error)?;
+    for entry in scan {
+        let (physical_key, index_value) = entry.map_err(precommit_storage_error)?;
+        if !physical_key.value().starts_with(prefix.as_slice()) {
+            break;
+        }
+        let Ok((request_id, sequence)) = keys::decode_audit_by_request_key(physical_key.value())
         else {
             return Ok(false);
         };
+        if request_id != target.request_id() {
+            return Ok(false);
+        }
+        let Ok(index_row) = decoded(codec::decode_service_audit_request_index_v1(
+            index_value.value(),
+        )) else {
+            return Ok(false);
+        };
+        if index_row.request_id() != request_id || index_row.administration_sequence() != sequence {
+            return Ok(false);
+        }
+        let audit_key = keys::encode_audit_key(sequence);
+        let Some(audit_value) = audit
+            .get(audit_key.as_slice())
+            .map_err(precommit_storage_error)?
+        else {
+            return Ok(false);
+        };
+        let Ok(record) = decoded(codec::decode_administration_audit_record_v1(
+            audit_value.value(),
+        )) else {
+            return Ok(false);
+        };
+        drop(audit_value);
         if record.administration_sequence() != sequence {
             return Ok(false);
         }
         let riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(record) = record else {
-            continue;
+            return Ok(false);
         };
         if record.request_id() != target.request_id() {
-            continue;
+            return Ok(false);
         }
         target_seen |= record.administration_sequence() == target.administration_sequence()
             && record == *target;
@@ -3545,24 +3994,27 @@ mod tests {
         CapabilityAdministrationOperationV1, CapabilityBootstrapMarkerV1, CapabilityGrantV1,
         CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
         CapabilityRequestedRecordV1, CatalogActivationIntentV1, CatalogAdministrationRepository,
-        DatabaseInitializationPort, DurableKeySchemaBindingV1, HistoricalEvidencePage,
-        PartitionScopeV1, ProjectionGenerationPosition, ProjectionLifecycleV1,
-        PublishedApplyModeV1, ReadableCapabilityDigestInventory,
-        ReadableIdempotencyDigestInventory, RevocationReasonCodeV1,
-        StoredAdministrationAuditRecordV1, StoredCapabilityAdministrationV1,
-        StoredCapabilityRecordV1, StoredCatalogAdministrationV1, StoredContractBundleV1,
-        StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredProjectionApplyV1,
-        StoredProjectionControlV1, StoredServiceAuditRecordV1, StructuralEvidenceEnd,
+        DatabaseInitializationPort, DeclaredOutcome, DurabilityMode, DurableKeySchemaBindingV1,
+        EntityTarget, ExecutablePlanRef, HistoricalEvidencePage, PartitionScopeV1,
+        ProjectionGenerationPosition, ProjectionLifecycleV1, PublishedApplyModeV1,
+        ReadDependencies, ReadableCapabilityDigestInventory, ReadableIdempotencyDigestInventory,
+        RevocationReasonCodeV1, StoredAdministrationAuditRecordV1,
+        StoredCapabilityAdministrationV1, StoredCapabilityRecordV1, StoredCatalogAdministrationV1,
+        StoredCommitRecordV1, StoredContractBundleV1, StoredEntityRecordV1, StoredIndexEntryV1,
+        StoredIndexEntryV2, StoredProjectionApplyV1, StoredProjectionControlV1,
+        StoredReadDependenciesV1, StoredServiceAuditRecordV1, StructuralEvidenceEnd,
         StructuralEvidencePage,
     };
     use riffdb_types::{
-        ActorId, ActorKind, AdministrationSequence, AggregateTypeId, Audience, CanonicalRecord,
-        CanonicalValue, CapabilityId, CapabilityTokenDigest, DigestKeyId, EntityKeyBuilder,
-        EntityTypeId, EntityVersion, Environment, FieldId, IndexEntryKeyBuilder,
-        PartitionKeyBuilder, ProjectionApplyHash, ProjectionApplyKey, ProjectionGeneration,
-        ProjectionId, ProjectionIdentity, ProjectionPlanHash, RequestId, ScopedPartitionV1,
-        ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1, ServiceIngressKindV1,
-        ServiceOperationV1, TenantScope, Timestamp,
+        ActorId, ActorKind, AdministrationSequence, AdmittedActorContext, AggregateTypeId,
+        Audience, CanonicalInputHash, CanonicalRecord, CanonicalValue, CapabilityId,
+        CapabilityTokenDigest, CommandId, CommitSequence, DigestKeyId, EntityKeyBuilder,
+        EntityTypeId, EntityVersion, Environment, FieldId, IndexEntryKeyBuilder, LogicalTime,
+        OutcomeId, PartitionKeyBuilder, PlanHash, ProjectionApplyHash, ProjectionApplyKey,
+        ProjectionGeneration, ProjectionId, ProjectionIdentity, ProjectionPlanHash, ProvenanceId,
+        RequestId, ScopedPartitionV1, ServiceAuditLinkV1, ServiceAuditPhaseV1,
+        ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1, TenantScope, Timestamp,
+        hash_partition_key,
     };
 
     use super::*;
@@ -4943,6 +5395,25 @@ contract RedbMigration version 1 {
                 .expect("insert second service audit");
         }
         {
+            // Index rows present so lifecycle (not MissingCrossLink) is the defect.
+            let mut index = write
+                .open_table(AUDIT_BY_REQUEST)
+                .expect("audit-by-request table");
+            for sequence in [
+                AdministrationSequence::first(),
+                AdministrationSequence::new(2).expect("second sequence"),
+            ] {
+                let key = keys::encode_audit_by_request_key(request_id, sequence);
+                let encoded = codec::encode_service_audit_request_index_v1(
+                    riffdb_storage_api::StoredServiceAuditRequestIndexV1::new(request_id, sequence),
+                )
+                .expect("encode index");
+                index
+                    .insert(key.as_slice(), encoded.as_bytes())
+                    .expect("insert index row");
+            }
+        }
+        {
             let mut meta = write.open_table(META).expect("metadata table");
             meta.insert(META_ADMINISTRATION_SEQUENCE, allocator.as_bytes())
                 .expect("advance allocator");
@@ -5104,5 +5575,370 @@ contract RedbMigration version 1 {
             panic!("V2 derived-state fixture must finish cleanly");
         };
         assert_eq!(opened.database_id(), database_id(0x75));
+    }
+
+    /// Collects the linear historical plan as a full (order_key, evidence) sequence.
+    /// Each order_key is checked against `historical_order_key` of the materialized
+    /// evidence (self-oracle). Pre-deletion differential vs `select_next_historical`
+    /// was equal on empty/mixed/plans fixtures before that oracle was removed.
+    fn collect_historical_plan_sequence(
+        path: &std::path::Path,
+    ) -> Vec<(Vec<u8>, HistoricalSemanticEvidence)> {
+        let store = RedbStore::open(path).expect("open");
+        let transaction = store.shared.database.begin_read().expect("read");
+        let validation = inputs_at(70);
+        let plan = build_historical_evidence_plan(&transaction, &validation).expect("plan");
+        plan.entries
+            .into_iter()
+            .map(|(key, locator)| {
+                let evidence =
+                    materialize_historical_evidence(&transaction, &locator).expect("materialize");
+                assert_eq!(
+                    key,
+                    historical_order_key(&evidence),
+                    "plan order_key must match materialized evidence"
+                );
+                (key, evidence)
+            })
+            .collect()
+    }
+
+    fn oracle_plan_ref(seed: u8) -> ExecutablePlanRef {
+        ExecutablePlanRef::new(
+            ContractLineage::new("oracle-app").expect("lineage"),
+            ContractVersion::new(1).expect("version"),
+            ContractBundleHash::from_bytes([seed; 32]),
+            CommandId::new(u32::from(seed).max(1)).expect("command"),
+            PlanHash::from_bytes([seed.wrapping_add(1); 32]),
+        )
+    }
+
+    fn oracle_commit(sequence: CommitSequence, plan: ExecutablePlanRef) -> StoredCommitRecordV1 {
+        let sequence_byte = u8::try_from(sequence.get()).expect("small sequence");
+        let actor = AdmittedActorContext::new(
+            ActorId::new("oracle-actor").expect("actor"),
+            ActorKind::Human,
+            TenantScope::Global,
+            None,
+        );
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition.push_u64(1).expect("partition component");
+        let partition_hash =
+            hash_partition_key(partition.finish().expect("partition key").as_bytes());
+        StoredCommitRecordV1::new(
+            sequence,
+            RequestId::from_bytes(uuid_bytes(sequence_byte.wrapping_add(0x20)))
+                .expect("request ID"),
+            plan,
+            CanonicalInputHash::from_bytes([sequence_byte; 32]),
+            actor,
+            LogicalTime::new(Timestamp::new(i64::from(sequence_byte), 0).expect("timestamp")),
+            partition_hash,
+            Vec::new(),
+            StoredReadDependenciesV1::from_live(
+                &ReadDependencies::new(Vec::new()).expect("empty dependencies"),
+            )
+            .expect("stored dependencies"),
+            Vec::new(),
+            Vec::new(),
+            DeclaredOutcome::new(
+                OutcomeId::first(),
+                CanonicalRecord::new(Vec::new()).expect("outcome fields"),
+            )
+            .expect("outcome"),
+            ProvenanceId::from_bytes(uuid_bytes(sequence_byte.wrapping_add(0x40)))
+                .expect("provenance ID"),
+            Vec::new(),
+            DurabilityMode::Sync,
+        )
+        .expect("stored commit")
+    }
+
+    fn populate_mixed_oracle_fixture(path: &TestDatabasePath, id: DatabaseId) {
+        let store = initialized_store(path, id);
+        let lineage = ContractLineage::new("oracle-app").expect("lineage");
+        let bundles = (1..=4)
+            .map(|version| {
+                stored_bundle(
+                    "oracle-app",
+                    version,
+                    format!("oracle-bundle-{version}").as_bytes(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let active = ActiveCatalogPointerV1::from_bundle(&bundles[3]);
+        let binding = DurableKeySchemaBindingV1::new(
+            lineage.clone(),
+            bundles[3].contract_version(),
+            bundles[3].bundle_hash(),
+        );
+        let entities = (1..=5)
+            .map(|value| {
+                let entity_type = EntityTypeId::new(7).expect("entity type");
+                let mut key = EntityKeyBuilder::new(entity_type);
+                key.push_u64(value).expect("entity component");
+                StoredEntityRecordV1::new(
+                    EntityTarget::new(entity_type, key.finish().expect("entity key"))
+                        .expect("target"),
+                    EntityVersion::new(1).expect("entity version"),
+                    bundles[3].contract_version(),
+                    binding.clone(),
+                    CanonicalRecord::new(Vec::new()).expect("fields"),
+                )
+                .expect("entity")
+            })
+            .collect::<Vec<_>>();
+        let index_rows = (1..=6)
+            .map(compiled_migration_legacy_row)
+            .collect::<Vec<_>>();
+        let capabilities = [
+            active_capability(
+                id,
+                capability_id(0xa1),
+                explicit_scope(&lineage, &[10, 11, 12]),
+                20,
+                0xb1,
+            ),
+            active_capability(
+                id,
+                capability_id(0xa2),
+                explicit_scope(&lineage, &[20, 21]),
+                20,
+                0xb2,
+            ),
+        ];
+        let commit = oracle_commit(CommitSequence::first(), oracle_plan_ref(0x31));
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write oracle fixture");
+        {
+            let mut table = write.open_table(CONTRACT_BUNDLES).expect("bundles");
+            for bundle in &bundles {
+                let key =
+                    keys::encode_contract_bundle_key(bundle.lineage(), bundle.contract_version())
+                        .expect("bundle key");
+                let encoded = codec::encode_contract_bundle_v1(bundle).expect("encode bundle");
+                table
+                    .insert(key.as_slice(), encoded.as_bytes())
+                    .expect("insert bundle");
+            }
+        }
+        {
+            let mut table = write.open_table(CATALOG_ACTIVE).expect("active");
+            let encoded = codec::encode_active_catalog_pointer_v1(&active).expect("encode active");
+            table
+                .insert(CATALOG_ACTIVE_KEY.as_slice(), encoded.as_bytes())
+                .expect("insert active");
+        }
+        {
+            let mut table = write.open_table(ENTITIES).expect("entities");
+            for entity in &entities {
+                let encoded = codec::encode_entity_record_v1(entity).expect("encode entity");
+                table
+                    .insert(entity.target().key().as_bytes(), encoded.as_bytes())
+                    .expect("insert entity");
+            }
+        }
+        {
+            let mut table = write.open_table(SECONDARY_INDEXES).expect("indexes");
+            for row in &index_rows {
+                let encoded = riffdb_storage_api::encode_index_entry_v1_fixture(row)
+                    .expect("encode V1 index")
+                    .into_bytes();
+                table
+                    .insert(row.key().as_bytes(), encoded.as_slice())
+                    .expect("insert index");
+            }
+        }
+        {
+            let mut table = write.open_table(CAPABILITIES).expect("capabilities");
+            for capability in &capabilities {
+                let key = keys::encode_capability_key(capability.capability_id());
+                let encoded =
+                    codec::encode_capability_record_v1(capability).expect("encode capability");
+                table
+                    .insert(key.as_slice(), encoded.as_bytes())
+                    .expect("insert capability");
+            }
+        }
+        {
+            let mut table = write.open_table(COMMITS).expect("commits");
+            let key = keys::encode_application_sequence_key(commit.commit_sequence());
+            let encoded = codec::encode_commit_record_v1(&commit).expect("encode commit");
+            table
+                .insert(key.as_slice(), encoded.as_bytes())
+                .expect("insert commit");
+        }
+        write.commit().expect("commit oracle fixture");
+    }
+
+    #[test]
+    fn historical_plan_sequence_self_oracle_empty() {
+        let path = TestDatabasePath::new("hist-oracle-empty");
+        let mut store = RedbStore::open(&path.0).expect("open");
+        store.initialize_database(database_id(0x81)).expect("init");
+        drop(store);
+        let sequence = collect_historical_plan_sequence(&path.0);
+        assert_eq!(sequence.len(), 1, "empty DB emits only ActiveCatalog");
+        assert!(matches!(
+            sequence[0].1,
+            HistoricalSemanticEvidence::ActiveCatalog(None)
+        ));
+    }
+
+    #[test]
+    fn historical_plan_sequence_self_oracle_mixed() {
+        let path = TestDatabasePath::new("hist-oracle-mixed");
+        populate_mixed_oracle_fixture(&path, database_id(0x82));
+        let sequence = collect_historical_plan_sequence(&path.0);
+        let bundles = sequence
+            .iter()
+            .filter(|(_, e)| matches!(e, HistoricalSemanticEvidence::Bundle(_)))
+            .count();
+        let entities = sequence
+            .iter()
+            .filter(|(_, e)| {
+                matches!(
+                    e,
+                    HistoricalSemanticEvidence::PersistedKey(key)
+                        if matches!(
+                            key.key(),
+                            riffdb_storage_api::IrOpaquePersistedKeyV1::Entity { .. }
+                        )
+                )
+            })
+            .count();
+        let indexes = sequence
+            .iter()
+            .filter(|(_, e)| matches!(e, HistoricalSemanticEvidence::IndexMigrationRow(_)))
+            .count();
+        let partitions = sequence
+            .iter()
+            .filter(|(_, e)| matches!(e, HistoricalSemanticEvidence::CapabilityPartition(_)))
+            .count();
+        let plans = sequence
+            .iter()
+            .filter(|(_, e)| matches!(e, HistoricalSemanticEvidence::PlanReference(_)))
+            .count();
+        let active = sequence
+            .iter()
+            .filter(|(_, e)| matches!(e, HistoricalSemanticEvidence::ActiveCatalog(Some(_))))
+            .count();
+        assert!(bundles >= 4, "bundles={bundles}");
+        assert!(entities >= 5, "entities={entities}");
+        assert!(indexes >= 6, "indexes={indexes}");
+        assert!(partitions >= 5, "capability partitions={partitions}");
+        assert!(plans >= 1, "plans={plans}");
+        assert_eq!(active, 1, "active catalog");
+        assert!(
+            sequence.len() > 4 + 5 + 6 + 5 + 1,
+            "mixed sequence length {}",
+            sequence.len()
+        );
+        // Strict total order on order_keys.
+        assert!(
+            sequence.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "order_keys must be strictly increasing"
+        );
+    }
+
+    #[test]
+    fn historical_plan_sequence_self_oracle_commit_plans() {
+        // Dedicated shape exercising collect_plan_locators via COMMITS rows.
+        let path = TestDatabasePath::new("hist-oracle-plans");
+        let id = database_id(0x83);
+        let store = initialized_store(&path, id);
+        let plans = [oracle_plan_ref(0x41), oracle_plan_ref(0x42)];
+        let commits = [
+            oracle_commit(CommitSequence::first(), plans[0].clone()),
+            oracle_commit(CommitSequence::new(2).expect("seq"), plans[1].clone()),
+        ];
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write plan fixture");
+        {
+            let mut table = write.open_table(COMMITS).expect("commits");
+            for commit in &commits {
+                let key = keys::encode_application_sequence_key(commit.commit_sequence());
+                let encoded = codec::encode_commit_record_v1(commit).expect("encode commit");
+                table
+                    .insert(key.as_slice(), encoded.as_bytes())
+                    .expect("insert commit");
+            }
+        }
+        write.commit().expect("commit plan fixture");
+        drop(store);
+        let sequence = collect_historical_plan_sequence(&path.0);
+        let plan_count = sequence
+            .iter()
+            .filter(|(_, e)| matches!(e, HistoricalSemanticEvidence::PlanReference(_)))
+            .count();
+        assert_eq!(plan_count, 2, "two commit plan references");
+    }
+
+    #[test]
+    fn service_audit_without_request_index_reports_missing_cross_link() {
+        let path = TestDatabasePath::new("missing-audit-request-index");
+        let store = initialized_store(&path, database_id(0x84));
+        let record = StoredServiceAuditRecordV1::from_stored_parts(
+            AdministrationSequence::first(),
+            request_id(0x71),
+            Timestamp::new(1, 0).expect("timestamp"),
+            ServiceOperationV1::GetHealth,
+            ServiceAuditPhaseV1::Denied,
+            Some(audit_principal(0x72)),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .expect("standalone service audit");
+        let encoded = codec::encode_administration_audit_record_v1(
+            &StoredAdministrationAuditRecordV1::Service(record),
+        )
+        .expect("encode service audit");
+        let allocator = codec::encode_administration_sequence_allocator_v1(
+            AdministrationSequenceAllocator::next(
+                AdministrationSequence::new(2).expect("allocator sequence"),
+            ),
+        )
+        .expect("encode allocator");
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write corrupt fixture");
+        {
+            let mut audit = write.open_table(AUDIT).expect("audit table");
+            audit
+                .insert(
+                    keys::encode_audit_key(AdministrationSequence::first()).as_slice(),
+                    encoded.as_bytes(),
+                )
+                .expect("insert service audit without index peer");
+        }
+        {
+            let mut meta = write.open_table(META).expect("metadata table");
+            meta.insert(META_ADMINISTRATION_SEQUENCE, allocator.as_bytes())
+                .expect("advance allocator");
+        }
+        // Deliberately omit AUDIT_BY_REQUEST — reciprocity must fail closed.
+        write.commit().expect("commit corrupt fixture");
+
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin evidence");
+        let (_, findings) = collect_structural(&mut session);
+        assert!(
+            findings.iter().any(|finding| {
+                finding.scope() == StructuralFindingScope::Authoritative
+                    && finding.code() == StructuralFindingCode::MissingCrossLink
+            }),
+            "expected MissingCrossLink for Service audit without AUDIT_BY_REQUEST peer; got {findings:?}"
+        );
     }
 }

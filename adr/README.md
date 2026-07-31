@@ -88,6 +88,10 @@ direction, merged draft, or implementation choice.
 | [0064](0064-underscore-mcp-tool-names-and-agent-presentation.md) | Underscore MCP Tool Names and Agent Presentation | Accepted |
 | [0065](0065-first-real-application-experience.md) | First Real Application Experience | Accepted |
 | [0066](0066-additive-contract-evolution-and-deployment-diagnostics.md) | Additive Contract Evolution and Deployment Diagnostics | Accepted |
+| [0070](0070-read-stability-and-internal-retry.md) | Read Stability and Internal Retry | Accepted |
+| [0071](0071-typed-saturation-and-admission.md) | Typed Saturation and Admission | Accepted |
+| [0072](0072-database-history-incarnation.md) | Database History Incarnation | Accepted |
+| [0073](0073-linear-startup-validation-and-bounded-history-access.md) | Linear Startup Validation and Bounded History Access | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

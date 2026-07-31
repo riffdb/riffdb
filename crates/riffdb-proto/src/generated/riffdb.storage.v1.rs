@@ -1457,6 +1457,11 @@ pub struct StoredOutboxIntentV2 {
     #[prost(message, optional, tag = "1")]
     pub event_reference: ::core::option::Option<EventReferenceV2>,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredHistoryIncarnationV1 {
+    #[prost(uint64, tag = "1")]
+    pub incarnation: u64,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredIndexGenerationV2 {
     #[prost(bytes = "vec", tag = "1")]
@@ -1823,4 +1828,11 @@ impl ProjectionFailureCodeV1 {
 pub struct StoredRecordRegistryV2 {
     #[prost(bytes = "vec", tag = "1")]
     pub registry_digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredServiceAuditRequestIndexV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub administration_sequence: u64,
 }

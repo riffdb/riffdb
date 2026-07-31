@@ -242,6 +242,21 @@ impl ServiceAuditGrowthHarness {
         })
     }
 
+    /// Reopens an existing fixture for continued window growth after a measurement drop.
+    pub fn reopen(path: &Path) -> Result<Self, EngineBenchmarkError> {
+        let store = RedbStore::open(path).map_err(|_| EngineBenchmarkError::Engine)?;
+        let dormant = RedbDormantPorts {
+            shared: store.shared,
+        };
+        let ports = dormant
+            .into_operational_after_catalog_validation()
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            ports,
+        })
+    }
+
     /// Appends one started/failed lifecycle per command through the real port.
     pub fn run_window(
         &mut self,
@@ -390,7 +405,8 @@ pub fn run_engine_mechanics_window(
     })
 }
 
-/// Reopens the database and proves the retained application allocator is readable.
+/// Lightweight engine reopen (allocator probe only). Series-compatible with
+/// pre-Package-H measurements: open + read META, no full evidence drain.
 pub fn measure_engine_reopen(path: &Path) -> Result<Duration, EngineBenchmarkError> {
     let started = Instant::now();
     let database = Database::create(path).map_err(|_| EngineBenchmarkError::Engine)?;
@@ -411,6 +427,74 @@ pub fn measure_engine_reopen(path: &Path) -> Result<Duration, EngineBenchmarkErr
     drop(transaction);
     drop(database);
     Ok(started.elapsed())
+}
+
+/// Full clean startup drain: open + structural + historical + operational handoff.
+pub fn measure_clean_startup(path: &Path) -> Result<Duration, EngineBenchmarkError> {
+    let started = Instant::now();
+    drain_startup_evidence(path)?;
+    Ok(started.elapsed())
+}
+
+fn drain_startup_evidence(path: &Path) -> Result<(), EngineBenchmarkError> {
+    use riffdb_storage_api::{
+        EvidencePageLimit, HistoricalEvidenceCursor, HistoricalEvidencePage,
+        ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+        StartupValidationInputs, StructuralEvidenceCursor, StructuralEvidenceOpen,
+        StructuralEvidencePage, StructuralEvidenceSession, StructuralOpenOutcome,
+    };
+    use riffdb_types::{DigestKeyId, Timestamp};
+
+    let store = RedbStore::open(path).map_err(|_| EngineBenchmarkError::Engine)?;
+    let key = ReadableDigestKey::v1(DigestKeyId::new(1).ok_or(EngineBenchmarkError::Engine)?);
+    let inputs = StartupValidationInputs::new(
+        Timestamp::new(1, 0).map_err(|_| EngineBenchmarkError::Engine)?,
+        ReadableCapabilityDigestInventory::new(vec![key])
+            .map_err(|_| EngineBenchmarkError::Engine)?,
+        ReadableIdempotencyDigestInventory::new(vec![key])
+            .map_err(|_| EngineBenchmarkError::Engine)?,
+    );
+    let mut session = store
+        .begin_structural_evidence(inputs)
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    let database_id = session.database_id();
+    let open_session_id = session.open_session_id();
+    let limit = EvidencePageLimit::new(64).ok_or(EngineBenchmarkError::Engine)?;
+    let mut structural = StructuralEvidenceCursor::start(database_id, open_session_id);
+    let structural_end = loop {
+        match session
+            .read_structural_evidence(structural, limit)
+            .map_err(|_| EngineBenchmarkError::Engine)?
+        {
+            StructuralEvidencePage::Page { next, .. } => structural = next,
+            StructuralEvidencePage::ExactEnd(end) => break end,
+        }
+    };
+    let mut historical = HistoricalEvidenceCursor::start(database_id, open_session_id);
+    let historical_end = loop {
+        match session
+            .read_historical_evidence(historical, limit)
+            .map_err(|_| EngineBenchmarkError::Engine)?
+        {
+            HistoricalEvidencePage::Page { next, .. } => historical = next,
+            HistoricalEvidencePage::ExactEnd(end) => break end,
+        }
+    };
+    let outcome = session
+        .finish(structural_end, historical_end)
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    match outcome {
+        StructuralOpenOutcome::Clean(opened) => {
+            let (_, _, _, dormant) = opened.into_parts();
+            let _ = dormant
+                .into_operational_after_catalog_validation()
+                .map_err(|_| EngineBenchmarkError::Engine)?;
+        }
+        StructuralOpenOutcome::MigrationRequired(_) => {
+            return Err(EngineBenchmarkError::Engine);
+        }
+    }
+    Ok(())
 }
 
 fn configure(

@@ -12,7 +12,7 @@ use riffdb_types::{
     AdministrationSequence, CapabilityId, CapabilityTokenDigest, CommitSequence,
     ContractBundleHash, ContractLineage, ContractVersion, DIGEST_SCHEME_V1, DigestKeyId, EntityKey,
     EventId, IndexEntryKey, IndexId, MAX_CONTRACT_LINEAGE_BYTES, PartitionKey, ProjectionApplyKey,
-    ProjectionFrontierKey, ProjectionGroupKey, ProvenanceId, QueryModuleHash,
+    ProjectionFrontierKey, ProjectionGroupKey, ProvenanceId, QueryModuleHash, RequestId,
 };
 
 pub(crate) const SINGLETON_KEY: [u8; 1] = [0x01];
@@ -23,6 +23,7 @@ const EVENT_KEY_BYTES: usize = 12;
 const CAPABILITY_KEY_BYTES: usize = 1 + UUID_KEY_BYTES;
 const CAPABILITY_TOKEN_KEY_BYTES: usize = 1 + 1 + 4 + 32;
 const AUDIT_KEY_BYTES: usize = 1 + U64_KEY_BYTES;
+const AUDIT_BY_REQUEST_KEY_BYTES: usize = UUID_KEY_BYTES + U64_KEY_BYTES;
 
 /// Redacted failure to structurally decode one physical table key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -260,6 +261,40 @@ pub(crate) fn decode_audit_key(bytes: &[u8]) -> Result<AdministrationSequence, P
     .ok_or(PhysicalKeyError::InvalidComponent)?;
     require_canonical(bytes, &encode_audit_key(sequence))?;
     Ok(sequence)
+}
+
+pub(crate) fn encode_audit_by_request_key(
+    request_id: RequestId,
+    sequence: AdministrationSequence,
+) -> [u8; AUDIT_BY_REQUEST_KEY_BYTES] {
+    let mut encoded = [0; AUDIT_BY_REQUEST_KEY_BYTES];
+    encoded[..UUID_KEY_BYTES].copy_from_slice(request_id.as_bytes());
+    encoded[UUID_KEY_BYTES..].copy_from_slice(&sequence.to_be_bytes());
+    encoded
+}
+
+pub(crate) fn encode_audit_by_request_prefix(request_id: RequestId) -> [u8; UUID_KEY_BYTES] {
+    *request_id.as_bytes()
+}
+
+pub(crate) fn decode_audit_by_request_key(
+    bytes: &[u8],
+) -> Result<(RequestId, AdministrationSequence), PhysicalKeyError> {
+    let encoded = exact_array::<AUDIT_BY_REQUEST_KEY_BYTES>(bytes)?;
+    let request_id = RequestId::from_bytes(
+        encoded[..UUID_KEY_BYTES]
+            .try_into()
+            .map_err(|_| PhysicalKeyError::InvalidLength)?,
+    )
+    .map_err(|_| PhysicalKeyError::InvalidComponent)?;
+    let sequence = AdministrationSequence::new(u64::from_be_bytes(
+        encoded[UUID_KEY_BYTES..]
+            .try_into()
+            .map_err(|_| PhysicalKeyError::InvalidLength)?,
+    ))
+    .ok_or(PhysicalKeyError::InvalidComponent)?;
+    require_canonical(bytes, &encode_audit_by_request_key(request_id, sequence))?;
+    Ok((request_id, sequence))
 }
 
 pub(crate) fn encode_entity_key(key: &EntityKey) -> &[u8] {

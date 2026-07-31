@@ -1023,6 +1023,7 @@ fn assign_application_sequence(
         overlay.metadata.database_id(),
         allocation.next(),
         overlay.metadata.administration_sequence(),
+        overlay.metadata.history_incarnation(),
         overlay.metadata.active_catalog().cloned(),
         overlay.metadata.capability_bootstrap(),
     )

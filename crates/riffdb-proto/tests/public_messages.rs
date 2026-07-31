@@ -214,6 +214,8 @@ fn root_duplicate_fields_reject_before_prost_merge() {
     let request = v1::GetCommitRequest {
         request_id: uuid_v7(),
         commit_sequence: 1,
+
+        observed_history_incarnation: None,
     };
     let mut encoded = request.encode_to_vec();
     encoded.extend_from_slice(&[0x10, 0x02]);
@@ -228,6 +230,8 @@ fn nested_duplicates_and_repeated_limits_reject_before_prost_merge() {
     let get = v1::GetCommitRequest {
         request_id: uuid_v7(),
         commit_sequence: 1,
+
+        observed_history_incarnation: None,
     };
     decode_public_message::<v1::GetCommitRequest>(&get.encode_to_vec())
         .expect("valid GetCommit remains wired to root-only preflight");
@@ -346,6 +350,8 @@ fn every_shared_identifier_class_uses_exact_uuid_v7() {
     let mut get = v1::GetCommitRequest {
         request_id: uuid_v7(),
         commit_sequence: 1,
+
+        observed_history_incarnation: None,
     };
     validate_public_message(&get).expect("request UUIDv7");
     get.request_id[6] = 0x40;
@@ -374,6 +380,8 @@ fn every_shared_identifier_class_uses_exact_uuid_v7() {
 
     let mut response = v1::GetCommitResponse {
         result: Some(v1::get_commit_response::Result::Found(commit())),
+
+        history_incarnation: 1,
     };
     response
         .result
@@ -398,6 +406,8 @@ fn cursors_remain_opaque_and_are_not_reclassified_as_uuids() {
             limit: Some(1),
             cursor: Some(vec![0; 16]),
         }),
+
+        observed_history_incarnation: None,
     };
     validate_public_message(&request).expect("opaque cursor");
 }
@@ -463,6 +473,8 @@ fn read_only_and_outcome_replay_shapes_are_closed() {
         provenance_uri: String::new(),
         durability_mode: String::new(),
         outcome_uri: None,
+
+        history_incarnation: 1,
     };
     validate_public_message(&read_only).expect("exact read-only sentinels");
     let mut invalid = read_only.clone();
@@ -582,6 +594,8 @@ fn collection_limits_are_checked_at_exact_boundaries() {
 
     let mut response = v1::GetCommitResponse {
         result: Some(v1::get_commit_response::Result::Found(commit())),
+
+        history_incarnation: 1,
     };
     let found = match response.result.as_mut().expect("result") {
         v1::get_commit_response::Result::Found(commit) => commit,
@@ -824,6 +838,8 @@ fn exchange_validation_enforces_selected_contract_and_effective_page_limits() {
     let commit_request = v1::ScanCommitsRequest {
         request_id: uuid_v7(),
         page: Some(page()),
+
+        observed_history_incarnation: None,
     };
     let first = commit();
     let mut second = first.clone();
@@ -833,6 +849,8 @@ fn exchange_validation_enforces_selected_contract_and_effective_page_limits() {
             items: vec![first, second],
             next_cursor: None,
             observed_fence: Some(applied(2)),
+
+            history_incarnation: 1,
         }),
     };
     assert_eq!(
@@ -847,6 +865,8 @@ fn public_pages_and_commit_collections_preserve_canonical_order() {
     commit.conflict_hashes = vec![vec![0x22; 32], vec![0x11; 32]];
     let mut response = v1::GetCommitResponse {
         result: Some(v1::get_commit_response::Result::Found(commit)),
+
+        history_incarnation: 1,
     };
     assert_eq!(
         validate_public_message(&response),
@@ -980,6 +1000,8 @@ fn only_index_pages_allow_empty_bounded_progress() {
             items: Vec::new(),
             next_cursor: cursor,
             observed_fence: Some(applied(1)),
+
+            history_incarnation: 1,
         }),
     };
     assert_eq!(
@@ -1120,6 +1142,8 @@ fn health_and_subscription_closed_bounds_are_checked() {
         request_id: uuid_v7(),
         after_sequence: None,
         maximum_lifetime_nanos: 900_000_000_000,
+
+        observed_history_incarnation: None,
     };
     validate_public_message(&subscribe).expect("maximum subscription lifetime");
     subscribe.maximum_lifetime_nanos += 1;

@@ -1251,6 +1251,8 @@ fn commit_scan_request() -> TestResult<v1::ScanCommitsRequest> {
             limit: Some(100),
             cursor: None,
         }),
+
+        observed_history_incarnation: None,
     })
 }
 

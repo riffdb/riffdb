@@ -204,12 +204,12 @@ fn public_path_phase_diagnostics_report() -> TestResult<()> {
     let mut phases_json = Vec::new();
     let mut shares = Vec::new();
     for (name, summary) in &phase_rows {
-        let share_bps = if total_mean == 0 || *name == "full_case_cycle_mean" {
+        let share_bps = if total_mean == 0 || **name == "full_case_cycle_mean" {
             0
         } else {
             (u128::from(summary.mean_ns) * 10_000) / total_mean
         };
-        if *name != "full_case_cycle_mean" {
+        if **name != "full_case_cycle_mean" {
             shares.push(((*name).to_owned(), share_bps, summary.mean_ns));
         }
         phases_json.push(format!(
@@ -265,7 +265,10 @@ fn public_path_phase_diagnostics_report() -> TestResult<()> {
         json_string(&hint)
     );
     fs::write(&output, body)?;
-    println!("RIFFDB_BUDGET_PUBLIC_PATH_DIAGNOSTICS_REPORT={}", output.display());
+    println!(
+        "RIFFDB_BUDGET_PUBLIC_PATH_DIAGNOSTICS_REPORT={}",
+        output.display()
+    );
     Ok(())
 }
 

@@ -623,6 +623,7 @@ impl MemoryState {
             metadata.database_id(),
             metadata.application_sequence(),
             assigned.next(),
+            metadata.history_incarnation(),
             metadata.active_catalog().cloned(),
             metadata.capability_bootstrap(),
         )

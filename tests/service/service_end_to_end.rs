@@ -4,20 +4,23 @@
 
 mod support;
 
-use riffdb_errors::PublicErrorKind;
+use std::time::{Duration, Instant};
+
+use riffdb_errors::{ApplicationErrorCode, PublicErrorKind};
 use riffdb_policy::PartitionConstraint;
 use riffdb_service::{
     AdministrationApplication, AuthoritativeOutcomeSelectorRef, AuthoritativeReadinessFailure,
-    CommandApplication, CommandDurability, CommitApplication, CompactResourceDescriptorRef,
-    ContractApplication, ContractValidationResult, CreateCapabilityInvocation,
-    DiscoverCommandToolsRequest, DiscoverCommandToolsResultRef, DiscoverResourcesRequest,
-    DiscoverResourcesResultRef, DiscoveryApplication, DiscoveryCatalogStateRef,
-    DiscoveryRepresentation, ExecuteCommandResult, ExplainCommandResult, GetActiveContractRequest,
-    GetActiveContractResult, GetCommitRequest, GetCommitResult, GetContractVersionResult,
-    GetEntityResult, GetProjectionStatusResult, HealthContext, HealthRequest, HealthResult,
-    HealthStatus, JournaledCompletion, PageLimit, PageRequest, PreBootstrapLifecycle,
-    QueryApplication, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
-    ResourceDescriptorRef, ResourceDiscoveryKind, StatisticsRequest, TraceProvenanceResult,
+    CapacityRejectionStage, CommandApplication, CommandDurability, CommitApplication,
+    CompactResourceDescriptorRef, ContractApplication, ContractValidationResult,
+    CreateCapabilityInvocation, DiscoverCommandToolsRequest, DiscoverCommandToolsResultRef,
+    DiscoverResourcesRequest, DiscoverResourcesResultRef, DiscoveryApplication,
+    DiscoveryCatalogStateRef, DiscoveryRepresentation, ExecuteCommandResult, ExplainCommandResult,
+    GetActiveContractRequest, GetActiveContractResult, GetCommitRequest, GetCommitResult,
+    GetContractVersionResult, GetEntityResult, GetProjectionStatusResult, HealthContext,
+    HealthRequest, HealthResult, HealthStatus, JournaledCompletion, PageLimit, PageRequest,
+    PreBootstrapLifecycle, QueryApplication, ResolveCommandOutcomeRequest,
+    ResolveCommandOutcomeResult, ResourceDescriptorRef, ResourceDiscoveryKind,
+    ServiceTelemetryEvent, StatisticsRequest, TraceProvenanceResult,
 };
 use riffdb_types::{
     PartitionScopeV1, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetV1,
@@ -156,6 +159,287 @@ fn concrete_service_reads_through_policy_port_and_real_audit_coordinator() {
             assert_eq!(record.approval_id(), None);
             assert_eq!(record.link(), ServiceAuditLinkV1::None);
         }
+    });
+}
+
+#[test]
+fn saturated_command_capacity_rejects_before_reauthorization_with_typed_overload() {
+    run_async(async move {
+        let mut harness = ServiceHarness::command_capacity_one();
+        // Hold the sole workload slot outside the service path.
+        let held = harness.hold_command_capacity();
+        assert!(
+            harness.try_command_capacity_is_full(),
+            "capacity-one harness must report full after one hold"
+        );
+
+        let (context, _cancellation) = harness.context(0xA1);
+        let failure = harness
+            .service
+            .execute_command(context, harness.execute_command_request())
+            .await
+            .expect_err("second concurrent command must be capacity-rejected");
+
+        assert_eq!(
+            failure.public_error().map(|error| error.kind()),
+            Some(PublicErrorKind::Overloaded),
+            "got {failure:?}"
+        );
+        assert_eq!(
+            failure
+                .public_error()
+                .map(|error| ApplicationErrorCode::from_public_kind(error.kind()).as_str()),
+            Some("RDB-CAPACITY-0101")
+        );
+        // begin_compound performs one initial authorize; reauthorization after
+        // capacity is skipped when admission rejects. A full committed command
+        // records several post-admission policy safe points.
+        assert_eq!(
+            harness.policy.calls(),
+            1,
+            "overload must reject after initial authorize and before reauthorization"
+        );
+        assert!(
+            harness.telemetry.events().iter().any(|event| matches!(
+                event,
+                ServiceTelemetryEvent::CapacityRejected {
+                    operation: ServiceOperationV1::ExecuteCommand,
+                    ingress: ServiceIngressKindV1::Grpc,
+                    stage: CapacityRejectionStage::QueueDepth,
+                }
+            )),
+            "CapacityRejected QueueDepth must be recorded"
+        );
+
+        drop(held);
+        harness.stop_coordinator();
+    });
+}
+
+/// Primary ADR-0071 saturation evidence: capacity N with 4N concurrent in-flight
+/// commands. Every failure is typed Overloaded; successes (if any) are absent
+/// while the channel is held full.
+#[test]
+fn capacity_n_concurrent_commands_yield_only_typed_overload_or_commit() {
+    run_async(async move {
+        const N: u16 = 2;
+        const IN_FLIGHT: usize = 8; // 4N
+        let mut harness = ServiceHarness::command_capacity_n(N);
+        let held = harness.hold_command_capacity_n(usize::from(N));
+        assert!(harness.try_command_capacity_is_full());
+
+        let service = harness.service.clone();
+        let mut joins = Vec::with_capacity(IN_FLIGHT);
+        for i in 0..IN_FLIGHT {
+            let (context, _cancel) = harness
+                .context_with_deadline(0xB0 + i as u8, Instant::now() + Duration::from_millis(20));
+            let request = harness.execute_command_request_with_key(&format!("sat-{i}"));
+            let service = service.clone();
+            joins.push(tokio::spawn(async move {
+                service.execute_command(context, request).await
+            }));
+        }
+
+        let mut overloaded = 0u32;
+        let mut success = 0u32;
+        let mut other = 0u32;
+        for join in joins {
+            match join.await.expect("join") {
+                Ok(ExecuteCommandResult::Journaled(result)) => {
+                    assert_eq!(result.completion(), JournaledCompletion::Committed);
+                    success = success.saturating_add(1);
+                }
+                Ok(_) => other = other.saturating_add(1),
+                Err(failure) => {
+                    if failure.public_error().map(|e| e.kind()) == Some(PublicErrorKind::Overloaded)
+                    {
+                        overloaded = overloaded.saturating_add(1);
+                    } else {
+                        other = other.saturating_add(1);
+                    }
+                }
+            }
+        }
+        assert_eq!(success, 0, "held-full channel admits no commits");
+        assert_eq!(other, 0, "no unclassified outcomes: other={other}");
+        assert_eq!(overloaded, IN_FLIGHT as u32);
+
+        drop(held);
+        // After release, a command commits.
+        let (context, _c) = harness.context(0xC0);
+        let ok = harness
+            .service
+            .execute_command(context, harness.execute_command_request_with_key("sat-ok"))
+            .await
+            .expect("released capacity commits");
+        assert!(matches!(ok, ExecuteCommandResult::Journaled(_)));
+        harness.stop_coordinator();
+    });
+}
+
+#[test]
+fn retained_bytes_exhaustion_rejects_with_capacity_stage() {
+    run_async(async move {
+        let mut harness = ServiceHarness::command_capacity_n(4);
+        let _bytes = harness.hold_all_retained_bytes();
+
+        let (context, _c) =
+            harness.context_with_deadline(0xD1, Instant::now() + Duration::from_millis(20));
+        let failure = harness
+            .service
+            .execute_command(
+                context,
+                harness.execute_command_request_with_key("bytes-full"),
+            )
+            .await
+            .expect_err("retained-byte exhaustion is overload");
+        assert_eq!(
+            failure.public_error().map(|e| e.kind()),
+            Some(PublicErrorKind::Overloaded)
+        );
+        assert!(
+            harness.telemetry.events().iter().any(|event| matches!(
+                event,
+                ServiceTelemetryEvent::CapacityRejected {
+                    stage: CapacityRejectionStage::RetainedBytes,
+                    ..
+                }
+            )),
+            "CapacityRejected RetainedBytes must be recorded"
+        );
+        harness.stop_coordinator();
+    });
+}
+
+/// I4 / M6: read-only capacity rejection is typed overload and writes no audit
+/// (admission precedes begin_invocation).
+#[test]
+fn read_only_capacity_rejects_before_audit_start_with_typed_overload() {
+    run_async(async move {
+        const REQUEST_SEED: u8 = 0xE1;
+        let mut harness = ServiceHarness::command_capacity_n_with_observe(1);
+        let held = harness.hold_command_capacity();
+        let (context, _c) =
+            harness.context_with_deadline(REQUEST_SEED, Instant::now() + Duration::from_millis(20));
+        let failure = harness
+            .service
+            .execute_command(context, harness.observe_budget_request())
+            .await
+            .expect_err("read-only capacity rejection");
+        assert_eq!(
+            failure.public_error().map(|e| e.kind()),
+            Some(PublicErrorKind::Overloaded)
+        );
+        assert_eq!(
+            failure
+                .public_error()
+                .map(|error| ApplicationErrorCode::from_public_kind(error.kind()).as_str()),
+            Some("RDB-CAPACITY-0101")
+        );
+        assert!(
+            harness.telemetry.events().iter().any(|event| matches!(
+                event,
+                ServiceTelemetryEvent::CapacityRejected {
+                    stage: CapacityRejectionStage::QueueDepth,
+                    ..
+                }
+            )),
+            "read-only capacity must record CapacityRejected QueueDepth"
+        );
+        drop(held);
+        harness.stop_coordinator();
+        assert!(
+            harness.audit_records(REQUEST_SEED).is_empty(),
+            "pre-audit capacity rejection must leave no Started/Failed pair"
+        );
+    });
+}
+
+/// I1: capacity overload settles without audit; a later success still audits.
+/// Non-capacity admission failures must not use the capacity settle path
+/// (`is_capacity_overload` is Overloaded-only — covered in unit tests).
+#[test]
+fn capacity_overload_mutation_leaves_no_terminal_audit_row() {
+    run_async(async move {
+        const REQUEST_SEED: u8 = 0xE2;
+        let mut harness = ServiceHarness::command_capacity_one();
+        let held = harness.hold_command_capacity();
+        let (context, _c) =
+            harness.context_with_deadline(REQUEST_SEED, Instant::now() + Duration::from_millis(20));
+        let failure = harness
+            .service
+            .execute_command(context, harness.execute_command_request())
+            .await
+            .expect_err("capacity rejection");
+        assert_eq!(
+            failure.public_error().map(|e| e.kind()),
+            Some(PublicErrorKind::Overloaded)
+        );
+        drop(held);
+        harness.stop_coordinator();
+        assert!(
+            harness.audit_records(REQUEST_SEED).is_empty(),
+            "capacity settle must not append Started/Failed (ADR-0071 capacity-only skip)"
+        );
+    });
+}
+
+#[test]
+fn admission_deadline_while_queued_is_overloaded_not_deadline_exceeded() {
+    run_async(async move {
+        let mut harness = ServiceHarness::command_capacity_one();
+        let held = harness.hold_command_capacity();
+
+        // Remaining budget below COMMAND_ADMISSION_MIN_REMAINING (25ms) rejects
+        // immediately as overload without burning the client's deadline class.
+        let (context, _cancellation) =
+            harness.context_with_deadline(0xA2, Instant::now() + Duration::from_millis(10));
+        let failure = harness
+            .service
+            .execute_command(context, harness.execute_command_request())
+            .await
+            .expect_err("queued-unadmitted deadline maps to overload");
+
+        assert_eq!(
+            failure.public_error().map(|error| error.kind()),
+            Some(PublicErrorKind::Overloaded),
+            "must not surface details-free DeadlineExceeded while unadmitted"
+        );
+        assert_ne!(
+            failure.public_error().map(|error| error.kind()),
+            Some(PublicErrorKind::InternalDefect)
+        );
+
+        drop(held);
+        harness.stop_coordinator();
+    });
+}
+
+#[test]
+fn cancellation_during_admission_remains_cancelled() {
+    run_async(async move {
+        let mut harness = ServiceHarness::command_capacity_one();
+        let held = harness.hold_command_capacity();
+
+        let (context, cancellation) =
+            harness.context_with_deadline(0xA3, Instant::now() + Duration::from_secs(5));
+        // Cancel before the bounded admission wait parks so the first poll sees
+        // cancellation while still unadmitted.
+        cancellation.cancel();
+
+        let failure = harness
+            .service
+            .execute_command(context, harness.execute_command_request())
+            .await
+            .expect_err("cancellation during admission is Cancelled");
+
+        assert!(
+            matches!(failure, riffdb_service::ServiceFailure::Cancelled),
+            "cancellation during admission must remain ServiceFailure::Cancelled, got {failure:?}"
+        );
+
+        drop(held);
+        harness.stop_coordinator();
     });
 }
 

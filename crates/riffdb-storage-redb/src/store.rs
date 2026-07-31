@@ -8,27 +8,29 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use redb::{
-    Database, Durability, MultimapTableHandle, ReadTransaction, ReadableDatabase, ReadableTable,
-    ReadableTableMetadata, TableDefinition, TableHandle, WriteTransaction,
+    Builder, Database, Durability, MultimapTableHandle, ReadTransaction, ReadableDatabase,
+    ReadableTable, ReadableTableMetadata, TableDefinition, TableHandle, WriteTransaction,
 };
 use riffdb_storage_api::{
     ApplicationSequenceAllocator, DatabaseIdentityProbe, DatabaseIdentityProbePort,
-    DatabaseInitializationPort, DatabaseInitializationResult, StorageError, StorageErrorKind,
-    StorageFormatVersion, StoredIndexEpochV1,
+    DatabaseInitializationPort, DatabaseInitializationResult, HISTORY_INCARNATION_INITIAL,
+    StorageError, StorageErrorKind, StorageFormatVersion, StoredIndexEpochV1,
     proto_codec::{
         decode_administration_sequence_allocator_v1, decode_application_sequence_allocator_v1,
-        decode_database_identity_v1, decode_record_registry_v2, decode_storage_format_version_v1,
-        encode_administration_sequence_allocator_v1, encode_application_sequence_allocator_v1,
-        encode_database_identity_v1, encode_record_registry_v2, encode_storage_format_version_v1,
+        decode_database_identity_v1, decode_history_incarnation_v1, decode_record_registry_v2,
+        decode_storage_format_version_v1, encode_administration_sequence_allocator_v1,
+        encode_application_sequence_allocator_v1, encode_database_identity_v1,
+        encode_history_incarnation_v1, encode_record_registry_v2, encode_storage_format_version_v1,
         transcode_durable_record_to_v2,
     },
 };
 use riffdb_types::{DatabaseId, IndexEpoch, IndexId, SchemaHash};
 
 use crate::codec::{
-    decode_commit_with_event_table, decode_index_entry_v2, decode_index_epoch_v1,
-    decode_legacy_index_epoch_v1, decode_outbox_with_event_table, encode_commit_record_v1,
-    encode_index_epoch_v1, encode_outbox_intent_v1,
+    decode_administration_audit_record_v1, decode_commit_with_event_table, decode_index_entry_v2,
+    decode_index_epoch_v1, decode_legacy_index_epoch_v1, decode_outbox_with_event_table,
+    decode_service_audit_request_index_v1, encode_commit_record_v1, encode_index_epoch_v1,
+    encode_outbox_intent_v1, encode_service_audit_request_index_v1,
 };
 use crate::error::{
     commit_error, database_error, precommit_storage_error, storage_error, table_error,
@@ -37,12 +39,16 @@ use crate::error::{
 use crate::gate::{ExclusiveGate, ExclusiveLease};
 use crate::hooks::{RedbTestController, RedbTestOperation};
 use crate::keys::{
-    decode_index_range_prefix_key, decode_partition_index_key, encode_partition_index_key,
+    decode_audit_by_request_key, decode_audit_key, decode_index_range_prefix_key,
+    decode_partition_index_key, encode_audit_by_request_key, encode_audit_by_request_prefix,
+    encode_partition_index_key,
 };
 use crate::layout::{
-    BYTE_TABLES, COMMITS, EVENTS, INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE,
-    META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP, META_DATABASE_ID, META_FORMAT_VERSION,
-    META_KEYS, META_RECORD_REGISTRY, OUTBOX, SECONDARY_INDEXES, TABLE_NAMES, create_all_tables,
+    AUDIT, AUDIT_BY_REQUEST, BYTE_TABLES, COMMITS, EVENTS, INDEX_EPOCHS, META,
+    META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
+    META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
+    META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, OUTBOX, SECONDARY_INDEXES,
+    TABLE_NAMES, create_all_tables,
 };
 use crate::transient::{TransientIndexDelta, TransientIndexState, TransientIndexes};
 
@@ -187,6 +193,8 @@ enum RegistryMigration {
     Current,
     EventReferencesThenGenerations,
     Generations,
+    HistoryIncarnation,
+    AuditRequestIndex,
 }
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
@@ -199,6 +207,25 @@ pub(crate) const PRE_INDEX_GENERATION_REGISTRY_DIGEST: [u8; 32] = [
     0x0f, 0xab, 0x09, 0x09, 0x1b, 0x8f, 0x56, 0xc3, 0xbe, 0xb9, 0x3a, 0x05, 0x75, 0x56, 0xfb, 0x3d,
     0x12, 0x83, 0xa0, 0x77, 0x55, 0xa9, 0x20, 0xd3, 0xe4, 0xa9, 0x73, 0x04, 0xd8, 0x21, 0x40, 0xb3,
 ];
+/// Registry digest at the history-incarnation branch base (pre-fence current).
+pub(crate) const PRE_HISTORY_INCARNATION_REGISTRY_DIGEST: [u8; 32] = [
+    0x25, 0xbd, 0x75, 0xfe, 0x14, 0xf1, 0xd7, 0x58, 0x60, 0x16, 0xe5, 0xa6, 0x12, 0x32, 0xd8, 0xc5,
+    0x8f, 0x15, 0xcf, 0xe8, 0x38, 0xc9, 0x38, 0xce, 0x2a, 0x57, 0xda, 0xa4, 0x15, 0x73, 0x62, 0xa9,
+];
+/// Registry digest at the audit-request-index branch base (post-F current).
+pub(crate) const PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST: [u8; 32] = [
+    0xfe, 0xfb, 0x86, 0xac, 0xe8, 0x2e, 0x36, 0xc6, 0x74, 0x9f, 0x22, 0xc7, 0xb7, 0xec, 0x4c, 0x05,
+    0x15, 0xa5, 0x1a, 0x14, 0xaa, 0x7d, 0xe2, 0xc2, 0x1a, 0x84, 0xee, 0x4f, 0xe0, 0x8a, 0xc2, 0xa2,
+];
+
+/// Last observed redb repair progress in basis points (0..=10_000), for recovery telemetry.
+static LAST_REPAIR_PROGRESS_BPS: AtomicU64 = AtomicU64::new(0);
+
+/// Returns the last observed redb repair progress in basis points (0..=10_000).
+#[must_use]
+pub fn last_repair_progress_basis_points() -> u64 {
+    LAST_REPAIR_PROGRESS_BPS.load(Ordering::Relaxed)
+}
 
 impl RedbStore {
     /// Opens an existing redb file or creates an empty redb container.
@@ -243,7 +270,16 @@ impl RedbStore {
         test_controller: Option<RedbTestController>,
     ) -> Result<Self, StorageError> {
         let path = path.to_path_buf();
-        let database = Database::create(&path).map_err(database_error)?;
+        let database = Builder::new()
+            .set_repair_callback(|session| {
+                // Bounded progress telemetry only; do not enable quick_repair
+                // (quick_repair forces two-phase commit, conflicting with Standard).
+                let progress = session.progress();
+                let basis_points = ((progress * 10_000.0) as u64).min(10_000);
+                LAST_REPAIR_PROGRESS_BPS.store(basis_points, Ordering::Relaxed);
+            })
+            .create(&path)
+            .map_err(database_error)?;
         let store = Self {
             shared: Arc::new(SharedRedb {
                 database,
@@ -302,6 +338,14 @@ impl RedbStore {
                     == &SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST)
                 {
                     RegistryMigration::Generations
+                } else if observed.value()
+                    == &SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST)
+                {
+                    RegistryMigration::HistoryIncarnation
+                } else if observed.value()
+                    == &SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST)
+                {
+                    RegistryMigration::AuditRequestIndex
                 } else {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
@@ -330,6 +374,33 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST),
+            )?;
+        }
+        if matches!(
+            registry_migration,
+            RegistryMigration::EventReferencesThenGenerations
+                | RegistryMigration::Generations
+                | RegistryMigration::HistoryIncarnation
+        ) {
+            migrate_history_incarnation(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST),
+            )?;
+        }
+        if matches!(
+            registry_migration,
+            RegistryMigration::EventReferencesThenGenerations
+                | RegistryMigration::Generations
+                | RegistryMigration::HistoryIncarnation
+                | RegistryMigration::AuditRequestIndex
+        ) {
+            migrate_audit_request_index(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -409,6 +480,18 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST),
+            )?;
+            migrate_history_incarnation(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST),
+            )?;
+            migrate_audit_request_index(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -433,11 +516,62 @@ impl RedbStore {
     }
 
     pub(crate) fn complete_partition_index_generation_migration(&self) -> Result<(), StorageError> {
-        migrate_partition_index_generations(&self.shared)?;
+        let observed = {
+            let transaction = self
+                .shared
+                .database
+                .begin_read()
+                .map_err(transaction_error)?;
+            let metadata = transaction.open_table(META).map_err(table_error)?;
+            let encoded = metadata
+                .get(META_RECORD_REGISTRY)
+                .map_err(precommit_storage_error)?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            *decode_record_registry_v2(encoded.value())
+                .map_err(crate::error::codec_error)?
+                .value()
+        };
+        let current = riffdb_storage_api::proto_codec::current_record_registry_digest();
+        // When the digest is already current, still repair legacy INDEX_EPOCHS
+        // rows if needed, but gate the (expensive) full scan: empty table or a
+        // durable one-shot repair marker is O(1) and conservatively correct.
+        // INDEX_EPOCHS remains written by current paths, so emptiness alone is
+        // insufficient once any generation rows exist.
+        if observed == current {
+            if index_epoch_rows_may_need_legacy_repair(&self.shared)? {
+                migrate_partition_index_generations(&self.shared)?;
+            }
+            return Ok(());
+        }
+        if observed == SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST) {
+            migrate_partition_index_generations(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST),
+            )?;
+        } else if observed == SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST) {
+            // PRE_HISTORY_INCARNATION digest still needs row repair if a prior
+            // cutover left legacy epoch rows behind a later digest bump.
+            migrate_partition_index_generations(&self.shared)?;
+        } else if observed != SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST) {
+            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        }
+        if observed == SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST)
+            || observed == SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST)
+        {
+            migrate_history_incarnation(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST),
+            )?;
+        }
+        migrate_audit_request_index(&self.shared)?;
         publish_record_registry(
             &self.shared,
-            SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST),
-            riffdb_storage_api::proto_codec::current_record_registry_digest(),
+            SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST),
+            current,
         )
     }
 
@@ -600,7 +734,61 @@ fn migrate_partition_index_generations(shared: &SharedRedb) -> Result<(), Storag
     let legacy_maxima = read_legacy_index_epoch_maxima(shared)?;
     migrate_partition_index_generation_rows(shared, &legacy_maxima)?;
     remove_legacy_index_epoch_rows(shared)?;
-    validate_partition_index_generation_rows(shared)
+    validate_partition_index_generation_rows(shared)?;
+    // Proven clean of legacy rows; subsequent current-digest opens skip the scan.
+    mark_index_epoch_rows_repaired(shared)
+}
+
+/// O(1) gate: run full legacy-row repair only when the table may still hold
+/// pre-generation prefix-keyed rows.
+///
+/// Conservative: empty → no work; durable repair marker → already proven;
+/// otherwise scan.
+fn index_epoch_rows_may_need_legacy_repair(shared: &SharedRedb) -> Result<bool, StorageError> {
+    let read = shared.database.begin_read().map_err(transaction_error)?;
+    let meta = read.open_table(META).map_err(table_error)?;
+    if meta
+        .get(META_INDEX_EPOCH_ROWS_REPAIRED)
+        .map_err(precommit_storage_error)?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    let epochs = read.open_table(INDEX_EPOCHS).map_err(table_error)?;
+    let empty = epochs.is_empty().map_err(precommit_storage_error)?;
+    if empty {
+        // No rows of any generation; mark repaired so reopen stays O(1).
+        drop(epochs);
+        drop(meta);
+        drop(read);
+        mark_index_epoch_rows_repaired(shared)?;
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn mark_index_epoch_rows_repaired(shared: &SharedRedb) -> Result<(), StorageError> {
+    let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+    transaction.set_two_phase_commit(true);
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    {
+        let mut meta = transaction.open_table(META).map_err(table_error)?;
+        if meta
+            .get(META_INDEX_EPOCH_ROWS_REPAIRED)
+            .map_err(precommit_storage_error)?
+            .is_some()
+        {
+            drop(meta);
+            return transaction.abort().map_err(precommit_storage_error);
+        }
+        // Fixed one-byte marker; not a durable record envelope.
+        meta.insert(META_INDEX_EPOCH_ROWS_REPAIRED, [1u8].as_slice())
+            .map_err(precommit_storage_error)?;
+    }
+    shared.commit_durable(transaction)?;
+    Ok(())
 }
 
 fn read_legacy_index_epoch_maxima(
@@ -829,6 +1017,139 @@ fn validate_partition_index_generation_rows(shared: &SharedRedb) -> Result<(), S
     Ok(())
 }
 
+/// Creates `audit_by_request` when absent and backfills service-audit index rows
+/// from the authoritative AUDIT table. Batched and crash-restartable: each batch
+/// is idempotent on key insert (duplicate key is a no-op success).
+fn migrate_audit_request_index(shared: &SharedRedb) -> Result<(), StorageError> {
+    ensure_audit_by_request_table(shared)?;
+    let mut after: Option<Vec<u8>> = None;
+    loop {
+        let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+        transaction.set_two_phase_commit(true);
+        transaction
+            .set_durability(Durability::Immediate)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let mut rows = 0usize;
+        let mut bytes = 0usize;
+        let mut last_key = after.clone();
+        {
+            let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+            let mut index = transaction
+                .open_table(AUDIT_BY_REQUEST)
+                .map_err(table_error)?;
+            let mut scan = match after.as_deref() {
+                Some(after_key) => audit
+                    .range::<&[u8]>((Excluded(after_key), Unbounded))
+                    .map_err(precommit_storage_error)?,
+                None => audit.iter().map_err(precommit_storage_error)?,
+            };
+            for entry in &mut scan {
+                let (key, value) = entry.map_err(precommit_storage_error)?;
+                let key_bytes = key.value().to_vec();
+                let value_bytes = value.value();
+                let sequence = decode_audit_key(&key_bytes)
+                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+                let record = decode_administration_audit_record_v1(value_bytes)?
+                    .into_parts()
+                    .0;
+                if record.administration_sequence() != sequence {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                if let riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(service) =
+                    &record
+                {
+                    let index_key = encode_audit_by_request_key(service.request_id(), sequence);
+                    let encoded = encode_service_audit_request_index_v1(
+                        riffdb_storage_api::StoredServiceAuditRequestIndexV1::new(
+                            service.request_id(),
+                            sequence,
+                        ),
+                    )?;
+                    // Idempotent: resume mid-batch must not fail on already-written keys.
+                    let _ = index
+                        .insert(index_key.as_slice(), encoded.as_bytes())
+                        .map_err(precommit_storage_error)?;
+                    bytes = bytes
+                        .checked_add(encoded.as_bytes().len())
+                        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                }
+                last_key = Some(key_bytes);
+                rows = rows
+                    .checked_add(1)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                if rows >= FORMAT_MIGRATION_MAX_ROWS || bytes >= FORMAT_MIGRATION_MAX_BYTES {
+                    break;
+                }
+            }
+        }
+        if rows == 0 {
+            return transaction.abort().map_err(precommit_storage_error);
+        }
+        shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+        shared.commit_durable(transaction)?;
+        shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+        after = last_key;
+        if rows < FORMAT_MIGRATION_MAX_ROWS && bytes < FORMAT_MIGRATION_MAX_BYTES {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_audit_by_request_table(shared: &SharedRedb) -> Result<(), StorageError> {
+    let read = shared.database.begin_read().map_err(transaction_error)?;
+    let tables = read
+        .list_tables()
+        .map_err(precommit_storage_error)?
+        .map(|table| table.name().to_owned())
+        .collect::<BTreeSet<_>>();
+    drop(read);
+    if tables.iter().any(|name| name == "audit_by_request") {
+        return Ok(());
+    }
+    let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+    transaction.set_two_phase_commit(true);
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    drop(
+        transaction
+            .open_table(AUDIT_BY_REQUEST)
+            .map_err(table_error)?,
+    );
+    shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+    shared.commit_durable(transaction)?;
+    shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)
+}
+
+/// Inserts `history_incarnation/v1 = 1` when absent. Idempotent; does not change an
+/// existing value (restore is the only path that advances the incarnation).
+fn migrate_history_incarnation(shared: &SharedRedb) -> Result<(), StorageError> {
+    let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+    transaction.set_two_phase_commit(true);
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let mut metadata = transaction.open_table(META).map_err(table_error)?;
+    if metadata
+        .get(META_HISTORY_INCARNATION)
+        .map_err(precommit_storage_error)?
+        .is_some()
+    {
+        drop(metadata);
+        return transaction.abort().map_err(precommit_storage_error);
+    }
+    let encoded = encode_history_incarnation_v1(HISTORY_INCARNATION_INITIAL)
+        .map_err(crate::error::codec_error)?;
+    metadata
+        .insert(META_HISTORY_INCARNATION, encoded.as_bytes())
+        .map_err(precommit_storage_error)?;
+    drop(metadata);
+    shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+    shared.commit_durable(transaction)?;
+    shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)
+}
+
 fn publish_record_registry(
     shared: &SharedRedb,
     expected: SchemaHash,
@@ -896,6 +1217,11 @@ fn migrate_string_table(
                 let key = key.value().to_owned();
                 let original = value.value();
                 scanned_rows = scanned_rows.saturating_add(1);
+                // One-shot process markers in META are not durable envelopes.
+                if key == META_INDEX_EPOCH_ROWS_REPAIRED {
+                    last = Some(key);
+                    continue;
+                }
                 let compact =
                     transcode_durable_record_to_v2(original).map_err(crate::error::codec_error)?;
                 if require_compact && compact.as_bytes() != original {
@@ -1061,6 +1387,15 @@ impl RedbDormantPorts {
 }
 
 impl RedbOperationalPorts {
+    /// Returns a cloneable pure-read handle over the same activated database.
+    ///
+    /// Mutation exclusion is the exclusive mutation gate, not handle uniqueness.
+    /// The shared handle implements only `&self` storage ports.
+    #[must_use]
+    pub fn shared_ports(&self) -> crate::shared_ports::RedbSharedPorts {
+        crate::shared_ports::RedbSharedPorts::new(Arc::clone(&self.shared))
+    }
+
     pub(crate) fn begin_read(&self) -> Result<ReadTransaction, StorageError> {
         self.shared.database.begin_read().map_err(transaction_error)
     }
@@ -1190,19 +1525,40 @@ impl SharedRedb {
         &self,
         request_id: riffdb_types::RequestId,
     ) -> Result<Vec<riffdb_types::AdministrationSequence>, StorageError> {
-        let state = self
-            .transient_indexes
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        match &*state {
-            TransientIndexState::Ready(indexes) => indexes
-                .service_audit_sequences(request_id)
-                .map(|sequences| sequences.to_vec())
-                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
-            TransientIndexState::Dormant | TransientIndexState::Invalid => {
-                Err(storage_error(StorageErrorKind::Unavailable))
+        const MAX_SERVICE_AUDIT_RECORDS_PER_REQUEST: usize = 2;
+        let transaction = self.database.begin_read().map_err(transaction_error)?;
+        let table = transaction
+            .open_table(AUDIT_BY_REQUEST)
+            .map_err(table_error)?;
+        let prefix = encode_audit_by_request_prefix(request_id);
+        let mut sequences = Vec::new();
+        let scan = table
+            .range::<&[u8]>((std::ops::Bound::Included(prefix.as_slice()), Unbounded))
+            .map_err(precommit_storage_error)?;
+        for entry in scan {
+            let (key, value) = entry.map_err(precommit_storage_error)?;
+            if !key.value().starts_with(prefix.as_slice()) {
+                break;
             }
+            let (decoded_request, sequence) = decode_audit_by_request_key(key.value())
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            if decoded_request != request_id {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            let index = decode_service_audit_request_index_v1(value.value())?
+                .into_parts()
+                .0;
+            if index.request_id() != request_id || index.administration_sequence() != sequence {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            if sequences.len() >= MAX_SERVICE_AUDIT_RECORDS_PER_REQUEST
+                || sequences.last().is_some_and(|prior| prior >= &sequence)
+            {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            sequences.push(sequence);
         }
+        Ok(sequences)
     }
 
     fn pending_outbox_page(
@@ -1376,6 +1732,14 @@ fn classify_table_names(
     if tables == expected {
         return Ok(LayoutState::Initialized);
     }
+    // Pre-audit-request-index layout: exactly the 21-table predecessor is
+    // migration-eligible and treated as initialized for open/identity probe.
+    // ensure_current_storage_format creates audit_by_request before any write path.
+    let mut pre_audit_request_index = expected.clone();
+    pre_audit_request_index.remove("audit_by_request");
+    if tables == pre_audit_request_index {
+        return Ok(LayoutState::Initialized);
+    }
     if tables.iter().any(|name| !expected.contains(name)) {
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     }
@@ -1400,6 +1764,8 @@ fn write_initial_metadata(
         riffdb_storage_api::AdministrationSequenceAllocator::initial(),
     )
     .map_err(crate::error::codec_error)?;
+    let history = encode_history_incarnation_v1(HISTORY_INCARNATION_INITIAL)
+        .map_err(crate::error::codec_error)?;
 
     let mut table = transaction.open_table(META).map_err(table_error)?;
     table
@@ -1416,6 +1782,13 @@ fn write_initial_metadata(
         .map_err(precommit_storage_error)?;
     table
         .insert(META_RECORD_REGISTRY, registry.as_bytes())
+        .map_err(precommit_storage_error)?;
+    table
+        .insert(META_HISTORY_INCARNATION, history.as_bytes())
+        .map_err(precommit_storage_error)?;
+    // Fresh databases never hold legacy INDEX_EPOCHS rows.
+    table
+        .insert(META_INDEX_EPOCH_ROWS_REPAIRED, [1u8].as_slice())
         .map_err(precommit_storage_error)?;
     Ok(())
 }
@@ -1477,6 +1850,14 @@ where
                     != &riffdb_storage_api::proto_codec::current_record_registry_digest()
                 {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+                }
+            }
+            META_HISTORY_INCARNATION => {
+                decode_history_incarnation_v1(value.value()).map_err(crate::error::codec_error)?;
+            }
+            META_INDEX_EPOCH_ROWS_REPAIRED => {
+                if value.value() != [1u8].as_slice() {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
                 }
             }
             _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
@@ -1795,7 +2176,12 @@ mod tests {
             .expect("read migrated metadata");
         let metadata = read.open_table(META).expect("open migrated metadata");
         for row in metadata.iter().expect("iterate migrated metadata") {
-            let (_, value) = row.expect("read migrated row");
+            let (key, value) = row.expect("read migrated row");
+            if key.value() == META_INDEX_EPOCH_ROWS_REPAIRED {
+                // Process marker is not a durable envelope.
+                assert_eq!(value.value(), [1u8].as_slice());
+                continue;
+            }
             assert!(value.value().starts_with(b"RDB2"));
         }
         let registry = metadata
@@ -2066,5 +2452,212 @@ mod tests {
             .expect("core writes remain unfenced")
             .abort()
             .expect("abort proof transaction");
+    }
+
+    #[test]
+    fn current_digest_reopen_skips_index_epoch_scan_after_repair_marker() {
+        let path = TestDatabasePath::new("epoch-repair-marker-skip");
+        let mut store = RedbStore::open(&path.0).expect("open");
+        store
+            .initialize_database(database_id(0x73))
+            .expect("initialize");
+        // Fresh init installs the repair marker; reopen must not require a scan.
+        assert!(
+            !index_epoch_rows_may_need_legacy_repair(&store.shared).expect("gate"),
+            "init marker must short-circuit the full secondary-index scan"
+        );
+        store
+            .complete_partition_index_generation_migration()
+            .expect("current digest no-op");
+        assert!(
+            !index_epoch_rows_may_need_legacy_repair(&store.shared).expect("gate again"),
+            "reopen remains O(1)"
+        );
+    }
+
+    #[test]
+    fn history_incarnation_migration_inserts_initial_and_is_idempotent() {
+        let path = TestDatabasePath::new("history-incarnation-migrate");
+        let mut store = RedbStore::open(&path.0).expect("open");
+        store
+            .initialize_database(database_id(0x71))
+            .expect("initialize");
+
+        // Simulate a pre-fence database: drop the key and roll the registry
+        // digest back to PRE_HISTORY_INCARNATION.
+        {
+            let transaction = store.shared.database.begin_write().expect("begin write");
+            {
+                let mut meta = transaction.open_table(META).expect("meta");
+                meta.remove(META_HISTORY_INCARNATION).expect("remove key");
+                let predecessor = encode_record_registry_v2(SchemaHash::from_bytes(
+                    PRE_HISTORY_INCARNATION_REGISTRY_DIGEST,
+                ))
+                .expect("encode predecessor");
+                meta.insert(META_RECORD_REGISTRY, predecessor.as_bytes())
+                    .expect("install predecessor");
+            }
+            transaction.commit().expect("commit pre-fence fixture");
+        }
+
+        store
+            .complete_partition_index_generation_migration()
+            .expect("migrate history incarnation");
+
+        let read = store.shared.database.begin_read().expect("read");
+        let meta = read.open_table(META).expect("meta");
+        let encoded = meta
+            .get(META_HISTORY_INCARNATION)
+            .expect("get")
+            .expect("history key present after migration");
+        let incarnation = *decode_history_incarnation_v1(encoded.value())
+            .expect("decode")
+            .value();
+        assert_eq!(incarnation, HISTORY_INCARNATION_INITIAL);
+        let registry = meta
+            .get(META_RECORD_REGISTRY)
+            .expect("registry get")
+            .expect("registry present");
+        assert_eq!(
+            *decode_record_registry_v2(registry.value())
+                .expect("decode registry")
+                .value(),
+            riffdb_storage_api::proto_codec::current_record_registry_digest()
+        );
+        drop(registry);
+        drop(encoded);
+        drop(meta);
+        drop(read);
+
+        // Second open / migration is a no-op for both digest and key value.
+        store
+            .complete_partition_index_generation_migration()
+            .expect("idempotent migration");
+        let read = store.shared.database.begin_read().expect("read again");
+        let meta = read.open_table(META).expect("meta");
+        let encoded = meta
+            .get(META_HISTORY_INCARNATION)
+            .expect("get")
+            .expect("still present");
+        assert_eq!(
+            *decode_history_incarnation_v1(encoded.value())
+                .expect("decode")
+                .value(),
+            HISTORY_INCARNATION_INITIAL
+        );
+    }
+
+    #[test]
+    fn current_digest_still_runs_index_generation_row_repair() {
+        // I4: short-circuit must not skip migrate_partition_index_generations
+        // even when the registry digest is already current.
+        let path = TestDatabasePath::new("current-digest-epoch-repair");
+        let mut store = RedbStore::open(&path.0).expect("open");
+        store
+            .initialize_database(database_id(0x72))
+            .expect("initialize");
+
+        // Simulate a pre-marker database that published the current digest while
+        // still holding legacy INDEX_EPOCHS rows: clear the init repair marker.
+        {
+            let transaction = store.shared.database.begin_write().expect("write");
+            {
+                let mut meta = transaction.open_table(META).expect("meta");
+                meta.remove(META_INDEX_EPOCH_ROWS_REPAIRED)
+                    .expect("clear marker");
+            }
+            transaction.commit().expect("commit");
+        }
+
+        // Full downgrade_all_index_rows_to_v1_fixture shape: V2 index entry +
+        // legacy epoch row, with the current registry digest left in place.
+        let index_id = IndexId::new(9).expect("index");
+        let mut index = IndexEntryKeyBuilder::new(index_id);
+        index.push_u64(11).expect("index component");
+        let mut entity = EntityKeyBuilder::new(EntityTypeId::first());
+        entity.push_u64(1).expect("entity component");
+        let index_key = index
+            .finish(entity.finish().expect("entity key"))
+            .expect("index key");
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition.push_u64(3).expect("partition component");
+        let partition = partition.finish().expect("partition key");
+        let binding = DurableKeySchemaBindingV1::new(
+            ContractLineage::new("repair-i4").expect("lineage"),
+            ContractVersion::new(1).expect("contract version"),
+            ContractBundleHash::from_bytes([0x45; 32]),
+        );
+        let entry = StoredIndexEntryV2::new(
+            index_key.clone(),
+            binding.clone(),
+            CanonicalRecord::new(Vec::new()).expect("covered values"),
+            partition,
+        )
+        .expect("index entry");
+        let encoded_entry = crate::codec::encode_index_entry_v2(&entry).expect("encode index");
+        let mut live_prefix = IndexRangePrefixBuilder::new(index_id);
+        live_prefix.push_u64(11).expect("prefix component");
+        let prefix = StructurallyDecodedIndexRangePrefixV1::from_live(&live_prefix.finish());
+        let legacy = LegacyStoredIndexEpochV1::new(
+            prefix.clone(),
+            binding,
+            IndexEpoch::new(3).expect("legacy generation"),
+        );
+        let encoded_legacy =
+            encode_legacy_index_epoch_v1_fixture(&legacy).expect("encode legacy generation");
+        {
+            let transaction = store.shared.database.begin_write().expect("write");
+            transaction
+                .open_table(SECONDARY_INDEXES)
+                .expect("indexes")
+                .insert(index_key.as_bytes(), encoded_entry.as_bytes())
+                .expect("insert index");
+            transaction
+                .open_table(INDEX_EPOCHS)
+                .expect("epochs")
+                .insert(
+                    encode_index_range_prefix_key(&prefix),
+                    encoded_legacy.as_bytes(),
+                )
+                .expect("insert legacy");
+            transaction.commit().expect("commit legacy fixture");
+        }
+
+        // Registry is already current — this is the I4 short-circuit path.
+        {
+            let read = store.shared.database.begin_read().expect("read");
+            let meta = read.open_table(META).expect("meta");
+            let registry = meta
+                .get(META_RECORD_REGISTRY)
+                .expect("get")
+                .expect("registry");
+            assert_eq!(
+                *decode_record_registry_v2(registry.value())
+                    .expect("decode")
+                    .value(),
+                riffdb_storage_api::proto_codec::current_record_registry_digest()
+            );
+        }
+
+        store
+            .complete_partition_index_generation_migration()
+            .expect("row repair on current digest");
+
+        let read = store.shared.database.begin_read().expect("read");
+        let epochs = read.open_table(INDEX_EPOCHS).expect("epochs");
+        let rows = epochs
+            .iter()
+            .expect("iter")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows");
+        assert_eq!(rows.len(), 1);
+        let (_key, value) = &rows[0];
+        let generation = decode_index_epoch_v1(value.value())
+            .expect("legacy row repaired to current encoding")
+            .into_parts()
+            .0;
+        // Migration rewrites prefix-keyed legacy rows to partition-keyed current
+        // encoding; the retained epoch is at least the legacy maximum.
+        assert!(generation.epoch().get() >= 3);
     }
 }

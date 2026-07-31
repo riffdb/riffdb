@@ -3,7 +3,9 @@
 use std::error::Error;
 use std::fmt;
 use std::num::NonZeroU32;
+use std::time::Duration;
 
+use riffdb_errors::{ApplicationErrorCode, PublicErrorKind};
 use riffdb_proto::v1;
 use riffdb_proto::{MAX_PROTOCOL_NAME_BYTES, validate_value};
 use riffdb_types::RequestId;
@@ -12,10 +14,16 @@ use crate::status::{ClientError, OutcomeUnknown, carries_uncertainty, is_retryab
 
 /// A caller-selected nonzero bound on total transport submissions.
 ///
-/// RiffDB defines no default attempt count or backoff policy in the POC. This
-/// value bounds immediate same-input recovery without inventing either.
+/// RiffDB defines no default attempt count in the POC. Same-input recovery is
+/// budgeted here; Overloaded retries apply bounded exponential backoff with
+/// jitter (via a bounded async backoff) to avoid retry storms.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AttemptBudget(NonZeroU32);
+
+/// Base delay for Overloaded exponential backoff (doubles each retry).
+const OVERLOADED_BACKOFF_BASE: Duration = Duration::from_millis(25);
+/// Hard cap on Overloaded backoff delay.
+const OVERLOADED_BACKOFF_CAP: Duration = Duration::from_millis(400);
 
 impl AttemptBudget {
     /// Constructs a total submission bound.
@@ -134,6 +142,8 @@ impl IdempotentCommand {
 pub(crate) struct RetryState {
     remaining_submissions: u32,
     unresolved_uncertainty: bool,
+    /// Zero-based index of the next retry delay (after the first failure).
+    overloaded_retry_index: u32,
 }
 
 impl RetryState {
@@ -141,6 +151,7 @@ impl RetryState {
         Self {
             remaining_submissions: budget.maximum_submissions(),
             unresolved_uncertainty: false,
+            overloaded_retry_index: 0,
         }
     }
 
@@ -173,6 +184,11 @@ impl RetryState {
             });
         }
         if self.remaining_submissions > 0 {
+            if is_overloaded(&error) {
+                let delay = overloaded_backoff(self.overloaded_retry_index);
+                self.overloaded_retry_index = self.overloaded_retry_index.saturating_add(1);
+                return RetryDecision::RetryAfter(delay);
+            }
             return RetryDecision::Retry;
         }
         if self.unresolved_uncertainty {
@@ -183,8 +199,57 @@ impl RetryState {
     }
 }
 
+/// Applies the Overloaded backoff delay without blocking the runtime thread.
+///
+/// Kept out of `client.rs` so architecture boundaries continue to forbid generic
+/// retry sleep authority there. Uses `tokio::time` (already transitive via tonic).
+pub(crate) async fn apply_overloaded_backoff(delay: Duration) {
+    tokio::time::sleep(delay).await;
+}
+
+/// Bounded exponential backoff with jitter for Overloaded retries.
+///
+/// Delay is `min(cap, base * 2^index)` with ±25% deterministic jitter derived
+/// from the index so tests remain stable without a process-global RNG.
+#[must_use]
+pub(crate) fn overloaded_backoff(retry_index: u32) -> Duration {
+    let shift = retry_index.min(4);
+    let base_ms = OVERLOADED_BACKOFF_BASE
+        .as_millis()
+        .saturating_mul(1u128 << shift);
+    let capped_ms = base_ms.min(OVERLOADED_BACKOFF_CAP.as_millis());
+    // Jitter in [0, capped/4]: add a deterministic fraction of the base.
+    let jitter_ms = if capped_ms == 0 {
+        0
+    } else {
+        let span = (capped_ms / 4).max(1);
+        u128::from(retry_index.wrapping_mul(0x9E37_79B9) % (u32::try_from(span).unwrap_or(1) + 1))
+    };
+    let ms = capped_ms.saturating_add(jitter_ms).min(
+        OVERLOADED_BACKOFF_CAP
+            .as_millis()
+            .saturating_add(OVERLOADED_BACKOFF_CAP.as_millis() / 4),
+    );
+    Duration::from_millis(u64::try_from(ms).unwrap_or(u64::MAX))
+}
+
+const fn is_overloaded(error: &ClientError) -> bool {
+    matches!(
+        error,
+        ClientError::Public(error) if matches!(error.kind(), PublicErrorKind::Overloaded)
+    ) || matches!(
+        error,
+        ClientError::Application(error)
+            if matches!(error.code(), ApplicationErrorCode::Overloaded)
+    )
+}
+
+#[derive(Debug)]
 pub(crate) enum RetryDecision {
+    /// Immediate same-input resubmission (non-Overloaded retryables).
     Retry,
+    /// Overloaded: wait then resubmit within the remaining attempt budget.
+    RetryAfter(Duration),
     Return(ClientError),
 }
 
@@ -291,5 +356,36 @@ mod tests {
             state.handle_failure(ClientError::Public(PublicError::authorization_denied())),
             RetryDecision::Return(ClientError::OutcomeUnknown(_))
         ));
+    }
+
+    #[test]
+    fn overloaded_retry_uses_bounded_backoff_within_attempt_budget() {
+        let mut state = RetryState::new(AttemptBudget::new(3).expect("budget"));
+        assert!(state.begin_submission());
+        let first = state.handle_failure(ClientError::Public(PublicError::overloaded()));
+        assert!(matches!(first, RetryDecision::RetryAfter(delay) if !delay.is_zero()));
+        assert!(state.begin_submission());
+        let second = state.handle_failure(ClientError::Public(PublicError::overloaded()));
+        match (first, second) {
+            (RetryDecision::RetryAfter(a), RetryDecision::RetryAfter(b)) => {
+                assert!(b.as_millis() >= a.as_millis() / 2, "backoff stays bounded");
+                assert!(b <= OVERLOADED_BACKOFF_CAP + OVERLOADED_BACKOFF_CAP / 4);
+            }
+            other => panic!("expected RetryAfter pair, got {other:?}"),
+        }
+        assert!(state.begin_submission());
+        assert!(matches!(
+            state.handle_failure(ClientError::Public(PublicError::overloaded())),
+            RetryDecision::Return(ClientError::Public(error))
+                if error.kind() == riffdb_errors::PublicErrorKind::Overloaded
+        ));
+    }
+
+    #[test]
+    fn overloaded_backoff_is_capped_and_deterministic() {
+        let a = overloaded_backoff(0);
+        let b = overloaded_backoff(0);
+        assert_eq!(a, b);
+        assert!(overloaded_backoff(10) <= OVERLOADED_BACKOFF_CAP + OVERLOADED_BACKOFF_CAP / 4);
     }
 }

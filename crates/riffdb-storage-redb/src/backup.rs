@@ -6,15 +6,16 @@ use std::io::{Read, Write};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
-use redb::{Database, ReadableDatabase, ReadableTable};
+use redb::{Database, Durability, ReadableDatabase, ReadableTable};
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, ApplicationSequenceAllocator, BackupArtifactChecksumV1,
     BackupBuildMetadataV1, BackupCatalogBundleV1, BackupIntegrityChecksumV1, BackupManifestVersion,
-    BackupSnapshotKindV1, MAX_BACKUP_BUILD_FEATURE_BYTES, MAX_BACKUP_BUILD_FEATURES,
-    MAX_BACKUP_BUILD_VALUE_BYTES, MAX_BACKUP_CATALOG_BUNDLES, MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES,
-    OfflineBackupManifestIdentityV1, OfflineBackupManifestV1, OfflineBackupPersistencePort,
-    OfflineRestoreOverwritePolicyV1, OfflineRestorePersistencePort, OfflineRestoreResultV1,
-    StorageError, StorageErrorKind, StorageFormatVersion, StorageValueError,
+    BackupSnapshotKindV1, HISTORY_INCARNATION_INITIAL, MAX_BACKUP_BUILD_FEATURE_BYTES,
+    MAX_BACKUP_BUILD_FEATURES, MAX_BACKUP_BUILD_VALUE_BYTES, MAX_BACKUP_CATALOG_BUNDLES,
+    MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES, OfflineBackupManifestIdentityV1, OfflineBackupManifestV1,
+    OfflineBackupPersistencePort, OfflineRestoreOverwritePolicyV1, OfflineRestorePersistencePort,
+    OfflineRestoreResultV1, StorageError, StorageErrorKind, StorageFormatVersion,
+    StorageValueError,
 };
 use riffdb_types::{
     CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId,
@@ -24,13 +25,14 @@ use sha2::{Digest, Sha256};
 
 use crate::codec;
 use crate::error::{
-    database_error, precommit_storage_error, storage_error, table_error, transaction_error,
+    commit_error, database_error, precommit_storage_error, storage_error, table_error,
+    transaction_error,
 };
 use crate::hooks::{RedbTestController, RedbTestOperation};
 use crate::keys::{decode_application_sequence_key, decode_contract_bundle_key};
 use crate::layout::{
     CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS, CONTRACT_BUNDLES, EVENTS, META,
-    META_APPLICATION_SEQUENCE, META_DATABASE_ID, META_FORMAT_VERSION,
+    META_APPLICATION_SEQUENCE, META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
 };
 
 pub(crate) const MANIFEST_FILE_NAME: &str = "manifest.riffdb";
@@ -41,6 +43,66 @@ const COPY_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_STAGING_ATTEMPTS: u16 = 256;
 const SHA256_BYTES: usize = 32;
 const STORAGE_ENGINE_DATA_TAG: u8 = 1;
+
+/// Reads the durable history incarnation from a closed database file.
+///
+/// Returns `None` when the key is absent (pre-fence artifact). Opens read-only
+/// so a pure inspection never triggers redb recovery-on-open writes.
+pub fn read_history_incarnation(path: impl AsRef<Path>) -> Result<Option<u64>, StorageError> {
+    let database = redb::ReadOnlyDatabase::open(path.as_ref()).map_err(database_error)?;
+    let transaction = database.begin_read().map_err(transaction_error)?;
+    let meta = transaction.open_table(META).map_err(table_error)?;
+    match meta
+        .get(META_HISTORY_INCARNATION)
+        .map_err(precommit_storage_error)?
+    {
+        None => Ok(None),
+        Some(encoded) => {
+            let incarnation = *codec::decode_history_incarnation_v1(encoded.value())?.value();
+            Ok(Some(incarnation))
+        }
+    }
+}
+
+/// Idempotently stamps `history_incarnation/v1` on a closed database file.
+///
+/// Offline-only path used after restore publication. Writes only when the
+/// stored value differs from `incarnation`.
+pub fn stamp_history_incarnation(
+    path: impl AsRef<Path>,
+    incarnation: u64,
+) -> Result<(), StorageError> {
+    if incarnation < HISTORY_INCARNATION_INITIAL {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    let database = Database::open(path.as_ref()).map_err(database_error)?;
+    let mut transaction = database.begin_write().map_err(transaction_error)?;
+    transaction.set_two_phase_commit(true);
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let current = {
+        let meta = transaction.open_table(META).map_err(table_error)?;
+        match meta
+            .get(META_HISTORY_INCARNATION)
+            .map_err(precommit_storage_error)?
+        {
+            None => None,
+            Some(encoded) => Some(*codec::decode_history_incarnation_v1(encoded.value())?.value()),
+        }
+    };
+    if current == Some(incarnation) {
+        return transaction.abort().map_err(precommit_storage_error);
+    }
+    {
+        let mut meta = transaction.open_table(META).map_err(table_error)?;
+        let encoded = codec::encode_history_incarnation_v1(incarnation)?;
+        meta.insert(META_HISTORY_INCARNATION, encoded.as_bytes())
+            .map_err(precommit_storage_error)?;
+    }
+    transaction.commit().map_err(commit_error)?;
+    Ok(())
+}
 
 /// Source- and destination-bound offline redb backup operation.
 ///
@@ -120,6 +182,7 @@ struct DatabaseFacts {
     catalog_bundles: Vec<BackupCatalogBundleV1>,
     active_catalog: Option<ActiveCatalogPointerV1>,
     last_commit_sequence: Option<CommitSequence>,
+    history_incarnation: Option<u64>,
 }
 
 impl DatabaseFacts {
@@ -135,6 +198,7 @@ impl DatabaseFacts {
             self.catalog_bundles,
             self.active_catalog,
             self.last_commit_sequence,
+            self.history_incarnation,
             vec![BackupArtifactChecksumV1::new(NonZeroU32::MIN, checksum)],
             build,
         )
@@ -251,6 +315,13 @@ fn open_database_with_facts(path: &Path) -> Result<(Database, DatabaseFacts), St
         .map_err(precommit_storage_error)?
         .ok_or_else(corrupt)?;
     let allocator = *codec::decode_application_sequence_allocator_v1(allocator.value())?.value();
+    let history_incarnation = match meta
+        .get(META_HISTORY_INCARNATION)
+        .map_err(precommit_storage_error)?
+    {
+        None => None,
+        Some(encoded) => Some(*codec::decode_history_incarnation_v1(encoded.value())?.value()),
+    };
     drop(meta);
 
     let bundle_table = transaction
@@ -332,6 +403,7 @@ fn open_database_with_facts(path: &Path) -> Result<(Database, DatabaseFacts), St
             catalog_bundles,
             active_catalog,
             last_commit_sequence,
+            history_incarnation,
         },
     ))
 }
@@ -383,11 +455,51 @@ pub(crate) fn validate_database_semantics(
 ) -> Result<Database, StorageError> {
     let expected_checksum = manifest_checksum(manifest)?;
     let (database, facts) = open_database_with_facts(artifact)?;
-    let reconstructed = facts.into_manifest(expected_checksum, manifest.build().clone())?;
-    if &reconstructed != manifest {
+    // Startup-owned migrations may insert history_incarnation/v1 on pre-fence
+    // artifacts. Compare non-history facts exactly, and require
+    // manifest.history_incarnation ≤ staged when both are present.
+    if !facts.semantically_match_manifest(manifest, &expected_checksum)? {
         return Err(corrupt());
     }
     Ok(database)
+}
+
+impl DatabaseFacts {
+    /// Exact non-history semantic match plus the fence-compatible history rule.
+    ///
+    /// When both the manifest and artifact carry a history incarnation, the
+    /// manifest value must be ≤ the artifact value (startup may only advance it
+    /// via accepted migrations). A pre-fence manifest without the field remains
+    /// acceptable. A manifest that claims an incarnation the artifact lacks is
+    /// corrupt.
+    fn semantically_match_manifest(
+        &self,
+        manifest: &OfflineBackupManifestV1,
+        expected_checksum: &BackupIntegrityChecksumV1,
+    ) -> Result<bool, StorageError> {
+        if self.storage_format_version != manifest.storage_format_version()
+            || self.database_id != manifest.database_id()
+            || self.catalog_bundles != manifest.catalog_bundles()
+            || self.active_catalog.as_ref() != manifest.active_catalog()
+            || self.last_commit_sequence != manifest.last_commit_sequence()
+            || manifest.snapshot_kind() != BackupSnapshotKindV1::StorageEngineData
+        {
+            return Ok(false);
+        }
+        let [checksum] = manifest.checksums() else {
+            return Ok(false);
+        };
+        if checksum.checksum() != expected_checksum {
+            return Ok(false);
+        }
+        match (manifest.history_incarnation(), self.history_incarnation) {
+            (Some(from_manifest), Some(from_artifact)) if from_manifest > from_artifact => {
+                Ok(false)
+            }
+            (Some(_), None) => Ok(false),
+            _ => Ok(true),
+        }
+    }
 }
 
 fn manifest_checksum(
@@ -405,6 +517,21 @@ fn manifest_checksum(
 }
 
 fn encode_manifest(manifest: &OfflineBackupManifestV1) -> Result<Vec<u8>, StorageError> {
+    encode_manifest_with_history_field(manifest, true)
+}
+
+/// Pre-fence encoding omits the history-incarnation presence tag entirely.
+fn encode_manifest_pre_fence(manifest: &OfflineBackupManifestV1) -> Result<Vec<u8>, StorageError> {
+    if manifest.history_incarnation().is_some() {
+        return Err(corrupt());
+    }
+    encode_manifest_with_history_field(manifest, false)
+}
+
+fn encode_manifest_with_history_field(
+    manifest: &OfflineBackupManifestV1,
+    include_history_field: bool,
+) -> Result<Vec<u8>, StorageError> {
     if manifest.manifest_version() != BackupManifestVersion::V1
         || manifest.snapshot_kind() != BackupSnapshotKindV1::StorageEngineData
     {
@@ -451,6 +578,15 @@ fn encode_manifest(manifest: &OfflineBackupManifestV1) -> Result<Vec<u8>, Storag
             output.u64(sequence.get())?;
         }
     }
+    if include_history_field {
+        match manifest.history_incarnation() {
+            None => output.u8(0)?,
+            Some(incarnation) => {
+                output.u8(1)?;
+                output.u64(incarnation)?;
+            }
+        }
+    }
     output.u32(1)?;
     output.u32(checksum.artifact_ordinal().get())?;
     output.framed(checksum.checksum().as_bytes())?;
@@ -469,6 +605,26 @@ fn decode_manifest(encoded: &[u8]) -> Result<OfflineBackupManifestV1, StorageErr
     if encoded.len() > MANIFEST_MAX_BYTES {
         return Err(limit_exceeded());
     }
+    // Prefer post-fence (presence-tagged history field). Fall back to pre-fence
+    // bytes that omit the field entirely (accept-and-stamp at restore). On any
+    // post-fence parse/canonicalization mismatch, try the pre-fence parser
+    // rather than fail closed — pre-fence bytes can partially parse as post-fence.
+    if let Ok(manifest) = decode_manifest_body(encoded, true)
+        && encode_manifest(&manifest)? == encoded
+    {
+        return Ok(manifest);
+    }
+    let manifest = decode_manifest_body(encoded, false)?;
+    if encode_manifest_pre_fence(&manifest)? != encoded {
+        return Err(corrupt());
+    }
+    Ok(manifest)
+}
+
+fn decode_manifest_body(
+    encoded: &[u8],
+    include_history_field: bool,
+) -> Result<OfflineBackupManifestV1, StorageError> {
     let mut input = ManifestDecoder::new(encoded);
     if input.bytes(MANIFEST_MAGIC.len())? != MANIFEST_MAGIC {
         return Err(incompatible());
@@ -512,6 +668,21 @@ fn decode_manifest(encoded: &[u8]) -> Result<OfflineBackupManifestV1, StorageErr
         1 => Some(CommitSequence::new(input.u64()?).ok_or_else(corrupt)?),
         _ => return Err(corrupt()),
     };
+    let history_incarnation = if include_history_field {
+        match input.u8()? {
+            0 => None,
+            1 => {
+                let incarnation = input.u64()?;
+                if incarnation < 1 {
+                    return Err(corrupt());
+                }
+                Some(incarnation)
+            }
+            _ => return Err(corrupt()),
+        }
+    } else {
+        None
+    };
 
     if input.u32()? != 1 {
         return Err(corrupt());
@@ -545,21 +716,32 @@ fn decode_manifest(encoded: &[u8]) -> Result<OfflineBackupManifestV1, StorageErr
         enabled_features,
     )
     .map_err(value_error)?;
-    let manifest = OfflineBackupManifestV1::new(
-        storage_format_version,
-        database_id,
-        BackupSnapshotKindV1::StorageEngineData,
-        catalog_bundles,
-        active_catalog,
-        last_commit_sequence,
-        vec![BackupArtifactChecksumV1::new(ordinal, checksum)],
-        build,
-    )
-    .map_err(value_error)?;
-    if encode_manifest(&manifest)? != encoded {
-        return Err(corrupt());
+    if include_history_field {
+        OfflineBackupManifestV1::new(
+            storage_format_version,
+            database_id,
+            BackupSnapshotKindV1::StorageEngineData,
+            catalog_bundles,
+            active_catalog,
+            last_commit_sequence,
+            history_incarnation,
+            vec![BackupArtifactChecksumV1::new(ordinal, checksum)],
+            build,
+        )
+        .map_err(value_error)
+    } else {
+        OfflineBackupManifestV1::new_pre_fence(
+            storage_format_version,
+            database_id,
+            BackupSnapshotKindV1::StorageEngineData,
+            catalog_bundles,
+            active_catalog,
+            last_commit_sequence,
+            vec![BackupArtifactChecksumV1::new(ordinal, checksum)],
+            build,
+        )
+        .map_err(value_error)
     }
-    Ok(manifest)
 }
 
 struct ManifestEncoder {
@@ -1304,6 +1486,7 @@ mod tests {
             catalog_bundles: Vec::new(),
             active_catalog: None,
             last_commit_sequence: None,
+            history_incarnation: Some(1),
         }
         .into_manifest(checksum, build_metadata())
         .expect("manifest");
@@ -1313,11 +1496,13 @@ mod tests {
             manifest
         );
         let golden_digest: [u8; SHA256_BYTES] = Sha256::digest(&encoded).into();
+        // Encoding grows by the presence-tagged history_incarnation field; digest is
+        // recomputed whenever the durable layout of this fixture changes intentionally.
         assert_eq!(
             golden_digest,
             [
-                207, 176, 203, 59, 158, 70, 248, 237, 137, 217, 118, 69, 100, 88, 28, 51, 176, 15,
-                109, 111, 66, 70, 91, 246, 131, 170, 115, 246, 38, 193, 208, 104,
+                98, 103, 172, 112, 38, 182, 112, 170, 150, 145, 173, 122, 22, 2, 234, 237, 12, 227,
+                218, 76, 37, 220, 133, 3, 47, 44, 214, 244, 252, 204, 145, 19,
             ],
             "manifest v1 encoding is a durable compatibility boundary"
         );
@@ -1339,5 +1524,183 @@ mod tests {
                 .kind(),
             StorageErrorKind::IncompatibleFormat
         );
+    }
+
+    #[test]
+    fn semantic_bytes_tri_state_matches_real_encoder_lengths() {
+        // W5: pre-fence absent / post-fence None / post-fence Some must charge
+        // the same deltas the real encoder emits.
+        let checksum = BackupIntegrityChecksumV1::new(vec![0x5a; SHA256_BYTES]).expect("checksum");
+        let build = build_metadata();
+        let pre = OfflineBackupManifestV1::new_pre_fence(
+            StorageFormatVersion::V1,
+            database_id(),
+            BackupSnapshotKindV1::StorageEngineData,
+            Vec::new(),
+            None,
+            None,
+            vec![BackupArtifactChecksumV1::new(
+                NonZeroU32::MIN,
+                checksum.clone(),
+            )],
+            build.clone(),
+        )
+        .expect("pre-fence");
+        let post_none = OfflineBackupManifestV1::new(
+            StorageFormatVersion::V1,
+            database_id(),
+            BackupSnapshotKindV1::StorageEngineData,
+            Vec::new(),
+            None,
+            None,
+            None,
+            vec![BackupArtifactChecksumV1::new(
+                NonZeroU32::MIN,
+                checksum.clone(),
+            )],
+            build.clone(),
+        )
+        .expect("post-fence None");
+        let post_some = OfflineBackupManifestV1::new(
+            StorageFormatVersion::V1,
+            database_id(),
+            BackupSnapshotKindV1::StorageEngineData,
+            Vec::new(),
+            None,
+            None,
+            Some(1),
+            vec![BackupArtifactChecksumV1::new(NonZeroU32::MIN, checksum)],
+            build,
+        )
+        .expect("post-fence Some");
+
+        assert!(!pre.history_wire_tagged());
+        assert!(post_none.history_wire_tagged());
+        assert!(post_some.history_wire_tagged());
+        assert_eq!(pre.history_incarnation(), None);
+        assert_eq!(post_none.history_incarnation(), None);
+        assert_eq!(post_some.history_incarnation(), Some(1));
+
+        let encoded_pre = encode_manifest_pre_fence(&pre).expect("encode pre");
+        let encoded_none = encode_manifest(&post_none).expect("encode none");
+        let encoded_some = encode_manifest(&post_some).expect("encode some");
+
+        // Presence-tag only: post-fence None is one byte longer than pre-fence.
+        assert_eq!(encoded_none.len() - encoded_pre.len(), 1);
+        assert_eq!(
+            post_none.semantic_bytes() - pre.semantic_bytes(),
+            encoded_none.len() - encoded_pre.len(),
+            "pre-fence absent vs post-fence None semantic delta must match encoder"
+        );
+        // Some adds presence(1) + u64(8) over None's presence(0).
+        assert_eq!(encoded_some.len() - encoded_none.len(), 8);
+        assert_eq!(
+            post_some.semantic_bytes() - post_none.semantic_bytes(),
+            encoded_some.len() - encoded_none.len(),
+            "post-fence None vs Some semantic delta must match encoder"
+        );
+        assert_eq!(
+            post_some.semantic_bytes() - pre.semantic_bytes(),
+            encoded_some.len() - encoded_pre.len(),
+            "pre-fence vs post-fence Some semantic delta must match encoder"
+        );
+    }
+
+    #[test]
+    fn pre_fence_manifest_and_stamp_round_trip() {
+        let checksum = BackupIntegrityChecksumV1::new(vec![0x5a; SHA256_BYTES]).expect("checksum");
+        let pre_fence = DatabaseFacts {
+            storage_format_version: StorageFormatVersion::V1,
+            database_id: database_id(),
+            catalog_bundles: Vec::new(),
+            active_catalog: None,
+            last_commit_sequence: None,
+            history_incarnation: None,
+        }
+        .into_manifest(checksum.clone(), build_metadata())
+        .expect("pre-fence manifest");
+        let encoded = encode_manifest_pre_fence(&pre_fence).expect("encode pre-fence");
+        let decoded = decode_manifest(&encoded).expect("decode pre-fence via dual-path");
+        assert_eq!(decoded.history_incarnation(), None);
+        assert_eq!(decoded.database_id(), pre_fence.database_id());
+
+        // Post-fence encode with presence tag also round-trips.
+        let with_field = DatabaseFacts {
+            storage_format_version: StorageFormatVersion::V1,
+            database_id: database_id(),
+            catalog_bundles: Vec::new(),
+            active_catalog: None,
+            last_commit_sequence: None,
+            history_incarnation: Some(1),
+        }
+        .into_manifest(checksum, build_metadata())
+        .expect("post-fence manifest");
+        let post = encode_manifest(&with_field).expect("encode post-fence");
+        assert_eq!(
+            decode_manifest(&post).expect("decode post-fence"),
+            with_field
+        );
+    }
+
+    #[test]
+    fn read_history_incarnation_absent_vs_unreadable() {
+        let root = std::env::temp_dir().join(format!(
+            "riffdb-history-read-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let db_path = root.join("database.redb");
+
+        // Absent file → open fails (not silently 0).
+        assert!(read_history_incarnation(&db_path).is_err());
+
+        let mut store = crate::RedbStore::open(&db_path).expect("open");
+        store
+            .initialize_database(database_id())
+            .expect("initialize");
+        drop(store);
+        assert_eq!(
+            read_history_incarnation(&db_path).expect("read present"),
+            Some(1)
+        );
+
+        // Truncate to corrupt: present-but-unreadable fails closed.
+        std::fs::write(&db_path, b"not-a-redb-file").expect("corrupt");
+        assert!(
+            read_history_incarnation(&db_path).is_err(),
+            "corrupt target must not be treated as incarnation 0"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stamp_history_incarnation_is_idempotent() {
+        let root = std::env::temp_dir().join(format!(
+            "riffdb-history-stamp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let db_path = root.join("database.redb");
+        let mut store = crate::RedbStore::open(&db_path).expect("open");
+        store
+            .initialize_database(database_id())
+            .expect("initialize");
+        drop(store);
+
+        stamp_history_incarnation(&db_path, 2).expect("stamp 2");
+        assert_eq!(read_history_incarnation(&db_path).expect("read"), Some(2));
+        stamp_history_incarnation(&db_path, 2).expect("idempotent stamp");
+        assert_eq!(read_history_incarnation(&db_path).expect("read"), Some(2));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

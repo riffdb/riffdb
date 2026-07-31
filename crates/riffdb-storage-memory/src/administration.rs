@@ -136,6 +136,7 @@ fn metadata_with_links(
         allocated.database_id(),
         allocated.application_sequence(),
         allocated.administration_sequence(),
+        allocated.history_incarnation(),
         active_catalog,
         capability_bootstrap,
     )
@@ -1604,8 +1605,9 @@ mod tests {
         CapabilityCreateCandidateTransaction, CapabilityGrantV1, CapabilityPermissionKindV1,
         CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityRequestedRecordV1,
         CapabilityRevokeAwaitingDecision, CapabilityRevokeCandidateTransaction,
-        DatabaseInitializationPort, DatabaseInitializationResult, PartitionScopeV1,
-        RevocationReasonCodeV1, StorageFormatVersion, StorageScanLimit, StorageValueError,
+        DatabaseInitializationPort, DatabaseInitializationResult, HISTORY_INCARNATION_INITIAL,
+        PartitionScopeV1, RevocationReasonCodeV1, StorageFormatVersion, StorageScanLimit,
+        StorageValueError,
     };
     use riffdb_types::{
         ActorId, ActorKind, Audience, CommitSequence, ContractBundleHash, DatabaseId, DigestKeyId,
@@ -1768,6 +1770,7 @@ mod tests {
                     database_id(),
                     ApplicationSequenceAllocator::initial(),
                     AdministrationSequenceAllocator::next(maximum),
+                    HISTORY_INCARNATION_INITIAL,
                     None,
                     None,
                 )
@@ -1791,6 +1794,7 @@ mod tests {
                     database_id(),
                     ApplicationSequenceAllocator::initial(),
                     AdministrationSequenceAllocator::Exhausted,
+                    HISTORY_INCARNATION_INITIAL,
                     None,
                     None,
                 )

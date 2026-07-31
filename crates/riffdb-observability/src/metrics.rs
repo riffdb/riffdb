@@ -11,7 +11,7 @@ use riffdb_catalog::CatalogTelemetryEvent;
 use riffdb_commit::CommitCommandTerminal;
 use riffdb_conflict::ConflictEventKind;
 use riffdb_policy::{AuthorizationDefect, PolicyCode};
-use riffdb_service::{AuthoritativeReadinessFailure, ServiceTerminalClass};
+use riffdb_service::{AuthoritativeReadinessFailure, CapacityRejectionStage, ServiceTerminalClass};
 use riffdb_types::{CommandId, ServiceIngressKindV1, ServiceOperationV1};
 
 use crate::IncidentClass;
@@ -31,7 +31,13 @@ const SERVICE_AUDIT_OFFSET: usize = 0;
 const SERVICE_INTEGRITY_OFFSET: usize = SERVICE_AUDIT_OFFSET + SERVICE_OPERATION_COUNT;
 const SERVICE_CURSOR_OFFSET: usize = SERVICE_INTEGRITY_OFFSET + SERVICE_OPERATION_COUNT;
 const SERVICE_STREAM_OFFSET: usize = SERVICE_CURSOR_OFFSET + 1;
-const SERVICE_TERMINAL_OFFSET: usize = SERVICE_STREAM_OFFSET + 1;
+const SERVICE_CURSOR_EVICTED_OFFSET: usize = SERVICE_STREAM_OFFSET + 1;
+const SERVICE_READ_RETRY_ATTEMPT_OFFSET: usize = SERVICE_CURSOR_EVICTED_OFFSET + 1;
+const SERVICE_READ_RETRY_EXHAUSTED_OFFSET: usize = SERVICE_READ_RETRY_ATTEMPT_OFFSET + 1;
+const CAPACITY_REJECTION_STAGE_COUNT: usize = CapacityRejectionStage::ALL.len();
+const SERVICE_CAPACITY_REJECTED_OFFSET: usize = SERVICE_READ_RETRY_EXHAUSTED_OFFSET + 1;
+const SERVICE_TERMINAL_OFFSET: usize =
+    SERVICE_CAPACITY_REJECTED_OFFSET + CAPACITY_REJECTION_STAGE_COUNT;
 const AUTH_REJECTION_OFFSET: usize = SERVICE_TERMINAL_OFFSET + SERVICE_TERMINAL_COUNT;
 const AUTH_DEFECT_OFFSET: usize = AUTH_REJECTION_OFFSET + AUTH_REJECTION_COUNT;
 const POLICY_DENIAL_OFFSET: usize = AUTH_DEFECT_OFFSET + AUTH_DEFECT_COUNT;
@@ -44,9 +50,10 @@ const INCIDENT_OFFSET: usize = CATALOG_EVENT_OFFSET + CATALOG_EVENT_COUNT;
 const INCIDENT_SOURCE_FAILURE_OFFSET: usize = INCIDENT_OFFSET + INCIDENT_CLASS_COUNT;
 const READINESS_FAILURE_OFFSET: usize = INCIDENT_SOURCE_FAILURE_OFFSET + 1;
 const TELEMETRY_DROPPED_OFFSET: usize = READINESS_FAILURE_OFFSET + READINESS_FAILURE_COUNT;
+const UNPROVEN_CORRUPT_TARGET_BUMP_OFFSET: usize = TELEMETRY_DROPPED_OFFSET + 1;
 
 /// Exact maximum number of metric series exported by the POC registry.
-pub const MAX_METRIC_SERIES: usize = TELEMETRY_DROPPED_OFFSET + 1;
+pub const MAX_METRIC_SERIES: usize = UNPROVEN_CORRUPT_TARGET_BUMP_OFFSET + 1;
 
 /// Maximum distinct typed command metric dimensions retained in-process.
 pub const MAX_COMMAND_METRIC_SERIES: usize = 1_024;
@@ -410,6 +417,14 @@ pub enum MetricKey {
     ServiceCursorUnavailable,
     /// Policy closed a live stream.
     ServiceStreamClosedByPolicy,
+    /// A live cursor was evicted under capacity pressure.
+    ServiceCursorEvicted,
+    /// An internal read retry attempt after a transient failure.
+    ServiceReadRetryAttempt,
+    /// Internal read retry budget was exhausted.
+    ServiceReadRetryExhausted,
+    /// Command capacity admission rejected a request before accept.
+    ServiceCapacityRejected(CapacityRejectionStage),
     /// One API-neutral operation reached a closed caller-visible disposition.
     ServiceOperationTerminal(ServiceTerminalClass),
     /// Initial credential authentication rejected.
@@ -436,6 +451,9 @@ pub enum MetricKey {
     AuthoritativeReadinessFailure(AuthoritativeReadinessFailure),
     /// A bounded telemetry collector rejected an additional record.
     TelemetryDropped,
+    /// Destructive restore bumped history incarnation without proving target
+    /// monotonicity (corrupt/unreadable target with no retained or receipt floor).
+    UnprovenCorruptTargetHistoryBump,
 }
 
 impl MetricKey {
@@ -449,6 +467,12 @@ impl MetricKey {
             }
             Self::ServiceCursorUnavailable => SERVICE_CURSOR_OFFSET,
             Self::ServiceStreamClosedByPolicy => SERVICE_STREAM_OFFSET,
+            Self::ServiceCursorEvicted => SERVICE_CURSOR_EVICTED_OFFSET,
+            Self::ServiceReadRetryAttempt => SERVICE_READ_RETRY_ATTEMPT_OFFSET,
+            Self::ServiceReadRetryExhausted => SERVICE_READ_RETRY_EXHAUSTED_OFFSET,
+            Self::ServiceCapacityRejected(stage) => {
+                SERVICE_CAPACITY_REJECTED_OFFSET + capacity_rejection_stage_index(stage)
+            }
             Self::ServiceOperationTerminal(terminal) => {
                 SERVICE_TERMINAL_OFFSET + service_terminal_index(terminal)
             }
@@ -472,6 +496,7 @@ impl MetricKey {
                 READINESS_FAILURE_OFFSET + readiness_failure_index(reason)
             }
             Self::TelemetryDropped => TELEMETRY_DROPPED_OFFSET,
+            Self::UnprovenCorruptTargetHistoryBump => UNPROVEN_CORRUPT_TARGET_BUMP_OFFSET,
         }
     }
 
@@ -519,6 +544,53 @@ impl MetricKey {
                         value: "stream_closed_by_policy",
                     }),
                     None,
+                ],
+                value,
+            },
+            Self::ServiceCursorEvicted => MetricSample {
+                name: "riffdb_service_events_total",
+                labels: [
+                    Some(MetricLabel {
+                        key: "kind",
+                        value: "cursor_evicted",
+                    }),
+                    None,
+                ],
+                value,
+            },
+            Self::ServiceReadRetryAttempt => MetricSample {
+                name: "riffdb_service_events_total",
+                labels: [
+                    Some(MetricLabel {
+                        key: "kind",
+                        value: "read_retry_attempt",
+                    }),
+                    None,
+                ],
+                value,
+            },
+            Self::ServiceReadRetryExhausted => MetricSample {
+                name: "riffdb_service_events_total",
+                labels: [
+                    Some(MetricLabel {
+                        key: "kind",
+                        value: "read_retry_exhausted",
+                    }),
+                    None,
+                ],
+                value,
+            },
+            Self::ServiceCapacityRejected(stage) => MetricSample {
+                name: "riffdb_service_events_total",
+                labels: [
+                    Some(MetricLabel {
+                        key: "kind",
+                        value: "capacity_rejected",
+                    }),
+                    Some(MetricLabel {
+                        key: "stage",
+                        value: capacity_rejection_stage_label(stage),
+                    }),
                 ],
                 value,
             },
@@ -584,6 +656,11 @@ impl MetricKey {
             },
             Self::TelemetryDropped => MetricSample {
                 name: "riffdb_telemetry_dropped_total",
+                labels: none,
+                value,
+            },
+            Self::UnprovenCorruptTargetHistoryBump => MetricSample {
+                name: "riffdb_unproven_corrupt_target_history_bumps_total",
                 labels: none,
                 value,
             },
@@ -1011,6 +1088,14 @@ fn metric_keys() -> Vec<MetricKey> {
     );
     keys.push(MetricKey::ServiceCursorUnavailable);
     keys.push(MetricKey::ServiceStreamClosedByPolicy);
+    keys.push(MetricKey::ServiceCursorEvicted);
+    keys.push(MetricKey::ServiceReadRetryAttempt);
+    keys.push(MetricKey::ServiceReadRetryExhausted);
+    keys.extend(
+        CapacityRejectionStage::ALL
+            .into_iter()
+            .map(MetricKey::ServiceCapacityRejected),
+    );
     keys.extend(
         ServiceTerminalClass::ALL
             .into_iter()
@@ -1032,12 +1117,27 @@ fn metric_keys() -> Vec<MetricKey> {
     keys.push(MetricKey::IncidentSourceFailure);
     keys.extend(readiness_failures().map(MetricKey::AuthoritativeReadinessFailure));
     keys.push(MetricKey::TelemetryDropped);
+    keys.push(MetricKey::UnprovenCorruptTargetHistoryBump);
     debug_assert_eq!(keys.len(), MAX_METRIC_SERIES);
     keys
 }
 
 const fn service_operation_index(operation: ServiceOperationV1) -> usize {
     (operation.tag() - 1) as usize
+}
+
+const fn capacity_rejection_stage_index(stage: CapacityRejectionStage) -> usize {
+    match stage {
+        CapacityRejectionStage::QueueDepth => 0,
+        CapacityRejectionStage::RetainedBytes => 1,
+    }
+}
+
+const fn capacity_rejection_stage_label(stage: CapacityRejectionStage) -> &'static str {
+    match stage {
+        CapacityRejectionStage::QueueDepth => "queue_depth",
+        CapacityRejectionStage::RetainedBytes => "retained_bytes",
+    }
 }
 
 fn service_terminal_index(terminal: ServiceTerminalClass) -> usize {
@@ -1196,6 +1296,8 @@ const fn service_terminal_label(terminal: ServiceTerminalClass) -> MetricLabel {
             ServiceTerminalClass::DeadlineExceeded => "deadline_exceeded",
             ServiceTerminalClass::ResponseTooLarge => "response_too_large",
             ServiceTerminalClass::EmergencyInternal => "emergency_internal",
+            ServiceTerminalClass::HistoryIncarnationMismatch => "history_incarnation_mismatch",
+            ServiceTerminalClass::Overloaded => "overloaded",
         },
     }
 }

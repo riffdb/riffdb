@@ -319,6 +319,27 @@ impl ServiceTelemetry for Observability {
                 MetricKey::ServiceStreamClosedByPolicy,
                 TraceRecord::service_stream_closed_by_policy(),
             ),
+            ServiceTelemetryEvent::CursorEvicted => {
+                self.metrics.increment(MetricKey::ServiceCursorEvicted);
+                return;
+            }
+            ServiceTelemetryEvent::ReadRetryAttempt { .. } => {
+                self.metrics.increment(MetricKey::ServiceReadRetryAttempt);
+                return;
+            }
+            ServiceTelemetryEvent::ReadRetryExhausted { .. } => {
+                self.metrics.increment(MetricKey::ServiceReadRetryExhausted);
+                return;
+            }
+            ServiceTelemetryEvent::CapacityRejected { stage, .. } => {
+                // Stage-only aggregate counter (bounded cardinality). There is
+                // no operation-level capacity metric: ServiceOperationTerminal
+                // is keyed only by terminal class. Operation/ingress live on
+                // the per-request trace path only.
+                self.metrics
+                    .increment(MetricKey::ServiceCapacityRejected(stage));
+                return;
+            }
         };
         self.metrics.increment(metric);
         self.record_trace(trace);

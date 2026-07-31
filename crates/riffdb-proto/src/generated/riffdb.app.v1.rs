@@ -359,6 +359,8 @@ pub enum ApplicationErrorCode {
     CommandExecutionFailed = 16,
     CapabilityRevoked = 17,
     ProtocolInvalid = 18,
+    HistoryIncarnationMismatch = 19,
+    Overloaded = 20,
 }
 impl ApplicationErrorCode {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -388,6 +390,10 @@ impl ApplicationErrorCode {
             }
             Self::CapabilityRevoked => "APPLICATION_ERROR_CODE_CAPABILITY_REVOKED",
             Self::ProtocolInvalid => "APPLICATION_ERROR_CODE_PROTOCOL_INVALID",
+            Self::HistoryIncarnationMismatch => {
+                "APPLICATION_ERROR_CODE_HISTORY_INCARNATION_MISMATCH"
+            }
+            Self::Overloaded => "APPLICATION_ERROR_CODE_OVERLOADED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -422,6 +428,10 @@ impl ApplicationErrorCode {
             }
             "APPLICATION_ERROR_CODE_CAPABILITY_REVOKED" => Some(Self::CapabilityRevoked),
             "APPLICATION_ERROR_CODE_PROTOCOL_INVALID" => Some(Self::ProtocolInvalid),
+            "APPLICATION_ERROR_CODE_HISTORY_INCARNATION_MISMATCH" => {
+                Some(Self::HistoryIncarnationMismatch)
+            }
+            "APPLICATION_ERROR_CODE_OVERLOADED" => Some(Self::Overloaded),
             _ => None,
         }
     }
@@ -443,6 +453,8 @@ pub enum ApplicationErrorCategory {
     Protocol = 11,
     Command = 12,
     Control = 13,
+    History = 14,
+    Capacity = 15,
 }
 impl ApplicationErrorCategory {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -465,6 +477,8 @@ impl ApplicationErrorCategory {
             Self::Protocol => "APPLICATION_ERROR_CATEGORY_PROTOCOL",
             Self::Command => "APPLICATION_ERROR_CATEGORY_COMMAND",
             Self::Control => "APPLICATION_ERROR_CATEGORY_CONTROL",
+            Self::History => "APPLICATION_ERROR_CATEGORY_HISTORY",
+            Self::Capacity => "APPLICATION_ERROR_CATEGORY_CAPACITY",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -484,6 +498,8 @@ impl ApplicationErrorCategory {
             "APPLICATION_ERROR_CATEGORY_PROTOCOL" => Some(Self::Protocol),
             "APPLICATION_ERROR_CATEGORY_COMMAND" => Some(Self::Command),
             "APPLICATION_ERROR_CATEGORY_CONTROL" => Some(Self::Control),
+            "APPLICATION_ERROR_CATEGORY_HISTORY" => Some(Self::History),
+            "APPLICATION_ERROR_CATEGORY_CAPACITY" => Some(Self::Capacity),
             _ => None,
         }
     }

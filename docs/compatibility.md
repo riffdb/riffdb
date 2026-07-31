@@ -39,4 +39,6 @@ in an isolated nested workspace and cannot be substituted into the server.
 
 Restore preserves the backed-up `DatabaseId` but does not preserve observations
 from the destroyed suffix. It is therefore not a mechanism for maintaining
-globally stable post-backup locators.
+globally stable post-backup locators. ADR-0072's durable `history_incarnation`
+makes restore rewinds detectable for clients that send optional
+`observed_history_incarnation`; non-participating clients remain unvalidated.

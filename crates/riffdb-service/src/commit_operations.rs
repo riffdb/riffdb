@@ -89,12 +89,27 @@ impl CommitApplication for RiffDbService {
     }
 }
 
+fn check_observed_history_incarnation(
+    service: &RiffDbServiceInner,
+    observed: Option<u64>,
+) -> ServiceResult<()> {
+    if let Some(observed) = observed
+        && observed != service.identity.history_incarnation()
+    {
+        return Err(ServiceFailure::Public(
+            PublicError::history_incarnation_mismatch(),
+        ));
+    }
+    Ok(())
+}
+
 async fn get_commit(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
     request: GetCommitRequest,
 ) -> ServiceResult<GetCommitResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::GetCommit;
+    check_observed_history_incarnation(&service, request.observed_history_incarnation())?;
     let sequence = request.sequence();
     let targets = ServiceAuditTargetMap::get_commit(sequence)
         .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
@@ -210,6 +225,7 @@ async fn scan_commits(
     request: ScanCommitsRequest,
 ) -> ServiceResult<ScanCommitsResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::ScanCommits;
+    check_observed_history_incarnation(&service, request.observed_history_incarnation())?;
     let page_request = request.page();
     let policy_request = OperationRequest::scan_commits(page_request.limit().get());
     let begun = service
@@ -485,6 +501,7 @@ async fn subscribe_to_commits(
     request: SubscribeToCommitsRequest,
 ) -> ServiceResult<SubscribeToCommitsResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::SubscribeToCommits;
+    check_observed_history_incarnation(&service, request.observed_history_incarnation())?;
     let policy_request = OperationRequest::subscribe_to_commits();
     let begun = service
         .begin_invocation(
@@ -1143,6 +1160,8 @@ fn authoritative_read_failure(
 ) -> ServiceFailure {
     match error {
         AuthoritativeReadError::Unavailable => PublicError::storage_unavailable().into(),
+        AuthoritativeReadError::Cancelled => ServiceFailure::Cancelled,
+        AuthoritativeReadError::DeadlineExceeded => ServiceFailure::DeadlineExceeded,
         AuthoritativeReadError::Integrity | AuthoritativeReadError::InvalidContinuation => {
             lower_integrity_failure(service, operation)
         }
@@ -1204,7 +1223,9 @@ impl CommitSubscription for ServiceCommitSubscription {
                         self.last_delivered = prior_last_delivered;
                         self.pending_upper = prior_pending_upper;
                         let terminal = match error {
-                            AuthoritativeReadError::Unavailable => {
+                            AuthoritativeReadError::Unavailable
+                            | AuthoritativeReadError::Cancelled
+                            | AuthoritativeReadError::DeadlineExceeded => {
                                 self.end(CommitSubscriptionEndReason::Unavailable)
                             }
                             AuthoritativeReadError::Integrity
@@ -1275,7 +1296,11 @@ impl ServiceCommitSubscription {
                 Ok(Err(AuthoritativeReadError::InvalidContinuation)) => {
                     return self.end(CommitSubscriptionEndReason::ScanGap);
                 }
-                Ok(Err(AuthoritativeReadError::Unavailable)) => {
+                Ok(Err(
+                    AuthoritativeReadError::Unavailable
+                    | AuthoritativeReadError::Cancelled
+                    | AuthoritativeReadError::DeadlineExceeded,
+                )) => {
                     return self.end(CommitSubscriptionEndReason::Unavailable);
                 }
                 Ok(Err(AuthoritativeReadError::Integrity)) => {
@@ -1352,7 +1377,11 @@ impl ServiceCommitSubscription {
                 AuthoritativeReadError::Integrity | AuthoritativeReadError::InvalidContinuation,
             )))
             | Ok(Err(PortDriverStopped)) => return self.end_integrity(),
-            Ok(Ok(Err(AuthoritativeReadError::Unavailable))) => {
+            Ok(Ok(Err(
+                AuthoritativeReadError::Unavailable
+                | AuthoritativeReadError::Cancelled
+                | AuthoritativeReadError::DeadlineExceeded,
+            ))) => {
                 return self.end(CommitSubscriptionEndReason::Unavailable);
             }
             Err(error) => return self.end_wait(error),
@@ -1570,10 +1599,39 @@ where
 
 #[cfg(test)]
 mod tests {
-    use riffdb_errors::{PublicErrorDetails, PublicErrorKind};
+    use riffdb_errors::{ApplicationErrorCode, PublicError, PublicErrorDetails, PublicErrorKind};
     use riffdb_types::{CommitSequence, TenantId, TenantScope};
 
     use super::*;
+    use crate::PageRequest;
+
+    #[test]
+    fn history_incarnation_mismatch_is_rdb_history_0101_on_all_three_request_shapes() {
+        // Wire-level public error identity shared by GetCommit / ScanCommits /
+        // SubscribeCommits (check_observed_history_incarnation).
+        let error = PublicError::history_incarnation_mismatch();
+        assert_eq!(error.kind(), PublicErrorKind::HistoryIncarnationMismatch);
+        assert_eq!(
+            ApplicationErrorCode::from_public_kind(error.kind()).as_str(),
+            "RDB-HISTORY-0101"
+        );
+        assert_eq!(
+            error.safe_message(),
+            "observed history predates a database restore"
+        );
+        // The three request builders all accept an observed fence; mismatch is
+        // independent of sequence/page contents.
+        let get = GetCommitRequest::new(CommitSequence::first())
+            .with_observed_history_incarnation(Some(1));
+        assert_eq!(get.observed_history_incarnation(), Some(1));
+        let page = PageRequest::new(PageLimit::new(1).expect("limit"), None);
+        let scan = ScanCommitsRequest::new(page).with_observed_history_incarnation(Some(1));
+        assert_eq!(scan.observed_history_incarnation(), Some(1));
+        let subscribe = SubscribeToCommitsRequest::new(None, std::time::Duration::from_secs(1))
+            .expect("subscribe")
+            .with_observed_history_incarnation(Some(1));
+        assert_eq!(subscribe.observed_history_incarnation(), Some(1));
+    }
 
     #[test]
     fn stored_commit_policy_can_only_hold_or_narrow() {

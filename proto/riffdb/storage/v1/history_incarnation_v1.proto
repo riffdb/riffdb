@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// Own-file durable record so additive incarnation does not rotate frozen
+// metadata.proto schema hashes for V1 envelopes (format/identity/allocators).
+message StoredHistoryIncarnationV1 {
+  uint64 incarnation = 1;
+}

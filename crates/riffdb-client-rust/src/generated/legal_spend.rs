@@ -696,6 +696,7 @@ mod tests {
             provenance_uri: "riffdb://provenance/018f22e2-79b7-7cc3-a85f-250f0f80c78e".to_owned(),
             durability_mode: "sync".to_owned(),
             outcome_uri: None,
+            history_incarnation: 1,
         };
         assert_eq!(
             command.decode_outcome(&response),
@@ -737,6 +738,7 @@ mod tests {
             provenance_uri: "riffdb://provenance/018f22e2-79b7-7cc3-a85f-250f0f80c78e".to_owned(),
             durability_mode: "sync".to_owned(),
             outcome_uri: None,
+            history_incarnation: 1,
         }
     }
 

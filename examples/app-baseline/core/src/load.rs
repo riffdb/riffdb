@@ -96,6 +96,16 @@ impl WorkloadProfile {
         }
     }
 
+    /// Write-heavy mix for saturation evidence (holds coordinator depth).
+    #[must_use]
+    pub fn saturating_weights() -> &'static [(LoadOp, u32)] {
+        &[
+            (LoadOp::CreateComment, 70),
+            (LoadOp::CloseTicketWithComment, 20),
+            (LoadOp::OpenTicketWithLabels, 10),
+        ]
+    }
+
     /// Burst length for agent pacing (interactive is continuous).
     #[must_use]
     pub const fn burst_ops(self) -> u32 {
@@ -127,6 +137,30 @@ impl WorkloadProfile {
 
 /// Hard cap for RiffDB load clients (matches seed concurrency bound).
 pub const RIFFDB_MAX_LOAD_CLIENTS: usize = 128;
+/// Max clients under saturate (knee-sweep friendly; not auto-forced).
+pub const RIFFDB_SATURATE_LOAD_CLIENTS: usize = 512;
+/// Default long-lived concurrent workers per logical load client when
+/// `--load-saturate` is set.
+///
+/// Effective continuous concurrency = `clients × saturate_fanout` (each fan-out
+/// slot is an independent closed-loop worker, not a wave barrier). The actor
+/// drains the mpsc channel into an unbounded `pending` deque and frees queue
+/// permits at group selection, so only sustained concurrency above channel
+/// depth can keep slots full long enough for the 150 ms admission cap to fire.
+/// Default long-lived workers per logical client under `--load-saturate`.
+///
+/// Paired with [`SATURATE_COORDINATOR_WORKLOAD_CAPACITY`]: 8 clients × 128 = 1024
+/// continuous jobs against a capacity-1 channel. Channel slots free at drain
+/// (before execute finishes), so wait ≈ `queue_position × group_turn`; need
+/// workers ≫ 150ms / ~0.25ms ≈ 600 to push oldest waiters over the cap.
+pub const SATURATE_DEFAULT_FANOUT: usize = 128;
+/// Coordinator queue depth for the saturate app-baseline riffdbd child.
+///
+/// Production default is 128; at that depth the actor drains into unbounded
+/// `pending` faster than closed-loop load can hold the channel full for 150 ms.
+/// The saturate profile intentionally uses capacity 1 so live evidence is
+/// reachable without shortening the ADR-0071 wait.
+pub const SATURATE_COORDINATOR_WORKLOAD_CAPACITY: u16 = 1;
 
 /// One operation drawn from the existing scenario catalog.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -204,6 +238,10 @@ pub enum OpOutcome {
     IdempotencyMismatch,
     /// Backend reported temporary storage or transport unavailability.
     Unavailable,
+    /// Typed capacity rejection (`RDB-CAPACITY-0101`); certain-not-executed.
+    Overloaded,
+    /// Observed history predates a restore (`RDB-HISTORY-0101`).
+    HistoryIncarnationMismatch,
     /// Intentional idempotent replay path completed.
     Replayed,
     /// Other failure (timeout, transport, unexpected).
@@ -227,6 +265,18 @@ pub struct LoadConfig {
     pub rng_seed: u64,
     /// Direct ticket reads and ticket writes at the same hot row.
     pub contended: bool,
+    /// Drive concurrent fan-out to evidence typed overload under depth.
+    pub saturate: bool,
+    /// p99 ceiling for **successful** ops under `--load-saturate` (default 250 ms).
+    ///
+    /// Admission alone may consume up to 150 ms before accept; the ceiling leaves
+    /// room for one group-turn of accepted work plus histogram bucket rounding.
+    pub saturate_p99_ceiling: Duration,
+    /// Long-lived concurrent workers per logical load client under saturate.
+    ///
+    /// Effective continuous concurrency = `clients × saturate_fanout`. Each
+    /// fan-out slot owns a session and loops independently (not a join-wave).
+    pub saturate_fanout: usize,
 }
 
 /// Backend-specific execution shape that materially affects load results.
@@ -250,6 +300,9 @@ impl LoadConfig {
             zipf_s: 1.0,
             rng_seed: 0x000A_11CE_BEEF,
             contended: false,
+            saturate: false,
+            saturate_p99_ceiling: Duration::from_millis(250),
+            saturate_fanout: 1,
         }
     }
 
@@ -264,6 +317,9 @@ impl LoadConfig {
             zipf_s: 1.0,
             rng_seed: 0x000A_11CE_BEEF,
             contended: false,
+            saturate: false,
+            saturate_p99_ceiling: Duration::from_millis(250),
+            saturate_fanout: 1,
         }
     }
 
@@ -278,8 +334,10 @@ impl LoadConfig {
 /// Per-operation aggregates for one load run.
 #[derive(Clone, Debug, Default)]
 pub struct OpStats {
-    /// Latency histogram.
+    /// Latency histogram (all outcomes).
     pub latency: LatencyHistogram,
+    /// Latency histogram for successful ops only (saturate p99 gate).
+    pub success_latency: LatencyHistogram,
     /// Outcome counts.
     pub success: u64,
     /// Conflict-like failures.
@@ -288,6 +346,10 @@ pub struct OpStats {
     pub idempotency_mismatch: u64,
     /// Temporary storage or transport unavailability.
     pub unavailable: u64,
+    /// Typed capacity rejections.
+    pub overloaded: u64,
+    /// History incarnation fence rejections.
+    pub history_incarnation_mismatch: u64,
     /// Intentional replays.
     pub replayed: u64,
     /// Other errors.
@@ -299,6 +361,9 @@ pub struct OpStats {
 impl OpStats {
     fn record(&mut self, elapsed: Duration, outcome: OpOutcome, error_text: Option<String>) {
         self.latency.record(elapsed);
+        if matches!(outcome, OpOutcome::Success) {
+            self.success_latency.record(elapsed);
+        }
         match outcome {
             OpOutcome::Success => self.success = self.success.saturating_add(1),
             OpOutcome::Conflict => self.conflict = self.conflict.saturating_add(1),
@@ -306,6 +371,11 @@ impl OpStats {
                 self.idempotency_mismatch = self.idempotency_mismatch.saturating_add(1);
             }
             OpOutcome::Unavailable => self.unavailable = self.unavailable.saturating_add(1),
+            OpOutcome::Overloaded => self.overloaded = self.overloaded.saturating_add(1),
+            OpOutcome::HistoryIncarnationMismatch => {
+                self.history_incarnation_mismatch =
+                    self.history_incarnation_mismatch.saturating_add(1);
+            }
             OpOutcome::Replayed => self.replayed = self.replayed.saturating_add(1),
             OpOutcome::Error => self.error = self.error.saturating_add(1),
         }
@@ -318,12 +388,17 @@ impl OpStats {
 
     fn merge(&mut self, other: &Self) {
         self.latency.merge(&other.latency);
+        self.success_latency.merge(&other.success_latency);
         self.success = self.success.saturating_add(other.success);
         self.conflict = self.conflict.saturating_add(other.conflict);
         self.idempotency_mismatch = self
             .idempotency_mismatch
             .saturating_add(other.idempotency_mismatch);
         self.unavailable = self.unavailable.saturating_add(other.unavailable);
+        self.overloaded = self.overloaded.saturating_add(other.overloaded);
+        self.history_incarnation_mismatch = self
+            .history_incarnation_mismatch
+            .saturating_add(other.history_incarnation_mismatch);
         self.replayed = self.replayed.saturating_add(other.replayed);
         self.error = self.error.saturating_add(other.error);
         if self.first_error.is_none() {
@@ -336,6 +411,8 @@ impl OpStats {
             .saturating_add(self.conflict)
             .saturating_add(self.idempotency_mismatch)
             .saturating_add(self.unavailable)
+            .saturating_add(self.overloaded)
+            .saturating_add(self.history_incarnation_mismatch)
             .saturating_add(self.replayed)
             .saturating_add(self.error)
     }
@@ -343,11 +420,14 @@ impl OpStats {
     fn json(&self) -> serde_json::Value {
         serde_json::json!({
             "latency": self.latency.summary_json(),
+            "success_latency": self.success_latency.summary_json(),
             "outcomes": {
                 "success": self.success,
                 "conflict": self.conflict,
                 "idempotency_mismatch": self.idempotency_mismatch,
                 "unavailable": self.unavailable,
+                "overloaded": self.overloaded,
+                "history_incarnation_mismatch": self.history_incarnation_mismatch,
                 "replayed": self.replayed,
                 "error": self.error,
                 "logical_operations": self.total_operations(),
@@ -483,8 +563,13 @@ where
     B::Error: Send + 'static,
     Factory: Fn() -> Result<B, String> + Send + Sync + 'static,
 {
-    if !(1..=128).contains(&config.clients) {
-        return Err("load clients must be 1..=128".to_owned());
+    let client_ceiling = if config.saturate {
+        RIFFDB_SATURATE_LOAD_CLIENTS
+    } else {
+        RIFFDB_MAX_LOAD_CLIENTS
+    };
+    if !(1..=client_ceiling).contains(&config.clients) {
+        return Err(format!("load clients must be 1..={client_ceiling}"));
     }
     if config.duration.is_zero() {
         return Err("load duration must be positive".to_owned());
@@ -543,7 +628,11 @@ where
         return Err("load driver requires at least one open ticket in the seed".to_owned());
     }
     let zipf = Arc::new(Zipf::new(write_tickets.len(), config.zipf_s));
-    let weights = config.profile.weights();
+    let weights = if config.saturate {
+        WorkloadProfile::saturating_weights()
+    } else {
+        config.profile.weights()
+    };
     let weight_sum: u32 = weights.iter().map(|(_, w)| *w).sum();
     if weight_sum == 0 {
         return Err("workload profile has zero weight".to_owned());
@@ -559,11 +648,29 @@ where
     let probes = Arc::new(probes);
     let config = Arc::new(config);
 
-    let ready = Arc::new(std::sync::Barrier::new(config.clients + 1));
-    let go = Arc::new(std::sync::Barrier::new(config.clients + 1));
-    let mut workers = Vec::with_capacity(config.clients);
+    // Saturate expands each logical client into independent long-lived workers
+    // (continuous concurrency). Wave-join fan-out cannot keep the channel full
+    // for the 150 ms admission window because permits free at group drain.
+    let fanout = if config.saturate {
+        config.saturate_fanout.max(1)
+    } else {
+        1
+    };
+    let worker_ceiling = if config.saturate {
+        RIFFDB_SATURATE_LOAD_CLIENTS.saturating_mul(SATURATE_DEFAULT_FANOUT)
+    } else {
+        RIFFDB_MAX_LOAD_CLIENTS
+    };
+    let worker_count = config
+        .clients
+        .saturating_mul(fanout)
+        .clamp(1, worker_ceiling);
 
-    for worker_id in 0..config.clients {
+    let ready = Arc::new(std::sync::Barrier::new(worker_count + 1));
+    let go = Arc::new(std::sync::Barrier::new(worker_count + 1));
+    let mut workers = Vec::with_capacity(worker_count);
+
+    for worker_id in 0..worker_count {
         let ready = Arc::clone(&ready);
         let go = Arc::clone(&go);
         let factory = Arc::clone(&factory);
@@ -604,13 +711,16 @@ where
                     let record = measuring.load(Ordering::Acquire);
                     let (op, replay) = draw_op(&weights, weight_sum, &mut rng, config.profile);
                     let write_ticket = select_write_ticket(&write_tickets, &zipf, &mut rng);
-                    let sample = sample_counter.fetch_add(1, Ordering::Relaxed);
                     // Re-check stop before starting work so we do not launch a new
                     // sample after the shared boundary (in-flight samples still finish).
                     if stop.load(Ordering::Acquire) {
                         break;
                     }
                     let started = Instant::now();
+                    let sample = sample_counter.fetch_add(1, Ordering::Relaxed);
+                    // Under saturate every submission is a distinct in-flight
+                    // command that contributes to coordinator depth (no replay).
+                    let replay = if config.saturate { false } else { replay };
                     let (outcome, elapsed, error_text) = execute_op(
                         &mut backend,
                         &probes,
@@ -632,7 +742,7 @@ where
                             stats.record(elapsed, outcome, error_text);
                         }
                     }
-                    if config.profile.burst_ops() > 1 {
+                    if !config.saturate && config.profile.burst_ops() > 1 {
                         burst_left = burst_left.saturating_sub(1);
                         if burst_left == 0 {
                             thread::sleep(config.profile.think_time());
@@ -664,7 +774,7 @@ where
         .into_iter()
         .map(|op| (op, OpStats::default()))
         .collect();
-    let mut worker_measure_intervals = Vec::with_capacity(config.clients);
+    let mut worker_measure_intervals = Vec::with_capacity(worker_count);
     let mut global_start: Option<Instant> = None;
     let mut global_end: Option<Instant> = None;
     for worker in workers {
@@ -929,6 +1039,8 @@ fn classify_typed<B: AppBackend>(
         LoadErrorClass::Conflict => OpOutcome::Conflict,
         LoadErrorClass::IdempotencyMismatch => OpOutcome::IdempotencyMismatch,
         LoadErrorClass::Unavailable => OpOutcome::Unavailable,
+        LoadErrorClass::Overloaded => OpOutcome::Overloaded,
+        LoadErrorClass::HistoryIncarnationMismatch => OpOutcome::HistoryIncarnationMismatch,
         LoadErrorClass::Other => OpOutcome::Error,
     };
     let code = B::load_error_code(&error)
@@ -1027,11 +1139,12 @@ pub fn print_load_summary(report: &LoadReport) {
         elapsed_s
     );
     println!(
-        "throughput={thr:.0} ops/s  logical_ops={total}  success={}  conflict={}  idempotency_mismatch={}  unavailable={}  replayed={}  error={}",
+        "throughput={thr:.0} ops/s  logical_ops={total}  success={}  conflict={}  idempotency_mismatch={}  unavailable={}  overloaded={}  replayed={}  error={}",
         report.aggregate.success,
         report.aggregate.conflict,
         report.aggregate.idempotency_mismatch,
         report.aggregate.unavailable,
+        report.aggregate.overloaded,
         report.aggregate.replayed,
         report.aggregate.error
     );

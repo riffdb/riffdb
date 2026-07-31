@@ -110,18 +110,22 @@ pub(crate) fn fixed_request_to_proto(
             fields: Some(v1::FieldSelection { field_ids: fields }),
             page: Some(page_to_proto(page)),
         }),
-        McpFixedToolRequest::GetCommit { commit_sequence } => {
-            FixedGrpcRequest::GetCommit(v1::GetCommitRequest {
-                request_id,
-                commit_sequence,
-            })
-        }
-        McpFixedToolRequest::ScanCommits { page } => {
-            FixedGrpcRequest::ScanCommits(v1::ScanCommitsRequest {
-                request_id,
-                page: Some(page_to_proto(page)),
-            })
-        }
+        McpFixedToolRequest::GetCommit {
+            commit_sequence,
+            observed_history_incarnation,
+        } => FixedGrpcRequest::GetCommit(v1::GetCommitRequest {
+            request_id,
+            commit_sequence,
+            observed_history_incarnation,
+        }),
+        McpFixedToolRequest::ScanCommits {
+            page,
+            observed_history_incarnation,
+        } => FixedGrpcRequest::ScanCommits(v1::ScanCommitsRequest {
+            request_id,
+            page: Some(page_to_proto(page)),
+            observed_history_incarnation,
+        }),
         McpFixedToolRequest::TraceProvenance { selector } => {
             let selection = match selector {
                 riffdb_api_mcp::McpProvenanceSelector::CommitSequence(sequence) => {

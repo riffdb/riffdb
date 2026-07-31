@@ -32,8 +32,12 @@ pub enum LoadErrorClass {
     Conflict,
     /// Same idempotency identity was reused with unequal input.
     IdempotencyMismatch,
-    /// Temporary unavailability / capacity (e.g. RDB-STORAGE-0101).
+    /// Temporary unavailability (e.g. RDB-STORAGE-0101).
     Unavailable,
+    /// Typed capacity rejection (RDB-CAPACITY-0101); certain-not-executed.
+    Overloaded,
+    /// Observed history predates a restore (RDB-HISTORY-0101).
+    HistoryIncarnationMismatch,
     /// Any other failure.
     Other,
 }

@@ -44,12 +44,14 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/common.proto",
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_references_v2.proto",
+    "riffdb/storage/v1/history_incarnation_v1.proto",
     "riffdb/storage/v1/index_generation_v2.proto",
     "riffdb/storage/v1/index_v2.proto",
     "riffdb/storage/v1/metadata.proto",
     "riffdb/storage/v1/outbox.proto",
     "riffdb/storage/v1/projection.proto",
     "riffdb/storage/v1/registry_v2.proto",
+    "riffdb/storage/v1/service_audit_request_index_v1.proto",
 ];
 const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/app/v1/application.proto",
@@ -60,12 +62,14 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/common.proto",
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_references_v2.proto",
+    "riffdb/storage/v1/history_incarnation_v1.proto",
     "riffdb/storage/v1/index_generation_v2.proto",
     "riffdb/storage/v1/index_v2.proto",
     "riffdb/storage/v1/metadata.proto",
     "riffdb/storage/v1/outbox.proto",
     "riffdb/storage/v1/projection.proto",
     "riffdb/storage/v1/registry_v2.proto",
+    "riffdb/storage/v1/service_audit_request_index_v1.proto",
     "riffdb/v1/admin.proto",
     "riffdb/v1/command.proto",
     "riffdb/v1/commit.proto",
@@ -269,6 +273,16 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "StoredIndexGenerationV2",
         PayloadBound::Tiny,
     ),
+    durable(
+        "history_incarnation_v1.proto",
+        "StoredHistoryIncarnationV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "service_audit_request_index_v1.proto",
+        "StoredServiceAuditRequestIndexV1",
+        PayloadBound::Tiny,
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -335,7 +349,7 @@ const DISCOVERY_PAGE_BOUNDARIES: [(&str, usize, bool, &str); 4] = [
     ("limit-500-exact-end", 500, false, "exact_end"),
 ];
 
-const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 14] = [
+const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 17] = [
     (
         "riffdb.v1.CommandToolDiscoveryPage.next_cursor",
         "ContractService.DiscoverCommandTools:response:full-boundary-empty-exact-end",
@@ -405,6 +419,21 @@ const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 14] = [
         "riffdb.v1.ContractCompatibilitySummary.parent_contract_version",
         "ContractService.GetActiveContract:response:present",
         "ContractService.GetActiveContract:response:present-successor",
+    ),
+    (
+        "riffdb.v1.GetCommitRequest.observed_history_incarnation",
+        "CommitService.GetCommit:request:sequence",
+        "CommitService.GetCommit:request:sequence-with-observed-incarnation",
+    ),
+    (
+        "riffdb.v1.ScanCommitsRequest.observed_history_incarnation",
+        "CommitService.ScanCommits:request:first-page",
+        "CommitService.ScanCommits:request:first-page-with-observed-incarnation",
+    ),
+    (
+        "riffdb.v1.SubscribeCommitsRequest.observed_history_incarnation",
+        "CommitService.SubscribeCommits:request:from-head",
+        "CommitService.SubscribeCommits:request:from-head-with-observed-incarnation",
     ),
 ];
 
@@ -552,6 +581,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let index_generation_v2_record = durable_registry
         .get(current_v1_record_count + 4)
         .ok_or_else(|| io::Error::other("durable index-generation registry is incomplete"))?;
+    let history_incarnation_record = durable_registry
+        .get(current_v1_record_count + 5)
+        .ok_or_else(|| io::Error::other("durable history-incarnation registry is incomplete"))?;
+    let service_audit_request_index_record = durable_registry
+        .get(current_v1_record_count + 6)
+        .ok_or_else(|| {
+            io::Error::other("durable service-audit-request-index registry is incomplete")
+        })?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -616,6 +653,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/durable-index-generation-v2-record-bound.bin",
         &durable_record_bounds(std::slice::from_ref(index_generation_v2_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-history-incarnation-v1-schema-hash.bin",
+        &history_incarnation_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-history-incarnation-v1-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(history_incarnation_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-service-audit-request-index-v1-schema-hash.bin",
+        &service_audit_request_index_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-service-audit-request-index-v1-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(service_audit_request_index_record)),
     )?;
     write_artifact(
         &output_root,
@@ -884,9 +941,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 34 {
+    if DURABLE_RECORDS.len() != 36 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 34 records").into(),
+            io::Error::other("readable durable registry must contain exactly 36 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -896,7 +953,7 @@ fn build_durable_registry(
             .any(|file| file.package() != "riffdb.storage.v1")
     {
         return Err(io::Error::other(
-            "storage descriptor must contain exactly the thirteen riffdb.storage.v1 sources",
+            "storage descriptor must contain exactly the fifteen riffdb.storage.v1 sources",
         )
         .into());
     }
@@ -910,9 +967,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 84 || enum_count != 12 {
+    if message_count != 86 || enum_count != 12 {
         return Err(io::Error::other(format!(
-            "storage schema must contain 83 semantic messages plus StoredEnvelope and 12 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain 85 semantic messages plus StoredEnvelope and 12 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1100,6 +1157,13 @@ fn durable_writable_registry_fixture(
     let generation_v2 = records
         .get(current_v1_record_count + 4)
         .ok_or_else(|| io::Error::other("durable registry is missing StoredIndexGenerationV2"))?;
+    let history_incarnation = records.get(current_v1_record_count + 5).ok_or_else(|| {
+        io::Error::other("durable registry is missing StoredHistoryIncarnationV1")
+    })?;
+    let service_audit_request_index =
+        records.get(current_v1_record_count + 6).ok_or_else(|| {
+            io::Error::other("durable registry is missing StoredServiceAuditRequestIndexV1")
+        })?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -1110,10 +1174,12 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(commit_v2))
         .chain(legacy[17..].iter())
         .chain(query_modules.iter())
+        .chain(std::iter::once(history_incarnation))
+        .chain(std::iter::once(service_audit_request_index))
         .chain(std::iter::once(registry_v2));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 1);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 3);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {
@@ -1871,6 +1937,7 @@ fn wire_vectors() -> Result<String, Box<dyn Error>> {
             provenance_uri: "riffdb://provenance/019bf6aa-a640-7de6-89c9-8a7f70bbbd23".to_owned(),
             durability_mode: "sync".to_owned(),
             outcome_uri: None,
+            history_incarnation: 1,
         },
     );
     append_wire_vector(
@@ -2377,6 +2444,19 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
         &v1::GetCommitRequest {
             request_id: request_id.clone(),
             commit_sequence: 1,
+            observed_history_incarnation: None,
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "CommitService.GetCommit",
+        "request",
+        "sequence-with-observed-incarnation",
+        "riffdb.v1.GetCommitRequest",
+        &v1::GetCommitRequest {
+            request_id: request_id.clone(),
+            commit_sequence: 1,
+            observed_history_incarnation: Some(1),
         },
     );
     for (branch, result) in [
@@ -2397,6 +2477,7 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
             "riffdb.v1.GetCommitResponse",
             &v1::GetCommitResponse {
                 result: Some(result),
+                history_incarnation: 1,
             },
         );
     }
@@ -2409,7 +2490,20 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
         "riffdb.v1.ScanCommitsRequest",
         &v1::ScanCommitsRequest {
             request_id: request_id.clone(),
+            page: Some(page.clone()),
+            observed_history_incarnation: None,
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "CommitService.ScanCommits",
+        "request",
+        "first-page-with-observed-incarnation",
+        "riffdb.v1.ScanCommitsRequest",
+        &v1::ScanCommitsRequest {
+            request_id: request_id.clone(),
             page: Some(page),
+            observed_history_incarnation: Some(1),
         },
     );
     append_client_vector(
@@ -2423,6 +2517,7 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
                 items: vec![public_commit()],
                 next_cursor: None,
                 observed_fence: Some(public_applied(1)),
+                history_incarnation: 1,
             }),
         },
     );
@@ -2437,6 +2532,20 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
             request_id: request_id.clone(),
             after_sequence: None,
             maximum_lifetime_nanos: 900_000_000_000,
+            observed_history_incarnation: None,
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "CommitService.SubscribeCommits",
+        "request",
+        "from-head-with-observed-incarnation",
+        "riffdb.v1.SubscribeCommitsRequest",
+        &v1::SubscribeCommitsRequest {
+            request_id: request_id.clone(),
+            after_sequence: None,
+            maximum_lifetime_nanos: 900_000_000_000,
+            observed_history_incarnation: Some(1),
         },
     );
     append_client_vector(
@@ -2449,6 +2558,7 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
             notification: Some(v1::commit_notification::Notification::Commit(
                 public_commit(),
             )),
+            history_incarnation: 1,
         },
     );
     for reason in 1..=8 {
@@ -2463,8 +2573,10 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
                     v1::CommitSubscriptionTerminal {
                         reason,
                         resume_after: Some(public_before_first()),
+                        history_incarnation: 1,
                     },
                 )),
+                history_incarnation: 1,
             },
         );
     }
@@ -2518,6 +2630,7 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
             last_commit_sequence: Some(1),
             pending_outbox_deliveries: Some(0),
             known_projections: Some(1),
+            history_incarnation: 1,
         },
     );
 
@@ -3773,6 +3886,7 @@ fn public_discovery_fence_for_version(
         }),
         server_generation: vec![0x44; 16],
         operation_schemas: Some(public_operation_schema_identity()),
+        history_incarnation: 1,
     }
 }
 
@@ -4164,6 +4278,7 @@ fn public_execute_response(status: i32) -> v1::ExecuteCommandResponse {
             "sync".to_owned()
         },
         outcome_uri: (!read_only).then(public_outcome_uri),
+        history_incarnation: 1,
     }
 }
 
@@ -4346,6 +4461,7 @@ fn public_authenticated_health() -> v1::HealthResponse {
                     contract_ir_version: 1,
                     mcp_protocol_baseline: "2025-06-18".to_owned(),
                 }),
+                history_incarnation: 1,
             },
         )),
         database_alias: "default".to_owned(),
@@ -4848,12 +4964,14 @@ fn response_charge_candidate(
             notification: Some(v1::commit_notification::Notification::Commit(
                 response_charge_commit(1_024, 4_096),
             )),
+            history_incarnation: 1,
         }
         .encode_to_vec(),
         "commit_notification.commit_representative" => v1::CommitNotification {
             notification: Some(v1::commit_notification::Notification::Commit(
                 response_charge_commit(2, 24),
             )),
+            history_incarnation: 1,
         }
         .encode_to_vec(),
         "commit_notification.terminal" => v1::CommitNotification {
@@ -4861,8 +4979,10 @@ fn response_charge_candidate(
                 v1::CommitSubscriptionTerminal {
                     reason: v1::CommitSubscriptionEndReason::LifetimeElapsed as i32,
                     resume_after: Some(public_applied(1)),
+                    history_incarnation: 1,
                 },
             )),
+            history_incarnation: 1,
         }
         .encode_to_vec(),
         "contract_validation.invalid_empty_source" => v1::ValidateContractResponse {
@@ -5446,12 +5566,14 @@ fn response_charge_candidate(
             result: Some(v1::get_commit_response::Result::Found(
                 response_charge_commit(1_024, 4_096),
             )),
+            history_incarnation: 1,
         }
         .encode_to_vec(),
         "get_commit.found_representative" => v1::GetCommitResponse {
             result: Some(v1::get_commit_response::Result::Found(
                 response_charge_commit(2, 24),
             )),
+            history_incarnation: 1,
         }
         .encode_to_vec(),
         "get_contract_version.found" => v1::GetContractVersionResponse {
@@ -5715,6 +5837,7 @@ fn response_charge_candidate(
                 items: vec![response_charge_commit(2, 24)],
                 next_cursor: Some(vec![0x88; 16]),
                 observed_fence: Some(public_applied(1)),
+                history_incarnation: 1,
             }),
         }
         .encode_to_vec(),
@@ -5725,6 +5848,7 @@ fn response_charge_candidate(
             last_commit_sequence: Some(1),
             pending_outbox_deliveries: Some(11),
             known_projections: Some(2),
+            history_incarnation: 1,
         }
         .encode_to_vec(),
         "trace_provenance.found" | "trace_provenance.found_max_claims" => {
@@ -5948,6 +6072,7 @@ fn response_charge_authenticated_health() -> v1::HealthResponse {
                     contract_ir_version: 1,
                     mcp_protocol_baseline: "2025-06-18".to_owned(),
                 }),
+                history_incarnation: 1,
             },
         )),
         database_alias: "d".repeat(64),
