@@ -591,18 +591,17 @@ fn validate_decimal(text: &str) -> Result<(), ResourceLocatorError> {
     Ok(())
 }
 
-/// Validates the exact compiler-owned ADR-0020 command tool-name grammar.
+/// Validates the exact compiler-owned ADR-0064 command tool-name grammar.
 ///
 /// The check never normalizes, derives, or suffixes a name.
 pub fn validate_command_tool_name(tool_name: &str) -> Result<(), ResourceLocatorError> {
     if tool_name.len() > 128 {
         return Err(ResourceLocatorError);
     }
-    let remainder = tool_name
-        .strip_prefix("riffdb.cmd.")
-        .ok_or(ResourceLocatorError)?;
-    let (contract, command) = remainder.split_once('.').ok_or(ResourceLocatorError)?;
-    if command.contains('.') || !valid_tool_segment(contract) || !valid_tool_segment(command) {
+    if !tool_name.starts_with("riffdb_cmd_")
+        || !valid_tool_segment(tool_name)
+        || !tool_name["riffdb_cmd_".len()..].contains('_')
+    {
         return Err(ResourceLocatorError);
     }
     Ok(())
@@ -689,7 +688,7 @@ mod tests {
                 &actor(),
                 &lineage,
                 CommandId::new(5).expect("command ID is nonzero"),
-                "riffdb.cmd.legalspend.allocatebudget",
+                "riffdb_cmd_legalspend_allocatebudget",
                 key_hash,
             )
             .expect("outcome locator is valid"),
@@ -745,10 +744,10 @@ mod tests {
             format_outcome_template_locator_from_public(
                 "LegalSpend",
                 5,
-                "riffdb.cmd.legalspend.allocatebudget",
+                "riffdb_cmd_legalspend_allocatebudget",
             ),
             Ok(
-                "riffdb://outcome/{principal}/LegalSpend/5/riffdb.cmd.legalspend.allocatebudget/{key_hash}"
+                "riffdb://outcome/{principal}/LegalSpend/5/riffdb_cmd_legalspend_allocatebudget/{key_hash}"
                     .to_owned()
             )
         );
@@ -757,7 +756,7 @@ mod tests {
                 "operator",
                 "LegalSpend",
                 5,
-                "riffdb.cmd.legalspend.allocatebudget",
+                "riffdb_cmd_legalspend_allocatebudget",
                 7,
                 [0x42; 32],
             ),
@@ -765,7 +764,7 @@ mod tests {
                 &ActorId::new("operator").expect("actor"),
                 &ContractLineage::new("LegalSpend").expect("lineage"),
                 CommandId::new(5).expect("command"),
-                "riffdb.cmd.legalspend.allocatebudget",
+                "riffdb_cmd_legalspend_allocatebudget",
                 OutcomeKeyHash::new(DigestKeyId::new(7).expect("key"), [0x42; 32]),
             )
         );
@@ -829,7 +828,7 @@ mod tests {
             "riffdb://provenance/019bf6aa-a640-6de6-89c9-8a7f70bbbd23",
             "riffdb://command/LegalSpend/1/unknown",
             "riffdb://outcome/operator/LegalSpend/2/RIFFDB.cmd.a.b/AQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "riffdb://outcome/operator/LegalSpend/2/riffdb.cmd.a.b/AQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "riffdb://outcome/operator/LegalSpend/2/riffdb_cmd_a_b/AQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
         ] {
             assert_eq!(
                 parse_resource_locator(invalid),

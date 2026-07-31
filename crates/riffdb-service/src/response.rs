@@ -2222,10 +2222,10 @@ mod tests {
     }
 
     fn fixture_journaled(completion: JournaledCompletion) -> JournaledCommandResult {
-        let tool_name = riffdb_contract_ir::McpCommandToolNameV1::new_checked(
+        let tool_name = riffdb_contract_ir::McpCommandToolNameV2::new_checked(
             "fixture",
             "complete",
-            "riffdb.cmd.fixture.complete",
+            "riffdb_cmd_fixture_complete",
         )
         .expect("fixture tool name");
         let locator = crate::OutcomeResourceLocator::mint(
@@ -2419,6 +2419,12 @@ mod tests {
         let explained = ExplainedCommand::new(
             descriptor,
             command_id,
+            bundle
+                .mcp_command_names()
+                .get(command_id)
+                .expect("fixture command name")
+                .tool_name()
+                .clone(),
             plan.plan_hash(),
             explanation,
             input_schema,
@@ -2666,13 +2672,13 @@ mod tests {
                 source_command_bytes: 1,
                 lineage_bytes: 115,
                 input_schema_json_bytes: 257_097,
-                outcome_schema_json_bytes: 257_066,
+                outcome_schema_json_bytes: 257_084,
             },
         ];
         let command_one_over_items = [
             MAXIMUM_COMMAND_DISCOVERY_ITEM_CHARGE,
             CommandDiscoveryItemCharge {
-                outcome_schema_json_bytes: 257_067,
+                outcome_schema_json_bytes: 257_085,
                 ..command_exact_items[1]
             },
         ];
@@ -2792,7 +2798,7 @@ mod tests {
                 "item_0_input_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
                 "item_0_outcome_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
                 "item_1_input_schema_json_bytes" => 257_097,
-                "item_1_outcome_schema_json_bytes" => 257_066,
+                "item_1_outcome_schema_json_bytes" => 257_084,
                 "item_count" => 2,
                 "lineage_bytes" => 115,
                 "representation" => "full",
@@ -2812,7 +2818,7 @@ mod tests {
                 "item_0_input_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
                 "item_0_outcome_schema_json_bytes" => MAX_JSON_SCHEMA_ARTIFACT_BYTES,
                 "item_1_input_schema_json_bytes" => 257_097,
-                "item_1_outcome_schema_json_bytes" => 257_067,
+                "item_1_outcome_schema_json_bytes" => 257_085,
                 "item_count" => 2,
                 "lineage_bytes" => 115,
                 "representation" => "full",
@@ -4177,7 +4183,7 @@ mod tests {
                 .service_response_charge_v1()
                 .expect("catalog charge")
                 .bytes(),
-            7_882
+            7_864
         );
         let fence = maximum_discovery_fence(&operation_schemas);
         assert_eq!(
@@ -4197,7 +4203,7 @@ mod tests {
         let maximum_dynamic =
             raw_discovery_page_response_charge(&maximum_dynamic_page, Some(&operation_schemas))
                 .expect("maximum dynamic response charge");
-        assert_eq!(maximum_dynamic.bytes(), 2_106_529);
+        assert_eq!(maximum_dynamic.bytes(), 2_106_511);
         assert!(maximum_dynamic.bytes() <= MAX_FULL_DISCOVERY_RESPONSE_BYTES);
         let maximum_dynamic_fit = fit_full_command_discovery_page_items(
             &[MAXIMUM_COMMAND_DISCOVERY_ITEM_CHARGE],

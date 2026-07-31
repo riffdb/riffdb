@@ -8,6 +8,8 @@
 
 /// The one accepted details-free INTERNAL message before a public error exists.
 pub const EMERGENCY_INTERNAL_MESSAGE: &str = "an internal error occurred";
+/// Exact ASCII metadata key selecting one database before authentication.
+pub const DATABASE_METADATA_KEY: &str = "riffdb-database";
 
 #[cfg(feature = "server")]
 mod authentication;

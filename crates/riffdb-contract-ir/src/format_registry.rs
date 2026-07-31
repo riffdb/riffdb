@@ -790,7 +790,7 @@ layout!(BUNDLE_LAYOUT, "ContractBundle", {
     "commands" => "u32 count + CommandBundleEntry[]",
     "projections" => "u32 count + ProjectionBundleEntry[]",
     "schema_artifacts" => "u32 count + GeneratedSchemaArtifact[]",
-    "mcp_names" => "McpCommandNameRegistryV1",
+    "mcp_names" => "McpCommandNameRegistryV2",
     "compatibility" => "CompatibilityReport",
 });
 layout!(PARENT_LAYOUT, "ParentBundleRef", {
@@ -1032,13 +1032,13 @@ layout!(SCHEMA_ARTIFACT_LAYOUT, "GeneratedSchemaArtifact", {
     "canonical_json" => "bytes",
     "schema_hash" => "32 bytes",
 });
-layout!(MCP_REGISTRY_LAYOUT, "McpCommandNameRegistryV1", {
+layout!(MCP_REGISTRY_LAYOUT, "McpCommandNameRegistryV2", {
     "version" => "u32 = 1",
     "lineage" => "string",
     "source_contract_name" => "string",
-    "entries" => "u32 count + McpCommandNameEntryV1[]",
+    "entries" => "u32 count + McpCommandNameEntryV2[]",
 });
-layout!(MCP_ENTRY_LAYOUT, "McpCommandNameEntryV1", {
+layout!(MCP_ENTRY_LAYOUT, "McpCommandNameEntryV2", {
     "command_id" => "CommandId",
     "source_command_name" => "string",
     "tool_name" => "string",

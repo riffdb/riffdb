@@ -2177,7 +2177,7 @@ async fn capability_command(
                 Ok(template) => template,
                 Err(_) => return invalid_input(CommandIdentity::CapabilityBootstrap),
             };
-            let metadata = match material.metadata() {
+            let metadata = match material.metadata(config.database.clone()) {
                 Ok(metadata) => metadata,
                 Err(error) => return bootstrap_credential_terminal(error),
             };
@@ -3452,6 +3452,7 @@ mod tests {
     fn test_config() -> EffectiveConfig {
         EffectiveConfig {
             endpoint: "http://127.0.0.1:7443".to_owned(),
+            database: riffdb_types::DatabaseAlias::default_alias(),
             output: crate::cli::OutputMode::Json,
             max_attempts: 3,
             credential_file: None,

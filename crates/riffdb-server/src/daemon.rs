@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use riffdb_api_grpc::{GrpcApplication, GrpcLifecycleRoute, GrpcRequestLimits};
+use riffdb_api_grpc::{GrpcApplication, GrpcDatabaseRoutes, GrpcLifecycleRoute, GrpcRequestLimits};
 use riffdb_api_mcp::MCP_PROTOCOL_VERSION;
 use riffdb_auth::{NoopAuthenticationTelemetry, load_digest_key_providers};
 use riffdb_contract_ir::EXECUTABLE_IR_VERSION_V1;
@@ -29,13 +29,13 @@ use riffdb_storage_api::{
 use riffdb_storage_redb::{
     RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation, RedbMaintenanceStorage,
 };
-use riffdb_types::OfflineMaintenanceOperationKind;
+use riffdb_types::{DatabaseAlias, OfflineMaintenanceOperationKind};
 use tokio::sync::oneshot;
 use tokio::task::{JoinError, JoinHandle as TokioJoinHandle};
 use tonic::transport::{Server, server::TcpIncoming};
 
 use crate::clocks::{ProductionWallClocks, ServerProcessClockError};
-use crate::config::{ServerConfig, ServerConfigError};
+use crate::config::{DatabaseConfig, ServerConfig, ServerConfigError};
 use crate::hosted_mcp::{HostedMcp, HostedMcpStartError, HostedMcpStopError};
 use crate::identifiers::ProductionIdentifierSources;
 use crate::lifecycle::ProductionLifecycleRoute;
@@ -439,6 +439,9 @@ async fn run_server(
     // cannot be lost while structural and catalog validation are running.
     let mut process_signal =
         ProductionShutdownSignal::register().map_err(DaemonError::ShutdownSignal)?;
+    if config.databases().len() > 1 {
+        return run_multi_database_server(config, &mut process_signal, &recovery).await;
+    }
     let clocks = ProductionWallClocks::new();
     let started_at = clocks.process_time().map_err(DaemonError::ProcessClock)?;
     let digest_keys = load_production_digest_keys(&config)?;
@@ -540,6 +543,7 @@ async fn run_server(
             }
             let dependencies = maintenance_driver_dependencies(
                 &config,
+                config.environment(),
                 &startup_inputs,
                 &digest_keys,
                 &identifiers,
@@ -570,6 +574,7 @@ async fn run_server(
                 .map_err(|_| DaemonError::MaintenanceDriver)?;
             let dependencies = maintenance_driver_dependencies(
                 &config,
+                config.environment(),
                 &startup_inputs,
                 &digest_keys,
                 &identifiers,
@@ -678,6 +683,7 @@ async fn run_server(
         activator,
         digest_keys,
         &config,
+        config.environment().clone(),
         started_at,
         build,
         identifiers,
@@ -777,6 +783,1145 @@ async fn run_server(
     .await
 }
 
+struct MultiDatabaseGraph {
+    alias: DatabaseAlias,
+    graph: Option<RunningProductionGraph>,
+    lifecycle: Arc<ProductionLifecycleRoute>,
+    routing: RuntimeRoutingState,
+    maintenance_lifecycle: Arc<MaintenanceLifecycle>,
+    maintenance: MaintenanceController,
+    maintenance_receiver: Option<tokio::sync::mpsc::Receiver<MaintenanceTrigger>>,
+    generation: u64,
+}
+
+struct MultiInitialRecovery {
+    operation_id: riffdb_types::OfflineMaintenanceOperationId,
+    startup: crate::startup::CheckedRedbStartup,
+}
+
+enum MultiDatabaseEvent {
+    Maintenance {
+        database_index: usize,
+        trigger: MaintenanceTrigger,
+    },
+    RuntimeStopped {
+        database_index: usize,
+        generation: u64,
+    },
+    MaintenanceClosed {
+        database_index: usize,
+    },
+}
+
+enum MultiDatabaseStop {
+    Clean,
+    TransportEnded,
+    McpEnded,
+}
+
+async fn run_multi_database_server(
+    config: ServerConfig,
+    process_signal: &mut ProductionShutdownSignal,
+    recovery: &MaintenanceRecoveryController,
+) -> Result<(), DaemonError> {
+    let process_clocks = ProductionWallClocks::new();
+    let started_at = process_clocks
+        .process_time()
+        .map_err(DaemonError::ProcessClock)?;
+    let digest_keys = load_production_digest_keys(&config)?;
+    let authorization_time = process_clocks
+        .authorization()
+        .now()
+        .map_err(DaemonError::StartupClock)?;
+    let startup_inputs = startup_validation_inputs(&digest_keys, authorization_time)?;
+
+    struct PendingDatabase {
+        alias: riffdb_types::DatabaseAlias,
+        activator: riffdb_service::RiffDbServiceActivator,
+        lifecycle: Arc<ProductionLifecycleRoute>,
+        routing: RuntimeRoutingState,
+        maintenance_lifecycle: Arc<MaintenanceLifecycle>,
+        identifiers: ProductionIdentifierSources,
+    }
+
+    let mut pending = Vec::with_capacity(config.databases().len());
+    let mut routes = Vec::with_capacity(config.databases().len());
+    for database in config.databases() {
+        let (public_initializing, _public_activator, public_issuer) =
+            RiffDbService::begin_initialization();
+        let public_route = Arc::new(ProductionLifecycleRoute::new_with_maintenance(
+            public_initializing,
+            public_issuer,
+            RuntimeRoutingState::new(),
+            Arc::new(MaintenanceLifecycle::ready()),
+        ));
+        let route: Arc<dyn GrpcLifecycleRoute> = public_route;
+        routes.push((database.alias().clone(), route));
+
+        let (initializing, activator, issuer) = RiffDbService::begin_initialization();
+        let routing = RuntimeRoutingState::new();
+        let maintenance_lifecycle = Arc::new(MaintenanceLifecycle::ready());
+        let lifecycle = Arc::new(ProductionLifecycleRoute::new_with_maintenance(
+            initializing,
+            issuer,
+            routing.clone(),
+            Arc::clone(&maintenance_lifecycle),
+        ));
+        pending.push(PendingDatabase {
+            alias: database.alias().clone(),
+            activator,
+            lifecycle,
+            routing,
+            maintenance_lifecycle,
+            identifiers: ProductionIdentifierSources::new(),
+        });
+    }
+    let routes =
+        Arc::new(GrpcDatabaseRoutes::new(routes).map_err(|_| DaemonError::GrpcConfiguration)?);
+    let limits = GrpcRequestLimits::new(REQUEST_DURATION_LIMIT)
+        .map_err(|_| DaemonError::GrpcConfiguration)?;
+    let application = GrpcApplication::with_database_routes(Arc::clone(&routes), limits);
+    let mut transport = HostedGrpc::bind(config.listen_address(), &application)?;
+    drop(application);
+
+    let mut graphs = Vec::with_capacity(pending.len());
+    for (database, mut pending) in config.databases().iter().zip(pending) {
+        let (maintenance_storage, reconciliation) =
+            match RedbMaintenanceStorage::open(database.database_path(), database.backup_root()) {
+                Ok(value) => value,
+                Err(source) => {
+                    shutdown_multi_before_ready(&mut transport, graphs).await?;
+                    return Err(DaemonError::MaintenanceStorage(source));
+                }
+            };
+        let target_requires_recovery = maintenance_storage
+            .configured_target_requires_recovery()
+            .map_err(DaemonError::MaintenanceStorage)?;
+        let initial_action = initial_database_action(&reconciliation, target_requires_recovery)?;
+        let (maintenance_triggers, mut maintenance_receiver) = maintenance_trigger_channel();
+        let maintenance = MaintenanceController::new(
+            shared_maintenance_storage(maintenance_storage),
+            Arc::clone(&pending.maintenance_lifecycle),
+            maintenance_triggers,
+        );
+        let mut completed_initial_operation = None;
+        let startup = match initial_action {
+            InitialDatabaseAction::OpenCurrent => {
+                match open_redb_startup_with_commit_profile(
+                    database.database_path(),
+                    startup_inputs.clone(),
+                    &pending.identifiers.database_ids(),
+                    config.redb_commit_profile(),
+                ) {
+                    Ok(startup) => startup,
+                    Err(source) => {
+                        shutdown_multi_before_ready(&mut transport, graphs).await?;
+                        return Err(DaemonError::Startup(source));
+                    }
+                }
+            }
+            InitialDatabaseAction::ResumeCurrent {
+                receipt,
+                request,
+                validate_current_source,
+            } => {
+                let operation_id = request.operation_id();
+                if validate_current_source {
+                    let current = open_redb_startup_with_commit_profile(
+                        database.database_path(),
+                        startup_inputs.clone(),
+                        &pending.identifiers.database_ids(),
+                        config.redb_commit_profile(),
+                    )
+                    .map_err(DaemonError::Startup)?;
+                    if receipt.source_database_id() != Some(current.database_id()) {
+                        shutdown_multi_before_ready(&mut transport, graphs).await?;
+                        return Err(DaemonError::MaintenanceDriver);
+                    }
+                    drop(current);
+                }
+                let dependencies = maintenance_driver_dependencies(
+                    &config,
+                    database.environment(),
+                    &startup_inputs,
+                    &digest_keys,
+                    &pending.identifiers,
+                    &process_clocks,
+                    recovery,
+                )?;
+                let storage = maintenance.storage();
+                let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+                mark_draining(&mut storage, &pending.maintenance_lifecycle, operation_id)
+                    .map_err(|_| DaemonError::MaintenanceDriver)?;
+                mark_offline(&mut storage, &pending.maintenance_lifecycle, operation_id)
+                    .map_err(|_| DaemonError::MaintenanceDriver)?;
+                let success = run_offline_maintenance(
+                    &mut storage,
+                    &pending.maintenance_lifecycle,
+                    &dependencies,
+                    request,
+                )
+                .map_err(|_| DaemonError::MaintenanceDriver)?;
+                completed_initial_operation = Some(operation_id);
+                success.into_parts().1
+            }
+            InitialDatabaseAction::ResumeRecovery(request) => {
+                let operation_id = request.operation_id();
+                pending
+                    .maintenance_lifecycle
+                    .await_recovery_retry(operation_id, request.input_hash())
+                    .and_then(|()| {
+                        pending
+                            .maintenance_lifecycle
+                            .begin_recovery_restore(operation_id)
+                    })
+                    .map_err(|_| DaemonError::MaintenanceDriver)?;
+                let dependencies = maintenance_driver_dependencies(
+                    &config,
+                    database.environment(),
+                    &startup_inputs,
+                    &digest_keys,
+                    &pending.identifiers,
+                    &process_clocks,
+                    recovery,
+                )?;
+                let storage = maintenance.storage();
+                let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+                let success = run_recovery_restore(
+                    &mut storage,
+                    &pending.maintenance_lifecycle,
+                    &dependencies,
+                    RecoveryMaintenanceDriverRequest::resume_published(request),
+                )
+                .map_err(|_| DaemonError::MaintenanceDriver)?;
+                completed_initial_operation = Some(operation_id);
+                success.into_parts().1
+            }
+            InitialDatabaseAction::AwaitRestoreCredential(receipt) => {
+                let current = open_redb_startup_with_commit_profile(
+                    database.database_path(),
+                    startup_inputs.clone(),
+                    &pending.identifiers.database_ids(),
+                    config.redb_commit_profile(),
+                )
+                .map_err(DaemonError::Startup)?;
+                if receipt.source_database_id() != Some(current.database_id()) {
+                    drop(current);
+                    shutdown_multi_before_ready(&mut transport, graphs).await?;
+                    return Err(DaemonError::MaintenanceDriver);
+                }
+                pending
+                    .maintenance_lifecycle
+                    .await_restore_retry(receipt.operation_id(), receipt.input_hash())
+                    .map_err(|_| DaemonError::MaintenanceDriver)?;
+                let (offline_service, _offline_activator, offline_issuer) =
+                    RiffDbService::begin_initialization();
+                let offline_lifecycle = Arc::new(ProductionLifecycleRoute::new_with_maintenance(
+                    offline_service,
+                    offline_issuer,
+                    RuntimeRoutingState::new(),
+                    Arc::clone(&pending.maintenance_lifecycle),
+                ));
+                let retry_lifecycle = std::mem::replace(&mut pending.lifecycle, offline_lifecycle);
+                let route: Arc<dyn GrpcLifecycleRoute> = retry_lifecycle.clone();
+                routes
+                    .replace(&pending.alias, route)
+                    .map_err(|_| DaemonError::GrpcConfiguration)?;
+                match await_multi_restore_retry(
+                    &config,
+                    database,
+                    current,
+                    receipt,
+                    &digest_keys,
+                    &process_clocks,
+                    &pending.identifiers,
+                    retry_lifecycle,
+                    pending.maintenance_lifecycle.clone(),
+                    maintenance.clone(),
+                    &mut maintenance_receiver,
+                    &routes,
+                    process_signal,
+                    &mut transport,
+                    recovery,
+                )
+                .await
+                {
+                    Ok(Some(recovered)) => {
+                        completed_initial_operation = Some(recovered.operation_id);
+                        let (initializing, activator, issuer) =
+                            RiffDbService::begin_initialization();
+                        let routing = RuntimeRoutingState::new();
+                        pending.lifecycle =
+                            Arc::new(ProductionLifecycleRoute::new_with_maintenance(
+                                initializing,
+                                issuer,
+                                routing.clone(),
+                                pending.maintenance_lifecycle.clone(),
+                            ));
+                        pending.activator = activator;
+                        pending.routing = routing;
+                        recovered.startup
+                    }
+                    Ok(None) => {
+                        shutdown_multi_before_ready(&mut transport, graphs).await?;
+                        return Ok(());
+                    }
+                    Err(source) => {
+                        shutdown_multi_before_ready(&mut transport, graphs).await?;
+                        return Err(source);
+                    }
+                }
+            }
+            InitialDatabaseAction::AwaitRecoveryCredential(receipt) => {
+                pending
+                    .maintenance_lifecycle
+                    .await_recovery_retry(receipt.operation_id(), receipt.input_hash())
+                    .map_err(|_| DaemonError::MaintenanceDriver)?;
+                let route: Arc<dyn GrpcLifecycleRoute> = pending.lifecycle.clone();
+                routes
+                    .replace(&pending.alias, route)
+                    .map_err(|_| DaemonError::GrpcConfiguration)?;
+                match await_multi_recovery(
+                    &config,
+                    database,
+                    &pending.identifiers,
+                    pending.lifecycle.clone(),
+                    pending.maintenance_lifecycle.clone(),
+                    maintenance.clone(),
+                    &mut maintenance_receiver,
+                    process_signal,
+                    &mut transport,
+                    recovery,
+                )
+                .await
+                {
+                    Ok(Some(recovered)) => {
+                        completed_initial_operation = Some(recovered.operation_id);
+                        let (initializing, activator, issuer) =
+                            RiffDbService::begin_initialization();
+                        let routing = RuntimeRoutingState::new();
+                        pending.lifecycle =
+                            Arc::new(ProductionLifecycleRoute::new_with_maintenance(
+                                initializing,
+                                issuer,
+                                routing.clone(),
+                                pending.maintenance_lifecycle.clone(),
+                            ));
+                        pending.activator = activator;
+                        pending.routing = routing;
+                        recovered.startup
+                    }
+                    Ok(None) => {
+                        shutdown_multi_before_ready(&mut transport, graphs).await?;
+                        return Ok(());
+                    }
+                    Err(source) => {
+                        shutdown_multi_before_ready(&mut transport, graphs).await?;
+                        return Err(source);
+                    }
+                }
+            }
+            InitialDatabaseAction::RecoveryOnly => {
+                pending
+                    .maintenance_lifecycle
+                    .enter_recovery_mode()
+                    .map_err(|_| DaemonError::MaintenanceDriver)?;
+                let route: Arc<dyn GrpcLifecycleRoute> = pending.lifecycle.clone();
+                routes
+                    .replace(&pending.alias, route)
+                    .map_err(|_| DaemonError::GrpcConfiguration)?;
+                match await_multi_recovery(
+                    &config,
+                    database,
+                    &pending.identifiers,
+                    pending.lifecycle.clone(),
+                    pending.maintenance_lifecycle.clone(),
+                    maintenance.clone(),
+                    &mut maintenance_receiver,
+                    process_signal,
+                    &mut transport,
+                    recovery,
+                )
+                .await
+                {
+                    Ok(Some(recovered)) => {
+                        completed_initial_operation = Some(recovered.operation_id);
+                        let (initializing, activator, issuer) =
+                            RiffDbService::begin_initialization();
+                        let routing = RuntimeRoutingState::new();
+                        pending.lifecycle =
+                            Arc::new(ProductionLifecycleRoute::new_with_maintenance(
+                                initializing,
+                                issuer,
+                                routing.clone(),
+                                pending.maintenance_lifecycle.clone(),
+                            ));
+                        pending.activator = activator;
+                        pending.routing = routing;
+                        recovered.startup
+                    }
+                    Ok(None) => {
+                        shutdown_multi_before_ready(&mut transport, graphs).await?;
+                        return Ok(());
+                    }
+                    Err(source) => {
+                        shutdown_multi_before_ready(&mut transport, graphs).await?;
+                        return Err(source);
+                    }
+                }
+            }
+            InitialDatabaseAction::FailClosed => {
+                shutdown_multi_before_ready(&mut transport, graphs).await?;
+                return Err(DaemonError::MaintenanceDriver);
+            }
+        };
+        let build = build_info(&startup)?;
+        let graph = match ProductionGraphBuilder::new(
+            startup,
+            pending.activator,
+            digest_keys.clone(),
+            &config,
+            database.environment().clone(),
+            started_at,
+            build,
+            pending.identifiers,
+            ProductionWallClocks::new(),
+            pending.lifecycle.clone(),
+            maintenance.clone(),
+        )
+        .build()
+        {
+            Ok(graph) => graph,
+            Err(source) => {
+                shutdown_multi_before_ready(&mut transport, graphs).await?;
+                return Err(DaemonError::GraphBuild(source));
+            }
+        };
+        if let Some(operation_id) = completed_initial_operation {
+            pending
+                .maintenance_lifecycle
+                .finish_ready(operation_id)
+                .map_err(|_| DaemonError::MaintenanceDriver)?;
+        }
+        let _ = pending.routing;
+        graphs.push(MultiDatabaseGraph {
+            alias: pending.alias,
+            graph: Some(graph),
+            lifecycle: pending.lifecycle,
+            routing: pending.routing,
+            maintenance_lifecycle: pending.maintenance_lifecycle,
+            maintenance,
+            maintenance_receiver: Some(maintenance_receiver),
+            generation: 0,
+        });
+    }
+
+    for graph in &graphs {
+        let route: Arc<dyn GrpcLifecycleRoute> = graph.lifecycle.clone();
+        routes
+            .replace(&graph.alias, route)
+            .map_err(|_| DaemonError::GrpcConfiguration)?;
+    }
+
+    let mut hosted_mcp = match config.mcp_listen_address() {
+        Some(address) => {
+            let mut dependencies = Vec::with_capacity(graphs.len());
+            for (database, graph) in config.databases().iter().zip(&graphs) {
+                let Some(hosted) = graph
+                    .graph
+                    .as_ref()
+                    .and_then(RunningProductionGraph::hosted_mcp_dependencies)
+                else {
+                    shutdown_multi_before_ready(&mut transport, graphs).await?;
+                    return Err(DaemonError::McpDependencies);
+                };
+                dependencies.push((database.alias().clone(), hosted));
+            }
+            match HostedMcp::bind_routes(address, config.mcp_origins(), dependencies).await {
+                Ok(hosted) => Some(hosted),
+                Err(source) => {
+                    shutdown_multi_before_ready(&mut transport, graphs).await?;
+                    return Err(DaemonError::McpStart(source));
+                }
+            }
+        }
+        None => None,
+    };
+
+    publish_readiness(transport.local_address())?;
+    let (shutdown_input, shutdown_thread) = spawn_shutdown_reader()?;
+    let mut shutdown_input = Some(shutdown_input);
+    let (event_sender, mut event_receiver) =
+        tokio::sync::mpsc::channel(config.databases().len().saturating_mul(2));
+    let mut monitors = Vec::with_capacity(graphs.len().saturating_mul(2));
+    for (database_index, graph) in graphs.iter_mut().enumerate() {
+        let mut receiver = graph
+            .maintenance_receiver
+            .take()
+            .expect("each database owns one maintenance receiver");
+        let sender = event_sender.clone();
+        monitors.push(tokio::spawn(async move {
+            while let Some(trigger) = receiver.recv().await {
+                if sender
+                    .send(MultiDatabaseEvent::Maintenance {
+                        database_index,
+                        trigger,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            let _ = sender
+                .send(MultiDatabaseEvent::MaintenanceClosed { database_index })
+                .await;
+        }));
+        monitors.push(spawn_multi_runtime_monitor(
+            database_index,
+            graph.generation,
+            graph.routing.clone(),
+            event_sender.clone(),
+        ));
+    }
+
+    let stop = loop {
+        let selected = tokio::select! {
+            signal = process_signal.received() => {
+                signal.map_err(DaemonError::ShutdownSignal)?;
+                MultiDatabaseStop::Clean
+            }
+            input = wait_for_shutdown_input(&mut shutdown_input) => {
+                match input {
+                    Some(ReadyProcessTrigger::Command) => MultiDatabaseStop::Clean,
+                    Some(ReadyProcessTrigger::ShutdownInputFailure) => {
+                        return Err(DaemonError::ShutdownInput);
+                    }
+                    None => continue,
+                    Some(_) => return Err(DaemonError::ShutdownInput),
+                }
+            }
+            completion = transport.completed() => {
+                completion?;
+                MultiDatabaseStop::TransportEnded
+            }
+            completion = wait_for_hosted_mcp(&mut hosted_mcp) => {
+                completion.map_err(DaemonError::McpStop)?;
+                MultiDatabaseStop::McpEnded
+            }
+            event = event_receiver.recv() => {
+                let Some(event) = event else {
+                    return Err(DaemonError::RuntimeStopped);
+                };
+                match event {
+                    MultiDatabaseEvent::RuntimeStopped {
+                        database_index,
+                        generation,
+                    } => {
+                        if graphs
+                            .get(database_index)
+                            .is_some_and(|graph| graph.generation == generation)
+                        {
+                            quarantine_multi_database_generation(
+                                database_index,
+                                &routes,
+                                &hosted_mcp,
+                                &mut graphs,
+                            )
+                            .await?;
+                        }
+                        continue;
+                    }
+                    MultiDatabaseEvent::MaintenanceClosed { database_index } => {
+                        quarantine_multi_database_generation(
+                            database_index,
+                            &routes,
+                            &hosted_mcp,
+                            &mut graphs,
+                        )
+                        .await?;
+                        continue;
+                    }
+                    MultiDatabaseEvent::Maintenance {
+                        database_index,
+                        trigger,
+                    } => {
+                        let replacement = replace_multi_database_generation(
+                            &config,
+                            started_at,
+                            database_index,
+                            trigger,
+                            &routes,
+                            &mut hosted_mcp,
+                            &mut graphs,
+                            recovery,
+                        )
+                        .await;
+                        if replacement.is_ok() {
+                            monitors.push(spawn_multi_runtime_monitor(
+                                database_index,
+                                graphs[database_index].generation,
+                                graphs[database_index].routing.clone(),
+                                event_sender.clone(),
+                            ));
+                        } else {
+                            quarantine_multi_database_generation(
+                                database_index,
+                                &routes,
+                                &hosted_mcp,
+                                &mut graphs,
+                            )
+                            .await?;
+                        }
+                        continue;
+                    }
+                }
+            }
+        };
+        break selected;
+    };
+    drop(shutdown_thread);
+    for monitor in monitors {
+        monitor.abort();
+    }
+    if let Some(hosted) = hosted_mcp.as_mut() {
+        hosted.begin_shutdown();
+    }
+    for graph in &graphs {
+        graph.lifecycle.stop();
+        if let Some(graph) = graph.graph.as_ref() {
+            graph
+                .begin_transport_shutdown()
+                .map_err(|_| DaemonError::NotificationShutdown)?;
+        }
+    }
+    if !matches!(stop, MultiDatabaseStop::TransportEnded) {
+        transport.drain_after_signal().await?;
+    }
+    if let Some(hosted) = hosted_mcp.as_mut() {
+        hosted
+            .drain_after_signal()
+            .await
+            .map_err(DaemonError::McpStop)?;
+    }
+    for graph in graphs {
+        if let Some(graph) = graph.graph {
+            graph.shutdown().await.map_err(DaemonError::GraphShutdown)?;
+        }
+    }
+    match stop {
+        MultiDatabaseStop::Clean => Ok(()),
+        MultiDatabaseStop::TransportEnded => Err(DaemonError::TransportEnded),
+        MultiDatabaseStop::McpEnded => Err(DaemonError::McpTransportEnded),
+    }
+}
+
+fn spawn_multi_runtime_monitor(
+    database_index: usize,
+    generation: u64,
+    routing: RuntimeRoutingState,
+    events: tokio::sync::mpsc::Sender<MultiDatabaseEvent>,
+) -> TokioJoinHandle<()> {
+    tokio::spawn(async move {
+        let _reason = routing.stopped().await;
+        let _ = events
+            .send(MultiDatabaseEvent::RuntimeStopped {
+                database_index,
+                generation,
+            })
+            .await;
+    })
+}
+
+async fn quarantine_multi_database_generation(
+    database_index: usize,
+    routes: &GrpcDatabaseRoutes,
+    hosted_mcp: &Option<HostedMcp>,
+    graphs: &mut [MultiDatabaseGraph],
+) -> Result<(), DaemonError> {
+    let generation = graphs
+        .get_mut(database_index)
+        .ok_or(DaemonError::RuntimeStopped)?;
+    generation.generation = generation
+        .generation
+        .checked_add(1)
+        .ok_or(DaemonError::RuntimeStopped)?;
+    generation.lifecycle.stop();
+    let routing = RuntimeRoutingState::new();
+    let (offline_service, _offline_activator, offline_issuer) =
+        RiffDbService::begin_initialization();
+    let offline_lifecycle = Arc::new(ProductionLifecycleRoute::new_with_maintenance(
+        offline_service,
+        offline_issuer,
+        routing.clone(),
+        Arc::clone(&generation.maintenance_lifecycle),
+    ));
+    let offline_route: Arc<dyn GrpcLifecycleRoute> = offline_lifecycle.clone();
+    routes
+        .replace(&generation.alias, offline_route)
+        .map_err(|_| DaemonError::GrpcConfiguration)?;
+    if let Some(hosted_mcp) = hosted_mcp {
+        hosted_mcp
+            .suspend(&generation.alias)
+            .map_err(DaemonError::McpStart)?;
+    }
+    if let Some(graph) = generation.graph.take() {
+        let _ = graph.begin_transport_shutdown();
+        let _ = graph.shutdown().await;
+    }
+    generation.lifecycle = offline_lifecycle;
+    generation.routing = routing;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn await_multi_restore_retry(
+    config: &ServerConfig,
+    database: &DatabaseConfig,
+    startup: crate::startup::CheckedRedbStartup,
+    receipt: OfflineMaintenanceReceiptV1,
+    digest_keys: &ProductionDigestKeys,
+    clocks: &ProductionWallClocks,
+    identifiers: &ProductionIdentifierSources,
+    lifecycle: Arc<ProductionLifecycleRoute>,
+    maintenance_lifecycle: Arc<MaintenanceLifecycle>,
+    maintenance: MaintenanceController,
+    maintenance_receiver: &mut tokio::sync::mpsc::Receiver<MaintenanceTrigger>,
+    routes: &GrpcDatabaseRoutes,
+    process_signal: &mut ProductionShutdownSignal,
+    transport: &mut HostedGrpc,
+    recovery: &MaintenanceRecoveryController,
+) -> Result<Option<MultiInitialRecovery>, DaemonError> {
+    let operation_id = receipt.operation_id();
+    let input_hash = receipt.input_hash();
+    let routing = lifecycle.runtime_routing();
+    let retry_host = RunningRestoreRetryHost::start(
+        startup,
+        operation_id,
+        input_hash,
+        digest_keys,
+        config,
+        database.environment(),
+        clocks,
+        maintenance.clone(),
+        lifecycle,
+        identifiers,
+    )
+    .map_err(DaemonError::RestoreRetryHostStart)?;
+
+    let trigger = tokio::select! {
+        signal = process_signal.received() => RestoreRetryProcessTrigger::Signal(signal),
+        _reason = routing.stopped() => RestoreRetryProcessTrigger::Runtime,
+        completion = &mut transport.task => RestoreRetryProcessTrigger::Transport(completion),
+        maintenance = maintenance_receiver.recv() => {
+            RestoreRetryProcessTrigger::Maintenance(maintenance)
+        },
+    };
+    let RestoreRetryProcessTrigger::Maintenance(Some(
+        mut trigger @ MaintenanceTrigger::RestoreBackup { .. },
+    )) = trigger
+    else {
+        retry_host.begin_transport_shutdown();
+        let host_result = retry_host.shutdown().await;
+        host_result.map_err(DaemonError::RestoreRetryHostShutdown)?;
+        return match trigger {
+            RestoreRetryProcessTrigger::Signal(signal) => {
+                signal.map_err(DaemonError::ShutdownSignal)?;
+                Ok(None)
+            }
+            RestoreRetryProcessTrigger::Transport(completion) => {
+                classify_transport_completion(&completion)?;
+                Err(DaemonError::TransportEnded)
+            }
+            RestoreRetryProcessTrigger::Runtime
+            | RestoreRetryProcessTrigger::Maintenance(None)
+            | RestoreRetryProcessTrigger::Maintenance(Some(_)) => Err(DaemonError::RuntimeStopped),
+        };
+    };
+
+    trigger
+        .wait_for_start_ready()
+        .await
+        .map_err(|()| DaemonError::MaintenanceDriver)?;
+    retry_host.begin_transport_shutdown();
+    retry_host
+        .shutdown()
+        .await
+        .map_err(DaemonError::RestoreRetryHostShutdown)?;
+    let (offline_service, _offline_activator, offline_issuer) =
+        RiffDbService::begin_initialization();
+    let offline_lifecycle = Arc::new(ProductionLifecycleRoute::new_with_maintenance(
+        offline_service,
+        offline_issuer,
+        RuntimeRoutingState::new(),
+        Arc::clone(&maintenance_lifecycle),
+    ));
+    let offline_route: Arc<dyn GrpcLifecycleRoute> = offline_lifecycle;
+    routes
+        .replace(database.alias(), offline_route)
+        .map_err(|_| DaemonError::GrpcConfiguration)?;
+    if trigger.operation_id() != operation_id {
+        maintenance_lifecycle.fail_closed(operation_id);
+        return Err(DaemonError::MaintenanceDriver);
+    }
+
+    let prepared = GenerationInputs::load(config)?;
+    let request = normal_driver_request(trigger)?;
+    let success = {
+        let storage = maintenance.storage();
+        let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+        mark_offline(&mut storage, &maintenance_lifecycle, operation_id)
+            .map_err(|_| DaemonError::MaintenanceDriver)?;
+        let dependencies = maintenance_driver_dependencies(
+            config,
+            database.environment(),
+            &prepared.startup_inputs,
+            &prepared.digest_keys,
+            &prepared.identifiers,
+            &prepared.clocks,
+            recovery,
+        )?;
+        run_offline_maintenance(&mut storage, &maintenance_lifecycle, &dependencies, request)
+            .map_err(|_| DaemonError::MaintenanceDriver)?
+    };
+    let (_receipt, startup) = success.into_parts();
+    Ok(Some(MultiInitialRecovery {
+        operation_id,
+        startup,
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn await_multi_recovery(
+    config: &ServerConfig,
+    database: &DatabaseConfig,
+    identifiers: &ProductionIdentifierSources,
+    lifecycle: Arc<ProductionLifecycleRoute>,
+    maintenance_lifecycle: Arc<MaintenanceLifecycle>,
+    maintenance: MaintenanceController,
+    maintenance_receiver: &mut tokio::sync::mpsc::Receiver<MaintenanceTrigger>,
+    process_signal: &mut ProductionShutdownSignal,
+    transport: &mut HostedGrpc,
+    recovery: &MaintenanceRecoveryController,
+) -> Result<Option<MultiInitialRecovery>, DaemonError> {
+    let routing = lifecycle.runtime_routing();
+    let recovery_host = RunningRecoveryHost::start(maintenance.clone(), lifecycle, identifiers)
+        .map_err(DaemonError::RecoveryHostStart)?;
+
+    loop {
+        let trigger = tokio::select! {
+            signal = process_signal.received() => RecoveryProcessTrigger::Signal(signal),
+            _reason = routing.stopped() => RecoveryProcessTrigger::Runtime,
+            completion = &mut transport.task => RecoveryProcessTrigger::Transport(completion),
+            maintenance = maintenance_receiver.recv() => {
+                RecoveryProcessTrigger::Maintenance(maintenance)
+            },
+        };
+        let RecoveryProcessTrigger::Maintenance(Some(MaintenanceTrigger::RecoveryRestore {
+            restore,
+            completion,
+        })) = trigger
+        else {
+            recovery_host.begin_transport_shutdown();
+            let host_result = recovery_host.shutdown().await;
+            host_result.map_err(DaemonError::RecoveryHostShutdown)?;
+            return match trigger {
+                RecoveryProcessTrigger::Signal(signal) => {
+                    signal.map_err(DaemonError::ShutdownSignal)?;
+                    Ok(None)
+                }
+                RecoveryProcessTrigger::Transport(completion) => {
+                    classify_transport_completion(&completion)?;
+                    Err(DaemonError::TransportEnded)
+                }
+                RecoveryProcessTrigger::Runtime
+                | RecoveryProcessTrigger::Maintenance(None)
+                | RecoveryProcessTrigger::Maintenance(Some(_)) => Err(DaemonError::RuntimeStopped),
+            };
+        };
+
+        let operation_id = restore.request().operation_id();
+        let prepared = match GenerationInputs::load(config) {
+            Ok(prepared) => prepared,
+            Err(_) => {
+                if maintenance_lifecycle
+                    .release_recovery_restore(operation_id)
+                    .is_err()
+                {
+                    let _ =
+                        completion.complete(Err(RecoveryOfflineMaintenancePortError::Integrity));
+                    recovery_host.begin_transport_shutdown();
+                    recovery_host
+                        .shutdown()
+                        .await
+                        .map_err(DaemonError::RecoveryHostShutdown)?;
+                    return Err(DaemonError::MaintenanceDriver);
+                }
+                let _ = completion.complete(Err(RecoveryOfflineMaintenancePortError::Unavailable));
+                continue;
+            }
+        };
+        let (_request_id, request, credential) = restore.into_parts();
+        let attempt = {
+            let storage = maintenance.storage();
+            let mut storage = match storage.lock() {
+                Ok(storage) => storage,
+                Err(poisoned) => {
+                    drop(poisoned.into_inner());
+                    maintenance_lifecycle.fail_closed(operation_id);
+                    let _ =
+                        completion.complete(Err(RecoveryOfflineMaintenancePortError::Integrity));
+                    recovery_host.begin_transport_shutdown();
+                    recovery_host
+                        .shutdown()
+                        .await
+                        .map_err(DaemonError::RecoveryHostShutdown)?;
+                    return Err(DaemonError::MaintenanceDriver);
+                }
+            };
+            match storage.read_receipt(operation_id) {
+                Ok(Some(receipt))
+                    if !receipt_matches_restore_request(&receipt, &request)
+                        || receipt.source_database_id().is_some() =>
+                {
+                    if maintenance_lifecycle
+                        .release_recovery_restore(operation_id)
+                        .is_err()
+                    {
+                        RecoveryAttempt::Stop(RecoveryOfflineMaintenancePortError::Integrity)
+                    } else {
+                        RecoveryAttempt::Retry(RecoveryOfflineMaintenancePortError::InputMismatch)
+                    }
+                }
+                Err(_) => {
+                    maintenance_lifecycle.fail_closed(operation_id);
+                    RecoveryAttempt::Stop(RecoveryOfflineMaintenancePortError::OutcomeUnknown)
+                }
+                Ok(_) => match maintenance_driver_dependencies(
+                    config,
+                    database.environment(),
+                    &prepared.startup_inputs,
+                    &prepared.digest_keys,
+                    &prepared.identifiers,
+                    &prepared.clocks,
+                    recovery,
+                ) {
+                    Ok(dependencies) => match run_recovery_restore(
+                        &mut storage,
+                        &maintenance_lifecycle,
+                        &dependencies,
+                        RecoveryMaintenanceDriverRequest::new(request, credential),
+                    ) {
+                        Ok(success) => RecoveryAttempt::Succeeded(Box::new(success)),
+                        Err(failure) => classify_recovery_driver_failure(
+                            &maintenance_lifecycle,
+                            operation_id,
+                            failure,
+                        ),
+                    },
+                    Err(_) => {
+                        maintenance_lifecycle.fail_closed(operation_id);
+                        RecoveryAttempt::Stop(RecoveryOfflineMaintenancePortError::Integrity)
+                    }
+                },
+            }
+        };
+
+        match attempt {
+            RecoveryAttempt::Retry(error) => {
+                let _ = completion.complete(Err(error));
+            }
+            RecoveryAttempt::Stop(error) => {
+                let _ = completion.complete(Err(error));
+                recovery_host.begin_transport_shutdown();
+                recovery_host
+                    .shutdown()
+                    .await
+                    .map_err(DaemonError::RecoveryHostShutdown)?;
+                return Err(DaemonError::MaintenanceDriver);
+            }
+            RecoveryAttempt::Terminal(result) => {
+                let _ = completion.complete(Ok(result));
+                recovery_host.begin_transport_shutdown();
+                recovery_host
+                    .shutdown()
+                    .await
+                    .map_err(DaemonError::RecoveryHostShutdown)?;
+                return Err(DaemonError::MaintenanceDriver);
+            }
+            RecoveryAttempt::Succeeded(success) => {
+                let (receipt, startup) = (*success).into_parts();
+                let result = start_result(OfflineMaintenanceStartDisposition::Terminal, &receipt)
+                    .map_err(|_| DaemonError::MaintenanceDriver)?;
+                let _ = completion.complete(Ok(result));
+                recovery_host.begin_transport_shutdown();
+                recovery_host
+                    .shutdown()
+                    .await
+                    .map_err(DaemonError::RecoveryHostShutdown)?;
+                return Ok(Some(MultiInitialRecovery {
+                    operation_id,
+                    startup,
+                }));
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn replace_multi_database_generation(
+    config: &ServerConfig,
+    started_at: riffdb_types::Timestamp,
+    database_index: usize,
+    mut trigger: MaintenanceTrigger,
+    routes: &GrpcDatabaseRoutes,
+    hosted_mcp: &mut Option<HostedMcp>,
+    graphs: &mut [MultiDatabaseGraph],
+    recovery: &MaintenanceRecoveryController,
+) -> Result<(), DaemonError> {
+    let database = config
+        .databases()
+        .get(database_index)
+        .ok_or(DaemonError::MaintenanceDriver)?;
+    let generation = graphs
+        .get_mut(database_index)
+        .ok_or(DaemonError::MaintenanceDriver)?;
+    trigger
+        .wait_for_start_ready()
+        .await
+        .map_err(|()| DaemonError::MaintenanceDriver)?;
+    let operation_id = trigger.operation_id();
+    generation.generation = generation
+        .generation
+        .checked_add(1)
+        .ok_or(DaemonError::MaintenanceDriver)?;
+    generation.lifecycle.stop();
+    let (offline_service, _offline_activator, offline_issuer) =
+        RiffDbService::begin_initialization();
+    let offline_lifecycle = Arc::new(ProductionLifecycleRoute::new_with_maintenance(
+        offline_service,
+        offline_issuer,
+        RuntimeRoutingState::new(),
+        Arc::clone(&generation.maintenance_lifecycle),
+    ));
+    let offline_route: Arc<dyn GrpcLifecycleRoute> = offline_lifecycle.clone();
+    routes
+        .replace(&generation.alias, offline_route)
+        .map_err(|_| DaemonError::GrpcConfiguration)?;
+    generation.lifecycle = offline_lifecycle;
+    if let Some(hosted_mcp) = hosted_mcp.as_ref() {
+        hosted_mcp
+            .suspend(&generation.alias)
+            .map_err(DaemonError::McpStart)?;
+    }
+    let graph = generation
+        .graph
+        .take()
+        .ok_or(DaemonError::MaintenanceDriver)?;
+    graph
+        .begin_transport_shutdown()
+        .map_err(|_| DaemonError::NotificationShutdown)?;
+    graph
+        .shutdown_for_maintenance(recovery)
+        .await
+        .map_err(DaemonError::GraphShutdown)?;
+    recovery.reached(MaintenanceRecoveryBoundary::DatabaseClosed);
+
+    let prepared = GenerationInputs::load(config)?;
+    let request = normal_driver_request(trigger)?;
+    let success = {
+        let storage = generation.maintenance.storage();
+        let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
+        mark_offline(
+            &mut storage,
+            &generation.maintenance_lifecycle,
+            operation_id,
+        )
+        .map_err(|_| DaemonError::MaintenanceDriver)?;
+        let dependencies = maintenance_driver_dependencies(
+            config,
+            database.environment(),
+            &prepared.startup_inputs,
+            &prepared.digest_keys,
+            &prepared.identifiers,
+            &prepared.clocks,
+            recovery,
+        )?;
+        run_offline_maintenance(
+            &mut storage,
+            &generation.maintenance_lifecycle,
+            &dependencies,
+            request,
+        )
+        .map_err(|_| DaemonError::MaintenanceDriver)?
+    };
+    let (_receipt, startup) = success.into_parts();
+
+    let (initializing, activator, issuer) = RiffDbService::begin_initialization();
+    let routing = RuntimeRoutingState::new();
+    let lifecycle = Arc::new(ProductionLifecycleRoute::new_with_maintenance(
+        initializing,
+        issuer,
+        routing.clone(),
+        Arc::clone(&generation.maintenance_lifecycle),
+    ));
+    let build = build_info(&startup)?;
+    let graph = ProductionGraphBuilder::new(
+        startup,
+        activator,
+        prepared.digest_keys,
+        config,
+        database.environment().clone(),
+        started_at,
+        build,
+        prepared.identifiers,
+        prepared.clocks,
+        lifecycle.clone(),
+        generation.maintenance.clone(),
+    )
+    .build()
+    .map_err(DaemonError::GraphBuild)?;
+    if let Some(hosted_mcp) = hosted_mcp.as_ref() {
+        let dependencies = graph
+            .hosted_mcp_dependencies()
+            .ok_or(DaemonError::McpDependencies)?;
+        hosted_mcp
+            .replace(&generation.alias, dependencies)
+            .map_err(DaemonError::McpStart)?;
+    }
+    let route: Arc<dyn GrpcLifecycleRoute> = lifecycle.clone();
+    routes
+        .replace(&generation.alias, route)
+        .map_err(|_| DaemonError::GrpcConfiguration)?;
+    generation
+        .maintenance_lifecycle
+        .finish_ready(operation_id)
+        .map_err(|_| DaemonError::MaintenanceDriver)?;
+    generation.graph = Some(graph);
+    generation.lifecycle = lifecycle;
+    generation.routing = routing;
+    Ok(())
+}
+
+async fn shutdown_multi_before_ready(
+    transport: &mut HostedGrpc,
+    graphs: Vec<MultiDatabaseGraph>,
+) -> Result<(), DaemonError> {
+    for graph in &graphs {
+        graph.lifecycle.stop();
+        if let Some(graph) = graph.graph.as_ref() {
+            let _ = graph.begin_transport_shutdown();
+        }
+    }
+    transport.drain_after_signal().await?;
+    for graph in graphs {
+        if let Some(graph) = graph.graph {
+            graph.shutdown().await.map_err(DaemonError::GraphShutdown)?;
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_ready_generations(
     config: &ServerConfig,
@@ -854,6 +1999,7 @@ async fn run_ready_generations(
                 .map_err(|_| DaemonError::MaintenanceDriver)?;
             let dependencies = maintenance_driver_dependencies(
                 config,
+                config.environment(),
                 &prepared.startup_inputs,
                 &prepared.digest_keys,
                 &prepared.identifiers,
@@ -906,12 +2052,13 @@ fn normal_driver_request(
     trigger: MaintenanceTrigger,
 ) -> Result<MaintenanceDriverRequest, DaemonError> {
     match trigger {
-        MaintenanceTrigger::CreateBackup { request } => Ok(
+        MaintenanceTrigger::CreateBackup { request, .. } => Ok(
             MaintenanceDriverRequest::create_backup(request.operation_id()),
         ),
         MaintenanceTrigger::RestoreBackup {
             request,
             credential,
+            ..
         } => Ok(MaintenanceDriverRequest::restore_backup(
             request.operation_id(),
             credential,
@@ -928,6 +2075,7 @@ fn trusted_audiences(config: &ServerConfig) -> Result<TrustedAudienceCatalog, Da
 
 fn maintenance_driver_dependencies<'a>(
     config: &ServerConfig,
+    environment: &riffdb_types::Environment,
     startup_inputs: &StartupValidationInputs,
     digest_keys: &ProductionDigestKeys,
     identifiers: &ProductionIdentifierSources,
@@ -939,7 +2087,7 @@ fn maintenance_driver_dependencies<'a>(
         identifiers.database_ids(),
         config.redb_commit_profile(),
         digest_keys.shared_capability(),
-        config.environment().clone(),
+        environment.clone(),
         config.audience().clone(),
         trusted_audiences(config)?,
         clocks,
@@ -993,6 +2141,7 @@ async fn run_restore_retry_until_ready(
         input_hash,
         digest_keys,
         config,
+        config.environment(),
         clocks,
         maintenance.clone(),
         Arc::clone(&lifecycle),
@@ -1080,6 +2229,7 @@ async fn run_restore_retry_until_ready(
             .map_err(|_| DaemonError::MaintenanceDriver)?;
         let dependencies = maintenance_driver_dependencies(
             config,
+            config.environment(),
             &prepared.startup_inputs,
             &prepared.digest_keys,
             &prepared.identifiers,
@@ -1255,6 +2405,7 @@ async fn run_recovery_until_ready(
                 }
                 Ok(_) => match maintenance_driver_dependencies(
                     config,
+                    config.environment(),
                     &prepared.startup_inputs,
                     &prepared.digest_keys,
                     &prepared.identifiers,
@@ -1428,6 +2579,7 @@ async fn start_generation(
         activator,
         digest_keys,
         config,
+        config.environment().clone(),
         started_at,
         build,
         identifiers,
@@ -2201,6 +3353,49 @@ mod tests {
         let readiness = production.find("publish_readiness(").expect("readiness");
         assert!(listener < startup);
         assert!(startup < readiness);
+    }
+
+    #[test]
+    fn multi_database_failures_quarantine_only_the_selected_generation() {
+        let source = include_str!("daemon.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .expect("daemon architecture boundary")
+            .0;
+        let supervisor = production
+            .split_once("let stop = loop {")
+            .and_then(|(_, tail)| tail.split_once("drop(shutdown_thread);"))
+            .map(|(body, _)| body)
+            .expect("multi-database ready supervisor");
+
+        assert_eq!(
+            supervisor
+                .matches("quarantine_multi_database_generation(")
+                .count(),
+            3,
+            "runtime, maintenance-channel, and replacement failures remain database-local"
+        );
+        assert!(
+            supervisor.contains("let replacement = replace_multi_database_generation("),
+            "maintenance replacement must be classified before the process supervisor decides"
+        );
+
+        let quarantine = production
+            .split_once("async fn quarantine_multi_database_generation(")
+            .and_then(|(_, tail)| tail.split_once("async fn await_multi_restore_retry("))
+            .map(|(body, _)| body)
+            .expect("database-local quarantine");
+        for required in [
+            "generation.lifecycle.stop();",
+            "routes\n        .replace(&generation.alias, offline_route)",
+            ".suspend(&generation.alias)",
+            "generation.graph.take()",
+        ] {
+            assert!(
+                quarantine.contains(required),
+                "quarantine omitted required isolation step: {required}"
+            );
+        }
     }
 
     #[test]

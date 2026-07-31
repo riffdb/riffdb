@@ -39,7 +39,7 @@
         ],
         "type": "object"
       },
-      "name": "agent_orders.add_order_line",
+      "name": "agent_orders_add_order_line",
       "plan_hash": "0bf35b27f4dcc9602a01b5c941ec7069c65a5e7da747dec19139a582db3c2d06",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -200,7 +200,7 @@
         ],
         "type": "object"
       },
-      "name": "agent_orders.create_customer",
+      "name": "agent_orders_create_customer",
       "plan_hash": "e9cc4a35c3a5ae6971299f9d7a2a2aef35c38cb00849d0ad1ce5b28fc9d248e0",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -315,7 +315,7 @@
         ],
         "type": "object"
       },
-      "name": "agent_orders.create_inventory",
+      "name": "agent_orders_create_inventory",
       "plan_hash": "ab3a75ba47435612b4594d6af49620726c7417239c49ba275a3c9ff13f41208a",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -451,7 +451,7 @@
         ],
         "type": "object"
       },
-      "name": "agent_orders.create_order",
+      "name": "agent_orders_create_order",
       "plan_hash": "fe654c9054282d5eef50fdcb117648b7f652414c3d38da57aacfa24bdd061971",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -582,7 +582,7 @@
         ],
         "type": "object"
       },
-      "name": "agent_orders.create_product",
+      "name": "agent_orders_create_product",
       "plan_hash": "c52d7f6ac66f5bcc3085d414668c2c3d50844178c975d365cc86f8cd740418f5",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -705,7 +705,7 @@
         ],
         "type": "object"
       },
-      "name": "agent_orders.create_store",
+      "name": "agent_orders_create_store",
       "plan_hash": "e452367a1f05628af56a24078629c52476ee1347afb151a1096b57dd4191ec1c",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -803,7 +803,7 @@
         ],
         "type": "object"
       },
-      "name": "agent_orders.reserve_inventory",
+      "name": "agent_orders_reserve_inventory",
       "plan_hash": "25b90b7ffb0d9dc242cc9b0e149ea5046d48ff5f9c792369717136267850972b",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1049,7 +1049,7 @@
         "type": "object"
       },
       "module_hash": "4efa919991df225b1235aeb95ed76b98b3eab6002b04d7afdb4c6894d13addea",
-      "name": "agent_orders.customer_history",
+      "name": "agent_orders_customer_history",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -1166,7 +1166,7 @@
         "type": "object"
       },
       "module_hash": "4efa919991df225b1235aeb95ed76b98b3eab6002b04d7afdb4c6894d13addea",
-      "name": "agent_orders.inventory_dashboard",
+      "name": "agent_orders_inventory_dashboard",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -1303,7 +1303,7 @@
         "type": "object"
       },
       "module_hash": "4efa919991df225b1235aeb95ed76b98b3eab6002b04d7afdb4c6894d13addea",
-      "name": "agent_orders.open_orders",
+      "name": "agent_orders_open_orders",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -1383,7 +1383,7 @@
         "type": "object"
       },
       "module_hash": "4efa919991df225b1235aeb95ed76b98b3eab6002b04d7afdb4c6894d13addea",
-      "name": "agent_orders.order_page",
+      "name": "agent_orders_order_page",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [

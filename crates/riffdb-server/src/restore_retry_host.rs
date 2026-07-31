@@ -14,6 +14,7 @@ use riffdb_service::{
     RestoreRetryOfflineMaintenanceService, ServiceDiagnostics, ServiceHealthHooks,
     ServiceJobSpawner,
 };
+use riffdb_types::Environment;
 use riffdb_types::{OfflineMaintenanceInputHash, OfflineMaintenanceOperationId};
 
 use crate::auth_adapters::{ServerCredentialAuthenticator, ServerCurrentPolicyPort};
@@ -55,6 +56,7 @@ impl RunningRestoreRetryHost {
         input_hash: OfflineMaintenanceInputHash,
         digest_keys: &ProductionDigestKeys,
         config: &ServerConfig,
+        environment: &Environment,
         clocks: &ProductionWallClocks,
         controller: MaintenanceController,
         lifecycle: Arc<ProductionLifecycleRoute>,
@@ -119,7 +121,7 @@ impl RunningRestoreRetryHost {
             storage,
             clocks.authorization(),
             database_id,
-            config.environment().clone(),
+            environment.clone(),
             trusted_audiences,
             authorization_telemetry,
         ));
@@ -132,7 +134,7 @@ impl RunningRestoreRetryHost {
                 operation_id,
                 input_hash,
                 database_id,
-                config.environment().clone(),
+                environment.clone(),
                 policy,
                 coordinator,
                 incident_ids,
@@ -143,11 +145,7 @@ impl RunningRestoreRetryHost {
             ));
         let security = CheckedGrpcRestoreRetrySecurityContext::new(
             authenticator,
-            AuthenticationContext::new(
-                database_id,
-                config.environment().clone(),
-                config.audience().clone(),
-            ),
+            AuthenticationContext::new(database_id, environment.clone(), config.audience().clone()),
         );
 
         if let Err(source) =

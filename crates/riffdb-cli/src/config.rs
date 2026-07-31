@@ -3,6 +3,7 @@ use std::ffi::{OsStr, OsString};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
+use riffdb_types::DatabaseAlias;
 use serde::Deserialize;
 
 use crate::cli::{Cli, OutputMode};
@@ -14,6 +15,7 @@ const DEFAULT_ATTEMPTS: u32 = 3;
 #[derive(Debug)]
 pub(crate) struct EffectiveConfig {
     pub(crate) endpoint: String,
+    pub(crate) database: DatabaseAlias,
     pub(crate) output: OutputMode,
     pub(crate) max_attempts: u32,
     pub(crate) credential_file: Option<PathBuf>,
@@ -57,6 +59,7 @@ struct ConfigDocument {
 #[serde(deny_unknown_fields)]
 struct ClientDocument {
     endpoint: Option<String>,
+    database: Option<String>,
     output: Option<String>,
     max_attempts: Option<u32>,
     credential_file: Option<String>,
@@ -104,6 +107,14 @@ pub(crate) fn resolve(
     )
     .map_err(|_| resolution_error(output))?;
     validate_endpoint(&endpoint).map_err(|_| resolution_error(output))?;
+    let database = selected_string(
+        cli.database.as_deref(),
+        environment.value("RIFFDB_DATABASE"),
+        client.database.as_deref(),
+        riffdb_types::DEFAULT_DATABASE_ALIAS,
+    )
+    .map_err(|_| resolution_error(output))
+    .and_then(|value| DatabaseAlias::new(value).map_err(|_| resolution_error(output)))?;
 
     let attempts = match (&cli.max_attempts, environment.value("RIFFDB_MAX_ATTEMPTS")) {
         (Some(value), _) => parse_attempts(value).map_err(|_| resolution_error(output))?,
@@ -127,6 +138,7 @@ pub(crate) fn resolve(
 
     Ok(EffectiveConfig {
         endpoint,
+        database,
         output,
         max_attempts: attempts,
         credential_file,
@@ -290,6 +302,10 @@ mod tests {
     fn defaults_and_flag_over_environment_precedence_are_exact() {
         let defaults = resolve(&health_cli(&[]), &TestEnvironment::default()).expect("defaults");
         assert_eq!(defaults.endpoint, DEFAULT_ENDPOINT);
+        assert_eq!(
+            defaults.database.as_str(),
+            riffdb_types::DEFAULT_DATABASE_ALIAS
+        );
         assert_eq!(defaults.output, OutputMode::Human);
         assert_eq!(defaults.max_attempts, 3);
 
@@ -303,6 +319,43 @@ mod tests {
         )
         .expect("flag");
         assert_eq!(selected.endpoint, "http://[::1]:9000");
+    }
+
+    #[test]
+    fn database_precedence_and_canonical_validation_are_exact() {
+        let path = temporary_file(
+            "database-precedence",
+            b"[client]\ndatabase = \"document_db\"\n",
+        );
+        let mut environment = TestEnvironment::default();
+        environment
+            .0
+            .insert("RIFFDB_CONFIG".into(), path.as_os_str().to_owned());
+        assert_eq!(
+            resolve(&health_cli(&[]), &environment)
+                .expect("document")
+                .database
+                .as_str(),
+            "document_db"
+        );
+        environment
+            .0
+            .insert("RIFFDB_DATABASE".into(), "environment_db".into());
+        assert_eq!(
+            resolve(&health_cli(&[]), &environment)
+                .expect("environment")
+                .database
+                .as_str(),
+            "environment_db"
+        );
+        assert_eq!(
+            resolve(&health_cli(&["--database", "argument_db"]), &environment)
+                .expect("argument")
+                .database
+                .as_str(),
+            "argument_db"
+        );
+        assert!(resolve(&health_cli(&["--database", "Invalid"]), &environment).is_err());
     }
 
     #[test]

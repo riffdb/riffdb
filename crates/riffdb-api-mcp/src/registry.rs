@@ -15,12 +15,12 @@ const RESOURCE_REGISTRY_SOURCE: &str = include_str!("../fixtures/resource-regist
 
 const FIXED_TOOL_REGISTRY_ID: &str = "riffdb.mcp.fixed-tool-registry/v1";
 const RESOURCE_REGISTRY_ID: &str = "riffdb.mcp.resource-registry/v1";
-const ACCEPTED_CHECKPOINT: &str = "accepted-by-human-maintainer-2026-07-23";
+const ACCEPTED_CHECKPOINT: &str = "accepted-by-human-maintainer-2026-07-30";
 const SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 const MAX_SCHEMA_BYTES: usize = 65_536;
 const MAX_DYNAMIC_SCHEMA_BYTES: usize = 1_048_576;
 const MAX_FIXED_SCHEMA_BYTES: usize = 1_048_576;
-const EXPECTED_FIXED_SCHEMA_BYTES: usize = 65_539;
+const EXPECTED_FIXED_SCHEMA_BYTES: usize = 65_533;
 
 static FIXED_TOOL_REGISTRY: OnceLock<Result<FixedToolRegistry, RegistryError>> = OnceLock::new();
 static RESOURCE_REGISTRY: OnceLock<Result<ResourceRegistry, RegistryError>> = OnceLock::new();
@@ -569,8 +569,9 @@ fn load_fixed_tool_registry() -> Result<FixedToolRegistry, RegistryError> {
         let expected_kind = u8::try_from(index + 1).map_err(|_| RegistryError)?;
         if tool.fixed_tool_kind != expected_kind
             || !names.insert(tool.name.clone())
+            || !valid_public_tool_name(&tool.name)
             || tool.annotations.open_world_hint
-            || (tool.name == "riffdb.contract.deploy")
+            || (tool.name == "riffdb_contract_deploy")
                 != (!tool.annotations.read_only_hint && tool.annotations.destructive_hint)
         {
             return Err(RegistryError);
@@ -628,6 +629,9 @@ fn load_fixed_tool_registry() -> Result<FixedToolRegistry, RegistryError> {
 
     let mut artifact_manifest = wire.artifact_manifest;
     append_symbolic_tools(&mut tools, &mut artifact_manifest)?;
+    if tools.iter().any(|tool| !valid_public_tool_name(&tool.name)) {
+        return Err(RegistryError);
+    }
     let symbolic_schema_bytes = tools.iter().skip(14).try_fold(0_usize, |total, tool| {
         total
             .checked_add(tool.input_schema.canonical_bytes())
@@ -652,7 +656,7 @@ fn append_symbolic_tools(
     let specifications = [
         SymbolicToolSpec {
             kind: 15,
-            name: "riffdb.contract.describe",
+            name: "riffdb_contract_describe",
             title: "Describe symbolic contract",
             description: "Return the selected contract as a bounded, name-only symbolic catalog.",
             method: "DescribeContract",
@@ -668,7 +672,7 @@ fn append_symbolic_tools(
         },
         SymbolicToolSpec {
             kind: 16,
-            name: "riffdb.query.check",
+            name: "riffdb_query_check",
             title: "Check RiffQL",
             description: "Parse, resolve, type check, and plan bounded RiffQL without executing it.",
             method: "CheckQuery",
@@ -679,7 +683,7 @@ fn append_symbolic_tools(
         },
         SymbolicToolSpec {
             kind: 17,
-            name: "riffdb.query.explain",
+            name: "riffdb_query_explain",
             title: "Explain RiffQL",
             description: "Return a deterministic, name-only execution plan for bounded RiffQL.",
             method: "ExplainQuery",
@@ -690,7 +694,7 @@ fn append_symbolic_tools(
         },
         SymbolicToolSpec {
             kind: 18,
-            name: "riffdb.query",
+            name: "riffdb_query",
             title: "Execute RiffQL",
             description: "Execute one authorized bounded RiffQL read against one database snapshot.",
             method: "ExecuteQuery",
@@ -702,6 +706,9 @@ fn append_symbolic_tools(
     ];
 
     for specification in specifications {
+        if !valid_public_tool_name(specification.name) {
+            return Err(RegistryError);
+        }
         let input_id = format!("riffdb.fixed-tool/{}/input/v1", specification.name);
         let result_id = format!("riffdb.fixed-tool/{}/result/v1", specification.name);
         let input_schema = generated_schema(input_id.clone(), specification.input)?;
@@ -733,8 +740,8 @@ fn append_symbolic_tools(
             result_schema,
         });
     }
-    let input_id = "riffdb.fixed-tool/riffdb.command.run/input/v1".to_owned();
-    let result_id = "riffdb.fixed-tool/riffdb.command.run/result/v1".to_owned();
+    let input_id = "riffdb.fixed-tool/riffdb_command_run/input/v1".to_owned();
+    let result_id = "riffdb.fixed-tool/riffdb_command_run/result/v1".to_owned();
     let input_schema = generated_schema(
         input_id.clone(),
         serde_json::json!({
@@ -753,7 +760,7 @@ fn append_symbolic_tools(
     manifest.extend([input_id, result_id]);
     tools.push(FixedToolDefinition {
         kind: 19,
-        name: "riffdb.command.run".to_owned(),
+        name: "riffdb_command_run".to_owned(),
         title: "Run symbolic command".to_owned(),
         description:
             "Invoke one compiled command with name-addressed natural JSON and declared outcomes."
@@ -775,6 +782,14 @@ fn append_symbolic_tools(
         result_schema,
     });
     Ok(())
+}
+
+fn valid_public_tool_name(name: &str) -> bool {
+    name.len() <= 128
+        && name.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 struct SymbolicToolSpec {
@@ -1019,127 +1034,127 @@ fn schema_source(path: &str) -> Option<&'static str> {
                 "../../riffdb-service/schema/riffdb.command-get-outcome-result-v1.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.command.get_outcome.input.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_command_get_outcome.input.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.command.get_outcome.input.schema.json"
+                "../schema/fixed-tool/v1/riffdb_command_get_outcome.input.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.commit.get.input.schema.json" => Some(
-            include_str!("../schema/fixed-tool/v1/riffdb.commit.get.input.schema.json"),
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_commit_get.input.schema.json" => Some(
+            include_str!("../schema/fixed-tool/v1/riffdb_commit_get.input.schema.json"),
         ),
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.commit.get.result.schema.json" => Some(
-            include_str!("../schema/fixed-tool/v1/riffdb.commit.get.result.schema.json"),
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_commit_get.result.schema.json" => Some(
+            include_str!("../schema/fixed-tool/v1/riffdb_commit_get.result.schema.json"),
         ),
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.commit.scan.input.schema.json" => Some(
-            include_str!("../schema/fixed-tool/v1/riffdb.commit.scan.input.schema.json"),
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_commit_scan.input.schema.json" => Some(
+            include_str!("../schema/fixed-tool/v1/riffdb_commit_scan.input.schema.json"),
         ),
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.commit.scan.result.schema.json" => Some(
-            include_str!("../schema/fixed-tool/v1/riffdb.commit.scan.result.schema.json"),
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_commit_scan.result.schema.json" => Some(
+            include_str!("../schema/fixed-tool/v1/riffdb_commit_scan.result.schema.json"),
         ),
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.contract.deploy.input.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_deploy.input.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.contract.deploy.input.schema.json"
+                "../schema/fixed-tool/v1/riffdb_contract_deploy.input.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.contract.deploy.result.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_deploy.result.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.contract.deploy.result.schema.json"
+                "../schema/fixed-tool/v1/riffdb_contract_deploy.result.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.contract.explain_command.input.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_explain_command.input.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.contract.explain_command.input.schema.json"
+                "../schema/fixed-tool/v1/riffdb_contract_explain_command.input.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.contract.explain_command.result.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_explain_command.result.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.contract.explain_command.result.schema.json"
+                "../schema/fixed-tool/v1/riffdb_contract_explain_command.result.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.contract.get_active.input.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_get_active.input.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.contract.get_active.input.schema.json"
+                "../schema/fixed-tool/v1/riffdb_contract_get_active.input.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.contract.get_active.result.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_get_active.result.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.contract.get_active.result.schema.json"
+                "../schema/fixed-tool/v1/riffdb_contract_get_active.result.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.contract.validate.input.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_validate.input.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.contract.validate.input.schema.json"
+                "../schema/fixed-tool/v1/riffdb_contract_validate.input.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.contract.validate.result.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_validate.result.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.contract.validate.result.schema.json"
+                "../schema/fixed-tool/v1/riffdb_contract_validate.result.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.entity.get.input.schema.json" => Some(
-            include_str!("../schema/fixed-tool/v1/riffdb.entity.get.input.schema.json"),
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_entity_get.input.schema.json" => Some(
+            include_str!("../schema/fixed-tool/v1/riffdb_entity_get.input.schema.json"),
         ),
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.entity.get.result.schema.json" => Some(
-            include_str!("../schema/fixed-tool/v1/riffdb.entity.get.result.schema.json"),
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_entity_get.result.schema.json" => Some(
+            include_str!("../schema/fixed-tool/v1/riffdb_entity_get.result.schema.json"),
         ),
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.entity.scan_index.input.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_entity_scan_index.input.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.entity.scan_index.input.schema.json"
+                "../schema/fixed-tool/v1/riffdb_entity_scan_index.input.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.entity.scan_index.result.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_entity_scan_index.result.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.entity.scan_index.result.schema.json"
+                "../schema/fixed-tool/v1/riffdb_entity_scan_index.result.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.outbox.list_pending.input.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_outbox_list_pending.input.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.outbox.list_pending.input.schema.json"
+                "../schema/fixed-tool/v1/riffdb_outbox_list_pending.input.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.outbox.list_pending.result.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_outbox_list_pending.result.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.outbox.list_pending.result.schema.json"
+                "../schema/fixed-tool/v1/riffdb_outbox_list_pending.result.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.projection.query.input.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_projection_query.input.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.projection.query.input.schema.json"
+                "../schema/fixed-tool/v1/riffdb_projection_query.input.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.projection.query.result.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_projection_query.result.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.projection.query.result.schema.json"
+                "../schema/fixed-tool/v1/riffdb_projection_query.result.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.projection.status.input.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_projection_status.input.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.projection.status.input.schema.json"
+                "../schema/fixed-tool/v1/riffdb_projection_status.input.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.projection.status.result.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_projection_status.result.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.projection.status.result.schema.json"
+                "../schema/fixed-tool/v1/riffdb_projection_status.result.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.provenance.trace.input.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_provenance_trace.input.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.provenance.trace.input.schema.json"
+                "../schema/fixed-tool/v1/riffdb_provenance_trace.input.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.provenance.trace.result.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_provenance_trace.result.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.provenance.trace.result.schema.json"
+                "../schema/fixed-tool/v1/riffdb_provenance_trace.result.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.server.health.input.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_server_health.input.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.server.health.input.schema.json"
+                "../schema/fixed-tool/v1/riffdb_server_health.input.schema.json"
             ))
         }
-        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb.server.health.result.schema.json" => {
+        "crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_server_health.result.schema.json" => {
             Some(include_str!(
-                "../schema/fixed-tool/v1/riffdb.server.health.result.schema.json"
+                "../schema/fixed-tool/v1/riffdb_server_health.result.schema.json"
             ))
         }
         _ => None,
@@ -1365,9 +1380,9 @@ mod tests {
     #[test]
     fn fixed_lookup_consumes_exact_names_only() {
         let registry = fixed_tool_registry().expect("accepted fixed registry loads");
-        assert!(registry.by_name("riffdb.contract.deploy").is_some());
+        assert!(registry.by_name("riffdb_contract_deploy").is_some());
         assert!(registry.by_name("RIFFDB.CONTRACT.DEPLOY").is_none());
-        assert!(registry.by_name("riffdb.contract.deploy ").is_none());
+        assert!(registry.by_name("riffdb_contract_deploy ").is_none());
         assert!(registry.by_name("riffdb.contract.unknown").is_none());
     }
 

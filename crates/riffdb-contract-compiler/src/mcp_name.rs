@@ -1,14 +1,14 @@
-//! ADR-0020 command tool-name derivation.
+//! ADR-0064 command tool-name derivation.
 
 use std::collections::BTreeMap;
 
-use riffdb_contract_ir::{McpCommandNameEntryV1, McpCommandNameRegistryV1};
+use riffdb_contract_ir::{McpCommandNameEntryV2, McpCommandNameRegistryV2};
 use riffdb_contract_syntax::{Span, Spanned};
 use riffdb_types::{CommandId, ContractLineage};
 
 use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
 
-const TOOL_PREFIX: &str = "riffdb.cmd.";
+const TOOL_PREFIX: &str = "riffdb_cmd_";
 const MAX_TOOL_NAME_BYTES: usize = 128;
 
 /// One compiler-private derived name before checked IR registry construction.
@@ -19,7 +19,7 @@ pub(crate) struct DerivedCommandToolName {
     pub(crate) complete_name: String,
 }
 
-/// Derives the complete deterministic ADR-0020 v1 registry in stable command-ID order.
+/// Derives the complete deterministic ADR-0064 v2 registry in stable command-ID order.
 pub(crate) fn derive_command_tool_names(
     contract: &Spanned<String>,
     commands: &[(CommandId, Spanned<String>)],
@@ -48,7 +48,7 @@ pub(crate) fn derive_command_tool_names(
             ));
             continue;
         };
-        let complete_name = format!("{TOOL_PREFIX}{contract_segment}.{command_segment}");
+        let complete_name = format!("{TOOL_PREFIX}{contract_segment}_{command_segment}");
         if complete_name.len() > MAX_TOOL_NAME_BYTES {
             diagnostics.push(CompilerDiagnostic::new(
                 CompilerDiagnosticCode::CommandToolNameTooLong,
@@ -85,7 +85,7 @@ pub(crate) fn derive_command_tool_names(
 pub(crate) fn build_command_tool_registry(
     contract: &Spanned<String>,
     commands: &[(CommandId, Spanned<String>)],
-) -> Result<McpCommandNameRegistryV1, CompilerDiagnostics> {
+) -> Result<McpCommandNameRegistryV2, CompilerDiagnostics> {
     let lineage = ContractLineage::new(contract.value.clone()).map_err(|_| {
         CompilerDiagnostics::single(CompilerDiagnostic::new(
             CompilerDiagnosticCode::InvalidCommandToolName,
@@ -95,7 +95,7 @@ pub(crate) fn build_command_tool_registry(
     let entries = derive_command_tool_names(contract, commands)?
         .into_iter()
         .map(|derived| {
-            McpCommandNameEntryV1::new(
+            McpCommandNameEntryV2::new(
                 derived.command_id,
                 &contract.value,
                 derived.source_identifier,
@@ -109,7 +109,7 @@ pub(crate) fn build_command_tool_registry(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    McpCommandNameRegistryV1::new(lineage, contract.value.clone(), entries).map_err(|_| {
+    McpCommandNameRegistryV2::new(lineage, contract.value.clone(), entries).map_err(|_| {
         CompilerDiagnostics::single(CompilerDiagnostic::new(
             CompilerDiagnosticCode::InvalidCommandToolName,
             contract.span,
@@ -158,7 +158,7 @@ mod tests {
         .expect("valid name");
         assert_eq!(
             names[0].complete_name,
-            "riffdb.cmd.legal_spend.allocate_budget2"
+            "riffdb_cmd_legal_spend_allocate_budget2"
         );
 
         let names = derive_command_tool_names(
@@ -168,7 +168,7 @@ mod tests {
         .expect("valid name");
         assert_eq!(
             names[0].complete_name,
-            "riffdb.cmd.legalspend.allocatebudget"
+            "riffdb_cmd_legalspend_allocatebudget"
         );
     }
 

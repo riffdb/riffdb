@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn dynamic_target_is_bounded_exact_visible_ascii_and_redacted() {
         let target =
-            McpRateTarget::command_tool("riffdb.cmd.contract.command").expect("bounded name");
+            McpRateTarget::command_tool("riffdb_cmd_contract_command").expect("bounded name");
         assert_eq!(format!("{target:?}"), "CommandTool([REDACTED])");
         for value in ["", "contains space", "\n", &"x".repeat(129)] {
             assert_eq!(

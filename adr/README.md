@@ -82,6 +82,10 @@ direction, merged draft, or implementation choice.
 | [0058](0058-bounded-group-durability-and-audited-command-transitions.md) | Bounded Group Durability and Audited Command Transitions | Accepted |
 | [0059](0059-same-partition-read-dependencies-and-write-parity.md) | Same-Partition Read Dependencies and Application Write Parity | Accepted |
 | [0060](0060-bounded-scheduler-storage-lanes-and-parallel-preparation.md) | Bounded Scheduler Windows, Activated Storage Lanes, and Parallel Preparation | Accepted |
+| [0061](0061-semantic-durability-terminal-admission-and-storage-v2.md) | Semantic Durability, Terminal Admission, and Storage Format V2 | Accepted |
+| [0062](0062-generic-deployment-required-capability-administration.md) | Generic Deployment-Required Capability Administration | Accepted |
+| [0063](0063-bounded-multiple-databases-per-process.md) | Bounded Multiple Databases Per Server Process | Accepted |
+| [0064](0064-underscore-mcp-tool-names-and-agent-presentation.md) | Underscore MCP Tool Names and Agent Presentation | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
@@ -258,6 +262,22 @@ one-phase and hardened two-phase redb profiles, atomic terminal admission,
 compact storage format V2, single authoritative event payload, conservative
 partition/index generations, and the prohibition on visible non-durable
 chaining.
+ADR-0062 has a separate acceptance reference: the maintainer's explicit
+2026-07-30 approval of authenticated capability creation, revocation, and
+policy-filtered command/resource discovery during `DeploymentRequired` through
+the unchanged service, policy, audit, and coordinator paths. It permits a
+generic empty database to create a distinct application-author identity and
+discover fixed contract-authoring surfaces without deploying a bundled example
+or admitting any application data operation.
+ADR-0063 has a separate acceptance reference: the maintainer's explicit
+2026-07-30 approval of at most 32 configured, independently durable databases
+per process; selector-before-authentication routing; compatibility for one
+implicit `default` database; unchanged v1 locators and durable bytes; and no
+cross-database operation or runtime database administration.
+ADR-0064 has a separate acceptance reference: the maintainer's explicit
+2026-07-30 approval of the incompatible pre-alpha underscore-only MCP tool-name
+cut, with no dotted aliases, plus bounded actionable input diagnostics,
+agent-facing generated command documentation, and an agent cookbook.
 
 ## Workflow
 

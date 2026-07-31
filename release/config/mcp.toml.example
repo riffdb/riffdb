@@ -1,3 +1,4 @@
 [mcp]
 endpoint = "http://127.0.0.1:7443"
+database = "default"
 credential_file = "/var/lib/riffdb-mcp/credential"

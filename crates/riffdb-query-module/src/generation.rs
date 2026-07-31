@@ -65,7 +65,7 @@ pub fn generate_mcp_tools(
         .queries()
         .iter()
         .map(|query| {
-            let name = format!("{}.{}", snake(module.name().as_str()), snake(query.name()));
+            let name = format!("{}_{}", snake(module.name().as_str()), snake(query.name()));
             if !names.insert(name.clone()) {
                 return Err(McpToolGenerationError::NameCollision);
             }
@@ -197,7 +197,7 @@ pub fn generate_mcp_commands(
                 .collect::<Vec<_>>();
             Ok(GeneratedMcpCommand {
                 name: format!(
-                    "{}.{}",
+                    "{}_{}",
                     snake(module.name().as_str()),
                     snake(command.name())
                 ),

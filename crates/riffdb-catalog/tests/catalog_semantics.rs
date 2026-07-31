@@ -300,7 +300,7 @@ fn every_malformed_or_misbound_command_registry_rejects_at_the_catalog_boundary(
     let mut malformed = Vec::<(&str, Vec<u8>)>::new();
 
     let mut unsupported_version = canonical.clone();
-    write_u32(&mut unsupported_version, layout.version, 2);
+    write_u32(&mut unsupported_version, layout.version, 3);
     malformed.push(("unsupported registry version", unsupported_version));
 
     let mut wrong_lineage = canonical.clone();
@@ -346,7 +346,7 @@ fn every_malformed_or_misbound_command_registry_rejects_at_the_catalog_boundary(
     let mut wrong_derivation = canonical.clone();
     let final_byte = layout.first_tool.end - 1;
     wrong_derivation[final_byte] = b'x';
-    malformed.push(("noncanonical v1 derivation", wrong_derivation));
+    malformed.push(("noncanonical v2 derivation", wrong_derivation));
 
     let mut overlength = canonical.clone();
     write_u32(&mut overlength, layout.first_tool_length, 129);
@@ -357,7 +357,7 @@ fn every_malformed_or_misbound_command_registry_rejects_at_the_catalog_boundary(
     collision.extend_from_slice(&12_u32.to_be_bytes());
     collision.extend_from_slice(b"CREATEBUDGET");
     collision.extend_from_slice(&34_u32.to_be_bytes());
-    collision.extend_from_slice(b"riffdb.cmd.legalspend.createbudget");
+    collision.extend_from_slice(b"riffdb_cmd_legalspend_createbudget");
     collision.extend_from_slice(&canonical[layout.second_tool.end..]);
     malformed.push(("normalized tool-name collision", collision));
 
@@ -391,9 +391,9 @@ fn persistence_accepts_the_exact_ir_bundle_ceiling_and_rejects_one_byte_over() {
 fn registry_layout(bytes: &[u8]) -> RegistryLayout {
     const LINEAGE: &[u8] = b"LegalSpend";
     const FIRST_SOURCE: &[u8] = b"CreateBudget";
-    const FIRST_TOOL: &[u8] = b"riffdb.cmd.legalspend.createbudget";
+    const FIRST_TOOL: &[u8] = b"riffdb_cmd_legalspend_createbudget";
     const SECOND_SOURCE: &[u8] = b"AllocateBudget";
-    const SECOND_TOOL: &[u8] = b"riffdb.cmd.legalspend.allocatebudget";
+    const SECOND_TOOL: &[u8] = b"riffdb_cmd_legalspend_allocatebudget";
 
     let first_tool_start = bytes
         .windows(FIRST_TOOL.len())
@@ -423,7 +423,7 @@ fn registry_layout(bytes: &[u8]) -> RegistryLayout {
     let lineage_length = lineage.start - 4;
     assert_eq!(read_u32(bytes, lineage_length), LINEAGE.len() as u32);
     let version = lineage_length - 4;
-    assert_eq!(read_u32(bytes, version), 1);
+    assert_eq!(read_u32(bytes, version), 2);
 
     let first_tool = first_tool_start..first_tool_start + FIRST_TOOL.len();
     let second_id = first_tool.end;

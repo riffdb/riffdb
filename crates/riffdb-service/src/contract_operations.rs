@@ -1064,9 +1064,15 @@ fn shape_explanation(
         .find(|artifact| artifact.key() == SchemaArtifactKey::CommandOutcomeUnion(command_id))
         .cloned()
         .ok_or(())?;
+    let tool_name = bundle
+        .mcp_command_names()
+        .get(command_id)
+        .map(|entry| entry.tool_name().clone())
+        .ok_or(())?;
     let explained = ExplainedCommand::new(
         contract_descriptor(bundle),
         command_id,
+        tool_name,
         plan.plan_hash(),
         CommandExplain::from_plan(plan),
         input_schema,

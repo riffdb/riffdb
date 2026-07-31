@@ -2134,8 +2134,8 @@ fn locator_owner_digest_and_tool_mismatches_are_nondisclosing_absence() {
         let tool_name = tool_result
             .outcome_locator()
             .tool_name()
-            .rsplit_once('.')
-            .map(|(prefix, _)| format!("{prefix}.other"))
+            .rsplit_once('_')
+            .map(|(prefix, _)| format!("{prefix}_other"))
             .expect("compiler tool-name segments");
         let wrong_tool = locator_with_segment(tool_result.outcome_locator(), 3, tool_name);
         let tool_calls = tool_harness.policy.calls();

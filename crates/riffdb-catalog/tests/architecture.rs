@@ -336,13 +336,13 @@ fn every_active_lineage_ingress_uses_the_exact_canonical_byte_budget() {
 #[test]
 fn catalog_revalidates_the_complete_compiler_owned_command_registry() {
     for required in [
-        "MCP_COMMAND_NAME_REGISTRY_VERSION_V1",
+        "MCP_COMMAND_NAME_REGISTRY_VERSION_V2",
         "registry.lineage() != bundle.lineage()",
         "registry.entries().len() != bundle.commands().len()",
         "registry.entries().iter().zip(bundle.commands())",
         "entry.command_id() != command.command_id()",
         "entry.source_command_name() != command.name()",
-        "McpCommandToolNameV1::new_checked",
+        "McpCommandToolNameV2::new_checked",
         "!names.insert(entry.tool_name().as_str())",
     ] {
         assert!(

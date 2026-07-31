@@ -15,7 +15,7 @@ use riffdb_catalog::ValidatedContractBundle;
 use riffdb_contract_compiler::CompilationError;
 use riffdb_contract_ir::{
     CommandExplain, CompatibilityClass, ContractBundle, ExecutionClass, GeneratedSchemaArtifact,
-    IndexScanPrefix, McpCommandToolNameV1, OutcomeSchema, RecordSchema, RecordTypeRef,
+    IndexScanPrefix, McpCommandToolNameV2, OutcomeSchema, RecordSchema, RecordTypeRef,
     SchemaArtifactKey, SchemaIr, ValueType,
 };
 use riffdb_policy::{
@@ -670,6 +670,7 @@ impl ExplainCommandRequest {
 pub struct ExplainedCommand {
     contract: ContractDescriptor,
     command_id: CommandId,
+    tool_name: McpCommandToolNameV2,
     plan_hash: PlanHash,
     explanation: CommandExplain,
     input_schema: GeneratedSchemaArtifact,
@@ -681,12 +682,14 @@ impl ExplainedCommand {
     pub fn new(
         contract: ContractDescriptor,
         command_id: CommandId,
+        tool_name: McpCommandToolNameV2,
         plan_hash: PlanHash,
         explanation: CommandExplain,
         input_schema: GeneratedSchemaArtifact,
         outcome_schema: GeneratedSchemaArtifact,
     ) -> Result<Self, ServiceDtoError> {
         if explanation.command_id() != command_id
+            || validate_locator_tool_name(contract.lineage(), tool_name.as_str()).is_err()
             || input_schema.key() != SchemaArtifactKey::CommandInput(command_id)
             || outcome_schema.key() != SchemaArtifactKey::CommandOutcomeUnion(command_id)
         {
@@ -695,6 +698,7 @@ impl ExplainedCommand {
         Ok(Self {
             contract,
             command_id,
+            tool_name,
             plan_hash,
             explanation,
             input_schema,
@@ -712,6 +716,12 @@ impl ExplainedCommand {
     #[must_use]
     pub const fn command_id(&self) -> CommandId {
         self.command_id
+    }
+
+    /// Borrows the exact compiler-owned MCP command tool name.
+    #[must_use]
+    pub const fn tool_name(&self) -> &McpCommandToolNameV2 {
+        &self.tool_name
     }
 
     /// Returns the exact command plan hash.
@@ -1396,7 +1406,7 @@ impl OutcomeResourceLocator {
         owner_principal_id: ActorId,
         lineage: ContractLineage,
         command_id: CommandId,
-        tool_name: &McpCommandToolNameV1,
+        tool_name: &McpCommandToolNameV2,
         digest: OutcomeLocatorDigestEvidence,
     ) -> Result<Self, ServiceDtoError> {
         validate_locator_tool_name(&lineage, tool_name.as_str())?;
@@ -1584,24 +1594,20 @@ fn validate_locator_tool_name(
     tool_name: &str,
 ) -> Result<(), ServiceDtoError> {
     if tool_name.len() > riffdb_contract_ir::MAX_MCP_COMMAND_TOOL_NAME_BYTES
-        || !tool_name.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'.'
-        })
+        || !tool_name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
     {
         return Err(ServiceDtoError::InvalidShape);
     }
-    let mut segments = tool_name
-        .strip_prefix("riffdb.cmd.")
-        .ok_or(ServiceDtoError::InvalidShape)?
-        .split('.');
-    let contract = segments.next().ok_or(ServiceDtoError::InvalidShape)?;
-    let command = segments.next().ok_or(ServiceDtoError::InvalidShape)?;
-    if segments.next().is_some()
-        || !valid_normalized_mcp_segment(contract)
-        || !valid_normalized_mcp_segment(command)
-        || !lineage.as_str().is_ascii()
-        || lineage.as_str().to_ascii_lowercase() != contract
-    {
+    if !lineage.as_str().is_ascii() {
+        return Err(ServiceDtoError::InvalidShape);
+    }
+    let expected_prefix = format!("riffdb_cmd_{}_", lineage.as_str().to_ascii_lowercase());
+    let command = tool_name
+        .strip_prefix(&expected_prefix)
+        .ok_or(ServiceDtoError::IdentityMismatch)?;
+    if !valid_normalized_mcp_segment(command) {
         return Err(ServiceDtoError::InvalidShape);
     }
     Ok(())
@@ -6535,12 +6541,12 @@ const COMMAND_OPERATION_ENVELOPE_SCHEMA: &str =
 const COMMAND_GET_OUTCOME_RESULT_SCHEMA: &str =
     include_str!("../schema/riffdb.command-get-outcome-result-v1.schema.json");
 const COMMAND_OPERATION_ENVELOPE_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
-    0x78, 0x1f, 0xf9, 0x3c, 0x2d, 0xbf, 0xd2, 0xee, 0x2b, 0xec, 0x28, 0x6f, 0x78, 0x10, 0x30, 0x0a,
-    0x0f, 0xec, 0x0a, 0x17, 0x05, 0x48, 0xb1, 0x40, 0x5c, 0xb8, 0xba, 0x2a, 0xc8, 0xd9, 0x03, 0x98,
+    0x1f, 0x83, 0xb8, 0x78, 0xc0, 0x52, 0xf5, 0x3c, 0x6e, 0xb7, 0x33, 0xb6, 0x7c, 0xd7, 0x92, 0x6f,
+    0xb7, 0xea, 0x37, 0x29, 0xf1, 0xd4, 0x69, 0xe0, 0xfd, 0x9a, 0xa8, 0xa1, 0x3f, 0x6b, 0x44, 0xd2,
 ]);
 const COMMAND_GET_OUTCOME_RESULT_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
-    0x40, 0x56, 0xf0, 0x1c, 0x29, 0x71, 0x20, 0xb0, 0x6a, 0xc9, 0x05, 0xf3, 0x34, 0x82, 0x13, 0x2a,
-    0x90, 0x85, 0x86, 0x59, 0x75, 0xad, 0xa3, 0x6e, 0x23, 0x96, 0xa6, 0x1e, 0xbf, 0x19, 0xfc, 0x0d,
+    0x0c, 0x1f, 0x33, 0xfb, 0xc6, 0x13, 0xb9, 0xe8, 0x7c, 0x4a, 0x54, 0xcc, 0xc2, 0xf7, 0xc1, 0xd4,
+    0x26, 0x62, 0x5c, 0xc0, 0xcb, 0x98, 0x23, 0x7e, 0x2b, 0xde, 0xd4, 0xbe, 0xc0, 0x73, 0xdd, 0xde,
 ]);
 
 /// Body-free identity of one versioned operation schema.
@@ -6880,7 +6886,7 @@ impl Default for DiscoverCommandToolsRequest {
 /// One visible command tool carrying the compiler-owned name verbatim.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandToolDescriptor {
-    name: McpCommandToolNameV1,
+    name: McpCommandToolNameV2,
     source_command: SourceName,
     lineage: ContractLineage,
     version: ContractVersion,
@@ -6892,7 +6898,7 @@ pub struct CommandToolDescriptor {
 impl CommandToolDescriptor {
     /// Checks that generated schemas belong to the exact command.
     pub fn new(
-        name: McpCommandToolNameV1,
+        name: McpCommandToolNameV2,
         source_command: SourceName,
         lineage: ContractLineage,
         version: ContractVersion,
@@ -6902,7 +6908,7 @@ impl CommandToolDescriptor {
     ) -> Result<Self, ServiceDtoError> {
         if input_schema.key() != SchemaArtifactKey::CommandInput(command_id)
             || outcome_schema.key() != SchemaArtifactKey::CommandOutcomeUnion(command_id)
-            || McpCommandToolNameV1::new_checked(
+            || McpCommandToolNameV2::new_checked(
                 lineage.as_str(),
                 source_command.as_str(),
                 name.as_str(),
@@ -6923,7 +6929,7 @@ impl CommandToolDescriptor {
     }
     /// Borrows the compiler-owned name without service normalization.
     #[must_use]
-    pub const fn name(&self) -> &McpCommandToolNameV1 {
+    pub const fn name(&self) -> &McpCommandToolNameV2 {
         &self.name
     }
     /// Borrows the exact compiler-checked source command used for dispatch.
@@ -7107,7 +7113,7 @@ impl GeneratedSchemaIdentity {
 /// Identity-only projection of one dynamic command tool.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompactCommandToolDescriptor {
-    name: McpCommandToolNameV1,
+    name: McpCommandToolNameV2,
     source_command: SourceName,
     lineage: ContractLineage,
     version: ContractVersion,
@@ -7119,7 +7125,7 @@ pub struct CompactCommandToolDescriptor {
 impl CompactCommandToolDescriptor {
     /// Borrows the compiler-owned tool name.
     #[must_use]
-    pub const fn name(&self) -> &McpCommandToolNameV1 {
+    pub const fn name(&self) -> &McpCommandToolNameV2 {
         &self.name
     }
     /// Borrows the exact source command.
@@ -7196,7 +7202,7 @@ impl CompactCommandToolDiscoveryItem {
 
 fn validate_command_tool_order(items: &[CommandToolDiscoveryItem]) -> Result<(), ServiceDtoError> {
     let mut last_fixed = None;
-    let mut last_command: Option<&McpCommandToolNameV1> = None;
+    let mut last_command: Option<&McpCommandToolNameV2> = None;
     for item in items {
         match item {
             CommandToolDiscoveryItem::Fixed(fixed) if last_command.is_none() => {
@@ -7230,7 +7236,7 @@ fn validate_compact_command_tool_order(
     items: &[CompactCommandToolDiscoveryItem],
 ) -> Result<(), ServiceDtoError> {
     let mut last_fixed = None;
-    let mut last_command: Option<&McpCommandToolNameV1> = None;
+    let mut last_command: Option<&McpCommandToolNameV2> = None;
     for item in items {
         match item {
             CompactCommandToolDiscoveryItem::Fixed(fixed) if last_command.is_none() => {
@@ -7461,7 +7467,7 @@ enum ResourceDescriptorInner {
     CommandOutcome {
         lineage: ContractLineage,
         command_id: CommandId,
-        tool_name: McpCommandToolNameV1,
+        tool_name: McpCommandToolNameV2,
     },
     Commit {
         sequence: Option<CommitSequence>,
@@ -7505,7 +7511,7 @@ pub enum ResourceDescriptorRef<'a> {
     CommandOutcome {
         lineage: &'a ContractLineage,
         command_id: CommandId,
-        tool_name: &'a McpCommandToolNameV1,
+        tool_name: &'a McpCommandToolNameV2,
     },
     Commit {
         sequence: Option<CommitSequence>,
@@ -7584,15 +7590,9 @@ impl ResourceDescriptor {
     pub fn command_outcome(
         lineage: ContractLineage,
         command_id: CommandId,
-        tool_name: McpCommandToolNameV1,
+        tool_name: McpCommandToolNameV2,
     ) -> Result<Self, ServiceDtoError> {
-        let source_command = tool_name
-            .as_str()
-            .rsplit_once('.')
-            .map(|(_, source_command)| source_command)
-            .ok_or(ServiceDtoError::IdentityMismatch)?;
-        McpCommandToolNameV1::new_checked(lineage.as_str(), source_command, tool_name.as_str())
-            .map_err(|_| ServiceDtoError::IdentityMismatch)?;
+        validate_locator_tool_name(&lineage, tool_name.as_str())?;
         Ok(Self(ResourceDescriptorInner::CommandOutcome {
             lineage,
             command_id,
@@ -7921,7 +7921,7 @@ enum CompactResourceDescriptorInner {
     CommandOutcome {
         lineage: ContractLineage,
         command_id: CommandId,
-        tool_name: McpCommandToolNameV1,
+        tool_name: McpCommandToolNameV2,
     },
     Commit {
         sequence: Option<CommitSequence>,
@@ -7965,7 +7965,7 @@ pub enum CompactResourceDescriptorRef<'a> {
     CommandOutcome {
         lineage: &'a ContractLineage,
         command_id: CommandId,
-        tool_name: &'a McpCommandToolNameV1,
+        tool_name: &'a McpCommandToolNameV2,
     },
     Commit {
         sequence: Option<CommitSequence>,
@@ -9666,10 +9666,10 @@ contract OutcomeShapes version 1 {
             .is_ok()
         );
 
-        let wrong_source_name = McpCommandToolNameV1::new_checked(
+        let wrong_source_name = McpCommandToolNameV2::new_checked(
             contract.lineage().as_str(),
             "Other",
-            "riffdb.cmd.outcomeshapes.other",
+            "riffdb_cmd_outcomeshapes_other",
         )
         .expect("independently valid wrong command binding");
         assert_eq!(
@@ -9685,10 +9685,10 @@ contract OutcomeShapes version 1 {
             Err(ServiceDtoError::IdentityMismatch)
         );
 
-        let wrong_lineage_name = McpCommandToolNameV1::new_checked(
+        let wrong_lineage_name = McpCommandToolNameV2::new_checked(
             "Other",
             name.source_command_name(),
-            "riffdb.cmd.other.inspect",
+            "riffdb_cmd_other_inspect",
         )
         .expect("independently valid wrong lineage binding");
         assert_eq!(

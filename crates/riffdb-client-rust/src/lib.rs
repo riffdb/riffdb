@@ -63,6 +63,6 @@ pub use riffdb_errors::{
     ValidationIssue, ValidationIssues, ValidationPath, ValidationPathSegment,
 };
 pub use riffdb_types::{
-    BackupNameV1, BackupNameV1Error, OfflineMaintenanceOperationId,
-    OfflineMaintenanceReplacementConfirmation, RequestId,
+    BackupNameV1, BackupNameV1Error, DEFAULT_DATABASE_ALIAS, DatabaseAlias,
+    OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, RequestId,
 };

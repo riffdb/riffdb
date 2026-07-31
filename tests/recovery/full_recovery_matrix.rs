@@ -43,7 +43,7 @@ use riffdb_testkit::inspection::{DurableInspection, DurableInspectionRequest, in
 use riffdb_testkit::model::budget_projection_schema;
 use riffdb_testkit::process::{ChildProcessController, ChildProcessSpec};
 use riffdb_types::{
-    CommitSequence, DigestKeyId, EntityKey, EntityKeyBuilder, EntityTypeId, EventId,
+    CommitSequence, DatabaseAlias, DigestKeyId, EntityKey, EntityKeyBuilder, EntityTypeId, EventId,
     FrontierPosition, RequestId, Timestamp,
 };
 use tokio::time::timeout;
@@ -180,8 +180,10 @@ fn main() -> ExitCode {
             Err(_) => ExitCode::FAILURE,
         };
     }
-    if !std::env::args().any(|argument| argument == "--ignored") {
-        println!("full_recovery_matrix: 8 ignored");
+    let multi_database_only =
+        std::env::args().any(|argument| argument == "--multi-database-recovery-only");
+    if !multi_database_only && !std::env::args().any(|argument| argument == "--ignored") {
+        println!("full_recovery_matrix: 9 ignored");
         return ExitCode::SUCCESS;
     }
 
@@ -196,9 +198,18 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(run_matrix()) {
+    let result = if multi_database_only {
+        runtime.block_on(run_multi_database_staged_authorization_case())
+    } else {
+        runtime.block_on(run_matrix())
+    };
+    match result {
         Ok(()) => {
-            println!("full_recovery_matrix: 8 passed");
+            if multi_database_only {
+                println!("full_recovery_matrix: multi-database recovery passed");
+            } else {
+                println!("full_recovery_matrix: 9 passed");
+            }
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -218,7 +229,8 @@ async fn run_matrix() -> TestResult<()> {
     run_maintenance_daemon_case(MaintenanceDaemonCrash::DrainComplete).await?;
     run_maintenance_daemon_case(MaintenanceDaemonCrash::DatabaseClosed).await?;
     run_maintenance_daemon_case(MaintenanceDaemonCrash::StagedAuthorizationComplete).await?;
-    run_maintenance_daemon_case(MaintenanceDaemonCrash::FreshValidationComplete).await
+    run_maintenance_daemon_case(MaintenanceDaemonCrash::FreshValidationComplete).await?;
+    run_multi_database_staged_authorization_case().await
 }
 
 fn bootstrap_retention_child(crash: BootstrapRetentionCrash) -> ExitCode {
@@ -408,6 +420,145 @@ async fn run_maintenance_daemon_case(crash: MaintenanceDaemonCrash) -> TestResul
     Ok(())
 }
 
+async fn run_multi_database_staged_authorization_case() -> TestResult<()> {
+    let fixture = ProcessFixture::new("multi-staged-authorization")?;
+    let retained = fixture.retained_bootstrap()?;
+    let selected = DatabaseAlias::new("default")?;
+    let authenticated =
+        CallMetadata::authenticated(bearer_credential(&retained)?).with_database(selected.clone());
+
+    let mut seed_process = fixture.spawn_multi_riffdbd_with_mode(CHILD_RIFFDBD, "127.0.0.1:0")?;
+    let address = parse_ready_address(
+        &seed_process
+            .wait_for_readiness(READY_PREFIX, PROCESS_START_TIMEOUT)
+            .map_err(|error| test_failure(format!("multi-database seed readiness: {error}")))?,
+    )?;
+    let mut seed_client = connect(address).await?;
+    bootstrap_and_deploy_selected(
+        &mut seed_client,
+        &retained,
+        &authenticated,
+        selected.clone(),
+    )
+    .await?;
+
+    let backup_name = BackupNameV1::new("wp385-multi-restore-source")?;
+    let backup = CreateOfflineBackup::new(
+        generate_offline_maintenance_operation_id()?,
+        backup_name.clone(),
+    );
+    let started = bounded_rpc(
+        "multi-database source backup",
+        seed_client.create_offline_backup_with_retry(&backup, one_attempt(), &authenticated),
+    )
+    .await?;
+    assert_maintenance_accepted(&started, backup.operation_id())?;
+    drop(seed_client);
+    let mut seed_client = connect_eventually(address).await?;
+    poll_terminal_maintenance_eventually(&mut seed_client, backup.operation_id(), &authenticated)
+        .await?;
+    drop(seed_client);
+    seed_process.shutdown_cleanly(SHUTDOWN_COMMAND, PROCESS_STOP_TIMEOUT)?;
+
+    let mut armed = fixture.spawn_multi_riffdbd_with_mode(
+        MaintenanceDaemonCrash::StagedAuthorizationComplete.mode(),
+        &address.to_string(),
+    )?;
+    let rebound = parse_ready_address(
+        &armed
+            .wait_for_readiness(READY_PREFIX, PROCESS_START_TIMEOUT)
+            .map_err(|error| test_failure(format!("multi-database armed readiness: {error}")))?,
+    )?;
+    if rebound != address {
+        return Err(test_failure(
+            "multi-database armed restart changed the listener address",
+        ));
+    }
+    let mut armed_client = connect(address).await?;
+    let operation_id = generate_offline_maintenance_operation_id()?;
+    let restore = RestoreOfflineBackup::new(
+        operation_id,
+        backup_name.clone(),
+        OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget,
+    );
+    let started = bounded_rpc(
+        "multi-database armed restore",
+        armed_client.restore_offline_backup_with_retry(&restore, one_attempt(), &authenticated),
+    )
+    .await?;
+    assert_restore_maintenance_accepted(&started, operation_id)?;
+    drop(armed_client);
+    let aborted = armed.wait_for_exit(PROCESS_START_TIMEOUT)?;
+    if aborted.status.signal() != Some(ABORT_SIGNAL) {
+        return Err(test_failure(format!(
+            "multi-database maintenance child exited with {:?}, expected SIGABRT",
+            aborted.status
+        )));
+    }
+
+    let mut restarted =
+        fixture.spawn_multi_riffdbd_with_mode(CHILD_RIFFDBD, &address.to_string())?;
+    let mut retry_client = connect_eventually(address).await?;
+    let staged = start_restore_eventually(
+        &mut retry_client,
+        operation_id,
+        &backup_name,
+        &authenticated,
+    )
+    .await?;
+    let Some(operation) = staged.operation.as_ref() else {
+        return Err(test_failure(
+            "multi-database recovery omitted the same-operation receipt",
+        ));
+    };
+    if operation.operation_id != operation_id.into_bytes()
+        || staged.disposition != v1::OfflineMaintenanceStartDisposition::AlreadyAccepted as i32
+        || operation.phase != v1::OfflineMaintenancePhase::Offline as i32
+    {
+        return Err(test_failure(format!(
+            "multi-database recovery did not resume the exact restore: disposition={} phase={} failure={}",
+            staged.disposition, operation.phase, operation.failure
+        )));
+    }
+    let ready = parse_ready_address(
+        &restarted
+            .wait_for_readiness(READY_PREFIX, PROCESS_START_TIMEOUT)
+            .map_err(|error| {
+                test_failure(format!("multi-database recovered readiness: {error}"))
+            })?,
+    )?;
+    if ready != address {
+        return Err(test_failure(
+            "multi-database recovery changed the listener address",
+        ));
+    }
+    let terminal = restore_eventually(
+        &mut retry_client,
+        operation_id,
+        &backup_name,
+        &authenticated,
+    )
+    .await?;
+    let Some(operation) = terminal.operation.as_ref() else {
+        return Err(test_failure(
+            "multi-database recovery omitted its terminal receipt",
+        ));
+    };
+    if operation.operation_id != operation_id.into_bytes()
+        || terminal.disposition != v1::OfflineMaintenanceStartDisposition::Terminal as i32
+        || operation.phase != v1::OfflineMaintenancePhase::Succeeded as i32
+        || operation.failure != v1::OfflineMaintenanceFailureClass::Unspecified as i32
+    {
+        return Err(test_failure(
+            "multi-database recovery did not resolve terminal success",
+        ));
+    }
+    poll_terminal_maintenance(&mut retry_client, operation_id, &authenticated).await?;
+    drop(retry_client);
+    restarted.shutdown_cleanly(SHUTDOWN_COMMAND, PROCESS_STOP_TIMEOUT)?;
+    Ok(())
+}
+
 async fn create_backup_to_terminal(
     process: &mut ChildProcessController,
     mut client: RiffDbClient,
@@ -499,6 +650,49 @@ async fn poll_terminal_maintenance(
         ));
     }
     Ok(())
+}
+
+async fn poll_terminal_maintenance_eventually(
+    client: &mut RiffDbClient,
+    operation_id: OfflineMaintenanceOperationId,
+    metadata: &CallMetadata,
+) -> TestResult<()> {
+    timeout(PROCESS_START_TIMEOUT, async {
+        loop {
+            let request = v1::GetOfflineMaintenanceOperationRequest {
+                request_id: fresh_request_id_bytes()?,
+                operation_id: operation_id.into_bytes().to_vec(),
+            };
+            if let Ok(response) = client
+                .get_offline_maintenance_operation(request, metadata)
+                .await
+            {
+                let Some(v1::get_offline_maintenance_operation_response::Result::Found(operation)) =
+                    response.result
+                else {
+                    return Err(test_failure(
+                        "multi-database maintenance receipt disappeared",
+                    ));
+                };
+                if operation.phase == v1::OfflineMaintenancePhase::Succeeded as i32
+                    && operation.failure == v1::OfflineMaintenanceFailureClass::Unspecified as i32
+                {
+                    return Ok(());
+                }
+                if matches!(
+                    v1::OfflineMaintenancePhase::try_from(operation.phase),
+                    Ok(v1::OfflineMaintenancePhase::FailedClosed)
+                ) {
+                    return Err(test_failure(
+                        "multi-database maintenance reached terminal failure",
+                    ));
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .map_err(|_| test_failure("multi-database maintenance did not become observable"))?
 }
 
 async fn run_response_loss_case(loss: ResponseLoss) -> TestResult<()> {
@@ -772,6 +966,36 @@ async fn bootstrap_and_deploy(
     credential: &RetainedBootstrapCredential,
     authenticated: &CallMetadata,
 ) -> TestResult<()> {
+    bootstrap_and_deploy_with_metadata(
+        client,
+        credential,
+        authenticated,
+        bootstrap_metadata(credential)?,
+    )
+    .await
+}
+
+async fn bootstrap_and_deploy_selected(
+    client: &mut RiffDbClient,
+    credential: &RetainedBootstrapCredential,
+    authenticated: &CallMetadata,
+    database: DatabaseAlias,
+) -> TestResult<()> {
+    bootstrap_and_deploy_with_metadata(
+        client,
+        credential,
+        authenticated,
+        bootstrap_metadata(credential)?.with_database(database),
+    )
+    .await
+}
+
+async fn bootstrap_and_deploy_with_metadata(
+    client: &mut RiffDbClient,
+    credential: &RetainedBootstrapCredential,
+    authenticated: &CallMetadata,
+    bootstrap: BootstrapCallMetadata,
+) -> TestResult<()> {
     let request = bootstrap_request(credential)?;
     riffdb_proto::validate_public_message(&request).map_err(|error| {
         test_failure(format!(
@@ -780,7 +1004,7 @@ async fn bootstrap_and_deploy(
     })?;
     let response = bounded_rpc(
         "bootstrap capability creation",
-        client.create_bootstrap_capability(request, &bootstrap_metadata(credential)?),
+        client.create_bootstrap_capability(request, &bootstrap),
     )
     .await?;
     let Some(v1::create_capability_response::Result::Bootstrap(result)) = response.result else {
@@ -851,9 +1075,15 @@ fn assert_replayed_allocate(
         || response.provenance_uri.is_empty()
         || response.outcome_uri.is_none()
     {
-        return Err(test_failure(
-            "uncertain AllocateBudget did not resolve as the original replay",
-        ));
+        return Err(test_failure(format!(
+            "uncertain AllocateBudget did not resolve as the original replay: status={} sequence={} version={} durability={} provenance={} outcome_uri={}",
+            response.status,
+            response.commit_sequence,
+            response.contract_version,
+            response.durability_mode,
+            !response.provenance_uri.is_empty(),
+            response.outcome_uri.is_some(),
+        )));
     }
     let AllocateBudgetOutcome::Allocated { budget, remaining } =
         command.decode_outcome(response)?
@@ -1167,13 +1397,52 @@ async fn restore_eventually(
                         as i32,
             };
             match client.restore_offline_backup(request, metadata).await {
-                Ok(response) => return Ok(response),
+                Ok(response)
+                    if response.operation.as_ref().is_some_and(|operation| {
+                        matches!(
+                            v1::OfflineMaintenancePhase::try_from(operation.phase),
+                            Ok(
+                                v1::OfflineMaintenancePhase::Succeeded
+                                    | v1::OfflineMaintenancePhase::FailedClosed
+                            )
+                        )
+                    }) =>
+                {
+                    return Ok(response);
+                }
+                Ok(_) => tokio::task::yield_now().await,
                 Err(_) => tokio::task::yield_now().await,
             }
         }
     })
     .await
     .map_err(|_| test_failure("same-operation restore retry did not become terminal"))?
+}
+
+async fn start_restore_eventually(
+    client: &mut RiffDbClient,
+    operation_id: OfflineMaintenanceOperationId,
+    backup_name: &BackupNameV1,
+    metadata: &CallMetadata,
+) -> TestResult<v1::RestoreOfflineBackupResponse> {
+    timeout(PROCESS_START_TIMEOUT, async {
+        loop {
+            let request = v1::RestoreOfflineBackupRequest {
+                request_id: fresh_request_id_bytes()?,
+                operation_id: operation_id.into_bytes().to_vec(),
+                backup_name: backup_name.as_str().to_owned(),
+                replacement_confirmation:
+                    v1::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget
+                        as i32,
+            };
+            match client.restore_offline_backup(request, metadata).await {
+                Ok(response) => return Ok(response),
+                Err(_) => tokio::task::yield_now().await,
+            }
+        }
+    })
+    .await
+    .map_err(|_| test_failure("same-operation restore retry was not admitted"))?
 }
 
 async fn bounded_rpc<T, E>(
@@ -1222,6 +1491,9 @@ struct ProcessFixture {
     _directory: TemporaryDirectory,
     database: PathBuf,
     backup_root: PathBuf,
+    second_database: PathBuf,
+    second_backup_root: PathBuf,
+    multi_config: PathBuf,
     capability_keys: PathBuf,
     idempotency_keys: PathBuf,
     bootstrap: PathBuf,
@@ -1232,9 +1504,14 @@ impl ProcessFixture {
         let directory = TemporaryDirectory::new(label)?;
         let database = directory.path().join("riffdb.redb");
         let backup_root = directory.path().join("backups");
+        let second_database = directory.path().join("other.redb");
+        let second_backup_root = directory.path().join("other-backups");
+        let multi_config = directory.path().join("riffdb-multi.toml");
         let capability_keys = directory.path().join("capability.keys");
         let idempotency_keys = directory.path().join("idempotency.keys");
         let bootstrap = directory.path().join("bootstrap.credential");
+        fs::create_dir(&backup_root)?;
+        fs::create_dir(&second_backup_root)?;
         write_protected_file(&capability_keys, CAPABILITY_KEY_DOCUMENT)?;
         write_protected_file(&idempotency_keys, IDEMPOTENCY_KEY_DOCUMENT)?;
         let generated = generate_bootstrap_credential(BOOTSTRAP_UNIX_MILLISECONDS, &SystemEntropy)?;
@@ -1244,6 +1521,9 @@ impl ProcessFixture {
             _directory: directory,
             database,
             backup_root,
+            second_database,
+            second_backup_root,
+            multi_config,
             capability_keys,
             idempotency_keys,
             bootstrap,
@@ -1284,6 +1564,44 @@ impl ProcessFixture {
             .arg(self.capability_keys.as_os_str())?
             .arg("--idempotency-keys")?
             .arg(self.idempotency_keys.as_os_str())?;
+        Ok(ChildProcessController::spawn(&specification)?)
+    }
+
+    fn spawn_multi_riffdbd_with_mode(
+        &self,
+        mode: &str,
+        listen_address: &str,
+    ) -> TestResult<ChildProcessController> {
+        let document = format!(
+            "[server]\n\
+             grpc_listen = {listen_address:?}\n\
+             audience = {audience:?}\n\
+             capability_keys = {capability_keys:?}\n\
+             idempotency_keys = {idempotency_keys:?}\n\
+             \n\
+             [databases.default]\n\
+             path = {database:?}\n\
+             backup_root = {backup_root:?}\n\
+             environment = {environment:?}\n\
+             \n\
+             [databases.other]\n\
+             path = {second_database:?}\n\
+             backup_root = {second_backup_root:?}\n\
+             environment = {environment:?}\n",
+            audience = AUDIENCE,
+            capability_keys = self.capability_keys,
+            idempotency_keys = self.idempotency_keys,
+            database = self.database,
+            backup_root = self.backup_root,
+            environment = ENVIRONMENT,
+            second_database = self.second_database,
+            second_backup_root = self.second_backup_root,
+        );
+        fs::write(&self.multi_config, document)?;
+        let specification = ChildProcessSpec::new(std::env::current_exe()?)?
+            .env(CHILD_MODE, mode)?
+            .arg("--config")?
+            .arg(self.multi_config.as_os_str())?;
         Ok(ChildProcessController::spawn(&specification)?)
     }
 }

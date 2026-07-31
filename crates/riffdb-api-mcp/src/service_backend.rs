@@ -3811,6 +3811,7 @@ fn explained_command_presentation(
     McpExplainedCommandPresentation::new(
         contract_descriptor(explained.contract())?,
         source_command.as_str(),
+        explained.tool_name().as_str(),
         *explained.plan_hash().as_bytes(),
         explanation,
         input_schema,

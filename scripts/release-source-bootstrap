@@ -5,15 +5,17 @@ umask 077
 
 usage() {
     printf '%s\n' \
-        'usage: cargo riffdb bootstrap (--user | --system) [--register-codex]' \
+        'usage: cargo riffdb bootstrap (--user | --system) [--database ALIAS] [--register-codex]' \
         '' \
-        'Bootstraps one new local POC database, deploys the checked budget' \
-        'contract, creates a restricted MCP capability, and writes user-owned' \
-        'client configuration. This is an explicit authoritative operation.' >&2
+        'Bootstraps one generic local POC database, creates an MCP developer' \
+        'capability, and writes user-owned client configuration. It does not' \
+        'deploy an application. This is an explicit authoritative operation.' >&2
 }
 
 scope=
 register_codex=false
+database_alias=default
+database_selected=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --user|--system)
@@ -25,6 +27,16 @@ while [[ $# -gt 0 ]]; do
             ;;
         --register-codex)
             register_codex=true
+            ;;
+        --database)
+            if [[ "$database_selected" == true || $# -lt 2 \
+               || ! "$2" =~ ^[a-z][a-z0-9_-]{0,63}$ ]]; then
+                usage
+                exit 2
+            fi
+            database_alias="$2"
+            database_selected=true
+            shift
             ;;
         -h|--help)
             usage
@@ -125,18 +137,25 @@ ensure_private_directory() {
 ensure_private_directory "$config_dir"
 ensure_private_directory "$state_dir"
 
-owner_credential="$config_dir/operator.credential"
-client_config="$config_dir/client.toml"
-mcp_credential="$config_dir/mcp.credential"
-mcp_config="$config_dir/mcp.toml"
-bootstrap_credential="$state_dir/bootstrap.credential"
-bootstrap_request="$state_dir/bootstrap-local-owner.json"
-mcp_request="$state_dir/mcp-budget-agent.json"
-owner_capability_id="$state_dir/operator-capability.id"
-mcp_pending_id="$state_dir/mcp-capability.pending-id"
-mcp_capability_id="$state_dir/mcp-capability.id"
-owner_candidate="$config_dir/.operator.credential.new"
-mcp_candidate="$config_dir/.mcp.credential.new"
+if [[ "$database_alias" == default ]]; then
+    database_suffix=
+    codex_name=riffdb
+else
+    database_suffix="-$database_alias"
+    codex_name="riffdb_$database_alias"
+fi
+owner_credential="$config_dir/operator$database_suffix.credential"
+client_config="$config_dir/client$database_suffix.toml"
+mcp_credential="$config_dir/mcp$database_suffix.credential"
+mcp_config="$config_dir/mcp$database_suffix.toml"
+bootstrap_credential="$state_dir/bootstrap$database_suffix.credential"
+bootstrap_request="$state_dir/bootstrap-local-owner$database_suffix.json"
+mcp_request="$state_dir/mcp-local-developer$database_suffix.json"
+owner_capability_id="$state_dir/operator-capability$database_suffix.id"
+mcp_pending_id="$state_dir/mcp-capability$database_suffix.pending-id"
+mcp_capability_id="$state_dir/mcp-capability$database_suffix.id"
+owner_candidate="$config_dir/.operator$database_suffix.credential.new"
+mcp_candidate="$config_dir/.mcp$database_suffix.credential.new"
 
 require_safe_destination() {
     local path="$1"
@@ -285,19 +304,17 @@ install_exact_private \
     release/config/bootstrap-local-owner.json.example \
     "$bootstrap_request"
 install_exact_private \
-    release/config/mcp-budget-agent.json.example \
+    release/config/mcp-local-developer.json.example \
     "$mcp_request"
 
 bootstrap_result="$(mktemp "$state_dir/.bootstrap-result.XXXXXX")"
 create_result="$(mktemp "$state_dir/.create-result.XXXXXX")"
-validate_result="$(mktemp "$state_dir/.validate-result.XXXXXX")"
-deploy_result="$(mktemp "$state_dir/.deploy-result.XXXXXX")"
 health_result="$(mktemp "$state_dir/.health-result.XXXXXX")"
 owner_id_candidate=
 mcp_id_candidate=
 cleanup() {
-    rm -f "$bootstrap_result" "$create_result" "$validate_result" \
-        "$deploy_result" "$health_result" "${codex_list:-}" \
+    rm -f "$bootstrap_result" "$create_result" "$health_result" \
+        "${codex_list:-}" \
         "$owner_id_candidate" "$mcp_id_candidate"
 }
 trap cleanup EXIT INT TERM
@@ -334,7 +351,7 @@ if [[ ! -e "$owner_credential" ]]; then
         )
     fi
 
-    if ! "$riffdb" --endpoint "$endpoint" --output json \
+    if ! "$riffdb" --endpoint "$endpoint" --database "$database_alias" --output json \
         capability bootstrap \
         --request "$bootstrap_request" \
         "${bootstrap_args[@]}" \
@@ -397,6 +414,7 @@ client_candidate="$(mktemp "$config_dir/.client.toml.XXXXXX")"
 {
     printf '%s\n' '[client]'
     printf 'endpoint = %s\n' "$(toml_quote "$endpoint")"
+    printf 'database = %s\n' "$(toml_quote "$database_alias")"
     printf '%s\n' 'output = "human"' 'max_attempts = 3'
     printf 'credential_file = %s\n' "$(toml_quote "$owner_credential")"
 } >"$client_candidate"
@@ -404,45 +422,35 @@ chmod 0600 "$client_candidate"
 install_exact_private "$client_candidate" "$client_config"
 rm -f "$client_candidate"
 
-contract="$repo_root/contracts/examples/budget.riff"
-"$riffdb" --config "$client_config" --output json \
-    contract validate "$contract" >"$validate_result"
-if ! jq -e '
-    .schema == "riffdb.cli.output/v1"
-    and .command == "contract.validate"
-    and .ok == true
-    and .result.status == "valid"
-' "$validate_result" >/dev/null; then
-    printf '%s\n' 'checked budget contract did not validate' >&2
-    exit 1
-fi
-"$riffdb" --config "$client_config" --output json \
-    contract deploy "$contract" >"$deploy_result"
-if ! jq -e '
-    .schema == "riffdb.cli.output/v1"
-    and .command == "contract.deploy"
-    and .ok == true
-    and (
-        .result.status == "activated"
-        or .result.status == "already_active"
-    )
-' "$deploy_result" >/dev/null; then
-    printf '%s\n' 'checked budget contract did not activate exactly' >&2
-    exit 1
-fi
-
 if ! "$riffdb" --config "$client_config" --output json \
     server health >"$health_result"; then
-    printf '%s\n' 'authenticated RiffDB health failed after deployment' >&2
+    printf '%s\n' 'authenticated RiffDB health failed after bootstrap' >&2
     exit 1
 fi
 if ! jq -e '
     .schema == "riffdb.cli.output/v1"
     and .command == "server.health"
     and .ok == true
-    and .result.status == "ready"
+    and .result.status == "not_ready"
+    and .result.active_contract_version == null
+    and .result.last_commit_sequence == null
+    and (.result.components | length) == 5
+    and ([.result.components[]
+          | select(.component == "authoritative_storage"
+                   or .component == "catalog"
+                   or .component == "commit_coordinator")]
+         == [
+           {"component": "authoritative_storage", "status": "healthy"},
+           {"component": "catalog", "status": "healthy"},
+           {"component": "commit_coordinator", "status": "healthy"}
+         ])
+    and all(.result.components[]
+            | select(.component == "projection"
+                     or .component == "outbox");
+            .status == "healthy" or .status == "degraded")
 ' "$health_result" >/dev/null; then
-    printf '%s\n' 'RiffDB did not report ready health after deployment' >&2
+    printf '%s\n' \
+        'RiffDB did not report the exact deployment-required health state' >&2
     exit 1
 fi
 rm -f "$bootstrap_credential"
@@ -575,21 +583,39 @@ mcp_candidate_config="$(mktemp "$config_dir/.mcp.toml.XXXXXX")"
 {
     printf '%s\n' '[mcp]'
     printf 'endpoint = %s\n' "$(toml_quote "$endpoint")"
+    printf 'database = %s\n' "$(toml_quote "$database_alias")"
     printf 'credential_file = %s\n' "$(toml_quote "$mcp_credential")"
 } >"$mcp_candidate_config"
 chmod 0600 "$mcp_candidate_config"
 install_exact_private "$mcp_candidate_config" "$mcp_config"
 rm -f "$mcp_candidate_config"
 
-"$riffdb" --endpoint "$endpoint" --output json \
+"$riffdb" --endpoint "$endpoint" --database "$database_alias" --output json \
     --credential-file "$mcp_credential" server health >"$health_result"
 if ! jq -e '
     .schema == "riffdb.cli.output/v1"
     and .command == "server.health"
     and .ok == true
-    and .result.status == "ready"
+    and .result.status == "not_ready"
+    and .result.active_contract_version == null
+    and .result.last_commit_sequence == null
+    and (.result.components | length) == 5
+    and ([.result.components[]
+          | select(.component == "authoritative_storage"
+                   or .component == "catalog"
+                   or .component == "commit_coordinator")]
+         == [
+           {"component": "authoritative_storage", "status": "healthy"},
+           {"component": "catalog", "status": "healthy"},
+           {"component": "commit_coordinator", "status": "healthy"}
+         ])
+    and all(.result.components[]
+            | select(.component == "projection"
+                     or .component == "outbox");
+            .status == "healthy" or .status == "degraded")
 ' "$health_result" >/dev/null; then
-    printf '%s\n' 'restricted MCP credential failed authenticated health' >&2
+    printf '%s\n' \
+        'MCP developer credential did not observe deployment-required health' >&2
     exit 1
 fi
 
@@ -615,21 +641,24 @@ if "$register_codex"; then
             'Codex returned an invalid MCP inventory; registration was not changed' >&2
         exit 1
     fi
-    if jq -e 'any(.[]; .name == "riffdb")' "$codex_list" >/dev/null; then
+    if jq -e --arg name "$codex_name" 'any(.[]; .name == $name)' \
+        "$codex_list" >/dev/null; then
         rm -f "$codex_list"
         printf '%s\n' \
-            'Codex already has an MCP server named riffdb; registration was not changed' >&2
+            "Codex already has an MCP server named $codex_name; registration was not changed" >&2
         exit 1
     fi
     rm -f "$codex_list"
-    "$codex_command" mcp add riffdb -- \
+    "$codex_command" mcp add "$codex_name" -- \
         "$riffdb_mcp" --config "$mcp_config"
 fi
 
 printf '%s\n' \
-    "RiffDB local POC bootstrap is ready at $endpoint." \
+    "RiffDB generic local POC bootstrap completed at $endpoint." \
     "CLI config: $client_config" \
     "MCP config: $mcp_config" \
-    'The MCP capability grants catalog/health reads and checked LegalSpend access.' \
+    'Health is not_ready until the first application contract is deployed.' \
+    'The MCP developer can validate, inspect, and deploy contracts and read health.' \
+    'Application commands require an exact post-deployment role or capability.' \
     'POC capabilities expire after at most 30 days; this is not production-ready.' \
-    "Register later with: codex mcp add riffdb -- $riffdb_mcp --config $mcp_config"
+    "Register later with: codex mcp add $codex_name -- $riffdb_mcp --config $mcp_config"

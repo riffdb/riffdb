@@ -69,7 +69,7 @@ const CAPABILITY_TOKEN: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 const CAPABILITY_KEYS: &[u8] = b"riffdb-capability-digest-keys-v1\n1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n";
 const LINEAGE: &str = "grpc-projection";
 const SERVER_GENERATION: [u8; 16] = [0xa5; 16];
-const OUTCOME_LOCATOR: &str = "riffdb://outcome/agent_01/legalspend/2/riffdb.cmd.legalspend.allocatebudget/AQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const OUTCOME_LOCATOR: &str = "riffdb://outcome/agent_01/legalspend/2/riffdb_cmd_legalspend_allocatebudget/AQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ObservedInvocation {

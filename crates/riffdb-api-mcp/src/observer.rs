@@ -2151,7 +2151,7 @@ mod tests {
         );
 
         let command = McpVisibleFingerprint::command_tool(
-            "riffdb.cmd.orders.place",
+            "riffdb_cmd_orders_place",
             "PlaceOrder",
             "orders",
             1,
@@ -2161,7 +2161,7 @@ mod tests {
         )
         .expect("command tool");
         let changed = McpVisibleFingerprint::command_tool(
-            "riffdb.cmd.orders.place",
+            "riffdb_cmd_orders_place",
             "PlaceOrder",
             "orders",
             2,
@@ -2174,7 +2174,7 @@ mod tests {
         assert_eq!(
             command,
             McpVisibleFingerprint::command_tool(
-                "riffdb.cmd.orders.place",
+                "riffdb_cmd_orders_place",
                 "PlaceOrder",
                 "orders",
                 1,

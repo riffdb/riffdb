@@ -1,0 +1,33 @@
+{
+  "principal_id": "riffdb-local-mcp-developer",
+  "actor_kind": "agent",
+  "requested_lifetime_seconds": 2505600,
+  "audiences": [
+    "riffdb-grpc-loopback"
+  ],
+  "grant": {
+    "tenant_scope": {
+      "type": "global"
+    },
+    "partition_scope": {
+      "type": "all"
+    },
+    "permissions": [
+      {
+        "type": "validate_contract"
+      },
+      {
+        "type": "read_contract"
+      },
+      {
+        "type": "deploy_contract"
+      },
+      {
+        "type": "read_health"
+      }
+    ],
+    "field_visibility": [],
+    "max_scan_rows": 1,
+    "approval_required": []
+  }
+}

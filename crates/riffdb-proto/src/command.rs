@@ -169,16 +169,7 @@ pub fn validate_outcome_resource_locator(uri: &str) -> Result<(), ExecuteWireErr
     {
         return Err(ExecuteWireError::InvalidOutcomeUri);
     }
-    let tool_contract = validate_mcp_command_tool_name(tool_name)?;
-    if !lineage.is_ascii()
-        || lineage
-            .iter()
-            .copied()
-            .map(|byte| byte.to_ascii_lowercase())
-            .ne(tool_contract.bytes())
-    {
-        return Err(ExecuteWireError::InvalidOutcomeUri);
-    }
+    validate_mcp_command_tool_name(tool_name, &lineage)?;
     if digest.len() != 50 {
         return Err(ExecuteWireError::InvalidOutcomeUri);
     }
@@ -239,21 +230,27 @@ fn uppercase_hex(byte: u8) -> Result<u8, ExecuteWireError> {
     }
 }
 
-fn validate_mcp_command_tool_name(value: &str) -> Result<&str, ExecuteWireError> {
-    let suffix = value
-        .strip_prefix("riffdb.cmd.")
-        .ok_or(ExecuteWireError::InvalidOutcomeUri)?;
-    let mut segments = suffix.split('.');
-    let contract = segments.next().ok_or(ExecuteWireError::InvalidOutcomeUri)?;
-    let command = segments.next().ok_or(ExecuteWireError::InvalidOutcomeUri)?;
-    if value.len() > 128
-        || segments.next().is_some()
-        || !valid_mcp_segment(contract)
-        || !valid_mcp_segment(command)
-    {
+fn validate_mcp_command_tool_name(value: &str, lineage: &[u8]) -> Result<(), ExecuteWireError> {
+    if !lineage.is_ascii() {
         return Err(ExecuteWireError::InvalidOutcomeUri);
     }
-    Ok(contract)
+    let normalized = lineage
+        .iter()
+        .copied()
+        .map(|byte| byte.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let mut prefix = b"riffdb_cmd_".to_vec();
+    prefix.extend_from_slice(&normalized);
+    prefix.push(b'_');
+    let command = value
+        .as_bytes()
+        .strip_prefix(prefix.as_slice())
+        .ok_or(ExecuteWireError::InvalidOutcomeUri)?;
+    let command = std::str::from_utf8(command).map_err(|_| ExecuteWireError::InvalidOutcomeUri)?;
+    if value.len() > 128 || !valid_mcp_segment(command) {
+        return Err(ExecuteWireError::InvalidOutcomeUri);
+    }
+    Ok(())
 }
 
 fn valid_mcp_segment(value: &str) -> bool {

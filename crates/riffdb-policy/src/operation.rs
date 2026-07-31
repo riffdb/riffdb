@@ -191,43 +191,43 @@ impl fmt::Debug for EntitySchemaCandidate {
 /// One SPEC POC fixed MCP tool considered for policy-filtered discovery.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum FixedToolCandidate {
-    /// `riffdb.contract.validate`.
+    /// `riffdb_contract_validate`.
     ValidateContract,
-    /// `riffdb.contract.get_active`.
+    /// `riffdb_contract_get_active`.
     GetActiveContract,
-    /// `riffdb.contract.explain_command`.
+    /// `riffdb_contract_explain_command`.
     ExplainCommand,
-    /// `riffdb.contract.deploy`.
+    /// `riffdb_contract_deploy`.
     DeployContract,
-    /// `riffdb.command.get_outcome`.
+    /// `riffdb_command_get_outcome`.
     ResolveCommandOutcome,
-    /// `riffdb.entity.get`.
+    /// `riffdb_entity_get`.
     GetEntity,
-    /// `riffdb.entity.scan_index`.
+    /// `riffdb_entity_scan_index`.
     ScanIndex,
-    /// `riffdb.commit.get`.
+    /// `riffdb_commit_get`.
     GetCommit,
-    /// `riffdb.commit.scan`.
+    /// `riffdb_commit_scan`.
     ScanCommits,
-    /// `riffdb.provenance.trace`.
+    /// `riffdb_provenance_trace`.
     TraceProvenance,
-    /// `riffdb.projection.query`.
+    /// `riffdb_projection_query`.
     QueryProjection,
-    /// `riffdb.projection.status`.
+    /// `riffdb_projection_status`.
     GetProjectionStatus,
-    /// `riffdb.outbox.list_pending`.
+    /// `riffdb_outbox_list_pending`.
     ListPendingOutboxDeliveries,
-    /// `riffdb.server.health`.
+    /// `riffdb_server_health`.
     GetHealth,
-    /// `riffdb.contract.describe`.
+    /// `riffdb_contract_describe`.
     DescribeContract,
-    /// `riffdb.query.check`.
+    /// `riffdb_query_check`.
     CheckQuery,
-    /// `riffdb.query.explain`.
+    /// `riffdb_query_explain`.
     ExplainQuery,
     /// `riffdb.query`.
     ExecuteQuery,
-    /// `riffdb.command.run`.
+    /// `riffdb_command_run`.
     RunCommand,
 }
 

@@ -1781,6 +1781,8 @@ pub struct ExplainedCommand {
     pub input_schema: ::core::option::Option<GeneratedSchemaArtifact>,
     #[prost(message, optional, tag = "6")]
     pub outcome_schema: ::core::option::Option<GeneratedSchemaArtifact>,
+    #[prost(string, tag = "7")]
+    pub tool_name: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExplainCommandResponse {

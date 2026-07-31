@@ -415,26 +415,26 @@ const OPERATION_ENVELOPE_SCHEMA_PATH: &str =
     "crates/riffdb-service/schema/riffdb.command-operation-envelope-v1.schema.json";
 const GET_OUTCOME_RESULT_SCHEMA_PATH: &str =
     "crates/riffdb-service/schema/riffdb.command-get-outcome-result-v1.schema.json";
-const OPERATION_ENVELOPE_SCHEMA_BYTES: usize = 2_561;
-const GET_OUTCOME_RESULT_SCHEMA_BYTES: usize = 4_745;
+const OPERATION_ENVELOPE_SCHEMA_BYTES: usize = 2_549;
+const GET_OUTCOME_RESULT_SCHEMA_BYTES: usize = 4_739;
 const OPERATION_ENVELOPE_SCHEMA_HASH: &str =
-    "781ff93c2dbfd2ee2bec286f7810300a0fec0a170548b1405cb8ba2ac8d90398";
+    "1f83b878c052f53c6eb733b67cd7926fb7ea3729f1d469e0fd9aa8a13f6b44d2";
 const GET_OUTCOME_RESULT_SCHEMA_HASH: &str =
-    "4056f01c297120b06ac905f33482132a9085865975ada36e2396a61ebf19fc0d";
+    "0c1f33fbc613b9e87c4a54ccc2f7c1d426625cc0cb98237e2bded4bec073ddde";
 const OPERATION_SCHEMA_SOURCE_MAX_BYTES: usize = 65_536;
 const OPERATION_SCHEMA_AGGREGATE_CHARGE_MAX_BYTES: usize = 131_584;
-const OPERATION_SCHEMA_FULL_CATALOG_BYTES: usize = 7_554;
+const OPERATION_SCHEMA_FULL_CATALOG_BYTES: usize = 7_536;
 const OPERATION_SCHEMA_IDENTITY_CATALOG_BYTES: usize = 148;
-const OPERATION_SCHEMA_COMPOSITION_BYTES: usize = 4_892;
+const OPERATION_SCHEMA_COMPOSITION_BYTES: usize = 4_880;
 const OPERATION_SCHEMA_COMPOSITION_HASH: &str =
-    "7133befc751d1a60d08ab993f2d03e98a73e75accf1963ace0e636c6e55b5c77";
+    "0d8555e0be0947bf59c5b642d84606446b69fe5ec4690451c801321e5c0aaefd";
 const REPRESENTATIVE_OUTCOME_SCHEMA_PATH: &str = "fixtures/compiler/schemas/04-00000002.json";
 const REPRESENTATIVE_OUTCOME_SCHEMA_BYTES: usize = 2_393;
 const REPRESENTATIVE_OUTCOME_SCHEMA_HASH: &str =
     "f711c1596dee5a94f03d6b727cc47ebc9a35e6f9a35cd6a84b52cdebd3850f6c";
 const REPRESENTATIVE_BUNDLE_HASH_PATH: &str = "fixtures/compiler/bundle-hash.txt";
 const REPRESENTATIVE_BUNDLE_HASH: &str =
-    "8a22cd047f46682a37468c40900fd67161f1a1d52d71b221d1eb9c9caa74cf5f";
+    "c378308ef865886bb10b9da26515c715b5e9a9fcc9c8737584df6db5bd2e889a";
 
 struct OperationSchemaCheckpoint {
     manifest: String,
@@ -3097,7 +3097,7 @@ fn append_discover_resource_vectors(
     let outcome = || v1::CommandOutcomeResource {
         contract_lineage: "budget".to_owned(),
         command_id: 1,
-        tool_name: "riffdb.cmd.budget.reserve".to_owned(),
+        tool_name: "riffdb_cmd_budget_reserve".to_owned(),
     };
     let full_items = vec![
         v1::ResourceDescriptor {
@@ -3777,7 +3777,7 @@ fn public_discovery_fence_for_version(
 
 fn public_command_tool_descriptor() -> v1::CommandToolDescriptor {
     v1::CommandToolDescriptor {
-        tool_name: "riffdb.cmd.budget.reserve".to_owned(),
+        tool_name: "riffdb_cmd_budget_reserve".to_owned(),
         source_command: "reserve".to_owned(),
         contract_lineage: "budget".to_owned(),
         contract_version: 1,
@@ -3793,7 +3793,7 @@ fn public_command_tool_descriptor() -> v1::CommandToolDescriptor {
 
 fn public_compact_command_tool_descriptor() -> v1::CompactCommandToolDescriptor {
     v1::CompactCommandToolDescriptor {
-        tool_name: "riffdb.cmd.budget.reserve".to_owned(),
+        tool_name: "riffdb_cmd_budget_reserve".to_owned(),
         source_command: "reserve".to_owned(),
         contract_lineage: "budget".to_owned(),
         contract_version: 1,
@@ -3829,7 +3829,7 @@ fn public_fixed_tool_kinds() -> [v1::FixedToolKind; 14] {
 fn public_boundary_command_tool_descriptor(command_id: u32) -> v1::CommandToolDescriptor {
     let source_command = format!("command{command_id:04}");
     v1::CommandToolDescriptor {
-        tool_name: format!("riffdb.cmd.budget.{source_command}"),
+        tool_name: format!("riffdb_cmd_budget_{source_command}"),
         source_command,
         contract_lineage: "budget".to_owned(),
         contract_version: 1,
@@ -3848,7 +3848,7 @@ fn public_boundary_compact_command_tool_descriptor(
 ) -> v1::CompactCommandToolDescriptor {
     let source_command = format!("command{command_id:04}");
     v1::CompactCommandToolDescriptor {
-        tool_name: format!("riffdb.cmd.budget.{source_command}"),
+        tool_name: format!("riffdb_cmd_budget_{source_command}"),
         source_command,
         contract_lineage: "budget".to_owned(),
         contract_version: 1,
@@ -3933,7 +3933,7 @@ fn response_charge_command_tool_descriptor(
     outcome_schema_json_bytes: usize,
 ) -> v1::CommandToolDescriptor {
     v1::CommandToolDescriptor {
-        tool_name: format!("riffdb.cmd.{lineage}.{source_command}"),
+        tool_name: format!("riffdb_cmd_{lineage}_{source_command}"),
         source_command: source_command.to_owned(),
         contract_lineage: lineage.to_owned(),
         contract_version: 1,
@@ -3965,7 +3965,7 @@ fn response_charge_representative_command_tool_descriptor() -> v1::CommandToolDe
         }
     };
     v1::CommandToolDescriptor {
-        tool_name: "riffdb.cmd.legalspend.createbudget".to_owned(),
+        tool_name: "riffdb_cmd_legalspend_createbudget".to_owned(),
         source_command: "CreateBudget".to_owned(),
         contract_lineage: "LegalSpend".to_owned(),
         contract_version: 1,
@@ -3993,7 +3993,7 @@ fn response_charge_compact_command_tool_descriptor_for(
         schema_hash: vec![0x77; 32],
     };
     v1::CompactCommandToolDescriptor {
-        tool_name: format!("riffdb.cmd.{contract_lineage}.{source_command}"),
+        tool_name: format!("riffdb_cmd_{contract_lineage}_{source_command}"),
         source_command: source_command.to_owned(),
         contract_lineage: contract_lineage.to_owned(),
         contract_version: u64::MAX,
@@ -4110,6 +4110,7 @@ fn public_explained_command() -> v1::ExplainedCommand {
     v1::ExplainedCommand {
         contract: Some(public_contract_descriptor()),
         command_id: 1,
+        tool_name: "riffdb_cmd_legalspend_allocatebudget".to_owned(),
         plan_hash: vec![0x55; 32],
         explanation: Some(v1::CommandExplain {
             command_id: 1,
@@ -4170,7 +4171,7 @@ fn public_outcome_uri() -> String {
     digest_tuple.extend_from_slice(&1_u32.to_be_bytes());
     digest_tuple.extend_from_slice(&[0x77; 32]);
     format!(
-        "riffdb://outcome/principal/budget/1/riffdb.cmd.budget.reserve/{}",
+        "riffdb://outcome/principal/budget/1/riffdb_cmd_budget_reserve/{}",
         URL_SAFE_NO_PAD.encode(digest_tuple)
     )
 }

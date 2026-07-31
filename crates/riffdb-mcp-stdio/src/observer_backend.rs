@@ -407,7 +407,7 @@ mod tests {
             v1::CompactCommandToolDiscoveryItem {
                 item: Some(v1::compact_command_tool_discovery_item::Item::CommandTool(
                     v1::CompactCommandToolDescriptor {
-                        tool_name: "riffdb.cmd.orders.place".to_owned(),
+                        tool_name: "riffdb_cmd_orders_place".to_owned(),
                         source_command: "PlaceOrder".to_owned(),
                         contract_lineage: "orders".to_owned(),
                         contract_version: 1,
@@ -437,7 +437,7 @@ mod tests {
         assert_eq!(
             fingerprints[1],
             McpVisibleFingerprint::command_tool(
-                "riffdb.cmd.orders.place",
+                "riffdb_cmd_orders_place",
                 "PlaceOrder",
                 "orders",
                 1,

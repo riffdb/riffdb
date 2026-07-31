@@ -8,6 +8,9 @@ use tonic::Request;
 use tonic::metadata::{Ascii, Binary, MetadataValue};
 use zeroize::Zeroizing;
 
+use riffdb_api_grpc::DATABASE_METADATA_KEY;
+use riffdb_types::DatabaseAlias;
+
 const CAPABILITY_TOKEN_BYTES: usize = 43;
 const MAX_TRACE_PARENT_BYTES: usize = 512;
 const BOOTSTRAP_TOKEN_METADATA_KEY: &str = "riffdb-bootstrap-token-bin";
@@ -128,6 +131,7 @@ impl fmt::Debug for TraceParent {
 pub struct CallMetadata {
     credential: Option<BearerCredential>,
     trace_parent: Option<TraceParent>,
+    database: Option<DatabaseAlias>,
 }
 
 impl CallMetadata {
@@ -137,6 +141,7 @@ impl CallMetadata {
         Self {
             credential: Some(credential),
             trace_parent: None,
+            database: None,
         }
     }
 
@@ -144,6 +149,13 @@ impl CallMetadata {
     #[must_use]
     pub fn with_trace_parent(mut self, trace_parent: TraceParent) -> Self {
         self.trace_parent = Some(trace_parent);
+        self
+    }
+
+    /// Binds every request using this metadata to one canonical database.
+    #[must_use]
+    pub fn with_database(mut self, database: DatabaseAlias) -> Self {
+        self.database = Some(database);
         self
     }
 
@@ -158,6 +170,11 @@ impl CallMetadata {
                 .metadata_mut()
                 .insert("traceparent", trace_parent.value.clone());
         }
+        if let Some(database) = &self.database {
+            let value = MetadataValue::from_str(database.as_str())
+                .expect("DatabaseAlias is valid ASCII metadata");
+            request.metadata_mut().insert(DATABASE_METADATA_KEY, value);
+        }
     }
 }
 
@@ -165,6 +182,7 @@ impl CallMetadata {
 pub struct BootstrapCallMetadata {
     credential: BootstrapCredential,
     trace_parent: Option<TraceParent>,
+    database: Option<DatabaseAlias>,
 }
 
 impl BootstrapCallMetadata {
@@ -174,6 +192,7 @@ impl BootstrapCallMetadata {
         Self {
             credential,
             trace_parent: None,
+            database: None,
         }
     }
 
@@ -181,6 +200,13 @@ impl BootstrapCallMetadata {
     #[must_use]
     pub fn with_trace_parent(mut self, trace_parent: TraceParent) -> Self {
         self.trace_parent = Some(trace_parent);
+        self
+    }
+
+    /// Binds the loopback bootstrap request to one canonical database.
+    #[must_use]
+    pub fn with_database(mut self, database: DatabaseAlias) -> Self {
+        self.database = Some(database);
         self
     }
 
@@ -192,6 +218,11 @@ impl BootstrapCallMetadata {
             request
                 .metadata_mut()
                 .insert("traceparent", trace_parent.value.clone());
+        }
+        if let Some(database) = &self.database {
+            let value = MetadataValue::from_str(database.as_str())
+                .expect("DatabaseAlias is valid ASCII metadata");
+            request.metadata_mut().insert(DATABASE_METADATA_KEY, value);
         }
     }
 }
@@ -230,7 +261,8 @@ mod tests {
     #[test]
     fn call_metadata_uses_only_reviewed_headers() {
         let metadata = CallMetadata::authenticated(BearerCredential::new(TOKEN).expect("token"))
-            .with_trace_parent(TraceParent::new("00-abc-def-01").expect("ASCII metadata"));
+            .with_trace_parent(TraceParent::new("00-abc-def-01").expect("ASCII metadata"))
+            .with_database(DatabaseAlias::new("ea_local").expect("database"));
         let mut request = Request::new(());
         metadata.apply(&mut request);
         assert_eq!(
@@ -246,14 +278,22 @@ mod tests {
             request.metadata().get("traceparent").expect("traceparent"),
             "00-abc-def-01"
         );
-        assert_eq!(request.metadata().len(), 2);
+        assert_eq!(
+            request
+                .metadata()
+                .get(DATABASE_METADATA_KEY)
+                .expect("database"),
+            "ea_local"
+        );
+        assert_eq!(request.metadata().len(), 3);
     }
 
     #[test]
     fn bootstrap_metadata_is_binary_and_disjoint_from_authorization() {
         let metadata = BootstrapCallMetadata::new(
             BootstrapCredential::new(TOKEN).expect("bounded token text"),
-        );
+        )
+        .with_database(DatabaseAlias::new("bootstrap_db").expect("database"));
         let mut request = Request::new(());
         metadata.apply(&mut request);
 
@@ -268,7 +308,14 @@ mod tests {
                 .as_ref(),
             TOKEN.as_bytes()
         );
-        assert_eq!(request.metadata().len(), 1);
+        assert_eq!(
+            request
+                .metadata()
+                .get(DATABASE_METADATA_KEY)
+                .expect("database"),
+            "bootstrap_db"
+        );
+        assert_eq!(request.metadata().len(), 2);
         assert!(!format!("{metadata:?}").contains(TOKEN));
     }
 }

@@ -123,22 +123,22 @@ builder_responses="$work_root/builder-responses.jsonl"
     printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
     printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
     printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"resources/list","params":{}}'
-    printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"riffdb.builder.application_check","arguments":{}}}'
-    printf '%s\n' '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"riffdb.builder.lock_preview","arguments":{}}}'
-    printf '%s\n' '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"riffdb.builder.lock_write","arguments":{}}}'
-    printf '%s\n' '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"riffdb.builder.generate","arguments":{}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"riffdb_builder_application_check","arguments":{}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"riffdb_builder_lock_preview","arguments":{}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"riffdb_builder_lock_write","arguments":{}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"riffdb_builder_generate","arguments":{}}}'
     printf '%s\n' '{"jsonrpc":"2.0","id":8,"method":"resources/read","params":{"uri":"riffdb-builder://reference/contract-language"}}'
 } | "$bundle/bin/riffdb-builder-mcp" \
     --workspace "$work_root/existing-empty" >"$builder_responses"
 
 jq -se '
   (map(select(.id == 2))[0].result.tools | map(.name)) == [
-    "riffdb.builder.describe",
-    "riffdb.builder.application_check",
-    "riffdb.builder.diagnostic_explain",
-    "riffdb.builder.lock_preview",
-    "riffdb.builder.lock_write",
-    "riffdb.builder.generate"
+    "riffdb_builder_describe",
+    "riffdb_builder_application_check",
+    "riffdb_builder_diagnostic_explain",
+    "riffdb_builder_lock_preview",
+    "riffdb_builder_lock_write",
+    "riffdb_builder_generate"
   ]
   and (map(select(.id == 3))[0].result.resources | length) == 5
   and map(select(.id == 4))[0].result.structuredContent.status == "checked"
@@ -166,7 +166,7 @@ fi
 {
     printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"acceptance","version":"1"}}}'
     printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
-    printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"riffdb.builder.application_check","arguments":{}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"riffdb_builder_application_check","arguments":{}}}'
 } | "$bundle/bin/riffdb-builder-mcp" \
     --workspace "$work_root/existing-empty" >"$work_root/builder-diagnostic.jsonl"
 jq -se --slurpfile cli "$work_root/cli-diagnostic.json" '

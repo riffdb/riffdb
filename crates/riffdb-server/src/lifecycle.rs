@@ -446,6 +446,10 @@ impl LifecycleModel {
                     | ServiceOperationV1::ExplainCommand
                     | ServiceOperationV1::DeployContract
                     | ServiceOperationV1::GetActiveContract
+                    | ServiceOperationV1::CreateCapability
+                    | ServiceOperationV1::RevokeCapability
+                    | ServiceOperationV1::DiscoverCommandTools
+                    | ServiceOperationV1::DiscoverResources
             ),
             LifecycleStage::Ready => true,
             LifecycleStage::InitializingValidation
@@ -965,6 +969,10 @@ mod tests {
                         | ServiceOperationV1::ExplainCommand
                         | ServiceOperationV1::DeployContract
                         | ServiceOperationV1::GetActiveContract
+                        | ServiceOperationV1::CreateCapability
+                        | ServiceOperationV1::RevokeCapability
+                        | ServiceOperationV1::DiscoverCommandTools
+                        | ServiceOperationV1::DiscoverResources
                 )
             );
             assert!(ready.allows_authenticated(operation, true));
@@ -1446,6 +1454,10 @@ mod tests {
                     | ServiceOperationV1::ExplainCommand
                     | ServiceOperationV1::DeployContract
                     | ServiceOperationV1::GetActiveContract
+                    | ServiceOperationV1::CreateCapability
+                    | ServiceOperationV1::RevokeCapability
+                    | ServiceOperationV1::DiscoverCommandTools
+                    | ServiceOperationV1::DiscoverResources
             );
             let admitted = route.admit_authenticated(operation);
             assert_eq!(admitted.is_some(), expected, "operation {operation:?}");

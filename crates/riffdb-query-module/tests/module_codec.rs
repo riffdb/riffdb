@@ -41,8 +41,8 @@ fn generated_mcp_tools_are_module_pinned_name_addressed_and_domain_shaped() {
     let tools = generate_mcp_tools(&module).expect("tools");
 
     assert_eq!(tools.len(), 2);
-    assert_eq!(tools[0].name, "ticketdesk.list_tickets");
-    assert_eq!(tools[1].name, "ticketdesk.ticket_page");
+    assert_eq!(tools[0].name, "ticketdesk_list_tickets");
+    assert_eq!(tools[1].name, "ticketdesk_ticket_page");
     assert!(
         tools
             .iter()
@@ -67,11 +67,11 @@ fn generated_mcp_tools_are_module_pinned_name_addressed_and_domain_shaped() {
 
     let commands = generate_mcp_commands(&module, &bundle).expect("commands");
     assert_eq!(commands.len(), 11);
-    assert_eq!(commands[0].name, "ticketdesk.add_project_member");
+    assert_eq!(commands[0].name, "ticketdesk_add_project_member");
     for expected in [
-        "ticketdesk.close_ticket_with_comment",
-        "ticketdesk.open_ticket_with_labels",
-        "ticketdesk.swap_member_roles",
+        "ticketdesk_close_ticket_with_comment",
+        "ticketdesk_open_ticket_with_labels",
+        "ticketdesk_swap_member_roles",
     ] {
         assert!(commands.iter().any(|command| command.name == expected));
     }

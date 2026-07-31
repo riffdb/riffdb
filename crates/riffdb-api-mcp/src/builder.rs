@@ -99,37 +99,37 @@ impl BuilderMcpServer {
     fn tools() -> Vec<Tool> {
         vec![
             builder_tool(
-                "riffdb.builder.describe",
+                "riffdb_builder_describe",
                 "Describe the symbolic application authoring workflow.",
                 false,
                 empty_schema(),
             ),
             builder_tool(
-                "riffdb.builder.application_check",
+                "riffdb_builder_application_check",
                 "Compile and safety-check local symbolic application sources without writing.",
                 false,
                 empty_schema(),
             ),
             builder_tool(
-                "riffdb.builder.diagnostic_explain",
+                "riffdb_builder_diagnostic_explain",
                 "Explain how to apply one stable authoring diagnostic.",
                 false,
                 object_schema(&["code"]),
             ),
             builder_tool(
-                "riffdb.builder.lock_preview",
+                "riffdb_builder_lock_preview",
                 "Compile the exact proposed lock and authority definition without writing.",
                 false,
                 empty_schema(),
             ),
             builder_tool(
-                "riffdb.builder.lock_write",
+                "riffdb_builder_lock_write",
                 "Explicitly write the reviewed exact lock and generated artifacts.",
                 true,
                 empty_schema(),
             ),
             builder_tool(
-                "riffdb.builder.generate",
+                "riffdb_builder_generate",
                 "Reproduce generated bindings from the exact current lock.",
                 true,
                 empty_schema(),
@@ -173,7 +173,7 @@ impl BuilderMcpServer {
 
     fn call(&self, name: &str, arguments: Map<String, Value>) -> Result<Value, Value> {
         match name {
-            "riffdb.builder.describe" if arguments.is_empty() => Ok(json!({
+            "riffdb_builder_describe" if arguments.is_empty() => Ok(json!({
                 "schema": "riffdb.builder-result/v1",
                 "status": "described",
                 "operations": [
@@ -184,7 +184,7 @@ impl BuilderMcpServer {
                 ],
                 "runtime_authority": false
             })),
-            "riffdb.builder.application_check" if arguments.is_empty() => {
+            "riffdb_builder_application_check" if arguments.is_empty() => {
                 self.run_application(&["application", "check"]).map(|_| {
                     json!({
                         "schema": "riffdb.builder-result/v1",
@@ -193,7 +193,7 @@ impl BuilderMcpServer {
                     })
                 })
             }
-            "riffdb.builder.lock_preview" if arguments.is_empty() => {
+            "riffdb_builder_lock_preview" if arguments.is_empty() => {
                 let output = self.run_application(&["application", "preview"])?;
                 let lock: Value = serde_json::from_slice(&output).map_err(|_| internal_result())?;
                 let current = fs::read(
@@ -209,7 +209,7 @@ impl BuilderMcpServer {
                     "lock": lock
                 }))
             }
-            "riffdb.builder.lock_write" if arguments.is_empty() => self
+            "riffdb_builder_lock_write" if arguments.is_empty() => self
                 .run_application(&["application", "lock", "--write"])
                 .map(|_| {
                     json!({
@@ -217,7 +217,7 @@ impl BuilderMcpServer {
                         "status": "written"
                     })
                 }),
-            "riffdb.builder.generate" if arguments.is_empty() => self
+            "riffdb_builder_generate" if arguments.is_empty() => self
                 .run_application(&["application", "generate", "--locked"])
                 .map(|_| {
                     json!({
@@ -225,7 +225,7 @@ impl BuilderMcpServer {
                         "status": "generated"
                     })
                 }),
-            "riffdb.builder.diagnostic_explain" => {
+            "riffdb_builder_diagnostic_explain" => {
                 let code = arguments.get("code").and_then(Value::as_str).ok_or_else(|| {
                     json!({"code": "RDB-BUILDER-INPUT", "message": "diagnostic code is required"})
                 })?;

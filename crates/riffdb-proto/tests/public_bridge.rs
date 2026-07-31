@@ -168,7 +168,7 @@ fn compact_command_discovery(
 
 fn outcome_uri(tuple: &[u8]) -> String {
     format!(
-        "riffdb://outcome/principal/budget/1/riffdb.cmd.budget.reserve/{}",
+        "riffdb://outcome/principal/budget/1/riffdb_cmd_budget_reserve/{}",
         URL_SAFE_NO_PAD.encode(tuple)
     )
 }
@@ -222,7 +222,7 @@ fn operation_catalog_checkpoint_is_encoded_by_the_public_types() {
     let identity = schema_identity();
     assert_eq!(full.encode_to_vec(), FULL_CATALOG);
     assert_eq!(identity.encode_to_vec(), IDENTITY_CATALOG);
-    assert_eq!(FULL_CATALOG.len(), 7_554);
+    assert_eq!(FULL_CATALOG.len(), 7_536);
     assert_eq!(IDENTITY_CATALOG.len(), 148);
 }
 
@@ -236,8 +236,8 @@ fn outcome_locator_parser_is_canonical_and_closed() {
     validate_outcome_resource_locator(&mixed_case_lineage)
         .expect("ASCII-lower lineage matches the tool contract segment");
     let historical_command_name = valid.replacen(
-        "riffdb.cmd.budget.reserve",
-        "riffdb.cmd.budget.retired_name",
+        "riffdb_cmd_budget_reserve",
+        "riffdb_cmd_budget_retired_name",
         1,
     );
     validate_outcome_resource_locator(&historical_command_name)
@@ -247,8 +247,8 @@ fn outcome_locator_parser_is_canonical_and_closed() {
         valid.replacen("principal", "pr%69ncipal", 1),
         valid.replacen("principal", "pr%c3%adncipal", 1),
         valid.replacen("/1/riffdb", "/01/riffdb", 1),
-        valid.replacen("riffdb.cmd.budget.reserve", "riffdb.cmd.Budget.reserve", 1),
-        valid.replacen("riffdb.cmd.budget.reserve", "riffdb.cmd.ledger.reserve", 1),
+        valid.replacen("riffdb_cmd_budget_reserve", "riffdb_cmd_Budget_reserve", 1),
+        valid.replacen("riffdb_cmd_budget_reserve", "riffdb_cmd_ledger_reserve", 1),
         valid.replacen("/budget/", "/budg%C3%A9t/", 1),
         format!("{valid}?query=1"),
         outcome_uri(&digest_tuple(2, 1)),
@@ -317,14 +317,14 @@ fn full_command_discovery_binds_the_compiler_owned_tool_name() {
     let valid = full_command_discovery(command_tool_descriptor(
         "Budget",
         "ReserveFunds",
-        "riffdb.cmd.budget.reservefunds",
+        "riffdb_cmd_budget_reservefunds",
     ));
     validate_public_message(&valid).expect("exact ASCII-lower derivation");
 
     let wrong_contract = full_command_discovery(command_tool_descriptor(
         "Ledger",
         "ReserveFunds",
-        "riffdb.cmd.budget.reservefunds",
+        "riffdb_cmd_budget_reservefunds",
     ));
     assert_eq!(
         validate_public_message(&wrong_contract),
@@ -334,7 +334,7 @@ fn full_command_discovery_binds_the_compiler_owned_tool_name() {
     let wrong_command = full_command_discovery(command_tool_descriptor(
         "Budget",
         "ReleaseFunds",
-        "riffdb.cmd.budget.reservefunds",
+        "riffdb_cmd_budget_reservefunds",
     ));
     assert_eq!(
         validate_public_message(&wrong_command),
@@ -347,14 +347,14 @@ fn compact_command_discovery_binds_the_compiler_owned_tool_name() {
     let valid = compact_command_discovery(compact_command_tool_descriptor(
         "Budget",
         "ReserveFunds",
-        "riffdb.cmd.budget.reservefunds",
+        "riffdb_cmd_budget_reservefunds",
     ));
     validate_public_message(&valid).expect("exact ASCII-lower derivation");
 
     let wrong_contract = compact_command_discovery(compact_command_tool_descriptor(
         "Ledger",
         "ReserveFunds",
-        "riffdb.cmd.budget.reservefunds",
+        "riffdb_cmd_budget_reservefunds",
     ));
     assert_eq!(
         validate_public_message(&wrong_contract),
@@ -364,7 +364,7 @@ fn compact_command_discovery_binds_the_compiler_owned_tool_name() {
     let wrong_command = compact_command_discovery(compact_command_tool_descriptor(
         "Budget",
         "ReleaseFunds",
-        "riffdb.cmd.budget.reservefunds",
+        "riffdb_cmd_budget_reservefunds",
     ));
     assert_eq!(
         validate_public_message(&wrong_command),
@@ -428,7 +428,7 @@ fn oversized_full_discovery_uses_one_dedicated_error_class() {
         let mut descriptor = command_tool_descriptor(
             "Budget",
             source_command,
-            &format!("riffdb.cmd.budget.{}", source_command.to_ascii_lowercase()),
+            &format!("riffdb_cmd_budget_{}", source_command.to_ascii_lowercase()),
         );
         descriptor.command_id = command_id;
         let input = descriptor.input_schema.as_mut().expect("input schema");
@@ -517,7 +517,7 @@ fn resource_kind_filter_is_checked_before_public_release() {
                         v1::CommandOutcomeResource {
                             contract_lineage: "budget".to_owned(),
                             command_id: 1,
-                            tool_name: "riffdb.cmd.budget.reserve".to_owned(),
+                            tool_name: "riffdb_cmd_budget_reserve".to_owned(),
                         },
                     )),
                 }],
@@ -546,7 +546,7 @@ fn resource_kind_filter_is_checked_before_public_release() {
     else {
         unreachable!()
     };
-    resource.tool_name = "riffdb.cmd.ledger.reserve".to_owned();
+    resource.tool_name = "riffdb_cmd_ledger_reserve".to_owned();
     assert_eq!(
         validate_discover_resources_exchange(
             &request(v1::ResourceDiscoveryKind::Template),

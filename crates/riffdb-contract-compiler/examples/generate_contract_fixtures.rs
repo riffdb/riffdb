@@ -261,7 +261,7 @@ fn generate_mcp_evolution_fixture(fixture_root: &std::path::Path) -> Result<(), 
     };
     if renamed_entry.command_id() <= old_entry.command_id()
         || renamed_entry.source_command_name() != "Reallocate"
-        || renamed_entry.tool_name().as_str() != "riffdb.cmd.toolevolution.reallocate"
+        || renamed_entry.tool_name().as_str() != "riffdb_cmd_toolevolution_reallocate"
         || renamed.compatibility().overall() != CompatibilityClass::Incompatible
     {
         return Err("renamed MCP command did not produce the canonical new public identity".into());

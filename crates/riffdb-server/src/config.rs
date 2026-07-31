@@ -2,6 +2,7 @@
 
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -14,7 +15,7 @@ use riffdb_api_mcp::{
     MAX_ALLOWED_ORIGIN_AGGREGATE_BYTES, MAX_ALLOWED_ORIGINS, MAX_ORIGIN_BYTES, MCP_ROUTE,
 };
 use riffdb_storage_redb::RedbCommitProfile;
-use riffdb_types::{Audience, Environment};
+use riffdb_types::{Audience, DatabaseAlias, Environment, MAX_DATABASES_PER_PROCESS};
 use serde::Deserialize;
 
 const MAX_CONFIGURED_PATH_BYTES: usize = 4_096;
@@ -46,17 +47,53 @@ const REDB_COMMIT_PROFILE_ENVIRONMENT: &str = "RIFFDB_REDB_COMMIT_PROFILE";
 /// TOML, then a safe local default. Digest-key contents remain in auth-owned
 /// protected-file custody; this configuration carries paths only.
 pub(crate) struct ServerConfig {
-    database_path: PathBuf,
+    databases: Vec<DatabaseConfig>,
     listen_address: SocketAddr,
-    environment: Environment,
     audience: Audience,
     mcp_listen_address: Option<SocketAddr>,
     mcp_origins: Vec<String>,
     mcp_audience: Option<Audience>,
-    backup_root: PathBuf,
     capability_key_path: PathBuf,
     idempotency_key_path: PathBuf,
     redb_commit_profile: RedbCommitProfile,
+}
+
+/// One independently hosted database's non-secret process configuration.
+pub(crate) struct DatabaseConfig {
+    alias: DatabaseAlias,
+    database_path: PathBuf,
+    environment: Environment,
+    backup_root: PathBuf,
+}
+
+impl DatabaseConfig {
+    pub(crate) const fn alias(&self) -> &DatabaseAlias {
+        &self.alias
+    }
+
+    pub(crate) fn database_path(&self) -> &Path {
+        &self.database_path
+    }
+
+    pub(crate) const fn environment(&self) -> &Environment {
+        &self.environment
+    }
+
+    pub(crate) fn backup_root(&self) -> &Path {
+        &self.backup_root
+    }
+}
+
+impl fmt::Debug for DatabaseConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DatabaseConfig")
+            .field("alias", &self.alias)
+            .field("database_path", &"[CONFIGURED]")
+            .field("environment", &self.environment)
+            .field("backup_root", &"[CONFIGURED]")
+            .finish()
+    }
 }
 
 impl ServerConfig {
@@ -96,26 +133,59 @@ impl ServerConfig {
             .map(read_document)
             .transpose()?
             .unwrap_or_default();
-        let server = document.server.unwrap_or_default();
-        let maintenance = document.maintenance.unwrap_or_default();
+        let ConfigDocument {
+            server,
+            maintenance,
+            databases: named_databases,
+        } = document;
+        let server = server.unwrap_or_default();
+        let maintenance = maintenance.unwrap_or_default();
 
-        let database_path = bounded_path(select_os(
-            arguments.database.as_ref(),
-            environment.value(DATABASE_ENVIRONMENT),
-            server.database.map(OsString::from),
-            OsString::from(DEFAULT_DATABASE_PATH),
-        )?)?;
+        let database_environment = environment.value(DATABASE_ENVIRONMENT);
+        let configured_environment_environment = environment.value(ENVIRONMENT_ENVIRONMENT);
+        let backup_root_environment = environment.value(BACKUP_ROOT_ENVIRONMENT);
+        let uses_legacy_database_configuration = arguments.database.is_some()
+            || arguments.environment.is_some()
+            || arguments.backup_root.is_some()
+            || database_environment.is_some()
+            || configured_environment_environment.is_some()
+            || backup_root_environment.is_some()
+            || server.database.is_some()
+            || server.environment.is_some()
+            || maintenance.backup_root.is_some();
+        if !named_databases.is_empty() && uses_legacy_database_configuration {
+            return Err(ServerConfigError::MixedDatabaseConfiguration);
+        }
+        let databases = if named_databases.is_empty() {
+            vec![DatabaseConfig {
+                alias: DatabaseAlias::default_alias(),
+                database_path: bounded_path(select_os(
+                    arguments.database.as_ref(),
+                    database_environment,
+                    server.database.map(OsString::from),
+                    OsString::from(DEFAULT_DATABASE_PATH),
+                )?)?,
+                environment: parse_environment(select_os(
+                    arguments.environment.as_ref(),
+                    configured_environment_environment,
+                    server.environment.map(OsString::from),
+                    OsString::from(DEFAULT_ENVIRONMENT),
+                )?)?,
+                backup_root: bounded_absolute_directory(select_os(
+                    arguments.backup_root.as_ref(),
+                    backup_root_environment,
+                    maintenance.backup_root.map(OsString::from),
+                    current_directory.join("backups").into_os_string(),
+                )?)?,
+            }]
+        } else {
+            parse_named_databases(named_databases)?
+        };
         let listen_address = parse_loopback_address(&select_os(
             arguments.listen.as_ref(),
             environment.value(LISTEN_ENVIRONMENT),
             server.grpc_listen.map(OsString::from),
             OsString::from(DEFAULT_LISTEN_ADDRESS),
-        )?)?;
-        let configured_environment = parse_environment(select_os(
-            arguments.environment.as_ref(),
-            environment.value(ENVIRONMENT_ENVIRONMENT),
-            server.environment.map(OsString::from),
-            OsString::from(DEFAULT_ENVIRONMENT),
         )?)?;
         let audience = parse_audience(select_os(
             arguments.audience.as_ref(),
@@ -135,12 +205,6 @@ impl ServerConfig {
             environment.value(MCP_ORIGINS_ENVIRONMENT),
             server.mcp_origins,
         )?;
-        let backup_root = bounded_absolute_directory(select_os(
-            arguments.backup_root.as_ref(),
-            environment.value(BACKUP_ROOT_ENVIRONMENT),
-            maintenance.backup_root.map(OsString::from),
-            current_directory.join("backups").into_os_string(),
-        )?)?;
         let capability_key_path = bounded_path(select_os(
             arguments.capability_keys.as_ref(),
             environment.value(CAPABILITY_KEYS_ENVIRONMENT),
@@ -172,14 +236,12 @@ impl ServerConfig {
         }
 
         let config = Self {
-            database_path,
+            databases,
             listen_address,
-            environment: configured_environment,
             audience,
             mcp_listen_address,
             mcp_origins,
             mcp_audience,
-            backup_root,
             capability_key_path,
             idempotency_key_path,
             redb_commit_profile,
@@ -189,12 +251,22 @@ impl ServerConfig {
     }
 
     fn validate_disjoint_paths(&self, current_directory: &Path) -> Result<(), ServerConfigError> {
-        let paths = [
-            lexical_absolute(&self.database_path, current_directory)?,
-            lexical_absolute(&self.backup_root, current_directory)?,
-            lexical_absolute(&self.capability_key_path, current_directory)?,
-            lexical_absolute(&self.idempotency_key_path, current_directory)?,
-        ];
+        let mut paths = Vec::with_capacity(self.databases.len() * 2 + 2);
+        for database in &self.databases {
+            paths.push(lexical_absolute(
+                &database.database_path,
+                current_directory,
+            )?);
+            paths.push(lexical_absolute(&database.backup_root, current_directory)?);
+        }
+        paths.push(lexical_absolute(
+            &self.capability_key_path,
+            current_directory,
+        )?);
+        paths.push(lexical_absolute(
+            &self.idempotency_key_path,
+            current_directory,
+        )?);
         if paths.iter().enumerate().any(|(left_index, left)| {
             paths
                 .iter()
@@ -207,15 +279,19 @@ impl ServerConfig {
     }
 
     pub(crate) fn database_path(&self) -> &Path {
-        &self.database_path
+        self.databases[0].database_path()
+    }
+
+    pub(crate) fn databases(&self) -> &[DatabaseConfig] {
+        &self.databases
     }
 
     pub(crate) const fn listen_address(&self) -> SocketAddr {
         self.listen_address
     }
 
-    pub(crate) const fn environment(&self) -> &Environment {
-        &self.environment
+    pub(crate) fn environment(&self) -> &Environment {
+        self.databases[0].environment()
     }
 
     pub(crate) const fn audience(&self) -> &Audience {
@@ -235,7 +311,7 @@ impl ServerConfig {
     }
 
     pub(crate) fn backup_root(&self) -> &Path {
-        &self.backup_root
+        self.databases[0].backup_root()
     }
 
     pub(crate) fn capability_key_path(&self) -> &Path {
@@ -255,14 +331,12 @@ impl fmt::Debug for ServerConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ServerConfig")
-            .field("database_path", &"[CONFIGURED]")
+            .field("databases", &self.databases)
             .field("listen_address", &self.listen_address)
-            .field("environment", &self.environment)
             .field("audience", &"[CONFIGURED]")
             .field("mcp_listen_address", &self.mcp_listen_address)
             .field("mcp_origins", &"[CONFIGURED]")
             .field("mcp_audience", &"[DERIVED]")
-            .field("backup_root", &"[CONFIGURED]")
             .field("capability_key_path", &"[CONFIGURED]")
             .field("idempotency_key_path", &"[CONFIGURED]")
             .field("redb_commit_profile", &self.redb_commit_profile)
@@ -343,6 +417,8 @@ impl EnvironmentSource for EmptyEnvironment {
 struct ConfigDocument {
     server: Option<ServerDocument>,
     maintenance: Option<MaintenanceDocument>,
+    #[serde(default)]
+    databases: BTreeMap<String, DatabaseDocument>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -363,6 +439,34 @@ struct ServerDocument {
 #[serde(deny_unknown_fields)]
 struct MaintenanceDocument {
     backup_root: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DatabaseDocument {
+    path: String,
+    backup_root: String,
+    environment: String,
+}
+
+fn parse_named_databases(
+    documents: BTreeMap<String, DatabaseDocument>,
+) -> Result<Vec<DatabaseConfig>, ServerConfigError> {
+    if documents.is_empty() || documents.len() > MAX_DATABASES_PER_PROCESS {
+        return Err(ServerConfigError::InvalidDatabaseConfiguration);
+    }
+    documents
+        .into_iter()
+        .map(|(alias, document)| {
+            Ok(DatabaseConfig {
+                alias: DatabaseAlias::new(alias)
+                    .map_err(|_| ServerConfigError::InvalidDatabaseConfiguration)?,
+                database_path: bounded_path(OsString::from(document.path))?,
+                environment: parse_environment(OsString::from(document.environment))?,
+                backup_root: bounded_absolute_directory(OsString::from(document.backup_root))?,
+            })
+        })
+        .collect()
 }
 
 fn read_document(path: &Path) -> Result<ConfigDocument, ServerConfigError> {
@@ -556,6 +660,8 @@ pub(crate) enum ServerConfigError {
     DuplicateOption,
     InvalidConfiguredValue,
     InvalidConfigDocument,
+    MixedDatabaseConfiguration,
+    InvalidDatabaseConfiguration,
     InvalidPath,
     OverlappingPaths,
     InvalidListenAddress,
@@ -574,6 +680,10 @@ impl fmt::Display for ServerConfigError {
             Self::DuplicateOption => "riffdbd option was supplied more than once",
             Self::InvalidConfiguredValue => "configured riffdbd value is invalid",
             Self::InvalidConfigDocument => "riffdbd configuration document is invalid",
+            Self::MixedDatabaseConfiguration => {
+                "legacy and named database configuration cannot be combined"
+            }
+            Self::InvalidDatabaseConfiguration => "configured database registry is invalid",
             Self::InvalidPath => "configured path is invalid",
             Self::OverlappingPaths => "database, backup, and key paths must be disjoint",
             Self::InvalidListenAddress => "configured listen address is invalid",
@@ -765,6 +875,90 @@ backup_root = "/tmp/riffdb-toml-backups"
             Path::new("toml-idempotency.keys")
         );
         assert_eq!(config.backup_root(), Path::new("/tmp/riffdb-toml-backups"));
+    }
+
+    #[test]
+    fn named_databases_are_canonical_sorted_bounded_and_disjoint() {
+        let root = TestRoot::new();
+        let document = root.write(
+            br#"
+[server]
+grpc_listen = "127.0.0.1:7001"
+
+[databases.zeta]
+path = "data/zeta.redb"
+backup_root = "/tmp/riffdb-zeta-backups"
+environment = "production"
+
+[databases.alpha]
+path = "data/alpha.redb"
+backup_root = "/tmp/riffdb-alpha-backups"
+environment = "development"
+"#,
+        );
+        let config = ServerConfig::resolve(
+            [OsString::from("--config"), document.into_os_string()],
+            &EmptyEnvironment,
+            &root.0,
+        )
+        .expect("named database registry");
+        assert_eq!(
+            config
+                .databases()
+                .iter()
+                .map(|database| database.alias().as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "zeta"]
+        );
+        assert_eq!(
+            config.databases()[0].database_path(),
+            Path::new("data/alpha.redb")
+        );
+        assert_eq!(config.databases()[1].environment().as_str(), "production");
+
+        let mixed = root.write(
+            br#"
+[server]
+database = "legacy.redb"
+
+[databases.alpha]
+path = "data/alpha.redb"
+backup_root = "/tmp/riffdb-alpha-backups"
+environment = "development"
+"#,
+        );
+        assert_eq!(
+            ServerConfig::resolve(
+                [OsString::from("--config"), mixed.into_os_string()],
+                &EmptyEnvironment,
+                &root.0,
+            )
+            .unwrap_err(),
+            ServerConfigError::MixedDatabaseConfiguration
+        );
+
+        let overlap = root.write(
+            br#"
+[databases.alpha]
+path = "data/shared.redb"
+backup_root = "/tmp/riffdb-alpha-backups"
+environment = "development"
+
+[databases.beta]
+path = "data/shared.redb"
+backup_root = "/tmp/riffdb-beta-backups"
+environment = "development"
+"#,
+        );
+        assert_eq!(
+            ServerConfig::resolve(
+                [OsString::from("--config"), overlap.into_os_string()],
+                &EmptyEnvironment,
+                &root.0,
+            )
+            .unwrap_err(),
+            ServerConfigError::OverlappingPaths
+        );
     }
 
     #[test]
