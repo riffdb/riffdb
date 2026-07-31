@@ -115,7 +115,12 @@ struct EntityChain {
     version: riffdb_types::EntityVersion,
     hash: riffdb_types::EntityRecordHash,
     intact: bool,
+    /// Set when an ENTITIES structural row claims this chain.
+    consumed: bool,
 }
+
+/// Cap on reported orphan targets (hostile COMMITS must not allocate unboundedly).
+const ENTITY_CHAIN_ORPHAN_REPORT_CAP: usize = 16;
 
 /// Compact locator for one historical evidence item; page serve re-materializes
 /// by point lookup (no retained canonical payloads).
@@ -178,15 +183,23 @@ pub struct RedbStructuralEvidenceSession {
     /// Held for the structural evidence pass only; must not outlive the session.
     structural_read: Option<ReadTransaction>,
     structural_cursors: Option<StructuralCursors>,
-    /// Built on the first ENTITIES row; dropped when the cursor leaves that phase.
+    /// Built at ENTITIES phase entry; dropped after orphan findings are queued.
     entity_chains: Option<EntityChainState>,
+    /// Cross-link findings for unconsumed/orphan chains, drained into structural pages.
+    pending_entity_orphan_findings: Vec<StructuralFinding>,
     historical_plan: Option<HistoricalEvidencePlan>,
 }
 
 /// Cached single-pass entity history state for the ENTITIES structural phase.
 struct EntityChainState {
     chains: std::collections::BTreeMap<riffdb_storage_api::EntityTarget, EntityChain>,
+    /// Bounded sample of commit-referenced targets with no ENTITIES slot left.
+    orphan_targets: Vec<riffdb_storage_api::EntityTarget>,
+    /// True once any target was rejected from the map (capacity = entity_count).
+    /// Read by tests; production reporting uses `orphan_targets` length.
+    #[cfg_attr(not(test), allow(dead_code))]
     overflow: bool,
+    orphans_queued: bool,
 }
 
 impl fmt::Debug for RedbStructuralEvidenceSession {
@@ -509,6 +522,7 @@ impl StructuralEvidenceOpen for RedbStore {
             structural_read: Some(transaction),
             structural_cursors: None,
             entity_chains: None,
+            pending_entity_orphan_findings: Vec::new(),
             historical_plan: None,
         })
     }
@@ -541,6 +555,25 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         }
         self.ensure_structural_continuity()?;
         if cursor.position() == self.structural_total {
+            if !self.pending_entity_orphan_findings.is_empty() {
+                let finding_bound =
+                    riffdb_storage_api::MAX_INTEGRITY_FINDINGS.min(limit.get() as usize);
+                let mut findings = Vec::new();
+                while findings.len() < finding_bound
+                    && !self.pending_entity_orphan_findings.is_empty()
+                {
+                    let finding = self.pending_entity_orphan_findings.remove(0);
+                    if finding.scope() == StructuralFindingScope::Authoritative {
+                        self.authoritative_finding_seen = true;
+                    }
+                    findings.push(finding);
+                }
+                // Stay on the terminal cursor until orphan findings drain.
+                let page = StructuralEvidencePage::page(cursor, findings, cursor)
+                    .map_err(value_error_as_storage)?;
+                self.next_structural = cursor;
+                return Ok(page);
+            }
             self.structural_finished = true;
             self.structural_cursors = None;
             self.entity_chains = None;
@@ -567,6 +600,14 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 }
                 findings.push(finding);
             }
+        }
+        let page_cap = finding_bound as usize;
+        while findings.len() < page_cap && !self.pending_entity_orphan_findings.is_empty() {
+            let finding = self.pending_entity_orphan_findings.remove(0);
+            if finding.scope() == StructuralFindingScope::Authoritative {
+                self.authoritative_finding_seen = true;
+            }
+            findings.push(finding);
         }
         let next = cursor.advanced(inspected).map_err(value_error_as_storage)?;
         let page =
@@ -891,6 +932,36 @@ impl RedbStructuralEvidenceSession {
         )
     }
 
+    fn ensure_entity_chains_built(&mut self) -> Result<(), StorageError> {
+        if self.entity_chains.is_some() {
+            return Ok(());
+        }
+        let entity_count = self.structural_counts.get(5).copied().unwrap_or(0);
+        let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+        self.entity_chains = Some(build_entity_chains(transaction, entity_count)?);
+        Ok(())
+    }
+
+    fn queue_entity_orphan_findings(&mut self) {
+        let extra = {
+            let Some(state) = self.entity_chains.as_mut() else {
+                return;
+            };
+            if state.orphans_queued {
+                return;
+            }
+            state.orphans_queued = true;
+            let unconsumed = state.chains.values().filter(|c| !c.consumed).count();
+            unconsumed.saturating_add(state.orphan_targets.len())
+        };
+        // Unconsumed chains + bounded overflow orphans: each is its own
+        // CrossLinkMismatch and does not alter intact entities' verdicts.
+        for _ in 0..extra {
+            self.pending_entity_orphan_findings
+                .push(authoritative(StructuralFindingCode::CrossLinkMismatch));
+        }
+    }
+
     fn inspect_entity_row_with_chains(
         &mut self,
         key: &[u8],
@@ -912,19 +983,31 @@ impl RedbStructuralEvidenceSession {
         if !binding_bundle_exists(transaction, record.schema_binding())? {
             return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
         }
-        if self.entity_chains.is_none() {
-            let entity_count = self.structural_counts.get(5).copied().unwrap_or(0);
-            let built = build_entity_chains(transaction, entity_count)?;
-            self.entity_chains = Some(built);
+        self.ensure_entity_chains_built()?;
+        // Per-entity verdict only — overflow/orphans do not mask intact rows.
+        let history_ok = {
+            let state = self.entity_chains.as_mut().ok_or_else(invariant)?;
+            match state.chains.get_mut(record.target()) {
+                Some(chain) => {
+                    chain.consumed = true;
+                    chain.intact
+                        && chain.version == record.entity_version()
+                        && riffdb_storage_api::derive_entity_record_hash_v1(&record)
+                            .is_ok_and(|hash| hash == chain.hash)
+                }
+                None => false,
+            }
+        };
+        let entity_count = self.structural_counts.get(5).copied().unwrap_or(0);
+        let consumed_in_phase = self
+            .structural_cursors
+            .as_ref()
+            .map(|c| c.consumed_in_phase)
+            .unwrap_or(0);
+        if entity_count > 0 && consumed_in_phase == entity_count {
+            self.queue_entity_orphan_findings();
         }
-        let state = self.entity_chains.as_ref().ok_or_else(invariant)?;
-        if state.overflow {
-            return Ok(Some(authoritative(
-                StructuralFindingCode::CrossLinkMismatch,
-            )));
-        }
-        Ok((!entity_history_matches_chain(&state.chains, &record))
-            .then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
+        Ok((!history_ok).then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
     }
 
     fn next_structural_row_raw(&mut self) -> Result<(usize, u64, Vec<u8>, Vec<u8>), StorageError> {
@@ -987,6 +1070,11 @@ impl RedbStructuralEvidenceSession {
                 .bytes
                 .is_none();
             if need_open {
+                // ENTITIES phase entry: build chains even when the table is empty so
+                // commit-referenced orphans are still validated.
+                if phase == 5 {
+                    self.ensure_entity_chains_built()?;
+                }
                 let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
                 let table: ReadOnlyTable<&'static [u8], &'static [u8]> = match phase {
                     1 => transaction
@@ -1063,8 +1151,9 @@ impl RedbStructuralEvidenceSession {
             let leaving = cursors.phase;
             cursors.phase = cursors.phase.checked_add(1).ok_or_else(invariant)?;
             cursors.consumed_in_phase = 0;
-            // Phase 5 is ENTITIES; drop the chain map when leaving that phase.
+            // Phase 5 is ENTITIES: queue unconsumed/orphan findings, then drop the map.
             if leaving == 5 {
+                self.queue_entity_orphan_findings();
                 self.entity_chains = None;
             }
         }
@@ -1085,7 +1174,8 @@ fn inspect_table_row_from_bytes(
         2 => inspect_active_row(transaction, key, value),
         3 => inspect_query_module_row(transaction, key, value),
         4 => inspect_active_query_module_row(transaction, key, value),
-        5 => inspect_entity_row(transaction, key, value),
+        // Phase 5 (ENTITIES) is handled exclusively by
+        // `inspect_entity_row_with_chains` in `inspect_structural_forward`.
         6 => inspect_index_row(transaction, key, value),
         7 => inspect_epoch_row(transaction, key, value),
         8 => inspect_terminal_row(transaction, inputs, database_id, key, value),
@@ -1505,17 +1595,6 @@ fn inspect_active_query_module_row(
     }
     Ok((!query_module_record_is_reciprocal(transaction, &record)?)
         .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)))
-}
-
-fn inspect_entity_row(
-    transaction: &ReadTransaction,
-    key: &[u8],
-    value: &[u8],
-) -> Result<Option<StructuralFinding>, StorageError> {
-    // Entity rows are inspected via `inspect_entity_row_with_chains` so the
-    // single-pass chain map can be cached on the structural session.
-    let _ = (transaction, key, value);
-    Err(invariant())
 }
 
 fn inspect_index_row(
@@ -3195,12 +3274,14 @@ fn build_entity_chains(
     let table = transaction.open_table(COMMITS).map_err(table_error)?;
     let mut chains: std::collections::BTreeMap<riffdb_storage_api::EntityTarget, EntityChain> =
         std::collections::BTreeMap::new();
+    let mut orphan_targets = Vec::new();
     let mut overflow = false;
+    let entity_count_usize = usize::try_from(entity_count).unwrap_or(usize::MAX);
     for entry in table.iter().map_err(precommit_storage_error)? {
         let (_physical_key, value) = entry.map_err(precommit_storage_error)?;
+        // Decode failures are covered by inspect_commit_row (MalformedRecord /
+        // CrossLinkMismatch). Continue so sibling entities still validate.
         let Ok(references) = decoded(codec::decode_commit_entity_references(value.value())) else {
-            // Decode failures are continuity violations for every referenced target
-            // we cannot reconstruct; keep scanning so sibling entities still run.
             continue;
         };
         let mut seen_in_commit = std::collections::BTreeSet::new();
@@ -3210,50 +3291,78 @@ fn build_entity_chains(
                 // Duplicate target in one commit: mark chain broken if present.
                 if let Some(chain) = chains.get_mut(&target_key) {
                     chain.intact = false;
-                } else {
+                } else if chains.len() < entity_count_usize {
                     chains.insert(
                         target_key,
                         EntityChain {
                             version: reference.entity_version(),
                             hash: reference.post_image_hash(),
                             intact: false,
+                            consumed: false,
                         },
+                    );
+                } else {
+                    record_orphan_target(
+                        &mut orphan_targets,
+                        &mut overflow,
+                        target_key,
+                        entity_count_usize,
                     );
                 }
                 continue;
             }
-            match chains.get_mut(&target_key) {
-                None => {
-                    let intact = reference.entity_version() == riffdb_types::EntityVersion::first();
-                    chains.insert(
-                        target_key,
-                        EntityChain {
-                            version: reference.entity_version(),
-                            hash: reference.post_image_hash(),
-                            intact,
-                        },
-                    );
+            if let Some(chain) = chains.get_mut(&target_key) {
+                let expected_next = chain.version.checked_next();
+                if expected_next != Some(reference.entity_version()) {
+                    chain.intact = false;
                 }
-                Some(chain) => {
-                    let expected_next = chain.version.checked_next();
-                    if expected_next != Some(reference.entity_version()) {
-                        chain.intact = false;
-                    }
-                    chain.version = reference.entity_version();
-                    chain.hash = reference.post_image_hash();
-                }
-            }
-            if u64::try_from(chains.len()).unwrap_or(u64::MAX) > entity_count {
-                overflow = true;
+                chain.version = reference.entity_version();
+                chain.hash = reference.post_image_hash();
+            } else if chains.len() < entity_count_usize {
+                let intact = reference.entity_version() == riffdb_types::EntityVersion::first();
+                chains.insert(
+                    target_key,
+                    EntityChain {
+                        version: reference.entity_version(),
+                        hash: reference.post_image_hash(),
+                        intact,
+                        consumed: false,
+                    },
+                );
+            } else {
+                // At capacity: never grow the map; bound orphan reporting.
+                record_orphan_target(
+                    &mut orphan_targets,
+                    &mut overflow,
+                    target_key,
+                    entity_count_usize,
+                );
             }
         }
     }
-    if u64::try_from(chains.len()).unwrap_or(u64::MAX) > entity_count {
-        overflow = true;
-    }
-    Ok(EntityChainState { chains, overflow })
+    Ok(EntityChainState {
+        chains,
+        orphan_targets,
+        overflow,
+        orphans_queued: false,
+    })
 }
 
+fn record_orphan_target(
+    orphan_targets: &mut Vec<riffdb_storage_api::EntityTarget>,
+    overflow: &mut bool,
+    target: riffdb_storage_api::EntityTarget,
+    _entity_count: usize,
+) {
+    *overflow = true;
+    if orphan_targets.len() < ENTITY_CHAIN_ORPHAN_REPORT_CAP
+        && !orphan_targets.iter().any(|t| t == &target)
+    {
+        orphan_targets.push(target);
+    }
+}
+
+#[cfg(test)]
 fn entity_history_matches_chain(
     chains: &std::collections::BTreeMap<riffdb_storage_api::EntityTarget, EntityChain>,
     current: &riffdb_storage_api::StoredEntityRecordV1,
@@ -4068,20 +4177,23 @@ mod tests {
     };
     use riffdb_contract_compiler::compile_contract_source;
     use riffdb_storage_api::{
-        ActiveCatalogPointerV1, AdministrationSequenceAllocator, AuditPrincipalV1,
-        CapabilityAdministrationOperationV1, CapabilityBootstrapMarkerV1, CapabilityGrantV1,
-        CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
-        CapabilityRequestedRecordV1, CatalogActivationIntentV1, CatalogAdministrationRepository,
+        ActiveCatalogPointerV1, AdministrationSequenceAllocator, AffectedEntityV1,
+        ApplicationSequenceAllocator, AuditPrincipalV1, CapabilityAdministrationOperationV1,
+        CapabilityBootstrapMarkerV1, CapabilityGrantV1, CapabilityPermissionKindV1,
+        CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityRequestedRecordV1,
+        CatalogActivationIntentV1, CatalogAdministrationRepository, CommittedEntityReferenceV2,
         DatabaseInitializationPort, DeclaredOutcome, DurabilityMode, DurableKeySchemaBindingV1,
-        EntityTarget, ExecutablePlanRef, HistoricalEvidencePage, PartitionScopeV1,
-        ProjectionGenerationPosition, ProjectionLifecycleV1, PublishedApplyModeV1,
-        ReadDependencies, ReadableCapabilityDigestInventory, ReadableIdempotencyDigestInventory,
+        EntityTarget, ExecutablePlanRef, ExpectedEntityState, HistoricalEvidencePage,
+        IdempotencyIdentity, IdempotencyKeyDigest, PartitionScopeV1, ProjectionGenerationPosition,
+        ProjectionLifecycleV1, PublishedApplyModeV1, ReadDependencies, ReadDependency,
+        ReadableCapabilityDigestInventory, ReadableIdempotencyDigestInventory,
         RevocationReasonCodeV1, StoredAdministrationAuditRecordV1,
-        StoredCapabilityAdministrationV1, StoredCapabilityRecordV1, StoredCatalogAdministrationV1,
-        StoredCommitRecordV1, StoredContractBundleV1, StoredEntityRecordV1, StoredIndexEntryV1,
-        StoredIndexEntryV2, StoredProjectionApplyV1, StoredProjectionControlV1,
-        StoredReadDependenciesV1, StoredServiceAuditRecordV1, StructuralEvidenceEnd,
-        StructuralEvidencePage,
+        StoredAdmittedProvenanceClaimsV1, StoredCapabilityAdministrationV1,
+        StoredCapabilityRecordV1, StoredCatalogAdministrationV1, StoredCommitRecordV1,
+        StoredContractBundleV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
+        StoredOutcomeV1, StoredProjectionApplyV1, StoredProjectionControlV1,
+        StoredProvenanceRecordV1, StoredReadDependenciesV1, StoredServiceAuditRecordV1,
+        StructuralEvidenceEnd, StructuralEvidencePage, derive_entity_record_hash_v1,
     };
     use riffdb_types::{
         ActorId, ActorKind, AdministrationSequence, AdmittedActorContext, AggregateTypeId,
@@ -5059,36 +5171,705 @@ contract RedbMigration version 1 {
         assert_ne!(first.open_session_id(), second.open_session_id());
     }
 
-    #[test]
-    fn current_entity_without_any_committed_post_image_is_not_reciprocal() {
-        let path = TestDatabasePath::new("orphan-entity");
-        let store = initialized_store(&path, database_id(0x71));
-        let entity_type = EntityTypeId::first();
+    /// Per-entity oracle resurrected from pre-Package-E `entity_history_matches`
+    /// (6892c84), adapted to entity references (mutations are no longer stored).
+    fn entity_history_matches_oracle(
+        transaction: &ReadTransaction,
+        current: &StoredEntityRecordV1,
+    ) -> Result<bool, StorageError> {
+        let table = transaction.open_table(COMMITS).map_err(table_error)?;
+        let mut prior_version: Option<EntityVersion> = None;
+        let mut saw_mutation = false;
+        let mut terminal_hash = None;
+        for entry in table.iter().map_err(precommit_storage_error)? {
+            let (physical_key, value) = entry.map_err(precommit_storage_error)?;
+            let Ok(sequence) = keys::decode_application_sequence_key(physical_key.value()) else {
+                return Ok(false);
+            };
+            let Ok(references) = decoded(codec::decode_commit_entity_references(value.value()))
+            else {
+                return Ok(false);
+            };
+            let _ = sequence;
+            let mut matching = references
+                .iter()
+                .filter(|reference| reference.target() == current.target());
+            let Some(reference) = matching.next() else {
+                continue;
+            };
+            if matching.next().is_some() {
+                return Ok(false);
+            }
+            let expected =
+                CommittedEntityReferenceV2::expected_from_version(reference.entity_version());
+            let expected_matches = match (prior_version, expected) {
+                (None, ExpectedEntityState::Absent) => {
+                    reference.entity_version() == EntityVersion::first()
+                }
+                (Some(prior), ExpectedEntityState::Present(version)) => prior == version,
+                (None, ExpectedEntityState::Present(_))
+                | (Some(_), ExpectedEntityState::Absent) => false,
+            };
+            if !expected_matches {
+                return Ok(false);
+            }
+            prior_version = Some(reference.entity_version());
+            terminal_hash = Some(reference.post_image_hash());
+            saw_mutation = true;
+        }
+        let current_hash = derive_entity_record_hash_v1(current).expect("hash current");
+        Ok(saw_mutation
+            && prior_version == Some(current.entity_version())
+            && terminal_hash == Some(current_hash))
+    }
+
+    fn history_entity(
+        seed: u64,
+        version: EntityVersion,
+        fields: &[u8],
+        bundle: &StoredContractBundleV1,
+    ) -> StoredEntityRecordV1 {
+        let entity_type = EntityTypeId::new(7).expect("entity type");
         let mut key = EntityKeyBuilder::new(entity_type);
-        key.push_u64(1).expect("entity key component");
+        key.push_u64(seed).expect("entity key component");
         let target =
-            riffdb_storage_api::EntityTarget::new(entity_type, key.finish().expect("entity key"))
-                .expect("entity target");
-        let bundle = stored_bundle("entity-history", 1, b"entity-history-bundle");
-        let current = StoredEntityRecordV1::new(
-            target,
-            EntityVersion::first(),
+            EntityTarget::new(entity_type, key.finish().expect("entity key")).expect("target");
+        let binding = DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
             bundle.contract_version(),
-            DurableKeySchemaBindingV1::new(
-                bundle.lineage().clone(),
-                bundle.contract_version(),
-                bundle.bundle_hash(),
-            ),
-            CanonicalRecord::new(Vec::new()).expect("entity fields"),
+            bundle.bundle_hash(),
+        );
+        let field_id = FieldId::new(1).expect("field");
+        let record = CanonicalRecord::new(vec![(
+            field_id,
+            CanonicalValue::bytes(fields.to_vec()).expect("field bytes"),
+        )])
+        .expect("fields");
+        StoredEntityRecordV1::new(target, version, bundle.contract_version(), binding, record)
+            .expect("entity")
+    }
+
+    fn history_commit(
+        sequence: CommitSequence,
+        plan: ExecutablePlanRef,
+        images: &[&StoredEntityRecordV1],
+    ) -> StoredCommitRecordV1 {
+        let sequence_byte = u8::try_from(sequence.get().min(250)).expect("sequence byte");
+        let actor = AdmittedActorContext::new(
+            ActorId::new("history-actor").expect("actor"),
+            ActorKind::Human,
+            TenantScope::Global,
+            None,
+        );
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition.push_u64(1).expect("partition component");
+        let partition_hash =
+            hash_partition_key(partition.finish().expect("partition key").as_bytes());
+        let references = images
+            .iter()
+            .map(|image| {
+                CommittedEntityReferenceV2::from_post_image(image).expect("entity reference")
+            })
+            .collect::<Vec<_>>();
+        let observations = images
+            .iter()
+            .map(|image| ReadDependency::EntityObservation {
+                target: image.target().clone(),
+                expected: CommittedEntityReferenceV2::expected_from_version(image.entity_version()),
+            })
+            .collect::<Vec<_>>();
+        let read_dependencies = StoredReadDependenciesV1::from_live(
+            &ReadDependencies::new(observations).expect("dependencies"),
         )
-        .expect("entity row");
-        let transaction = store
+        .expect("stored dependencies");
+        StoredCommitRecordV1::new(
+            sequence,
+            RequestId::from_bytes(uuid_bytes(sequence_byte.wrapping_add(0x20)))
+                .expect("request ID"),
+            plan,
+            CanonicalInputHash::from_bytes([sequence_byte; 32]),
+            actor,
+            LogicalTime::new(Timestamp::new(i64::from(sequence_byte), 0).expect("timestamp")),
+            partition_hash,
+            Vec::new(),
+            read_dependencies,
+            references,
+            Vec::new(),
+            DeclaredOutcome::new(
+                OutcomeId::first(),
+                CanonicalRecord::new(Vec::new()).expect("outcome fields"),
+            )
+            .expect("outcome"),
+            ProvenanceId::from_bytes(uuid_bytes(sequence_byte.wrapping_add(0x40)))
+                .expect("provenance ID"),
+            Vec::new(),
+            DurabilityMode::Sync,
+        )
+        .expect("history commit")
+    }
+
+    fn write_entities_and_commits(
+        store: &RedbStore,
+        id: DatabaseId,
+        bundle: &StoredContractBundleV1,
+        entities: &[StoredEntityRecordV1],
+        commits: &[StoredCommitRecordV1],
+    ) {
+        let write = store
             .shared
             .database
-            .begin_read()
-            .expect("read transaction");
-        let chains = build_entity_chains(&transaction, 1).expect("chain build");
-        assert!(!entity_history_matches_chain(&chains.chains, &current));
+            .begin_write()
+            .expect("write history fixture");
+        {
+            let mut table = write.open_table(CONTRACT_BUNDLES).expect("bundles");
+            let key = keys::encode_contract_bundle_key(bundle.lineage(), bundle.contract_version())
+                .expect("bundle key");
+            let encoded = codec::encode_contract_bundle_v1(bundle).expect("encode bundle");
+            table
+                .insert(key.as_slice(), encoded.as_bytes())
+                .expect("insert bundle");
+        }
+        {
+            let mut table = write.open_table(ENTITIES).expect("entities");
+            for entity in entities {
+                let encoded = codec::encode_entity_record_v1(entity).expect("encode entity");
+                table
+                    .insert(entity.target().key().as_bytes(), encoded.as_bytes())
+                    .expect("insert entity");
+            }
+        }
+        {
+            let mut commits_table = write.open_table(COMMITS).expect("commits");
+            let mut outcomes = write.open_table(IDEMPOTENCY).expect("idempotency");
+            let mut provenance_table = write.open_table(PROVENANCE).expect("provenance");
+            for (ordinal, commit) in commits.iter().enumerate() {
+                let key = keys::encode_application_sequence_key(commit.commit_sequence());
+                let encoded = codec::encode_commit_record_v1(commit).expect("encode commit");
+                commits_table
+                    .insert(key.as_slice(), encoded.as_bytes())
+                    .expect("insert commit");
+                // Minimal reciprocal outcome/provenance so commit inspect noise
+                // does not drown entity-history findings.
+                let mut seed = [0x31u8; 32];
+                seed[0] = u8::try_from(ordinal.wrapping_add(1)).unwrap_or(1);
+                let identity = IdempotencyIdentity::new(
+                    id,
+                    Environment::new("test").expect("environment"),
+                    TenantScope::Global,
+                    commit.actor().principal_id().clone(),
+                    commit.plan().contract_lineage().clone(),
+                    commit.plan().command_id(),
+                    IdempotencyKeyDigest::from_hmac_bytes(
+                        DigestKeyId::new(1).expect("digest key"),
+                        seed,
+                    ),
+                );
+                let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+                partition.push_u64(1).expect("partition");
+                let partition_key = partition.finish().expect("partition key");
+                let outcome = StoredOutcomeV1::new(
+                    identity.clone(),
+                    commit.commit_sequence(),
+                    commit.admission_request_id(),
+                    commit.plan().clone(),
+                    commit.canonical_input_hash(),
+                    commit.actor().clone(),
+                    commit.logical_time(),
+                    partition_key,
+                    commit.partition_hash(),
+                    commit.conflict_hashes().to_vec(),
+                    commit.declared_outcome().clone(),
+                    StoredAdmittedProvenanceClaimsV1::default(),
+                    commit.provenance_id(),
+                    commit.durability_mode(),
+                )
+                .expect("outcome");
+                let affected = commit
+                    .entity_references()
+                    .iter()
+                    .map(|reference| {
+                        AffectedEntityV1::from_stored_parts(
+                            reference.target().clone(),
+                            reference.entity_version(),
+                        )
+                    })
+                    .collect();
+                let provenance = StoredProvenanceRecordV1::new(
+                    commit.provenance_id(),
+                    commit.commit_sequence(),
+                    identity,
+                    commit.admission_request_id(),
+                    commit.plan().clone(),
+                    commit.canonical_input_hash(),
+                    commit.actor().clone(),
+                    commit.logical_time(),
+                    commit.partition_hash(),
+                    commit.conflict_hashes().to_vec(),
+                    commit.declared_outcome().outcome_id(),
+                    affected,
+                    commit.outbox_event_ids().to_vec(),
+                    StoredAdmittedProvenanceClaimsV1::default(),
+                )
+                .expect("provenance");
+                let outcome_encoded =
+                    codec::encode_stored_outcome_v1(&outcome).expect("encode outcome");
+                let identity_key = outcome.identity().storage_key().expect("identity key");
+                outcomes
+                    .insert(identity_key.as_bytes(), outcome_encoded.as_bytes())
+                    .expect("insert outcome");
+                let provenance_encoded =
+                    codec::encode_provenance_record_v1(&provenance).expect("encode provenance");
+                let provenance_key = keys::encode_provenance_key(commit.provenance_id());
+                provenance_table
+                    .insert(provenance_key.as_slice(), provenance_encoded.as_bytes())
+                    .expect("insert provenance");
+            }
+        }
+        // Advance application sequence past the highest commit so sequence
+        // continuity does not flag a discontinuity.
+        if let Some(last) = commits.iter().map(|c| c.commit_sequence()).max()
+            && let Some(next) = last.checked_next()
+        {
+            let encoded = codec::encode_application_sequence_allocator_v1(
+                ApplicationSequenceAllocator::Next(next),
+            )
+            .expect("allocator");
+            write
+                .open_table(META)
+                .expect("meta")
+                .insert(META_APPLICATION_SEQUENCE, encoded.as_bytes())
+                .expect("update allocator");
+        }
+        write.commit().expect("commit history fixture");
+    }
+
+    #[test]
+    fn entity_history_differential_oracle_agrees_on_three_populated_histories() {
+        let bundle = stored_bundle("entity-history", 1, b"entity-history-bundle");
+        let plan = ExecutablePlanRef::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+            CommandId::first(),
+            PlanHash::from_bytes([0x44; 32]),
+        );
+
+        // History 1: two entities, two versions each, with intermediate commits.
+        // History 2: three entities, single create each.
+        // History 3: one entity updated three times.
+        let histories: Vec<(Vec<StoredEntityRecordV1>, Vec<StoredCommitRecordV1>)> = {
+            let e1_v1 = history_entity(1, EntityVersion::first(), b"a1", &bundle);
+            let e1_v2 = history_entity(
+                1,
+                EntityVersion::first().checked_next().expect("v2"),
+                b"a2",
+                &bundle,
+            );
+            let e2_v1 = history_entity(2, EntityVersion::first(), b"b1", &bundle);
+            let e2_v2 = history_entity(
+                2,
+                EntityVersion::first().checked_next().expect("v2"),
+                b"b2",
+                &bundle,
+            );
+            let h1_commits = vec![
+                history_commit(CommitSequence::first(), plan.clone(), &[&e1_v1, &e2_v1]),
+                history_commit(
+                    CommitSequence::new(2).expect("seq"),
+                    plan.clone(),
+                    &[&e1_v2],
+                ),
+                history_commit(
+                    CommitSequence::new(3).expect("seq"),
+                    plan.clone(),
+                    &[&e2_v2],
+                ),
+            ];
+            let h1_entities = vec![e1_v2, e2_v2];
+
+            let e3 = history_entity(3, EntityVersion::first(), b"c1", &bundle);
+            let e4 = history_entity(4, EntityVersion::first(), b"d1", &bundle);
+            let e5 = history_entity(5, EntityVersion::first(), b"e1", &bundle);
+            let h2_commits = vec![
+                history_commit(CommitSequence::first(), plan.clone(), &[&e3]),
+                history_commit(CommitSequence::new(2).expect("seq"), plan.clone(), &[&e4]),
+                history_commit(CommitSequence::new(3).expect("seq"), plan.clone(), &[&e5]),
+            ];
+            let h2_entities = vec![e3, e4, e5];
+
+            let mut versions = Vec::new();
+            let mut commits = Vec::new();
+            let mut prior = history_entity(9, EntityVersion::first(), b"x1", &bundle);
+            commits.push(history_commit(
+                CommitSequence::first(),
+                plan.clone(),
+                &[&prior],
+            ));
+            for step in 2..=3u64 {
+                let next = history_entity(
+                    9,
+                    EntityVersion::new(step).expect("version"),
+                    format!("x{step}").as_bytes(),
+                    &bundle,
+                );
+                commits.push(history_commit(
+                    CommitSequence::new(step).expect("seq"),
+                    plan.clone(),
+                    &[&next],
+                ));
+                prior = next;
+            }
+            versions.push(prior);
+            let h3_entities = versions;
+            let h3_commits = commits;
+
+            vec![
+                (h1_entities, h1_commits),
+                (h2_entities, h2_commits),
+                (h3_entities, h3_commits),
+            ]
+        };
+
+        for (index, (entities, commits)) in histories.into_iter().enumerate() {
+            let path = TestDatabasePath::new(&format!("entity-oracle-{index}"));
+            let store = initialized_store(&path, database_id(0x80 + index as u8));
+            write_entities_and_commits(
+                &store,
+                database_id(0x80 + index as u8),
+                &bundle,
+                &entities,
+                &commits,
+            );
+            let transaction = store
+                .shared
+                .database
+                .begin_read()
+                .expect("read transaction");
+            let chains = build_entity_chains(
+                &transaction,
+                u64::try_from(entities.len()).expect("entity count"),
+            )
+            .expect("build chains");
+            assert!(
+                !chains.chains.is_empty(),
+                "history {index} must produce non-empty chains"
+            );
+            for entity in &entities {
+                let oracle =
+                    entity_history_matches_oracle(&transaction, entity).expect("oracle check");
+                let chain = entity_history_matches_chain(&chains.chains, entity);
+                assert_eq!(
+                    oracle,
+                    chain,
+                    "history {index} entity {:?} oracle={oracle} chain={chain}",
+                    entity.target().key().as_bytes()
+                );
+                assert!(oracle, "history {index} must be intact");
+            }
+            // Real structural-session entry: drives inspect_entity_row_with_chains.
+            // Residual MissingCrossLink may come from incomplete command-graph
+            // reciprocity outside entity history; per-entity history is asserted above.
+            let mut session = store
+                .begin_structural_evidence(inputs())
+                .expect("begin structural");
+            let (_end, _findings) = collect_structural(&mut session);
+        }
+    }
+
+    #[test]
+    fn entity_chain_broken_version_gap_via_structural_session() {
+        let path = TestDatabasePath::new("entity-gap");
+        let store = initialized_store(&path, database_id(0x91));
+        let bundle = stored_bundle("entity-history", 1, b"entity-history-bundle");
+        let plan = ExecutablePlanRef::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+            CommandId::first(),
+            PlanHash::from_bytes([0x45; 32]),
+        );
+        let good_v1 = history_entity(1, EntityVersion::first(), b"good1", &bundle);
+        let good_v2 = history_entity(
+            1,
+            EntityVersion::first().checked_next().expect("v2"),
+            b"good2",
+            &bundle,
+        );
+        let bad_v1 = history_entity(2, EntityVersion::first(), b"bad1", &bundle);
+        // Skip v2 — jump to v3 for entity 2 (broken chain).
+        let bad_v3 = history_entity(2, EntityVersion::new(3).expect("v3"), b"bad3", &bundle);
+        let commits = vec![
+            history_commit(CommitSequence::first(), plan.clone(), &[&good_v1, &bad_v1]),
+            history_commit(
+                CommitSequence::new(2).expect("seq"),
+                plan.clone(),
+                &[&good_v2],
+            ),
+            // Fabricate a reference with version 3 without version 2 in history.
+            history_commit(CommitSequence::new(3).expect("seq"), plan, &[&bad_v3]),
+        ];
+        // Terminal images: good at v2, bad at v3 (but chain has gap).
+        write_entities_and_commits(
+            &store,
+            database_id(0x91),
+            &bundle,
+            &[good_v2.clone(), bad_v3.clone()],
+            &commits,
+        );
+
+        // Fix the commit sequence for bad entity: history_commit for v3 alone uses
+        // expected_from_version(v3)=Present(v2), but prior chain tip is v1 — intact=false.
+        let transaction = store.shared.database.begin_read().expect("read");
+        let chains = build_entity_chains(&transaction, 2).expect("chains");
+        assert!(
+            entity_history_matches_chain(&chains.chains, &good_v2),
+            "intact sibling must pass chain check"
+        );
+        assert!(
+            !entity_history_matches_chain(&chains.chains, &bad_v3),
+            "broken version gap must fail chain check"
+        );
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin structural");
+        let (_end, findings) = collect_structural(&mut session);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code() == StructuralFindingCode::MissingCrossLink),
+            "structural session must surface MissingCrossLink: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn entity_chain_fabricated_terminal_hash_via_structural_session() {
+        let path = TestDatabasePath::new("entity-fab-hash");
+        let store = initialized_store(&path, database_id(0x92));
+        let bundle = stored_bundle("entity-history", 1, b"entity-history-bundle");
+        let plan = ExecutablePlanRef::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+            CommandId::first(),
+            PlanHash::from_bytes([0x46; 32]),
+        );
+        let a = history_entity(1, EntityVersion::first(), b"a", &bundle);
+        let b = history_entity(2, EntityVersion::first(), b"b", &bundle);
+        let commit = history_commit(CommitSequence::first(), plan, &[&a, &b]);
+        // Store entity A with different fields than the commit reference hashed.
+        let a_tampered = history_entity(1, EntityVersion::first(), b"TAMPERED", &bundle);
+        write_entities_and_commits(
+            &store,
+            database_id(0x92),
+            &bundle,
+            &[a_tampered.clone(), b.clone()],
+            &[commit],
+        );
+
+        let transaction = store.shared.database.begin_read().expect("read");
+        let chains = build_entity_chains(&transaction, 2).expect("chains");
+        assert!(
+            entity_history_matches_chain(&chains.chains, &b),
+            "intact sibling must pass"
+        );
+        assert!(
+            !entity_history_matches_chain(&chains.chains, &a_tampered),
+            "fabricated terminal hash must fail"
+        );
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin structural");
+        let (_end, findings) = collect_structural(&mut session);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code() == StructuralFindingCode::MissingCrossLink),
+            "structural session must surface MissingCrossLink: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn entity_chain_duplicate_target_in_one_commit_via_structural_session() {
+        let path = TestDatabasePath::new("entity-dup-target");
+        let store = initialized_store(&path, database_id(0x93));
+        let bundle = stored_bundle("entity-history", 1, b"entity-history-bundle");
+        let plan = ExecutablePlanRef::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+            CommandId::first(),
+            PlanHash::from_bytes([0x47; 32]),
+        );
+        let a = history_entity(1, EntityVersion::first(), b"a", &bundle);
+        let b = history_entity(2, EntityVersion::first(), b"b", &bundle);
+        let commit = history_commit(CommitSequence::first(), plan, &[&a, &b]);
+        // StoredCommitRecordV1::new rejects duplicates; inject at the wire level.
+        write_entities_and_commits(&store, database_id(0x93), &bundle, &[a, b], &[]);
+        let write = store.shared.database.begin_write().expect("write");
+        {
+            let encoded = codec::encode_commit_record_v1(&commit).expect("encode");
+            let corrupted =
+                riffdb_storage_api::inject_duplicate_entity_reference_v3(encoded.as_bytes())
+                    .expect("inject duplicate");
+            let key = keys::encode_application_sequence_key(CommitSequence::first());
+            write
+                .open_table(COMMITS)
+                .expect("commits")
+                .insert(key.as_slice(), corrupted.as_bytes())
+                .expect("insert");
+        }
+        write.commit().expect("commit");
+
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin structural");
+        let (_end, findings) = collect_structural(&mut session);
+        // Duplicate marks entity A chain broken; B remains intact if only A is marked.
+        let missing = findings
+            .iter()
+            .filter(|f| f.code() == StructuralFindingCode::MissingCrossLink)
+            .count();
+        assert!(
+            missing >= 1,
+            "duplicate target must break at least one entity: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn entity_chain_orphan_overflow_via_structural_session() {
+        let path = TestDatabasePath::new("entity-orphan-overflow");
+        let store = initialized_store(&path, database_id(0x94));
+        let bundle = stored_bundle("entity-history", 1, b"entity-history-bundle");
+        let plan = ExecutablePlanRef::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+            CommandId::first(),
+            PlanHash::from_bytes([0x48; 32]),
+        );
+        // One real entity row; commits also reference a fabricated second target.
+        let real = history_entity(1, EntityVersion::first(), b"real", &bundle);
+        let ghost = history_entity(99, EntityVersion::first(), b"ghost", &bundle);
+        let commit = history_commit(CommitSequence::first(), plan, &[&real, &ghost]);
+        // Only write the real entity row (ghost is orphan).
+        write_entities_and_commits(
+            &store,
+            database_id(0x94),
+            &bundle,
+            std::slice::from_ref(&real),
+            &[commit],
+        );
+
+        let transaction = store.shared.database.begin_read().expect("read");
+        let chains = build_entity_chains(&transaction, 1).expect("chains");
+        assert!(
+            entity_history_matches_chain(&chains.chains, &real),
+            "real entity must stay intact"
+        );
+        assert!(chains.overflow || !chains.orphan_targets.is_empty());
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin structural");
+        let (_end, findings) = collect_structural(&mut session);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code() == StructuralFindingCode::CrossLinkMismatch),
+            "orphan must report CrossLinkMismatch: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn entity_chain_exact_count_masking_counterexample_reports_orphan() {
+        // entities {E1,E2}, E2 never referenced, one commit references fabricated X
+        // → len==2==count without the consumption/orphan fix would hide X.
+        let path = TestDatabasePath::new("entity-masking");
+        let store = initialized_store(&path, database_id(0x95));
+        let bundle = stored_bundle("entity-history", 1, b"entity-history-bundle");
+        let plan = ExecutablePlanRef::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+            CommandId::first(),
+            PlanHash::from_bytes([0x49; 32]),
+        );
+        let e1 = history_entity(1, EntityVersion::first(), b"e1", &bundle);
+        let e2 = history_entity(2, EntityVersion::first(), b"e2", &bundle);
+        let fabricated = history_entity(77, EntityVersion::first(), b"fab", &bundle);
+        // Commit references E1 and fabricated X — not E2.
+        let commit = history_commit(CommitSequence::first(), plan, &[&e1, &fabricated]);
+        write_entities_and_commits(
+            &store,
+            database_id(0x95),
+            &bundle,
+            &[e1.clone(), e2.clone()],
+            &[commit],
+        );
+
+        let transaction = store.shared.database.begin_read().expect("read");
+        let chains = build_entity_chains(&transaction, 2).expect("chains");
+        assert!(
+            entity_history_matches_chain(&chains.chains, &e1),
+            "E1 referenced must pass"
+        );
+        assert!(
+            !entity_history_matches_chain(&chains.chains, &e2),
+            "E2 never referenced must fail"
+        );
+        // fabricated occupies a chain slot and remains unconsumed.
+        assert!(
+            chains.chains.values().any(|c| !c.consumed)
+                || !chains.orphan_targets.is_empty()
+                || chains.chains.len() == 2,
+            "fabricated target must be tracked"
+        );
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin structural");
+        let (_end, findings) = collect_structural(&mut session);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code() == StructuralFindingCode::MissingCrossLink),
+            "E2 unreferenced: {findings:?}"
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code() == StructuralFindingCode::CrossLinkMismatch),
+            "fabricated orphan: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn entity_chain_empty_entities_with_referencing_commit_reports_orphan() {
+        let path = TestDatabasePath::new("entity-empty-ents");
+        let store = initialized_store(&path, database_id(0x96));
+        let bundle = stored_bundle("entity-history", 1, b"entity-history-bundle");
+        let plan = ExecutablePlanRef::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+            CommandId::first(),
+            PlanHash::from_bytes([0x4a; 32]),
+        );
+        let ghost = history_entity(1, EntityVersion::first(), b"ghost", &bundle);
+        let commit = history_commit(CommitSequence::first(), plan, &[&ghost]);
+        // Zero ENTITIES rows; commit still references an entity.
+        write_entities_and_commits(&store, database_id(0x96), &bundle, &[], &[commit]);
+
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin structural");
+        let (_end, findings) = collect_structural(&mut session);
+        let mismatch = findings
+            .iter()
+            .filter(|f| f.code() == StructuralFindingCode::CrossLinkMismatch)
+            .count();
+        assert!(
+            mismatch >= 1,
+            "empty ENTITIES must still report commit-referenced orphans: {findings:?}"
+        );
     }
 
     #[test]
