@@ -250,7 +250,7 @@ operator supplies both the role and the explicit replacement acknowledgement:
 ```bash
 riffdb application deploy \
   --provision-role EaApplication \
-  --replace-expired-credential \
+  --replace-role-credential \
   --seed
 ```
 
@@ -268,6 +268,12 @@ canonical result in `generated/riffdb.contract.bundle`. Deployment later sends
 the exact parent version/hash and candidate hash from that artifact. Parent or
 candidate drift is rejected before catalog admission and the error reports the
 lock, expected parent, actual active, and compiled candidate hashes.
+
+Role check, bind, and provisioning consume that pinned parent-aware bundle;
+they do not recompile successor source as a genesis contract. If the symbolic
+role widened, use `--provision-role <role> --replace-role-credential` so the
+retained predecessor capability is explicitly revoked before the wider role is
+bound. The legacy `--replace-expired-credential` spelling remains an alias.
 
 Do not use `contract deploy` as a probe. A successful direct deployment changes
 the active pointer and the POC has no rollback RPC. Use `contract validate` or

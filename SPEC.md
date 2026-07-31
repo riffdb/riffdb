@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.52
+**Version:** 0.53
 **Status:** Application-platform implementation handoff
 **Date:** 31 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -88,6 +88,7 @@
 | 0.50 | 2026-07-30 | Applied accepted ADR-0066 and planned WP-393: bounded additive enum, entity, and aggregate evolution; explicit-version enum extension; structured deployment diagnostics; and an explicit offline pre-alpha reset boundary. |
 | 0.51 | 2026-07-31 | Applied accepted ADR-0074 and planned WP-394 through WP-398: a Python 3.13+ generated application client backed by the existing Rust stable client, exact sync/async and value/error/retry parity, explicit application source/lock V2 migration, reproducible manylinux wheels and source distribution, and a new Python parity gate. Database semantics and transport trust decisions remain first-party Rust; target-language generated application bindings are the narrow accepted `SYS-002` exception. |
 | 0.52 | 2026-07-31 | Applied accepted ADR-0075 and planned WP-399: successor application locks compile against the exact active parent through a read-only authorized preview, lock V3 pins canonical bundle bytes as a checked artifact, deployment proves exact parent and candidate identities before mutation, exact already-active retries remain idempotent, and application check can no longer report a stale lock as exact. |
+| 0.53 | 2026-07-31 | Corrected the post-WP-399 role-reconciliation boundary and planned WP-400: locked role compilation consumes the pinned parent-aware bundle instead of recompiling successor source as genesis, every local role/query preflight completes before the first remote mutation, widened authority still requires explicit credential replacement, and CLI operation labels no longer describe successor locking as deployment. |
 
 ### Normative language
 
@@ -390,6 +391,11 @@ and every offline check, generation, deployment, query, role, and generated
 binding identity MUST derive from that same strictly decoded bundle. V1/V2
 genesis lock bytes MUST retain their accepted meanings.
 
+In particular, application and standalone role check, describe, bind, and
+provision operations over a V3 lock MUST compile against the pinned bundle and
+its exact query modules. They MUST NOT reinterpret successor source through the
+genesis compiler merely because the source bytes remain available locally.
+
 `SAI-004` Application deployment MUST compare the exact expected parent version
 and bundle hash plus exact candidate bundle hash before catalog admission. Any
 mismatch MUST leave authoritative and deployment state unchanged. An exact
@@ -404,6 +410,13 @@ artifact was checked.
 identity revalidation without manual deletion. A changed retained role identity
 MUST still require explicit credential replacement and MUST never widen
 authority implicitly.
+
+Application deployment MUST finish all fallible local source, lock, generated
+artifact, query-module, and requested-role compilation before its first remote
+mutation. A local authoring diagnostic that reports `no_files_changed` MUST
+therefore never be emitted after that invocation has activated a contract or
+query module. Remote partial progress remains explicitly journaled and
+resumable.
 
 ## 4.6 Python application driver
 

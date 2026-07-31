@@ -1,4 +1,4 @@
-spec_version: '0.52'
+spec_version: '0.53'
 product: RiffDB
 repository: riffdb
 status: application-platform-implementation
@@ -6214,4 +6214,29 @@ work_packages:
   - cargo clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: A byte-identical additive successor locks and deploys under one bundle hash, stale or raced identities
     perform no mutation, exact retries resume, and application check never reports stale artifacts as exact.
+  human_review_triggers: *id001
+- id: WP-400
+  name: Successor role reconciliation and pre-mutation application preflight
+  depends_on: [WP-399]
+  objective: Make every locked role path consume the exact parent-aware bundle and move every fallible local
+    application preflight before the first remote mutation.
+  requirements: [SAI-003, SAI-006, DX-007, AAA-013]
+  required_adrs: [ADR-0052, ADR-0057, ADR-0065, ADR-0075]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0075-successor-application-identity.md,
+    crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, crates/riffdb-cli/**,
+    fixtures/application-diagnostics/**, tests/**, docs/**, templates/**]
+  deliverables:
+  - Pinned-bundle role compilation for application and standalone check, describe, bind, and provisioning paths
+  - Complete local query and requested-role preflight before contract or query-module deployment
+  - Widened-role regression proving a successor lock binds the new exact least-authority definition
+  - Exact application-lock CLI identity and unambiguous replacement/progress diagnostics
+  acceptance_commands:
+  - cargo test -p riffdb-query-module -p riffdb-diagnostics -p riffdb-cli --all-features
+  - ./scripts/check-application-bindings
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A successor that widens one symbolic role preflights, deploys, and explicitly replaces its retained
+    credential without RDB-AR003, no local authoring failure follows remote mutation, and every CLI operation names
+    the action actually performed.
   human_review_triggers: *id001

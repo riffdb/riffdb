@@ -66,6 +66,16 @@ MCP never replace it with unstructured process text. Review the symbolic diff
 before writing a new lock. If source was not intentionally changed, restore it
 and regenerate from the existing exact lock instead.
 
+`RDB-AR003` describes a disagreement between a role's exact manifest contract
+and the contract bundle used to derive its grant; it is not a report about an
+older capability still stored by the server. With lock V3, role operations use
+the pinned parent-aware bundle, so an exact `application check` and an
+`RDB-AR003` from the same unchanged workspace would be an implementation defect,
+not a reason to rewrite the same lock repeatedly. A deliberately widened role
+instead produces a new role definition hash and requires
+`--replace-role-credential`; replacement diagnostics include the retained and
+locked role hashes in JSON when both are known.
+
 Use JSON when an agent or editor needs deterministic fields:
 
 ```bash
