@@ -61,15 +61,28 @@ Selected file-size observations from this branch (audit workload):
 | 32768 | 32272384 |
 | 65536 | 72609792 |
 
-### Application-baseline end-to-end numbers (placeholder)
+### Application-baseline end-to-end numbers (measured at integration)
 
-End-to-end write-byte reduction under real entity-mutating commands is measured
-by the app-baseline / concurrency-sweep harnesses at integration, not by
-command-growth. **Numbers are not fabricated here.**
+Same-machine back-to-back `run-app-baseline --full` (15,160 seed commands,
+concurrency 128) on 2026-07-31: branch base `6892c84` (pre-E/B) versus the
+`format-acceptances` integration head carrying Packages E and B. The harness
+reports latency, not bytes; the per-commit byte reduction is evidenced by the
+durable wire vectors (481 -> 421, -60 B for the two-mutation vector).
 
-| Workload | Pre-E bytes/cmd | Post-E bytes/cmd | Delta | Source run |
-| --- | ---: | ---: | ---: | --- |
-| _TBD at integration_ | — | — | — | app-baseline JSONL |
+| Metric | Base `6892c84` | E+B integration | Delta |
+| --- | ---: | ---: | ---: |
+| RiffDB seed (15,160 cmds) | 1,504.6 ms (10,080 ops/s) | 1,436.4 ms (10,557 ops/s) | -4.5% |
+| Seed ratio vs same-run PG | 2.34x | 2.29x | improved |
+| `create_comment` p50 | 0.498 ms | 0.449 ms | -9.8% |
+| `close_ticket_with_comment` p50 | 0.499 ms | 0.448 ms | -10.2% |
+| `swap_member_roles` p50 | 0.435 ms | 0.415 ms | -4.6% |
+| `open_ticket_with_labels` p50 | 0.534 ms | 0.519 ms | -2.8% |
+| `point_get_ticket` p50 | 0.204 ms | 0.190 ms | -6.9% |
+| `ticket_detail_page` p50 | 0.275 ms | 0.266 ms | -3.3% |
+
+No scenario regressed. The uniform write-side improvement is consistent with
+smaller commit records reducing encode and durable-write bytes on the commit
+hot path.
 
 ## Startup history check
 
