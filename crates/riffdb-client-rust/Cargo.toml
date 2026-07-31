@@ -24,7 +24,9 @@ tonic-prost = { version = "=0.14.6", default-features = false }
 zeroize = { version = "=1.8.1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
-tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt", "time", "test-util"] }
+# Current-thread runtime for batch re-entry tests that exercise real Overloaded
+# backoff sleeps via execute_retry_attempts (needs `rt` + `time`).
+tokio = { version = "=1.52.0", default-features = false, features = ["rt", "time"] }
 
 [lints]
 workspace = true
