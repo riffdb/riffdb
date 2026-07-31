@@ -31,7 +31,10 @@ const SERVICE_AUDIT_OFFSET: usize = 0;
 const SERVICE_INTEGRITY_OFFSET: usize = SERVICE_AUDIT_OFFSET + SERVICE_OPERATION_COUNT;
 const SERVICE_CURSOR_OFFSET: usize = SERVICE_INTEGRITY_OFFSET + SERVICE_OPERATION_COUNT;
 const SERVICE_STREAM_OFFSET: usize = SERVICE_CURSOR_OFFSET + 1;
-const SERVICE_TERMINAL_OFFSET: usize = SERVICE_STREAM_OFFSET + 1;
+const SERVICE_CURSOR_EVICTED_OFFSET: usize = SERVICE_STREAM_OFFSET + 1;
+const SERVICE_READ_RETRY_ATTEMPT_OFFSET: usize = SERVICE_CURSOR_EVICTED_OFFSET + 1;
+const SERVICE_READ_RETRY_EXHAUSTED_OFFSET: usize = SERVICE_READ_RETRY_ATTEMPT_OFFSET + 1;
+const SERVICE_TERMINAL_OFFSET: usize = SERVICE_READ_RETRY_EXHAUSTED_OFFSET + 1;
 const AUTH_REJECTION_OFFSET: usize = SERVICE_TERMINAL_OFFSET + SERVICE_TERMINAL_COUNT;
 const AUTH_DEFECT_OFFSET: usize = AUTH_REJECTION_OFFSET + AUTH_REJECTION_COUNT;
 const POLICY_DENIAL_OFFSET: usize = AUTH_DEFECT_OFFSET + AUTH_DEFECT_COUNT;
@@ -410,6 +413,12 @@ pub enum MetricKey {
     ServiceCursorUnavailable,
     /// Policy closed a live stream.
     ServiceStreamClosedByPolicy,
+    /// A live cursor was evicted under capacity pressure.
+    ServiceCursorEvicted,
+    /// An internal read retry attempt after a transient failure.
+    ServiceReadRetryAttempt,
+    /// Internal read retry budget was exhausted.
+    ServiceReadRetryExhausted,
     /// One API-neutral operation reached a closed caller-visible disposition.
     ServiceOperationTerminal(ServiceTerminalClass),
     /// Initial credential authentication rejected.
@@ -449,6 +458,9 @@ impl MetricKey {
             }
             Self::ServiceCursorUnavailable => SERVICE_CURSOR_OFFSET,
             Self::ServiceStreamClosedByPolicy => SERVICE_STREAM_OFFSET,
+            Self::ServiceCursorEvicted => SERVICE_CURSOR_EVICTED_OFFSET,
+            Self::ServiceReadRetryAttempt => SERVICE_READ_RETRY_ATTEMPT_OFFSET,
+            Self::ServiceReadRetryExhausted => SERVICE_READ_RETRY_EXHAUSTED_OFFSET,
             Self::ServiceOperationTerminal(terminal) => {
                 SERVICE_TERMINAL_OFFSET + service_terminal_index(terminal)
             }
@@ -517,6 +529,39 @@ impl MetricKey {
                     Some(MetricLabel {
                         key: "kind",
                         value: "stream_closed_by_policy",
+                    }),
+                    None,
+                ],
+                value,
+            },
+            Self::ServiceCursorEvicted => MetricSample {
+                name: "riffdb_service_events_total",
+                labels: [
+                    Some(MetricLabel {
+                        key: "kind",
+                        value: "cursor_evicted",
+                    }),
+                    None,
+                ],
+                value,
+            },
+            Self::ServiceReadRetryAttempt => MetricSample {
+                name: "riffdb_service_events_total",
+                labels: [
+                    Some(MetricLabel {
+                        key: "kind",
+                        value: "read_retry_attempt",
+                    }),
+                    None,
+                ],
+                value,
+            },
+            Self::ServiceReadRetryExhausted => MetricSample {
+                name: "riffdb_service_events_total",
+                labels: [
+                    Some(MetricLabel {
+                        key: "kind",
+                        value: "read_retry_exhausted",
                     }),
                     None,
                 ],
@@ -1011,6 +1056,9 @@ fn metric_keys() -> Vec<MetricKey> {
     );
     keys.push(MetricKey::ServiceCursorUnavailable);
     keys.push(MetricKey::ServiceStreamClosedByPolicy);
+    keys.push(MetricKey::ServiceCursorEvicted);
+    keys.push(MetricKey::ServiceReadRetryAttempt);
+    keys.push(MetricKey::ServiceReadRetryExhausted);
     keys.extend(
         ServiceTerminalClass::ALL
             .into_iter()

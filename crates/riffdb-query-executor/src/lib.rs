@@ -229,9 +229,13 @@ impl std::fmt::Debug for QueryExecutionFuel {
 
 impl QueryExecutionFuel {
     fn from_cost(cost: QueryCostVectorV1) -> Self {
+        // Runtime headroom: each access step may observe one extra index row when
+        // deciding whether a continuation is minted (scan limit+1). This is not
+        // part of the plan-hashed cost vector (returned-row budget stays stable).
+        let scan_headroom = cost.access_steps();
         Self {
             access_steps: cost.access_steps(),
-            scanned_index_rows: cost.scanned_index_rows(),
+            scanned_index_rows: cost.scanned_index_rows().saturating_add(scan_headroom),
             point_reads: cost.point_reads(),
             dependent_keys: cost.dependent_keys(),
             intermediate_rows: cost.intermediate_rows(),

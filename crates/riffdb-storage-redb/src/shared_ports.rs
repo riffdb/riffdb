@@ -21,14 +21,18 @@ use riffdb_storage_api::{
     EntityTarget, ExecutionFailureAdmissionResult, ExecutionFailureTransitionPort,
     ExecutionFailureTransitionRequestV1, FilteredAuthoritativeIndexScanPage,
     FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader, IdempotencyIdentity,
-    IdempotencyLookupCandidatesV1, ProjectionApplySnapshot, ProjectionApplySnapshotReader,
-    ProjectionApplySnapshotRequest, ProjectionControlScanV1, ProjectionQueryReader,
-    ProjectionQueryRequest, ProjectionQueryResult, ProjectionRecoveryPageLimit,
-    ProjectionRecoveryRepository, ProjectionRecoveryValidationRequestV1,
-    ProjectionRecoveryValidationResultV1, ProjectionStatus, QueryModuleRepository, ReadSnapshot,
-    SnapshotReader, SnapshotRequest, StorageError, StorageScanLimit, StoredCapabilityRecordV1,
-    StoredCommitRecordV1, StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1,
-    StoredOutcomeV1, StoredProvenanceRecordV1, StoredQueryModuleV1,
+    IdempotencyLookupCandidatesV1, OutboxClaimV1, OutboxDeadLetterV1, OutboxPageLimit,
+    OutboxRenewV1, OutboxRepository, OutboxRetryV1, OutboxStatusReadResultV1, OutboxSucceedV1,
+    OutboxTransitionResultV1, PendingOutboxScanV1, ProjectionApplySnapshot,
+    ProjectionApplySnapshotReader, ProjectionApplySnapshotRequest, ProjectionControlScanV1,
+    ProjectionQueryReader, ProjectionQueryRequest, ProjectionQueryResult,
+    ProjectionRecoveryPageLimit, ProjectionRecoveryRepository,
+    ProjectionRecoveryValidationRequestV1, ProjectionRecoveryValidationResultV1, ProjectionStatus,
+    QueryModuleRepository, ReadSnapshot, SnapshotReader, SnapshotRequest, StorageError,
+    StorageErrorKind, StorageScanLimit, StoredCapabilityRecordV1, StoredCommitRecordV1,
+    StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
+    StoredProvenanceRecordV1, StoredQueryModuleV1, UndeliveredOutboxStatusScanRequestV1,
+    UndeliveredOutboxStatusScanV1,
 };
 use riffdb_types::{
     CapabilityId, CapabilityTokenDigest, CommitSequence, ContractBundleHash, ContractLineage,
@@ -51,12 +55,13 @@ impl RedbSharedPorts {
         Self(shared)
     }
 
-    /// Temporary operational view for trait delegation and mixed read paths.
+    /// Temporary operational view for trait delegation inside this crate only.
     ///
-    /// The value is not cloneable and is never retained by callers of the
-    /// shared-port traits. Concurrent writers still serialize on the mutation gate.
+    /// Not public: callers outside this crate must use the `&self` port traits
+    /// implemented on [`RedbSharedPorts`]. Concurrent writers still serialize on
+    /// the mutation gate, not handle uniqueness.
     #[must_use]
-    pub fn operational(&self) -> RedbOperationalPorts {
+    pub(crate) fn operational(&self) -> RedbOperationalPorts {
         RedbOperationalPorts {
             shared: Arc::clone(&self.0),
         }
@@ -336,4 +341,71 @@ impl ProjectionRecoveryRepository for RedbSharedPorts {
             request,
         )
     }
+}
+
+impl OutboxRepository for RedbSharedPorts {
+    fn has_undelivered_outbox(&self) -> Result<bool, StorageError> {
+        OutboxRepository::has_undelivered_outbox(&self.operational())
+    }
+
+    fn read_outbox_status(
+        &self,
+        event_id: EventId,
+    ) -> Result<OutboxStatusReadResultV1, StorageError> {
+        OutboxRepository::read_outbox_status(&self.operational(), event_id)
+    }
+
+    fn scan_pending_outbox(
+        &self,
+        after: Option<EventId>,
+        limit: OutboxPageLimit,
+    ) -> Result<PendingOutboxScanV1, StorageError> {
+        OutboxRepository::scan_pending_outbox(&self.operational(), after, limit)
+    }
+
+    fn scan_undelivered_outbox_statuses(
+        &self,
+        request: UndeliveredOutboxStatusScanRequestV1,
+    ) -> Result<UndeliveredOutboxStatusScanV1, StorageError> {
+        OutboxRepository::scan_undelivered_outbox_statuses(&self.operational(), request)
+    }
+
+    fn claim_outbox(
+        &mut self,
+        _transition: &OutboxClaimV1,
+    ) -> Result<OutboxTransitionResultV1, StorageError> {
+        Err(shared_ports_mutation_denied())
+    }
+
+    fn renew_outbox(
+        &mut self,
+        _transition: &OutboxRenewV1,
+    ) -> Result<OutboxTransitionResultV1, StorageError> {
+        Err(shared_ports_mutation_denied())
+    }
+
+    fn succeed_outbox(
+        &mut self,
+        _transition: &OutboxSucceedV1,
+    ) -> Result<OutboxTransitionResultV1, StorageError> {
+        Err(shared_ports_mutation_denied())
+    }
+
+    fn retry_outbox(
+        &mut self,
+        _transition: &OutboxRetryV1,
+    ) -> Result<OutboxTransitionResultV1, StorageError> {
+        Err(shared_ports_mutation_denied())
+    }
+
+    fn dead_letter_outbox(
+        &mut self,
+        _transition: &OutboxDeadLetterV1,
+    ) -> Result<OutboxTransitionResultV1, StorageError> {
+        Err(shared_ports_mutation_denied())
+    }
+}
+
+fn shared_ports_mutation_denied() -> StorageError {
+    StorageError::new(StorageErrorKind::InvariantViolation, None)
 }
