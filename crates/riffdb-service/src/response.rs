@@ -784,27 +784,38 @@ impl ServiceResponseCharge for ContractValidationResult {
     ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
         let mut charge = ChargeAccumulator::message();
         charge.fields(1)?;
-        if let Self::Invalid(error) = self {
-            if let Some(diagnostics) = error.syntax() {
-                for diagnostic in diagnostics.as_slice() {
-                    charge.fields(8)?;
-                    charge.bytes(diagnostic.code().as_str().len())?;
-                    charge.bytes(diagnostic.code().summary().len())?;
-                    if let Some(help) = diagnostic.code().help() {
-                        charge.bytes(help.len())?;
-                    }
-                    for expected in diagnostic.expected() {
-                        charge.bytes(expected.len())?;
+        match self {
+            Self::Valid => {}
+            Self::Candidate(candidate) => {
+                if candidate.parent_version().is_some() {
+                    charge.fields(1)?;
+                    charge.bytes(32)?;
+                }
+                charge_contract_descriptor(&mut charge, candidate.candidate())?;
+                charge.bytes(candidate.canonical_bundle().len())?;
+            }
+            Self::Invalid(error) => {
+                if let Some(diagnostics) = error.syntax() {
+                    for diagnostic in diagnostics.as_slice() {
+                        charge.fields(8)?;
+                        charge.bytes(diagnostic.code().as_str().len())?;
+                        charge.bytes(diagnostic.code().summary().len())?;
+                        if let Some(help) = diagnostic.code().help() {
+                            charge.bytes(help.len())?;
+                        }
+                        for expected in diagnostic.expected() {
+                            charge.bytes(expected.len())?;
+                        }
                     }
                 }
-            }
-            if let Some(diagnostics) = error.semantic() {
-                for diagnostic in diagnostics.as_slice() {
-                    charge.fields(8)?;
-                    charge.bytes(diagnostic.code().as_str().len())?;
-                    charge.bytes(diagnostic.code().summary().len())?;
-                    if let Some(help) = diagnostic.code().help() {
-                        charge.bytes(help.len())?;
+                if let Some(diagnostics) = error.semantic() {
+                    for diagnostic in diagnostics.as_slice() {
+                        charge.fields(8)?;
+                        charge.bytes(diagnostic.code().as_str().len())?;
+                        charge.bytes(diagnostic.code().summary().len())?;
+                        if let Some(help) = diagnostic.code().help() {
+                            charge.bytes(help.len())?;
+                        }
                     }
                 }
             }
@@ -851,6 +862,15 @@ impl ServiceResponseCharge for DeployContractResult {
                 if actual.is_some() {
                     charge.fields(1)?;
                 }
+            }
+            Self::ExpectedApplicationIdentityMismatch {
+                actual_active,
+                compiled_candidate,
+            } => {
+                if let Some(actual) = actual_active {
+                    charge_contract_descriptor(&mut charge, actual)?;
+                }
+                charge_contract_descriptor(&mut charge, compiled_candidate)?;
             }
             Self::BundleConflict => {}
         }

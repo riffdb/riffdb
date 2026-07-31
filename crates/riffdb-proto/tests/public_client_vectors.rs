@@ -146,7 +146,7 @@ fn every_client_vector_passes_its_strict_public_boundary() {
         }
         count += 1;
     }
-    assert_eq!(count, 129);
+    assert_eq!(count, 134);
     assert_eq!(rpcs.len(), 25);
     assert_eq!(request_rpcs, rpcs);
     assert_eq!(visible_rpcs, rpcs);
@@ -560,6 +560,11 @@ fn expected_optional_registry() -> BTreeSet<String> {
             "ContractService.DiscoverResources:response:compact-boundary-limit-500-continuation",
         ),
         (
+            "riffdb.v1.CompiledContractCandidate.parent_version",
+            "ContractService.ValidateContract:response:valid",
+            "ContractService.ValidateContract:response:candidate-preview",
+        ),
+        (
             "riffdb.v1.ContractCompatibilitySummary.parent_bundle_hash",
             "ContractService.GetActiveContract:response:present",
             "ContractService.GetActiveContract:response:present-successor",
@@ -683,6 +688,19 @@ fn strict_decode<M: PublicMessage>(vector: &FixtureVector<'_>, message_type: &st
 
 fn optional_field_present(field: &str, vector: &FixtureVector<'_>) -> bool {
     match field {
+        "riffdb.v1.CompiledContractCandidate.parent_version" => {
+            let response = strict_decode::<v1::ValidateContractResponse>(
+                vector,
+                "riffdb.v1.ValidateContractResponse",
+            );
+            match response.result.expect("registered validation result") {
+                v1::validate_contract_response::Result::Candidate(candidate) => {
+                    candidate.parent_version.is_some()
+                }
+                v1::validate_contract_response::Result::Valid(_) => false,
+                _ => panic!("optional candidate fixture uses the wrong validation result"),
+            }
+        }
         field if field.starts_with("riffdb.v1.ContractCompatibilitySummary.") => {
             let response = strict_decode::<v1::GetActiveContractResponse>(
                 vector,
@@ -952,7 +970,7 @@ fn assert_unspecified_enum_rejected(enumeration: &str, message_type: &str, bytes
 #[test]
 fn wp137_enum_optional_and_page_registry_is_complete() {
     let (vectors, registry) = fixture_sections();
-    assert_eq!(vectors.len(), 129);
+    assert_eq!(vectors.len(), 134);
 
     let expected_enums = expected_enum_values();
     let expected_optionals = expected_optional_registry();

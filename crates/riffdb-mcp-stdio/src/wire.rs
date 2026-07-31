@@ -40,7 +40,11 @@ pub(crate) fn fixed_request_to_proto(
     let request_id = request_id.to_vec();
     Ok(match request {
         McpFixedToolRequest::ValidateContract { source } => {
-            FixedGrpcRequest::ValidateContract(v1::ValidateContractRequest { request_id, source })
+            FixedGrpcRequest::ValidateContract(v1::ValidateContractRequest {
+                request_id,
+                source,
+                preview_active_successor: false,
+            })
         }
         McpFixedToolRequest::GetActiveContract => {
             FixedGrpcRequest::GetActiveContract(v1::GetActiveContractRequest { request_id })
@@ -60,6 +64,8 @@ pub(crate) fn fixed_request_to_proto(
             request_id,
             source,
             expected_active_version,
+            expected_active_bundle_hash: Vec::new(),
+            expected_candidate_bundle_hash: Vec::new(),
         }),
         McpFixedToolRequest::GetOutcomeIdentity {
             contract_lineage,

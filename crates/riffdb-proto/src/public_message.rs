@@ -1490,6 +1490,19 @@ fn validate_validate_contract_response(
         v1::validate_contract_response::Result::Invalid(diagnostics) => {
             validate_diagnostics(diagnostics)
         }
+        v1::validate_contract_response::Result::Candidate(candidate) => {
+            if candidate.parent_version.is_some() != !candidate.parent_bundle_hash.is_empty()
+                || candidate.parent_version == Some(0)
+                || candidate.canonical_bundle.is_empty()
+                || candidate.canonical_bundle.len() > MAX_PUBLIC_RESPONSE_BYTES
+            {
+                return Err(PublicWireError::InvalidIdentity);
+            }
+            if !candidate.parent_bundle_hash.is_empty() {
+                hash(&candidate.parent_bundle_hash)?;
+            }
+            validate_contract_descriptor(candidate.candidate.as_ref())
+        }
     }
 }
 
@@ -1525,6 +1538,21 @@ fn validate_deploy_contract_request(
     if message.expected_active_version == Some(0) {
         return Err(PublicWireError::InvalidIdentity);
     }
+    let exact = !message.expected_candidate_bundle_hash.is_empty();
+    if !exact && !message.expected_active_bundle_hash.is_empty() {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    if exact {
+        hash(&message.expected_candidate_bundle_hash)?;
+        if message.expected_active_version.is_some()
+            != !message.expected_active_bundle_hash.is_empty()
+        {
+            return Err(PublicWireError::InvalidIdentity);
+        }
+        if !message.expected_active_bundle_hash.is_empty() {
+            hash(&message.expected_active_bundle_hash)?;
+        }
+    }
     Ok(())
 }
 
@@ -1551,6 +1579,12 @@ fn validate_deploy_contract_response(
         v1::deploy_contract_response::Result::BundleConflict(_) => Ok(()),
         v1::deploy_contract_response::Result::InvalidSource(diagnostics) => {
             validate_diagnostics(diagnostics)
+        }
+        v1::deploy_contract_response::Result::ExpectedApplicationIdentityMismatch(mismatch) => {
+            if let Some(active) = mismatch.actual_active.as_ref() {
+                validate_contract_descriptor(Some(active))?;
+            }
+            validate_contract_descriptor(mismatch.compiled_candidate.as_ref())
         }
     }
 }

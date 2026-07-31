@@ -162,6 +162,8 @@ It binds these steps into one checked chain:
 
 ```text
 application lock
+  -> pinned canonical contract bundle
+  -> exact parent version + bundle hash
   -> contract bundle hash
   -> query module version + hash
   -> compiled role identity
@@ -182,3 +184,16 @@ already retained, deploy requires `--provision-role <name>` together with
 the role compiled from the successor lock. Application code and scripts should
 read identity from the generated client or lock and should never hardcode a
 contract version or module hash.
+
+Lock V3 makes the contract bundle part of this same chain. Genesis
+`application lock --write` remains local. For a successor, the command performs
+an authorized, read-only server preview against the active parent and writes
+`generated/riffdb.contract.bundle`; it does not deploy. Offline
+`application lock --check` and `application generate --locked` decode that
+pinned bundle instead of recompiling the successor as genesis.
+
+Before deployment, the server compares the lock's expected parent version and
+bundle hash and its candidate bundle hash. A disagreement returns the lock,
+expected-parent, actual-active, and server-compiled candidate identities and
+changes no catalog, module, role, seed, or deployment-journal state. If the
+exact candidate is already active, retry is an idempotent success.

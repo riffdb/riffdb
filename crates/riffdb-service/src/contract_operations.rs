@@ -113,9 +113,58 @@ async fn validate_contract(
         )
         .await?;
 
-    let result = match validate_contract_source(request.source().as_str()) {
-        Ok(()) => ContractValidationResult::Valid,
-        Err(error) => ContractValidationResult::Invalid(error),
+    let result = if request.previews_active_successor() {
+        let active = match wait_with_control(
+            context.control(),
+            service.providers.deadline_scheduler.as_ref(),
+            service
+                .providers
+                .catalog
+                .prepare_active_catalog(context.control()),
+        )
+        .await
+        {
+            Ok(Ok(active)) => active,
+            Ok(Err(error)) => {
+                let failure = map_unprotected_catalog_error(
+                    service,
+                    ServiceOperationV1::ValidateContract,
+                    error,
+                );
+                return Err(finish_terminal_failure(
+                    service,
+                    &context,
+                    &begun,
+                    ServiceOperationV1::ValidateContract,
+                    failure,
+                )
+                .await);
+            }
+            Err(error) => {
+                return Err(finish_terminal_failure(
+                    service,
+                    &context,
+                    &begun,
+                    ServiceOperationV1::ValidateContract,
+                    controlled_wait_failure(error),
+                )
+                .await);
+            }
+        };
+        match compile_deployment_candidate(
+            request.source().as_str(),
+            active.as_ref().map(ActiveCatalogSnapshot::bundle),
+        ) {
+            Ok(candidate) => ContractValidationResult::Candidate(Box::new(
+                crate::CompiledContractCandidate::from_bundle(&candidate),
+            )),
+            Err(error) => ContractValidationResult::Invalid(error),
+        }
+    } else {
+        match validate_contract_source(request.source().as_str()) {
+            Ok(()) => ContractValidationResult::Valid,
+            Err(error) => ContractValidationResult::Invalid(error),
+        }
     };
 
     // Compilation is the protected long-running compute. Recheck current policy
@@ -589,15 +638,60 @@ async fn deploy_contract(
         }
     };
     service.refine_intrinsic_prestart(&context, OPERATION, targets.clone())?;
+    let actual_active_descriptor = active
+        .as_ref()
+        .map(|active| contract_descriptor(active.bundle().bundle()));
+    let exact_candidate_already_active =
+        request
+            .expected_candidate_bundle_hash()
+            .is_some_and(|expected| {
+                descriptor.bundle_hash() == expected
+                    && actual_active_descriptor
+                        .as_ref()
+                        .is_some_and(|actual| actual.bundle_hash() == expected)
+            });
+    let deployment_expected_active_version = if exact_candidate_already_active {
+        actual_active_descriptor
+            .as_ref()
+            .map(ContractDescriptor::version)
+    } else {
+        request.expected_active_version()
+    };
     let operation = OperationRequest::deploy_contract(
         descriptor.lineage().clone(),
         descriptor.version(),
         descriptor.bundle_hash(),
-        request.expected_active_version(),
+        deployment_expected_active_version,
     );
     let begun = service
         .begin_invocation(&context, operation, targets, AuditScope::Intrinsic)
         .await?;
+
+    if let Some(result) =
+        exact_application_identity_result(&request, actual_active_descriptor.as_ref(), &descriptor)
+    {
+        let phase = if matches!(result, DeployContractResult::AlreadyActive(_)) {
+            ServiceAuditPhaseV1::Succeeded
+        } else {
+            ServiceAuditPhaseV1::Failed
+        };
+        let _fresh = begun.reauthorize(service, &context).await?;
+        if let Err(failure) = ensure_response_budget(&result) {
+            return Err(
+                finish_terminal_failure(service, &context, &begun, OPERATION, failure).await,
+            );
+        }
+        finish_phase(
+            service,
+            &context,
+            &begun,
+            OPERATION,
+            phase,
+            ServiceAuditLinkV1::None,
+        )
+        .await?;
+        return Ok(result);
+    }
 
     let actual_active_version = active
         .as_ref()
@@ -630,7 +724,7 @@ async fn deploy_contract(
         service.providers.catalog.prepare_deployment(
             context.control(),
             candidate,
-            request.expected_active_version(),
+            deployment_expected_active_version,
         ),
     )
     .await
@@ -700,7 +794,7 @@ async fn deploy_contract(
         descriptor.lineage(),
         descriptor.version(),
         descriptor.bundle_hash(),
-        request.expected_active_version(),
+        deployment_expected_active_version,
     ) {
         Ok(authorization) => authorization,
         Err(_) => {
@@ -1123,6 +1217,32 @@ fn compile_deployment_candidate(
 
 fn contract_descriptor(bundle: &ContractBundle) -> ContractDescriptor {
     ContractDescriptor::from_bundle(bundle)
+}
+
+fn exact_application_identity_result(
+    request: &DeployContractRequest,
+    actual_active: Option<&ContractDescriptor>,
+    compiled_candidate: &ContractDescriptor,
+) -> Option<DeployContractResult> {
+    let expected_candidate = request.expected_candidate_bundle_hash()?;
+    if actual_active.is_some_and(|actual| {
+        actual.bundle_hash() == expected_candidate
+            && compiled_candidate.bundle_hash() == expected_candidate
+    }) {
+        return None;
+    }
+    let active_matches = actual_active.map(|actual| (actual.version(), actual.bundle_hash()))
+        == request
+            .expected_active_version()
+            .zip(request.expected_active_bundle_hash());
+    if active_matches && compiled_candidate.bundle_hash() == expected_candidate {
+        None
+    } else {
+        Some(DeployContractResult::ExpectedApplicationIdentityMismatch {
+            actual_active: actual_active.cloned(),
+            compiled_candidate: compiled_candidate.clone(),
+        })
+    }
 }
 
 fn shape_deployment_outcome(
@@ -1677,6 +1797,67 @@ mod tests {
 
         assert_eq!(replay.canonical_bytes(), compiled.canonical_bytes());
         assert_eq!(replay.bundle_hash(), compiled.bundle_hash());
+    }
+
+    #[test]
+    fn exact_application_identity_is_checked_before_catalog_preparation() {
+        let source = include_str!("../../../contracts/examples/budget.riff");
+        let genesis = compile_contract_source(source).expect("genesis");
+        let successor_source = source.replacen("version 1", "version 2", 1);
+        let successor =
+            compile_contract_successor(&successor_source, &genesis).expect("compatible successor");
+        let active = contract_descriptor(&genesis);
+        let candidate = contract_descriptor(&successor);
+        let request = DeployContractRequest::new_exact(
+            crate::ContractSource::new(successor_source).expect("source"),
+            Some(genesis.contract_version()),
+            Some(genesis.bundle_hash()),
+            successor.bundle_hash(),
+        )
+        .expect("exact request");
+
+        assert_eq!(
+            exact_application_identity_result(&request, Some(&active), &candidate),
+            None,
+            "matching parent and candidate proceed to catalog CAS"
+        );
+        assert_eq!(
+            exact_application_identity_result(&request, Some(&candidate), &candidate),
+            None,
+            "already-active exact candidate proceeds through read-only catalog preparation so the original audited outcome can be recovered"
+        );
+
+        let wrong_candidate = DeployContractRequest::new_exact(
+            crate::ContractSource::new(source).expect("source"),
+            Some(genesis.contract_version()),
+            Some(genesis.bundle_hash()),
+            genesis.bundle_hash(),
+        )
+        .expect("wrong candidate request");
+        assert!(matches!(
+            exact_application_identity_result(&wrong_candidate, Some(&active), &candidate),
+            Some(DeployContractResult::ExpectedApplicationIdentityMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn candidate_preview_carries_the_exact_parent_and_canonical_bundle() {
+        let source = include_str!("../../../contracts/examples/budget.riff");
+        let genesis = compile_contract_source(source).expect("genesis");
+        let successor =
+            compile_contract_successor(&source.replacen("version 1", "version 2", 1), &genesis)
+                .expect("successor");
+        let preview = crate::CompiledContractCandidate::from_bundle(&successor);
+
+        assert_eq!(preview.parent_version(), Some(genesis.contract_version()));
+        assert_eq!(preview.parent_bundle_hash(), Some(genesis.bundle_hash()));
+        assert_eq!(preview.candidate().bundle_hash(), successor.bundle_hash());
+        assert_eq!(
+            ContractBundle::decode(preview.canonical_bundle())
+                .expect("canonical preview")
+                .bundle_hash(),
+            successor.bundle_hash()
+        );
     }
 
     #[test]

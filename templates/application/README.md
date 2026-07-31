@@ -15,6 +15,9 @@ riffdb dev --seed --run
 
 The first command is read-only. `lock --write` is the explicit review point for
 new compiler-derived plans, identities, authority, and generated artifacts.
+Genesis locking is local; successor locking performs an authorized read-only
+preview against the selected database's active parent and pins the exact
+canonical bundle at `generated/riffdb.contract.bundle`. It never deploys.
 `riffdb dev --seed --run` deploys that exact generation, binds
 `{{ROLE_NAME}}`, seeds through `CreateItem`, and runs this repository's Rust,
 TypeScript, or Python application with the scoped development credential. Rust

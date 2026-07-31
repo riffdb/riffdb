@@ -19,6 +19,10 @@ use crate::{
 pub const APPLICATION_LOCK_SCHEMA_V1: &str = "riffdb.application-lock/v1";
 /// Exact lock schema covering a generated Python artifact.
 pub const APPLICATION_LOCK_SCHEMA_V2: &str = "riffdb.application-lock/v2";
+/// Exact lock schema pinning one canonical contract-bundle artifact.
+pub const APPLICATION_LOCK_SCHEMA_V3: &str = "riffdb.application-lock/v3";
+/// Compiler-owned canonical contract-bundle artifact path.
+pub const CONTRACT_BUNDLE_ARTIFACT_PATH: &str = "generated/riffdb.contract.bundle";
 /// Maximum accepted canonical application-lock bytes.
 pub const MAX_APPLICATION_LOCK_BYTES: usize = 4 * 1_024 * 1_024;
 /// Current tenant-unbound role-definition format.
@@ -39,6 +43,8 @@ pub enum GeneratedApplicationArtifactKind {
     Python,
     /// MCP operation registry.
     Mcp,
+    /// Canonical compiler-owned contract bundle.
+    ContractBundle,
 }
 
 impl GeneratedApplicationArtifactKind {
@@ -49,6 +55,7 @@ impl GeneratedApplicationArtifactKind {
             Self::TypeScript => "typescript",
             Self::Python => "python",
             Self::Mcp => "mcp",
+            Self::ContractBundle => "contract_bundle",
         }
     }
 }
@@ -113,6 +120,7 @@ pub struct ApplicationLock {
     manifest_hash: ApplicationManifestHash,
     canonical_bytes: Vec<u8>,
     identity: ApplicationLockHash,
+    contract_bundle_artifact: Option<GeneratedApplicationArtifact>,
 }
 
 impl ApplicationLock {
@@ -123,6 +131,28 @@ impl ApplicationLock {
         contract: &ContractBundle,
         modules: &[QueryModule],
         artifacts: &[GeneratedApplicationArtifact],
+    ) -> Result<Self, ApplicationLockError> {
+        Self::compile_inner(source, manifest, contract, modules, artifacts, false)
+    }
+
+    /// Compiles lock V3 with the exact canonical contract bundle as an artifact.
+    pub fn compile_v3(
+        source: &ApplicationSourceManifest,
+        manifest: &ApplicationManifest,
+        contract: &ContractBundle,
+        modules: &[QueryModule],
+        artifacts: &[GeneratedApplicationArtifact],
+    ) -> Result<Self, ApplicationLockError> {
+        Self::compile_inner(source, manifest, contract, modules, artifacts, true)
+    }
+
+    fn compile_inner(
+        source: &ApplicationSourceManifest,
+        manifest: &ApplicationManifest,
+        contract: &ContractBundle,
+        modules: &[QueryModule],
+        artifacts: &[GeneratedApplicationArtifact],
+        pin_contract_bundle: bool,
     ) -> Result<Self, ApplicationLockError> {
         let expected = source
             .exact_manifest(contract, modules)
@@ -149,7 +179,46 @@ impl ApplicationLock {
                 ApplicationLockErrorKind::Duplicate,
             ));
         }
-        let schema = if source.schema() == crate::APPLICATION_SOURCE_SCHEMA_V2 {
+        let contract_bundle_artifact = artifacts
+            .iter()
+            .find(|artifact| artifact.kind == GeneratedApplicationArtifactKind::ContractBundle)
+            .cloned();
+        if !pin_contract_bundle && contract_bundle_artifact.is_some() {
+            return Err(ApplicationLockError::new(
+                ApplicationLockErrorKind::InvalidShape,
+            ));
+        }
+        let schema = if pin_contract_bundle {
+            let expected_bundle_artifact = GeneratedApplicationArtifact::new(
+                GeneratedApplicationArtifactKind::ContractBundle,
+                CONTRACT_BUNDLE_ARTIFACT_PATH,
+                contract.canonical_bytes(),
+            )?;
+            if contract_bundle_artifact.as_ref() != Some(&expected_bundle_artifact)
+                || artifacts
+                    .iter()
+                    .filter(|artifact| {
+                        artifact.kind == GeneratedApplicationArtifactKind::ContractBundle
+                    })
+                    .count()
+                    != 1
+            {
+                return Err(ApplicationLockError::new(
+                    ApplicationLockErrorKind::IdentityMismatch,
+                ));
+            }
+            if source.schema() == crate::APPLICATION_SOURCE_SCHEMA_V2 {
+                require_python_artifact(source, &artifacts)?;
+            } else if artifacts
+                .iter()
+                .any(|artifact| artifact.kind == GeneratedApplicationArtifactKind::Python)
+            {
+                return Err(ApplicationLockError::new(
+                    ApplicationLockErrorKind::InvalidShape,
+                ));
+            }
+            APPLICATION_LOCK_SCHEMA_V3
+        } else if source.schema() == crate::APPLICATION_SOURCE_SCHEMA_V2 {
             let python_path = source.generation().python().ok_or_else(|| {
                 ApplicationLockError::new(ApplicationLockErrorKind::IdentityMismatch)
             })?;
@@ -232,6 +301,7 @@ impl ApplicationLock {
             manifest_hash: manifest.identity(),
             identity: hash_application_lock(&canonical_bytes),
             canonical_bytes,
+            contract_bundle_artifact,
         })
     }
 
@@ -262,12 +332,42 @@ impl ApplicationLock {
             object,
             "exact_manifest_hash",
         )?)?);
+        let contract_bundle_artifact = if schema == APPLICATION_LOCK_SCHEMA_V3 {
+            let artifacts = required(object, "artifacts")?
+                .as_array()
+                .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
+            let value = artifacts
+                .iter()
+                .find(|artifact| {
+                    artifact.get("kind").and_then(Value::as_str) == Some("contract_bundle")
+                })
+                .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
+            let artifact = value
+                .as_object()
+                .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
+            Some(GeneratedApplicationArtifact {
+                kind: GeneratedApplicationArtifactKind::ContractBundle,
+                path: required(artifact, "path")?
+                    .as_str()
+                    .ok_or_else(|| {
+                        ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape)
+                    })?
+                    .to_owned(),
+                content_hash: GeneratedArtifactHash::from_bytes(parse_hash(required(
+                    artifact,
+                    "content_hash",
+                )?)?),
+            })
+        } else {
+            None
+        };
         Ok(Self {
             schema,
             source_hash,
             manifest_hash,
             identity: hash_application_lock(&canonical),
             canonical_bytes: canonical,
+            contract_bundle_artifact,
         })
     }
 
@@ -300,6 +400,37 @@ impl ApplicationLock {
     pub const fn identity(&self) -> ApplicationLockHash {
         self.identity
     }
+
+    /// Exact canonical contract-bundle artifact pinned by lock V3.
+    #[must_use]
+    pub const fn contract_bundle_artifact(&self) -> Option<&GeneratedApplicationArtifact> {
+        self.contract_bundle_artifact.as_ref()
+    }
+}
+
+fn require_python_artifact(
+    source: &ApplicationSourceManifest,
+    artifacts: &[GeneratedApplicationArtifact],
+) -> Result<(), ApplicationLockError> {
+    let python_path = source
+        .generation()
+        .python()
+        .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::IdentityMismatch))?;
+    if artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == GeneratedApplicationArtifactKind::Python)
+        .count()
+        != 1
+        || !artifacts.iter().any(|artifact| {
+            artifact.kind == GeneratedApplicationArtifactKind::Python
+                && artifact.path == python_path
+        })
+    {
+        return Err(ApplicationLockError::new(
+            ApplicationLockErrorKind::IdentityMismatch,
+        ));
+    }
+    Ok(())
 }
 
 /// Closed application-lock failure kind.
@@ -448,6 +579,7 @@ fn validate_lock_shape(value: &Value) -> Result<&'static str, ApplicationLockErr
     let schema = match required(root, "schema")?.as_str() {
         Some(APPLICATION_LOCK_SCHEMA_V1) => APPLICATION_LOCK_SCHEMA_V1,
         Some(APPLICATION_LOCK_SCHEMA_V2) => APPLICATION_LOCK_SCHEMA_V2,
+        Some(APPLICATION_LOCK_SCHEMA_V3) => APPLICATION_LOCK_SCHEMA_V3,
         _ => {
             return Err(ApplicationLockError::new(
                 ApplicationLockErrorKind::UnsupportedVersion,
@@ -505,6 +637,22 @@ fn validate_lock_shape(value: &Value) -> Result<&'static str, ApplicationLockErr
             .filter(|value| value.get("kind").and_then(Value::as_str) == Some("python"))
             .count();
         if python_count != 1 {
+            return Err(ApplicationLockError::new(
+                ApplicationLockErrorKind::InvalidShape,
+            ));
+        }
+    }
+    if schema == APPLICATION_LOCK_SCHEMA_V3 {
+        let contract_bundles = artifacts
+            .as_array()
+            .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?
+            .iter()
+            .filter(|value| value.get("kind").and_then(Value::as_str) == Some("contract_bundle"))
+            .collect::<Vec<_>>();
+        if contract_bundles.len() != 1
+            || contract_bundles[0].get("path").and_then(Value::as_str)
+                != Some(CONTRACT_BUNDLE_ARTIFACT_PATH)
+        {
             return Err(ApplicationLockError::new(
                 ApplicationLockErrorKind::InvalidShape,
             ));
@@ -615,7 +763,9 @@ fn validate_artifact(value: &Value, schema: &str) -> Result<(), ApplicationLockE
         .as_str()
         .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
     if !matches!(kind, "manifest" | "rust" | "typescript" | "mcp")
-        && !(schema == APPLICATION_LOCK_SCHEMA_V2 && kind == "python")
+        && !((schema == APPLICATION_LOCK_SCHEMA_V2 || schema == APPLICATION_LOCK_SCHEMA_V3)
+            && kind == "python")
+        && !(schema == APPLICATION_LOCK_SCHEMA_V3 && kind == "contract_bundle")
     {
         return Err(ApplicationLockError::new(
             ApplicationLockErrorKind::InvalidShape,

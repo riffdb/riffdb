@@ -2532,6 +2532,9 @@ fn render_validation_result(
                 Some(payload_from(&payload)?),
             )
         }
+        riffdb_service::ContractValidationResult::Candidate(_) => {
+            Err(McpBackendError::InvalidResponse)
+        }
     }
 }
 
@@ -2739,6 +2742,9 @@ fn render_deploy_result(result: DeployContractResult) -> Result<McpToolResult, M
         ),
         DeployContractResult::BundleConflict => {
             compose(4, McpFixedResultBranch::DeployBundleConflict, None)
+        }
+        DeployContractResult::ExpectedApplicationIdentityMismatch { .. } => {
+            Err(McpBackendError::InvalidResponse)
         }
     }
 }

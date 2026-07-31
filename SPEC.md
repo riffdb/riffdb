@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.51
+**Version:** 0.52
 **Status:** Application-platform implementation handoff
-**Date:** 30 July 2026
+**Date:** 31 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -87,6 +87,7 @@
 | 0.49 | 2026-07-30 | Applied accepted ADR-0065 and planned WP-386 through WP-392: installer-owned configurations gain resumable offline database addition, application values become schema-directed and symbolic, installed deployment consumes exact locks with explicit least-authority provisioning, public responses identify the selected database, and MCP exposes authorized named operations with an explicit doctor path. |
 | 0.50 | 2026-07-30 | Applied accepted ADR-0066 and planned WP-393: bounded additive enum, entity, and aggregate evolution; explicit-version enum extension; structured deployment diagnostics; and an explicit offline pre-alpha reset boundary. |
 | 0.51 | 2026-07-31 | Applied accepted ADR-0074 and planned WP-394 through WP-398: a Python 3.13+ generated application client backed by the existing Rust stable client, exact sync/async and value/error/retry parity, explicit application source/lock V2 migration, reproducible manylinux wheels and source distribution, and a new Python parity gate. Database semantics and transport trust decisions remain first-party Rust; target-language generated application bindings are the narrow accepted `SYS-002` exception. |
+| 0.52 | 2026-07-31 | Applied accepted ADR-0075 and planned WP-399: successor application locks compile against the exact active parent through a read-only authorized preview, lock V3 pins canonical bundle bytes as a checked artifact, deployment proves exact parent and candidate identities before mutation, exact already-active retries remain idempotent, and application check can no longer report a stale lock as exact. |
 
 ### Normative language
 
@@ -373,7 +374,38 @@ codes for an incompatible successor. These results MUST be owned by the shared
 application service and preserved across gRPC, CLI, SDK, hosted MCP, and stdio
 MCP after authorization and redaction.
 
-## 4.5 Python application driver
+## 4.5 Exact successor application identity
+
+`SAI-001` Local genesis compilation and parent-aware successor compilation MUST
+remain distinct. A successor application lock MUST be derived from the exact
+active parent bundle and MUST NOT silently fall back to genesis compilation.
+
+`SAI-002` The authorized read-only contract-authoring surface MUST return the
+exact parent identity, candidate descriptor, and bounded canonical candidate
+bundle without mutating catalog, deployment journal, query modules, roles, or
+application data.
+
+`SAI-003` Application lock V3 MUST pin one canonical contract-bundle artifact
+and every offline check, generation, deployment, query, role, and generated
+binding identity MUST derive from that same strictly decoded bundle. V1/V2
+genesis lock bytes MUST retain their accepted meanings.
+
+`SAI-004` Application deployment MUST compare the exact expected parent version
+and bundle hash plus exact candidate bundle hash before catalog admission. Any
+mismatch MUST leave authoritative and deployment state unchanged. An exact
+already-active candidate MUST be an idempotent success.
+
+`SAI-005` `application check` MUST validate an existing default lock and every
+generated artifact, returning `RDB-AL008` for drift. When no lock exists it MUST
+describe source-only compilation and MUST NOT claim that a lock or generated
+artifact was checked.
+
+`SAI-006` Interrupted or partial deployment state MUST resume through remote
+identity revalidation without manual deletion. A changed retained role identity
+MUST still require explicit credential replacement and MUST never widen
+authority implicitly.
+
+## 4.6 Python application driver
 
 `PYD-001` The public Python distribution MUST be named `riffdb-application`,
 imported as `riffdb_application`, require CPython 3.13 or newer, and expose only
@@ -5589,6 +5621,7 @@ earlier deadline governs unless a reviewed reconciliation changes both sources.
 | `ADR-0057` | Accepted | Compiler-owned exact application lock, bounded authoring diagnostics, empty-directory scaffold, complete public authoring kit, TypeScript/builder-MCP parity, durability-preserving performance investigation, rehearsals, canaries, and campaign 02 | WP-345 through WP-370 |
 | `ADR-0058` | Accepted | Bounded typed FIFO writer scheduling, production group durability over redb `Immediate`, two-transition audited commands, complete-outcome release proof, and independent grouped uncertainty | WP-364 |
 | `ADR-0059` | Accepted | Same-partition cross-aggregate read dependencies, exactly one mutation aggregate, mutation-only conflict keys, exact commit-time read revalidation, effective group evidence, and same-run PostgreSQL write parity | WP-366 |
+| `ADR-0075` | Accepted | Parent-aware successor lock V3, read-only candidate preview, exact pre-mutation deployment identity, idempotent already-active retry, truthful application check, and resumable partial deployment state | WP-399 |
 
 ## 22.2 Decisions to resolve before implementation reaches the named gate
 
@@ -6430,6 +6463,7 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `ENT-*` | Authoritative entity records |
 | `CMP-*` | Contract compiler and language |
 | `EVL-*` | Additive contract evolution and deployment diagnostics |
+| `SAI-*` | Exact successor application identity before mutation |
 | `PYD-*` | Python generated application driver, packaging, and language parity |
 | `DSL-*` | Contract language restrictions |
 | `OUT-*` | Typed outcome and idempotency behavior |
