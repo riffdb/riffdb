@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+temporary="$(mktemp -d)"
+trap 'rm -rf "$temporary"' EXIT
+export SOURCE_DATE_EPOCH=1735689600
+
+build_once() {
+    local destination="$1"
+    mkdir -p "$destination"
+    (cd clients/python/runtime && python3 -m maturin build --quiet --release \
+        --interpreter python3 --compatibility linux --out "$destination")
+}
+
+sdist_once() {
+    local destination="$1"
+    mkdir -p "$destination"
+    ./scripts/build-python-sdist "$destination"
+}
+
+build_once "$temporary/one"
+build_once "$temporary/two"
+wheel_one="$(find "$temporary/one" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+wheel_two="$(find "$temporary/two" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+[[ "$(basename "$wheel_one")" == riffdb_application-0.1.0-cp313-abi3-* ]]
+cmp "$wheel_one" "$wheel_two"
+
+sdist_once "$temporary/sdist-one"
+sdist_once "$temporary/sdist-two"
+sdist_one="$(find "$temporary/sdist-one" -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
+sdist_two="$(find "$temporary/sdist-two" -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
+[[ "$(basename "$sdist_one")" == riffdb_application-0.1.0.tar.gz ]]
+cmp "$sdist_one" "$sdist_two"
+
+python3 - "$wheel_one" <<'PY'
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as wheel:
+    names = wheel.namelist()
+    assert "riffdb_application/__init__.py" in names
+    assert "riffdb_application/_binding.py" in names
+    assert "riffdb_application/py.typed" in names
+    assert any(name.startswith("riffdb_application/_native.abi3") for name in names)
+    assert not any(name.endswith(".proto") for name in names)
+PY
+
+python3 - "$sdist_one" <<'PY'
+import sys
+import tarfile
+
+with tarfile.open(sys.argv[1], "r:gz") as archive:
+    names = archive.getnames()
+    root = "riffdb_application-0.1.0/"
+    required = {
+        root + "Cargo.lock",
+        root + "Cargo.toml",
+        root + "crates/riffdb-client-python-native/src/lib.rs",
+        root + "crates/riffdb-client-rust/src/lib.rs",
+        root + "fixtures/proto/descriptors/riffdb-v1-descriptor-set.bin",
+        root + "pyproject.toml",
+        root + "rust-toolchain.toml",
+        root + "clients/python/runtime/src/riffdb_application/__init__.py",
+        root + "clients/python/runtime/src/riffdb_application/_native.pyi",
+        root + "clients/python/runtime/src/riffdb_application/py.typed",
+    }
+    assert required <= set(names), required - set(names)
+    assert not any("/.git/" in name or "__pycache__" in name for name in names)
+PY
+
+export UV_CACHE_DIR="$temporary/uv-cache"
+uv venv --python python3 "$temporary/sdist-venv"
+uv pip install --python "$temporary/sdist-venv/bin/python" maturin==1.14.1
+uv pip install --python "$temporary/sdist-venv/bin/python" \
+    --no-build-isolation "$sdist_one"
+"$temporary/sdist-venv/bin/python" -c \
+    'import riffdb_application; assert "SyncApplicationTransport" in riffdb_application.__all__'
+
+./scripts/check-python-runtime
+cargo deny check
+printf 'Python wheel inventory and reproducibility checks passed.\n'

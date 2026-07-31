@@ -16,13 +16,14 @@ riffdb dev --seed --run
 The first command is read-only. `lock --write` is the explicit review point for
 new compiler-derived plans, identities, authority, and generated artifacts.
 `riffdb dev --seed --run` deploys that exact generation, binds
-`{{ROLE_NAME}}`, seeds through `CreateItem`, and runs this repository's Rust or
-TypeScript application with the scoped development credential. Rust runners
-may complete as one-shot checks; TypeScript web runners remain attached until
-you stop them. Use `riffdb dev --seed --watch` when you want contract/query
+`{{ROLE_NAME}}`, seeds through `CreateItem`, and runs this repository's Rust,
+TypeScript, or Python application with the scoped development credential. Rust
+and Python runners may complete as one-shot checks; TypeScript web runners
+remain attached until you stop them. Use `riffdb dev --seed --watch` when you want contract/query
 regeneration without starting the application process.
 
-Handwritten code belongs in `src/`. Files below `generated/` are compiler-owned.
+Handwritten code belongs in `src/`. Files below `generated/`, plus a Python
+module at the exact locked `generation.python` path, are compiler-owned.
 `riffdb.application.json` contains symbolic author intent.
 `riffdb.application.lock.json` and everything below `generated/` are
 compiler-owned; update them only with `riffdb application lock --write`, verify

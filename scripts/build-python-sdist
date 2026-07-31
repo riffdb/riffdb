@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+destination="${1:-}"
+[[ -n "$destination" ]] || {
+    echo "usage: scripts/build-python-sdist OUTPUT_DIRECTORY" >&2
+    exit 2
+}
+mkdir -p "$destination"
+destination="$(cd "$destination" && pwd)"
+temporary="$(mktemp -d)"
+trap 'rm -rf "$temporary"' EXIT
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1735689600}"
+python_bin="${PYTHON:-python3}"
+
+rsync -a \
+    --exclude '.git/' \
+    --exclude '.venv/' \
+    --exclude 'node_modules/' \
+    --exclude 'target/' \
+    --exclude '**/__pycache__/' \
+    --exclude '**/.mypy_cache/' \
+    --exclude '**/.pytest_cache/' \
+    "$repo_root/" "$temporary/source/"
+cp "$repo_root/release/python/pyproject.toml" "$temporary/source/pyproject.toml"
+
+cd "$temporary/source"
+"$python_bin" -m maturin sdist --out "$destination"

@@ -11,6 +11,8 @@ use crate::{ApplicationManifest, QueryModule};
 
 /// Symbolic application-source schema identifier.
 pub const APPLICATION_SOURCE_SCHEMA_V1: &str = "riffdb.application-source/v1";
+/// Symbolic application-source schema with a required Python target.
+pub const APPLICATION_SOURCE_SCHEMA_V2: &str = "riffdb.application-source/v2";
 /// Maximum accepted application-source bytes.
 pub const MAX_APPLICATION_SOURCE_BYTES: usize = 1_048_576;
 const MAX_NAME_BYTES: usize = 256;
@@ -164,6 +166,7 @@ pub struct ApplicationSourceGeneration {
     rust: String,
     typescript: String,
     mcp: String,
+    python: Option<String>,
 }
 
 impl ApplicationSourceGeneration {
@@ -184,11 +187,18 @@ impl ApplicationSourceGeneration {
     pub fn mcp(&self) -> &str {
         &self.mcp
     }
+
+    /// Python output path for V2 source manifests.
+    #[must_use]
+    pub fn python(&self) -> Option<&str> {
+        self.python.as_deref()
+    }
 }
 
 /// Canonical author-owned symbolic application source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApplicationSourceManifest {
+    schema: &'static str,
     application_name: String,
     contract: ApplicationSourceContract,
     query_modules: Vec<ApplicationSourceQueryModule>,
@@ -221,16 +231,20 @@ impl ApplicationSourceManifest {
                 "seed_inputs",
             ],
         )?;
-        if string(root, "schema")? != APPLICATION_SOURCE_SCHEMA_V1 {
-            return Err(ApplicationSourceError::new(
-                ApplicationSourceErrorKind::UnsupportedVersion,
-            ));
-        }
+        let schema = match string(root, "schema")? {
+            APPLICATION_SOURCE_SCHEMA_V1 => APPLICATION_SOURCE_SCHEMA_V1,
+            APPLICATION_SOURCE_SCHEMA_V2 => APPLICATION_SOURCE_SCHEMA_V2,
+            _ => {
+                return Err(ApplicationSourceError::new(
+                    ApplicationSourceErrorKind::UnsupportedVersion,
+                ));
+            }
+        };
         let application_name = checked_name(string(root, "application")?)?;
         let contract = parse_contract(required(root, "contract")?)?;
         let query_modules = parse_modules(required(root, "query_modules")?)?;
         let roles = parse_roles(required(root, "roles")?, &query_modules)?;
-        let generation = parse_generation(required(root, "generation")?)?;
+        let generation = parse_generation(required(root, "generation")?, schema)?;
         let seed_inputs = parse_paths(required(root, "seed_inputs")?, MAX_SEED_INPUTS)?;
         let canonical_value = canonical_value(
             &application_name,
@@ -239,6 +253,7 @@ impl ApplicationSourceManifest {
             &roles,
             &generation,
             &seed_inputs,
+            schema,
         );
         let mut canonical_bytes = serde_json::to_vec(&canonical_value)
             .map_err(|_| ApplicationSourceError::new(ApplicationSourceErrorKind::InvalidJson))?;
@@ -250,6 +265,7 @@ impl ApplicationSourceManifest {
         }
         let identity = hash_application_source(&canonical_bytes);
         Ok(Self {
+            schema,
             application_name,
             contract,
             query_modules,
@@ -278,6 +294,12 @@ impl ApplicationSourceManifest {
     #[must_use]
     pub fn application_name(&self) -> &str {
         &self.application_name
+    }
+
+    /// Exact symbolic source schema identifier.
+    #[must_use]
+    pub const fn schema(&self) -> &'static str {
+        self.schema
     }
 
     /// Symbolic contract declaration.
@@ -477,7 +499,15 @@ fn canonical_value(
     roles: &[ApplicationSourceRole],
     generation: &ApplicationSourceGeneration,
     seeds: &[String],
+    schema: &'static str,
 ) -> Value {
+    let mut generation_value = Map::new();
+    generation_value.insert("mcp".to_owned(), json!(generation.mcp));
+    if let Some(python) = &generation.python {
+        generation_value.insert("python".to_owned(), json!(python));
+    }
+    generation_value.insert("rust".to_owned(), json!(generation.rust));
+    generation_value.insert("typescript".to_owned(), json!(generation.typescript));
     json!({
         "application": application,
         "contract": {
@@ -485,11 +515,7 @@ fn canonical_value(
             "source": contract.source,
             "version": contract.version,
         },
-        "generation": {
-            "mcp": generation.mcp,
-            "rust": generation.rust,
-            "typescript": generation.typescript,
-        },
+        "generation": generation_value,
         "query_modules": modules.iter().map(|module| json!({
             "name": module.name,
             "queries": module.queries.iter().map(|query| json!({
@@ -505,7 +531,7 @@ fn canonical_value(
             "queries": role.queries,
             "tenant_scope": role.tenant_scope.as_str(),
         })).collect::<Vec<_>>(),
-        "schema": APPLICATION_SOURCE_SCHEMA_V1,
+        "schema": schema,
         "seed_inputs": seeds,
     })
 }
@@ -599,18 +625,34 @@ fn parse_roles(
     Ok(roles)
 }
 
-fn parse_generation(value: &Value) -> Result<ApplicationSourceGeneration, ApplicationSourceError> {
-    let object = object(value, &["mcp", "rust", "typescript"])?;
+fn parse_generation(
+    value: &Value,
+    schema: &str,
+) -> Result<ApplicationSourceGeneration, ApplicationSourceError> {
+    let object = if schema == APPLICATION_SOURCE_SCHEMA_V1 {
+        object(value, &["mcp", "rust", "typescript"])?
+    } else {
+        object(value, &["mcp", "python", "rust", "typescript"])?
+    };
     let generation = ApplicationSourceGeneration {
         rust: checked_path(string(object, "rust")?)?,
         typescript: checked_path(string(object, "typescript")?)?,
         mcp: checked_path(string(object, "mcp")?)?,
+        python: if schema == APPLICATION_SOURCE_SCHEMA_V2 {
+            Some(checked_path(string(object, "python")?)?)
+        } else {
+            None
+        },
     };
-    ensure_unique([
+    let mut paths = vec![
         generation.rust.as_str(),
         generation.typescript.as_str(),
         generation.mcp.as_str(),
-    ])?;
+    ];
+    if let Some(python) = generation.python.as_deref() {
+        paths.push(python);
+    }
+    ensure_unique(paths)?;
     Ok(generation)
 }
 
@@ -826,6 +868,44 @@ mod tests {
             )
             .expect_err("path"),
             ApplicationSourceError::new(ApplicationSourceErrorKind::InvalidPath)
+        );
+    }
+
+    #[test]
+    fn v2_requires_and_canonically_covers_python_target() {
+        let source = SOURCE
+            .replace("application-source/v1", "application-source/v2")
+            .replace(
+                "\"mcp\": \"generated/mcp/tools.json\"",
+                "\"mcp\": \"generated/mcp/tools.json\",\n        \"python\": \"generated/python/client.py\"",
+            );
+        let manifest = ApplicationSourceManifest::parse(&source).expect("v2 source");
+        assert_eq!(manifest.schema(), APPLICATION_SOURCE_SCHEMA_V2);
+        assert_eq!(
+            manifest.generation().python(),
+            Some("generated/python/client.py")
+        );
+        assert!(
+            std::str::from_utf8(manifest.canonical_bytes())
+                .expect("UTF-8")
+                .contains("\"python\":\"generated/python/client.py\"")
+        );
+
+        let missing = source.replace(",\n        \"python\": \"generated/python/client.py\"", "");
+        assert_eq!(
+            ApplicationSourceManifest::parse(&missing)
+                .expect_err("required Python target")
+                .kind(),
+            ApplicationSourceErrorKind::InvalidShape
+        );
+        assert_eq!(
+            ApplicationSourceManifest::parse(&SOURCE.replace(
+                "\"mcp\": \"generated/mcp/tools.json\"",
+                "\"mcp\": \"generated/mcp/tools.json\", \"python\": \"generated/python/client.py\""
+            ))
+            .expect_err("v1 remains closed")
+            .kind(),
+            ApplicationSourceErrorKind::InvalidShape
         );
     }
 }

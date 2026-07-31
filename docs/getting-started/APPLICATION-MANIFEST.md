@@ -18,6 +18,30 @@ author source: riffdb.application-source/v1
 compiler lock: riffdb.application-lock/v1
 ```
 
+Source and lock V1 are permanent compatibility formats. They contain Rust,
+TypeScript, and MCP generation targets and are never upgraded implicitly. A
+Python application uses the explicit V2 successor, which adds exactly one
+required generation member:
+
+```json
+{
+  "generation": {
+    "mcp": "generated/ticketdesk.mcp.json",
+    "python": "src/ticketdesk/generated.py",
+    "rust": "src/generated/riffdb.rs",
+    "typescript": "src/generated/riffdb.ts"
+  },
+  "schema": "riffdb.application-source/v2"
+}
+```
+
+Preview migration locally with `riffdb application migrate --to v2`. The
+`--write` form atomically changes only `riffdb.application.json`; it does not
+write a lock, generate code, deploy, bind a role, seed data, or contact a
+server. Run `riffdb application lock --write` separately after reviewing the
+canonical source change. Lock V2 then covers the exact generated Python path,
+bytes, and digest alongside the existing three artifacts.
+
 The source document is closed JSON with exactly these top-level members:
 
 ```json
@@ -101,12 +125,13 @@ riffdb application generate --locked
 ./scripts/check-application-bindings
 ```
 
-Generated Rust and TypeScript facades own parameter serialization, response
-decoding, exact identity checks, opaque cursors, read-after-commit fences,
-typed command outcomes, and retry-safe uncertainty recovery. Generated MCP
-schemas come from the same operation registry. Application code uses these
-facades or RiffQL text; numeric IDs, field masks, protobuf records, and raw RPC
-wrappers remain generated or internal implementation details.
+Generated Rust and TypeScript facades are present in V1; V2 also requires the
+generated Python facade. They own parameter serialization, response decoding,
+exact identity checks, opaque cursors, read-after-commit fences, typed command
+outcomes, and retry-safe uncertainty recovery. Generated MCP schemas come from
+the same operation registry. Application code uses these facades or RiffQL
+text; numeric IDs, field masks, protobuf records, and raw RPC wrappers remain
+generated or internal implementation details.
 
 Check, inspect, bind, and revoke roles symbolically:
 

@@ -14,7 +14,7 @@ use riffdb_query_module::{
     GeneratedApplicationArtifact, GeneratedApplicationArtifactKind, GeneratedMcpCommand,
     GeneratedMcpTool, NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName,
     QueryModuleVersion, compile_application_role, generate_mcp_commands, generate_mcp_tools,
-    generate_rust_client, generate_typescript_client,
+    generate_python_client, generate_rust_client, generate_typescript_client,
 };
 use riffdb_types::TenantId;
 use serde_json::json;
@@ -26,6 +26,8 @@ const README_TEMPLATE: &str = include_str!("../../../templates/application/READM
 const RUST_MAIN_TEMPLATE: &str = include_str!("../../../templates/application/rust-main.rs");
 const TYPESCRIPT_MAIN_TEMPLATE: &str =
     include_str!("../../../templates/application/typescript-main.ts");
+const PYTHON_MAIN_TEMPLATE: &str = include_str!("../../../templates/application/python-main.py");
+const PYPROJECT_TEMPLATE: &str = include_str!("../../../templates/application/pyproject.toml");
 const CARGO_TEMPLATE: &str = include_str!("../../../templates/application/Cargo.toml");
 const PACKAGE_TEMPLATE: &str = include_str!("../../../templates/application/package.json");
 const PACKAGE_LOCK_BASE: &str =
@@ -47,6 +49,7 @@ const DEFAULT_LOCK_PATH: &str = "riffdb.application.lock.json";
 pub(crate) enum ScaffoldLanguage {
     Rust,
     Typescript,
+    Python,
 }
 
 #[derive(Debug)]
@@ -62,6 +65,8 @@ pub(crate) enum ScaffoldError {
     IdentityMismatch,
     SourceLimit,
     GenerateMcp,
+    GeneratePython,
+    PythonWheelUnavailable,
     UnsafePath,
     Authoring(AuthoringDiagnostics),
     Io(io::Error),
@@ -87,6 +92,10 @@ impl fmt::Display for ScaffoldError {
             }
             Self::SourceLimit => "an application source exceeds the bounded compiler input limit",
             Self::GenerateMcp => "the generated MCP application surface is invalid",
+            Self::GeneratePython => "the generated Python application surface is invalid",
+            Self::PythonWheelUnavailable => {
+                "a matching riffdb-application wheel is not installed; set RIFFDB_APPLICATION_WHEEL"
+            }
             Self::UnsafePath => "an application path escapes the workspace or traverses a symlink",
             Self::Authoring(diagnostics) => {
                 return formatter.write_str(
@@ -112,11 +121,15 @@ pub(crate) fn generate_application(
         Some("riffdb.application-manifest/v1") if !locked => {
             generate_legacy_application(manifest_path)
         }
-        Some("riffdb.application-source/v1") if locked => generate_application_locked(
-            manifest_path,
-            lock_path.unwrap_or_else(|| Path::new(DEFAULT_LOCK_PATH)),
-        ),
-        Some("riffdb.application-source/v1") => Err(ScaffoldError::LockRequired),
+        Some("riffdb.application-source/v1" | "riffdb.application-source/v2") if locked => {
+            generate_application_locked(
+                manifest_path,
+                lock_path.unwrap_or_else(|| Path::new(DEFAULT_LOCK_PATH)),
+            )
+        }
+        Some("riffdb.application-source/v1" | "riffdb.application-source/v2") => {
+            Err(ScaffoldError::LockRequired)
+        }
         _ => Err(ScaffoldError::Manifest),
     }
 }
@@ -230,6 +243,42 @@ pub(crate) fn preview_application_lock(source_path: &Path) -> Result<Vec<u8>, Sc
         .lock
         .canonical_bytes()
         .to_vec())
+}
+
+/// Produces the canonical V2 application source and optionally replaces only
+/// the source file atomically. No compilation, generation, lock write, or
+/// server operation occurs on this path.
+pub(crate) fn migrate_application_source_v2(
+    source_path: &Path,
+    write: bool,
+) -> Result<Vec<u8>, ScaffoldError> {
+    let source_bytes = read_bounded(source_path, 1_048_576)?;
+    let source_text =
+        std::str::from_utf8(&source_bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
+    let parsed = ApplicationSourceManifest::parse(source_text)
+        .map_err(|error| application_source_diagnostic(source_path, error.kind()))?;
+    let migrated = if parsed.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V2 {
+        parsed.canonical_bytes().to_vec()
+    } else {
+        let mut value: serde_json::Value = serde_json::from_slice(parsed.canonical_bytes())
+            .map_err(|_| ScaffoldError::ApplicationSource)?;
+        value["schema"] = json!(riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V2);
+        let generation = value
+            .get_mut("generation")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or(ScaffoldError::ApplicationSource)?;
+        generation.insert("python".to_owned(), json!("generated/python/client.py"));
+        let proposed =
+            serde_json::to_string(&value).map_err(|_| ScaffoldError::ApplicationSource)?;
+        ApplicationSourceManifest::parse(&proposed)
+            .map_err(|error| application_source_diagnostic(source_path, error.kind()))?
+            .canonical_bytes()
+            .to_vec()
+    };
+    if write {
+        atomic_write_absolute(source_path, &migrated)?;
+    }
+    Ok(migrated)
 }
 
 pub(crate) fn write_application_lock(
@@ -388,7 +437,7 @@ fn compile_symbolic_application(
     let commands =
         generate_mcp_commands(module, &contract).map_err(|_| ScaffoldError::GenerateMcp)?;
     let generated_mcp = render_mcp_manifest(&exact, &tools, &commands)?;
-    let outputs = vec![
+    let mut outputs = vec![
         (
             EXACT_MANIFEST_PATH.to_owned(),
             exact.canonical_bytes().to_vec(),
@@ -406,6 +455,14 @@ fn compile_symbolic_application(
             generated_mcp.into_bytes(),
         ),
     ];
+    if let Some(path) = source.generation().python() {
+        outputs.push((
+            path.to_owned(),
+            generate_python_client(module, &contract)
+                .map_err(|_| ScaffoldError::GeneratePython)?
+                .into_bytes(),
+        ));
+    }
     let artifacts = outputs
         .iter()
         .map(|(path, bytes)| {
@@ -415,6 +472,8 @@ fn compile_symbolic_application(
                 GeneratedApplicationArtifactKind::Rust
             } else if path == source.generation().typescript() {
                 GeneratedApplicationArtifactKind::TypeScript
+            } else if source.generation().python() == Some(path.as_str()) {
+                GeneratedApplicationArtifactKind::Python
             } else {
                 GeneratedApplicationArtifactKind::Mcp
             };
@@ -565,6 +624,22 @@ pub(crate) fn create_application(
     .map_err(|_| ScaffoldError::CompileQuery)?;
     let module =
         QueryModule::compile(candidate, &contract).map_err(|_| ScaffoldError::CompileQuery)?;
+    let python = matches!(language, ScaffoldLanguage::Python);
+    let python_generation_path = format!("src/{}/generated.py", application.replace('-', "_"));
+    let generation = if python {
+        json!({
+            "mcp": "generated/mcp/tools.json",
+            "python": python_generation_path,
+            "rust": "generated/rust/client.rs",
+            "typescript": "generated/typescript/client.ts",
+        })
+    } else {
+        json!({
+            "mcp": "generated/mcp/tools.json",
+            "rust": "generated/rust/client.rs",
+            "typescript": "generated/typescript/client.ts",
+        })
+    };
     let application_source = serde_json::to_string(&json!({
         "application": application,
         "contract": {
@@ -572,11 +647,7 @@ pub(crate) fn create_application(
             "source": "riffdb/contract.riff",
             "version": contract.contract_version().get(),
         },
-        "generation": {
-            "mcp": "generated/mcp/tools.json",
-            "rust": "generated/rust/client.rs",
-            "typescript": "generated/typescript/client.ts",
-        },
+        "generation": generation,
         "query_modules": [{
             "name": module_name,
             "queries": [{
@@ -592,7 +663,7 @@ pub(crate) fn create_application(
             "queries": ["ItemPage"],
             "tenant_scope": "global",
         }],
-        "schema": "riffdb.application-source/v1",
+        "schema": if python { "riffdb.application-source/v2" } else { "riffdb.application-source/v1" },
         "seed_inputs": ["riffdb/seed/01-CreateItem.jsonl"],
     }))
     .map_err(|_| ScaffoldError::ApplicationSource)?;
@@ -615,7 +686,11 @@ pub(crate) fn create_application(
     let generated_mcp = render_mcp_manifest(&manifest, &tools, &commands)?;
     let generated_rust = generate_rust_client(&module, &contract);
     let generated_typescript = generate_typescript_client(&module, &contract);
-    let artifacts = [
+    let generated_python = python
+        .then(|| generate_python_client(&module, &contract))
+        .transpose()
+        .map_err(|_| ScaffoldError::GeneratePython)?;
+    let mut artifacts = vec![
         GeneratedApplicationArtifact::new(
             GeneratedApplicationArtifactKind::Manifest,
             EXACT_MANIFEST_PATH,
@@ -641,6 +716,19 @@ pub(crate) fn create_application(
         )
         .map_err(|_| ScaffoldError::ApplicationLock)?,
     ];
+    if let Some(generated_python) = &generated_python {
+        artifacts.push(
+            GeneratedApplicationArtifact::new(
+                GeneratedApplicationArtifactKind::Python,
+                source
+                    .generation()
+                    .python()
+                    .ok_or(ScaffoldError::ApplicationSource)?,
+                generated_python.as_bytes(),
+            )
+            .map_err(|_| ScaffoldError::ApplicationLock)?,
+        );
+    }
     let lock = ApplicationLock::compile(
         &source,
         &manifest,
@@ -673,6 +761,7 @@ pub(crate) fn create_application(
         manifest.canonical_bytes(),
         &generated_rust,
         &generated_typescript,
+        generated_python.as_deref(),
         &generated_mcp,
     )
     .and_then(|()| {
@@ -858,6 +947,7 @@ fn write_repository(
     exact_manifest: &[u8],
     generated_rust: &str,
     generated_typescript: &str,
+    generated_python: Option<&str>,
     generated_mcp: &str,
 ) -> Result<(), ScaffoldError> {
     write_file(root, "riffdb/contract.riff", contract_source.as_bytes())?;
@@ -888,6 +978,10 @@ fn write_repository(
         generated_typescript.as_bytes(),
     )?;
     write_file(root, "generated/mcp/tools.json", generated_mcp.as_bytes())?;
+    if let Some(generated_python) = generated_python {
+        let path = format!("src/{}/generated.py", application.replace('-', "_"));
+        write_file(root, &path, generated_python.as_bytes())?;
+    }
     write_file(
         root,
         "README.md",
@@ -1016,6 +1110,49 @@ fn write_repository(
             )?;
             materialize_installed_typescript_toolchain(root)?;
         }
+        ScaffoldLanguage::Python => {
+            let (wheel_name, wheel_bytes) = load_python_wheel()?;
+            let package_name = application.replace('-', "_");
+            write_file(
+                root,
+                "pyproject.toml",
+                render_python(
+                    PYPROJECT_TEMPLATE,
+                    application,
+                    &package_name,
+                    &wheel_name,
+                    module_client,
+                )
+                .as_bytes(),
+            )?;
+            write_file(
+                root,
+                "uv.lock",
+                render_uv_lock(application, &wheel_name, &wheel_bytes).as_bytes(),
+            )?;
+            write_file(root, &format!("vendor/{wheel_name}"), &wheel_bytes)?;
+            write_file(root, &format!("src/{package_name}/__init__.py"), b"")?;
+            write_file(
+                root,
+                &format!("src/{package_name}/__main__.py"),
+                render_python(
+                    PYTHON_MAIN_TEMPLATE,
+                    application,
+                    &package_name,
+                    &wheel_name,
+                    module_client,
+                )
+                .as_bytes(),
+            )?;
+            write_file(
+                root,
+                "tests/test_generated.py",
+                format!(
+                    "import unittest\n\n\nclass GeneratedImportTest(unittest.TestCase):\n    def test_generated_import(self) -> None:\n        import {package_name}.generated\n"
+                )
+                .as_bytes(),
+            )?;
+        }
     }
     Ok(())
 }
@@ -1058,6 +1195,73 @@ fn render_package_lock(application: &str) -> Result<String, ScaffoldError> {
         serde_json::to_string_pretty(&lock).map_err(|_| ScaffoldError::ApplicationSource)?;
     rendered.push('\n');
     Ok(rendered)
+}
+
+fn load_python_wheel() -> Result<(String, Vec<u8>), ScaffoldError> {
+    let explicit = std::env::var_os("RIFFDB_APPLICATION_WHEEL").map(PathBuf::from);
+    let installed = std::env::current_exe().ok().and_then(|executable| {
+        let root = executable.parent()?.parent()?;
+        let directory = root.join("public/python");
+        let mut wheels = fs::read_dir(directory)
+            .ok()?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(valid_python_wheel_name)
+            })
+            .collect::<Vec<_>>();
+        wheels.sort();
+        (wheels.len() == 1).then(|| wheels.remove(0))
+    });
+    let path = explicit
+        .or(installed)
+        .ok_or(ScaffoldError::PythonWheelUnavailable)?;
+    let name = path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .filter(|name| valid_python_wheel_name(name))
+        .ok_or(ScaffoldError::UnsafePath)?
+        .to_owned();
+    let bytes = read_bounded(&path, 128 * 1_024 * 1_024)?;
+    Ok((name, bytes))
+}
+
+fn valid_python_wheel_name(name: &str) -> bool {
+    name.starts_with("riffdb_application-0.1.0-cp313-abi3-")
+        && name.ends_with(".whl")
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
+fn render_python(
+    template: &str,
+    application: &str,
+    package: &str,
+    wheel: &str,
+    module_client: &str,
+) -> String {
+    template
+        .replace("{{APPLICATION_NAME}}", application)
+        .replace("{{PACKAGE_NAME}}", package)
+        .replace("{{WHEEL_NAME}}", wheel)
+        .replace("{{MODULE_CLIENT}}", module_client)
+}
+
+fn render_uv_lock(application: &str, wheel: &str, wheel_bytes: &[u8]) -> String {
+    use sha2::{Digest as _, Sha256};
+
+    let wheel_hash = hex(&Sha256::digest(wheel_bytes));
+    format!(
+        "version = 1\nrevision = 3\nrequires-python = \">=3.13\"\n\n\
+         [[package]]\nname = \"{application}\"\nversion = \"0.1.0\"\nsource = {{ virtual = \".\" }}\n\
+         dependencies = [\n    {{ name = \"riffdb-application\" }},\n]\n\n\
+         [package.metadata]\nrequires-dist = [{{ name = \"riffdb-application\", path = \"vendor/{wheel}\" }}]\n\n\
+         [[package]]\nname = \"riffdb-application\"\nversion = \"0.1.0\"\n\
+         source = {{ path = \"vendor/{wheel}\" }}\nwheels = [\n    {{ filename = \"{wheel}\", hash = \"sha256:{wheel_hash}\" }},\n]\n"
+    )
 }
 
 fn materialize_installed_typescript_toolchain(root: &Path) -> Result<(), ScaffoldError> {
@@ -1490,6 +1694,47 @@ mod tests {
             assert!(!valid_application_name(name), "{name}");
         }
         assert!(valid_application_name("order-desk2"));
+    }
+
+    #[test]
+    fn v2_migration_preview_is_pure_and_write_changes_only_source() {
+        let base = std::env::temp_dir().join(format!(
+            "riffdb-application-migrate-test-{}",
+            std::process::id()
+        ));
+        if base.exists() {
+            fs::remove_dir_all(&base).expect("remove prior test directory");
+        }
+        create_application("migrate-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
+        let source_path = base.join("riffdb.application.json");
+        let lock_path = base.join(DEFAULT_LOCK_PATH);
+        let original_source = fs::read(&source_path).expect("source");
+        let original_lock = fs::read(&lock_path).expect("lock");
+
+        let preview = migrate_application_source_v2(&source_path, false).expect("preview");
+        assert_eq!(
+            fs::read(&source_path).expect("unchanged source"),
+            original_source
+        );
+        assert_eq!(fs::read(&lock_path).expect("unchanged lock"), original_lock);
+        let migrated = ApplicationSourceManifest::decode_canonical(&preview).expect("canonical v2");
+        assert_eq!(
+            migrated.schema(),
+            riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V2
+        );
+        assert_eq!(
+            migrated.generation().python(),
+            Some("generated/python/client.py")
+        );
+
+        assert_eq!(
+            migrate_application_source_v2(&source_path, true).expect("write"),
+            preview
+        );
+        assert_eq!(fs::read(&source_path).expect("migrated source"), preview);
+        assert_eq!(fs::read(&lock_path).expect("unchanged lock"), original_lock);
+        assert!(!base.join("generated/python/client.py").exists());
+        fs::remove_dir_all(base).expect("cleanup");
     }
 
     #[test]

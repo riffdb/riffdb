@@ -9,6 +9,7 @@ mod application_manifest;
 mod application_role;
 mod application_source;
 mod generation;
+mod python_generation;
 
 pub use application_manifest::{
     APPLICATION_MANIFEST_SCHEMA_V1, ApplicationManifest, ApplicationManifestSourceMap,
@@ -21,15 +22,16 @@ pub use application_role::{
     ApplicationRoleOperationKind, CompiledApplicationRole, compile_application_role,
 };
 pub use application_source::{
-    APPLICATION_SOURCE_SCHEMA_V1, ApplicationSourceContract, ApplicationSourceError,
-    ApplicationSourceErrorKind, ApplicationSourceGeneration, ApplicationSourceManifest,
-    ApplicationSourceQuery, ApplicationSourceQueryModule, ApplicationSourceRole,
-    ApplicationSourceTenantScope, MAX_APPLICATION_SOURCE_BYTES,
+    APPLICATION_SOURCE_SCHEMA_V1, APPLICATION_SOURCE_SCHEMA_V2, ApplicationSourceContract,
+    ApplicationSourceError, ApplicationSourceErrorKind, ApplicationSourceGeneration,
+    ApplicationSourceManifest, ApplicationSourceQuery, ApplicationSourceQueryModule,
+    ApplicationSourceRole, ApplicationSourceTenantScope, MAX_APPLICATION_SOURCE_BYTES,
 };
 pub use generation::{
     GeneratedMcpCommand, GeneratedMcpTool, McpToolGenerationError, generate_mcp_commands,
     generate_mcp_tools, generate_rust_client, generate_typescript_client,
 };
+pub use python_generation::{PythonGenerationError, generate_python_client};
 
 use riffdb_contract_ir::ContractBundle;
 use riffdb_query_compiler::compile_query;
@@ -731,7 +733,7 @@ impl<'a> Reader<'a> {
     }
 }
 pub use application_lock::{
-    APPLICATION_LOCK_SCHEMA_V1, APPLICATION_ROLE_DEFINITION_FORMAT_V1, ApplicationLock,
-    ApplicationLockError, ApplicationLockErrorKind, GeneratedApplicationArtifact,
+    APPLICATION_LOCK_SCHEMA_V1, APPLICATION_LOCK_SCHEMA_V2, APPLICATION_ROLE_DEFINITION_FORMAT_V1,
+    ApplicationLock, ApplicationLockError, ApplicationLockErrorKind, GeneratedApplicationArtifact,
     GeneratedApplicationArtifactKind, MAX_APPLICATION_LOCK_BYTES,
 };

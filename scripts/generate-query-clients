@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
@@ -17,6 +18,12 @@ if [[ "${1:-}" == "--check" ]]; then
     diff -u fixtures/application-manifests/ticketdesk-agent-role-v1.json \
         "$generated/fixtures/application-manifests/ticketdesk-agent-role-v1.json"
     diff -u clients/typescript/ticketdesk/client.ts "$generated/clients/typescript/ticketdesk/client.ts"
+    diff -u clients/python/ticketdesk/generated.py "$generated/clients/python/ticketdesk/generated.py"
+    python3 -c 'compile(open("clients/python/ticketdesk/generated.py", encoding="utf-8").read(), "clients/python/ticketdesk/generated.py", "exec")'
+    if command -v mypy >/dev/null 2>&1; then
+        MYPYPATH=clients/python/runtime/src \
+            mypy --strict clients/python/ticketdesk/generated.py
+    fi
     cargo check --quiet -p riffdb-ticketdesk --all-targets
     if command -v tsc >/dev/null 2>&1; then
         tsc --noEmit --strict --target ES2022 \

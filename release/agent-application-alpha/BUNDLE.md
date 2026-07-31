@@ -23,6 +23,11 @@ For TypeScript, `riffdb new --language typescript` materializes the exact
 compiler, Node types, product runtime, lockfile, build scripts, and HTTP starter
 from `$RIFFDB_TYPESCRIPT_RUNTIME`; no registry operation is required.
 
+For Python, `riffdb new --language python` copies the architecture-matching
+`cp313-abi3` wheel from `public/python`, locks its SHA-256 in `uv.lock`, and
+creates a source-layout application that completes `uv sync --locked` without
+a registry lookup. CPython 3.13 or 3.14 is required.
+
 `bin/riffdb-builder-mcp --workspace <path>` exposes the same local check,
 diagnostic, lock, and generation semantics as the CLI plus the bundled public
 references. It has no credential and no runtime operation. These are

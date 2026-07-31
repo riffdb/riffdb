@@ -171,3 +171,78 @@ fn lock_rejects_stale_manifest_duplicate_outputs_and_noncanonical_bytes() {
         ApplicationLockErrorKind::NonCanonical
     );
 }
+
+#[test]
+fn v2_lock_requires_exact_python_artifact_and_v1_rejects_it() {
+    let v2_source_text = SOURCE
+        .replace("application-source/v1", "application-source/v2")
+        .replace(
+            "\"mcp\": \"generated/mcp/tools.json\"",
+            "\"mcp\": \"generated/mcp/tools.json\",\n    \"python\": \"generated/python/client.py\"",
+        );
+    let source = ApplicationSourceManifest::parse(&v2_source_text).expect("v2 source");
+    let contract = compile_contract_source(CONTRACT).expect("contract");
+    let module = QueryModule::compile(
+        QueryModuleCandidate::new(
+            QueryModuleName::new("ticketdesk").expect("module name"),
+            QueryModuleVersion::new(1).expect("module version"),
+            vec![NamedQuerySource::new("ListTickets", LIST_TICKETS).expect("query")],
+        )
+        .expect("candidate"),
+        &contract,
+    )
+    .expect("module");
+    let manifest = source
+        .exact_manifest(&contract, std::slice::from_ref(&module))
+        .expect("manifest");
+    assert_eq!(
+        ApplicationLock::compile(
+            &source,
+            &manifest,
+            &contract,
+            std::slice::from_ref(&module),
+            &[],
+        )
+        .expect_err("missing Python")
+        .kind(),
+        ApplicationLockErrorKind::IdentityMismatch
+    );
+    let python = GeneratedApplicationArtifact::new(
+        GeneratedApplicationArtifactKind::Python,
+        "generated/python/client.py",
+        b"generated python",
+    )
+    .expect("Python artifact");
+    let lock = ApplicationLock::compile(
+        &source,
+        &manifest,
+        &contract,
+        std::slice::from_ref(&module),
+        std::slice::from_ref(&python),
+    )
+    .expect("v2 lock");
+    assert_eq!(
+        lock.schema(),
+        riffdb_query_module::APPLICATION_LOCK_SCHEMA_V2
+    );
+    assert_eq!(
+        ApplicationLock::decode_canonical(lock.canonical_bytes())
+            .expect("v2 decode")
+            .canonical_bytes(),
+        lock.canonical_bytes()
+    );
+
+    let (v1_source, v1_manifest, v1_contract, v1_module) = compiled_application();
+    assert_eq!(
+        ApplicationLock::compile(
+            &v1_source,
+            &v1_manifest,
+            &v1_contract,
+            std::slice::from_ref(&v1_module),
+            &[python],
+        )
+        .expect_err("v1 rejects Python")
+        .kind(),
+        ApplicationLockErrorKind::InvalidShape
+    );
+}

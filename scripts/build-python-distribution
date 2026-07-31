@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+destination="${1:-}"
+[[ -n "$destination" ]] || {
+    echo "usage: scripts/build-python-distribution OUTPUT_DIRECTORY" >&2
+    exit 2
+}
+mkdir -p "$destination"
+destination="$(cd "$destination" && pwd)"
+compatibility="${RIFFDB_PYTHON_COMPATIBILITY:-manylinux_2_28}"
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1735689600}"
+
+cd "$repo_root/clients/python/runtime"
+python3 -m maturin build --quiet --release --locked \
+    --compatibility "$compatibility" --out "$destination"
+"$repo_root/scripts/build-python-sdist" "$destination"
+
+printf 'Python distribution artifacts written to %s\n' "$destination"

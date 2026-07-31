@@ -31,7 +31,7 @@ pub(crate) enum TopLevel {
             long,
             value_enum,
             default_value = "rust",
-            value_name = "rust|typescript"
+            value_name = "rust|typescript|python"
         )]
         language: ApplicationLanguage,
         #[arg(long, value_name = "DIRECTORY")]
@@ -109,6 +109,18 @@ pub(crate) enum TopLevel {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ApplicationCommand {
+    /// Previews or atomically writes an explicit local application-format migration.
+    Migrate {
+        #[arg(
+            default_value = "riffdb.application.json",
+            value_name = "APPLICATION_SOURCE"
+        )]
+        source: OsString,
+        #[arg(long, value_parser = ["v2"], value_name = "v2")]
+        to: String,
+        #[arg(long)]
+        write: bool,
+    },
     /// Read-only symbolic compilation and safety analysis.
     Check {
         #[arg(
@@ -214,6 +226,7 @@ pub(crate) enum ApplicationCommand {
 pub(crate) enum ApplicationLanguage {
     Rust,
     Typescript,
+    Python,
 }
 
 #[derive(Debug, Subcommand)]
@@ -627,11 +640,29 @@ mod tests {
                 ..
             } if application == "inventory"
         ));
+        let python = Cli::try_parse_from(["riffdb", "new", "inventory", "--language", "python"])
+            .expect("accepted Python scaffold command");
+        assert!(matches!(
+            python.command,
+            TopLevel::New {
+                language: ApplicationLanguage::Python,
+                ..
+            }
+        ));
         assert!(Cli::try_parse_from(["riffdb", "new", "inventory", "--kernel"]).is_err());
     }
 
     #[test]
     fn application_source_and_lock_operations_are_explicit_and_closed() {
+        assert!(matches!(
+            Cli::try_parse_from(["riffdb", "application", "migrate", "--to", "v2"])
+                .expect("migration preview")
+                .command,
+            TopLevel::Application {
+                command: ApplicationCommand::Migrate { write: false, .. }
+            }
+        ));
+        assert!(Cli::try_parse_from(["riffdb", "application", "migrate", "--to", "v3"]).is_err());
         assert!(matches!(
             Cli::try_parse_from(["riffdb", "application", "check"])
                 .expect("check")

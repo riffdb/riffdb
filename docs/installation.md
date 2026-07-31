@@ -226,6 +226,23 @@ the next stage is published locally. Do not delete
 `.riffdb/deployments/<database>/` to recover from an uncertain deploy: rerun the
 same command with the same exact lock.
 
+### Python applications
+
+The Python application distribution is `riffdb-application` and supports
+CPython 3.13 and 3.14 on Linux x86_64 and aarch64. Release bundles carry the
+matching limited-API wheel under `public/python`, allowing the installed CLI to
+create a fully locked, offline scaffold:
+
+```bash
+riffdb new my-app --language python
+cd my-app
+uv sync --locked
+```
+
+Direct `pip` and `uv` wheel installation, source-distribution builds, explicit
+application-format migration, sync and async client usage, and the release
+artifact commands are documented in [Python Application Driver](python-driver.md).
+
 Changing the application lock is a successor deployment, not a resume. When a
 prior application role exists, RiffDB refuses to mutate the server until the
 operator supplies both the role and the explicit replacement acknowledgement:
