@@ -1457,6 +1457,11 @@ pub struct StoredOutboxIntentV2 {
     #[prost(message, optional, tag = "1")]
     pub event_reference: ::core::option::Option<EventReferenceV2>,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredHistoryIncarnationV1 {
+    #[prost(uint64, tag = "1")]
+    pub incarnation: u64,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredIndexGenerationV2 {
     #[prost(bytes = "vec", tag = "1")]
@@ -1520,11 +1525,6 @@ pub mod stored_administration_sequence_allocator_v1 {
         #[prost(message, tag = "2")]
         Exhausted(super::UnitV1),
     }
-}
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct StoredHistoryIncarnationV1 {
-    #[prost(uint64, tag = "1")]
-    pub incarnation: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredOutboxIntentV1 {

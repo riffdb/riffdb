@@ -461,6 +461,7 @@ pub(crate) fn render_commit(response: &v1::GetCommitResponse) -> Terminal {
             &CommitFound {
                 status: "found",
                 commit: CommitDto(commit),
+                history_incarnation: response.history_incarnation.to_string(),
             },
         ),
         None => rendering_failure(CommandIdentity::CommitShow),
@@ -774,6 +775,7 @@ pub(crate) fn render_health(response: &v1::HealthResponse) -> Terminal {
                     last_commit_sequence: health
                         .last_commit_sequence
                         .map(|value| value.to_string()),
+                    history_incarnation: health.history_incarnation.to_string(),
                     components: HealthComponents(&health.components),
                     started_at: TimestampDto(started_at),
                     build: BuildDto(build),
@@ -1701,6 +1703,7 @@ struct EntityFound<'a> {
 struct CommitFound<'a> {
     status: &'a str,
     commit: CommitDto<'a>,
+    history_incarnation: String,
 }
 
 struct CommitDto<'a>(&'a v1::Commit);
@@ -2207,6 +2210,7 @@ struct AuthenticatedHealth<'a> {
     active_contract_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_commit_sequence: Option<String>,
+    history_incarnation: String,
     components: HealthComponents<'a>,
     started_at: TimestampDto<'a>,
     build: BuildDto<'a>,
@@ -3378,7 +3382,7 @@ mod tests {
                     .collect(),
                 started_at: Some(timestamp(&value["started_at"])),
                 build: Some(build(&value["build"])),
-                history_incarnation: 1,
+                history_incarnation: optional_u64_string(value, "history_incarnation").unwrap_or(1),
             })
         };
         v1::HealthResponse {

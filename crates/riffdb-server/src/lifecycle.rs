@@ -179,6 +179,15 @@ impl ProductionLifecycleRoute {
         self.runtime.clone()
     }
 
+    /// Process-retained history incarnation installed at activation, if any.
+    ///
+    /// Unlike the gRPC route getter, this ignores admission and lifecycle stage
+    /// so offline maintenance can still use the value as a corrupt-target floor
+    /// after ordinary admission has been closed.
+    pub(crate) fn retained_history_incarnation(&self) -> Option<u64> {
+        self.history_incarnation.get().copied()
+    }
+
     fn activated_service(&self) -> Option<Arc<dyn ApplicationService>> {
         self.activated.get().cloned()
     }

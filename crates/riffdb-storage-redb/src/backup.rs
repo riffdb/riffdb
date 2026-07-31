@@ -46,9 +46,10 @@ const STORAGE_ENGINE_DATA_TAG: u8 = 1;
 
 /// Reads the durable history incarnation from a closed database file.
 ///
-/// Returns `None` when the key is absent (pre-fence artifact).
+/// Returns `None` when the key is absent (pre-fence artifact). Opens read-only
+/// so a pure inspection never triggers redb recovery-on-open writes.
 pub fn read_history_incarnation(path: impl AsRef<Path>) -> Result<Option<u64>, StorageError> {
-    let database = Database::open(path.as_ref()).map_err(database_error)?;
+    let database = redb::ReadOnlyDatabase::open(path.as_ref()).map_err(database_error)?;
     let transaction = database.begin_read().map_err(transaction_error)?;
     let meta = transaction.open_table(META).map_err(table_error)?;
     match meta
@@ -605,18 +606,19 @@ fn decode_manifest(encoded: &[u8]) -> Result<OfflineBackupManifestV1, StorageErr
         return Err(limit_exceeded());
     }
     // Prefer post-fence (presence-tagged history field). Fall back to pre-fence
-    // bytes that omit the field entirely (accept-and-stamp at restore).
-    match decode_manifest_body(encoded, true) {
-        Ok(manifest) if encode_manifest(&manifest)? == encoded => Ok(manifest),
-        Ok(_) => Err(corrupt()),
-        Err(_) => {
-            let manifest = decode_manifest_body(encoded, false)?;
-            if encode_manifest_pre_fence(&manifest)? != encoded {
-                return Err(corrupt());
-            }
-            Ok(manifest)
-        }
+    // bytes that omit the field entirely (accept-and-stamp at restore). On any
+    // post-fence parse/canonicalization mismatch, try the pre-fence parser
+    // rather than fail closed — pre-fence bytes can partially parse as post-fence.
+    if let Ok(manifest) = decode_manifest_body(encoded, true)
+        && encode_manifest(&manifest)? == encoded
+    {
+        return Ok(manifest);
     }
+    let manifest = decode_manifest_body(encoded, false)?;
+    if encode_manifest_pre_fence(&manifest)? != encoded {
+        return Err(corrupt());
+    }
+    Ok(manifest)
 }
 
 fn decode_manifest_body(
@@ -714,18 +716,32 @@ fn decode_manifest_body(
         enabled_features,
     )
     .map_err(value_error)?;
-    OfflineBackupManifestV1::new(
-        storage_format_version,
-        database_id,
-        BackupSnapshotKindV1::StorageEngineData,
-        catalog_bundles,
-        active_catalog,
-        last_commit_sequence,
-        history_incarnation,
-        vec![BackupArtifactChecksumV1::new(ordinal, checksum)],
-        build,
-    )
-    .map_err(value_error)
+    if include_history_field {
+        OfflineBackupManifestV1::new(
+            storage_format_version,
+            database_id,
+            BackupSnapshotKindV1::StorageEngineData,
+            catalog_bundles,
+            active_catalog,
+            last_commit_sequence,
+            history_incarnation,
+            vec![BackupArtifactChecksumV1::new(ordinal, checksum)],
+            build,
+        )
+        .map_err(value_error)
+    } else {
+        OfflineBackupManifestV1::new_pre_fence(
+            storage_format_version,
+            database_id,
+            BackupSnapshotKindV1::StorageEngineData,
+            catalog_bundles,
+            active_catalog,
+            last_commit_sequence,
+            vec![BackupArtifactChecksumV1::new(ordinal, checksum)],
+            build,
+        )
+        .map_err(value_error)
+    }
 }
 
 struct ManifestEncoder {
@@ -1508,5 +1524,183 @@ mod tests {
                 .kind(),
             StorageErrorKind::IncompatibleFormat
         );
+    }
+
+    #[test]
+    fn semantic_bytes_tri_state_matches_real_encoder_lengths() {
+        // W5: pre-fence absent / post-fence None / post-fence Some must charge
+        // the same deltas the real encoder emits.
+        let checksum = BackupIntegrityChecksumV1::new(vec![0x5a; SHA256_BYTES]).expect("checksum");
+        let build = build_metadata();
+        let pre = OfflineBackupManifestV1::new_pre_fence(
+            StorageFormatVersion::V1,
+            database_id(),
+            BackupSnapshotKindV1::StorageEngineData,
+            Vec::new(),
+            None,
+            None,
+            vec![BackupArtifactChecksumV1::new(
+                NonZeroU32::MIN,
+                checksum.clone(),
+            )],
+            build.clone(),
+        )
+        .expect("pre-fence");
+        let post_none = OfflineBackupManifestV1::new(
+            StorageFormatVersion::V1,
+            database_id(),
+            BackupSnapshotKindV1::StorageEngineData,
+            Vec::new(),
+            None,
+            None,
+            None,
+            vec![BackupArtifactChecksumV1::new(
+                NonZeroU32::MIN,
+                checksum.clone(),
+            )],
+            build.clone(),
+        )
+        .expect("post-fence None");
+        let post_some = OfflineBackupManifestV1::new(
+            StorageFormatVersion::V1,
+            database_id(),
+            BackupSnapshotKindV1::StorageEngineData,
+            Vec::new(),
+            None,
+            None,
+            Some(1),
+            vec![BackupArtifactChecksumV1::new(NonZeroU32::MIN, checksum)],
+            build,
+        )
+        .expect("post-fence Some");
+
+        assert!(!pre.history_wire_tagged());
+        assert!(post_none.history_wire_tagged());
+        assert!(post_some.history_wire_tagged());
+        assert_eq!(pre.history_incarnation(), None);
+        assert_eq!(post_none.history_incarnation(), None);
+        assert_eq!(post_some.history_incarnation(), Some(1));
+
+        let encoded_pre = encode_manifest_pre_fence(&pre).expect("encode pre");
+        let encoded_none = encode_manifest(&post_none).expect("encode none");
+        let encoded_some = encode_manifest(&post_some).expect("encode some");
+
+        // Presence-tag only: post-fence None is one byte longer than pre-fence.
+        assert_eq!(encoded_none.len() - encoded_pre.len(), 1);
+        assert_eq!(
+            post_none.semantic_bytes() - pre.semantic_bytes(),
+            encoded_none.len() - encoded_pre.len(),
+            "pre-fence absent vs post-fence None semantic delta must match encoder"
+        );
+        // Some adds presence(1) + u64(8) over None's presence(0).
+        assert_eq!(encoded_some.len() - encoded_none.len(), 8);
+        assert_eq!(
+            post_some.semantic_bytes() - post_none.semantic_bytes(),
+            encoded_some.len() - encoded_none.len(),
+            "post-fence None vs Some semantic delta must match encoder"
+        );
+        assert_eq!(
+            post_some.semantic_bytes() - pre.semantic_bytes(),
+            encoded_some.len() - encoded_pre.len(),
+            "pre-fence vs post-fence Some semantic delta must match encoder"
+        );
+    }
+
+    #[test]
+    fn pre_fence_manifest_and_stamp_round_trip() {
+        let checksum = BackupIntegrityChecksumV1::new(vec![0x5a; SHA256_BYTES]).expect("checksum");
+        let pre_fence = DatabaseFacts {
+            storage_format_version: StorageFormatVersion::V1,
+            database_id: database_id(),
+            catalog_bundles: Vec::new(),
+            active_catalog: None,
+            last_commit_sequence: None,
+            history_incarnation: None,
+        }
+        .into_manifest(checksum.clone(), build_metadata())
+        .expect("pre-fence manifest");
+        let encoded = encode_manifest_pre_fence(&pre_fence).expect("encode pre-fence");
+        let decoded = decode_manifest(&encoded).expect("decode pre-fence via dual-path");
+        assert_eq!(decoded.history_incarnation(), None);
+        assert_eq!(decoded.database_id(), pre_fence.database_id());
+
+        // Post-fence encode with presence tag also round-trips.
+        let with_field = DatabaseFacts {
+            storage_format_version: StorageFormatVersion::V1,
+            database_id: database_id(),
+            catalog_bundles: Vec::new(),
+            active_catalog: None,
+            last_commit_sequence: None,
+            history_incarnation: Some(1),
+        }
+        .into_manifest(checksum, build_metadata())
+        .expect("post-fence manifest");
+        let post = encode_manifest(&with_field).expect("encode post-fence");
+        assert_eq!(
+            decode_manifest(&post).expect("decode post-fence"),
+            with_field
+        );
+    }
+
+    #[test]
+    fn read_history_incarnation_absent_vs_unreadable() {
+        let root = std::env::temp_dir().join(format!(
+            "riffdb-history-read-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let db_path = root.join("database.redb");
+
+        // Absent file → open fails (not silently 0).
+        assert!(read_history_incarnation(&db_path).is_err());
+
+        let mut store = crate::RedbStore::open(&db_path).expect("open");
+        store
+            .initialize_database(database_id())
+            .expect("initialize");
+        drop(store);
+        assert_eq!(
+            read_history_incarnation(&db_path).expect("read present"),
+            Some(1)
+        );
+
+        // Truncate to corrupt: present-but-unreadable fails closed.
+        std::fs::write(&db_path, b"not-a-redb-file").expect("corrupt");
+        assert!(
+            read_history_incarnation(&db_path).is_err(),
+            "corrupt target must not be treated as incarnation 0"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stamp_history_incarnation_is_idempotent() {
+        let root = std::env::temp_dir().join(format!(
+            "riffdb-history-stamp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let db_path = root.join("database.redb");
+        let mut store = crate::RedbStore::open(&db_path).expect("open");
+        store
+            .initialize_database(database_id())
+            .expect("initialize");
+        drop(store);
+
+        stamp_history_incarnation(&db_path, 2).expect("stamp 2");
+        assert_eq!(read_history_incarnation(&db_path).expect("read"), Some(2));
+        stamp_history_incarnation(&db_path, 2).expect("idempotent stamp");
+        assert_eq!(read_history_incarnation(&db_path).expect("read"), Some(2));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

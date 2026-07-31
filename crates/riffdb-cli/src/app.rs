@@ -2147,10 +2147,20 @@ async fn commit_command(
     config: &EffectiveConfig,
     environment: &dyn Environment,
 ) -> Terminal {
-    let CommitCommand::Show { commit_sequence } = command;
+    let CommitCommand::Show {
+        commit_sequence,
+        observed_history_incarnation,
+    } = command;
     let commit_sequence = match parse_nonzero_u64(&commit_sequence) {
         Ok(value) => value,
         Err(()) => return invalid_input(CommandIdentity::CommitShow),
+    };
+    let observed_history_incarnation = match observed_history_incarnation {
+        None => None,
+        Some(value) => match parse_nonzero_u64(&value) {
+            Ok(value) => Some(value),
+            Err(()) => return invalid_input(CommandIdentity::CommitShow),
+        },
     };
     let metadata = match required_metadata(CommandIdentity::CommitShow, config, environment) {
         Ok(metadata) => metadata,
@@ -2169,7 +2179,7 @@ async fn commit_command(
             v1::GetCommitRequest {
                 request_id,
                 commit_sequence,
-                observed_history_incarnation: None,
+                observed_history_incarnation,
             },
             &metadata,
         )

@@ -166,6 +166,7 @@ impl RedbStagedRestore {
             backup_name: self.backup_name,
             backup_directory: self.backup_directory,
             configured_database_file: self.configured_database_file,
+            staged_database_file: self.staged_database_file,
             manifest: self.manifest,
             manifest_identity: self.manifest_identity,
             staged_history_incarnation,
@@ -201,6 +202,7 @@ pub struct RedbSealedStagedRestore {
     backup_name: BackupNameV1,
     backup_directory: PathBuf,
     configured_database_file: PathBuf,
+    staged_database_file: PathBuf,
     manifest: OfflineBackupManifestV1,
     manifest_identity: OfflineBackupManifestIdentityV1,
     staged_history_incarnation: u64,
@@ -228,6 +230,28 @@ impl RedbSealedStagedRestore {
     #[must_use]
     pub const fn staged_history_incarnation(&self) -> u64 {
         self.staged_history_incarnation
+    }
+
+    /// Stamps the published history incarnation into the staged artifact and
+    /// reseals the byte checksum so rename publication stays byte-identical.
+    ///
+    /// Called only during the offline restore phase before publish. Crash resume
+    /// re-applies from the receipt; stamping is idempotent.
+    pub fn apply_published_history_incarnation(
+        &mut self,
+        incarnation: u64,
+    ) -> Result<(), StorageError> {
+        // Receipt authority is already durable before this stamp; a crash here
+        // resumes from the receipt value without double-advancing.
+        self.hit(
+            RedbMaintenanceFailpoint::BetweenReceiptWriteAndStagedStamp,
+            true,
+        )?;
+        crate::backup::stamp_history_incarnation(&self.staged_database_file, incarnation)?;
+        self.staged_history_incarnation = incarnation;
+        self.sealed_artifact_checksum = sha256_file(&self.staged_database_file)?;
+        self.verify_paths()?;
+        Ok(())
     }
 
     pub(super) const fn operation_id(&self) -> OfflineMaintenanceOperationId {

@@ -530,6 +530,7 @@ async fn run_server(
             validate_current_source,
         } => {
             let operation_id = request.operation_id();
+            let mut retained_target_history_incarnation = None;
             if validate_current_source {
                 let current = open_redb_startup_with_commit_profile(
                     config.database_path(),
@@ -544,6 +545,8 @@ async fn run_server(
                     transport.drain_after_signal().await?;
                     return Err(DaemonError::MaintenanceDriver);
                 }
+                retained_target_history_incarnation =
+                    Some(current.retained_metadata().history_incarnation());
                 drop(current);
             }
             let dependencies = maintenance_driver_dependencies(
@@ -554,6 +557,8 @@ async fn run_server(
                 &identifiers,
                 &clocks,
                 &recovery,
+                retained_target_history_incarnation,
+                None,
             )?;
             let storage = maintenance.storage();
             let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
@@ -585,6 +590,8 @@ async fn run_server(
                 &identifiers,
                 &clocks,
                 &recovery,
+                None,
+                None,
             )?;
             let storage = maintenance.storage();
             let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
@@ -935,6 +942,7 @@ async fn run_multi_database_server(
                 validate_current_source,
             } => {
                 let operation_id = request.operation_id();
+                let mut retained_target_history_incarnation = None;
                 if validate_current_source {
                     let current = open_redb_startup_with_commit_profile(
                         database.database_path(),
@@ -947,6 +955,8 @@ async fn run_multi_database_server(
                         shutdown_multi_before_ready(&mut transport, graphs).await?;
                         return Err(DaemonError::MaintenanceDriver);
                     }
+                    retained_target_history_incarnation =
+                        Some(current.retained_metadata().history_incarnation());
                     drop(current);
                 }
                 let dependencies = maintenance_driver_dependencies(
@@ -957,6 +967,8 @@ async fn run_multi_database_server(
                     &pending.identifiers,
                     &process_clocks,
                     recovery,
+                    retained_target_history_incarnation,
+                    None,
                 )?;
                 let storage = maintenance.storage();
                 let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
@@ -993,6 +1005,8 @@ async fn run_multi_database_server(
                     &pending.identifiers,
                     &process_clocks,
                     recovery,
+                    None,
+                    None,
                 )?;
                 let storage = maintenance.storage();
                 let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
@@ -1504,6 +1518,11 @@ async fn await_multi_restore_retry(
     let operation_id = receipt.operation_id();
     let input_hash = receipt.input_hash();
     let routing = lifecycle.runtime_routing();
+    // The narrow retry host discards the validated startup, so the target's
+    // durable fence must be captured before the handoff. Without it the restore
+    // driver has no monotonicity evidence if the target becomes unreadable.
+    let retained_target_history_incarnation =
+        Some(startup.retained_metadata().history_incarnation());
     let retry_host = RunningRestoreRetryHost::start(
         startup,
         operation_id,
@@ -1589,6 +1608,8 @@ async fn await_multi_restore_retry(
             &prepared.identifiers,
             &prepared.clocks,
             recovery,
+            retained_target_history_incarnation,
+            None,
         )?;
         run_offline_maintenance(&mut storage, &maintenance_lifecycle, &dependencies, request)
             .map_err(|_| DaemonError::MaintenanceDriver)?
@@ -1714,6 +1735,8 @@ async fn await_multi_recovery(
                     &prepared.identifiers,
                     &prepared.clocks,
                     recovery,
+                    None,
+                    None,
                 ) {
                     Ok(dependencies) => match run_recovery_restore(
                         &mut storage,
@@ -1804,6 +1827,11 @@ async fn replace_multi_database_generation(
         .generation
         .checked_add(1)
         .ok_or(DaemonError::MaintenanceDriver)?;
+    let retained_target_history_incarnation = generation.lifecycle.retained_history_incarnation();
+    let retained_metrics = generation
+        .graph
+        .as_ref()
+        .map(RunningProductionGraph::metrics);
     generation.lifecycle.stop();
     let (offline_service, _offline_activator, offline_issuer) =
         RiffDbService::begin_initialization();
@@ -1855,6 +1883,8 @@ async fn replace_multi_database_generation(
             &prepared.identifiers,
             &prepared.clocks,
             recovery,
+            retained_target_history_incarnation,
+            retained_metrics,
         )?;
         run_offline_maintenance(
             &mut storage,
@@ -1983,6 +2013,8 @@ async fn run_ready_generations(
     let mut stdin_thread = Some(stdin_thread);
 
     loop {
+        let retained_target_history_incarnation = generation.graph.retained_history_incarnation();
+        let retained_metrics = Some(generation.graph.metrics());
         let completion = supervise_ready_process(
             generation.graph,
             generation.routing,
@@ -2014,6 +2046,8 @@ async fn run_ready_generations(
                 &prepared.identifiers,
                 &prepared.clocks,
                 recovery,
+                retained_target_history_incarnation,
+                retained_metrics,
             )?;
             run_offline_maintenance(&mut storage, &maintenance_lifecycle, &dependencies, request)
                 .map_err(|_| DaemonError::MaintenanceDriver)?
@@ -2082,6 +2116,7 @@ fn trusted_audiences(config: &ServerConfig) -> Result<TrustedAudienceCatalog, Da
     TrustedAudienceCatalog::new(audiences).map_err(|_| DaemonError::MaintenanceDriver)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn maintenance_driver_dependencies<'a>(
     config: &ServerConfig,
     environment: &riffdb_types::Environment,
@@ -2090,6 +2125,8 @@ fn maintenance_driver_dependencies<'a>(
     identifiers: &ProductionIdentifierSources,
     clocks: &'a ProductionWallClocks,
     recovery: &'a MaintenanceRecoveryController,
+    retained_target_history_incarnation: Option<u64>,
+    metrics: Option<riffdb_observability::MetricRegistry>,
 ) -> Result<MaintenanceDriverDependencies<'a>, DaemonError> {
     Ok(MaintenanceDriverDependencies::new(
         startup_inputs.clone(),
@@ -2103,6 +2140,8 @@ fn maintenance_driver_dependencies<'a>(
         Arc::new(NoopAuthenticationTelemetry),
         Arc::new(NoopAuthorizationTelemetry),
         recovery,
+        retained_target_history_incarnation,
+        metrics,
     ))
 }
 
@@ -2144,6 +2183,11 @@ async fn run_restore_retry_until_ready(
     let input_hash = receipt.input_hash();
     let listen_address = transport.local_address();
     let routing = lifecycle.runtime_routing();
+    // The narrow retry host discards the validated startup, so the target's
+    // durable fence must be captured before the handoff. Without it the restore
+    // driver has no monotonicity evidence if the target becomes unreadable.
+    let retained_target_history_incarnation =
+        Some(startup.retained_metadata().history_incarnation());
     let retry_host = match RunningRestoreRetryHost::start(
         startup,
         operation_id,
@@ -2244,6 +2288,8 @@ async fn run_restore_retry_until_ready(
             &prepared.identifiers,
             &prepared.clocks,
             recovery,
+            retained_target_history_incarnation,
+            None,
         )?;
         run_offline_maintenance(&mut storage, &maintenance_lifecycle, &dependencies, request)
             .map_err(|_| DaemonError::MaintenanceDriver)?
@@ -2420,6 +2466,8 @@ async fn run_recovery_until_ready(
                     &prepared.identifiers,
                     &prepared.clocks,
                     recovery,
+                    None,
+                    None,
                 ) {
                     Ok(dependencies) => match run_recovery_restore(
                         &mut storage,
@@ -3481,6 +3529,56 @@ mod tests {
         assert!(driver < fresh_generation);
         assert!(!retry.contains("ProductionGraphBuilder"));
         assert!(!retry.contains("HostedMcp::bind"));
+    }
+
+    #[test]
+    fn restore_retry_resumption_carries_the_target_fence_past_the_narrow_host() {
+        // The narrow host consumes the validated startup and drops its retained
+        // metadata, so both retry supervisors must read the target's history
+        // incarnation before the handoff and hand it to the restore driver.
+        let source = include_str!("daemon.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .expect("daemon architecture boundary")
+            .0;
+        for (supervisor, next) in [
+            (
+                "async fn await_multi_restore_retry(",
+                "async fn await_multi_recovery(",
+            ),
+            (
+                "async fn run_restore_retry_until_ready(",
+                "async fn run_recovery_until_ready(",
+            ),
+        ] {
+            let body = production
+                .split_once(supervisor)
+                .and_then(|(_, tail)| tail.split_once(next))
+                .map(|(body, _)| body)
+                .unwrap_or_else(|| panic!("{supervisor} body"));
+            let capture = body
+                .find("startup.retained_metadata().history_incarnation()")
+                .unwrap_or_else(|| panic!("{supervisor} must capture the target fence"));
+            let handoff = body
+                .find("RunningRestoreRetryHost::start(")
+                .unwrap_or_else(|| panic!("{supervisor} narrow host start"));
+            let dependencies = body
+                .find("maintenance_driver_dependencies(")
+                .unwrap_or_else(|| panic!("{supervisor} driver dependencies"));
+            assert!(
+                capture < handoff,
+                "{supervisor} must read the fence before surrendering the startup"
+            );
+            assert!(handoff < dependencies);
+            let arguments = body[dependencies..]
+                .split_once(")?;")
+                .map(|(head, _)| head)
+                .unwrap_or_else(|| panic!("{supervisor} dependency arguments"));
+            assert!(
+                arguments.contains("retained_target_history_incarnation,"),
+                "{supervisor} must pass the captured fence to the restore driver"
+            );
+        }
     }
 
     #[test]

@@ -435,11 +435,15 @@ pub enum McpFixedToolRequest {
     GetCommit {
         /// Nonzero commit sequence.
         commit_sequence: u64,
+        /// Optional observed history incarnation fence (ADR-0072).
+        observed_history_incarnation: Option<u64>,
     },
     /// `riffdb_commit_scan`.
     ScanCommits {
         /// Bounded page controls.
         page: McpPageRequest,
+        /// Optional observed history incarnation fence (ADR-0072).
+        observed_history_incarnation: Option<u64>,
     },
     /// `riffdb_provenance_trace`.
     TraceProvenance {
@@ -590,12 +594,22 @@ pub fn decode_fixed_tool_request(
             let request: RawCommit = arguments.deserialize().map_err(conversion)?;
             Ok(McpFixedToolRequest::GetCommit {
                 commit_sequence: parse_u64(&request.commit_sequence)?,
+                observed_history_incarnation: request
+                    .observed_history_incarnation
+                    .as_deref()
+                    .map(parse_u64)
+                    .transpose()?,
             })
         }
         9 => {
             let request: RawPageEnvelope = arguments.deserialize().map_err(conversion)?;
             Ok(McpFixedToolRequest::ScanCommits {
                 page: request.page.try_into()?,
+                observed_history_incarnation: request
+                    .observed_history_incarnation
+                    .as_deref()
+                    .map(parse_u64)
+                    .transpose()?,
             })
         }
         10 => {
@@ -1223,12 +1237,16 @@ struct RawScanIndex {
 #[serde(deny_unknown_fields)]
 struct RawCommit {
     commit_sequence: String,
+    #[serde(default)]
+    observed_history_incarnation: Option<String>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawPageEnvelope {
     page: RawPage,
+    #[serde(default)]
+    observed_history_incarnation: Option<String>,
 }
 
 #[derive(Deserialize)]

@@ -1599,10 +1599,39 @@ where
 
 #[cfg(test)]
 mod tests {
-    use riffdb_errors::{PublicErrorDetails, PublicErrorKind};
+    use riffdb_errors::{ApplicationErrorCode, PublicError, PublicErrorDetails, PublicErrorKind};
     use riffdb_types::{CommitSequence, TenantId, TenantScope};
 
     use super::*;
+    use crate::PageRequest;
+
+    #[test]
+    fn history_incarnation_mismatch_is_rdb_history_0101_on_all_three_request_shapes() {
+        // Wire-level public error identity shared by GetCommit / ScanCommits /
+        // SubscribeCommits (check_observed_history_incarnation).
+        let error = PublicError::history_incarnation_mismatch();
+        assert_eq!(error.kind(), PublicErrorKind::HistoryIncarnationMismatch);
+        assert_eq!(
+            ApplicationErrorCode::from_public_kind(error.kind()).as_str(),
+            "RDB-HISTORY-0101"
+        );
+        assert_eq!(
+            error.safe_message(),
+            "observed history predates a database restore"
+        );
+        // The three request builders all accept an observed fence; mismatch is
+        // independent of sequence/page contents.
+        let get = GetCommitRequest::new(CommitSequence::first())
+            .with_observed_history_incarnation(Some(1));
+        assert_eq!(get.observed_history_incarnation(), Some(1));
+        let page = PageRequest::new(PageLimit::new(1).expect("limit"), None);
+        let scan = ScanCommitsRequest::new(page).with_observed_history_incarnation(Some(1));
+        assert_eq!(scan.observed_history_incarnation(), Some(1));
+        let subscribe = SubscribeToCommitsRequest::new(None, std::time::Duration::from_secs(1))
+            .expect("subscribe")
+            .with_observed_history_incarnation(Some(1));
+        assert_eq!(subscribe.observed_history_incarnation(), Some(1));
+    }
 
     #[test]
     fn stored_commit_policy_can_only_hold_or_narrow() {
