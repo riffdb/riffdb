@@ -180,10 +180,18 @@ capability identities make replay deterministic.
 
 A changed lock is deliberately not resumed under an old role. If a role is
 already retained, deploy requires `--provision-role <name>` together with
-`--replace-expired-credential`, revokes the predecessor capability, and binds
+`--replace-role-credential`, revokes the predecessor capability, and binds
 the role compiled from the successor lock. Application code and scripts should
 read identity from the generated client or lock and should never hardcode a
 contract version or module hash.
+
+Role compilation for lock V3 always consumes
+`generated/riffdb.contract.bundle` and the exact locked query modules. Both
+`application bind-dev-role` and standalone `role check|describe|bind` discover
+that lock from either `riffdb.application.json` or the generated exact manifest.
+A successor is never reinterpreted as genesis during role compilation. The
+legacy `--replace-expired-credential` spelling remains an alias for
+`--replace-role-credential`.
 
 Lock V3 makes the contract bundle part of this same chain. Genesis
 `application lock --write` remains local. For a successor, the command performs

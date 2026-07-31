@@ -87,6 +87,21 @@ are reverified. Retained role authority still requires explicit credential
 replacement. Manual deletion of deployment state is never the normal recovery
 path.
 
+### Locked role reconciliation
+
+Every role operation reached through an application lock consumes the pinned
+canonical contract bundle and exact query modules from that lock. Recompiling
+the contract source as genesis is not a valid role-resolution fallback for a
+successor. Standalone role operations discover and verify the same lock when
+they are given either the symbolic application source or its generated exact
+manifest.
+
+Application deployment compiles every requested role and materializes every
+local query-module input before the contract deployment RPC. A local authoring
+failure therefore performs no remote mutation. Widening a role changes its
+definition identity and still requires explicit revocation and replacement of
+retained authority; reconciliation is never implicit authority expansion.
+
 ## Compatibility
 
 The validation and deployment messages receive additive pre-alpha fields and
