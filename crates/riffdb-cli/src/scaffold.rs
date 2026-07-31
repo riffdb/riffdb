@@ -12,9 +12,9 @@ use riffdb_diagnostics::{
 use riffdb_query_module::{
     ApplicationLock, ApplicationManifest, ApplicationSourceManifest, ApplicationSourceTenantScope,
     GeneratedApplicationArtifact, GeneratedApplicationArtifactKind, GeneratedMcpCommand,
-    GeneratedMcpTool, NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName,
-    QueryModuleVersion, compile_application_role, generate_mcp_commands, generate_mcp_tools,
-    generate_python_client, generate_rust_client, generate_typescript_client,
+    GeneratedMcpTool, NamedQuerySource, PythonGenerationError, QueryModule, QueryModuleCandidate,
+    QueryModuleName, QueryModuleVersion, compile_application_role, generate_mcp_commands,
+    generate_mcp_tools, generate_python_client, generate_rust_client, generate_typescript_client,
 };
 use riffdb_types::TenantId;
 use serde_json::json;
@@ -376,10 +376,16 @@ fn compile_symbolic_application(
     let contract = compile_contract_source(&contract_source)
         .map_err(|error| contract_diagnostic(source.contract().source(), &error))?;
     let mut modules = Vec::with_capacity(source.query_modules().len());
+    let mut python_query_sources = Vec::new();
     for declared in source.query_modules() {
         let mut queries = Vec::with_capacity(declared.queries().len());
         for query in declared.queries() {
             let query_source = read_workspace_text(root, query.source(), 1_048_576)?;
+            python_query_sources.push((
+                query.name().to_owned(),
+                query.source().to_owned(),
+                query_source.clone(),
+            ));
             queries.push(
                 NamedQuerySource::new(query.name(), query_source)
                     .map_err(|_| ScaffoldError::CompileQuery)?,
@@ -459,7 +465,14 @@ fn compile_symbolic_application(
         outputs.push((
             path.to_owned(),
             generate_python_client(module, &contract)
-                .map_err(|_| ScaffoldError::GeneratePython)?
+                .map_err(|error| {
+                    python_generation_diagnostic(
+                        source.contract().source(),
+                        &contract_source,
+                        &python_query_sources,
+                        &error,
+                    )
+                })?
                 .into_bytes(),
         ));
     }
@@ -543,6 +556,38 @@ fn query_diagnostic(path: &str, error: &riffdb_query_module::QueryModuleError) -
         .ok()
         .and_then(|path| AuthoringDiagnostics::from_query_module(path, error).ok())
         .map_or(ScaffoldError::CompileQuery, ScaffoldError::Authoring)
+}
+
+fn python_generation_diagnostic(
+    contract_path: &str,
+    contract_source: &str,
+    query_sources: &[(String, String, String)],
+    error: &PythonGenerationError,
+) -> ScaffoldError {
+    let source_pairs = query_sources
+        .iter()
+        .map(|(name, _, source)| (name.as_str(), source.as_str()))
+        .collect::<Vec<_>>();
+    let Some(location) = error.locate(contract_source, &source_pairs) else {
+        return ScaffoldError::GeneratePython;
+    };
+    let source_path = location.query_name().map_or(contract_path, |query_name| {
+        query_sources
+            .iter()
+            .find_map(|(name, path, _)| (name == query_name).then_some(path.as_str()))
+            .unwrap_or(contract_path)
+    });
+    AuthoringSourcePath::new(source_path)
+        .ok()
+        .and_then(|path| {
+            AuthoringDiagnostics::python_name_collision(
+                path,
+                location.span(),
+                location.symbol_path().to_vec(),
+            )
+            .ok()
+        })
+        .map_or(ScaffoldError::GeneratePython, ScaffoldError::Authoring)
 }
 
 fn role_diagnostic(
@@ -1734,6 +1779,49 @@ mod tests {
         assert_eq!(fs::read(&source_path).expect("migrated source"), preview);
         assert_eq!(fs::read(&lock_path).expect("unchanged lock"), original_lock);
         assert!(!base.join("generated/python/client.py").exists());
+        fs::remove_dir_all(base).expect("cleanup");
+    }
+
+    #[test]
+    fn python_name_collision_reports_the_offending_contract_span() {
+        let base = std::env::temp_dir().join(format!(
+            "riffdb-python-collision-test-{}",
+            std::process::id()
+        ));
+        if base.exists() {
+            fs::remove_dir_all(&base).expect("remove prior test directory");
+        }
+        create_application("collision-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
+        let source_path = base.join("riffdb.application.json");
+        migrate_application_source_v2(&source_path, true).expect("migrate source");
+        let contract_path = base.join("riffdb/contract.riff");
+        let contract = fs::read_to_string(&contract_path).expect("contract");
+        let contract = contract.replace(
+            "contract CollisionApp version 1 {\n",
+            "contract CollisionApp version 1 {\n  enum Collision { fooBar, foo_bar }\n",
+        );
+        fs::write(&contract_path, &contract).expect("collision contract");
+
+        let diagnostics = match compile_symbolic_application(&source_path) {
+            Err(ScaffoldError::Authoring(diagnostics)) => diagnostics,
+            Ok(_) | Err(_) => panic!("expected source-spanned authoring diagnostic"),
+        };
+        let diagnostic = &diagnostics.as_slice()[0];
+        let span = diagnostic.span().expect("source span");
+        assert_eq!(diagnostic.code().as_str(), "RDB-GEN001");
+        assert_eq!(
+            diagnostic.stage(),
+            riffdb_diagnostics::AuthoringStage::Generation
+        );
+        assert_eq!(diagnostic.path().as_str(), "riffdb/contract.riff");
+        assert_eq!(
+            &contract[span.start() as usize..span.end() as usize],
+            "foo_bar"
+        );
+        assert_eq!(
+            diagnostic.symbol_path(),
+            &["enum", "Collision", "variant", "foo_bar"]
+        );
         fs::remove_dir_all(base).expect("cleanup");
     }
 

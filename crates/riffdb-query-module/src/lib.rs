@@ -31,7 +31,9 @@ pub use generation::{
     GeneratedMcpCommand, GeneratedMcpTool, McpToolGenerationError, generate_mcp_commands,
     generate_mcp_tools, generate_rust_client, generate_typescript_client,
 };
-pub use python_generation::{PythonGenerationError, generate_python_client};
+pub use python_generation::{
+    PythonGenerationError, PythonGenerationLocation, generate_python_client,
+};
 
 use riffdb_contract_ir::ContractBundle;
 use riffdb_query_compiler::compile_query;
