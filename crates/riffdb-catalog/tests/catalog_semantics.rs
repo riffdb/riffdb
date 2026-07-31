@@ -247,6 +247,45 @@ fn preparation_recomputes_compatibility_and_preserves_storage_retry_precedence()
 }
 
 #[test]
+fn explicit_expected_version_activates_an_appended_enum_variant() {
+    let genesis_source = r#"
+contract EnumEvolution version 1 {
+  enum Origin { Other }
+  entity Item {
+    key (workspace_id: uuid, item_id: uuid)
+    field origin: Origin
+  }
+  aggregate Items {
+    root Item
+    partition_by workspace_id
+    conflict_key (workspace_id, item_id)
+  }
+}
+"#;
+    let successor_source = genesis_source
+        .replace("version 1", "version 2")
+        .replace("enum Origin { Other }", "enum Origin { Other, Email }");
+    let genesis = compile_contract_source(genesis_source).expect("genesis");
+    let checked =
+        ValidatedContractBundle::from_compiler_bundle(genesis.clone()).expect("validated genesis");
+    let active = ActiveCatalogSnapshot::read(&repository(&checked))
+        .expect("active read")
+        .expect("active exists");
+    let successor =
+        compile_contract_successor(&successor_source, &genesis).expect("successor compiles");
+
+    let CatalogPreparationResult::Prepared(prepared) = prepare_catalog_activation(
+        successor,
+        Some(ContractVersion::new(1).expect("version")),
+        Some(&active),
+    )
+    .expect("explicit-version successor prepares") else {
+        panic!("exact expected version must satisfy explicit-version activation");
+    };
+    assert_eq!(prepared.mode(), CatalogActivationMode::NewActivation);
+}
+
+#[test]
 fn destructive_successor_rejects() {
     let genesis = compile_contract_source(BUDGET).expect("genesis");
     let checked =

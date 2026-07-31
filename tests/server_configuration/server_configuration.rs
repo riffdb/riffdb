@@ -256,7 +256,7 @@ fn assert_config_rejected<const N: usize>(arguments: [&str; N]) -> TestResult<()
         return Err("invalid configuration reached process readiness".into());
     }
     let stderr = String::from_utf8(output.stderr)?;
-    if stderr != "riffdbd terminated without reaching a clean process boundary\n" {
+    if !stderr.starts_with("RDB-CONFIG-0001: ") || !stderr.ends_with('\n') || stderr.len() > 256 {
         return Err("invalid configuration did not return one bounded safe diagnostic".into());
     }
     Ok(())

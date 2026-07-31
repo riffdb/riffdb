@@ -1,4 +1,4 @@
-spec_version: '0.48'
+spec_version: '0.50'
 product: RiffDB
 repository: riffdb
 status: application-platform-implementation
@@ -6033,4 +6033,32 @@ work_packages:
   - cargo fmt --all -- --check
   - cargo clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: A fresh agent completes the installed multi-database application using only public surfaces and least authority.
+  human_review_triggers: *id001
+- id: WP-393
+  name: Additive contract evolution and actionable deployment diagnostics
+  depends_on: [WP-386]
+  objective: Permit the approved bounded additive schema subset and preserve safe compiler and compatibility detail
+    through every deployment surface.
+  requirements: [EVL-001, EVL-002, EVL-003, EVL-004, EVL-005, EVL-006]
+  required_adrs: [ADR-0002, ADR-0007, ADR-0013, ADR-0028, ADR-0041, ADR-0046, ADR-0066]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-contract-compiler/**, crates/riffdb-catalog/**, crates/riffdb-service/**,
+    crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**,
+    crates/riffdb-mcp-stdio/**, crates/riffdb-client-rust/**, crates/riffdb-cli/**,
+    proto/**, fixtures/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Stable compatibility codes and comparator support for the approved additive schema subset
+  - Exact-version catalog activation for RequiresExplicitVersion successors
+  - Structured invalid-source and incompatible-candidate deployment results through every public transport
+  - Contract evolution and explicit pre-alpha reset documentation
+  acceptance_commands:
+  - cargo test -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-catalog --all-features
+  - cargo test -p riffdb-service -p riffdb-api-grpc -p riffdb-api-mcp -p riffdb-cli --all-features
+  - cargo test --test mcp_conformance --all-features
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: An additive EA-shaped successor activates without data reset, incompatible source/schema reports an
+    actionable bounded result on every surface, and no existing schema or durable row is reinterpreted.
   human_review_triggers: *id001

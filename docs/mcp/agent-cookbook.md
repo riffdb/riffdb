@@ -7,10 +7,15 @@ and underscores only.
 
 ## Values
 
-- Send fixed-scale decimals as strings, for example `"1250.00"`. Do not send a
-  JSON floating-point number.
+- Send signed or unsigned integers as ordinary JSON integers when the generated
+  schema says `integer`; RiffDB resolves signedness after selecting the
+  operation schema. Tagged `{"$i64":"2"}` and `{"$u64":"2"}` remain accepted
+  compatibility forms.
+- Send fixed-scale decimals with the generated exact decimal object. Do not
+  send a JSON floating-point number.
 - Send UUID values as canonical lowercase strings, for example
   `"01900000-0000-7000-8000-000000000001"`.
+- Send enum variants as their declared strings, for example `"Linear"`.
 - Follow each tool's `inputSchema`; undeclared properties are rejected.
 
 ## Mutating Commands
@@ -56,3 +61,22 @@ schema shape. The error never echoes the submitted value.
 Each MCP connection is bound to one configured database alias. Stdio selects it
 in `mcp.toml`; hosted MCP uses the `riffdb-database` header. Credentials are
 database-bound and cannot authorize another database.
+
+Authenticated `server_health` and active-contract responses include the
+selected `database` alias; health also includes the configured authentication
+`audience`. Check these before deploying or mutating. To validate an stdio
+configuration without starting an MCP session, run:
+
+```bash
+riffdb-mcp doctor --config ~/.config/riffdb/mcp-ea.toml
+```
+
+`doctor` first uses authenticated health when the role permits it. A narrow
+application role need not gain health authority: the generated application MCP
+config retains the expected audience, and `doctor` instead proves the
+credential and database route through capability-filtered tool discovery.
+
+The bootstrap MCP credential is an authoring identity: validation, catalog,
+deployment, and health. A separately bound application-role credential is the
+runtime identity for named queries and commands. Register a second MCP process
+with that application credential rather than widening the bootstrap identity.

@@ -5,7 +5,7 @@ use std::fmt;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use riffdb_types::hash_schema;
+use riffdb_types::{DatabaseAlias, hash_schema};
 use serde_json::{Map, Value};
 
 use crate::{McpResourceLocator, SchemaDocument, parse_resource_locator};
@@ -1071,12 +1071,14 @@ fn accepted_pattern(pattern: &str) -> bool {
             | "^[1-9][0-9]*$"
             | "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
             | "^[ -~]+$"
+            | "^[!-~]+$"
             | "^[0-9a-f]{32}$"
             | "^[0-9a-f]{64}$"
             | "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
             | "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
             | "^[A-Z]{3}$"
             | "^[A-Za-z_][A-Za-z0-9_]{0,255}$"
+            | "^[a-z][a-z0-9_-]{0,63}$"
             | "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$"
             | "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
     ) || decimal_pattern_shape(pattern).is_some()
@@ -1095,6 +1097,7 @@ fn pattern_matches(pattern: &str, text: &str) -> bool {
             .decode(text)
             .is_ok_and(|decoded| STANDARD.encode(decoded) == text),
         "^[ -~]+$" => !text.is_empty() && text.bytes().all(|byte| (b' '..=b'~').contains(&byte)),
+        "^[!-~]+$" => !text.is_empty() && text.bytes().all(|byte| (b'!'..=b'~').contains(&byte)),
         "^[0-9a-f]{32}$" => is_lower_hex(text, 32),
         "^[0-9a-f]{64}$" => is_lower_hex(text, 64),
         "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" => {
@@ -1103,6 +1106,7 @@ fn pattern_matches(pattern: &str, text: &str) -> bool {
         "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" => uuid_shape(text, false),
         "^[A-Z]{3}$" => is_currency(text),
         "^[A-Za-z_][A-Za-z0-9_]{0,255}$" => source_name(text),
+        "^[a-z][a-z0-9_-]{0,63}$" => DatabaseAlias::new(text).is_ok(),
         "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$" =>
         {
             matches!(

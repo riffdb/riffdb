@@ -347,8 +347,12 @@ Each compatibility entry encodes its exact eight-byte ASCII code through normal 
 | `RDB-K011` | `0x01` | added event |
 | `RDB-K012` | `0x01` | added projection |
 | `RDB-K013` | `0x01` | added optional field |
+| `RDB-K014` | `0x01` | added enum |
+| `RDB-K015` | `0x01` | added entity |
+| `RDB-K016` | `0x01` | added aggregate containing only newly added entities |
 | `RDB-K020` | `0x02` | added outcome |
 | `RDB-K021` | `0x02` | added optional outcome field |
+| `RDB-K022` | `0x02` | added enum variant |
 | `RDB-K100` | `0x03` | removed identity |
 | `RDB-K101` | `0x03` | tombstone resurrection |
 | `RDB-K102` | `0x03` | stable ID reuse |

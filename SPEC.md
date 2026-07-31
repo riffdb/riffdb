@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.48
+**Version:** 0.50
 **Status:** Application-platform implementation handoff
 **Date:** 30 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -85,6 +85,7 @@
 | 0.47 | 2026-07-30 | Planned WP-376 through WP-379 after post-WP-375 evidence identified timer-wheel parks, remaining immutable-artifact clones, repeated checked decoding, quadratic group compatibility, and sequence-free sizing construction as the residual application-path costs. The packages retain every authorization safe point, canonical durable validation, transaction-current recheck, one ordered writer, and Immediate acknowledgement boundary; WP-370 now depends on the renewed PERF-008 gate. |
 | 0.48 | 2026-07-30 | Applied accepted ADR-0063 and ADR-0064: one standalone process may host at most 32 independently durable databases selected before authentication, and every MCP tool now uses the underscore-only pre-alpha compatibility surface with actionable redacted input diagnostics and invocation-oriented command documentation. |
 | 0.49 | 2026-07-30 | Applied accepted ADR-0065 and planned WP-386 through WP-392: installer-owned configurations gain resumable offline database addition, application values become schema-directed and symbolic, installed deployment consumes exact locks with explicit least-authority provisioning, public responses identify the selected database, and MCP exposes authorized named operations with an explicit doctor path. |
+| 0.50 | 2026-07-30 | Applied accepted ADR-0066 and planned WP-393: bounded additive enum, entity, and aggregate evolution; explicit-version enum extension; structured deployment diagnostics; and an explicit offline pre-alpha reset boundary. |
 
 ### Normative language
 
@@ -338,6 +339,38 @@ without exposing credentials or unrestricted configuration.
 name scopes, line-comment support, natural JSON shapes, fixed RiffQL page
 bounds, legacy-to-multi migration, locked deployment, and the two-credential
 MCP model from authoritative registries and tested examples.
+
+## 4.4 Additive contract evolution
+
+`EVL-001` A successor contract MAY add a new enum with its complete initial
+variants and a new entity with its complete initial key, fields, indexes, and
+entity-local invariants. These declarations MUST receive fresh stable IDs and
+MUST NOT reinterpret an existing row or identity.
+
+`EVL-002` A successor MAY add an aggregate, relationship, or unique constraint
+only when its ownership and every referenced entity are confined to entities
+introduced by that same successor. Such additions are compatible and begin
+with no authoritative entity state.
+
+`EVL-003` Appending a fresh variant to an existing enum MUST be classified
+`RequiresExplicitVersion`. Removing, renaming, reusing, or changing an existing
+variant remains incompatible.
+
+`EVL-004` A `RequiresExplicitVersion` successor MAY activate only after the
+catalog verifies the caller's exact expected active version. `Incompatible`
+successors MUST NOT activate. Numeric version ordering alone MUST NOT prove
+compatibility.
+
+`EVL-005` Existing entity keys, field types, indexes, invariants,
+relationships, unique constraints, aggregate membership, partition derivation,
+and conflict derivation remain frozen. Adding a constraint or index to an
+existing entity is incompatible until an accepted migration design exists.
+
+`EVL-006` Contract deployment MUST return bounded structured compilation
+diagnostics for invalid source and a checked descriptor with compatibility
+codes for an incompatible successor. These results MUST be owned by the shared
+application service and preserved across gRPC, CLI, SDK, hosted MCP, and stdio
+MCP after authorization and redaction.
 | gRPC API | Programmatic application and administration protocol | Alternative semantics |
 | MCP API | Dynamic tools, resources, prompts, progress, cancellation, and agent-safe result shaping | Direct storage access |
 | CLI | Local operator and demo workflows over public APIs | Hidden privileged mutation path |
@@ -1064,10 +1097,14 @@ The compiler MUST assign stable numeric IDs to entities, fields, commands, outco
 
 - Add a new command.
 - Add a new query.
+- Add a new enum with its complete initial variants.
+- Add a new entity with its complete initial key, fields, indexes, and entity-local invariants.
+- Add a new aggregate, relationship, or unique constraint whose ownership and references are confined to entities added by the same successor.
 - Add an optional field with a deterministic default.
 - Add a new event type.
 - Add a new projection.
 - Add a new outcome to a command only when callers explicitly opt into the new contract version.
+- Add a variant to an existing enum only when callers explicitly opt into the new contract version.
 
 ### POC-incompatible changes
 
@@ -1079,6 +1116,8 @@ The compiler MUST assign stable numeric IDs to entities, fields, commands, outco
 - Change outcome payload types in place.
 - Change an event's existing field meaning.
 - Remove an entity, field, command, outcome, event, or projection.
+- Add an index, invariant, relationship, or unique constraint to an existing entity.
+- Add an aggregate that owns or references an existing entity.
 
 The POC MAY require a stop-the-world contract deployment. The MVP MUST define rolling compatibility between server nodes, SDKs, and active contract versions.
 
@@ -6296,6 +6335,7 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `VAL-*` | Canonical transactional values |
 | `ENT-*` | Authoritative entity records |
 | `CMP-*` | Contract compiler and language |
+| `EVL-*` | Additive contract evolution and deployment diagnostics |
 | `DSL-*` | Contract language restrictions |
 | `OUT-*` | Typed outcome and idempotency behavior |
 | `TXN-*` | Command execution, conflict ownership, and validation |

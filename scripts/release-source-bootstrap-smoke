@@ -782,6 +782,91 @@ if ! jq -s -e '
     fail "named MCP config did not expose an underscore-only authorized catalog"
 fi
 
+application_root="$work_root/agent-alpha application"
+mkdir -p \
+    "$application_root/generated/mcp" \
+    "$application_root/generated/rust" \
+    "$application_root/web/src/generated"
+jq '
+    del(.contract.bundle_hash)
+    | .query_modules |= map(del(.module_hash))
+    | .schema = "riffdb.application-source/v1"
+' "$repo_root/examples/agent-alpha/riffdb.application.json" \
+    >"$application_root/riffdb.application.json"
+cp -a "$repo_root/examples/agent-alpha/riffdb" "$application_root/"
+(
+    cd "$application_root"
+    "$bin_root/riffdb" application lock --write \
+        >"$work_root/application-lock.out"
+)
+(
+    cd "$application_root"
+    "$bin_root/riffdb" --config "$agent_client_config" --output json \
+        application deploy \
+        --provision-role AgentAlphaApplication \
+        --seed \
+        >"$work_root/application-deploy.json"
+)
+application_state_root="$application_root/.riffdb/deployments/agent"
+application_credential="$application_state_root/application.credential"
+application_client_config="$application_state_root/client.toml"
+application_mcp_config="$application_state_root/mcp.toml"
+application_deployment_state="$application_state_root/deployment-state.json"
+for private_file in \
+    "$application_credential" \
+    "$application_client_config" \
+    "$application_mcp_config" \
+    "$application_deployment_state"
+do
+    require_regular_mode "$private_file" 0600
+done
+if ! jq -e '
+    .schema == "riffdb.application-deployment-state/v1"
+    and .database == "agent"
+    and .contract_deployed == true
+    and .query_modules_deployed == ["agent_alpha"]
+    and .role.role_name == "AgentAlphaApplication"
+    and .role.bound == true
+    and .seeds_completed == ["riffdb/seed/01-CreateItem.jsonl"]
+' "$application_deployment_state" >/dev/null; then
+    fail "locked application deployment did not retain exact completed stages"
+fi
+application_credential_hash="$(
+    sha256sum "$application_credential" | sed 's/ .*//'
+)"
+(
+    cd "$application_root"
+    "$bin_root/riffdb" --config "$agent_client_config" --output json \
+        application deploy \
+        --provision-role AgentAlphaApplication \
+        --seed \
+        >"$work_root/application-deploy-resumed.json"
+)
+if [[ "$(sha256sum "$application_credential" | sed 's/ .*//')" \
+      != "$application_credential_hash" ]]; then
+    fail "resumed application deployment replaced its retained capability"
+fi
+if ! "$bin_root/riffdb" --config "$application_client_config" --output json \
+    query run-named ItemPage \
+    --contract-lineage AgentAlpha \
+    --contract-version 1 \
+    --parameters \
+    '{"item_id":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10"}' \
+    >"$work_root/application-query.json"
+then
+    sed 's/^/application query: /' "$work_root/application-query.json" >&2 || true
+    fail "bound application credential could not execute its named query"
+fi
+"$bin_root/riffdb-mcp" doctor --config "$application_mcp_config" \
+    >"$work_root/application-mcp-doctor.json"
+if ! jq -e '
+    .ok == true
+    and .database == "agent"
+    and .audience == "riffdb-grpc-loopback"
+' "$work_root/application-mcp-doctor.json" >/dev/null; then
+    fail "application MCP doctor did not prove its selected database and audience"
+fi
+
 "$bin_root/riffdb" --config "$client_config" --output json \
     contract deploy "$repo_root/contracts/examples/budget.riff" \
     >"$work_root/default-contract-deploy.json"
@@ -887,9 +972,9 @@ if ! jq -e '
     .schema == "riffdb.cli.output/v1"
     and .command == "server.health"
     and .ok == true
-    and .result.active_contract_version == null
+    and .result.active_contract_version == "1"
 ' "$work_root/agent-health-after-restart.json" >/dev/null; then
-    fail "agent database gained default-database state across process crash"
+    fail "agent application contract did not survive process crash"
 fi
 if "$bin_root/riffdb" --endpoint "$endpoint" --database agent --output json \
     --credential-file "$operator_credential" server health >/dev/null 2>&1

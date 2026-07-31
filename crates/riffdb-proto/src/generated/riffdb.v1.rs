@@ -54,6 +54,10 @@ pub struct AuthenticatedHealth {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HealthResponse {
+    #[prost(string, tag = "3")]
+    pub database_alias: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub authentication_audience: ::prost::alloc::string::String,
     #[prost(oneof = "health_response::Result", tags = "1, 2")]
     pub result: ::core::option::Option<health_response::Result>,
 }
@@ -1815,7 +1819,7 @@ pub struct ExpectedActiveVersionMismatch {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DeployContractResponse {
-    #[prost(oneof = "deploy_contract_response::Result", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "deploy_contract_response::Result", tags = "1, 2, 3, 4, 5, 6")]
     pub result: ::core::option::Option<deploy_contract_response::Result>,
 }
 /// Nested message and enum types in `DeployContractResponse`.
@@ -1830,6 +1834,10 @@ pub mod deploy_contract_response {
         ExpectedActiveVersionMismatch(super::ExpectedActiveVersionMismatch),
         #[prost(message, tag = "4")]
         BundleConflict(super::Unit),
+        #[prost(message, tag = "5")]
+        InvalidSource(super::CompilationDiagnostics),
+        #[prost(message, tag = "6")]
+        IncompatibleCandidate(super::ContractDescriptor),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1839,6 +1847,8 @@ pub struct GetActiveContractRequest {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetActiveContractResponse {
+    #[prost(string, tag = "3")]
+    pub database_alias: ::prost::alloc::string::String,
     #[prost(oneof = "get_active_contract_response::Result", tags = "1, 2")]
     pub result: ::core::option::Option<get_active_contract_response::Result>,
 }

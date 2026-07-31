@@ -15,6 +15,7 @@ use serde::Deserialize;
 const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:7443";
 const MAX_CONFIG_BYTES: usize = 65_536;
 const MAX_ENDPOINT_BYTES: usize = 512;
+const MAX_AUDIENCE_BYTES: usize = 512;
 const MAX_PATH_BYTES: usize = 4_096;
 
 const CONFIG_ENV: &str = "RIFFDB_MCP_CONFIG";
@@ -65,11 +66,17 @@ pub(crate) struct StdioConfig {
     endpoint: String,
     database: DatabaseAlias,
     credential: BearerCredential,
+    expected_audience: Option<String>,
 }
 
 impl StdioConfig {
-    pub(crate) fn into_parts(self) -> (String, DatabaseAlias, BearerCredential) {
-        (self.endpoint, self.database, self.credential)
+    pub(crate) fn into_parts(self) -> (String, DatabaseAlias, BearerCredential, Option<String>) {
+        (
+            self.endpoint,
+            self.database,
+            self.credential,
+            self.expected_audience,
+        )
     }
 }
 
@@ -92,6 +99,7 @@ struct McpConfig {
     endpoint: Option<String>,
     database: Option<String>,
     credential_file: Option<String>,
+    expected_audience: Option<String>,
 }
 
 trait StartupIo {
@@ -126,6 +134,10 @@ impl StartupIo for ProcessIo {
 
 pub(crate) fn load_process_config() -> Result<StdioConfig, StdioConfigError> {
     load_config(std::env::args_os().skip(1), &ProcessIo)
+}
+
+pub(crate) fn load_process_config_after_command() -> Result<StdioConfig, StdioConfigError> {
+    load_config(std::env::args_os().skip(2), &ProcessIo)
 }
 
 fn load_config(
@@ -172,6 +184,10 @@ fn load_config(
             .map_err(|_| StdioConfigError::InvalidDatabase)?,
         },
     };
+    let expected_audience = file_config
+        .expected_audience
+        .map(validate_expected_audience)
+        .transpose()?;
 
     let raw_token = io.environment(TOKEN_ENV);
     let credential_path = io
@@ -196,7 +212,18 @@ fn load_config(
         endpoint,
         database,
         credential,
+        expected_audience,
     })
+}
+
+fn validate_expected_audience(audience: String) -> Result<String, StdioConfigError> {
+    if audience.is_empty()
+        || audience.len() > MAX_AUDIENCE_BYTES
+        || !audience.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return Err(StdioConfigError::InvalidConfig);
+    }
+    Ok(audience)
 }
 
 fn parse_arguments(
@@ -500,6 +527,29 @@ mod tests {
     }
 
     #[test]
+    fn expected_audience_is_bounded_identity_evidence_not_authority() {
+        let mut io = FakeIo::with_token();
+        io.environment.insert(CONFIG_ENV, "/config".into());
+        io.documents.insert(
+            "/config".into(),
+            Ok(b"[mcp]\nexpected_audience = \"riffdb-grpc-loopback\"\n".to_vec()),
+        );
+        assert_eq!(
+            load_config([], &io).expect("document").into_parts().3,
+            Some("riffdb-grpc-loopback".to_owned())
+        );
+
+        io.documents.insert(
+            "/config".into(),
+            Ok(b"[mcp]\nexpected_audience = \"invalid audience\"\n".to_vec()),
+        );
+        assert_eq!(
+            load_config([], &io).err(),
+            Some(StdioConfigError::InvalidConfig)
+        );
+    }
+
+    #[test]
     fn present_invalid_higher_precedence_endpoint_never_falls_through() {
         let mut io = FakeIo::with_token();
         io.environment.insert(ENDPOINT_ENV, OsString::new());
@@ -709,7 +759,7 @@ mod tests {
         assert!(!error.to_string().contains("token"));
 
         let config = load_config([], &FakeIo::with_token()).expect("config");
-        let (_, _, credential) = config.into_parts();
+        let (_, _, credential, _) = config.into_parts();
         assert_eq!(format!("{credential:?}"), "BearerCredential([REDACTED])");
     }
 }

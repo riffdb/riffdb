@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
-use std::ffi::OsString;
-use std::fs;
-use std::io::{self, Read};
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Read, Write};
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitCode};
 
@@ -9,11 +10,11 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use clap::Parser;
 use riffdb_client_rust::{
-    AttemptBudget, BackupNameV1, BootstrapCapabilityCreateTemplate, CallMetadata, ClientError,
-    CreateOfflineBackup, IdempotentCommand, NormalCapabilityCreateTemplate,
-    OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, RestoreOfflineBackup,
-    RiffDbClient, app_v1, generate_capability_id, generate_offline_maintenance_operation_id,
-    generate_request_id, v1,
+    ApplicationError, ApplicationErrorContext, ApplicationOperation, AttemptBudget, BackupNameV1,
+    BootstrapCapabilityCreateTemplate, CallMetadata, ClientError, CreateOfflineBackup,
+    IdempotentCommand, NormalCapabilityCreateTemplate, OfflineMaintenanceOperationId,
+    OfflineMaintenanceReplacementConfirmation, RestoreOfflineBackup, RiffDbClient, app_v1,
+    generate_capability_id, generate_offline_maintenance_operation_id, generate_request_id, v1,
 };
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_diagnostics::{AuthoringDiagnostics, AuthoringSourcePath};
@@ -52,9 +53,34 @@ use crate::output::{
     render_revoke, success, take_normal_create_disposition, uncertain,
 };
 use crate::runner::{RunnerError, RunnerStream, run_budget};
+use crate::value::format_uuid;
+
+const APPLICATION_DEPLOYMENT_STATE_SCHEMA: &str = "riffdb.application-deployment-state/v1";
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ApplicationDeploymentState {
+    schema: String,
+    database: String,
+    lock_hash: String,
+    contract_deployed: bool,
+    query_modules_deployed: Vec<String>,
+    role: Option<ApplicationDeploymentRoleState>,
+    seeds_completed: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ApplicationDeploymentRoleState {
+    role_name: String,
+    capability_id: String,
+    bound: bool,
+    authentication_audience: Option<String>,
+}
 use crate::scaffold::{
     ScaffoldLanguage, check_application, check_application_lock, create_application,
-    generate_application, preview_application_lock, write_application_lock,
+    generate_application, load_locked_application, preview_application_lock,
+    write_application_lock,
 };
 use crate::value::{InputValue, RecordInput, ValueError, parse_uuid};
 
@@ -174,7 +200,12 @@ pub async fn run() -> ExitCode {
             }
         };
     }
-    if let TopLevel::Application { command } = &cli.command {
+    if let TopLevel::Application { command } = &cli.command
+        && !matches!(
+            command,
+            ApplicationCommand::Deploy { .. } | ApplicationCommand::BindDevRole { .. }
+        )
+    {
         if let ApplicationCommand::Preview { source } = command {
             return match preview_application_lock(Path::new(source)) {
                 Ok(lock) => {
@@ -212,6 +243,9 @@ pub async fn run() -> ExitCode {
                 locked,
                 lock,
             } => generate_application(Path::new(manifest), *locked, Some(Path::new(lock))),
+            ApplicationCommand::Deploy { .. } | ApplicationCommand::BindDevRole { .. } => {
+                unreachable!("networked application operation was not intercepted")
+            }
         };
         return match result {
             Ok(()) => {
@@ -377,11 +411,9 @@ async fn dispatch(
     stdin: &mut dyn Read,
 ) -> Terminal {
     match command {
-        TopLevel::Application { .. } => local_error(
-            CommandIdentity::ServerHealth,
-            "application_dispatch_invalid",
-            "application package dispatch is invalid",
-        ),
+        TopLevel::Application { command } => {
+            application_command(command, config, environment, stdin).await
+        }
         TopLevel::New { .. } => local_error(
             CommandIdentity::ServerHealth,
             "new_dispatch_invalid",
@@ -410,6 +442,699 @@ async fn dispatch(
         TopLevel::Backup { command } => backup_command(command, config, environment).await,
         TopLevel::Demo { command } => demo_command(command, config, environment),
     }
+}
+
+async fn application_command(
+    command: ApplicationCommand,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+    stdin: &mut dyn Read,
+) -> Terminal {
+    let (
+        identity,
+        source,
+        lock,
+        provision_role,
+        tenant,
+        lifetime_seconds,
+        seed,
+        seed_concurrency,
+        replace_expired_credential,
+    ) = match command {
+        ApplicationCommand::Deploy {
+            source,
+            lock,
+            provision_role,
+            tenant,
+            lifetime_seconds,
+            seed,
+            seed_concurrency,
+            replace_expired_credential,
+        } => (
+            CommandIdentity::ApplicationDeploy,
+            source,
+            lock,
+            provision_role,
+            tenant,
+            lifetime_seconds,
+            seed,
+            seed_concurrency,
+            replace_expired_credential,
+        ),
+        ApplicationCommand::BindDevRole {
+            source,
+            lock,
+            role,
+            tenant,
+            lifetime_seconds,
+            replace_expired_credential,
+        } => (
+            CommandIdentity::ApplicationBindDevRole,
+            source,
+            lock,
+            Some(role),
+            tenant,
+            lifetime_seconds,
+            false,
+            "8".to_owned(),
+            replace_expired_credential,
+        ),
+        ApplicationCommand::Check { .. }
+        | ApplicationCommand::Preview { .. }
+        | ApplicationCommand::Lock { .. }
+        | ApplicationCommand::Generate { .. } => {
+            return local_error(
+                CommandIdentity::ApplicationDeploy,
+                "application_dispatch_invalid",
+                "local application operation reached network dispatch",
+            );
+        }
+    };
+    let lifetime_seconds = match parse_nonzero_u32(&lifetime_seconds) {
+        Ok(value) => value,
+        Err(()) => return invalid_input(identity),
+    };
+    let seed_concurrency = match seed_concurrency.parse::<usize>() {
+        Ok(value) if (1..=MAX_BATCH_CONCURRENCY).contains(&value) => value,
+        _ => return invalid_input(identity),
+    };
+    let locked = match load_locked_application(Path::new(&source), Some(Path::new(&lock))) {
+        Ok(locked) => locked,
+        Err(_) => {
+            return local_error(
+                identity,
+                "application_lock_inexact",
+                "application source, lock, and generated artifacts are not exact",
+            );
+        }
+    };
+    let deployment_root = match prepare_deployment_root(locked.root(), config.database.as_str()) {
+        Ok(root) => root,
+        Err(()) => {
+            return local_error(
+                identity,
+                "deployment_state_unsafe",
+                "private deployment state path is unsafe",
+            );
+        }
+    };
+    let state_path = deployment_root.join("deployment-state.json");
+    let mut state = match load_deployment_state(
+        &state_path,
+        config.database.as_str(),
+        &hex(locked.lock_identity().as_bytes()),
+    ) {
+        Ok(state) => state,
+        Err(()) => {
+            return local_error(
+                identity,
+                "deployment_state_inexact",
+                "deployment state does not match the selected database and exact lock",
+            );
+        }
+    };
+    let metadata = match required_metadata(identity, config, environment) {
+        Ok(metadata) => metadata,
+        Err(terminal) => return terminal,
+    };
+    let mut client = match connect(config).await {
+        Ok(client) => client,
+        Err(error) => return client_error(identity, &error),
+    };
+    let contract_source_path = locked.root().join(locked.manifest().contract().source());
+    let contract_source = match read_file(&contract_source_path, MAX_INPUT_BYTES).and_then(utf8) {
+        Ok(source) => source,
+        Err(error) => return input_terminal(identity, error),
+    };
+    let deploy_request_id = match request_id() {
+        Ok(request_id) => request_id,
+        Err(error) => return client_error(identity, &error),
+    };
+    let contract_deployment = match client
+        .deploy_contract(
+            v1::DeployContractRequest {
+                request_id: deploy_request_id,
+                source: contract_source,
+                expected_active_version: None,
+            },
+            &metadata,
+        )
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return client_error(identity, &error),
+    };
+    match contract_deployment.result {
+        Some(
+            v1::deploy_contract_response::Result::Activated(_)
+            | v1::deploy_contract_response::Result::AlreadyActive(_),
+        ) => {}
+        Some(v1::deploy_contract_response::Result::InvalidSource(_)) => {
+            return local_error(
+                identity,
+                "locked_contract_invalid",
+                "the exact locked contract was rejected as invalid",
+            );
+        }
+        Some(v1::deploy_contract_response::Result::IncompatibleCandidate(_)) => {
+            return local_error(
+                identity,
+                "locked_contract_incompatible",
+                "the exact locked contract is incompatible with the active lineage",
+            );
+        }
+        Some(v1::deploy_contract_response::Result::ExpectedActiveVersionMismatch(_)) => {
+            return local_error(
+                identity,
+                "active_contract_mismatch",
+                "the selected database has a different active contract",
+            );
+        }
+        Some(v1::deploy_contract_response::Result::BundleConflict(_)) => {
+            return local_error(
+                identity,
+                "contract_bundle_conflict",
+                "the locked contract identity conflicts with retained catalog state",
+            );
+        }
+        None => {
+            return local_error(
+                identity,
+                "contract_deployment_result_absent",
+                "contract deployment returned no terminal result",
+            );
+        }
+    }
+    state.contract_deployed = true;
+    if persist_deployment_state(&state_path, &state).is_err() {
+        return local_error(
+            identity,
+            "deployment_state_write_failed",
+            "durable deployment progress could not be retained",
+        );
+    }
+
+    for module in locked.manifest().query_modules() {
+        let mut queries = Vec::with_capacity(module.queries().len());
+        for query in module.queries() {
+            let path = locked.root().join(query.source());
+            let source = match read_file(&path, MAX_INPUT_BYTES).and_then(utf8) {
+                Ok(source) => source,
+                Err(error) => return input_terminal(identity, error),
+            };
+            queries.push(app_v1::NamedQuerySource {
+                name: query.name().to_owned(),
+                source,
+            });
+        }
+        let request_id = match request_id() {
+            Ok(request_id) => request_id,
+            Err(error) => return client_error(identity, &error),
+        };
+        let response = match client
+            .deploy_query_module(
+                app_v1::DeployQueryModuleRequest {
+                    contract: Some(app_v1::ContractSelector {
+                        lineage: locked.manifest().contract().lineage().to_owned(),
+                        version: locked.manifest().contract().version(),
+                        bundle_hash: locked
+                            .manifest()
+                            .contract()
+                            .bundle_hash()
+                            .as_bytes()
+                            .to_vec(),
+                    }),
+                    module_name: module.name().to_owned(),
+                    module_version: module.version(),
+                    queries,
+                    expected_active: Some(
+                        app_v1::deploy_query_module_request::ExpectedActive::AnyActive(true),
+                    ),
+                    request_id,
+                },
+                &metadata,
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => return client_error(identity, &error),
+        };
+        match app_v1::QueryModuleDeploymentOutcome::try_from(response.outcome).ok() {
+            Some(
+                app_v1::QueryModuleDeploymentOutcome::Activated
+                | app_v1::QueryModuleDeploymentOutcome::AlreadyActive,
+            ) => {}
+            Some(app_v1::QueryModuleDeploymentOutcome::ExpectedActiveMismatch) => {
+                return local_error(
+                    identity,
+                    "active_query_module_mismatch",
+                    "the selected contract has a different active query module",
+                );
+            }
+            Some(app_v1::QueryModuleDeploymentOutcome::VersionConflict) => {
+                return local_error(
+                    identity,
+                    "query_module_version_conflict",
+                    "the locked query module version conflicts with retained state",
+                );
+            }
+            Some(app_v1::QueryModuleDeploymentOutcome::ContractUnavailable) => {
+                return local_error(
+                    identity,
+                    "query_module_contract_unavailable",
+                    "the locked query module contract is unavailable",
+                );
+            }
+            Some(app_v1::QueryModuleDeploymentOutcome::Unspecified) | None => {
+                return local_error(
+                    identity,
+                    "query_module_deployment_result_invalid",
+                    "query module deployment returned no terminal result",
+                );
+            }
+        }
+        if !state
+            .query_modules_deployed
+            .iter()
+            .any(|name| name == module.name())
+        {
+            state.query_modules_deployed.push(module.name().to_owned());
+            state.query_modules_deployed.sort();
+        }
+        if persist_deployment_state(&state_path, &state).is_err() {
+            return local_error(
+                identity,
+                "deployment_state_write_failed",
+                "durable deployment progress could not be retained",
+            );
+        }
+    }
+
+    let mut application_credential = None;
+    if let Some(role) = provision_role {
+        let credential_path = deployment_root.join("application.credential");
+        if state
+            .role
+            .as_ref()
+            .is_some_and(|retained| retained.role_name != role)
+        {
+            return local_error(
+                identity,
+                "deployment_role_mismatch",
+                "retained deployment state belongs to another application role",
+            );
+        }
+        if replace_expired_credential {
+            let Some(retained) = state.role.as_ref() else {
+                return local_error(
+                    identity,
+                    "credential_replacement_identity_absent",
+                    "credential replacement requires the retained old capability identity",
+                );
+            };
+            let terminal = role_command(
+                RoleCommand::Revoke {
+                    capability_id: retained.capability_id.clone(),
+                    reason: RevocationReason::Replaced,
+                },
+                config,
+                environment,
+            )
+            .await;
+            if terminal.failed() {
+                return terminal;
+            }
+            if credential_path.exists() && fs::remove_file(&credential_path).is_err() {
+                return local_error(
+                    identity,
+                    "credential_replacement_cleanup_failed",
+                    "revoked application credential could not be removed",
+                );
+            }
+            state.role = None;
+            if persist_deployment_state(&state_path, &state).is_err() {
+                return local_error(
+                    identity,
+                    "deployment_state_write_failed",
+                    "durable deployment progress could not be retained",
+                );
+            }
+        }
+        if credential_path.exists() && state.role.as_ref().is_none_or(|retained| !retained.bound) {
+            return local_error(
+                identity,
+                "credential_identity_unbound",
+                "application credential exists without matching retained role state",
+            );
+        }
+        if !credential_path.exists() && state.role.as_ref().is_some_and(|retained| retained.bound) {
+            return local_error(
+                identity,
+                "application_credential_missing",
+                "retained application credential is missing; use explicit replacement",
+            );
+        }
+        if !credential_path.exists() {
+            let capability_id = match state.role.as_ref() {
+                Some(retained) => retained.capability_id.clone(),
+                None => {
+                    let generated = match generate_capability_id() {
+                        Ok(value) => value.into_bytes(),
+                        Err(error) => {
+                            return client_error(
+                                identity,
+                                &ClientError::IdentifierGeneration(error),
+                            );
+                        }
+                    };
+                    let Some(capability_id) = format_uuid(&generated) else {
+                        return invalid_input(identity);
+                    };
+                    state.role = Some(ApplicationDeploymentRoleState {
+                        role_name: role.clone(),
+                        capability_id: capability_id.clone(),
+                        bound: false,
+                        authentication_audience: None,
+                    });
+                    if persist_deployment_state(&state_path, &state).is_err() {
+                        return local_error(
+                            identity,
+                            "deployment_state_write_failed",
+                            "durable deployment progress could not be retained",
+                        );
+                    }
+                    capability_id
+                }
+            };
+            let request_id = match request_id() {
+                Ok(request_id) => request_id,
+                Err(error) => return client_error(identity, &error),
+            };
+            let health = match client
+                .health(
+                    v1::HealthRequest {
+                        request_id: Some(request_id),
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(health) if !health.authentication_audience.is_empty() => health,
+                Ok(_) => {
+                    return local_error(
+                        identity,
+                        "audience_unavailable",
+                        "server health did not identify its authentication audience",
+                    );
+                }
+                Err(error) => return client_error(identity, &error),
+            };
+            let authentication_audience = health.authentication_audience;
+            let terminal = role_command(
+                RoleCommand::Bind {
+                    manifest: locked.manifest_path().as_os_str().to_owned(),
+                    role,
+                    tenant,
+                    principal: format!("app:{}", locked.manifest().application_name()),
+                    actor_kind: RoleActorKind::Service,
+                    lifetime_seconds: lifetime_seconds.to_string(),
+                    audiences: vec![authentication_audience.clone()],
+                    capability_id: Some(capability_id),
+                    credential_output: credential_path.as_os_str().to_owned(),
+                },
+                config,
+                environment,
+            )
+            .await;
+            if terminal.failed() {
+                return terminal;
+            }
+            let Some(retained) = state.role.as_mut() else {
+                return invalid_input(identity);
+            };
+            retained.bound = true;
+            retained.authentication_audience = Some(authentication_audience);
+            if persist_deployment_state(&state_path, &state).is_err() {
+                return local_error(
+                    identity,
+                    "deployment_state_write_failed",
+                    "durable deployment progress could not be retained",
+                );
+            }
+        }
+        let Some(authentication_audience) = state
+            .role
+            .as_ref()
+            .and_then(|role| role.authentication_audience.as_deref())
+        else {
+            return local_error(
+                identity,
+                "application_audience_missing",
+                "retained application role is missing its authentication audience",
+            );
+        };
+        if persist_application_configs(
+            &deployment_root,
+            config,
+            &credential_path,
+            authentication_audience,
+        )
+        .is_err()
+        {
+            return local_error(
+                identity,
+                "application_config_write_failed",
+                "private application client configuration could not be retained",
+            );
+        }
+        application_credential = Some(credential_path);
+    }
+
+    if seed {
+        let Some(credential_path) = application_credential.as_ref() else {
+            return invalid_input(identity);
+        };
+        let mut application_config = config.clone();
+        application_config.credential_file = Some(credential_path.clone());
+        for (index, source) in locked.manifest().seed_inputs().iter().enumerate() {
+            let path = locked.root().join(source);
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                return invalid_input(identity);
+            };
+            let Some(command_name) = file_name
+                .strip_suffix(".jsonl")
+                .and_then(|name| name.split_once('-').map(|(_, command)| command))
+                .filter(|name| !name.is_empty())
+            else {
+                return invalid_input(identity);
+            };
+            let checkpoint = deployment_root.join(format!("seed-{index:03}.checkpoint.json"));
+            let terminal = command_command(
+                CommandCommand::Batch {
+                    command_name: command_name.to_owned(),
+                    input: path.into_os_string(),
+                    expected_version: Some(locked.manifest().contract().version().to_string()),
+                    concurrency: seed_concurrency.to_string(),
+                    idempotency_field: "idempotency_key".to_owned(),
+                    checkpoint: Some(checkpoint.into_os_string()),
+                    error_outcomes: Vec::new(),
+                    progress: true,
+                },
+                &application_config,
+                environment,
+                stdin,
+            )
+            .await;
+            if terminal.failed() {
+                return terminal;
+            }
+            if !state.seeds_completed.iter().any(|item| item == source) {
+                state.seeds_completed.push(source.to_owned());
+                state.seeds_completed.sort();
+            }
+            if persist_deployment_state(&state_path, &state).is_err() {
+                return local_error(
+                    identity,
+                    "deployment_state_write_failed",
+                    "durable deployment progress could not be retained",
+                );
+            }
+        }
+    }
+
+    success(
+        identity,
+        "deployed",
+        &serde_json::json!({
+            "application": locked.manifest().application_name(),
+            "contract_lineage": locked.manifest().contract().lineage(),
+            "contract_version": locked.manifest().contract().version().to_string(),
+            "database": config.database.as_str(),
+            "lock_hash": hex(locked.lock_identity().as_bytes()),
+            "provisioned": application_credential.is_some(),
+            "seeded": seed,
+        }),
+    )
+}
+
+fn prepare_deployment_root(root: &Path, database: &str) -> Result<PathBuf, ()> {
+    let private = root.join(".riffdb");
+    let deployments = private.join("deployments");
+    let selected = deployments.join(database);
+    for directory in [&private, &deployments, &selected] {
+        match fs::symlink_metadata(directory) {
+            Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+            }
+            Ok(_) => return Err(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir(directory).map_err(|_| ())?;
+            }
+            Err(_) => return Err(()),
+        }
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).map_err(|_| ())?;
+    }
+    Ok(selected)
+}
+
+fn load_deployment_state(
+    path: &Path,
+    database: &str,
+    lock_hash: &str,
+) -> Result<ApplicationDeploymentState, ()> {
+    if fs::symlink_metadata(path).is_err() {
+        return Ok(ApplicationDeploymentState {
+            schema: APPLICATION_DEPLOYMENT_STATE_SCHEMA.to_owned(),
+            database: database.to_owned(),
+            lock_hash: lock_hash.to_owned(),
+            contract_deployed: false,
+            query_modules_deployed: Vec::new(),
+            role: None,
+            seeds_completed: Vec::new(),
+        });
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|_| ())?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err(());
+    }
+    let bytes = read_file(path, MAX_INPUT_BYTES).map_err(|_| ())?;
+    let state: ApplicationDeploymentState = serde_json::from_slice(&bytes).map_err(|_| ())?;
+    if state.schema != APPLICATION_DEPLOYMENT_STATE_SCHEMA
+        || state.database != database
+        || state.lock_hash != lock_hash
+        || state.query_modules_deployed.len() > 4_096
+        || state.seeds_completed.len() > 4_096
+        || state
+            .query_modules_deployed
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        || state
+            .seeds_completed
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        || state.role.as_ref().is_some_and(|role| {
+            role.role_name.is_empty()
+                || role.role_name.len() > 256
+                || parse_uuid_v7(&role.capability_id).is_none()
+                || (role.bound
+                    && role
+                        .authentication_audience
+                        .as_ref()
+                        .is_none_or(|audience| {
+                            audience.is_empty()
+                                || audience.len() > 512
+                                || !audience.bytes().all(|byte| byte.is_ascii_graphic())
+                        }))
+        })
+    {
+        return Err(());
+    }
+    Ok(state)
+}
+
+fn persist_deployment_state(path: &Path, state: &ApplicationDeploymentState) -> Result<(), ()> {
+    let bytes = serde_json::to_vec(state).map_err(|_| ())?;
+    if bytes.len() > MAX_INPUT_BYTES {
+        return Err(());
+    }
+    persist_private_file(path, &bytes)
+}
+
+fn persist_application_configs(
+    root: &Path,
+    config: &EffectiveConfig,
+    credential_path: &Path,
+    authentication_audience: &str,
+) -> Result<(), ()> {
+    let credential_path = if credential_path.is_absolute() {
+        credential_path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|_| ())?
+            .join(credential_path)
+    };
+    let credential = credential_path.to_str().ok_or(())?;
+    let endpoint = serde_json::to_string(&config.endpoint).map_err(|_| ())?;
+    let database = serde_json::to_string(config.database.as_str()).map_err(|_| ())?;
+    let credential = serde_json::to_string(credential).map_err(|_| ())?;
+    let authentication_audience = serde_json::to_string(authentication_audience).map_err(|_| ())?;
+    let client = format!(
+        "[client]\nendpoint = {endpoint}\ndatabase = {database}\noutput = \"json\"\nmax_attempts = {}\ncredential_file = {credential}\n",
+        config.max_attempts
+    );
+    let mcp = format!(
+        "[mcp]\nendpoint = {endpoint}\ndatabase = {database}\ncredential_file = {credential}\nexpected_audience = {authentication_audience}\n"
+    );
+    persist_private_file(&root.join("client.toml"), client.as_bytes())?;
+    persist_private_file(&root.join("mcp.toml"), mcp.as_bytes())
+}
+
+fn persist_private_file(path: &Path, bytes: &[u8]) -> Result<(), ()> {
+    let parent = path.parent().ok_or(())?;
+    let parent_metadata = fs::symlink_metadata(parent).map_err(|_| ())?;
+    if !parent_metadata.file_type().is_dir() || parent_metadata.file_type().is_symlink() {
+        return Err(());
+    }
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Err(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return Err(()),
+    }
+    let name = path.file_name().and_then(|name| name.to_str()).ok_or(())?;
+    let mut opened = None;
+    for suffix in 0..128_u8 {
+        let temporary = parent.join(format!(
+            ".{name}.riffdb-deploy-{}-{suffix}",
+            std::process::id()
+        ));
+        match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&temporary)
+        {
+            Ok(file) => {
+                opened = Some((temporary, file));
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(_) => return Err(()),
+        }
+    }
+    let (temporary, mut file) = opened.ok_or(())?;
+    let result = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| {
+            drop(file);
+            fs::rename(&temporary, path)
+        })
+        .and_then(|()| fs::File::open(parent)?.sync_all());
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+        return Err(());
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|_| ())
 }
 
 async fn query_command(
@@ -1241,6 +1966,7 @@ async fn command_command(
             input,
             expected_version,
         } => {
+            let application_command_name = command_name.clone();
             let input = match read_json::<serde_json::Map<String, serde_json::Value>>(&input, stdin)
                 .and_then(|input| natural_command_record(input).map_err(|()| InputError::Invalid))
             {
@@ -1271,7 +1997,11 @@ async fn command_command(
             let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
             match submit_execute_retry(&mut client, &command, attempts, &metadata).await {
                 Ok(response) => render_execution(CommandIdentity::CommandRun, &response),
-                Err(error) => client_error(CommandIdentity::CommandRun, &error),
+                Err(error) => {
+                    let error =
+                        contextualize_application_command_error(error, &application_command_name);
+                    client_error(CommandIdentity::CommandRun, &error)
+                }
             }
         }
         CommandCommand::Execute {
@@ -2836,9 +3566,11 @@ fn bootstrap_credential_terminal(error: CredentialError) -> Terminal {
 fn input_terminal(command: CommandIdentity, error: InputError) -> Terminal {
     match error {
         InputError::PathInvalid => local_error(command, "path_invalid", "an input path is invalid"),
-        InputError::ReadFailed => {
-            local_error(command, "input_read_failed", "input could not be read")
-        }
+        InputError::ReadFailed => local_error(
+            command,
+            "input_read_failed",
+            "input could not be read; provide inline JSON, @path, path, or - for stdin",
+        ),
         InputError::TooLarge => {
             local_error(command, "input_too_large", "input exceeds the CLI limit")
         }
@@ -2893,15 +3625,43 @@ fn invalid_input(command: CommandIdentity) -> Terminal {
     local_error(command, "input_invalid", "input is invalid")
 }
 
+fn contextualize_application_command_error(error: ClientError, command_name: &str) -> ClientError {
+    let ClientError::Public(public) = error else {
+        return error;
+    };
+    let context = ApplicationErrorContext::empty()
+        .with_operation_symbol(command_name.to_owned())
+        .unwrap_or_else(|_| ApplicationErrorContext::empty());
+    ClientError::Application(Box::new(ApplicationError::from_public_error(
+        &public,
+        ApplicationOperation::ExecuteCommand,
+        context,
+    )))
+}
+
 fn read_text(path: &OsString, stdin: &mut dyn Read) -> Result<String, InputError> {
     utf8(read_path_or_stdin(path, stdin, MAX_INPUT_BYTES)?)
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(
-    path: &OsString,
+    source: &OsString,
     stdin: &mut dyn Read,
 ) -> Result<T, InputError> {
-    let bytes = read_path_or_stdin(path, stdin, MAX_INPUT_BYTES)?;
+    let encoded = source.as_encoded_bytes();
+    let bytes = if encoded.first() == Some(&b'{') || encoded.first() == Some(&b'[') {
+        if encoded.len() > MAX_INPUT_BYTES {
+            return Err(InputError::TooLarge);
+        }
+        encoded.to_vec()
+    } else if encoded.first() == Some(&b'@') {
+        let path = source
+            .to_str()
+            .and_then(|value| value.strip_prefix('@'))
+            .ok_or(InputError::PathInvalid)?;
+        read_path_or_stdin(OsStr::new(path), stdin, MAX_INPUT_BYTES)?
+    } else {
+        read_path_or_stdin(source, stdin, MAX_INPUT_BYTES)?
+    };
     serde_json::from_slice(&bytes).map_err(|_| InputError::Invalid)
 }
 
@@ -3346,6 +4106,12 @@ const fn restore_confirmation(confirmed: bool) -> OfflineMaintenanceReplacementC
 
 const fn command_identity(command: &TopLevel) -> CommandIdentity {
     match command {
+        TopLevel::Application {
+            command: ApplicationCommand::Deploy { .. },
+        } => CommandIdentity::ApplicationDeploy,
+        TopLevel::Application {
+            command: ApplicationCommand::BindDevRole { .. },
+        } => CommandIdentity::ApplicationBindDevRole,
         TopLevel::Application { .. } => CommandIdentity::ServerHealth,
         TopLevel::New { .. } => CommandIdentity::ServerHealth,
         TopLevel::Dev { .. } => CommandIdentity::ServerHealth,
@@ -3480,6 +4246,116 @@ mod tests {
             result["identity"]["module_hash"],
             serde_json::Value::String("cc".repeat(32))
         );
+    }
+
+    #[test]
+    fn application_json_accepts_inline_at_file_legacy_path_and_stdin_sources() {
+        let directory =
+            std::env::temp_dir().join(format!("riffdb-cli-natural-json-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).expect("fixture directory");
+        let path = directory.join("input.json");
+        fs::write(&path, br#"{"priority":2}"#).expect("fixture input");
+
+        let inline: serde_json::Value = read_json(
+            &OsString::from(r#"{"priority":2}"#),
+            &mut Cursor::new(Vec::<u8>::new()),
+        )
+        .expect("inline JSON");
+        let at_file: serde_json::Value = read_json(
+            &OsString::from(format!("@{}", path.display())),
+            &mut Cursor::new(Vec::<u8>::new()),
+        )
+        .expect("@file JSON");
+        let legacy_path: serde_json::Value = read_json(
+            &path.as_os_str().to_owned(),
+            &mut Cursor::new(Vec::<u8>::new()),
+        )
+        .expect("legacy path JSON");
+        let stdin: serde_json::Value = read_json(
+            &OsString::from("-"),
+            &mut Cursor::new(br#"{"priority":2}"#.to_vec()),
+        )
+        .expect("stdin JSON");
+
+        assert_eq!(inline, serde_json::json!({"priority": 2}));
+        assert_eq!(at_file, inline);
+        assert_eq!(legacy_path, inline);
+        assert_eq!(stdin, inline);
+        fs::remove_dir_all(directory).expect("fixture cleanup");
+    }
+
+    #[test]
+    fn deployment_state_is_private_exact_and_database_bound() {
+        let directory = std::env::temp_dir().join(format!(
+            "riffdb-cli-deployment-state-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).expect("fixture directory");
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+            .expect("private fixture directory");
+        let path = directory.join("deployment-state.json");
+        let lock_hash = "ab".repeat(32);
+        let mut state =
+            load_deployment_state(&path, "ea", &lock_hash).expect("new exact deployment state");
+        state.contract_deployed = true;
+        state.query_modules_deployed.push("EaQueries".to_owned());
+        state.role = Some(ApplicationDeploymentRoleState {
+            role_name: "EaApplication".to_owned(),
+            capability_id: "01900000-0000-7000-8000-000000000001".to_owned(),
+            bound: true,
+            authentication_audience: Some("riffdb-grpc-loopback".to_owned()),
+        });
+        persist_deployment_state(&path, &state).expect("durable deployment state");
+
+        assert_eq!(
+            fs::metadata(&path)
+                .expect("state metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            load_deployment_state(&path, "ea", &lock_hash)
+                .expect("matching state")
+                .role
+                .expect("retained role")
+                .role_name,
+            "EaApplication"
+        );
+        assert!(load_deployment_state(&path, "default", &lock_hash).is_err());
+        assert!(load_deployment_state(&path, "ea", &"cd".repeat(32)).is_err());
+        fs::remove_dir_all(directory).expect("fixture cleanup");
+    }
+
+    #[test]
+    fn generated_application_configs_retain_an_absolute_credential_path() {
+        let directory = std::env::temp_dir().join(format!(
+            "riffdb-cli-application-config-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).expect("fixture directory");
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+            .expect("private fixture directory");
+
+        let relative = Path::new(".riffdb/deployments/ea/application.credential");
+        persist_application_configs(&directory, &test_config(), relative, "riffdb-grpc-loopback")
+            .expect("application configs");
+        let expected = std::env::current_dir()
+            .expect("current directory")
+            .join(relative);
+        let client = fs::read_to_string(directory.join("client.toml")).expect("client config");
+        assert!(client.contains(&format!(
+            "credential_file = {}\n",
+            serde_json::to_string(expected.to_str().expect("UTF-8 path")).expect("quoted path")
+        )));
+        let mcp = fs::read_to_string(directory.join("mcp.toml")).expect("MCP config");
+        assert!(mcp.contains("expected_audience = \"riffdb-grpc-loopback\"\n"));
+
+        fs::remove_dir_all(directory).expect("fixture cleanup");
     }
 
     #[test]

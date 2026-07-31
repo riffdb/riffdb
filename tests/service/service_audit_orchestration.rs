@@ -1844,14 +1844,14 @@ fn deploy_prestart_failures_append_one_standalone_phase_without_policy_or_prepar
 
         let mut compile_failure = ServiceHarness::new(ReadCommitMode::ImmediateNotFound, true);
         let (context, _cancellation) = compile_failure.context(0x62);
-        let failure = compile_failure
+        let result = compile_failure
             .service
             .deploy_contract(context, compile_failure.invalid_deploy_request())
             .await
-            .expect_err("invalid contract compilation remains a failed deployment attempt");
-        assert_eq!(
-            failure.public_error().map(|error| error.kind()),
-            Some(PublicErrorKind::Validation)
+            .expect("invalid source is an ordinary structured deployment result");
+        assert!(
+            matches!(result, DeployContractResult::InvalidSource(_)),
+            "compiler diagnostics must remain typed result data"
         );
         assert_eq!(compile_failure.policy.calls(), 0);
         compile_failure.stop_coordinator();

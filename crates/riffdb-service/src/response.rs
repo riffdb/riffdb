@@ -837,7 +837,13 @@ impl ServiceResponseCharge for DeployContractResult {
         let mut charge = ChargeAccumulator::message();
         charge.fields(1)?;
         match self {
-            Self::Activated(descriptor) | Self::AlreadyActive(descriptor) => {
+            Self::InvalidSource(error) => {
+                let validation = ContractValidationResult::Invalid(error.clone());
+                charge.nested(&validation)?;
+            }
+            Self::IncompatibleCandidate(descriptor)
+            | Self::Activated(descriptor)
+            | Self::AlreadyActive(descriptor) => {
                 charge_contract_descriptor(&mut charge, descriptor)?;
             }
             Self::ExpectedActiveVersionMismatch { actual } => {

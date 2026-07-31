@@ -1510,12 +1510,21 @@ fn materialize_value(
     match (value_type.tag(), value) {
         (ValueTypeTag::Bool, SubmittedValue::Bool(value)) => Ok(CanonicalValue::Bool(*value)),
         (ValueTypeTag::I64, SubmittedValue::I64(value)) => Ok(CanonicalValue::I64(*value)),
+        (ValueTypeTag::I64, SubmittedValue::U64(value)) => i64::try_from(*value)
+            .map(CanonicalValue::I64)
+            .map_err(|_| public_materialization(ValidationCode::OutOfRange, path)),
         (ValueTypeTag::U64, SubmittedValue::U64(value)) => Ok(CanonicalValue::U64(*value)),
+        (ValueTypeTag::U64, SubmittedValue::I64(value)) => u64::try_from(*value)
+            .map(CanonicalValue::U64)
+            .map_err(|_| public_materialization(ValidationCode::OutOfRange, path)),
         (ValueTypeTag::Timestamp, SubmittedValue::Timestamp(value)) => {
             Ok(CanonicalValue::Timestamp(*value))
         }
         (ValueTypeTag::Date, SubmittedValue::Date(value)) => Ok(CanonicalValue::Date(*value)),
         (ValueTypeTag::Uuid, SubmittedValue::Uuid(value)) => Ok(CanonicalValue::Uuid(*value)),
+        (ValueTypeTag::Uuid, SubmittedValue::String(value)) => parse_natural_uuid(value.as_str())
+            .map(CanonicalValue::Uuid)
+            .ok_or_else(|| public_materialization(ValidationCode::InvalidValue, path)),
         (ValueTypeTag::Decimal, SubmittedValue::Decimal(actual)) => {
             let spec = value_type
                 .decimal_spec()
@@ -1613,6 +1622,23 @@ fn materialize_value(
                 variant_id: variant.id(),
             })
         }
+        (ValueTypeTag::Enum, SubmittedValue::String(actual)) => {
+            let expected_type = value_type
+                .enum_type_id()
+                .ok_or(MaterializationError::Integrity)?;
+            let enumeration = schema
+                .enumeration(expected_type)
+                .ok_or(MaterializationError::Integrity)?;
+            let variant = enumeration
+                .variants()
+                .iter()
+                .find(|variant| variant.name() == actual.as_str())
+                .ok_or_else(|| public_materialization(ValidationCode::InvalidValue, path))?;
+            Ok(CanonicalValue::Enum {
+                type_id: expected_type,
+                variant_id: variant.id(),
+            })
+        }
         (ValueTypeTag::List, SubmittedValue::List(values)) => {
             let Some((element, maximum)) = value_type.list_parts() else {
                 return Err(MaterializationError::Integrity);
@@ -1644,6 +1670,37 @@ fn materialize_value(
         }
         _ => Err(public_materialization(ValidationCode::TypeMismatch, path)),
     }
+}
+
+pub(crate) fn parse_natural_uuid(text: &str) -> Option<[u8; 16]> {
+    if text.len() != 36
+        || text.as_bytes().get(8) != Some(&b'-')
+        || text.as_bytes().get(13) != Some(&b'-')
+        || text.as_bytes().get(18) != Some(&b'-')
+        || text.as_bytes().get(23) != Some(&b'-')
+    {
+        return None;
+    }
+    let mut bytes = [0_u8; 16];
+    let mut output = 0;
+    let mut high = None;
+    for byte in text.bytes() {
+        if byte == b'-' {
+            continue;
+        }
+        let nibble = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            _ => return None,
+        };
+        if let Some(high) = high.take() {
+            *bytes.get_mut(output)? = high << 4 | nibble;
+            output += 1;
+        } else {
+            high = Some(nibble);
+        }
+    }
+    (output == bytes.len() && high.is_none()).then_some(bytes)
 }
 
 fn materialize_exact_record(
@@ -2706,6 +2763,80 @@ contract LargeDecimalInput version 1 {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn natural_json_scalars_materialize_from_the_declared_command_schema() {
+        let bundle = compile_normalization_fixture();
+        let plan = command(&bundle);
+        let canonical = valid_input(&bundle, None);
+        let fields = canonical
+            .fields()
+            .iter()
+            .map(|(field_id, value)| {
+                let declared = plan
+                    .input()
+                    .record()
+                    .field(*field_id)
+                    .expect("declared field");
+                let value = match declared.name() {
+                    "id" => SubmittedValue::string("11111111-1111-1111-1111-111111111111")
+                        .expect("bounded UUID string"),
+                    "mode" => SubmittedValue::string("Alpha").expect("bounded enum string"),
+                    "values" => SubmittedValue::list(vec![SubmittedValue::U64(7)])
+                        .expect("bounded natural integer list"),
+                    _ => SubmittedValue::try_from(value.clone()).expect("bounded submitted scalar"),
+                };
+                SubmittedField::new(
+                    SubmittedFieldIdentity::Name(
+                        SourceName::new(declared.name()).expect("source name"),
+                    ),
+                    value,
+                )
+            })
+            .collect();
+        let submitted = SubmittedRecord::new(fields).expect("bounded natural record");
+
+        let normalized = normalize_command_input(plan, bundle.schema(), plan, &submitted)
+            .unwrap_or_else(|_| panic!("schema-directed natural values materialize"));
+
+        assert_eq!(
+            value(&normalized, field_id(plan, "id")),
+            Some(&CanonicalValue::Uuid([0x11; 16]))
+        );
+        assert!(matches!(
+            value(&normalized, field_id(plan, "mode")),
+            Some(CanonicalValue::Enum { .. })
+        ));
+        assert_eq!(
+            value(&normalized, field_id(plan, "values")),
+            Some(
+                &CanonicalValue::list(vec![CanonicalValue::I64(7)])
+                    .expect("bounded canonical list")
+            )
+        );
+    }
+
+    #[test]
+    fn natural_integer_coercion_is_exact_and_fails_closed_on_range() {
+        let bundle = compile_normalization_fixture();
+        let plan = command(&bundle);
+        let values = field_id(plan, "values");
+        let submitted = submitted_input(valid_input(&bundle, None));
+        let out_of_range = replace_submitted_value(
+            &submitted,
+            values,
+            SubmittedValue::list(vec![SubmittedValue::U64(
+                u64::try_from(i64::MAX).expect("positive maximum") + 1,
+            )])
+            .expect("bounded natural integer list"),
+        );
+
+        let failure = issue(
+            normalize_command_input(plan, bundle.schema(), plan, &out_of_range)
+                .expect_err("out-of-range natural integer must fail"),
+        );
+        assert_eq!(failure.code(), ValidationCode::OutOfRange);
     }
 
     #[test]

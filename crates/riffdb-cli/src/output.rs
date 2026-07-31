@@ -24,6 +24,8 @@ const OUTPUT_RENDER_FAILED: &[u8] =
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CommandIdentity {
+    ApplicationDeploy,
+    ApplicationBindDevRole,
     ContractValidate,
     ContractDeploy,
     CommandExecute,
@@ -58,6 +60,8 @@ pub(crate) enum CommandIdentity {
 impl CommandIdentity {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
+            Self::ApplicationDeploy => "application.deploy",
+            Self::ApplicationBindDevRole => "application.bind_dev_role",
             Self::ContractValidate => "contract.validate",
             Self::ContractDeploy => "contract.deploy",
             Self::CommandExecute => "command.execute",
@@ -259,7 +263,6 @@ pub(crate) fn client_error(command: CommandIdentity, error: &ClientError) -> Ter
 }
 
 pub(crate) fn render_contract_validation(response: &v1::ValidateContractResponse) -> Terminal {
-    use v1::compilation_diagnostics::Diagnostics;
     use v1::validate_contract_response::Result;
     match response.result.as_ref() {
         Some(Result::Valid(_)) => success(
@@ -267,26 +270,36 @@ pub(crate) fn render_contract_validation(response: &v1::ValidateContractResponse
             "valid",
             &StatusResult { status: "valid" },
         ),
-        Some(Result::Invalid(diagnostics)) => match diagnostics.diagnostics.as_ref() {
-            Some(Diagnostics::Syntax(list)) => success(
-                CommandIdentity::ContractValidate,
-                "invalid_syntax",
-                &SyntaxResult {
-                    status: "invalid_syntax",
-                    diagnostics: SyntaxDiagnostics(&list.diagnostics),
-                },
-            ),
-            Some(Diagnostics::Semantic(list)) => success(
-                CommandIdentity::ContractValidate,
-                "invalid_semantic",
-                &SemanticResult {
-                    status: "invalid_semantic",
-                    diagnostics: SemanticDiagnostics(&list.diagnostics),
-                },
-            ),
-            None => rendering_failure(CommandIdentity::ContractValidate),
-        },
+        Some(Result::Invalid(diagnostics)) => {
+            render_compilation_diagnostics(CommandIdentity::ContractValidate, diagnostics)
+        }
         None => rendering_failure(CommandIdentity::ContractValidate),
+    }
+}
+
+fn render_compilation_diagnostics(
+    command: CommandIdentity,
+    diagnostics: &v1::CompilationDiagnostics,
+) -> Terminal {
+    use v1::compilation_diagnostics::Diagnostics;
+    match diagnostics.diagnostics.as_ref() {
+        Some(Diagnostics::Syntax(list)) => success(
+            command,
+            "invalid_syntax",
+            &SyntaxResult {
+                status: "invalid_syntax",
+                diagnostics: SyntaxDiagnostics(&list.diagnostics),
+            },
+        ),
+        Some(Diagnostics::Semantic(list)) => success(
+            command,
+            "invalid_semantic",
+            &SemanticResult {
+                status: "invalid_semantic",
+                diagnostics: SemanticDiagnostics(&list.diagnostics),
+            },
+        ),
+        None => rendering_failure(command),
     }
 }
 
@@ -307,6 +320,17 @@ pub(crate) fn render_contract_deploy(response: &v1::DeployContractResponse) -> T
             &ContractResult {
                 status: "already_active",
                 contract: ContractDescriptorDto(contract),
+            },
+        ),
+        Some(Result::InvalidSource(diagnostics)) => {
+            render_compilation_diagnostics(CommandIdentity::ContractDeploy, diagnostics)
+        }
+        Some(Result::IncompatibleCandidate(contract)) => success(
+            CommandIdentity::ContractDeploy,
+            "incompatible_candidate",
+            &IncompatibleContractResult {
+                status: "incompatible_candidate",
+                contract: ContractDescriptorWithCompatibilityDto(contract),
             },
         ),
         Some(Result::ExpectedActiveVersionMismatch(mismatch)) => success(
@@ -717,6 +741,8 @@ pub(crate) fn render_health(response: &v1::HealthResponse) -> Terminal {
                 "pre_bootstrap",
                 &PreBootstrapHealth {
                     status: "pre_bootstrap",
+                    database: &response.database_alias,
+                    audience: &response.authentication_audience,
                     lifecycle,
                     liveness: health.liveness,
                     readiness: health.readiness,
@@ -740,6 +766,8 @@ pub(crate) fn render_health(response: &v1::HealthResponse) -> Terminal {
                 status,
                 &AuthenticatedHealth {
                     status,
+                    database: &response.database_alias,
+                    audience: &response.authentication_audience,
                     active_contract_version: health
                         .active_contract_version
                         .map(|value| value.to_string()),
@@ -817,6 +845,10 @@ fn error_with_exit<T: Serialize>(
 }
 
 impl Terminal {
+    pub(crate) const fn failed(&self) -> bool {
+        self.failed
+    }
+
     fn new<T: Serialize>(
         command: CommandIdentity,
         ok: bool,
@@ -1523,6 +1555,84 @@ struct ContractResult<'a> {
 }
 
 #[derive(Serialize)]
+struct IncompatibleContractResult<'a> {
+    status: &'a str,
+    contract: ContractDescriptorWithCompatibilityDto<'a>,
+}
+
+struct ContractDescriptorWithCompatibilityDto<'a>(&'a v1::ContractDescriptor);
+
+impl Serialize for ContractDescriptorWithCompatibilityDto<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let descriptor = self.0;
+        let compatibility = descriptor
+            .compatibility
+            .as_ref()
+            .ok_or_else(|| S::Error::custom("missing compatibility summary"))?;
+        let mut map = serializer.serialize_map(Some(6))?;
+        map.serialize_entry("contract_lineage", &descriptor.contract_lineage)?;
+        map.serialize_entry("contract_version", &descriptor.contract_version.to_string())?;
+        map.serialize_entry("bundle_hash", &LowerHex(&descriptor.bundle_hash))?;
+        map.serialize_entry("source_hash", &LowerHex(&descriptor.source_hash))?;
+        map.serialize_entry("plan_root_hash", &LowerHex(&descriptor.plan_root_hash))?;
+        map.serialize_entry("compatibility", &CompatibilitySummaryDto(compatibility))?;
+        map.end()
+    }
+}
+
+struct CompatibilitySummaryDto<'a>(&'a v1::ContractCompatibilitySummary);
+
+impl Serialize for CompatibilitySummaryDto<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let summary = self.0;
+        let overall = match v1::ContractCompatibilityClass::try_from(summary.overall) {
+            Ok(v1::ContractCompatibilityClass::Compatible) => "compatible",
+            Ok(v1::ContractCompatibilityClass::RequiresExplicitVersion) => {
+                "requires_explicit_version"
+            }
+            Ok(v1::ContractCompatibilityClass::Incompatible) => "incompatible",
+            _ => return Err(S::Error::custom("invalid compatibility class")),
+        };
+        let mut map = serializer.serialize_map(None)?;
+        if let Some(version) = summary.parent_contract_version {
+            map.serialize_entry("parent_contract_version", &version.to_string())?;
+        }
+        if let Some(hash) = summary.parent_bundle_hash.as_deref() {
+            map.serialize_entry("parent_bundle_hash", &LowerHex(hash))?;
+        }
+        map.serialize_entry("overall", overall)?;
+        map.serialize_entry(
+            "code_counts",
+            &CompatibilityCodeCounts(&summary.code_counts),
+        )?;
+        map.end()
+    }
+}
+
+struct CompatibilityCodeCounts<'a>(&'a [v1::ContractCompatibilityCodeCount]);
+
+impl Serialize for CompatibilityCodeCounts<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for count in self.0 {
+            sequence.serialize_element(&CompatibilityCodeCountDto(count))?;
+        }
+        sequence.end()
+    }
+}
+
+struct CompatibilityCodeCountDto<'a>(&'a v1::ContractCompatibilityCodeCount);
+
+impl Serialize for CompatibilityCodeCountDto<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry("code", &self.0.code)?;
+        map.serialize_entry("count", &self.0.count)?;
+        map.end()
+    }
+}
+
+#[derive(Serialize)]
 struct ExpectedVersionMismatch<'a> {
     status: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2081,6 +2191,8 @@ impl<'a> MaintenanceOperationDto<'a> {
 #[derive(Serialize)]
 struct PreBootstrapHealth<'a> {
     status: &'a str,
+    database: &'a str,
+    audience: &'a str,
     lifecycle: &'a str,
     liveness: bool,
     readiness: bool,
@@ -2089,6 +2201,8 @@ struct PreBootstrapHealth<'a> {
 #[derive(Serialize)]
 struct AuthenticatedHealth<'a> {
     status: &'a str,
+    database: &'a str,
+    audience: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     active_contract_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2306,6 +2420,8 @@ mod tests {
         "contract.deploy.expected_version_mismatch_absent.jsonl",
         "contract.deploy.expected_version_mismatch_present.jsonl",
         "contract.deploy.bundle_conflict.jsonl",
+        "contract.deploy.invalid_syntax.jsonl",
+        "contract.deploy.incompatible_candidate.jsonl",
         "command.execute.committed.jsonl",
         "command.execute.replayed.jsonl",
         "command.execute.executed_read_only.jsonl",
@@ -2405,7 +2521,7 @@ mod tests {
             );
             covered.insert(name);
         }
-        assert_eq!(covered.len(), 98);
+        assert_eq!(covered.len(), 100);
     }
 
     #[test]
@@ -2506,6 +2622,33 @@ mod tests {
                     })
                 }
                 "bundle_conflict" => Result::BundleConflict(v1::Unit {}),
+                "invalid_syntax" => {
+                    use v1::compilation_diagnostics::Diagnostics;
+                    Result::InvalidSource(v1::CompilationDiagnostics {
+                        diagnostics: Some(Diagnostics::Syntax(v1::SyntaxDiagnosticList {
+                            diagnostics: result["diagnostics"]
+                                .as_array()
+                                .expect("syntax diagnostics")
+                                .iter()
+                                .map(|diagnostic| v1::SyntaxDiagnostic {
+                                    code: text(diagnostic, "code"),
+                                    summary: text(diagnostic, "summary"),
+                                    help: optional_text(diagnostic, "help"),
+                                    span: Some(span(&diagnostic["span"])),
+                                    expected: diagnostic["expected"]
+                                        .as_array()
+                                        .expect("expected tokens")
+                                        .iter()
+                                        .map(|value| value.as_str().expect("token").to_owned())
+                                        .collect(),
+                                })
+                                .collect(),
+                        })),
+                    })
+                }
+                "incompatible_candidate" => Result::IncompatibleCandidate(
+                    contract_descriptor_with_compatibility(&result["contract"]),
+                ),
                 _ => panic!("unexpected deployment status {status}"),
             };
             return render_contract_deploy(&v1::DeployContractResponse {
@@ -2878,6 +3021,38 @@ mod tests {
         }
     }
 
+    fn contract_descriptor_with_compatibility(value: &JsonValue) -> v1::ContractDescriptor {
+        let mut descriptor = contract_descriptor(value);
+        let compatibility = &value["compatibility"];
+        descriptor.compatibility = Some(v1::ContractCompatibilitySummary {
+            parent_contract_version: optional_u64_string(compatibility, "parent_contract_version"),
+            parent_bundle_hash: compatibility
+                .get("parent_bundle_hash")
+                .map(|_| hex_bytes(compatibility, "parent_bundle_hash")),
+            overall: match compatibility["overall"]
+                .as_str()
+                .expect("compatibility class")
+            {
+                "compatible" => v1::ContractCompatibilityClass::Compatible as i32,
+                "requires_explicit_version" => {
+                    v1::ContractCompatibilityClass::RequiresExplicitVersion as i32
+                }
+                "incompatible" => v1::ContractCompatibilityClass::Incompatible as i32,
+                value => panic!("unknown compatibility class {value}"),
+            },
+            code_counts: compatibility["code_counts"]
+                .as_array()
+                .expect("compatibility code counts")
+                .iter()
+                .map(|count| v1::ContractCompatibilityCodeCount {
+                    code: text(count, "code"),
+                    count: u32_number(count, "count"),
+                })
+                .collect(),
+        });
+        descriptor
+    }
+
     fn value(value: &JsonValue) -> v1::Value {
         let kind = match value["type"].as_str().expect("value type") {
             "null" => v1::value::Kind::NullValue(v1::NullValue::NullValue as i32),
@@ -3205,6 +3380,11 @@ mod tests {
         };
         v1::HealthResponse {
             result: Some(result),
+            database_alias: value["database"].as_str().unwrap_or("default").to_owned(),
+            authentication_audience: value["audience"]
+                .as_str()
+                .unwrap_or("riffdb-grpc-loopback")
+                .to_owned(),
         }
     }
 
@@ -3370,6 +3550,8 @@ mod tests {
                     readiness: false,
                 },
             )),
+            database_alias: "default".to_owned(),
+            authentication_audience: "riffdb-grpc-loopback".to_owned(),
         };
         assert_fixture(
             &render_health(&health),
