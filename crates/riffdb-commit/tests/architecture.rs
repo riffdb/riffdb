@@ -1428,8 +1428,8 @@ fn reviewed_tokio_owner_and_lock_graph_are_frozen() {
             "riffdb-api-grpc",
             "riffdb-api-mcp",
             "riffdb-cli",
-            // Python native driver: reviewed with ADR-0074 (accepted); runtime
-            // ownership mirrors riffdb-client-rust's transport requirements.
+            // Python extension: bridges Python awaitables onto the same
+            // current first-party Tokio runtime as the Rust client.
             "riffdb-client-python-native",
             // Client: `time` only for non-blocking Overloaded backoff (already
             // transitive via tonic; see riffdb-client-rust Cargo.toml comment).

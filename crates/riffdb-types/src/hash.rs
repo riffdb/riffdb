@@ -10,9 +10,9 @@ use crate::{
     ApplicationRoleHash, ApplicationSourceHash, CanonicalInputHash, CanonicalValueHash,
     CapabilityTokenDigest, ConflictKeyHash, ContractBundleHash, ContractPlanRootHash, DigestKey,
     DigestKeyId, EntityKeyHash, EntityRecordHash, EventHash, GeneratedArtifactHash,
-    OfflineMaintenanceInputHash, PartitionKeyHash, PlanHash, ProjectionApplyHash,
-    ProjectionPlanHash, QueryModuleHash, QueryParameterHash, QueryPlanHash, QuerySourceHash,
-    SchemaHash, SourceHash,
+    MigrationBundleHash, MigrationSourceHash, OfflineMaintenanceInputHash, PartitionKeyHash,
+    PlanHash, ProjectionApplyHash, ProjectionPlanHash, QueryModuleHash, QueryParameterHash,
+    QueryPlanHash, QuerySourceHash, SchemaHash, SourceHash,
 };
 
 /// Hash framing and algorithm scheme defined by ADR-0011.
@@ -28,8 +28,12 @@ pub enum HashDomain {
     CanonicalValue,
     /// Canonical contract source.
     Source,
+    /// Exact migration source document.
+    MigrationSource,
     /// Canonical contract bundle.
     ContractBundle,
+    /// Canonical compiled migration bundle.
+    MigrationBundle,
     /// Executable command plan.
     Plan,
     /// Validated projection plan.
@@ -80,10 +84,12 @@ pub enum HashDomain {
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 28] = [
         Self::CanonicalValue,
         Self::Source,
+        Self::MigrationSource,
         Self::ContractBundle,
+        Self::MigrationBundle,
         Self::Plan,
         Self::ProjectionPlan,
         Self::QueryPlan,
@@ -114,7 +120,9 @@ impl HashDomain {
         match self {
             Self::CanonicalValue => "riffdb.canonical-value/v1",
             Self::Source => "riffdb.source/v1",
+            Self::MigrationSource => "riffdb.migration-source/v1",
             Self::ContractBundle => "riffdb.contract-bundle/v1",
+            Self::MigrationBundle => "riffdb.migration-bundle/v1",
             Self::Plan => "riffdb.plan/v1",
             Self::ProjectionPlan => "riffdb.projection-plan/v1",
             Self::QueryPlan => "riffdb.query-plan/v1",
@@ -290,10 +298,22 @@ typed_hash_function!(
     SourceHash
 );
 typed_hash_function!(
+    /// Hashes one exact migration source document in its immutable v1 domain.
+    hash_migration_source,
+    MigrationSource,
+    MigrationSourceHash
+);
+typed_hash_function!(
     /// Hashes an immutable contract bundle in its v1 domain.
     hash_contract_bundle,
     ContractBundle,
     ContractBundleHash
+);
+typed_hash_function!(
+    /// Hashes one canonical compiled migration bundle in its immutable v1 domain.
+    hash_migration_bundle,
+    MigrationBundle,
+    MigrationBundleHash
 );
 typed_hash_function!(
     /// Hashes an executable command plan in its immutable v1 domain.

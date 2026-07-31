@@ -47,6 +47,10 @@ pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
+// The second word cannot be a valid following source-name length. Keeping the
+// extension magic eight bytes wide prevents a future stable event ID equal to
+// the first word from being misread as a partition extension.
+const EVENT_PARTITION_SCHEMA_EXTENSION: u64 = 0xffff_fffc_ffff_ffff;
 /// Immutable stable-ID lineage-ledger format version.
 pub const LINEAGE_LEDGER_VERSION_V1: u32 = 1;
 /// Maximum canonical bundle bytes below the durable envelope limit.
@@ -1929,7 +1933,16 @@ fn encode_event_schema(
     if include_display_names {
         writer.string(event.name())?;
     }
-    encode_record_schema(writer, event.payload())
+    encode_record_schema(writer, event.payload())?;
+    if let Some(partition) = event.partition() {
+        writer.u64(EVENT_PARTITION_SCHEMA_EXTENSION)?;
+        writer.u32(partition.fields().len() as u32)?;
+        for field in partition.fields() {
+            writer.u32(field.get())?;
+        }
+        encode_key_schema(writer, partition.key_schema())?;
+    }
+    Ok(())
 }
 
 fn encode_aggregate_schema(
@@ -2087,7 +2100,7 @@ fn encode_key_schema(writer: &mut Writer, schema: &KeySchema) -> Result<(), IrVa
     Ok(())
 }
 
-fn encode_expression_arena(
+pub(crate) fn encode_expression_arena(
     writer: &mut Writer,
     arena: &ExpressionArena,
 ) -> Result<(), IrValidationError> {
@@ -2917,11 +2930,22 @@ fn decode_entity_schema(reader: &mut Reader<'_>) -> Result<EntitySchema, IrValid
 }
 
 fn decode_event_schema(reader: &mut Reader<'_>) -> Result<EventSchema, IrValidationError> {
-    EventSchema::new(
-        decode_event_id(reader)?,
-        reader.string(256)?,
-        decode_record_schema(reader)?,
-    )
+    let id = decode_event_id(reader)?;
+    let name = reader.string(256)?;
+    let payload = decode_record_schema(reader)?;
+    if reader.remaining() >= 8 && reader.peek_u64()? == EVENT_PARTITION_SCHEMA_EXTENSION {
+        let _marker = reader.u64()?;
+        let field_count = decode_len(reader, "event partition fields", 1_024)?;
+        let mut fields = Vec::with_capacity(field_count);
+        for _ in 0..field_count {
+            fields.push(decode_field_id(reader)?);
+        }
+        let key_schema = decode_key_schema(reader, 0)?;
+        let partition = crate::EventPartitionSchema::new(fields, key_schema, &payload)?;
+        EventSchema::partitioned(id, name, payload, partition)
+    } else {
+        EventSchema::new(id, name, payload)
+    }
 }
 
 fn decode_enum_schema(reader: &mut Reader<'_>) -> Result<EnumSchema, IrValidationError> {
@@ -3161,7 +3185,9 @@ fn decode_key_schema(
     Ok(schema)
 }
 
-fn decode_expression_arena(reader: &mut Reader<'_>) -> Result<ExpressionArena, IrValidationError> {
+pub(crate) fn decode_expression_arena(
+    reader: &mut Reader<'_>,
+) -> Result<ExpressionArena, IrValidationError> {
     let count =
         decode_len_with_minimum(reader, "expression arena", crate::MAX_EXPRESSION_NODES, 2)?;
     let mut nodes = Vec::with_capacity(count);
@@ -4122,6 +4148,7 @@ fn decode_compatibility_class(tag: u8) -> Result<CompatibilityClass, IrValidatio
         compatibility_tag::REQUIRES_EXPLICIT_VERSION => {
             Ok(CompatibilityClass::RequiresExplicitVersion)
         }
+        compatibility_tag::REQUIRES_MIGRATION => Ok(CompatibilityClass::RequiresMigration),
         compatibility_tag::INCOMPATIBLE => Ok(CompatibilityClass::Incompatible),
         tag => Err(IrValidationError::UnknownTag {
             kind: "compatibility class",
@@ -4170,6 +4197,39 @@ mod tests {
             CompatibilityReport::genesis(),
         )
         .expect("bundle")
+    }
+
+    #[test]
+    fn event_partition_magic_cannot_alias_the_next_stable_event_id() {
+        let marker_id = EventTypeId::new(0xffff_fffc).expect("nonzero marker-shaped event ID");
+        let next_id = EventTypeId::first();
+        let marker_shaped = EventSchema::new(
+            marker_id,
+            "MarkerShaped",
+            RecordSchema::new(RecordTypeRef::Event(marker_id), vec![]).expect("payload"),
+        )
+        .expect("event");
+        let next = EventSchema::new(
+            next_id,
+            "Next",
+            RecordSchema::new(RecordTypeRef::Event(next_id), vec![]).expect("payload"),
+        )
+        .expect("event");
+        let mut writer = Writer::new(256);
+        encode_event_schema(&mut writer, &next, true).expect("first event");
+        encode_event_schema(&mut writer, &marker_shaped, true).expect("second event");
+        let bytes = writer.finish();
+        let mut reader = Reader::new(&bytes);
+
+        assert_eq!(
+            decode_event_schema(&mut reader).expect("unpartitioned first event"),
+            next
+        );
+        assert_eq!(
+            decode_event_schema(&mut reader).expect("following event"),
+            marker_shaped
+        );
+        assert_eq!(reader.remaining(), 0);
     }
 
     #[test]

@@ -11,8 +11,9 @@ use riffdb_storage_api::{
 use riffdb_types::{
     AdministrationSequence, CapabilityId, CapabilityTokenDigest, CommitSequence,
     ContractBundleHash, ContractLineage, ContractVersion, DIGEST_SCHEME_V1, DigestKeyId, EntityKey,
-    EventId, IndexEntryKey, IndexId, MAX_CONTRACT_LINEAGE_BYTES, PartitionKey, ProjectionApplyKey,
-    ProjectionFrontierKey, ProjectionGroupKey, ProvenanceId, QueryModuleHash, RequestId,
+    EventId, IndexEntryKey, IndexId, MAX_CONTRACT_LINEAGE_BYTES, PartitionKey, PartitionKeyHash,
+    ProjectionApplyKey, ProjectionFrontierKey, ProjectionGroupKey, ProvenanceId, QueryModuleHash,
+    RequestId,
 };
 
 pub(crate) const SINGLETON_KEY: [u8; 1] = [0x01];
@@ -20,6 +21,7 @@ pub(crate) const SINGLETON_KEY: [u8; 1] = [0x01];
 const U64_KEY_BYTES: usize = 8;
 const UUID_KEY_BYTES: usize = 16;
 const EVENT_KEY_BYTES: usize = 12;
+const EVENT_ROUTE_KEY_BYTES: usize = 32 + EVENT_KEY_BYTES;
 const CAPABILITY_KEY_BYTES: usize = 1 + UUID_KEY_BYTES;
 const CAPABILITY_TOKEN_KEY_BYTES: usize = 1 + 1 + 4 + 32;
 const AUDIT_KEY_BYTES: usize = 1 + U64_KEY_BYTES;
@@ -86,6 +88,35 @@ pub(crate) fn decode_event_key(bytes: &[u8]) -> Result<EventId, PhysicalKeyError
     let event_id = EventId::from_be_bytes(encoded).ok_or(PhysicalKeyError::InvalidComponent)?;
     require_canonical(bytes, &encode_event_key(event_id))?;
     Ok(event_id)
+}
+
+pub(crate) fn encode_event_route_key(
+    partition_hash: PartitionKeyHash,
+    event_id: EventId,
+) -> [u8; EVENT_ROUTE_KEY_BYTES] {
+    let mut encoded = [0_u8; EVENT_ROUTE_KEY_BYTES];
+    encoded[..32].copy_from_slice(partition_hash.as_bytes());
+    encoded[32..].copy_from_slice(&event_id.to_be_bytes());
+    encoded
+}
+
+pub(crate) fn decode_event_route_key(
+    bytes: &[u8],
+) -> Result<(PartitionKeyHash, EventId), PhysicalKeyError> {
+    let encoded = exact_array::<EVENT_ROUTE_KEY_BYTES>(bytes)?;
+    let partition_hash = PartitionKeyHash::from_bytes(
+        encoded[..32]
+            .try_into()
+            .map_err(|_| PhysicalKeyError::InvalidLength)?,
+    );
+    let event_id = EventId::from_be_bytes(
+        encoded[32..]
+            .try_into()
+            .map_err(|_| PhysicalKeyError::InvalidLength)?,
+    )
+    .ok_or(PhysicalKeyError::InvalidComponent)?;
+    require_canonical(bytes, &encode_event_route_key(partition_hash, event_id))?;
+    Ok((partition_hash, event_id))
 }
 
 pub(crate) const fn encode_singleton_key() -> [u8; 1] {
@@ -510,6 +541,19 @@ mod tests {
         assert_eq!(encode_event_key(event).as_slice(), expected_event);
         assert_eq!(decode_event_key(&expected_event), Ok(event));
 
+        let partition_hash = PartitionKeyHash::from_bytes([0xa5; 32]);
+        let mut expected_route = [0_u8; 44];
+        expected_route[..32].fill(0xa5);
+        expected_route[32..].copy_from_slice(&expected_event);
+        assert_eq!(
+            encode_event_route_key(partition_hash, event),
+            expected_route
+        );
+        assert_eq!(
+            decode_event_route_key(&expected_route),
+            Ok((partition_hash, event))
+        );
+
         assert_eq!(encode_singleton_key(), [0x01]);
         assert_eq!(decode_singleton_key(&[0x01]), Ok(()));
     }
@@ -662,6 +706,14 @@ mod tests {
         assert_eq!(
             decode_event_key(&[0; 12]),
             Err(PhysicalKeyError::InvalidComponent)
+        );
+        assert_eq!(
+            decode_event_route_key(&[0; 44]),
+            Err(PhysicalKeyError::InvalidComponent)
+        );
+        assert_eq!(
+            decode_event_route_key(&[0; 45]),
+            Err(PhysicalKeyError::InvalidLength)
         );
         assert_eq!(
             decode_provenance_key(&[0; 16]),

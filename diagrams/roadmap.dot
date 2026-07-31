@@ -6,6 +6,9 @@ digraph G {
   p0 [label="P0 — Executable semantics\nDSL • typed IR • checked projection schema • storage semantics • deterministic runtime", fillcolor="#EEF5F7"];
   p1 [label="P1 — Durable standalone POC\ndurable/public schema freezes • V1-to-V2 index migration • commit • recovery • idempotency\nprovenance • audit • atomic outbox intent • gRPC • Rust SDK • CLI", fillcolor="#E4F0F2"];
   p2 [label="P2 / POC exit — Native agent and derived-system proof\nMCP • outbox dispatch • projection identities/generations/frontiers • public offline backup/restore\nchecksummed receipt recovery • final server composition • integrated recovery", fillcolor="#CFE6E8", penwidth=2.0];
+  p3p6 [label="P3–P6 — Application platform and public handbook\nRiffQL • named authority • generated Rust/TypeScript/Python clients • multi-database operation • verified docs", fillcolor="#DCEFF0"];
+  p7 [label="P7 — Robust offline contract migration (planned)\nexact .riffm artifacts • selected-database staging • immutable history • atomic publish/rollback", fillcolor="#FFF7E8", penwidth=2.0];
+  p8 [label="P8 — Reactive applications (planned)\npartitioned events • durable consumers • live RiffQL • contextual agent work", fillcolor="#E9F4FF", penwidth=2.0];
   evidence [label="Cross-stage budget comparison evidence\nPostgreSQL baseline → service parity → public SDK runner → safety counterexamples\nredb/Fjall semantic and benchmark comparison", style="rounded,filled,dashed", fillcolor="#FAFAFA"];
   a [label="Single-node alpha\ncontinued format evolution • hardened backup/restore • remote auth • generated clients"];
   b [label="Replicated beta\nRaft • snapshots • failover • unchanged command semantics"];
@@ -17,7 +20,10 @@ digraph G {
   p0 -> evidence [style=dashed, label="start after compiler", constraint=false];
   p1 -> evidence [style=dashed, label="add public adapters", constraint=false];
   evidence -> p2 [style=dashed, label="correctness + benchmark input", constraint=false];
-  p2 -> a [label="POC evidence"];
+  p2 -> p3p6 [label="application proof"];
+  p3p6 -> p7 [label="migration ADR + recovery gate"];
+  p7 -> p8 [label="format boundary"];
+  p8 -> a [label="reactive evidence"];
   a -> b [label="operational gate"];
   b -> c [label="failure gate"];
   c -> post [style=dashed, label="explicit research tracks"];

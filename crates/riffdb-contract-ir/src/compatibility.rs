@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Closed compatibility classes from least to most restrictive.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(u8)]
 pub enum CompatibilityClass {
     /// Safe under the active POC additive policy.
@@ -28,6 +28,31 @@ pub enum CompatibilityClass {
         crate::format_registry::compatibility_class::REQUIRES_EXPLICIT_VERSION,
     /// Not activatable under the POC policy.
     Incompatible = crate::format_registry::compatibility_class::INCOMPATIBLE,
+    /// Requires an exact checked migration bundle and exclusive migration operation.
+    RequiresMigration = crate::format_registry::compatibility_class::REQUIRES_MIGRATION,
+}
+
+impl CompatibilityClass {
+    const fn severity(self) -> u8 {
+        match self {
+            Self::Compatible => 1,
+            Self::RequiresExplicitVersion => 2,
+            Self::RequiresMigration => 3,
+            Self::Incompatible => 4,
+        }
+    }
+}
+
+impl Ord for CompatibilityClass {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.severity().cmp(&other.severity())
+    }
+}
+
+impl PartialOrd for CompatibilityClass {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// Stable compatibility finding codes.
@@ -56,6 +81,18 @@ pub enum CompatibilityCode {
     AddedOptionalOutcomeField,
     /// Added variant to an existing enum, requiring explicit version selection.
     AddedEnumVariant,
+    /// Added required field requiring deterministic backfill.
+    AddedRequiredField,
+    /// Added index requiring historical construction.
+    AddedIndex,
+    /// Added relationship requiring validation over existing state.
+    AddedRelationship,
+    /// Added uniqueness rule requiring validation over existing state.
+    AddedUniqueConstraint,
+    /// Added invariant requiring validation over existing state.
+    AddedInvariant,
+    /// Added projection requiring historical backfill.
+    ProjectionBackfill,
     /// Removed stable identity.
     RemovedIdentity,
     /// Attempted tombstone resurrection.
@@ -85,7 +122,7 @@ pub enum CompatibilityCode {
 }
 
 impl CompatibilityCode {
-    pub(crate) const ALL: [Self; 24] = [
+    pub(crate) const ALL: [Self; 30] = [
         Self::NoSemanticChange,
         Self::AddedCommand,
         Self::AddedEvent,
@@ -97,6 +134,12 @@ impl CompatibilityCode {
         Self::AddedOutcome,
         Self::AddedOptionalOutcomeField,
         Self::AddedEnumVariant,
+        Self::AddedRequiredField,
+        Self::AddedIndex,
+        Self::AddedRelationship,
+        Self::AddedUniqueConstraint,
+        Self::AddedInvariant,
+        Self::ProjectionBackfill,
         Self::RemovedIdentity,
         Self::TombstoneResurrection,
         Self::IdReuse,
@@ -138,6 +181,9 @@ impl CompatibilityCode {
             }
             crate::format_registry::compatibility_class::REQUIRES_EXPLICIT_VERSION => {
                 CompatibilityClass::RequiresExplicitVersion
+            }
+            crate::format_registry::compatibility_class::REQUIRES_MIGRATION => {
+                CompatibilityClass::RequiresMigration
             }
             crate::format_registry::compatibility_class::INCOMPATIBLE => {
                 CompatibilityClass::Incompatible
@@ -535,7 +581,12 @@ pub fn compare_successor(
         &compatible_schema,
         &mut findings,
     )?;
-    compare_projections(parent.projections(), next.projections, &mut findings);
+    compare_projections(
+        parent.projections(),
+        next.projections,
+        parent.schema(),
+        &mut findings,
+    );
     CompatibilityReport::successor(
         findings
             .into_iter()
@@ -569,6 +620,7 @@ fn compare_schema(
             entity.record(),
             &path,
             CompatibilityCode::AddedOptionalField,
+            CompatibilityCode::AddedRequiredField,
             findings,
         ) {
             compatible.optional_entities.insert(entity.id());
@@ -587,7 +639,7 @@ fn compare_schema(
         for index in entity.indexes() {
             let index_path = format!("{path}/index:{}", index.id().get());
             match old_indexes.get(&index.id()) {
-                None => add(findings, CompatibilityCode::UnsupportedAddition, index_path),
+                None => add(findings, CompatibilityCode::AddedIndex, index_path),
                 Some(old) if *old != index => {
                     add(findings, CompatibilityCode::KeyLayoutChange, index_path);
                 }
@@ -606,15 +658,21 @@ fn compare_schema(
             event.payload(),
             &path,
             CompatibilityCode::AddedOptionalField,
+            CompatibilityCode::UnsupportedAddition,
             findings,
         );
-        if old != event {
-            if old.name() == event.name() && only_optional_additions(old.payload(), event.payload())
-            {
-                compatible.optional_events.insert(event.id());
-            } else {
-                add(findings, CompatibilityCode::EventChange, path);
-            }
+        let partition_compatible = match (old.partition(), event.partition()) {
+            (None, None | Some(_)) => true,
+            (Some(old), Some(next)) => old == next,
+            (Some(_), None) => false,
+        };
+        if old.name() != event.name()
+            || !partition_compatible
+            || !only_optional_additions(old.payload(), event.payload())
+        {
+            add(findings, CompatibilityCode::EventChange, path);
+        } else if old.payload() != event.payload() {
+            compatible.optional_events.insert(event.id());
         }
     }
     for enumeration in next.enums() {
@@ -702,7 +760,12 @@ fn compare_schema(
                     .added_entities
                     .contains(&relationship.target_entity()) => {}
             Some(old) if *old == *relationship => {}
-            None | Some(_) => add(
+            None => add(
+                findings,
+                CompatibilityCode::AddedRelationship,
+                format!("entity:{}", key.0.get()),
+            ),
+            Some(_) => add(
                 findings,
                 CompatibilityCode::InvariantChange,
                 format!("entity:{}", key.0.get()),
@@ -732,7 +795,12 @@ fn compare_schema(
         match parent_unique.get(key) {
             None if compatible.added_entities.contains(&unique.source_entity()) => {}
             Some(old) if *old == *unique => {}
-            None | Some(_) => add(
+            None => add(
+                findings,
+                CompatibilityCode::AddedUniqueConstraint,
+                format!("entity:{}", key.0.get()),
+            ),
+            Some(_) => add(
                 findings,
                 CompatibilityCode::InvariantChange,
                 format!("entity:{}", key.0.get()),
@@ -764,7 +832,7 @@ fn compare_invariants(
     for invariant in next {
         let path = format!("{owner_path}/invariant:{}", invariant.id().get());
         match old.get(&invariant.id()) {
-            None => add(findings, CompatibilityCode::UnsupportedAddition, path),
+            None => add(findings, CompatibilityCode::AddedInvariant, path),
             Some(old) if *old != invariant => {
                 add(findings, CompatibilityCode::InvariantChange, path);
             }
@@ -778,6 +846,7 @@ fn compare_optional_record_additions(
     next: &RecordSchema,
     owner_path: &str,
     optional_code: CompatibilityCode,
+    required_code: CompatibilityCode,
     findings: &mut BTreeSet<(CompatibilityCode, String)>,
 ) -> bool {
     let old_fields = parent
@@ -793,7 +862,7 @@ fn compare_optional_record_additions(
                 optional_added = true;
                 add(findings, optional_code, path);
             }
-            None => add(findings, CompatibilityCode::UnsupportedAddition, path),
+            None => add(findings, required_code, path),
             Some(old) if old != &field => {
                 let code = if old.value_type() != field.value_type() {
                     CompatibilityCode::TypeChange
@@ -849,6 +918,7 @@ fn compare_commands(
             command.input().record(),
             &format!("{path}/input"),
             CompatibilityCode::AddedOptionalField,
+            CompatibilityCode::UnsupportedAddition,
             findings,
         );
         if old.idempotency_input() != command.idempotency_input() {
@@ -898,6 +968,7 @@ fn compare_outcomes(
             outcome.payload(),
             &path,
             CompatibilityCode::AddedOptionalOutcomeField,
+            CompatibilityCode::OutcomeChange,
             findings,
         );
         if old.name() != outcome.name() {
@@ -1485,6 +1556,7 @@ fn expression_trees_equal(
 fn compare_projections(
     parent: &[ProjectionPlan],
     next: &[ProjectionPlan],
+    parent_schema: &SchemaIr,
     findings: &mut BTreeSet<(CompatibilityCode, String)>,
 ) {
     let old = parent
@@ -1494,7 +1566,15 @@ fn compare_projections(
     for projection in next {
         let path = format!("projection:{}", projection.projection_id().get());
         let Some(parent) = old.get(&projection.projection_id()).copied() else {
-            add(findings, CompatibilityCode::AddedProjection, path);
+            add(
+                findings,
+                if parent_schema.event(projection.source_event()).is_some() {
+                    CompatibilityCode::ProjectionBackfill
+                } else {
+                    CompatibilityCode::AddedProjection
+                },
+                path,
+            );
             continue;
         };
         if parent.source_event() != projection.source_event()

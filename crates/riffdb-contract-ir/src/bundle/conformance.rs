@@ -275,7 +275,8 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "indexes",
             ],
         ),
-        ("EventSchema", vec!["id", "name", "payload"]),
+        ("EventSchema", vec!["id", "name", "payload", "partition"]),
+        ("EventPartitionSchema", vec!["fields", "key_schema"]),
         ("EnumSchema", vec!["id", "name", "variants"]),
         ("EnumVariantSchema", vec!["id", "name"]),
         (
@@ -496,6 +497,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ("UniqueKeySchema", "uniqueness compiler fixture"),
         ("EntitySchema", "command schema closure fixture"),
         ("EventSchema", "projection source fixture"),
+        ("EventPartitionSchema", "partitioned event fixture"),
         ("EnumSchema", "enum closure fixture"),
         ("EnumVariantSchema", "enum closure fixture"),
         ("AggregateSchema", "command schema closure fixture"),

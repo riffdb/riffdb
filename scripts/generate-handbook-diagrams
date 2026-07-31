@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+mode="${1:---check}"
+case "$mode" in
+    --check|--write) ;;
+    *) printf 'usage: %s [--check|--write]\n' "$0" >&2; exit 2 ;;
+esac
+
+command -v dot >/dev/null || {
+    printf 'Graphviz dot is required to generate handbook diagrams\n' >&2
+    exit 1
+}
+
+sources=(
+    "diagrams/poc_architecture.dot"
+    "diagrams/command_sequence.dot"
+)
+outputs=(
+    "docs/assets/poc-architecture.svg"
+    "docs/assets/command-sequence.svg"
+)
+
+for index in "${!sources[@]}"; do
+    source_path="${sources[$index]}"
+    output_path="${outputs[$index]}"
+    source_hash="$(sha256sum "$source_path" | cut -d ' ' -f 1)"
+    marker="riffdb-dot-sha256:$source_hash"
+
+    if [[ "$mode" == "--check" ]]; then
+        if [[ ! -f "$output_path" ]] || ! grep -Fq "$marker" "$output_path"; then
+            printf 'stale handbook diagram: %s (source %s)\n' "$output_path" "$source_path" >&2
+            exit 1
+        fi
+        continue
+    fi
+
+    mkdir -p "$(dirname "$output_path")"
+    rendered="$(mktemp)"
+    final="$(mktemp)"
+    trap 'rm -f "$rendered" "$final"' EXIT
+    dot -Tsvg "$source_path" -o "$rendered"
+    awk -v marker="$marker" 'NR == 2 { print "<!-- " marker " -->" } { print }' "$rendered" >"$final"
+    mv "$final" "$output_path"
+    rm -f "$rendered"
+    trap - EXIT
+done
+
+printf 'Handbook diagrams are %s.\n' "$([[ "$mode" == "--check" ]] && printf current || printf generated)"

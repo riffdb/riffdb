@@ -64,6 +64,12 @@ active version and must compare against the exact expected active version.
 Version numbers alone do not establish compatibility; the compiler compares
 the checked successor with the active bundle.
 
+For application source trees, `application lock --write` obtains that exact
+parent through the authorized read-only candidate preview. The resulting lock
+pins both the parent identity and `generated/riffdb.contract.bundle`. Never
+manufacture a successor lock with an offline genesis compile or copy a hash
+from an error.
+
 The pre-alpha compatibility classes are:
 
 | Successor change | Classification |
@@ -73,7 +79,9 @@ The pre-alpha compatibility classes are:
 | Add an aggregate whose root and children are all new in this successor | Compatible |
 | Add a relationship or unique constraint confined to new entities | Compatible |
 | Append a fresh variant to an existing enum | Requires explicit version |
-| Add a field, key part, index, invariant, relationship, or unique constraint to an existing entity | Incompatible |
+| Add an optional field to an existing entity | Compatible |
+| Add a required field, index, invariant, relationship, or unique constraint to an existing entity | Requires migration |
+| Add a projection over existing authoritative state | Requires migration |
 | Change or remove an existing declaration, type, key, variant, constraint, aggregate membership, partition rule, or conflict rule | Incompatible |
 
 The complete initial definition of a newly added entity or aggregate is
@@ -105,3 +113,17 @@ but incompatible successor returns `incompatible_candidate` with its parent,
 overall compatibility class, and stable compatibility-code counts. Neither
 result activates the candidate. Do not work around incompatibility by
 reusing stable IDs or editing the active database file.
+
+A valid successor that needs existing state to be checked or transformed
+returns `migration_required`. Use Application Source V3, a parent-specific
+`.riffm` proof, Application Lock V4, and the read-only plan described in
+[Contract Migrations](MIGRATIONS.md). Planning is implemented before runtime
+migration and therefore cannot activate that successor yet.
+
+`contract deploy` is a mutating operator command, not a compatibility probe.
+There is no contract rollback RPC. Use `contract validate` for source-only
+validation or `application lock --write` for an exact read-only successor
+preview, then review the lock before `application deploy`. If a direct deploy
+activates an unwanted successor, stop the service and follow the documented
+offline backup/restore or disposable pre-alpha reset procedure; do not deploy
+another probe hoping to undo it.

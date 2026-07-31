@@ -148,6 +148,36 @@ tag_registry!(compatibility_class, "Compatibility class", {
     COMPATIBLE = 0x01 => "compatible",
     REQUIRES_EXPLICIT_VERSION = 0x02 => "explicit version",
     INCOMPATIBLE = 0x03 => "incompatible",
+    REQUIRES_MIGRATION = 0x04 => "migration required",
+});
+tag_registry!(migration_step, "Migration step", {
+    RENAME_IDENTITY = 0x01 => "rename identity",
+    RETIRE_IDENTITY = 0x02 => "retire identity",
+    SET_FIELD = 0x03 => "set field",
+    REPLACE_FIELD = 0x04 => "replace field",
+    REQUIRE_ENTITY = 0x05 => "require entity",
+    REKEY_ENTITY = 0x06 => "rekey entity",
+    MAP_ENUM = 0x07 => "map enum",
+    REBUILD_INDEX = 0x08 => "rebuild index",
+    VALIDATE_RELATIONSHIP = 0x09 => "validate relationship",
+    VALIDATE_UNIQUE = 0x0a => "validate unique",
+    VALIDATE_INVARIANT = 0x0b => "validate invariant",
+    REBUILD_PROJECTION = 0x0c => "rebuild projection",
+    ACKNOWLEDGE_REPARTITION = 0x0d => "acknowledge repartition",
+    ACKNOWLEDGE_AGGREGATE = 0x0e => "acknowledge aggregate",
+    ACKNOWLEDGE_CONFLICT = 0x0f => "acknowledge conflict",
+});
+tag_registry!(migration_conversion, "Migration conversion", {
+    IDENTITY = 0x01 => "identity",
+    WRAP_OPTIONAL = 0x02 => "wrap optional",
+    ASSERT_UNWRAP_OPTIONAL = 0x03 => "assert unwrap optional",
+    CHECKED_I64_TO_U64 = 0x04 => "checked i64 to u64",
+    CHECKED_U64_TO_I64 = 0x05 => "checked u64 to i64",
+    EXACT_DECIMAL = 0x06 => "exact decimal",
+    ASSERT_BOUNDED_NARROW = 0x07 => "assert bounded narrow",
+    LIST_ELEMENTS = 0x08 => "list elements",
+    UUID_TO_STRING = 0x09 => "UUID to string",
+    STRING_TO_UUID = 0x0a => "string to UUID",
 });
 tag_registry!(schema_artifact, "Schema artifact", {
     ENTITY = 0x01 => "entity record",
@@ -195,6 +225,8 @@ pub(crate) const TAG_REGISTRIES: &[TagRegistry] = &[
     projection_aggregation::REGISTRY,
     projection_frontier::REGISTRY,
     compatibility_class::REGISTRY,
+    migration_step::REGISTRY,
+    migration_conversion::REGISTRY,
     schema_artifact::REGISTRY,
     record_owner::REGISTRY,
     invariant_owner::REGISTRY,
@@ -728,6 +760,36 @@ pub(crate) const COMPATIBILITY_CODES: &[CompatibilityCodeFormat] = &[
         meaning: "added enum variant",
     },
     CompatibilityCodeFormat {
+        code: "RDB-K030",
+        class_tag: compatibility_class::REQUIRES_MIGRATION,
+        meaning: "added required field",
+    },
+    CompatibilityCodeFormat {
+        code: "RDB-K031",
+        class_tag: compatibility_class::REQUIRES_MIGRATION,
+        meaning: "added index over existing state",
+    },
+    CompatibilityCodeFormat {
+        code: "RDB-K032",
+        class_tag: compatibility_class::REQUIRES_MIGRATION,
+        meaning: "added relationship over existing state",
+    },
+    CompatibilityCodeFormat {
+        code: "RDB-K033",
+        class_tag: compatibility_class::REQUIRES_MIGRATION,
+        meaning: "added uniqueness rule over existing state",
+    },
+    CompatibilityCodeFormat {
+        code: "RDB-K034",
+        class_tag: compatibility_class::REQUIRES_MIGRATION,
+        meaning: "added invariant over existing state",
+    },
+    CompatibilityCodeFormat {
+        code: "RDB-K035",
+        class_tag: compatibility_class::REQUIRES_MIGRATION,
+        meaning: "added projection requiring historical backfill",
+    },
+    CompatibilityCodeFormat {
         code: "RDB-K100",
         class_tag: compatibility_class::INCOMPATIBLE,
         meaning: "removed identity",
@@ -869,6 +931,11 @@ layout!(EVENT_LAYOUT, "EventSchema", {
     "id" => "u32",
     "name" => "string",
     "payload" => "RecordSchema",
+    "partition" => "optional u64 magic 0xfffffffcffffffff + EventPartitionSchema; omitted when absent",
+});
+layout!(EVENT_PARTITION_LAYOUT, "EventPartitionSchema", {
+    "fields" => "u32 count + FieldId[]",
+    "key_schema" => "aggregate-namespaced partition KeySchema",
 });
 layout!(ENUM_LAYOUT, "EnumSchema", {
     "id" => "u32",
@@ -1092,6 +1159,7 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     UNIQUE_KEY_LAYOUT,
     ENTITY_LAYOUT,
     EVENT_LAYOUT,
+    EVENT_PARTITION_LAYOUT,
     ENUM_LAYOUT,
     ENUM_VARIANT_LAYOUT,
     AGGREGATE_LAYOUT,
@@ -1866,6 +1934,7 @@ mod tests {
                 CompatibilityClass::Compatible,
                 CompatibilityClass::RequiresExplicitVersion,
                 CompatibilityClass::Incompatible,
+                CompatibilityClass::RequiresMigration,
             ]
             .map(|value| value as u8),
             registry_values(compatibility_class::REGISTRY).as_slice()
@@ -1947,7 +2016,7 @@ mod tests {
     #[test]
     fn ordered_layout_registry_is_complete_and_canonical() {
         assert_eq!(FORMAT_LAYOUTS.first(), Some(&BUNDLE_LAYOUT));
-        assert_eq!(FORMAT_LAYOUTS.len(), 43);
+        assert_eq!(FORMAT_LAYOUTS.len(), 44);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(

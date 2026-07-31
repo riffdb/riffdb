@@ -6,29 +6,32 @@ use redb::{ReadOnlyTable, ReadTransaction, ReadableTable};
 use riffdb_storage_api::{
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
     AuthoritativeScanReader, CommitScanPageV1, CommitScanRequest, EncodedPageItem,
-    EntityObservation, EntityTarget, FilteredAuthoritativeIndexScanPage,
+    EntityObservation, EntityTarget, EventRouteScanRequestV1, EventRouteScanV1,
+    EventRouteUpperFenceV1, FilteredAuthoritativeIndexScanPage,
     FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader, IdempotencyIdentity,
     IndexEpochPosition, IndexPartitionFilterScope, IndexRangeEntry, MAX_COMMIT_SCAN_PAGE_BYTES,
     MAX_INDEX_SCAN_INSPECTED_BYTES, MAX_INDEX_SCAN_INSPECTED_ENTRIES, MAX_SCAN_PAGE_BYTES,
-    PartitionIndexTarget, ReadSnapshot, ReadSnapshotBuilder, SnapshotReader, SnapshotRequest,
-    StorageError, StorageErrorKind, StorageValueError, StoredCommitRecordV1, StoredDurableEventV1,
-    StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
+    PartitionEventRouteReader, PartitionIndexTarget, ReadSnapshot, ReadSnapshotBuilder,
+    SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind, StorageValueError,
+    StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
+    StoredProvenanceRecordV1,
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
 use crate::codec::{
     IdempotencyRecordV1, decode_commit_with_event_table, decode_durable_event_v1,
-    decode_entity_record_v1, decode_idempotency_record_v1, decode_index_entry_v2,
-    decode_index_epoch_v1, decode_provenance_record_v1,
+    decode_entity_record_v1, decode_event_route_v1, decode_idempotency_record_v1,
+    decode_index_entry_v2, decode_index_epoch_v1, decode_provenance_record_v1,
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::keys::{
-    decode_application_sequence_key, decode_index_entry_key, encode_application_sequence_key,
-    encode_entity_key, encode_event_key, encode_idempotency_key, encode_partition_index_key,
-    encode_provenance_key,
+    decode_application_sequence_key, decode_event_route_key, decode_index_entry_key,
+    encode_application_sequence_key, encode_entity_key, encode_event_key, encode_event_route_key,
+    encode_idempotency_key, encode_partition_index_key, encode_provenance_key,
 };
 use crate::layout::{
-    COMMITS, ENTITIES, EVENTS, IDEMPOTENCY, INDEX_EPOCHS, PROVENANCE, SECONDARY_INDEXES,
+    COMMITS, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY, INDEX_EPOCHS, PROVENANCE,
+    SECONDARY_INDEXES,
 };
 use crate::store::RedbOperationalPorts;
 
@@ -195,6 +198,126 @@ impl AuthoritativePointReader for RedbOperationalPorts {
             return Err(corrupt());
         }
         Ok(Some(event))
+    }
+}
+
+impl PartitionEventRouteReader for RedbOperationalPorts {
+    fn scan_partition_event_routes(
+        &self,
+        request: EventRouteScanRequestV1,
+    ) -> Result<EventRouteScanV1, StorageError> {
+        let transaction = self.begin_read()?;
+        let routes = transaction.open_table(EVENT_ROUTES).map_err(table_error)?;
+        let events = transaction.open_table(EVENTS).map_err(table_error)?;
+        let partition_hash = request.partition_hash();
+        let mut partition_lower = [0_u8; 44];
+        partition_lower[..32].copy_from_slice(partition_hash.as_bytes());
+        let mut partition_upper = [0xff_u8; 44];
+        partition_upper[..32].copy_from_slice(partition_hash.as_bytes());
+
+        let inclusive_upper = match request.inclusive_upper() {
+            Some(upper) => {
+                let upper_key = encode_event_route_key(partition_hash, upper);
+                if routes
+                    .get(upper_key.as_slice())
+                    .map_err(precommit_storage_error)?
+                    .is_none()
+                {
+                    return Err(corrupt());
+                }
+                EventRouteUpperFenceV1::Inclusive(upper)
+            }
+            None => {
+                let mut partition = routes
+                    .range::<&[u8]>((
+                        Included(partition_lower.as_slice()),
+                        Included(partition_upper.as_slice()),
+                    ))
+                    .map_err(precommit_storage_error)?;
+                match partition.next_back() {
+                    Some(entry) => {
+                        let (key, _) = entry.map_err(precommit_storage_error)?;
+                        let (stored_partition, event_id) =
+                            decode_event_route_key(key.value()).map_err(|_| corrupt())?;
+                        if stored_partition != partition_hash {
+                            return Err(corrupt());
+                        }
+                        EventRouteUpperFenceV1::Inclusive(event_id)
+                    }
+                    None => EventRouteUpperFenceV1::BeforeFirst,
+                }
+            }
+        };
+        let EventRouteUpperFenceV1::Inclusive(upper) = inclusive_upper else {
+            return EventRouteScanV1::exact_end(request, inclusive_upper, Vec::new())
+                .map_err(materialization_value);
+        };
+        if request.after().is_some_and(|after| after >= upper) {
+            return EventRouteScanV1::exact_end(request, inclusive_upper, Vec::new())
+                .map_err(materialization_value);
+        }
+
+        let upper_key = encode_event_route_key(partition_hash, upper);
+        let lower_key = request
+            .after()
+            .map(|after| encode_event_route_key(partition_hash, after));
+        let lower_bound = lower_key
+            .as_ref()
+            .map_or(Included(partition_lower.as_slice()), |key| {
+                Excluded(key.as_slice())
+            });
+        let mut scan = routes
+            .range::<&[u8]>((lower_bound, Included(upper_key.as_slice())))
+            .map_err(precommit_storage_error)?;
+        let wanted = usize::from(request.limit().get().get());
+        let mut items = Vec::with_capacity(wanted);
+        let mut encoded_bytes = 0usize;
+        let mut has_more = false;
+        for entry in &mut scan {
+            let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
+            let (stored_partition, event_id) =
+                decode_event_route_key(physical_key.value()).map_err(|_| corrupt())?;
+            if stored_partition != partition_hash {
+                return Err(corrupt());
+            }
+            if items.len() == wanted {
+                has_more = true;
+                break;
+            }
+            let decoded = decode_event_route_v1(encoded.value())?;
+            if decoded.value().event_id() != event_id {
+                return Err(corrupt());
+            }
+            let event_key = encode_event_key(event_id);
+            let event = events
+                .get(event_key.as_slice())
+                .map_err(precommit_storage_error)?
+                .ok_or_else(corrupt)?;
+            let event = decode_durable_event_v1(event.value())?.into_parts().0;
+            if event.event_id() != event_id
+                || event.event_type_id() != decoded.value().event_type_id()
+                || event.event_hash() != decoded.value().event_hash()
+            {
+                return Err(corrupt());
+            }
+            let (route, charge) = decoded.into_parts();
+            let next_bytes = encoded_bytes
+                .checked_add(charge.get())
+                .ok_or_else(corrupt)?;
+            if next_bytes > MAX_SCAN_PAGE_BYTES {
+                has_more = true;
+                break;
+            }
+            encoded_bytes = next_bytes;
+            items.push(EncodedPageItem::new(route, charge));
+        }
+
+        if has_more {
+            EventRouteScanV1::page(request, upper, items).map_err(materialization_value)
+        } else {
+            EventRouteScanV1::exact_end(request, inclusive_upper, items)
+                .map_err(materialization_value)
+        }
     }
 }
 
@@ -543,31 +666,34 @@ const fn corrupt() -> StorageError {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU16;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use riffdb_storage_api::{
         AuthoritativeIndexScanPage, DatabaseInitializationPort, DeclaredOutcome, DurabilityMode,
-        DurableKeySchemaBindingV1, ExecutablePlanRef, IdempotencyIdentity, IdempotencyKeyDigest,
-        IndexPartitionFilter, IndexPartitionFilterScope, IndexRangePrefixBuilder, IndexRangeTarget,
-        PartitionIndexTarget, ReadDependencies, StorageScanLimit, StoredCommitRecordV1,
-        StoredIndexEntryV2, StoredIndexEpochV1, StoredReadDependenciesV1,
+        DurableKeySchemaBindingV1, EventRoutePageLimit, ExecutablePlanRef, IdempotencyIdentity,
+        IdempotencyKeyDigest, IndexPartitionFilter, IndexPartitionFilterScope,
+        IndexRangePrefixBuilder, IndexRangeTarget, PartitionIndexTarget, ReadDependencies,
+        StorageScanLimit, StoredCommitRecordV1, StoredDurableEventV1, StoredEventRouteV1,
+        StoredIndexEntryV2, StoredIndexEpochV1, StoredReadDependenciesV1, derive_event_hash_v1,
     };
     use riffdb_types::{
         ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
         CanonicalRecord, CommandId, ContractBundleHash, ContractLineage, ContractVersion,
         DatabaseId, DigestKeyId, EntityKeyBuilder, EntityTypeId, EntityVersion, Environment,
-        IndexEntryKeyBuilder, IndexEpoch, IndexId, LogicalTime, OutcomeId, PartitionKeyBuilder,
-        PlanHash, ProvenanceId, RequestId, TenantScope, Timestamp, hash_partition_key,
+        EventTypeId, IndexEntryKeyBuilder, IndexEpoch, IndexId, LogicalTime, OutcomeId,
+        PartitionKeyBuilder, PlanHash, ProvenanceId, RequestId, TenantScope, Timestamp,
+        hash_partition_key,
     };
 
     use super::*;
     use crate::codec::{
-        encode_commit_record_v1, encode_entity_record_v1, encode_index_entry_v2,
-        encode_index_epoch_v1,
+        encode_commit_record_v1, encode_durable_event_v1, encode_entity_record_v1,
+        encode_event_route_v1, encode_index_entry_v2, encode_index_epoch_v1,
     };
-    use crate::layout::{COMMITS, ENTITIES, INDEX_EPOCHS, SECONDARY_INDEXES};
+    use crate::layout::{COMMITS, ENTITIES, EVENT_ROUTES, EVENTS, INDEX_EPOCHS, SECONDARY_INDEXES};
     use crate::store::RedbStore;
 
     static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(1);
@@ -826,6 +952,59 @@ mod tests {
         access.commit().expect("commit seed");
     }
 
+    fn event_partition_hash() -> riffdb_types::PartitionKeyHash {
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition.push_u64(77).expect("partition component");
+        hash_partition_key(partition.finish().expect("partition key").as_bytes())
+    }
+
+    fn seed_event_route(ports: &RedbOperationalPorts, sequence: CommitSequence) {
+        let event_id = EventId::new(sequence, 0);
+        let event_type_id = EventTypeId::new(7).expect("event type");
+        let payload = CanonicalRecord::new(vec![(
+            riffdb_types::FieldId::first(),
+            riffdb_types::CanonicalValue::U64(sequence.get()),
+        )])
+        .expect("event payload");
+        let event_hash =
+            derive_event_hash_v1(event_id, event_type_id, &payload).expect("derive event hash");
+        let event = StoredDurableEventV1::new(event_id, event_type_id, payload, event_hash)
+            .expect("durable event");
+        let route = StoredEventRouteV1::new(event_id, event_type_id, event_hash);
+        let encoded_event = encode_durable_event_v1(&event).expect("encode event");
+        let encoded_route = encode_event_route_v1(route).expect("encode event route");
+        let event_key = encode_event_key(event_id);
+        let route_key = encode_event_route_key(event_partition_hash(), event_id);
+        let access = ports.begin_write().expect("begin event-route seed");
+        {
+            let mut events = access
+                .transaction()
+                .expect("seed transaction")
+                .open_table(EVENTS)
+                .expect("event table");
+            assert!(
+                events
+                    .insert(event_key.as_slice(), encoded_event.as_bytes())
+                    .expect("insert event")
+                    .is_none()
+            );
+        }
+        {
+            let mut routes = access
+                .transaction()
+                .expect("seed transaction")
+                .open_table(EVENT_ROUTES)
+                .expect("event-route table");
+            assert!(
+                routes
+                    .insert(route_key.as_slice(), encoded_route.as_bytes())
+                    .expect("insert event route")
+                    .is_none()
+            );
+        }
+        access.commit().expect("commit event-route seed");
+    }
+
     #[test]
     fn empty_reads_return_absence_and_exact_end() {
         let (_path, ports) = operational("empty");
@@ -918,6 +1097,62 @@ mod tests {
         assert!(matches!(
             fresh,
             CommitScanPageV1::ExactEnd { records, .. } if records.len() == 3
+        ));
+    }
+
+    #[test]
+    fn event_route_continuation_reuses_the_initial_frozen_partition_head() {
+        let (_path, ports) = operational("event-route-fence");
+        let first = CommitSequence::first();
+        let second = first.checked_next().expect("second sequence");
+        let third = second.checked_next().expect("third sequence");
+        seed_event_route(&ports, first);
+        seed_event_route(&ports, second);
+
+        let limit = EventRoutePageLimit::new(NonZeroU16::MIN).expect("route limit");
+        let initial = ports
+            .scan_partition_event_routes(EventRouteScanRequestV1::initial(
+                event_partition_hash(),
+                None,
+                limit,
+            ))
+            .expect("initial route page");
+        assert_eq!(
+            initial.inclusive_upper(),
+            EventRouteUpperFenceV1::Inclusive(EventId::new(second, 0))
+        );
+        let continuation = initial.continuation().expect("route continuation");
+        assert_eq!(continuation.after(), EventId::new(first, 0));
+
+        seed_event_route(&ports, third);
+        let continued = ports
+            .scan_partition_event_routes(EventRouteScanRequestV1::continuing(continuation, limit))
+            .expect("continued route page");
+        assert_eq!(
+            continued.inclusive_upper(),
+            EventRouteUpperFenceV1::Inclusive(EventId::new(second, 0))
+        );
+        assert!(matches!(
+            continued,
+            EventRouteScanV1::ExactEnd { items, .. }
+                if items.len() == 1 && items[0].value().event_id() == EventId::new(second, 0)
+        ));
+
+        let fresh = ports
+            .scan_partition_event_routes(EventRouteScanRequestV1::initial(
+                event_partition_hash(),
+                None,
+                EventRoutePageLimit::new(NonZeroU16::new(3).expect("nonzero"))
+                    .expect("fresh limit"),
+            ))
+            .expect("fresh route page");
+        assert_eq!(
+            fresh.inclusive_upper(),
+            EventRouteUpperFenceV1::Inclusive(EventId::new(third, 0))
+        );
+        assert!(matches!(
+            fresh,
+            EventRouteScanV1::ExactEnd { items, .. } if items.len() == 3
         ));
     }
 

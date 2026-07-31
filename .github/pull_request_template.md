@@ -8,5 +8,6 @@ Compatibility classification:
 Security implications:
 Tests executed:
 Generated artifacts checked:
+Documentation impact:
 Known limitations:
 Follow-up issues:

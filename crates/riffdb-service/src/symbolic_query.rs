@@ -1186,7 +1186,7 @@ async fn describe_contract(
         lineage: bundle.lineage().clone(),
         version: bundle.contract_version(),
         bundle_hash: bundle.bundle_hash(),
-        catalog: render_catalog(&catalog),
+        catalog: render_catalog(&catalog, bundle.bundle().schema()),
     };
     begun.reauthorize(&service, &context).await?;
     finish_success(&service, &context, &begun).await?;
@@ -2291,7 +2291,7 @@ fn render_named_type(value: &NamedTypeSchema) -> String {
     }
 }
 
-fn render_catalog(catalog: &SymbolicCatalog) -> String {
+fn render_catalog(catalog: &SymbolicCatalog, schema: &riffdb_contract_ir::SchemaIr) -> String {
     let mut lines = Vec::new();
     for enumeration in catalog.enums() {
         lines.push(format!(
@@ -2299,6 +2299,35 @@ fn render_catalog(catalog: &SymbolicCatalog) -> String {
             enumeration.name(),
             enumeration.variants().collect::<Vec<_>>().join(", ")
         ));
+    }
+    for event in schema.events() {
+        lines.push(format!("event {} {{", event.name()));
+        for field in event.payload().fields() {
+            lines.push(format!(
+                "  {}: {}",
+                field.name(),
+                render_contract_type(catalog, field.value_type())
+            ));
+        }
+        match event.partition() {
+            Some(partition) => {
+                let fields = partition
+                    .fields()
+                    .iter()
+                    .map(|field_id| {
+                        event
+                            .payload()
+                            .field(*field_id)
+                            .map(riffdb_contract_ir::FieldSchema::name)
+                            .unwrap_or("<invalid-field>")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                lines.push(format!("  partition by ({fields})"));
+            }
+            None => lines.push("  application stream unavailable".to_owned()),
+        }
+        lines.push("}".to_owned());
     }
     for entity in catalog.entities() {
         lines.push(format!("entity {} {{", entity.name()));
@@ -2365,5 +2394,60 @@ fn render_contract_type(
             format!("[{}; {maximum}]", render_contract_type(catalog, element))
         }
         ValueTypeTag::Record => "record".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod event_catalog_tests {
+    use super::*;
+
+    #[test]
+    fn symbolic_catalog_names_streamable_and_internal_events_without_numeric_ids() {
+        let source = r#"
+contract EventCatalog version 1 {
+  entity Row {
+    key (id: uuid)
+    field value: i64
+  }
+  event Routed {
+    partition_by (id)
+    id: uuid
+    note: optional<string<32>>
+  }
+  event InternalOnly {
+    id: uuid
+  }
+  aggregate Rows {
+    root Row
+    partition_by id
+    conflict_key (id)
+  }
+  command Change {
+    input idempotency_key: string<128>
+    input id: uuid
+    idempotency_key idempotency_key
+    mutate Row(id) as row else Missing { id: id }
+    set row.value = 1
+    emit Routed { id: id }
+    return Changed { row: row }
+  }
+}
+"#;
+        let bundle = riffdb_contract_compiler::compile_contract_source(source)
+            .expect("event catalog contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");
+        let rendered = render_catalog(&catalog, bundle.schema());
+
+        assert!(
+            rendered.contains(
+                "event Routed {\n  id: uuid\n  note: string<32>?\n  partition by (id)\n}"
+            )
+        );
+        assert!(
+            rendered
+                .contains("event InternalOnly {\n  id: uuid\n  application stream unavailable\n}")
+        );
+        assert!(!rendered.contains("field_id"));
+        assert!(!rendered.contains("event_type_id"));
     }
 }

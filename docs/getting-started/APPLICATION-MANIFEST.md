@@ -42,6 +42,28 @@ server. Run `riffdb application lock --write` separately after reviewing the
 canonical source change. Lock V2 then covers the exact generated Python path,
 bytes, and digest alongside the existing three artifacts.
 
+Application Source V3 adds an exact `migrations` array while retaining the V2
+Python target. Each entry names one `.riffm` source and one retained canonical
+parent bundle. Lock V4 pins those sources, parent identities, generated
+migration bundles, and the one canonical successor bundle. Source V3 is for
+contract-data migration; `application migrate --to v2` remains only the
+source-format V1-to-V2 helper and does not create V3.
+
+```json
+{
+  "schema": "riffdb.application-source/v3",
+  "migrations": [
+    {
+      "parent_bundle": "retained/ticketdesk-v1.riffdb.contract.bundle",
+      "source": "riffdb/migrations/ticketdesk-v1-to-v2.riffm"
+    }
+  ]
+}
+```
+
+See [Contract Migrations](../contracts/MIGRATIONS.md) for the complete identity
+model, supported Gate A changes, and read-only planning workflow.
+
 The source document is closed JSON with exactly these top-level members:
 
 ```json
@@ -113,7 +135,7 @@ compatibility artifact for deployments and stable V1 tooling. It includes
 bundle and module hashes, but is now emitted under
 `generated/riffdb.application.exact.json`; application authors do not edit it.
 The checked-in TicketDesk compatibility fixture is
-[`fixtures/application-manifests/ticketdesk-v1.json`](../../fixtures/application-manifests/ticketdesk-v1.json).
+`fixtures/application-manifests/ticketdesk-v1.json` in the repository root.
 
 Run source, lock, generation, and drift checks with:
 
@@ -126,7 +148,8 @@ riffdb application generate --locked
 ```
 
 Generated Rust and TypeScript facades are present in V1; V2 also requires the
-generated Python facade. They own parameter serialization, response decoding,
+generated Python facade. V3 retains all four generation targets. They own
+parameter serialization, response decoding,
 exact identity checks, opaque cursors, read-after-commit fences, typed command
 outcomes, and retry-safe uncertainty recovery. Generated MCP schemas come from
 the same operation registry. Application code uses these facades or RiffQL
@@ -162,6 +185,8 @@ It binds these steps into one checked chain:
 
 ```text
 application lock
+  -> pinned canonical contract bundle
+  -> exact parent version + bundle hash
   -> contract bundle hash
   -> query module version + hash
   -> compiled role identity
@@ -178,7 +203,43 @@ capability identities make replay deterministic.
 
 A changed lock is deliberately not resumed under an old role. If a role is
 already retained, deploy requires `--provision-role <name>` together with
-`--replace-expired-credential`, revokes the predecessor capability, and binds
+`--replace-role-credential`, revokes the predecessor capability, and binds
 the role compiled from the successor lock. Application code and scripts should
 read identity from the generated client or lock and should never hardcode a
 contract version or module hash.
+
+Role compilation for lock V3 always consumes
+`generated/riffdb.contract.bundle` and the exact locked query modules. Both
+`application bind-dev-role` and standalone `role check|describe|bind` discover
+that lock from either `riffdb.application.json` or the generated exact manifest.
+A successor is never reinterpreted as genesis during role compilation. The
+legacy `--replace-expired-credential` spelling remains an alias for
+`--replace-role-credential`.
+
+Lock V3 makes the contract bundle part of this same chain. Genesis
+`application lock --write` remains local. For a successor, the command performs
+an authorized, read-only server preview against the active parent and writes
+`generated/riffdb.contract.bundle`; it does not deploy. Offline
+`application lock --check` and `application generate --locked` decode that
+pinned bundle instead of recompiling the successor as genesis.
+
+When a V3 lock already pins byte-identical contract source, `application lock
+--write` refreshes query, role, and generated-client artifacts locally from that
+checked bundle. This is the supported path after installing a corrected code
+generator: it rewrites compiler-owned artifact hashes without treating the
+already-active contract as another successor. Any contract-source change still
+requires the authorized server preview against the active parent, and a damaged
+or substituted pinned bundle fails closed instead of falling back to the
+network path.
+
+Lock V4 retains the V3 contract-bundle pin and adds exact direct-parent
+migration artifacts. `riffdb migration plan --application
+riffdb.application.json` validates and prints that local plan. In the current
+WP-406 implementation this command is inspection only; it cannot mutate or
+activate a database.
+
+Before deployment, the server compares the lock's expected parent version and
+bundle hash and its candidate bundle hash. A disagreement returns the lock,
+expected-parent, actual-active, and server-compiled candidate identities and
+changes no catalog, module, role, seed, or deployment-journal state. If the
+exact candidate is already active, retry is an idempotent success.

@@ -13,6 +13,7 @@ mod hir;
 mod literal;
 mod locality;
 mod mcp_name;
+mod migration;
 mod projection_lowering;
 mod schema_lowering;
 mod symbols;
@@ -24,3 +25,4 @@ pub use compiler::{
 pub use diagnostic::{
     CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics, DiagnosticBoundsError,
 };
+pub use migration::compile_migration_source;

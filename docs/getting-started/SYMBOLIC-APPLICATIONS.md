@@ -150,7 +150,7 @@ result is uncertain.
 
 Rust application code calls only generated names and types:
 
-```rust,no_run
+```rust,ignore
 use riffdb_client_rust::{AttemptBudget, CallMetadata, QueryOptions};
 use riffdb_ticketdesk::{TicketDeskClient, TicketPageParams};
 

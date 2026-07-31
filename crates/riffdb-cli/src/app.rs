@@ -33,9 +33,9 @@ use crate::batch::{
 };
 use crate::cli::{
     ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli, CommandCommand,
-    CommitCommand, ContractCommand, ContractSelectionArgs, DemoCommand, EntityCommand, OutputMode,
-    ProjectionCommand, QueryCommand, RevocationReason, RoleActorKind, RoleCommand, ServerCommand,
-    TopLevel,
+    CommitCommand, ContractCommand, ContractSelectionArgs, DemoCommand, EntityCommand,
+    MigrationCommand, OutputMode, ProjectionCommand, QueryCommand, RevocationReason, RoleActorKind,
+    RoleCommand, ServerCommand, TopLevel,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -47,10 +47,11 @@ use crate::input::{
 use crate::output::{
     CommandIdentity, NormalCreateDisposition, Terminal, authoring_error, client_error, local_error,
     local_error_with, maintenance_uncertain, render_bootstrap, render_commit,
-    render_contract_deploy, render_contract_validation, render_create_maintenance_start,
-    render_entity, render_execution, render_health, render_maintenance_operation,
-    render_normal_create, render_outcome, render_projection, render_restore_maintenance_start,
-    render_revoke, success, take_normal_create_disposition, uncertain,
+    render_compilation_diagnostics, render_contract_deploy, render_contract_validation,
+    render_create_maintenance_start, render_entity, render_execution, render_health,
+    render_maintenance_operation, render_normal_create, render_outcome, render_projection,
+    render_restore_maintenance_start, render_revoke, success, take_normal_create_disposition,
+    uncertain,
 };
 use crate::runner::{RunnerError, RunnerStream, run_budget};
 use crate::value::format_uuid;
@@ -95,6 +96,16 @@ struct ApplicationDeploymentRoleState {
 }
 
 #[derive(Serialize)]
+struct BatchCheckpointContractVersionError<'a> {
+    code: &'static str,
+    message: &'static str,
+    checkpoint_file: &'a str,
+    checkpoint_contract_version: Option<u64>,
+    requested_contract_version: Option<u64>,
+    recovery_action: &'static str,
+}
+
+#[derive(Serialize)]
 struct ApplicationModuleIdentityError<'a> {
     code: &'static str,
     message: &'static str,
@@ -107,6 +118,48 @@ struct ApplicationModuleIdentityError<'a> {
     recovery_action: &'static str,
 }
 
+#[derive(Serialize)]
+struct ApplicationContractIdentityError<'a> {
+    code: &'static str,
+    message: &'static str,
+    database: &'a str,
+    lock_hash: String,
+    expected_parent_version: Option<u64>,
+    expected_parent_bundle_hash: Option<String>,
+    locked_candidate_bundle_hash: String,
+    actual_active_version: Option<u64>,
+    actual_active_bundle_hash: Option<String>,
+    compiled_candidate_bundle_hash: Option<String>,
+    recovery_action: &'static str,
+}
+
+#[derive(Serialize)]
+struct ApplicationLockResult {
+    status: &'static str,
+}
+
+#[derive(Serialize)]
+struct ApplicationRoleIdentityError<'a> {
+    code: &'static str,
+    message: &'static str,
+    database: &'a str,
+    lock_hash: &'a str,
+    role_name: &'a str,
+    retained_role_hash: Option<&'a str>,
+    locked_role_hash: Option<&'a str>,
+    recovery_action: &'static str,
+}
+
+struct PreparedRoleBinding {
+    role: CompiledApplicationRole,
+    principal: String,
+    actor_kind: RoleActorKind,
+    lifetime_seconds: String,
+    audiences: Vec<String>,
+    capability_id: Option<String>,
+    credential_output: OsString,
+}
+
 fn interrupt_application_deployment_after(environment: &dyn Environment, stage: &str) {
     if environment
         .value(APPLICATION_DEPLOYMENT_TEST_INTERRUPT_AFTER)
@@ -116,9 +169,12 @@ fn interrupt_application_deployment_after(environment: &dyn Environment, stage: 
     }
 }
 use crate::scaffold::{
-    ScaffoldLanguage, check_application, check_application_lock, create_application,
+    ApplicationCheckStatus, PinnedLockRefresh, ScaffoldLanguage, application_contract_source,
+    application_contract_version, check_application, check_application_lock, create_application,
     generate_application, load_locked_application, migrate_application_source_v2,
-    preview_application_lock, write_application_lock,
+    plan_application_migrations, preview_application_lock,
+    refresh_application_lock_from_pinned_bundle, write_application_lock,
+    write_application_lock_with_bundle,
 };
 use crate::value::{InputValue, RecordInput, ValueError, parse_uuid};
 
@@ -239,11 +295,60 @@ pub async fn run() -> ExitCode {
             }
         };
     }
+    if let TopLevel::Migration {
+        command: MigrationCommand::Plan { application, lock },
+    } = &cli.command
+    {
+        return match plan_application_migrations(Path::new(application), Some(Path::new(lock))) {
+            Ok(plan) => success(CommandIdentity::MigrationPlan, "planned", &plan).emit(
+                cli.output.unwrap_or(OutputMode::Human),
+                &mut io::stdout().lock(),
+                &mut io::stderr().lock(),
+            ),
+            Err(error) => {
+                emit_scaffold_failure("riffdb migration plan failed", &error, cli.output);
+                ExitCode::FAILURE
+            }
+        };
+    }
+    let networked_successor_lock = matches!(
+        &cli.command,
+        TopLevel::Application {
+            command: ApplicationCommand::Lock { source, write: true, .. }
+        } if application_contract_version(Path::new(source)).is_ok_and(|version| version > 1)
+    );
+    if networked_successor_lock
+        && let TopLevel::Application {
+            command:
+                ApplicationCommand::Lock {
+                    source,
+                    write: true,
+                    lock,
+                    ..
+                },
+        } = &cli.command
+    {
+        match refresh_application_lock_from_pinned_bundle(Path::new(source), Some(Path::new(lock)))
+        {
+            Ok(PinnedLockRefresh::Refreshed) => {
+                println!(
+                    "application sources, pinned contract bundle, lock, and generated bindings are exact"
+                );
+                return ExitCode::SUCCESS;
+            }
+            Ok(PinnedLockRefresh::ContractSourceChanged | PinnedLockRefresh::NotPinned) => {}
+            Err(error) => {
+                emit_scaffold_failure("riffdb application lock refresh failed", &error, cli.output);
+                return ExitCode::FAILURE;
+            }
+        }
+    }
     if let TopLevel::Application { command } = &cli.command
         && !matches!(
             command,
             ApplicationCommand::Deploy { .. } | ApplicationCommand::BindDevRole { .. }
         )
+        && !networked_successor_lock
     {
         if let ApplicationCommand::Preview { source } = command {
             return match preview_application_lock(Path::new(source)) {
@@ -289,9 +394,27 @@ pub async fn run() -> ExitCode {
                 }
             };
         }
+        if let ApplicationCommand::Check { source } = command {
+            return match check_application(Path::new(source)) {
+                Ok(ApplicationCheckStatus::ExactLock) => {
+                    println!("application sources, exact lock, and generated bindings are exact");
+                    ExitCode::SUCCESS
+                }
+                Ok(ApplicationCheckStatus::SourceOnly) => {
+                    println!(
+                        "application sources compile; no lock or generated artifacts were checked"
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    emit_scaffold_failure("riffdb application failed", &error, cli.output);
+                    ExitCode::FAILURE
+                }
+            };
+        }
         let result = match command {
             ApplicationCommand::Migrate { .. } => unreachable!("migration returned above"),
-            ApplicationCommand::Check { source } => check_application(Path::new(source)),
+            ApplicationCommand::Check { .. } => unreachable!("check returned above"),
             ApplicationCommand::Preview { .. } => unreachable!("preview returned above"),
             ApplicationCommand::Lock {
                 source,
@@ -482,6 +605,11 @@ async fn dispatch(
         TopLevel::Application { command } => {
             application_command(command, config, environment, stdin).await
         }
+        TopLevel::Migration { .. } => local_error(
+            CommandIdentity::MigrationPlan,
+            "migration_plan_dispatch_invalid",
+            "migration plan dispatch is invalid",
+        ),
         TopLevel::New { .. } => local_error(
             CommandIdentity::ServerHealth,
             "new_dispatch_invalid",
@@ -518,6 +646,15 @@ async fn application_command(
     environment: &dyn Environment,
     stdin: &mut dyn Read,
 ) -> Terminal {
+    if let ApplicationCommand::Lock {
+        source,
+        lock,
+        write: true,
+        check: false,
+    } = &command
+    {
+        return write_successor_application_lock(source, lock, config, environment).await;
+    }
     let (
         identity,
         source,
@@ -589,13 +726,44 @@ async fn application_command(
     };
     let locked = match load_locked_application(Path::new(&source), Some(Path::new(&lock))) {
         Ok(locked) => locked,
-        Err(_) => {
-            return local_error(
-                identity,
-                "application_lock_inexact",
-                "application source, lock, and generated artifacts are not exact",
+        Err(error) => {
+            return error.diagnostics().map_or_else(
+                || {
+                    local_error(
+                        identity,
+                        "application_lock_inexact",
+                        "application source, lock, and generated artifacts are not exact; run application check for the exact failing artifact, then review and write the lock",
+                    )
+                },
+                |diagnostics| authoring_error(identity, diagnostics),
             );
         }
+    };
+    let mut prepared_query_modules = Vec::with_capacity(locked.manifest().query_modules().len());
+    for module in locked.manifest().query_modules() {
+        let mut queries = Vec::with_capacity(module.queries().len());
+        for query in module.queries() {
+            let path = locked.root().join(query.source());
+            let source = match read_file(&path, MAX_INPUT_BYTES).and_then(utf8) {
+                Ok(source) => source,
+                Err(error) => return input_terminal(identity, error),
+            };
+            queries.push(app_v1::NamedQuerySource {
+                name: query.name().to_owned(),
+                source,
+            });
+        }
+        prepared_query_modules.push(queries);
+    }
+    let prepared_role = match provision_role.as_deref() {
+        Some(role) => {
+            let manifest_path = locked.manifest_path().as_os_str().to_owned();
+            match compile_role_from_workspace(&manifest_path, role, tenant.as_deref()) {
+                Ok(role) => Some(role),
+                Err(error) => return error.terminal(identity),
+            }
+        }
+        None => None,
     };
     let deployment_root = match prepare_deployment_root(locked.root(), config.database.as_str()) {
         Ok(root) => root,
@@ -622,12 +790,28 @@ async fn application_command(
         };
     let lock_changed = state.lock_hash != requested_lock_hash;
     if lock_changed {
-        if state.role.is_some() && (!replace_expired_credential || provision_role.is_none()) {
-            return local_error(
-                identity,
-                "deployment_lock_changed_requires_role_replacement",
-                "the application lock changed; explicitly replace the retained application role credential",
-            );
+        if let Some(retained) = state.role.as_ref()
+            && (!replace_expired_credential || provision_role.is_none())
+        {
+            let locked_role_hash = prepared_role
+                .as_ref()
+                .map(|role| hex(role.identity().as_bytes()))
+                .unwrap_or_default();
+            let detail = ApplicationRoleIdentityError {
+                code: "deployment_lock_changed_requires_role_replacement",
+                message: "the application lock changed; rerun with --provision-role <role> --replace-role-credential",
+                database: config.database.as_str(),
+                lock_hash: &requested_lock_hash,
+                role_name: provision_role
+                    .as_deref()
+                    .unwrap_or(retained.role_name.as_str()),
+                retained_role_hash: (!retained.role_identity.is_empty())
+                    .then_some(retained.role_identity.as_str()),
+                locked_role_hash: (!locked_role_hash.is_empty())
+                    .then_some(locked_role_hash.as_str()),
+                recovery_action: "rerun_with_replace_role_credential",
+            };
+            return local_error_with(identity, &detail, detail.code, detail.message, 2);
         }
         state.lock_hash.clone_from(&requested_lock_hash);
         state.contract_deployed = false;
@@ -653,12 +837,17 @@ async fn application_command(
         Ok(request_id) => request_id,
         Err(error) => return client_error(identity, &error),
     };
+    let locked_parent = locked.contract().parent();
     let contract_deployment = match client
         .deploy_contract(
             v1::DeployContractRequest {
                 request_id: deploy_request_id,
                 source: contract_source,
-                expected_active_version: None,
+                expected_active_version: locked_parent
+                    .map(|parent| parent.contract_version().get()),
+                expected_active_bundle_hash: locked_parent
+                    .map_or_else(Vec::new, |parent| parent.bundle_hash().as_bytes().to_vec()),
+                expected_candidate_bundle_hash: locked.contract().bundle_hash().as_bytes().to_vec(),
             },
             &metadata,
         )
@@ -703,12 +892,48 @@ async fn application_command(
                 "the exact locked contract is incompatible with the active lineage",
             );
         }
+        Some(v1::deploy_contract_response::Result::MigrationRequired(_)) => {
+            return local_error(
+                identity,
+                "locked_contract_requires_migration",
+                "the exact locked contract requires a migration from the active lineage",
+            );
+        }
         Some(v1::deploy_contract_response::Result::ExpectedActiveVersionMismatch(_)) => {
             return local_error(
                 identity,
                 "active_contract_mismatch",
                 "the selected database has a different active contract",
             );
+        }
+        Some(v1::deploy_contract_response::Result::ExpectedApplicationIdentityMismatch(
+            mismatch,
+        )) => {
+            let detail = ApplicationContractIdentityError {
+                code: "application_contract_identity_mismatch",
+                message: "the active parent, server-compiled candidate, and application lock identities disagree",
+                database: config.database.as_str(),
+                lock_hash: hex(locked.lock_identity().as_bytes()),
+                expected_parent_version: locked_parent
+                    .map(|parent| parent.contract_version().get()),
+                expected_parent_bundle_hash: locked_parent
+                    .map(|parent| hex(parent.bundle_hash().as_bytes())),
+                locked_candidate_bundle_hash: hex(locked.contract().bundle_hash().as_bytes()),
+                actual_active_version: mismatch
+                    .actual_active
+                    .as_ref()
+                    .map(|descriptor| descriptor.contract_version),
+                actual_active_bundle_hash: mismatch
+                    .actual_active
+                    .as_ref()
+                    .map(|descriptor| hex(&descriptor.bundle_hash)),
+                compiled_candidate_bundle_hash: mismatch
+                    .compiled_candidate
+                    .as_ref()
+                    .map(|descriptor| hex(&descriptor.bundle_hash)),
+                recovery_action: "riffdb_application_lock_write_against_active",
+            };
+            return local_error_with(identity, &detail, detail.code, detail.message, 2);
         }
         Some(v1::deploy_contract_response::Result::BundleConflict(_)) => {
             return local_error(
@@ -736,19 +961,12 @@ async fn application_command(
         );
     }
 
-    for module in locked.manifest().query_modules() {
-        let mut queries = Vec::with_capacity(module.queries().len());
-        for query in module.queries() {
-            let path = locked.root().join(query.source());
-            let source = match read_file(&path, MAX_INPUT_BYTES).and_then(utf8) {
-                Ok(source) => source,
-                Err(error) => return input_terminal(identity, error),
-            };
-            queries.push(app_v1::NamedQuerySource {
-                name: query.name().to_owned(),
-                source,
-            });
-        }
+    for (module, queries) in locked
+        .manifest()
+        .query_modules()
+        .iter()
+        .zip(prepared_query_modules)
+    {
         let contract_selector = app_v1::ContractSelector {
             lineage: locked_contract.lineage().to_owned(),
             version: locked_contract.version(),
@@ -909,24 +1127,32 @@ async fn application_command(
     let mut application_credential = None;
     if let Some(role) = provision_role {
         let credential_path = deployment_root.join("application.credential");
-        let locked_manifest_path = locked.manifest_path().as_os_str().to_owned();
-        let compiled_role =
-            match compile_role_from_workspace(&locked_manifest_path, &role, tenant.as_deref()) {
-                Ok(compiled_role) => compiled_role,
-                Err(error) => return error.terminal(identity),
-            };
-        let expected_role_identity = hex(compiled_role.identity().as_bytes());
-        if state.role.as_ref().is_some_and(|retained| {
-            (retained.role_name != role
-                || (!retained.role_identity.is_empty()
-                    && retained.role_identity != expected_role_identity))
-                && !replace_expired_credential
-        }) {
+        let Some(compiled_role) = prepared_role else {
             return local_error(
                 identity,
-                "deployment_role_identity_mismatch",
-                "the retained application credential does not match the exact locked role",
+                "application_role_preflight_absent",
+                "the requested application role was not preflighted",
             );
+        };
+        let expected_role_identity = hex(compiled_role.identity().as_bytes());
+        if let Some(retained) = state.role.as_ref()
+            && (retained.role_name != role
+                || (!retained.role_identity.is_empty()
+                    && retained.role_identity != expected_role_identity))
+            && !replace_expired_credential
+        {
+            let detail = ApplicationRoleIdentityError {
+                code: "deployment_role_identity_mismatch",
+                message: "the retained application credential does not match the exact locked role; rerun with --replace-role-credential",
+                database: config.database.as_str(),
+                lock_hash: &requested_lock_hash,
+                role_name: &role,
+                retained_role_hash: (!retained.role_identity.is_empty())
+                    .then_some(retained.role_identity.as_str()),
+                locked_role_hash: Some(expected_role_identity.as_str()),
+                recovery_action: "rerun_with_replace_role_credential",
+            };
+            return local_error_with(identity, &detail, detail.code, detail.message, 2);
         }
         if !replace_expired_credential
             && let Some(retained) = state.role.as_mut()
@@ -1053,11 +1279,9 @@ async fn application_command(
                 Err(error) => return client_error(identity, &error),
             };
             let authentication_audience = health.authentication_audience;
-            let terminal = role_command(
-                RoleCommand::Bind {
-                    manifest: locked_manifest_path,
-                    role,
-                    tenant,
+            let terminal = bind_compiled_role(
+                PreparedRoleBinding {
+                    role: compiled_role,
                     principal: format!("app:{}", locked.manifest().application_name()),
                     actor_kind: RoleActorKind::Service,
                     lifetime_seconds: lifetime_seconds.to_string(),
@@ -1065,6 +1289,7 @@ async fn application_command(
                     capability_id: Some(capability_id),
                     credential_output: credential_path.as_os_str().to_owned(),
                 },
+                identity,
                 config,
                 environment,
             )
@@ -1132,7 +1357,11 @@ async fn application_command(
             else {
                 return invalid_input(identity);
             };
-            let checkpoint = deployment_root.join(format!("seed-{index:03}.checkpoint.json"));
+            let checkpoint = seed_checkpoint_path(
+                &deployment_root,
+                index,
+                locked.manifest().contract().version(),
+            );
             let terminal = command_command(
                 CommandCommand::Batch {
                     command_name: command_name.to_owned(),
@@ -1182,6 +1411,120 @@ async fn application_command(
     )
 }
 
+async fn write_successor_application_lock(
+    source_path: &OsStr,
+    lock_path: &OsStr,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+) -> Terminal {
+    let identity = CommandIdentity::ApplicationLock;
+    let source = match application_contract_source(Path::new(source_path)) {
+        Ok(source) => source,
+        Err(_) => {
+            return local_error(
+                identity,
+                "application_source_invalid",
+                "the symbolic application or contract source is invalid",
+            );
+        }
+    };
+    let metadata = match required_metadata(identity, config, environment) {
+        Ok(metadata) => metadata,
+        Err(terminal) => return terminal,
+    };
+    let mut client = match connect(config).await {
+        Ok(client) => client,
+        Err(error) => return client_error(identity, &error),
+    };
+    let request_id = match request_id() {
+        Ok(request_id) => request_id,
+        Err(error) => return client_error(identity, &error),
+    };
+    let response = match client
+        .validate_contract(
+            v1::ValidateContractRequest {
+                request_id,
+                source,
+                preview_active_successor: true,
+            },
+            &metadata,
+        )
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return client_error(identity, &error),
+    };
+    let candidate = match response.result.as_ref() {
+        Some(v1::validate_contract_response::Result::Candidate(candidate)) => candidate,
+        Some(v1::validate_contract_response::Result::Invalid(diagnostics)) => {
+            return render_compilation_diagnostics(identity, diagnostics);
+        }
+        Some(v1::validate_contract_response::Result::Valid(_)) | None => {
+            return local_error(
+                identity,
+                "candidate_preview_invalid",
+                "the server did not return the requested parent-aware candidate",
+            );
+        }
+    };
+    let contract = match riffdb_contract_ir::ContractBundle::decode(&candidate.canonical_bundle) {
+        Ok(contract) => contract,
+        Err(_) => {
+            return local_error(
+                identity,
+                "candidate_bundle_invalid",
+                "the server returned an invalid canonical candidate bundle",
+            );
+        }
+    };
+    if contract.parent().is_none() {
+        return local_error(
+            identity,
+            "active_parent_absent",
+            "a successor lock requires an active parent in the selected database; deploy the genesis contract first or select the intended database",
+        );
+    }
+    let descriptor_matches = candidate.candidate.as_ref().is_some_and(|descriptor| {
+        descriptor.contract_lineage == contract.lineage().as_str()
+            && descriptor.contract_version == contract.contract_version().get()
+            && descriptor.bundle_hash.as_slice() == contract.bundle_hash().as_bytes()
+    });
+    let parent_matches = contract
+        .parent()
+        .map(|parent| (parent.contract_version().get(), parent.bundle_hash()))
+        == candidate.parent_version.zip(
+            candidate
+                .parent_bundle_hash
+                .as_slice()
+                .try_into()
+                .ok()
+                .map(riffdb_types::ContractBundleHash::from_bytes),
+        );
+    if !descriptor_matches || !parent_matches {
+        return local_error(
+            identity,
+            "candidate_identity_mismatch",
+            "the server candidate descriptor, parent identity, and canonical bundle disagree",
+        );
+    }
+    match write_application_lock_with_bundle(
+        Path::new(source_path),
+        Some(Path::new(lock_path)),
+        contract,
+    ) {
+        Ok(()) => success(
+            identity,
+            "locked",
+            &ApplicationLockResult { status: "locked" },
+        ),
+        Err(_) => local_error(
+            identity,
+            "application_lock_inexact",
+            "the candidate does not exactly match the symbolic application sources",
+        ),
+    }
+}
+
 fn prepare_deployment_root(root: &Path, database: &str) -> Result<PathBuf, ()> {
     let private = root.join(".riffdb");
     let deployments = private.join("deployments");
@@ -1199,6 +1542,12 @@ fn prepare_deployment_root(root: &Path, database: &str) -> Result<PathBuf, ()> {
         fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).map_err(|_| ())?;
     }
     Ok(selected)
+}
+
+fn seed_checkpoint_path(root: &Path, index: usize, contract_version: u64) -> PathBuf {
+    root.join(format!(
+        "seed-{index:03}-contract-v{contract_version}.checkpoint.json"
+    ))
 }
 
 fn load_deployment_state(
@@ -2080,7 +2429,11 @@ async fn contract_command(
             };
             match client
                 .validate_contract(
-                    v1::ValidateContractRequest { request_id, source },
+                    v1::ValidateContractRequest {
+                        request_id,
+                        source,
+                        preview_active_successor: false,
+                    },
                     &metadata,
                 )
                 .await
@@ -2119,6 +2472,8 @@ async fn contract_command(
                 request_id,
                 source,
                 expected_active_version,
+                expected_active_bundle_hash: Vec::new(),
+                expected_candidate_bundle_hash: Vec::new(),
             };
             match client.deploy_contract(request, &metadata).await {
                 Ok(response) => render_contract_deploy(&response),
@@ -2432,6 +2787,104 @@ async fn commit_command(
     }
 }
 
+async fn bind_compiled_role(
+    binding: PreparedRoleBinding,
+    identity: CommandIdentity,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+) -> Terminal {
+    let PreparedRoleBinding {
+        role,
+        principal,
+        actor_kind,
+        lifetime_seconds,
+        audiences,
+        capability_id,
+        credential_output,
+    } = binding;
+    let lifetime_seconds = match parse_nonzero_u32(&lifetime_seconds) {
+        Ok(value) => value,
+        Err(()) => return invalid_input(identity),
+    };
+    let capability_id = match capability_id {
+        Some(value) => match parse_uuid_v7(&value) {
+            Some(value) => value,
+            None => return invalid_input(identity),
+        },
+        None => match generate_capability_id() {
+            Ok(value) => value.into_bytes(),
+            Err(error) => return client_error(identity, &ClientError::IdentifierGeneration(error)),
+        },
+    };
+    if validate_path(&credential_output).is_err()
+        || credential_output.as_encoded_bytes() == b"-"
+        || principal.is_empty()
+        || audiences.is_empty()
+    {
+        return invalid_input(identity);
+    }
+    let request = v1::CreateCapabilityRequest {
+        request_id: Vec::new(),
+        mode: v1::CapabilityCreateMode::Normal as i32,
+        capability_id: capability_id.to_vec(),
+        principal_id: principal,
+        actor_kind: match actor_kind {
+            RoleActorKind::Human => v1::ActorKind::Human as i32,
+            RoleActorKind::Agent => v1::ActorKind::Agent as i32,
+            RoleActorKind::Service => v1::ActorKind::Service as i32,
+        },
+        requested_lifetime_seconds: lifetime_seconds,
+        audiences,
+        grant: Some(application_role_grant_to_proto(role.internal_grant())),
+    };
+    let template = match NormalCapabilityCreateTemplate::new(request) {
+        Ok(template) => template,
+        Err(_) => return role_invalid(identity),
+    };
+    let metadata = match required_metadata(identity, config, environment) {
+        Ok(metadata) => metadata,
+        Err(terminal) => return terminal,
+    };
+    let mut client = match connect(config).await {
+        Ok(client) => client,
+        Err(error) => return client_error(identity, &error),
+    };
+    let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+    let mut response =
+        match submit_normal_create_retry(&mut client, &template, attempts, &metadata).await {
+            Ok(response) => response,
+            Err(ClientError::OutcomeUnknown(_)) => {
+                return uncertain(
+                    identity,
+                    "role_bind_outcome_unknown",
+                    "the role-binding outcome remains unknown",
+                    "retry_with_same_capability_id",
+                    Some(&capability_id),
+                );
+            }
+            Err(error) => return client_error(identity, &error),
+        };
+    let Some((disposition, token)) = take_normal_create_disposition(&mut response) else {
+        return local_error(identity, "output_render_failed", "output rendering failed");
+    };
+    match (&disposition, token) {
+        (NormalCreateDisposition::Created(_), Some(token)) => {
+            if retain_normal_token(&credential_output, token).is_err() {
+                return local_error(
+                    identity,
+                    "credential_retention_failed",
+                    "credential retention failed",
+                );
+            }
+        }
+        (NormalCreateDisposition::Created(_), None) | (_, Some(_)) => {
+            return local_error(identity, "output_render_failed", "output rendering failed");
+        }
+        _ => {}
+    }
+    render_normal_create(identity, &disposition)
+}
+
 async fn role_command(
     command: RoleCommand,
     config: &EffectiveConfig,
@@ -2483,101 +2936,21 @@ async fn role_command(
                 Ok(role) => role,
                 Err(error) => return error.terminal(CommandIdentity::RoleBind),
             };
-            let lifetime_seconds = match parse_nonzero_u32(&lifetime_seconds) {
-                Ok(value) => value,
-                Err(()) => return invalid_input(CommandIdentity::RoleBind),
-            };
-            let capability_id = match capability_id {
-                Some(value) => match parse_uuid_v7(&value) {
-                    Some(value) => value,
-                    None => return invalid_input(CommandIdentity::RoleBind),
+            bind_compiled_role(
+                PreparedRoleBinding {
+                    role,
+                    principal,
+                    actor_kind,
+                    lifetime_seconds,
+                    audiences,
+                    capability_id,
+                    credential_output,
                 },
-                None => match generate_capability_id() {
-                    Ok(value) => value.into_bytes(),
-                    Err(error) => {
-                        return client_error(
-                            CommandIdentity::RoleBind,
-                            &ClientError::IdentifierGeneration(error),
-                        );
-                    }
-                },
-            };
-            if validate_path(&credential_output).is_err()
-                || credential_output.as_encoded_bytes() == b"-"
-                || principal.is_empty()
-                || audiences.is_empty()
-            {
-                return invalid_input(CommandIdentity::RoleBind);
-            }
-            let request = v1::CreateCapabilityRequest {
-                request_id: Vec::new(),
-                mode: v1::CapabilityCreateMode::Normal as i32,
-                capability_id: capability_id.to_vec(),
-                principal_id: principal,
-                actor_kind: match actor_kind {
-                    RoleActorKind::Human => v1::ActorKind::Human as i32,
-                    RoleActorKind::Agent => v1::ActorKind::Agent as i32,
-                    RoleActorKind::Service => v1::ActorKind::Service as i32,
-                },
-                requested_lifetime_seconds: lifetime_seconds,
-                audiences,
-                grant: Some(application_role_grant_to_proto(role.internal_grant())),
-            };
-            let template = match NormalCapabilityCreateTemplate::new(request) {
-                Ok(template) => template,
-                Err(_) => return role_invalid(CommandIdentity::RoleBind),
-            };
-            let metadata = match required_metadata(CommandIdentity::RoleBind, config, environment) {
-                Ok(metadata) => metadata,
-                Err(terminal) => return terminal,
-            };
-            let mut client = match connect(config).await {
-                Ok(client) => client,
-                Err(error) => return client_error(CommandIdentity::RoleBind, &error),
-            };
-            let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
-            let mut response =
-                match submit_normal_create_retry(&mut client, &template, attempts, &metadata).await
-                {
-                    Ok(response) => response,
-                    Err(ClientError::OutcomeUnknown(_)) => {
-                        return uncertain(
-                            CommandIdentity::RoleBind,
-                            "role_bind_outcome_unknown",
-                            "the role-binding outcome remains unknown",
-                            "retry_with_same_capability_id",
-                            Some(&capability_id),
-                        );
-                    }
-                    Err(error) => return client_error(CommandIdentity::RoleBind, &error),
-                };
-            let Some((disposition, token)) = take_normal_create_disposition(&mut response) else {
-                return local_error(
-                    CommandIdentity::RoleBind,
-                    "output_render_failed",
-                    "output rendering failed",
-                );
-            };
-            match (&disposition, token) {
-                (NormalCreateDisposition::Created(_), Some(token)) => {
-                    if retain_normal_token(&credential_output, token).is_err() {
-                        return local_error(
-                            CommandIdentity::RoleBind,
-                            "credential_retention_failed",
-                            "credential retention failed",
-                        );
-                    }
-                }
-                (NormalCreateDisposition::Created(_), None) | (_, Some(_)) => {
-                    return local_error(
-                        CommandIdentity::RoleBind,
-                        "output_render_failed",
-                        "output rendering failed",
-                    );
-                }
-                _ => {}
-            }
-            render_normal_create(CommandIdentity::RoleBind, &disposition)
+                CommandIdentity::RoleBind,
+                config,
+                environment,
+            )
+            .await
         }
         RoleCommand::Revoke {
             capability_id,
@@ -2638,26 +3011,19 @@ fn compile_role_from_workspace(
         read_file(requested_path, MAX_INPUT_BYTES).map_err(|_| RoleWorkspaceError::Invalid)?;
     let requested_value: serde_json::Value =
         serde_json::from_slice(&requested_bytes).map_err(|_| RoleWorkspaceError::Invalid)?;
-    let exact_path;
-    let manifest_path = if requested_value
-        .get("schema")
-        .and_then(serde_json::Value::as_str)
-        == Some("riffdb.application-source/v1")
-    {
-        check_application_lock(requested_path, None).map_err(|error| {
-            error
-                .diagnostics()
-                .cloned()
-                .map_or(RoleWorkspaceError::Invalid, RoleWorkspaceError::Authoring)
-        })?;
-        exact_path = requested_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("generated/riffdb.application.exact.json");
-        exact_path.as_path()
-    } else {
-        requested_path
-    };
+    let requested_is_source = matches!(
+        requested_value
+            .get("schema")
+            .and_then(serde_json::Value::as_str),
+        Some("riffdb.application-source/v1" | "riffdb.application-source/v2")
+    );
+    let source_locked = requested_is_source
+        .then(|| load_locked_application(requested_path, None))
+        .transpose()
+        .map_err(role_workspace_lock_error)?;
+    let manifest_path = source_locked
+        .as_ref()
+        .map_or(requested_path, |locked| locked.manifest_path());
     let manifest_bytes =
         read_file(manifest_path, MAX_INPUT_BYTES).map_err(|_| RoleWorkspaceError::Invalid)?;
     let manifest_source =
@@ -2666,14 +3032,35 @@ fn compile_role_from_workspace(
         .map_err(|error| role_manifest_diagnostic(manifest_path, error.kind()))?;
     let workspace = find_application_workspace(manifest_path, manifest.contract().source())
         .map_err(|()| RoleWorkspaceError::Invalid)?;
-    let contract_source = read_workspace_text(&workspace, manifest.contract().source())
-        .map_err(|()| RoleWorkspaceError::Invalid)?;
-    let contract = compile_contract_source(&contract_source).map_err(|error| {
-        AuthoringSourcePath::new(manifest.contract().source())
-            .ok()
-            .and_then(|path| AuthoringDiagnostics::from_contract(path, &error).ok())
-            .map_or(RoleWorkspaceError::Invalid, RoleWorkspaceError::Authoring)
-    })?;
+    let discovered_source_path = workspace.join("riffdb.application.json");
+    let discovered_lock_path = workspace.join("riffdb.application.lock.json");
+    let discovered_locked = if source_locked.is_none()
+        && discovered_source_path.is_file()
+        && discovered_lock_path.is_file()
+    {
+        Some(
+            load_locked_application(&discovered_source_path, None)
+                .map_err(role_workspace_lock_error)?,
+        )
+    } else {
+        None
+    };
+    let locked = source_locked.as_ref().or(discovered_locked.as_ref());
+    let contract = if let Some(locked) = locked {
+        if locked.manifest().identity() != manifest.identity() {
+            return Err(RoleWorkspaceError::Invalid);
+        }
+        locked.contract().clone()
+    } else {
+        let contract_source = read_workspace_text(&workspace, manifest.contract().source())
+            .map_err(|()| RoleWorkspaceError::Invalid)?;
+        compile_contract_source(&contract_source).map_err(|error| {
+            AuthoringSourcePath::new(manifest.contract().source())
+                .ok()
+                .and_then(|path| AuthoringDiagnostics::from_contract(path, &error).ok())
+                .map_or(RoleWorkspaceError::Invalid, RoleWorkspaceError::Authoring)
+        })?
+    };
     let mut modules = Vec::with_capacity(manifest.query_modules().len());
     for module in manifest.query_modules() {
         let queries = module
@@ -2719,6 +3106,13 @@ fn compile_role_from_workspace(
         .and_then(|path| AuthoringDiagnostics::from_role(path, error.kind(), Some(role_name)).ok())
         .map_or(RoleWorkspaceError::Invalid, RoleWorkspaceError::Authoring)
     })
+}
+
+fn role_workspace_lock_error(error: crate::scaffold::ScaffoldError) -> RoleWorkspaceError {
+    error
+        .diagnostics()
+        .cloned()
+        .map_or(RoleWorkspaceError::Invalid, RoleWorkspaceError::Authoring)
 }
 
 fn role_manifest_diagnostic(
@@ -3837,8 +4231,30 @@ fn batch_error_terminal(error: BatchError) -> Terminal {
         BatchError::CheckpointInvalid => local_error(
             CommandIdentity::CommandBatch,
             "batch_checkpoint_invalid",
-            "the batch checkpoint does not match its checksum, command, or source",
+            "the batch checkpoint does not match its checksum, command, or source; archive the checkpoint only after reviewing whether the prior batch must be resumed",
         ),
+        BatchError::CheckpointContractVersionMismatch {
+            checkpoint_file,
+            checkpoint_contract_version,
+            requested_contract_version,
+        } => {
+            const CODE: &str = "batch_checkpoint_contract_version_mismatch";
+            const MESSAGE: &str = "the batch checkpoint belongs to another contract version and cannot be resumed for this invocation";
+            local_error_with(
+                CommandIdentity::CommandBatch,
+                &BatchCheckpointContractVersionError {
+                    code: CODE,
+                    message: MESSAGE,
+                    checkpoint_file: &checkpoint_file,
+                    checkpoint_contract_version,
+                    requested_contract_version,
+                    recovery_action: "resume with the checkpoint's original contract version, or archive it and start a new batch checkpoint after reviewing prior outcomes",
+                },
+                CODE,
+                MESSAGE,
+                2,
+            )
+        }
         BatchError::CheckpointWriteFailed => local_error(
             CommandIdentity::CommandBatch,
             "batch_checkpoint_write_failed",
@@ -4360,12 +4776,16 @@ const fn restore_confirmation(confirmed: bool) -> OfflineMaintenanceReplacementC
 const fn command_identity(command: &TopLevel) -> CommandIdentity {
     match command {
         TopLevel::Application {
+            command: ApplicationCommand::Lock { .. },
+        } => CommandIdentity::ApplicationLock,
+        TopLevel::Application {
             command: ApplicationCommand::Deploy { .. },
         } => CommandIdentity::ApplicationDeploy,
         TopLevel::Application {
             command: ApplicationCommand::BindDevRole { .. },
         } => CommandIdentity::ApplicationBindDevRole,
         TopLevel::Application { .. } => CommandIdentity::ServerHealth,
+        TopLevel::Migration { .. } => CommandIdentity::MigrationPlan,
         TopLevel::New { .. } => CommandIdentity::ServerHealth,
         TopLevel::Dev { .. } => CommandIdentity::ServerHealth,
         TopLevel::Contract {
@@ -4458,6 +4878,20 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn seed_checkpoints_are_contract_version_scoped() {
+        let root = Path::new(".riffdb/deployments/ea");
+
+        assert_eq!(
+            seed_checkpoint_path(root, 0, 4),
+            root.join("seed-000-contract-v4.checkpoint.json")
+        );
+        assert_ne!(
+            seed_checkpoint_path(root, 0, 2),
+            seed_checkpoint_path(root, 0, 4)
+        );
+    }
 
     #[derive(Default)]
     struct TestEnvironment(BTreeMap<String, OsString>);
@@ -5030,6 +5464,49 @@ mod tests {
         .await;
         assert_local_code(invalid_credential, "credential_invalid");
         assert_listener_unused(&listener);
+
+        let directory =
+            std::env::temp_dir().join(format!("riffdb-cli-preflight-role-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        crate::scaffold::create_application(
+            "preflight-app",
+            crate::scaffold::ScaffoldLanguage::Rust,
+            &directory,
+        )
+        .expect("scaffold preflight application");
+        let invalid_role = dispatch(
+            TopLevel::Application {
+                command: ApplicationCommand::Deploy {
+                    source: directory.join("riffdb.application.json").into_os_string(),
+                    lock: OsString::from("riffdb.application.lock.json"),
+                    provision_role: Some("MissingRole".to_owned()),
+                    tenant: None,
+                    lifetime_seconds: "28800".to_owned(),
+                    seed: false,
+                    seed_concurrency: "8".to_owned(),
+                    replace_expired_credential: false,
+                },
+            },
+            &config,
+            &environment,
+            &mut Cursor::new(Vec::new()),
+        )
+        .await;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let _ = invalid_role.emit(crate::cli::OutputMode::Json, &mut stdout, &mut stderr);
+        assert!(stderr.is_empty());
+        assert!(
+            contains_bytes(&stdout, b"\"code\":\"RDB-AR001\""),
+            "unexpected preflight output: {}",
+            String::from_utf8_lossy(&stdout)
+        );
+        assert!(contains_bytes(
+            &stdout,
+            b"\"file_change\":\"no_files_changed\""
+        ));
+        assert_listener_unused(&listener);
+        fs::remove_dir_all(directory).expect("preflight fixture cleanup");
     }
 
     #[test]
@@ -5132,6 +5609,10 @@ mod tests {
 
     #[test]
     fn canonical_numeric_and_uuid_inputs_are_closed() {
+        assert_eq!(
+            CommandIdentity::ApplicationLock.as_str(),
+            "application.lock"
+        );
         assert_eq!(parse_u64("0"), Ok(0));
         assert_eq!(parse_nonzero_u64("1"), Ok(1));
         assert_eq!(parse_expected_active_version(None), Ok(None));
@@ -5265,6 +5746,68 @@ mod tests {
                 .expect("JSON")
                 .contains("field_id")
         );
+    }
+
+    #[test]
+    fn widened_successor_role_compiles_from_the_pinned_parent_aware_bundle() {
+        let directory =
+            std::env::temp_dir().join(format!("riffdb-cli-successor-role-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        crate::scaffold::create_application(
+            "safe-app",
+            crate::scaffold::ScaffoldLanguage::Rust,
+            &directory,
+        )
+        .expect("scaffold genesis application");
+
+        let source_path = directory.join("riffdb.application.json");
+        let contract_path = directory.join("riffdb/contract.riff");
+        let genesis_source = fs::read_to_string(&contract_path).expect("genesis source");
+        let genesis = riffdb_contract_compiler::compile_contract_source(&genesis_source)
+            .expect("genesis contract");
+        let versioned = genesis_source.replacen("version 1", "version 2", 1);
+        let (body, _) = versioned
+            .rsplit_once("}\n")
+            .expect("contract closing delimiter");
+        let successor_source = format!(
+            "{body}\n\n  command RenameItem {{\n    input idempotency_key: string<128>\n    input item_id: uuid\n    input title: string<128>\n    idempotency_key idempotency_key\n    mutate Item(item_id) as item\n      else ItemMissing {{ item_id: item_id }}\n    set item.title = title\n    return Renamed {{ item: item }}\n  }}\n}}\n"
+        );
+        let successor =
+            riffdb_contract_compiler::compile_contract_successor(&successor_source, &genesis)
+                .expect("additive successor contract");
+        fs::write(&contract_path, successor_source).expect("write successor source");
+
+        let mut application: serde_json::Value =
+            serde_json::from_slice(&fs::read(&source_path).expect("application source"))
+                .expect("application JSON");
+        application["contract"]["version"] = serde_json::json!(2);
+        application["roles"][0]["commands"] = serde_json::json!(["CreateItem", "RenameItem"]);
+        fs::write(
+            &source_path,
+            serde_json::to_vec(&application).expect("successor application JSON"),
+        )
+        .expect("write successor application source");
+        crate::scaffold::write_application_lock_with_bundle(&source_path, None, successor)
+            .expect("write parent-aware successor lock");
+
+        let role =
+            compile_role_from_workspace(&source_path.into_os_string(), "SafeAppApplication", None)
+                .expect("the widened role compiles from the pinned successor bundle");
+        assert_eq!(role.operations().len(), 3);
+        assert!(role.operations().iter().any(|operation| {
+            operation.kind() == riffdb_query_module::ApplicationRoleOperationKind::Command
+                && operation.name() == "RenameItem"
+        }));
+        let exact_role = compile_role_from_workspace(
+            &directory
+                .join("generated/riffdb.application.exact.json")
+                .into_os_string(),
+            "SafeAppApplication",
+            None,
+        )
+        .expect("standalone role paths discover the same successor lock");
+        assert_eq!(exact_role.identity(), role.identity());
+        fs::remove_dir_all(directory).expect("fixture cleanup");
     }
 
     #[test]

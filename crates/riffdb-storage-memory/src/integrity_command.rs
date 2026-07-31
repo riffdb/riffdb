@@ -272,7 +272,41 @@ pub(crate) fn inspect_event_graph(state: &MemoryState, index: usize) -> Option<S
     let Some(intent) = outbox_intent(state, event.event_id()) else {
         return missing();
     };
-    if embedded != event || intent.event() != event {
+    let Some(route) = event_route(state, commit.partition_hash(), event.event_id()) else {
+        return missing();
+    };
+    if embedded != event
+        || intent.event() != event
+        || route.route.event_type_id() != event.event_type_id()
+        || route.route.event_hash() != event.event_hash()
+    {
+        return mismatch();
+    }
+    None
+}
+
+pub(crate) fn inspect_event_route_graph(
+    state: &MemoryState,
+    index: usize,
+) -> Option<StructuralFinding> {
+    let route = &state.event_routes[index];
+    if index > 0 && state.event_routes[index - 1].order_key() >= route.order_key() {
+        return mismatch();
+    }
+    let Some(event) = event(state, route.route.event_id()) else {
+        return missing();
+    };
+    let Some(commit) = commit(state, route.route.event_id().commit_sequence()) else {
+        return missing();
+    };
+    let Ok(ordinal) = usize::try_from(route.route.event_id().event_ordinal()) else {
+        return mismatch();
+    };
+    if commit.partition_hash() != route.partition_hash
+        || commit.events().get(ordinal) != Some(event)
+        || route.route.event_type_id() != event.event_type_id()
+        || route.route.event_hash() != event.event_hash()
+    {
         return mismatch();
     }
     None
@@ -486,6 +520,25 @@ fn event(
     Some(&state.events[index])
 }
 
+fn event_route(
+    state: &MemoryState,
+    partition_hash: riffdb_types::PartitionKeyHash,
+    event_id: EventId,
+) -> Option<&crate::state::EventRouteRow> {
+    let key = (partition_hash, event_id);
+    let index = state
+        .event_routes
+        .binary_search_by_key(&key, |row| row.order_key())
+        .ok()?;
+    if (index > 0 && state.event_routes[index - 1].order_key() == key)
+        || (index + 1 < state.event_routes.len()
+            && state.event_routes[index + 1].order_key() == key)
+    {
+        return None;
+    }
+    Some(&state.event_routes[index])
+}
+
 fn outbox_intent(
     state: &MemoryState,
     event_id: EventId,
@@ -535,7 +588,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::state::{CommitAdmissionIndexRow, CommittedAdmissionIndexRow, EntityCommitIndexRow};
+    use crate::state::{
+        CommitAdmissionIndexRow, CommittedAdmissionIndexRow, EntityCommitIndexRow, EventRouteRow,
+    };
 
     fn uuid_bytes(fill: u8) -> [u8; 16] {
         let mut bytes = [fill; 16];
@@ -675,6 +730,14 @@ mod tests {
         });
         state.provenance.push(provenance);
         state.events.push(event.clone());
+        state.event_routes.push(EventRouteRow::new(
+            partition_hash,
+            riffdb_storage_api::StoredEventRouteV1::new(
+                event.event_id(),
+                event.event_type_id(),
+                event.event_hash(),
+            ),
+        ));
         state.outbox_intents.push(StoredOutboxIntentV1::new(event));
         (state, pending)
     }
@@ -688,6 +751,7 @@ mod tests {
         assert_eq!(inspect_committed_admission_index(&state, 0), None);
         assert_eq!(inspect_provenance_graph(&state, 0), None);
         assert_eq!(inspect_event_graph(&state, 0), None);
+        assert_eq!(inspect_event_route_graph(&state, 0), None);
         assert_eq!(inspect_outbox_intent_graph(&state, 0), None);
     }
 
@@ -733,6 +797,10 @@ mod tests {
         missing_state.outbox_intents.clear();
         assert_eq!(inspect_commit_graph(&missing_state, 0), missing());
         assert_eq!(inspect_event_graph(&missing_state, 0), missing());
+
+        let (mut missing_route_state, _) = command_graph();
+        missing_route_state.event_routes.clear();
+        assert_eq!(inspect_event_graph(&missing_route_state, 0), missing());
 
         let (mut mismatch_state, _) = command_graph();
         let original = &mismatch_state.events[0];

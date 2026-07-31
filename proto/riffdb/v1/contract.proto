@@ -9,6 +9,7 @@ enum ContractCompatibilityClass {
   CONTRACT_COMPATIBILITY_CLASS_COMPATIBLE = 1;
   CONTRACT_COMPATIBILITY_CLASS_REQUIRES_EXPLICIT_VERSION = 2;
   CONTRACT_COMPATIBILITY_CLASS_INCOMPATIBLE = 3;
+  CONTRACT_COMPATIBILITY_CLASS_REQUIRES_MIGRATION = 4;
 }
 
 message ContractCompatibilityCodeCount {
@@ -107,12 +108,21 @@ message CommandExplain {
 message ValidateContractRequest {
   bytes request_id = 1;
   string source = 2;
+  bool preview_active_successor = 3;
+}
+
+message CompiledContractCandidate {
+  optional uint64 parent_version = 1;
+  bytes parent_bundle_hash = 2;
+  ContractDescriptor candidate = 3;
+  bytes canonical_bundle = 4;
 }
 
 message ValidateContractResponse {
   oneof result {
     Unit valid = 1;
     CompilationDiagnostics invalid = 2;
+    CompiledContractCandidate candidate = 3;
   }
 }
 
@@ -143,10 +153,17 @@ message DeployContractRequest {
   bytes request_id = 1;
   string source = 2;
   optional uint64 expected_active_version = 3;
+  bytes expected_active_bundle_hash = 4;
+  bytes expected_candidate_bundle_hash = 5;
 }
 
 message ExpectedActiveVersionMismatch {
   optional uint64 actual_active_version = 1;
+}
+
+message ExpectedApplicationIdentityMismatch {
+  ContractDescriptor actual_active = 1;
+  ContractDescriptor compiled_candidate = 2;
 }
 
 message DeployContractResponse {
@@ -157,6 +174,8 @@ message DeployContractResponse {
     Unit bundle_conflict = 4;
     CompilationDiagnostics invalid_source = 5;
     ContractDescriptor incompatible_candidate = 6;
+    ExpectedApplicationIdentityMismatch expected_application_identity_mismatch = 7;
+    ContractDescriptor migration_required = 8;
   }
 }
 

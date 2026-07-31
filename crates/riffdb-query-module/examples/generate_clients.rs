@@ -6,11 +6,15 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use riffdb_contract_compiler::compile_contract_source;
+use riffdb_contract_compiler::{
+    compile_contract_source, compile_contract_successor, compile_migration_source,
+};
 use riffdb_query_module::{
-    ApplicationManifest, NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName,
-    QueryModuleVersion, compile_application_role, generate_mcp_commands, generate_mcp_tools,
-    generate_python_client, generate_rust_client, generate_typescript_client,
+    ApplicationLock, ApplicationManifest, ApplicationMigrationLockInput, ApplicationSourceManifest,
+    GeneratedApplicationArtifact, GeneratedApplicationArtifactKind, NamedQuerySource, QueryModule,
+    QueryModuleCandidate, QueryModuleName, QueryModuleVersion, compile_application_role,
+    generate_mcp_commands, generate_mcp_tools, generate_python_client, generate_rust_client,
+    generate_typescript_client,
 };
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
@@ -92,6 +96,7 @@ fn main() {
     fs::create_dir_all(output.join("fixtures/query-modules")).expect("fixture directory");
     fs::create_dir_all(output.join("fixtures/application-manifests"))
         .expect("manifest fixture directory");
+    fs::create_dir_all(output.join("fixtures/application-locks")).expect("lock fixture directory");
     fs::create_dir_all(output.join("clients/typescript/ticketdesk")).expect("client directory");
     fs::create_dir_all(output.join("clients/python/ticketdesk")).expect("client directory");
     fs::write(
@@ -203,6 +208,162 @@ fn main() {
         ),
     )
     .expect("role description fixture");
+    generate_migration_application_fixtures(&output);
+}
+
+fn generate_migration_application_fixtures(output: &std::path::Path) {
+    let parent = compile_contract_source(CONTRACT).expect("compile migration parent");
+    let successor_source = CONTRACT.replacen("version 1", "version 2", 1).replace(
+        "index by_assignee_status (organization_id, assignee_id, status, ticket_id)",
+        concat!(
+            "index by_assignee_status (organization_id, assignee_id, status, ticket_id)\n",
+            "    index by_title (organization_id, title, ticket_id)"
+        ),
+    );
+    let successor = compile_contract_successor(&successor_source, &parent)
+        .expect("compile migration successor");
+    let migration_source = "migration TicketDesk from 1 to 2 {}\n";
+    let migration = compile_migration_source(migration_source, &parent, &successor)
+        .expect("compile migration fixture");
+    let query_source = QUERIES
+        .iter()
+        .find_map(|(name, source)| (*name == "GetTicket").then_some(*source))
+        .expect("GetTicket source");
+    let module = QueryModule::compile(
+        QueryModuleCandidate::new(
+            QueryModuleName::new("ticketdesk").expect("module name"),
+            QueryModuleVersion::new(2).expect("module version"),
+            vec![NamedQuerySource::new("GetTicket", query_source).expect("query source")],
+        )
+        .expect("module candidate"),
+        &successor,
+    )
+    .expect("compile successor query module");
+    let source_json = serde_json::json!({
+        "application": "ticketdesk-migration-fixture",
+        "contract": {
+            "lineage": "TicketDesk",
+            "source": "riffdb/contract.riff",
+            "version": 2,
+        },
+        "generation": {
+            "mcp": "generated/mcp/tools.json",
+            "python": "generated/python/client.py",
+            "rust": "generated/rust/client.rs",
+            "typescript": "generated/typescript/client.ts",
+        },
+        "migrations": [{
+            "parent_bundle": "retained/ticketdesk-v1.riffdb.contract.bundle",
+            "source": "riffdb/migrations/ticketdesk-v1-to-v2.riffm",
+        }],
+        "query_modules": [{
+            "name": "ticketdesk",
+            "queries": [{
+                "name": "GetTicket",
+                "source": "riffdb/queries/get_ticket.riffq",
+            }],
+            "version": 2,
+        }],
+        "roles": [{
+            "commands": ["CreateTicket"],
+            "environment": "development",
+            "name": "TicketDeskMigrationAgent",
+            "queries": ["GetTicket"],
+            "tenant_scope": "global",
+        }],
+        "schema": "riffdb.application-source/v3",
+        "seed_inputs": [],
+    });
+    let source = ApplicationSourceManifest::parse(
+        &serde_json::to_string(&source_json).expect("application source JSON"),
+    )
+    .expect("application source V3");
+    let exact = source
+        .exact_manifest(&successor, std::slice::from_ref(&module))
+        .expect("exact manifest");
+    let rust = generate_rust_client(&module, &successor);
+    let typescript = generate_typescript_client(&module, &successor);
+    let python = generate_python_client(&module, &successor).expect("Python client");
+    let mcp = serde_json::to_vec(&serde_json::json!({
+        "commands": generate_mcp_commands(&module, &successor)
+            .expect("MCP commands")
+            .iter()
+            .map(|command| command.name.as_str())
+            .collect::<Vec<_>>(),
+        "schema": "riffdb-migration-fixture-mcp/v1",
+        "tools": generate_mcp_tools(&module)
+            .expect("MCP tools")
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+    }))
+    .expect("MCP fixture");
+    let artifacts = [
+        (
+            GeneratedApplicationArtifactKind::Manifest,
+            "generated/riffdb.application.exact.json",
+            exact.canonical_bytes(),
+        ),
+        (
+            GeneratedApplicationArtifactKind::Rust,
+            "generated/rust/client.rs",
+            rust.as_bytes(),
+        ),
+        (
+            GeneratedApplicationArtifactKind::TypeScript,
+            "generated/typescript/client.ts",
+            typescript.as_bytes(),
+        ),
+        (
+            GeneratedApplicationArtifactKind::Python,
+            "generated/python/client.py",
+            python.as_bytes(),
+        ),
+        (
+            GeneratedApplicationArtifactKind::Mcp,
+            "generated/mcp/tools.json",
+            mcp.as_slice(),
+        ),
+        (
+            GeneratedApplicationArtifactKind::ContractBundle,
+            riffdb_query_module::CONTRACT_BUNDLE_ARTIFACT_PATH,
+            successor.canonical_bytes(),
+        ),
+    ]
+    .into_iter()
+    .map(|(kind, path, bytes)| {
+        GeneratedApplicationArtifact::new(kind, path, bytes).expect("generated artifact")
+    })
+    .collect::<Vec<_>>();
+    let migration_input = ApplicationMigrationLockInput::new(
+        "riffdb/migrations/ticketdesk-v1-to-v2.riffm",
+        migration_source.as_bytes(),
+        "retained/ticketdesk-v1.riffdb.contract.bundle",
+        &parent,
+        "generated/migrations/1-to-2.riffdb.migration.bundle",
+        &migration,
+    )
+    .expect("migration lock input");
+    let lock = ApplicationLock::compile_v4(
+        &source,
+        &exact,
+        &successor,
+        std::slice::from_ref(&module),
+        &artifacts,
+        &[migration_input],
+    )
+    .expect("application lock V4");
+
+    fs::write(
+        output.join("fixtures/application-manifests/ticketdesk-migration-v3.json"),
+        source.canonical_bytes(),
+    )
+    .expect("source V3 fixture");
+    fs::write(
+        output.join("fixtures/application-locks/ticketdesk-migration-v4.json"),
+        lock.canonical_bytes(),
+    )
+    .expect("lock V4 fixture");
 }
 
 fn hex(bytes: &[u8]) -> String {

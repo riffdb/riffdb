@@ -40,24 +40,26 @@ use crate::hooks::RedbTestOperation;
 use crate::keys;
 use crate::layout::{
     AUDIT, AUDIT_BY_REQUEST, CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY,
-    COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS,
-    META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
-    META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
+    COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING,
+    INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE,
+    META_CAPABILITY_BOOTSTRAP, META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
     META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, OUTBOX, OUTBOX_STATUS,
     PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE,
     QUERY_MODULES, SECONDARY_INDEXES, TABLE_NAMES,
 };
 use crate::store::{
     PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST, PRE_ENTITY_REFERENCE_REGISTRY_DIGEST,
+    PRE_EVENT_ROUTE_REGISTRY_DIGEST,
     PRE_HISTORY_INCARNATION_REGISTRY_DIGEST, PRE_INDEX_GENERATION_REGISTRY_DIGEST,
     RedbDormantPorts, RedbStore, SharedRedb,
 };
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
-const STRUCTURAL_TABLE_COUNT: usize = 22;
+const STRUCTURAL_TABLE_COUNT: usize = 23;
 
 fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
     digest == riffdb_storage_api::proto_codec::current_record_registry_digest()
+        || digest == riffdb_types::SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST)
@@ -878,6 +880,7 @@ impl RedbStructuralEvidenceSession {
             COMMITS,
             PROVENANCE,
             EVENTS,
+            EVENT_ROUTES,
             OUTBOX,
             OUTBOX_STATUS,
             PROJECTION_STATE,
@@ -1147,23 +1150,24 @@ impl RedbStructuralEvidenceSession {
                     10 => transaction.open_table(COMMITS).map_err(table_error)?,
                     11 => transaction.open_table(PROVENANCE).map_err(table_error)?,
                     12 => transaction.open_table(EVENTS).map_err(table_error)?,
-                    13 => transaction.open_table(OUTBOX).map_err(table_error)?,
-                    14 => transaction.open_table(OUTBOX_STATUS).map_err(table_error)?,
-                    15 => transaction
+                    13 => transaction.open_table(EVENT_ROUTES).map_err(table_error)?,
+                    14 => transaction.open_table(OUTBOX).map_err(table_error)?,
+                    15 => transaction.open_table(OUTBOX_STATUS).map_err(table_error)?,
+                    16 => transaction
                         .open_table(PROJECTION_STATE)
                         .map_err(table_error)?,
-                    16 => transaction
+                    17 => transaction
                         .open_table(PROJECTION_FRONTIER)
                         .map_err(table_error)?,
-                    17 => transaction
+                    18 => transaction
                         .open_table(PROJECTION_APPLIED)
                         .map_err(table_error)?,
-                    18 => transaction.open_table(CAPABILITIES).map_err(table_error)?,
-                    19 => transaction
+                    19 => transaction.open_table(CAPABILITIES).map_err(table_error)?,
+                    20 => transaction
                         .open_table(CAPABILITY_TOKENS)
                         .map_err(table_error)?,
-                    20 => transaction.open_table(AUDIT).map_err(table_error)?,
-                    21 => transaction
+                    21 => transaction.open_table(AUDIT).map_err(table_error)?,
+                    22 => transaction
                         .open_table(AUDIT_BY_REQUEST)
                         .map_err(table_error)?,
                     _ => return Err(invariant()),
@@ -1231,15 +1235,16 @@ fn inspect_table_row_from_bytes(
         10 => inspect_commit_row(transaction, index, key, value),
         11 => inspect_provenance_row(transaction, key, value),
         12 => inspect_event_row(transaction, key, value),
-        13 => inspect_outbox_row(transaction, key, value),
-        14 => inspect_outbox_status_row(transaction, key, value),
-        15 => inspect_projection_state_row(transaction, key, value),
-        16 => inspect_projection_control_row(transaction, key, value),
-        17 => inspect_projection_apply_row(transaction, key, value),
-        18 => inspect_capability_row(transaction, inputs, database_id, key, value),
-        19 => inspect_capability_lookup_row(transaction, key, value),
-        20 => inspect_audit_row(transaction, index, key, value),
-        21 => inspect_audit_by_request_row(transaction, key, value),
+        13 => inspect_event_route_row(transaction, key, value),
+        14 => inspect_outbox_row(transaction, key, value),
+        15 => inspect_outbox_status_row(transaction, key, value),
+        16 => inspect_projection_state_row(transaction, key, value),
+        17 => inspect_projection_control_row(transaction, key, value),
+        18 => inspect_projection_apply_row(transaction, key, value),
+        19 => inspect_capability_row(transaction, inputs, database_id, key, value),
+        20 => inspect_capability_lookup_row(transaction, key, value),
+        21 => inspect_audit_row(transaction, index, key, value),
+        22 => inspect_audit_by_request_row(transaction, key, value),
         _ => Err(invariant()),
     }
 }
@@ -1279,6 +1284,7 @@ fn collect_startup_snapshot(
         table_len(transaction, COMMITS)?,
         table_len(transaction, PROVENANCE)?,
         table_len(transaction, EVENTS)?,
+        table_len(transaction, EVENT_ROUTES)?,
         table_len(transaction, OUTBOX)?,
         table_len(transaction, OUTBOX_STATUS)?,
         table_len(transaction, PROJECTION_STATE)?,
@@ -1828,10 +1834,54 @@ fn inspect_event_row(
         Ok(value) => value,
         Err(code) => return Ok(Some(authoritative(code))),
     };
-    Ok(
-        (event.event_id() != id || !event_graph_is_reciprocal(transaction, &event)?)
-            .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)),
-    )
+    let route_matches = if let Some(commit) = get_commit(transaction, id.commit_sequence())? {
+        let route_key = keys::encode_event_route_key(commit.partition_hash(), id);
+        matches!(
+            get_decoded(
+                transaction,
+                EVENT_ROUTES,
+                &route_key,
+                codec::decode_event_route_v1,
+            )?,
+            Ok(Some(route))
+                if route.event_id() == id
+                    && route.event_type_id() == event.event_type_id()
+                    && route.event_hash() == event.event_hash()
+        )
+    } else {
+        false
+    };
+    Ok((event.event_id() != id
+        || !event_graph_is_reciprocal(transaction, &event)?
+        || !route_matches)
+        .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)))
+}
+
+fn inspect_event_route_row(
+    transaction: &ReadTransaction,
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let Ok((partition_hash, id)) = keys::decode_event_route_key(key) else {
+        return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
+    };
+    let route = match decoded(codec::decode_event_route_v1(value)) {
+        Ok(value) => value,
+        Err(code) => return Ok(Some(authoritative(code))),
+    };
+    let Some(event) = get_event(transaction, id)? else {
+        return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+    };
+    let Some(commit) = get_commit(transaction, id.commit_sequence())? else {
+        return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+    };
+    let ordinal = usize::try_from(id.event_ordinal()).map_err(|_| limit_exceeded())?;
+    Ok((route.event_id() != id
+        || route.event_type_id() != event.event_type_id()
+        || route.event_hash() != event.event_hash()
+        || commit.partition_hash() != partition_hash
+        || commit.events().get(ordinal) != Some(&event))
+    .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)))
 }
 
 fn inspect_outbox_row(

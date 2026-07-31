@@ -71,8 +71,13 @@ EntityItem: Spanned<EntityItem> = {
 };
 
 EventDeclaration: EventDeclaration = {
-    "event" <name:Identifier> "{" <fields:SpannedTypedField*> "}"
-        => EventDeclaration { name, fields },
+    "event" <name:Identifier> "{" <partition_by:EventPartition?> <fields:SpannedTypedField*> "}"
+        => EventDeclaration { name, partition_by, fields },
+};
+
+EventPartition: Spanned<Vec<Spanned<String>>> = {
+    <lo:@L> "partition_by" "(" <fields:IdentifierList> ")" <hi:@R>
+        => parser::spanned(fields, lo, hi),
 };
 
 EnumDeclaration: EnumDeclaration = {

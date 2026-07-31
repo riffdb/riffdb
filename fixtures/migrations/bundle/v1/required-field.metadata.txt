@@ -1,0 +1,8 @@
+format=riffdb-migration-bundle-fixture-v1
+lineage=MigrationFixture
+parent_version=1
+parent_bundle_hash=426a5aa13ec1a2d76ce81a5f62c45b7aca6d132dfb0e02f45b6531c25bd34ecc
+candidate_version=2
+candidate_bundle_hash=c8ed41d55aa50c6747ab0623abd239dd8f91cf4c8430275ab73c4e3fe993105c
+source_hash=56b489f291eff4bae5764efdb4f58b7ab8e650b967312d3cf911126e0f3f4908
+step_count=1

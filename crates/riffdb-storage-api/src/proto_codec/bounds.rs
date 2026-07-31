@@ -12,10 +12,10 @@ use crate::{
 
 use super::{
     COMMIT, CanonicalStoredEnvelopeV1, DurableCodecError, DurableCodecErrorKind, ENTITY, EVENT,
-    INDEX_ENTRY, INDEX_EPOCH, OUTCOME, PROVENANCE, binding_to_proto, claims_to_proto,
+    EVENT_ROUTE, INDEX_ENTRY, INDEX_EPOCH, OUTCOME, PROVENANCE, binding_to_proto, claims_to_proto,
     dependencies_to_proto, durability_to_proto, encode_application_sequence_allocator_v1,
     encode_commit_record_v1, encode_durable_event_v1, encode_entity_record_v1,
-    encode_index_entry_v2, encode_index_epoch_v1, encode_outbox_intent_v1,
+    encode_event_route_v1, encode_index_entry_v2, encode_index_epoch_v1, encode_outbox_intent_v1,
     encode_provenance_record_v1, encode_stored_outcome_v1, entity_target_to_proto,
     identity_to_proto, plan_to_proto, storage_result, timestamp_to_proto,
 };
@@ -125,6 +125,7 @@ pub struct EncodedAtomicCommandRecordSetV1 {
     index_epochs: Vec<CanonicalStoredEnvelopeV1>,
     outcome: CanonicalStoredEnvelopeV1,
     events: Vec<CanonicalStoredEnvelopeV1>,
+    event_routes: Vec<CanonicalStoredEnvelopeV1>,
     outbox_intents: Vec<CanonicalStoredEnvelopeV1>,
     provenance: CanonicalStoredEnvelopeV1,
     commit: CanonicalStoredEnvelopeV1,
@@ -168,6 +169,12 @@ impl EncodedAtomicCommandRecordSetV1 {
     #[must_use]
     pub fn events(&self) -> &[CanonicalStoredEnvelopeV1] {
         &self.events
+    }
+
+    /// Returns payload-free partition event-route envelopes in ordinal order.
+    #[must_use]
+    pub fn event_routes(&self) -> &[CanonicalStoredEnvelopeV1] {
+        &self.event_routes
     }
 
     /// Returns reciprocal outbox-intent envelopes in event order.
@@ -236,6 +243,18 @@ pub fn command_write_set_upper_bound_v1(
             Ok(sizing_event_id_len(ordinal))
         })
         .collect::<Result<Vec<_>, DurableCodecError>>()?;
+    let event_route_lens = evaluated
+        .event_intents()
+        .iter()
+        .zip(&event_id_lens)
+        .map(|(event, event_id_len)| {
+            sum_proto_fields([
+                message_field_len(1, *event_id_len),
+                varint_field_len(2, event.event_type_id().get()),
+                bytes_field_len(3, SIZING_EVENT_HASH.len()),
+            ])
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let read_dependencies = storage_result(StoredReadDependenciesV1::from_live(
         evaluated.read_dependencies(),
     ))?;
@@ -345,7 +364,12 @@ pub fn command_write_set_upper_bound_v1(
         events: sum_sizes(
             event_payload_lens
                 .iter()
-                .map(|value| sizing_charge_len(EVENT, *value)),
+                .map(|value| sizing_charge_len(EVENT, *value))
+                .chain(
+                    event_route_lens
+                        .iter()
+                        .map(|value| sizing_charge_len(EVENT_ROUTE, *value)),
+                ),
         )?,
         outbox_intents: sum_sizes(event_reference_lens.iter().map(|event_reference_len| {
             message_field_len(1, *event_reference_len)
@@ -402,6 +426,17 @@ pub fn encode_atomic_command_record_set_v1(
         .iter()
         .map(encode_durable_event_v1)
         .collect::<Result<Vec<_>, _>>()?;
+    let event_routes = records
+        .events()
+        .iter()
+        .map(|event| {
+            encode_event_route_v1(crate::StoredEventRouteV1::new(
+                event.event_id(),
+                event.event_type_id(),
+                event.event_hash(),
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let outbox_intents = records
         .outbox_intents()
         .iter()
@@ -416,7 +451,9 @@ pub fn encode_atomic_command_record_set_v1(
         sum_optional_envelope_charges(&index_entries)?,
         sum_envelope_charges(&index_epochs)?,
         outcome.encoded_content_charge().get(),
-        sum_envelope_charges(&events)?,
+        sum_envelope_charges(&events)?
+            .checked_add(sum_envelope_charges(&event_routes)?)
+            .ok_or_else(DurableCodecError::invariant)?,
         sum_envelope_charges(&outbox_intents)?,
         provenance.encoded_content_charge().get(),
         commit.encoded_content_charge().get(),
@@ -433,6 +470,7 @@ pub fn encode_atomic_command_record_set_v1(
         index_epochs,
         outcome,
         events,
+        event_routes,
         outbox_intents,
         provenance,
         commit,

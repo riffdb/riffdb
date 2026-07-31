@@ -1,0 +1,86 @@
+name: Handbook
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: riffdb-handbook-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  RUST_TOOLCHAIN: "1.97.0"
+
+jobs:
+  build:
+    name: Build and verify
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+      - name: Install Graphviz
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes graphviz
+      - name: Cache Cargo sources
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: handbook-cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', 'scripts/tool-versions') }}
+      - name: Cache handbook tools
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/bin/mdbook
+            ~/.cargo/bin/lychee
+          key: handbook-tools-${{ runner.os }}-${{ hashFiles('scripts/tool-versions') }}
+      - name: Install pinned handbook tools
+        shell: bash
+        run: |
+          source scripts/tool-versions
+          if ! mdbook --version 2>/dev/null | grep -Fq "v$RIFFDB_MDBOOK_VERSION"; then
+            cargo install --locked --version "$RIFFDB_MDBOOK_VERSION" mdbook
+          fi
+          if ! lychee --version 2>/dev/null | grep -Fq "$RIFFDB_LYCHEE_VERSION"; then
+            cargo install --locked --version "$RIFFDB_LYCHEE_VERSION" lychee
+          fi
+      - name: Verify handbook
+        run: ./scripts/handbook check
+      - name: Check external links on schedule
+        if: github.event_name == 'schedule'
+        run: lychee --include-fragments --root-dir target/handbook --exclude-path '/api/rust/' target/handbook
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: target/handbook
+
+  deploy:
+    name: Publish GitHub Pages
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'schedule'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

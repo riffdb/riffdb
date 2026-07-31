@@ -201,6 +201,11 @@ human summary with p50 latencies and RiffDB/Postgres ratios.
   128). Every item retains independent authorization, idempotency, outcome,
   provenance, audit, and recovery semantics.
 - PostgreSQL stays in the nested comparison workspace only.
+- Live `riffdbd` session databases default to **`target/app-baseline/db/`**
+  (real disk under the repo; gitignored). They do **not** use `/tmp` (often a
+  small tmpfs — full load can fill it and look like a process crash). Override
+  with `--database-root PATH` or `RIFFDB_APP_BASELINE_DB_ROOT`. On start the
+  harness sweeps stale `riffdb-app-baseline-*` session dirs under that root.
 
 ## Scale
 

@@ -1,0 +1,4 @@
+format=riffdb-compatibility-report-fixture-v1
+overall=requires-migration
+entry_count=1
+entry code=RDB-K030 class=requires-migration path=entity:1/field:3

@@ -41,8 +41,14 @@ if [[ "$mode" == "--check" ]]; then
         printf 'compiler fixtures are stale, missing, or have an unexpected file inventory\n' >&2
         exit 1
     fi
+    if ! diff --recursive --brief -- fixtures/migrations "$output_root/fixtures/migrations"; then
+        printf 'migration fixtures are stale, missing, or have an unexpected file inventory\n' >&2
+        exit 1
+    fi
     printf 'Contract IR documentation and compiler fixtures are current.\n'
 else
     artifact_count="$(find fixtures/compiler -type f -print | wc -l | tr -d ' ')"
-    printf 'Generated 2 contract IR documents and %s compiler fixtures.\n' "$artifact_count"
+    migration_count="$(find fixtures/migrations -type f -print | wc -l | tr -d ' ')"
+    printf 'Generated 2 contract IR documents, %s compiler fixtures, and %s migration fixtures.\n' \
+        "$artifact_count" "$migration_count"
 fi
