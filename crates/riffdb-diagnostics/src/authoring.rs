@@ -588,6 +588,24 @@ impl AuthoringDiagnostics {
         )?])
     }
 
+    /// Reports one source symbol rejected by a deterministic binding generator.
+    pub fn python_name_collision(
+        path: AuthoringSourcePath,
+        span: (u32, u32),
+        symbol_path: Vec<String>,
+    ) -> Result<Self, AuthoringDiagnosticBoundsError> {
+        Self::new(vec![diagnostic_value(
+            AuthoringStage::Generation,
+            AuthoringDiagnosticCode("RDB-GEN001"),
+            path,
+            Some(span),
+            symbol_path,
+            "application symbols collide after Python name normalization",
+            AuthoringCause::GenerationFailure,
+            vec![AuthoringFix::CorrectSymbol],
+        )?])
+    }
+
     /// Creates one closed filesystem diagnostic.
     pub fn filesystem(
         path: AuthoringSourcePath,
@@ -1072,5 +1090,34 @@ query Bad($organization_id: Organization.organization_id, $title: Ticket.title) 
             assert!(AuthoringSourcePath::new(path).is_err(), "{path}");
         }
         assert!(AuthoringSourcePath::new("riffdb/queries/page.riffq").is_ok());
+    }
+
+    #[test]
+    fn python_name_collision_is_source_spanned_and_closed() {
+        let diagnostics = AuthoringDiagnostics::python_name_collision(
+            AuthoringSourcePath::new("riffdb/contract.riff").expect("path"),
+            (41, 47),
+            vec![
+                "entity".to_owned(),
+                "Item".to_owned(),
+                "field".to_owned(),
+                "class_".to_owned(),
+            ],
+        )
+        .expect("diagnostics");
+        let diagnostic = &diagnostics.as_slice()[0];
+
+        assert_eq!(diagnostic.code().as_str(), "RDB-GEN001");
+        assert_eq!(diagnostic.stage(), AuthoringStage::Generation);
+        assert_eq!(diagnostic.cause(), AuthoringCause::GenerationFailure);
+        assert_eq!(
+            diagnostic.span().map(|span| (span.start(), span.end())),
+            Some((41, 47))
+        );
+        assert_eq!(
+            diagnostic.symbol_path(),
+            &["entity", "Item", "field", "class_"]
+        );
+        assert_eq!(diagnostic.fixes(), &[AuthoringFix::CorrectSymbol]);
     }
 }

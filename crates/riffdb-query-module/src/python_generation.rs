@@ -4,15 +4,84 @@ use std::collections::BTreeSet;
 use std::fmt::{self, Write as _};
 
 use riffdb_contract_ir::{ContractBundle, RecordTypeRef, ValueType, ValueTypeTag};
+use riffdb_contract_syntax::ast::{Binding, Declaration, EntityItem, OutcomeExpression};
 use riffdb_query_ir::NamedTypeSchema;
+use riffdb_riffql_syntax::{FieldSelection, Selection};
 
 use crate::QueryModule;
 
-/// Closed Python binding generation failure.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PythonGenerationError {
-    /// Two source symbols normalize to the same Python identifier.
-    NameCollision,
+/// Source symbol responsible for one Python name collision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PythonGenerationError {
+    query_name: Option<String>,
+    symbol_path: Vec<String>,
+}
+
+/// Located Python generation diagnostic in one caller-owned source file.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PythonGenerationLocation {
+    query_name: Option<String>,
+    symbol_path: Vec<String>,
+    span: (u32, u32),
+}
+
+impl PythonGenerationLocation {
+    /// Query source name, or `None` for the contract source.
+    #[must_use]
+    pub fn query_name(&self) -> Option<&str> {
+        self.query_name.as_deref()
+    }
+
+    /// Stable symbolic source path.
+    #[must_use]
+    pub fn symbol_path(&self) -> &[String] {
+        &self.symbol_path
+    }
+
+    /// Half-open UTF-8 byte span in the selected source.
+    #[must_use]
+    pub const fn span(&self) -> (u32, u32) {
+        self.span
+    }
+}
+
+impl PythonGenerationError {
+    fn contract(symbol_path: Vec<String>) -> Self {
+        Self {
+            query_name: None,
+            symbol_path,
+        }
+    }
+
+    fn query(query_name: &str, symbol_path: Vec<String>) -> Self {
+        Self {
+            query_name: Some(query_name.to_owned()),
+            symbol_path,
+        }
+    }
+
+    /// Locates the rejected source symbol using the parser-owned AST spans.
+    #[must_use]
+    pub fn locate(
+        &self,
+        contract_source: &str,
+        query_sources: &[(&str, &str)],
+    ) -> Option<PythonGenerationLocation> {
+        let span = match self.query_name.as_deref() {
+            Some(query_name) => {
+                let source = query_sources
+                    .iter()
+                    .find_map(|(name, source)| (*name == query_name).then_some(*source))?;
+                locate_query_symbol(source, &self.symbol_path)?
+            }
+            None => locate_contract_symbol(contract_source, &self.symbol_path)?,
+        };
+        Some(PythonGenerationLocation {
+            query_name: self.query_name.clone(),
+            symbol_path: self.symbol_path.clone(),
+            span,
+        })
+    }
 }
 
 impl fmt::Display for PythonGenerationError {
@@ -22,6 +91,235 @@ impl fmt::Display for PythonGenerationError {
 }
 
 impl std::error::Error for PythonGenerationError {}
+
+fn locate_contract_symbol(source: &str, path: &[String]) -> Option<(u32, u32)> {
+    let document = riffdb_contract_syntax::parse_contract(source).ok()?;
+    let contract = &document.contract.value;
+    match path {
+        [kind, name] if kind == "contract" && contract.name.value == *name => {
+            Some(contract_span(contract.name.span))
+        }
+        [kind, name] if kind == "enum" => contract.declarations.iter().find_map(|declaration| {
+            let Declaration::Enum(enumeration) = &declaration.value else {
+                return None;
+            };
+            (enumeration.name.value == *name).then(|| contract_span(enumeration.name.span))
+        }),
+        [kind, enum_name, variant_kind, variant] if kind == "enum" && variant_kind == "variant" => {
+            contract.declarations.iter().find_map(|declaration| {
+                let Declaration::Enum(enumeration) = &declaration.value else {
+                    return None;
+                };
+                (enumeration.name.value == *enum_name)
+                    .then(|| {
+                        enumeration
+                            .variants
+                            .iter()
+                            .find(|candidate| candidate.value == *variant)
+                            .map(|candidate| contract_span(candidate.span))
+                    })
+                    .flatten()
+            })
+        }
+        [kind, entity_name] if kind == "entity" => {
+            contract.declarations.iter().find_map(|declaration| {
+                let Declaration::Entity(entity) = &declaration.value else {
+                    return None;
+                };
+                (entity.name.value == *entity_name).then(|| contract_span(entity.name.span))
+            })
+        }
+        [kind, entity_name, field_kind, field] if kind == "entity" && field_kind == "field" => {
+            contract.declarations.iter().find_map(|declaration| {
+                let Declaration::Entity(entity) = &declaration.value else {
+                    return None;
+                };
+                if entity.name.value != *entity_name {
+                    return None;
+                }
+                entity.items.iter().find_map(|item| match &item.value {
+                    EntityItem::Key(key) => key
+                        .fields
+                        .iter()
+                        .find(|candidate| candidate.value.name.value == *field)
+                        .map(|candidate| contract_span(candidate.value.name.span)),
+                    EntityItem::Field(candidate) if candidate.name.value == *field => {
+                        Some(contract_span(candidate.name.span))
+                    }
+                    EntityItem::Field(_)
+                    | EntityItem::Invariant(_)
+                    | EntityItem::Index(_)
+                    | EntityItem::Unique(_)
+                    | EntityItem::Reference(_) => None,
+                })
+            })
+        }
+        [kind, command_name] if kind == "command" => {
+            contract.declarations.iter().find_map(|declaration| {
+                let Declaration::Command(command) = &declaration.value else {
+                    return None;
+                };
+                (command.name.value == *command_name).then(|| contract_span(command.name.span))
+            })
+        }
+        [kind, command_name, input_kind, input] if kind == "command" && input_kind == "input" => {
+            contract.declarations.iter().find_map(|declaration| {
+                let Declaration::Command(command) = &declaration.value else {
+                    return None;
+                };
+                (command.name.value == *command_name)
+                    .then(|| {
+                        command
+                            .inputs
+                            .iter()
+                            .find(|candidate| candidate.value.field.name.value == *input)
+                            .map(|candidate| contract_span(candidate.value.field.name.span))
+                    })
+                    .flatten()
+            })
+        }
+        [kind, command_name, outcome_kind, outcome]
+            if kind == "command" && outcome_kind == "outcome" =>
+        {
+            locate_contract_outcome(contract, command_name, outcome)
+                .map(|candidate| contract_span(candidate.name.span))
+        }
+        [kind, command_name, outcome_kind, outcome, field_kind, field]
+            if kind == "command" && outcome_kind == "outcome" && field_kind == "field" =>
+        {
+            locate_contract_outcome(contract, command_name, outcome).and_then(|candidate| {
+                candidate
+                    .payload
+                    .value
+                    .fields
+                    .iter()
+                    .find(|candidate| candidate.value.name.value == *field)
+                    .map(|candidate| contract_span(candidate.value.name.span))
+            })
+        }
+        _ => None,
+    }
+}
+
+fn locate_contract_outcome<'a>(
+    contract: &'a riffdb_contract_syntax::ast::Contract,
+    command_name: &str,
+    outcome_name: &str,
+) -> Option<&'a OutcomeExpression> {
+    let command = contract.declarations.iter().find_map(|declaration| {
+        let Declaration::Command(command) = &declaration.value else {
+            return None;
+        };
+        (command.name.value == command_name).then_some(command)
+    })?;
+    command
+        .bindings
+        .iter()
+        .map(|binding| match &binding.value {
+            Binding::Read(binding) | Binding::Mutate(binding) | Binding::Create(binding) => {
+                &binding.failure.value
+            }
+        })
+        .chain(
+            command
+                .requirements
+                .iter()
+                .map(|requirement| &requirement.value.rejection.value),
+        )
+        .chain(std::iter::once(&command.return_clause.value.outcome.value))
+        .find(|outcome| outcome.name.value == outcome_name)
+}
+
+fn contract_span(span: riffdb_contract_syntax::Span) -> (u32, u32) {
+    (span.start(), span.end())
+}
+
+fn locate_query_symbol(source: &str, path: &[String]) -> Option<(u32, u32)> {
+    let document = riffdb_riffql_syntax::parse_query(source).ok()?;
+    let [kind, query_name, rest @ ..] = path else {
+        return None;
+    };
+    if kind != "query"
+        || document
+            .name
+            .as_ref()
+            .is_some_and(|name| name.value.as_str() != query_name)
+    {
+        return None;
+    }
+    match rest {
+        [] => document.name.map(|name| query_span(name.span)),
+        [parameter_kind, parameter, ..] if parameter_kind == "parameter" => document
+            .parameters
+            .iter()
+            .find(|candidate| candidate.name.value.as_str() == parameter)
+            .map(|candidate| query_span(candidate.name.span)),
+        [outcome_kind, outcome] if outcome_kind == "outcome" => document
+            .body
+            .outcomes
+            .iter()
+            .chain(document.body.outcome.iter())
+            .find(|candidate| candidate.value.as_str() == outcome)
+            .map(|candidate| query_span(candidate.span)),
+        [field_kind, fields @ ..] if field_kind == "field" && !fields.is_empty() => {
+            locate_query_field(&document.body.selection, fields)
+        }
+        _ => None,
+    }
+}
+
+fn locate_query_field(selection: &Selection, path: &[String]) -> Option<(u32, u32)> {
+    let (name, remaining) = path.split_first()?;
+    let field = selection
+        .fields
+        .iter()
+        .find(|field| query_field_name(field) == name)?;
+    if remaining.is_empty() {
+        return Some(query_field_span(field));
+    }
+    field
+        .nested
+        .as_ref()
+        .and_then(|nested| locate_query_field(nested, remaining))
+        .or_else(|| Some(query_field_span(field)))
+}
+
+fn query_field_name(field: &FieldSelection) -> &str {
+    field.alias.as_ref().map_or_else(
+        || {
+            field
+                .source
+                .value
+                .0
+                .last()
+                .expect("the parser only produces nonempty paths")
+                .value
+                .as_str()
+        },
+        |alias| alias.value.as_str(),
+    )
+}
+
+fn query_field_span(field: &FieldSelection) -> (u32, u32) {
+    field.alias.as_ref().map_or_else(
+        || {
+            query_span(
+                field
+                    .source
+                    .value
+                    .0
+                    .last()
+                    .expect("the parser only produces nonempty paths")
+                    .span,
+            )
+        },
+        |alias| query_span(alias.span),
+    )
+}
+
+const fn query_span(span: riffdb_riffql_syntax::Span) -> (u32, u32) {
+    (span.start, span.end)
+}
 
 /// Generates one complete, identity-pinned Python application module.
 pub fn generate_python_client(
@@ -472,42 +770,84 @@ fn validate_names(
     let mut methods = BTreeSet::new();
 
     for enumeration in contract.schema().enums() {
-        insert_name(&mut top_level, pascal(enumeration.name()))?;
+        insert_name(
+            &mut top_level,
+            pascal(enumeration.name()),
+            PythonGenerationError::contract(vec!["enum".to_owned(), enumeration.name().to_owned()]),
+        )?;
         validate_normalized_names(
-            enumeration
-                .variants()
-                .iter()
-                .map(|variant| screaming_snake(variant.name())),
+            enumeration.variants().iter().map(|variant| {
+                (
+                    screaming_snake(variant.name()),
+                    PythonGenerationError::contract(vec![
+                        "enum".to_owned(),
+                        enumeration.name().to_owned(),
+                        "variant".to_owned(),
+                        variant.name().to_owned(),
+                    ]),
+                )
+            }),
             false,
         )?;
     }
     for entity in contract.schema().entities() {
-        insert_name(&mut top_level, pascal(entity.name()))?;
+        insert_name(
+            &mut top_level,
+            pascal(entity.name()),
+            PythonGenerationError::contract(vec!["entity".to_owned(), entity.name().to_owned()]),
+        )?;
         validate_normalized_names(
-            entity
-                .record()
-                .fields()
-                .iter()
-                .map(|field| python_identifier(field.name())),
+            entity.record().fields().iter().map(|field| {
+                (
+                    python_identifier(field.name()),
+                    PythonGenerationError::contract(vec![
+                        "entity".to_owned(),
+                        entity.name().to_owned(),
+                        "field".to_owned(),
+                        field.name().to_owned(),
+                    ]),
+                )
+            }),
             false,
         )?;
     }
     for query in module.queries() {
         let name = pascal(query.name());
-        insert_name(&mut top_level, format!("{name}Params"))?;
-        insert_name(&mut top_level, format!("{name}Result"))?;
+        let query_origin = || {
+            PythonGenerationError::query(
+                query.name(),
+                vec!["query".to_owned(), query.name().to_owned()],
+            )
+        };
+        insert_name(&mut top_level, format!("{name}Params"), query_origin())?;
+        insert_name(&mut top_level, format!("{name}Result"), query_origin())?;
         insert_name(
             &mut top_level,
             format!("{}_QUERY_PLAN_HASH", screaming_snake(query.name())),
+            query_origin(),
         )?;
-        insert_name(&mut methods, python_identifier(&snake(query.name())))?;
+        insert_name(
+            &mut methods,
+            python_identifier(&snake(query.name())),
+            query_origin(),
+        )?;
 
         let schemas = query.program().surface().schemas();
         validate_normalized_names(
-            schemas
-                .parameters()
-                .iter()
-                .map(|field| python_identifier(field.name())),
+            schemas.parameters().iter().map(|field| {
+                (
+                    python_identifier(field.name()),
+                    PythonGenerationError::query(
+                        query.name(),
+                        vec![
+                            "query".to_owned(),
+                            query.name().to_owned(),
+                            "parameter".to_owned(),
+                            field.name().to_owned(),
+                        ],
+                    ),
+                )
+            }),
             false,
         )?;
         for parameter in schemas.parameters() {
@@ -515,16 +855,47 @@ fn validate_names(
                 &mut top_level,
                 &format!("{name}Params{}", pascal(parameter.name())),
                 parameter.value_type(),
+                PythonGenerationError::query(
+                    query.name(),
+                    vec![
+                        "query".to_owned(),
+                        query.name().to_owned(),
+                        "parameter".to_owned(),
+                        parameter.name().to_owned(),
+                    ],
+                ),
             )?;
         }
         for branch in schemas.results() {
             let branch_name = format!("{name}{}", pascal(branch.name()));
-            insert_name(&mut top_level, branch_name.clone())?;
+            insert_name(
+                &mut top_level,
+                branch_name.clone(),
+                PythonGenerationError::query(
+                    query.name(),
+                    vec![
+                        "query".to_owned(),
+                        query.name().to_owned(),
+                        "outcome".to_owned(),
+                        branch.name().to_owned(),
+                    ],
+                ),
+            )?;
             validate_normalized_names(
-                branch
-                    .fields()
-                    .iter()
-                    .map(|field| python_identifier(field.name())),
+                branch.fields().iter().map(|field| {
+                    (
+                        python_identifier(field.name()),
+                        PythonGenerationError::query(
+                            query.name(),
+                            vec![
+                                "query".to_owned(),
+                                query.name().to_owned(),
+                                "field".to_owned(),
+                                field.name().to_owned(),
+                            ],
+                        ),
+                    )
+                }),
                 true,
             )?;
             for field in branch.fields() {
@@ -532,38 +903,73 @@ fn validate_names(
                     &mut top_level,
                     &format!("{branch_name}{}", pascal(field.name())),
                     field.value_type(),
+                    PythonGenerationError::query(
+                        query.name(),
+                        vec![
+                            "query".to_owned(),
+                            query.name().to_owned(),
+                            "field".to_owned(),
+                            field.name().to_owned(),
+                        ],
+                    ),
                 )?;
             }
         }
     }
     for command in contract.commands() {
         let name = pascal(command.name());
-        insert_name(&mut top_level, format!("{name}Input"))?;
-        insert_name(&mut top_level, format!("{name}Outcome"))?;
+        let command_origin = || {
+            PythonGenerationError::contract(vec!["command".to_owned(), command.name().to_owned()])
+        };
+        insert_name(&mut top_level, format!("{name}Input"), command_origin())?;
+        insert_name(&mut top_level, format!("{name}Outcome"), command_origin())?;
         insert_name(
             &mut top_level,
             format!("{}_PLAN_HASH", screaming_snake(command.name())),
+            command_origin(),
         )?;
         let method = python_identifier(&snake(command.name()));
-        insert_name(&mut methods, method.clone())?;
-        insert_name(&mut methods, format!("{method}_batch"))?;
+        insert_name(&mut methods, method.clone(), command_origin())?;
+        insert_name(&mut methods, format!("{method}_batch"), command_origin())?;
         validate_normalized_names(
-            command
-                .input()
-                .record()
-                .fields()
-                .iter()
-                .map(|field| python_identifier(field.name())),
+            command.input().record().fields().iter().map(|field| {
+                (
+                    python_identifier(field.name()),
+                    PythonGenerationError::contract(vec![
+                        "command".to_owned(),
+                        command.name().to_owned(),
+                        "input".to_owned(),
+                        field.name().to_owned(),
+                    ]),
+                )
+            }),
             false,
         )?;
         for outcome in command.outcomes() {
-            insert_name(&mut top_level, format!("{name}{}", pascal(outcome.name())))?;
+            insert_name(
+                &mut top_level,
+                format!("{name}{}", pascal(outcome.name())),
+                PythonGenerationError::contract(vec![
+                    "command".to_owned(),
+                    command.name().to_owned(),
+                    "outcome".to_owned(),
+                    outcome.name().to_owned(),
+                ]),
+            )?;
             validate_normalized_names(
-                outcome
-                    .payload()
-                    .fields()
-                    .iter()
-                    .map(|field| python_identifier(field.name())),
+                outcome.payload().fields().iter().map(|field| {
+                    (
+                        python_identifier(field.name()),
+                        PythonGenerationError::contract(vec![
+                            "command".to_owned(),
+                            command.name().to_owned(),
+                            "outcome".to_owned(),
+                            outcome.name().to_owned(),
+                            "field".to_owned(),
+                            field.name().to_owned(),
+                        ]),
+                    )
+                }),
                 true,
             )?;
         }
@@ -571,10 +977,18 @@ fn validate_names(
     insert_name(
         &mut top_level,
         format!("{}Client", pascal(module.contract_lineage().as_str())),
+        PythonGenerationError::contract(vec![
+            "contract".to_owned(),
+            module.contract_lineage().as_str().to_owned(),
+        ]),
     )?;
     insert_name(
         &mut top_level,
         format!("Async{}Client", pascal(module.contract_lineage().as_str())),
+        PythonGenerationError::contract(vec![
+            "contract".to_owned(),
+            module.contract_lineage().as_str().to_owned(),
+        ]),
     )?;
     Ok(())
 }
@@ -583,24 +997,32 @@ fn register_nested_names(
     top_level: &mut BTreeSet<String>,
     name: &str,
     value_type: &NamedTypeSchema,
+    origin: PythonGenerationError,
 ) -> Result<(), PythonGenerationError> {
     match value_type {
         NamedTypeSchema::Optional(inner)
         | NamedTypeSchema::Set(inner)
         | NamedTypeSchema::List { element: inner, .. } => {
-            register_nested_names(top_level, name, inner)
+            register_nested_names(top_level, name, inner, origin)
         }
         NamedTypeSchema::Record(fields) => {
-            insert_name(top_level, name.to_owned())?;
+            insert_name(top_level, name.to_owned(), origin.clone())?;
             validate_normalized_names(
-                fields.iter().map(|field| python_identifier(field.name())),
+                fields.iter().map(|field| {
+                    let mut field_origin = origin.clone();
+                    field_origin.symbol_path.push(field.name().to_owned());
+                    (python_identifier(field.name()), field_origin)
+                }),
                 false,
             )?;
             for field in fields {
+                let mut field_origin = origin.clone();
+                field_origin.symbol_path.push(field.name().to_owned());
                 register_nested_names(
                     top_level,
                     &format!("{name}{}", pascal(field.name())),
                     field.value_type(),
+                    field_origin,
                 )?;
             }
             Ok(())
@@ -610,22 +1032,26 @@ fn register_nested_names(
 }
 
 fn validate_normalized_names(
-    names: impl IntoIterator<Item = String>,
+    names: impl IntoIterator<Item = (String, PythonGenerationError)>,
     reserve_outcome: bool,
 ) -> Result<(), PythonGenerationError> {
     let mut normalized = BTreeSet::new();
     if reserve_outcome {
         normalized.insert("outcome".to_owned());
     }
-    for name in names {
-        insert_name(&mut normalized, name)?;
+    for (name, origin) in names {
+        insert_name(&mut normalized, name, origin)?;
     }
     Ok(())
 }
 
-fn insert_name(names: &mut BTreeSet<String>, name: String) -> Result<(), PythonGenerationError> {
+fn insert_name(
+    names: &mut BTreeSet<String>,
+    name: String,
+    origin: PythonGenerationError,
+) -> Result<(), PythonGenerationError> {
     if name.is_empty() || !names.insert(name) {
-        return Err(PythonGenerationError::NameCollision);
+        return Err(origin);
     }
     Ok(())
 }
@@ -739,22 +1165,65 @@ fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{PythonGenerationError, python_identifier, validate_normalized_names};
+    use super::{
+        PythonGenerationError, locate_contract_symbol, locate_query_symbol, python_identifier,
+        validate_normalized_names,
+    };
 
     #[test]
     fn keywords_gain_one_suffix_and_collisions_are_rejected() {
         assert_eq!(python_identifier("class"), "class_");
         assert_eq!(python_identifier("ordinaryName"), "ordinary_name");
+        let first = PythonGenerationError::contract(vec!["first".to_owned()]);
+        let second = PythonGenerationError::contract(vec!["second".to_owned()]);
         assert_eq!(
             validate_normalized_names(
-                [python_identifier("class"), python_identifier("class_")],
+                [
+                    (python_identifier("class"), first),
+                    (python_identifier("class_"), second.clone()),
+                ],
                 false,
             ),
-            Err(PythonGenerationError::NameCollision)
+            Err(second.clone())
         );
         assert_eq!(
-            validate_normalized_names([python_identifier("outcome")], true),
-            Err(PythonGenerationError::NameCollision)
+            validate_normalized_names([(python_identifier("outcome"), second.clone())], true),
+            Err(second)
+        );
+    }
+
+    #[test]
+    fn generation_symbols_resolve_to_exact_contract_and_query_spans() {
+        let contract = "contract Demo version 1 {\n  entity Item {\n    key (id: uuid)\n    field class_: string<32>\n  }\n}\n";
+        let contract_span = locate_contract_symbol(
+            contract,
+            &[
+                "entity".to_owned(),
+                "Item".to_owned(),
+                "field".to_owned(),
+                "class_".to_owned(),
+            ],
+        )
+        .expect("contract field span");
+        assert_eq!(
+            &contract[contract_span.0 as usize..contract_span.1 as usize],
+            "class_"
+        );
+
+        let query = "query ItemPage($id: Item.id) {\n  one item from Item where id == $id else NotFound\n  return Found { renamed: item { id } }\n  outcomes Found | NotFound\n}\n";
+        let query_span = locate_query_symbol(
+            query,
+            &[
+                "query".to_owned(),
+                "ItemPage".to_owned(),
+                "field".to_owned(),
+                "renamed".to_owned(),
+            ],
+        )
+        .expect("query alias span");
+        assert_eq!(
+            &query[query_span.0 as usize..query_span.1 as usize],
+            "renamed"
         );
     }
 }

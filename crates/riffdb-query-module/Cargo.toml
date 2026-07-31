@@ -11,6 +11,7 @@ default = []
 
 [dependencies]
 riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", default-features = false }
+riffdb-contract-syntax = { version = "0.1.0", path = "../riffdb-contract-syntax", default-features = false }
 riffdb-query-compiler = { version = "0.1.0", path = "../riffdb-query-compiler", default-features = false }
 riffdb-query-ir = { version = "0.1.0", path = "../riffdb-query-ir", default-features = false }
 riffdb-riffql-syntax = { version = "0.1.0", path = "../riffdb-riffql-syntax", default-features = false }
