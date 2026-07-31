@@ -49,12 +49,10 @@ Successful and declared business outcomes are terminal per item. Add
 `--error-outcome OutcomeName` to classify a durable declared outcome as a
 recorded item failure for import policy purposes. Authorization, contract,
 validation, and idempotency-reuse failures are also terminal and resumable.
-Registry-retryable failures (capacity, storage unavailability, outcome
-uncertainty, and other codes whose recovery action is `Retry` or
-`ResolveWithSameIdempotencyKey`) re-enter same-key recovery for that item
-only, under the caller's attempt budget and Overloaded backoff. Cancellation,
-deadlines, response-size, and emergency containment still fail the whole
-transport batch RPC.
+Transport uncertainty, cancellation, deadlines, and storage unavailability
+remain pending; a later invocation resubmits the identical command input and
+key through normal idempotency recovery. Response-size rejection is a terminal
+recorded item failure under the CLI path (one ordinary `Execute` per line).
 
 The checkpoint is also the stable receipt. It is replaced atomically after each
 completed item. A killed client may lose only knowledge of a completion, never

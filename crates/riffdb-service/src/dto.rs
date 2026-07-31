@@ -1849,8 +1849,9 @@ impl ReadOnlyCommandResult {
     /// Builds a minimal empty-outcome read-only result for integration tests.
     ///
     /// Not a production construction path: outcomes normally come from a
-    /// catalog-validated bundle. Kept public so transport harnesses can exercise
-    /// success arms without a full catalog fixture.
+    /// catalog-validated bundle. Gated behind the `test-fixtures` feature so
+    /// production builds do not expose a cross-crate outcome construction path.
+    #[cfg(feature = "test-fixtures")]
     #[doc(hidden)]
     pub fn integration_fixture(
         lineage: ContractLineage,
