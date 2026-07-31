@@ -64,6 +64,10 @@ From the repository root:
 ./benchmarks/run-app-baseline --full --load agent --load-clients 32 \
   --load-duration-secs 30 --load-warmup-secs 5
 
+# concurrency sweep: same mix at 1/8/32/128 clients (scaling curve evidence)
+./benchmarks/run-app-baseline --full --load interactive --load-concurrency-sweep \
+  --load-duration-secs 30 --load-warmup-secs 5
+
 # ordinary concurrent reads and writes on the same hot ticket
 ./benchmarks/run-app-baseline --smoke --load interactive --load-clients 8 \
   --load-duration-secs 5 --load-warmup-secs 1 --load-contended
@@ -141,6 +145,23 @@ or a cursor-release operation—not benchmark key isolation or silent eviction.
 
 Report schema: `riffdb.app-baseline-load-suite/v1` (default path
 `target/app-baseline/load-report-v1.json`).
+
+### Concurrency sweep (`--load-concurrency-sweep`)
+
+Runs the **same** closed-loop mix at client counts **1, 8, 32, 128** (in that
+order) per backend. Seed once; measure windows and profile weights are identical
+across points — only concurrency changes. The suite JSON includes:
+
+- `comparison.client_points` — the fixed curve abscissae
+- `curve[]` — compact per-point thr / p50 / p99 / write p50
+- `backends[]` — full per-point load reports
+
+This is the evidence for concurrency scaling claims (e.g. how p50/throughput
+move from 1 → 128 clients). A two-point inference is not enough; use the curve.
+Incompatible with `--load-clients` and `--load-saturate`. Ephemeral Docker
+Postgres is started with `max_connections=200` so the c=128 point is reachable.
+
+Default report path: `target/app-baseline/load-concurrency-sweep-v1.json`.
 
 Follow-ups not in this increment: open-loop Poisson arrivals, history-growth
 curves, crash-under-load, deploy-under-load.

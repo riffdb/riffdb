@@ -137,6 +137,12 @@ impl WorkloadProfile {
 
 /// Hard cap for RiffDB load clients (matches seed concurrency bound).
 pub const RIFFDB_MAX_LOAD_CLIENTS: usize = 128;
+
+/// Fixed client counts for `--load-concurrency-sweep`.
+///
+/// Same workload mix and measure window at each point; only concurrency changes.
+/// Order is low → high so the curve is monotonic in client count.
+pub const LOAD_CONCURRENCY_SWEEP_CLIENTS: &[usize] = &[1, 8, 32, 128];
 /// Max clients under saturate (knee-sweep friendly; not auto-forced).
 pub const RIFFDB_SATURATE_LOAD_CLIENTS: usize = 512;
 /// Default long-lived concurrent workers per logical load client when
@@ -277,6 +283,12 @@ pub struct LoadConfig {
     /// Effective continuous concurrency = `clients × saturate_fanout`. Each
     /// fan-out slot owns a session and loops independently (not a join-wave).
     pub saturate_fanout: usize,
+    /// Starting sample ordinal for write identity (idempotency keys, comment ids).
+    ///
+    /// Concurrency sweeps seed once and re-run at higher client counts; without a
+    /// rising base, later points reuse earlier keys and trip RDB-COMMAND-0101 /
+    /// SQLSTATE 23505.
+    pub sample_id_base: u64,
 }
 
 /// Backend-specific execution shape that materially affects load results.
@@ -303,6 +315,7 @@ impl LoadConfig {
             saturate: false,
             saturate_p99_ceiling: Duration::from_millis(250),
             saturate_fanout: 1,
+            sample_id_base: 0,
         }
     }
 
@@ -320,6 +333,7 @@ impl LoadConfig {
             saturate: false,
             saturate_p99_ceiling: Duration::from_millis(250),
             saturate_fanout: 1,
+            sample_id_base: 0,
         }
     }
 
@@ -638,7 +652,8 @@ where
         return Err("workload profile has zero weight".to_owned());
     }
 
-    let sample_counter = Arc::new(AtomicU64::new(1));
+    // sample_id_base lets multi-point sweeps avoid reusing write identities.
+    let sample_counter = Arc::new(AtomicU64::new(config.sample_id_base.saturating_add(1)));
     // Shared control plane: measuring opens the record window; stop is the
     // single stop boundary every worker observes (no per-worker deadline skew).
     let measuring = Arc::new(AtomicBool::new(false));
@@ -1182,9 +1197,99 @@ pub fn print_load_summary(report: &LoadReport) {
     }
 }
 
+/// One point on a concurrency-sweep curve (JSON-friendly).
+#[must_use]
+pub fn concurrency_curve_point(report: &LoadReport) -> serde_json::Value {
+    let elapsed_ns = u64::try_from(report.measured_elapsed.as_nanos()).unwrap_or(u64::MAX);
+    let logical_ops = report.aggregate.total_operations();
+    let throughput = if elapsed_ns == 0 {
+        0
+    } else {
+        logical_ops.saturating_mul(1_000_000_000) / elapsed_ns
+    };
+    let write_p50 = |op: LoadOp| -> Option<u64> {
+        report
+            .by_op
+            .iter()
+            .find(|(candidate, stats)| *candidate == op && stats.total_operations() > 0)
+            .map(|(_, stats)| stats.latency.percentile_ns(50))
+    };
+    serde_json::json!({
+        "backend_id": report.backend_id,
+        "profile": report.config.profile.as_str(),
+        "clients": report.config.clients,
+        "measured_elapsed_ns": elapsed_ns,
+        "logical_ops": logical_ops,
+        "throughput_ops_s": throughput,
+        "aggregate_p50_ns": report.aggregate.latency.percentile_ns(50),
+        "aggregate_p95_ns": report.aggregate.latency.percentile_ns(95),
+        "aggregate_p99_ns": report.aggregate.latency.percentile_ns(99),
+        "create_comment_p50_ns": write_p50(LoadOp::CreateComment),
+        "close_ticket_with_comment_p50_ns": write_p50(LoadOp::CloseTicketWithComment),
+        "open_ticket_with_labels_p50_ns": write_p50(LoadOp::OpenTicketWithLabels),
+        "outcomes": {
+            "success": report.aggregate.success,
+            "conflict": report.aggregate.conflict,
+            "unavailable": report.aggregate.unavailable,
+            "error": report.aggregate.error,
+        },
+    })
+}
+
+/// Prints a concurrency-sweep table (throughput and p50 vs client count).
+pub fn print_concurrency_sweep_summary(points: &[serde_json::Value]) {
+    if points.is_empty() {
+        return;
+    }
+    println!("\n== concurrency sweep curve ==");
+    println!(
+        "{:<22} {:>8} {:>12} {:>10} {:>10} {:>12}",
+        "backend", "clients", "ops/s", "p50_ms", "p99_ms", "write_p50_ms"
+    );
+    for point in points {
+        let backend = point["backend_id"].as_str().unwrap_or("?");
+        let clients = point["clients"].as_u64().unwrap_or(0);
+        let thr = point["throughput_ops_s"].as_u64().unwrap_or(0);
+        let p50 = point["aggregate_p50_ns"].as_u64().unwrap_or(0) as f64 / 1e6;
+        let p99 = point["aggregate_p99_ns"].as_u64().unwrap_or(0) as f64 / 1e6;
+        let write_p50 = point["create_comment_p50_ns"]
+            .as_u64()
+            .unwrap_or(0) as f64
+            / 1e6;
+        println!("{backend:<22} {clients:>8} {thr:>12} {p50:>10.3} {p99:>10.3} {write_p50:>12.3}");
+    }
+    // Relative thr vs each backend's 1-client point when present.
+    for backend in ["postgres_sql", "riffdb_public_grpc"] {
+        let series: Vec<_> = points
+            .iter()
+            .filter(|p| p["backend_id"].as_str() == Some(backend))
+            .collect();
+        if series.len() < 2 {
+            continue;
+        }
+        let base = series[0]["throughput_ops_s"].as_u64().unwrap_or(0).max(1) as f64;
+        let mut parts = Vec::new();
+        for point in &series {
+            let clients = point["clients"].as_u64().unwrap_or(0);
+            let thr = point["throughput_ops_s"].as_u64().unwrap_or(0) as f64;
+            parts.push(format!("{clients}→{:.2}×", thr / base));
+        }
+        println!("{backend} thr vs c=1: {}", parts.join("  "));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrency_sweep_points_are_monotonic() {
+        let points = LOAD_CONCURRENCY_SWEEP_CLIENTS;
+        assert_eq!(points, &[1, 8, 32, 128]);
+        for window in points.windows(2) {
+            assert!(window[0] < window[1]);
+        }
+    }
 
     #[test]
     fn zipf_prefers_low_ranks_when_skewed() {
