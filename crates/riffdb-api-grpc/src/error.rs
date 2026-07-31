@@ -2,6 +2,7 @@
 
 use riffdb_errors::{
     ApplicationError, ApplicationErrorCode, ErrorClass, MAX_APPLICATION_ERROR_BYTES, PublicError,
+    PublicErrorKind,
 };
 use riffdb_proto::{MAX_PUBLIC_ERROR_BYTES, application_error_to_proto, public_error_to_proto};
 use riffdb_service::{ApplicationErrorContextBuilder, ServiceFailure};
@@ -39,7 +40,7 @@ pub fn status_from_public_error(error: &PublicError) -> Status {
         return Status::internal(crate::EMERGENCY_INTERNAL_MESSAGE);
     }
     Status::with_details(
-        grpc_code(error.class()),
+        grpc_code_for_public_error(error),
         error.safe_message(),
         Bytes::from(details),
     )
@@ -102,8 +103,11 @@ pub const fn application_grpc_code(code: ApplicationErrorCode) -> Code {
         ApplicationErrorCode::ContractMismatch
         | ApplicationErrorCode::QueryUnavailable
         | ApplicationErrorCode::ModuleUnavailable
-        | ApplicationErrorCode::CommandExecutionFailed => Code::FailedPrecondition,
-        ApplicationErrorCode::ResponseTooLarge => Code::ResourceExhausted,
+        | ApplicationErrorCode::CommandExecutionFailed
+        | ApplicationErrorCode::HistoryIncarnationMismatch => Code::FailedPrecondition,
+        ApplicationErrorCode::ResponseTooLarge | ApplicationErrorCode::Overloaded => {
+            Code::ResourceExhausted
+        }
         ApplicationErrorCode::StorageUnavailable => Code::Unavailable,
         ApplicationErrorCode::OutcomeUnknown => Code::Unknown,
         ApplicationErrorCode::OperationCancelled => Code::Cancelled,
@@ -112,6 +116,19 @@ pub const fn application_grpc_code(code: ApplicationErrorCode) -> Code {
             Code::Internal
         }
         ApplicationErrorCode::IdempotencyKeyReuse => Code::AlreadyExists,
+    }
+}
+
+/// Returns the gRPC status code for one public error.
+///
+/// Kind-level overrides run before the class fallback so overload rejections
+/// remain certain-not-executed (`ResourceExhausted`) while keeping class
+/// classification as [`ErrorClass::Unavailable`].
+#[must_use]
+pub const fn grpc_code_for_public_error(error: &PublicError) -> Code {
+    match error.kind() {
+        PublicErrorKind::Overloaded => Code::ResourceExhausted,
+        _ => grpc_code(error.class()),
     }
 }
 
@@ -178,6 +195,56 @@ mod tests {
         assert_eq!(status.code(), Code::PermissionDenied);
         assert_eq!(status.message(), error.safe_message());
         assert_eq!(decode_application_error(status.details()), Ok(error));
+    }
+
+    #[test]
+    fn staged_public_kinds_map_to_explicit_grpc_codes() {
+        let mismatch = PublicError::history_incarnation_mismatch();
+        let mismatch_status = status_from_public_error(&mismatch);
+        assert_eq!(mismatch_status.code(), Code::FailedPrecondition);
+        assert_eq!(mismatch_status.message(), mismatch.safe_message());
+        assert_eq!(decode_public_error(mismatch_status.details()), Ok(mismatch));
+
+        let overloaded = PublicError::overloaded();
+        let overloaded_status = status_from_public_error(&overloaded);
+        assert_eq!(overloaded_status.code(), Code::ResourceExhausted);
+        assert_eq!(overloaded.class(), ErrorClass::Unavailable);
+        assert_eq!(overloaded_status.message(), overloaded.safe_message());
+        assert_eq!(
+            decode_public_error(overloaded_status.details()),
+            Ok(overloaded)
+        );
+    }
+
+    #[test]
+    fn staged_application_codes_map_to_explicit_grpc_codes() {
+        let mismatch = ApplicationError::new(
+            ApplicationErrorCode::HistoryIncarnationMismatch,
+            ApplicationOperation::ExecuteQuery,
+            ApplicationErrorContext::empty(),
+            None,
+        );
+        let mismatch_status = status_from_application_error(&mismatch);
+        assert_eq!(mismatch_status.code(), Code::FailedPrecondition);
+        assert_eq!(mismatch_status.message(), mismatch.safe_message());
+        assert_eq!(
+            decode_application_error(mismatch_status.details()),
+            Ok(mismatch)
+        );
+
+        let overloaded = ApplicationError::new(
+            ApplicationErrorCode::Overloaded,
+            ApplicationOperation::ExecuteQuery,
+            ApplicationErrorContext::empty(),
+            None,
+        );
+        let overloaded_status = status_from_application_error(&overloaded);
+        assert_eq!(overloaded_status.code(), Code::ResourceExhausted);
+        assert_eq!(overloaded_status.message(), overloaded.safe_message());
+        assert_eq!(
+            decode_application_error(overloaded_status.details()),
+            Ok(overloaded)
+        );
     }
 
     #[test]

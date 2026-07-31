@@ -104,10 +104,14 @@ pub enum ApplicationErrorCode {
     CapabilityRevoked,
     /// A public peer violated the application protocol.
     ProtocolInvalid,
+    /// Observed history predates a database restore.
+    HistoryIncarnationMismatch,
+    /// The service is over capacity and rejected admission.
+    Overloaded,
 }
 
 /// Complete v1 application error code registry in stable wire order.
-pub const APPLICATION_ERROR_CODES: [ApplicationErrorCode; 18] = [
+pub const APPLICATION_ERROR_CODES: [ApplicationErrorCode; 20] = [
     ApplicationErrorCode::InvalidRequest,
     ApplicationErrorCode::InputInvalid,
     ApplicationErrorCode::AuthorizationDenied,
@@ -126,6 +130,8 @@ pub const APPLICATION_ERROR_CODES: [ApplicationErrorCode; 18] = [
     ApplicationErrorCode::CommandExecutionFailed,
     ApplicationErrorCode::CapabilityRevoked,
     ApplicationErrorCode::ProtocolInvalid,
+    ApplicationErrorCode::HistoryIncarnationMismatch,
+    ApplicationErrorCode::Overloaded,
 ];
 
 impl ApplicationErrorCode {
@@ -142,6 +148,8 @@ impl ApplicationErrorCode {
             PublicErrorKind::OutcomeUnknown => Self::OutcomeUnknown,
             PublicErrorKind::InternalDefect => Self::InternalDefect,
             PublicErrorKind::CommandExecutionFailed => Self::CommandExecutionFailed,
+            PublicErrorKind::HistoryIncarnationMismatch => Self::HistoryIncarnationMismatch,
+            PublicErrorKind::Overloaded => Self::Overloaded,
         }
     }
 
@@ -167,6 +175,8 @@ impl ApplicationErrorCode {
             Self::CommandExecutionFailed => "RDB-COMMAND-0102",
             Self::CapabilityRevoked => "RDB-AUTH-0215",
             Self::ProtocolInvalid => "RDB-PROTOCOL-0101",
+            Self::HistoryIncarnationMismatch => "RDB-HISTORY-0101",
+            Self::Overloaded => "RDB-CAPACITY-0101",
         }
     }
 
@@ -194,6 +204,8 @@ impl ApplicationErrorCode {
             Self::CommandExecutionFailed => "command execution failed",
             Self::CapabilityRevoked => "application capability is revoked",
             Self::ProtocolInvalid => "the RiffDB peer returned an invalid application response",
+            Self::HistoryIncarnationMismatch => "observed history predates a database restore",
+            Self::Overloaded => "service is over capacity",
         }
     }
 
@@ -218,6 +230,8 @@ impl ApplicationErrorCode {
                 ApplicationErrorCategory::Command
             }
             Self::ProtocolInvalid => ApplicationErrorCategory::Protocol,
+            Self::HistoryIncarnationMismatch => ApplicationErrorCategory::History,
+            Self::Overloaded => ApplicationErrorCategory::Capacity,
         }
     }
 
@@ -230,14 +244,17 @@ impl ApplicationErrorCode {
             | Self::QueryInvalid
             | Self::CursorInvalid
             | Self::ResponseTooLarge
-            | Self::IdempotencyKeyReuse => ApplicationRecoveryAction::CorrectRequest,
+            | Self::IdempotencyKeyReuse
+            | Self::HistoryIncarnationMismatch => ApplicationRecoveryAction::CorrectRequest,
             Self::AuthorizationDenied | Self::CapabilityRevoked => {
                 ApplicationRecoveryAction::ObtainPermission
             }
             Self::ContractMismatch | Self::QueryUnavailable | Self::ModuleUnavailable => {
                 ApplicationRecoveryAction::RefreshContract
             }
-            Self::StorageUnavailable | Self::DeadlineExceeded => ApplicationRecoveryAction::Retry,
+            Self::StorageUnavailable | Self::DeadlineExceeded | Self::Overloaded => {
+                ApplicationRecoveryAction::Retry
+            }
             Self::OutcomeUnknown => ApplicationRecoveryAction::ResolveWithSameIdempotencyKey,
             Self::OperationCancelled => ApplicationRecoveryAction::None,
             Self::InternalDefect | Self::CommandExecutionFailed | Self::ProtocolInvalid => {
@@ -250,9 +267,10 @@ impl ApplicationErrorCode {
     #[must_use]
     pub const fn fixes(self) -> &'static [ApplicationFixCode] {
         match self {
-            Self::InvalidRequest | Self::InputInvalid | Self::QueryInvalid => {
-                &[ApplicationFixCode::CorrectInput]
-            }
+            Self::InvalidRequest
+            | Self::InputInvalid
+            | Self::QueryInvalid
+            | Self::HistoryIncarnationMismatch => &[ApplicationFixCode::CorrectInput],
             Self::AuthorizationDenied | Self::CapabilityRevoked => {
                 &[ApplicationFixCode::BindApplicationRole]
             }
@@ -264,7 +282,9 @@ impl ApplicationErrorCode {
             Self::ResponseTooLarge | Self::IdempotencyKeyReuse => {
                 &[ApplicationFixCode::CorrectInput]
             }
-            Self::StorageUnavailable | Self::DeadlineExceeded => &[ApplicationFixCode::RetryLater],
+            Self::StorageUnavailable | Self::DeadlineExceeded | Self::Overloaded => {
+                &[ApplicationFixCode::RetryLater]
+            }
             Self::OutcomeUnknown => &[ApplicationFixCode::ResolveWithSameIdempotencyKey],
             Self::InternalDefect => &[ApplicationFixCode::ContactOperatorWithIncident],
             Self::OperationCancelled | Self::CommandExecutionFailed | Self::ProtocolInvalid => &[],
@@ -301,6 +321,10 @@ pub enum ApplicationErrorCategory {
     Command,
     /// Cancellation and deadline control.
     Control,
+    /// History incarnation observations.
+    History,
+    /// Admission capacity.
+    Capacity,
 }
 
 impl ApplicationErrorCategory {
@@ -321,6 +345,8 @@ impl ApplicationErrorCategory {
             Self::Protocol => "protocol",
             Self::Command => "command",
             Self::Control => "control",
+            Self::History => "history",
+            Self::Capacity => "capacity",
         }
     }
 }
@@ -819,6 +845,10 @@ pub enum PublicErrorKind {
     InternalDefect,
     /// Deterministic evaluation failed before an application commit was formed.
     CommandExecutionFailed,
+    /// Observed history predates a database restore.
+    HistoryIncarnationMismatch,
+    /// The service is over capacity and rejected admission.
+    Overloaded,
 }
 
 impl PublicErrorKind {
@@ -835,6 +865,8 @@ impl PublicErrorKind {
             Self::OutcomeUnknown => "outcome_unknown",
             Self::InternalDefect => "internal_defect",
             Self::CommandExecutionFailed => "command_execution_failed",
+            Self::HistoryIncarnationMismatch => "history_incarnation_mismatch",
+            Self::Overloaded => "overloaded",
         }
     }
 
@@ -851,6 +883,8 @@ impl PublicErrorKind {
             Self::OutcomeUnknown => "command outcome is not yet known",
             Self::InternalDefect => "an internal error occurred",
             Self::CommandExecutionFailed => "command execution failed",
+            Self::HistoryIncarnationMismatch => "observed history predates a database restore",
+            Self::Overloaded => "service is over capacity",
         }
     }
 
@@ -862,8 +896,10 @@ impl PublicErrorKind {
             Self::IdempotencyKeyReuse => ErrorClass::Conflict,
             Self::AuthorizationDenied => ErrorClass::PermissionDenied,
             Self::ConcurrencyDeadlineExceeded => ErrorClass::DeadlineExceeded,
-            Self::ContractMismatch => ErrorClass::FailedPrecondition,
-            Self::StorageUnavailable => ErrorClass::Unavailable,
+            Self::ContractMismatch | Self::HistoryIncarnationMismatch => {
+                ErrorClass::FailedPrecondition
+            }
+            Self::StorageUnavailable | Self::Overloaded => ErrorClass::Unavailable,
             Self::OutcomeUnknown => ErrorClass::Uncertain,
             Self::InternalDefect => ErrorClass::Internal,
             Self::CommandExecutionFailed => ErrorClass::FailedPrecondition,
@@ -874,9 +910,13 @@ impl PublicErrorKind {
     #[must_use]
     pub const fn recovery_action(self) -> RecoveryAction {
         match self {
-            Self::Validation | Self::IdempotencyKeyReuse => RecoveryAction::CorrectRequest,
+            Self::Validation | Self::IdempotencyKeyReuse | Self::HistoryIncarnationMismatch => {
+                RecoveryAction::CorrectRequest
+            }
             Self::AuthorizationDenied => RecoveryAction::ObtainPermission,
-            Self::ConcurrencyDeadlineExceeded | Self::StorageUnavailable => RecoveryAction::Retry,
+            Self::ConcurrencyDeadlineExceeded | Self::StorageUnavailable | Self::Overloaded => {
+                RecoveryAction::Retry
+            }
             Self::ContractMismatch => RecoveryAction::RefreshContract,
             Self::OutcomeUnknown => RecoveryAction::ResolveWithSameIdempotencyKey,
             Self::InternalDefect | Self::CommandExecutionFailed => RecoveryAction::ContactOperator,
@@ -1191,6 +1231,18 @@ impl PublicError {
         }
     }
 
+    /// Creates a history-incarnation mismatch failure.
+    #[must_use]
+    pub const fn history_incarnation_mismatch() -> Self {
+        Self::contextless(PublicErrorKind::HistoryIncarnationMismatch)
+    }
+
+    /// Creates an overload / capacity rejection failure.
+    #[must_use]
+    pub const fn overloaded() -> Self {
+        Self::contextless(PublicErrorKind::Overloaded)
+    }
+
     /// Adds an opaque incident identifier for trusted diagnostic correlation.
     #[must_use]
     pub const fn with_incident_id(mut self, incident_id: IncidentId) -> Self {
@@ -1232,6 +1284,10 @@ impl PublicError {
             PublicErrorKind::CommandExecutionFailed => {
                 code == ApplicationErrorCode::CommandExecutionFailed
             }
+            PublicErrorKind::HistoryIncarnationMismatch => {
+                code == ApplicationErrorCode::HistoryIncarnationMismatch
+            }
+            PublicErrorKind::Overloaded => code == ApplicationErrorCode::Overloaded,
         };
         if !compatible {
             return Err(ApplicationErrorHintError);
@@ -1379,7 +1435,7 @@ mod tests {
 
     use super::*;
 
-    const KINDS: [PublicErrorKind; 9] = [
+    const KINDS: [PublicErrorKind; 11] = [
         PublicErrorKind::Validation,
         PublicErrorKind::IdempotencyKeyReuse,
         PublicErrorKind::AuthorizationDenied,
@@ -1389,6 +1445,8 @@ mod tests {
         PublicErrorKind::OutcomeUnknown,
         PublicErrorKind::InternalDefect,
         PublicErrorKind::CommandExecutionFailed,
+        PublicErrorKind::HistoryIncarnationMismatch,
+        PublicErrorKind::Overloaded,
     ];
 
     const VALIDATION_CODES: [ValidationCode; 8] = [
@@ -1540,7 +1598,32 @@ mod tests {
                 ErrorClass::FailedPrecondition,
                 RecoveryAction::ContactOperator,
             ),
+            (
+                "history_incarnation_mismatch",
+                "observed history predates a database restore",
+                ErrorClass::FailedPrecondition,
+                RecoveryAction::CorrectRequest,
+            ),
+            (
+                "overloaded",
+                "service is over capacity",
+                ErrorClass::Unavailable,
+                RecoveryAction::Retry,
+            ),
         ];
+
+        assert_eq!(KINDS.len(), 11);
+        assert_eq!(KINDS[9], PublicErrorKind::HistoryIncarnationMismatch);
+        assert_eq!(KINDS[10], PublicErrorKind::Overloaded);
+        assert_eq!(APPLICATION_ERROR_CODES.len(), 20);
+        assert_eq!(
+            APPLICATION_ERROR_CODES[18],
+            ApplicationErrorCode::HistoryIncarnationMismatch
+        );
+        assert_eq!(
+            APPLICATION_ERROR_CODES[19],
+            ApplicationErrorCode::Overloaded
+        );
 
         for (kind, (code, message, class, recovery_action)) in KINDS.into_iter().zip(expected) {
             assert_eq!(kind.code(), code);
@@ -1550,6 +1633,27 @@ mod tests {
             assert!(code.is_ascii());
             assert!(message.is_ascii());
         }
+    }
+
+    #[test]
+    fn staged_public_constructors_are_contextless_and_registry_aligned() {
+        let mismatch = PublicError::history_incarnation_mismatch();
+        assert_eq!(mismatch.kind(), PublicErrorKind::HistoryIncarnationMismatch);
+        assert_eq!(mismatch.details(), &PublicErrorDetails::None);
+        assert_eq!(mismatch.incident_id(), None);
+        assert_eq!(
+            ApplicationErrorCode::from_public_kind(mismatch.kind()),
+            ApplicationErrorCode::HistoryIncarnationMismatch
+        );
+
+        let overloaded = PublicError::overloaded();
+        assert_eq!(overloaded.kind(), PublicErrorKind::Overloaded);
+        assert_eq!(overloaded.details(), &PublicErrorDetails::None);
+        assert_eq!(overloaded.incident_id(), None);
+        assert_eq!(
+            ApplicationErrorCode::from_public_kind(overloaded.kind()),
+            ApplicationErrorCode::Overloaded
+        );
     }
 
     #[test]

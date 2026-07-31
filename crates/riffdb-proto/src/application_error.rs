@@ -250,6 +250,10 @@ const fn proto_code(value: DomainCode) -> app_v1::ApplicationErrorCode {
         DomainCode::CommandExecutionFailed => app_v1::ApplicationErrorCode::CommandExecutionFailed,
         DomainCode::CapabilityRevoked => app_v1::ApplicationErrorCode::CapabilityRevoked,
         DomainCode::ProtocolInvalid => app_v1::ApplicationErrorCode::ProtocolInvalid,
+        DomainCode::HistoryIncarnationMismatch => {
+            app_v1::ApplicationErrorCode::HistoryIncarnationMismatch
+        }
+        DomainCode::Overloaded => app_v1::ApplicationErrorCode::Overloaded,
     }
 }
 
@@ -274,6 +278,8 @@ fn domain_code(value: i32) -> Result<DomainCode, ApplicationErrorWireError> {
         Ok(Wire::CommandExecutionFailed) => Ok(DomainCode::CommandExecutionFailed),
         Ok(Wire::CapabilityRevoked) => Ok(DomainCode::CapabilityRevoked),
         Ok(Wire::ProtocolInvalid) => Ok(DomainCode::ProtocolInvalid),
+        Ok(Wire::HistoryIncarnationMismatch) => Ok(DomainCode::HistoryIncarnationMismatch),
+        Ok(Wire::Overloaded) => Ok(DomainCode::Overloaded),
         Ok(Wire::Unspecified) | Err(_) => Err(ApplicationErrorWireError::UnknownCode),
     }
 }
@@ -293,6 +299,8 @@ const fn proto_category(value: DomainCategory) -> app_v1::ApplicationErrorCatego
         DomainCategory::Protocol => app_v1::ApplicationErrorCategory::Protocol,
         DomainCategory::Command => app_v1::ApplicationErrorCategory::Command,
         DomainCategory::Control => app_v1::ApplicationErrorCategory::Control,
+        DomainCategory::History => app_v1::ApplicationErrorCategory::History,
+        DomainCategory::Capacity => app_v1::ApplicationErrorCategory::Capacity,
     }
 }
 
