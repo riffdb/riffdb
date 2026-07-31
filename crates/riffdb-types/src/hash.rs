@@ -9,9 +9,10 @@ use crate::{
     ApplicationLockHash, ApplicationManifestHash, ApplicationRoleDefinitionHash,
     ApplicationRoleHash, ApplicationSourceHash, CanonicalInputHash, CanonicalValueHash,
     CapabilityTokenDigest, ConflictKeyHash, ContractBundleHash, ContractPlanRootHash, DigestKey,
-    DigestKeyId, EntityKeyHash, EventHash, GeneratedArtifactHash, OfflineMaintenanceInputHash,
-    PartitionKeyHash, PlanHash, ProjectionApplyHash, ProjectionPlanHash, QueryModuleHash,
-    QueryParameterHash, QueryPlanHash, QuerySourceHash, SchemaHash, SourceHash,
+    DigestKeyId, EntityKeyHash, EntityRecordHash, EventHash, GeneratedArtifactHash,
+    OfflineMaintenanceInputHash, PartitionKeyHash, PlanHash, ProjectionApplyHash,
+    ProjectionPlanHash, QueryModuleHash, QueryParameterHash, QueryPlanHash, QuerySourceHash,
+    SchemaHash, SourceHash,
 };
 
 /// Hash framing and algorithm scheme defined by ADR-0011.
@@ -59,6 +60,8 @@ pub enum HashDomain {
     CommandInput,
     /// Durable event content.
     Event,
+    /// Complete canonical entity-record preimage.
+    EntityRecord,
     /// Canonical entity key.
     EntityKey,
     /// Canonical conflict key.
@@ -77,7 +80,7 @@ pub enum HashDomain {
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 26] = [
         Self::CanonicalValue,
         Self::Source,
         Self::ContractBundle,
@@ -96,6 +99,7 @@ impl HashDomain {
         Self::ContractPlanRoot,
         Self::CommandInput,
         Self::Event,
+        Self::EntityRecord,
         Self::EntityKey,
         Self::ConflictKey,
         Self::PartitionKey,
@@ -126,6 +130,7 @@ impl HashDomain {
             Self::ContractPlanRoot => "riffdb.contract-plan-root/v1",
             Self::CommandInput => "riffdb.command-input/v1",
             Self::Event => "riffdb.event/v1",
+            Self::EntityRecord => "riffdb.entity-record/v1",
             Self::EntityKey => "riffdb.entity-key/v1",
             Self::ConflictKey => "riffdb.conflict-key/v1",
             Self::PartitionKey => "riffdb.partition-key/v1",
@@ -379,6 +384,12 @@ typed_hash_function!(
     hash_event,
     Event,
     EventHash
+);
+typed_hash_function!(
+    /// Hashes a complete canonical entity-record preimage in its immutable v1 domain.
+    hash_entity_record,
+    EntityRecord,
+    EntityRecordHash
 );
 typed_hash_function!(
     /// Hashes canonical entity-key bytes in their immutable v1 domain.

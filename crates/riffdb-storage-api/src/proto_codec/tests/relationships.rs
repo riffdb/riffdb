@@ -9,9 +9,9 @@ use riffdb_types::{
 use crate::{
     AdministrationSequenceAllocator, AffectedEntityV1, BootstrapServiceAuditStartV1,
     CapabilityAdministrationOperationV1, CapabilityBootstrapMarkerV1, CapabilityTokenLookupV1,
-    OutboxStatusObservationV1, SequenceAllocationError, StoredCapabilityAdministrationV1,
-    StoredCapabilityRecordV1, StoredCommitRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
-    StoredServiceAuditRecordV1, derive_event_hash_v1,
+    CommittedEntityMutationV1, OutboxStatusObservationV1, SequenceAllocationError,
+    StoredCapabilityAdministrationV1, StoredCapabilityRecordV1, StoredCommitRecordV1,
+    StoredOutcomeV1, StoredProvenanceRecordV1, StoredServiceAuditRecordV1, derive_event_hash_v1,
 };
 
 use super::super::*;
@@ -31,6 +31,7 @@ struct RelationshipGraph {
     outcome: StoredOutcomeV1,
     commit: StoredCommitRecordV1,
     provenance: StoredProvenanceRecordV1,
+    entities: Vec<CommittedEntityMutationV1>,
 }
 
 struct EventRelationshipParts {
@@ -268,7 +269,8 @@ pub(super) fn relationship_wire_fixture() -> String {
             expectation,
             "commit",
             COMMIT,
-            encode_commit_record_legacy_v1(&graph.commit).expect("legacy commit encodes"),
+            encode_commit_record_legacy_v1(&graph.commit, &graph.entities)
+                .expect("legacy commit encodes"),
         );
         append_relationship_record(
             &mut fixture,
@@ -591,6 +593,7 @@ fn relationship_cases() -> Vec<(&'static str, RelationshipGraph, bool)> {
         outcome: records.stored_outcome().clone(),
         commit: records.commit().clone(),
         provenance: records.provenance().clone(),
+        entities: records.entities().to_vec(),
     };
     let alternate_request =
         RequestId::from_bytes(sample::uuid_v7(0x15)).expect("alternate request ID");
@@ -645,7 +648,7 @@ fn commit_with_request(
         value.partition_hash(),
         value.conflict_hashes().to_vec(),
         value.read_dependencies().clone(),
-        value.mutations().to_vec(),
+        value.entity_references().to_vec(),
         value.events().to_vec(),
         value.declared_outcome().clone(),
         value.provenance_id(),
@@ -683,9 +686,14 @@ fn graph_agrees(graph: &RelationshipGraph) -> bool {
     let commit = &graph.commit;
     let provenance = &graph.provenance;
     let affected = commit
-        .mutations()
+        .entity_references()
         .iter()
-        .map(|mutation| AffectedEntityV1::from_record(mutation.post_image()))
+        .map(|reference| {
+            AffectedEntityV1::from_stored_parts(
+                reference.target().clone(),
+                reference.entity_version(),
+            )
+        })
         .collect::<Vec<_>>();
 
     outcome.commit_sequence() == commit.commit_sequence()
@@ -725,7 +733,7 @@ fn assert_codec_round_trip(graph: &RelationshipGraph) {
     );
     let commit = encode_commit_record_v1(&graph.commit).expect("commit encodes");
     assert_eq!(
-        decode_commit_record_v2(commit.as_bytes(), graph.commit.events().to_vec())
+        decode_commit_record_v3(commit.as_bytes(), graph.commit.events().to_vec())
             .expect("commit individually decodes")
             .value(),
         &graph.commit
@@ -786,8 +794,8 @@ fn event_relationship_parts() -> EventRelationshipParts {
         .payload()
         .to_vec();
 
-    let commit_envelope =
-        encode_commit_record_legacy_v1(records.commit()).expect("legacy commit encodes");
+    let commit_envelope = encode_commit_record_legacy_v1(records.commit(), records.entities())
+        .expect("legacy commit encodes");
     let commit_payload = riffdb_proto::durable::readable_record_registry()
         .decode(commit_envelope.as_bytes())
         .expect("commit envelope");

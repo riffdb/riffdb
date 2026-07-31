@@ -264,6 +264,10 @@ shape!(EVENT_REFERENCE_V2 [
     message(1, &EVENT_ID),
     fixed_bytes(2, 32),
 ]);
+shape!(COMMITTED_ENTITY_REFERENCE_V2 [
+    message(1, &ENTITY_TARGET),
+    fixed_bytes(3, 32),
+]);
 shape!(COMMIT [
     fixed_bytes(2, 16),
     message(3, &PLAN),
@@ -289,6 +293,21 @@ shape!(COMMIT_V2 [
     repeated_fixed_bytes(8, MAX_CONFLICT_HASHES, 32),
     message(9, &READ_DEPENDENCIES),
     repeated_message(10, MAX_COMMAND_ITEMS, &COMMITTED_MUTATION),
+    repeated_message(11, MAX_COMMAND_ITEMS, &EVENT_REFERENCE_V2),
+    message(12, &DECLARED_OUTCOME),
+    fixed_bytes(13, 16),
+    repeated_message(14, MAX_COMMAND_ITEMS, &EVENT_ID),
+]);
+shape!(COMMIT_V3 [
+    fixed_bytes(2, 16),
+    message(3, &PLAN),
+    fixed_bytes(4, 32),
+    message(5, &ADMITTED_ACTOR),
+    message(6, &TIMESTAMP),
+    fixed_bytes(7, 32),
+    repeated_fixed_bytes(8, MAX_CONFLICT_HASHES, 32),
+    message(9, &READ_DEPENDENCIES),
+    repeated_message(10, MAX_COMMAND_ITEMS, &COMMITTED_ENTITY_REFERENCE_V2),
     repeated_message(11, MAX_COMMAND_ITEMS, &EVENT_REFERENCE_V2),
     message(12, &DECLARED_OUTCOME),
     fixed_bytes(13, 16),
@@ -469,7 +488,7 @@ shape!(PROJECTION_CONTROL [
     message(7, &PROJECTION_FAILURE),
 ]);
 
-const ROOTS: [&Shape; 36] = [
+const ROOTS: [&Shape; 37] = [
     &Shape { rules: &[] },
     &Shape {
         rules: &[fixed_bytes(1, 16)],
@@ -516,6 +535,7 @@ const ROOTS: [&Shape; 36] = [
     &Shape {
         rules: &[fixed_bytes(1, 16)],
     },
+    &COMMIT_V3,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {
