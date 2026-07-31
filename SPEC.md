@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.50
+**Version:** 0.51
 **Status:** Application-platform implementation handoff
 **Date:** 30 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -86,6 +86,7 @@
 | 0.48 | 2026-07-30 | Applied accepted ADR-0063 and ADR-0064: one standalone process may host at most 32 independently durable databases selected before authentication, and every MCP tool now uses the underscore-only pre-alpha compatibility surface with actionable redacted input diagnostics and invocation-oriented command documentation. |
 | 0.49 | 2026-07-30 | Applied accepted ADR-0065 and planned WP-386 through WP-392: installer-owned configurations gain resumable offline database addition, application values become schema-directed and symbolic, installed deployment consumes exact locks with explicit least-authority provisioning, public responses identify the selected database, and MCP exposes authorized named operations with an explicit doctor path. |
 | 0.50 | 2026-07-30 | Applied accepted ADR-0066 and planned WP-393: bounded additive enum, entity, and aggregate evolution; explicit-version enum extension; structured deployment diagnostics; and an explicit offline pre-alpha reset boundary. |
+| 0.51 | 2026-07-31 | Applied accepted ADR-0074 and planned WP-394 through WP-398: a Python 3.13+ generated application client backed by the existing Rust stable client, exact sync/async and value/error/retry parity, explicit application source/lock V2 migration, reproducible manylinux wheels and source distribution, and a new Python parity gate. Database semantics and transport trust decisions remain first-party Rust; target-language generated application bindings are the narrow accepted `SYS-002` exception. |
 
 ### Normative language
 
@@ -200,7 +201,7 @@ These decisions are binding for the POC unless changed through an ADR reviewed b
 | Decision | Requirement | Rationale |
 |---|---|---|
 | Standalone database | `SYS-001` The POC MUST run as its own durable server process. | Proves the proposed application/database contract without inheriting another database's transaction surface. |
-| Rust first-party code | `SYS-002` All first-party production code MUST be Rust. | Keeps compiler, runtime, storage coordination, and agent interface in one type and tooling ecosystem. |
+| Rust-owned product semantics | `SYS-002` The database server, compiler, storage, command runtime, authorization, protocols, transport trust decisions, and authoritative semantics MUST be first-party Rust. Target-language generated application bindings MAY own only language-idiomatic immutable values and typed facade assembly under an accepted interface ADR and equivalent semantic tests. | Keeps authoritative behavior in one type and tooling ecosystem without preventing complete generated application clients. |
 | Safe Rust default | `SYS-003` Workspace crates MUST use `#![forbid(unsafe_code)]` unless an ADR grants a narrow exception. | Reduces the correctness surface in a database prototype. |
 | Command-only writes | `SYS-004` Application roles MUST NOT have a generic insert, update, or delete operation. | Prevents bypass of invariants, state machines, idempotency, outbox, and provenance. |
 | Custom typed DSL | `CMP-001` Contracts MUST compile from a small declarative language into a versioned executable IR. | Enables precise dependency, outcome, schema, and MCP generation. |
@@ -371,6 +372,78 @@ diagnostics for invalid source and a checked descriptor with compatibility
 codes for an incompatible successor. These results MUST be owned by the shared
 application service and preserved across gRPC, CLI, SDK, hosted MCP, and stdio
 MCP after authorization and redaction.
+
+## 4.5 Python application driver
+
+`PYD-001` The public Python distribution MUST be named `riffdb-application`,
+imported as `riffdb_application`, require CPython 3.13 or newer, and expose only
+the stable application surface by default. It MUST NOT expose raw Protobuf,
+kernel, administration, storage, SQL, or PEP 249 operations.
+
+`PYD-002` The Python transport MUST be a safe-Rust PyO3 extension over
+`riffdb-client-rust`. Request construction, gRPC status validation, retry
+classification, fresh request-ID generation, idempotency recovery, and
+`OutcomeUnknown` MUST retain the existing Rust owners and MUST NOT be
+reimplemented in Python.
+
+`PYD-003` The distribution MUST expose separate synchronous and asynchronous
+application transports with explicit close and context-manager lifecycles. The
+asynchronous path MUST bridge Rust futures directly, propagate cancellation,
+release the GIL during waits, and MUST NOT implement async calls by submitting
+the synchronous client to an unbounded executor.
+
+`PYD-004` Generated Python values MUST preserve the complete checked RiffDB
+domain: `uuid.UUID`, exact `decimal.Decimal`, immutable money and nanosecond
+timestamp values, bytes, checked integers, generated string enums, immutable
+records and collections, and an exact epoch-day `RiffDate`. A valid RiffDB date
+outside `datetime.date` MUST remain representable.
+
+`PYD-005` Every generated Python module MUST contain exact contract, bundle,
+module, and plan identities; frozen slotted input/result/outcome dataclasses;
+deterministic Python naming; and paired synchronous and asynchronous module
+clients for every locked query and command, including pagination,
+read-after-commit, and bounded command batches.
+
+`PYD-006` Python callers MUST receive only checked bounded application errors,
+closed local input/protocol/connection failures, or explicit
+`OutcomeUnknown`. Peer text, raw gRPC exceptions, malformed structured detail,
+native panic text, and internal Rust/Python sources MUST NOT cross the public
+facade.
+
+`PYD-007` Credentials MUST remain redacted, nonserializable, and
+nonextractable after construction. The existing protected Linux credential
+loader, canonical database alias, bearer metadata, and bounded trace context
+MUST be reused so Python observes the same authorization and multi-database
+routing as Rust, CLI, TypeScript, and MCP.
+
+`PYD-008` `riffdb.application-source/v1` and
+`riffdb.application-lock/v1` MUST retain their exact accepted bytes and
+meaning. V2 MUST require `mcp`, `rust`, `typescript`, and `python` generation
+targets and lock the Python artifact path, bytes, and digest. Migration MUST be
+explicit, deterministic, local, non-authorizing, and previewed before write.
+
+`PYD-009` `riffdb application migrate --to v2 --write` MUST change only the
+author-owned source manifest atomically. It MUST NOT rewrite a lock, generate
+artifacts, deploy, bind authority, seed data, or reinterpret V1; the existing
+explicit `application lock --write` operation remains the review boundary.
+
+`PYD-010` Release artifacts MUST include reproducible CPython limited-API
+manylinux wheels for x86_64 and aarch64 plus a self-contained source
+distribution. Wheels MUST install without a Rust toolchain; source builds MUST
+pin Rust 1.97.0 and every native/build dependency. Publication to PyPI is a
+separate human-controlled release action.
+
+`PYD-011` `riffdb new --language python` MUST create an offline-buildable
+source-layout application with a locked compatible wheel, `pyproject.toml`,
+`uv.lock`, generated client, runnable command/query example, strict type checks,
+and tests. Public documentation MUST show equivalent `uv` and `pip` dependency
+and artifact-install workflows.
+
+`PYD-012` Boundary linting and parity evidence MUST reject handwritten Python
+transport/protocol/kernel imports and prove equivalent Rust, TypeScript, and
+Python identities, values, queries, commands, batches, errors, uncertainty,
+authorization, and two-database routing. Prior sealed evaluation evidence MUST
+remain immutable.
 | gRPC API | Programmatic application and administration protocol | Alternative semantics |
 | MCP API | Dynamic tools, resources, prompts, progress, cancellation, and agent-safe result shaping | Direct storage access |
 | CLI | Local operator and demo workflows over public APIs | Hidden privileged mutation path |
@@ -5321,6 +5394,21 @@ WP-330, WP-335, WP-340, WP-345, WP-350, WP-355, WP-360, WP-362,
 WP-364, WP-365, WP-366, WP-367 through WP-379 as required by their dependency
 graph, and WP-370 as the final sealed evaluation.
 
+## 20.4.3 Stage P5 — Python application-driver parity
+
+**Objective:** Add a Python 3.13+ application-only client without duplicating
+or weakening the Rust-owned transport, retry, authorization, or protocol
+semantics.
+
+**Gate P5:** `PYD-001` through `PYD-012` pass. A clean installed Python
+application completes the same generated command/query/batch workload in sync
+and async modes against two independently authorized databases; wheels and the
+source distribution reproduce and install under their documented toolchain.
+
+**P5 work-package members:** WP-394 through WP-398. WP-395 and WP-396 also
+depend on completed WP-393 so production work does not overlap the current
+contract-evolution package.
+
 ## 20.5 Stage A — single-node alpha hardening
 
 **Objective:** Turn the prototype into a stable, supportable single-node alpha for trusted design partners.
@@ -6342,6 +6430,7 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `ENT-*` | Authoritative entity records |
 | `CMP-*` | Contract compiler and language |
 | `EVL-*` | Additive contract evolution and deployment diagnostics |
+| `PYD-*` | Python generated application driver, packaging, and language parity |
 | `DSL-*` | Contract language restrictions |
 | `OUT-*` | Typed outcome and idempotency behavior |
 | `TXN-*` | Command execution, conflict ownership, and validation |

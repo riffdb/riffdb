@@ -1,4 +1,4 @@
-spec_version: '0.50'
+spec_version: '0.51'
 product: RiffDB
 repository: riffdb
 status: application-platform-implementation
@@ -10,7 +10,8 @@ normative_terms:
 - SHOULD NOT
 - MAY
 global_rules:
-- All first-party production code is Rust.
+- Database semantics, protocols, transport trust decisions, and authoritative runtime code are first-party Rust;
+  target-language generated application bindings require an accepted interface ADR and equivalent semantic tests.
 - All application mutation passes through the shared application service and commit coordinator.
 - No work package may weaken a normative guarantee without an accepted ADR.
 - Every work package must map requirements to automated tests or an explicitly approved manual artifact.
@@ -99,6 +100,14 @@ gates:
   - WP-374
   - WP-375
   - WP-370
+- id: P5
+  name: Python application driver
+  requires:
+  - WP-394
+  - WP-395
+  - WP-396
+  - WP-397
+  - WP-398
 work_packages:
 - id: WP-000
   name: Repository foundation
@@ -6062,4 +6071,116 @@ work_packages:
   - cargo clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: An additive EA-shaped successor activates without data reset, incompatible source/schema reports an
     actionable bounded result on every surface, and no existing schema or durable row is reinterpreted.
+  human_review_triggers: *id001
+- id: WP-394
+  name: Python application-driver interface freeze
+  depends_on: [WP-390]
+  objective: Freeze the application-only Python package, native Rust bridge, value model, sync/async facade,
+    compatibility formats, packaging targets, and dependency boundary before implementation.
+  requirements: [PYD-001, PYD-002, PYD-003, PYD-004, PYD-005, PYD-006, PYD-007, PYD-008, PYD-009, PYD-010,
+    PYD-011, PYD-012]
+  required_adrs: [ADR-0037, ADR-0040, ADR-0041, ADR-0052, ADR-0055, ADR-0056, ADR-0057, ADR-0063, ADR-0065,
+    ADR-0074]
+  allowed_paths: [AGENTS.md, SPEC.md, work_packages.yaml, adr/**, fixtures/application-parity/**]
+  deliverables:
+  - Exact accepted ADR reconciling SYS-002 with non-Rust generated application bindings and approving native dependencies
+  - Frozen public Python type stub and private native-bridge ownership rules
+  - Complete requirement and dependency mapping for implementation packages
+  acceptance_commands:
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  exit_gate: Every public, native-dependency, retry, compatibility, packaging, and platform decision is accepted before
+    Python or PyO3 production code is added.
+  human_review_triggers: *id001
+- id: WP-395
+  name: Python manifest V2 and generated bindings
+  depends_on: [WP-393, WP-394]
+  objective: Add exact V2 source/lock formats, explicit migration, and deterministic complete Python bindings while
+    preserving V1 byte-for-byte.
+  requirements: [PYD-004, PYD-005, PYD-008, PYD-009, PYD-012]
+  required_adrs: [ADR-0052, ADR-0055, ADR-0056, ADR-0057, ADR-0065, ADR-0074]
+  allowed_paths: [Cargo.toml, Cargo.lock, crates/riffdb-query-module/**, crates/riffdb-cli/**, clients/python/**,
+    fixtures/application-manifests/**, fixtures/application-locks/**, fixtures/application-parity/**, scripts/**,
+    docs/**]
+  deliverables:
+  - Exact V2 source and lock decoders/encoders with required Python target and V1 compatibility fixtures
+  - Read-only migration preview and atomic source-only V2 write
+  - Deterministic generated Python values, operations, sync/async clients, names, and diagnostics
+  acceptance_commands:
+  - cargo test -p riffdb-query-module -p riffdb-cli --all-features
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: V1 remains exact, V2 deterministically locks Python, and every generated binding matches the accepted API.
+  human_review_triggers: *id001
+- id: WP-396
+  name: Rust-backed Python application runtime
+  depends_on: [WP-393, WP-394]
+  objective: Expose the existing stable Rust application client through a safe bounded PyO3 sync/async bridge without
+    duplicating protocol or retry semantics.
+  requirements: [PYD-001, PYD-002, PYD-003, PYD-004, PYD-006, PYD-007, PYD-010]
+  required_adrs: [ADR-0037, ADR-0040, ADR-0041, ADR-0052, ADR-0055, ADR-0063, ADR-0074]
+  allowed_paths: [Cargo.toml, Cargo.lock, deny.toml, crates/riffdb-client-python-native/**, clients/python/runtime/**,
+    fixtures/application-parity/**, scripts/**, tests/**, docs/**]
+  deliverables:
+  - Safe-Rust native extension reusing riffdb-client-rust transport, metadata, validation, and uncertainty recovery
+  - Python 3.13+ sync/async runtime, exact values, redacted credentials, checked failures, and typed stubs
+  - Cancellation, GIL-release, no-panic, malformed-bridge, and two-database tests
+  acceptance_commands:
+  - cargo test -p riffdb-client-python-native --all-features
+  - ./scripts/check-python-runtime
+  - cargo deny check
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Python reaches native gRPC only through the checked Rust client and exposes no raw protocol or secret.
+  human_review_triggers: *id001
+- id: WP-397
+  name: Python scaffold and release artifacts
+  depends_on: [WP-395, WP-396]
+  objective: Make Python applications installable, scaffoldable, offline-buildable, and release-ready through pip and uv.
+  requirements: [PYD-001, PYD-005, PYD-008, PYD-009, PYD-010, PYD-011, PYD-012]
+  required_adrs: [ADR-0056, ADR-0057, ADR-0065, ADR-0074]
+  allowed_paths: [Cargo.toml, Cargo.lock, crates/riffdb-cli/**, crates/riffdb-query-module/**, clients/python/**,
+    templates/application/**, fixtures/**, scripts/**, release/**, docs/**, examples/**, .github/**]
+  deliverables:
+  - Complete riffdb new --language python source-layout application and boundary linting
+  - Reproducible abi3 manylinux x86_64/aarch64 wheels and self-contained source distribution
+  - Offline bundled-wheel uv workflow plus conventional pip/uv dependency documentation
+  acceptance_commands:
+  - ./scripts/riffdb-new-acceptance
+  - ./scripts/agent-application-python-acceptance
+  - ./scripts/check-python-package
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A fresh Python 3.13 application builds and runs from the installed release without source-tree repair.
+  human_review_triggers: *id001
+- id: WP-398
+  name: Python cross-language and installed parity proof
+  depends_on: [WP-397]
+  objective: Publish final sync/async, cross-language, multi-database, packaging, and reproducibility evidence without
+    rewriting prior sealed evaluations.
+  requirements: [PYD-001, PYD-002, PYD-003, PYD-004, PYD-005, PYD-006, PYD-007, PYD-008, PYD-009, PYD-010,
+    PYD-011, PYD-012]
+  required_adrs: [ADR-0055, ADR-0056, ADR-0057, ADR-0063, ADR-0065, ADR-0074]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/**, clients/python/**, fixtures/**, tests/**, scripts/**, release/**,
+    docs/**, examples/**, .github/**]
+  deliverables:
+  - Same-workload Rust, TypeScript, Python-sync, and Python-async golden observations
+  - Installed two-database authorization, identity, command, query, batch, retry, and recovery evidence
+  - Python 3.13/3.14 wheel and source-install reproducibility report for both supported Linux architectures
+  acceptance_commands:
+  - cargo test --workspace --all-features
+  - ./scripts/agent-application-python-acceptance
+  - ./scripts/check-python-package
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo deny check
+  exit_gate: The installed Python driver proves full generated application parity without a raw protocol path or
+    semantic exception.
   human_review_triggers: *id001

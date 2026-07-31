@@ -8,7 +8,10 @@ The specification and accepted architecture decision records are authoritative. 
 
 ## Non-negotiable architecture boundaries
 
-1. All first-party production code is Rust.
+1. Database semantics, protocols, transport trust decisions, and authoritative
+   runtime code are first-party Rust. Target-language generated application
+   bindings may own only the language-idiomatic values and typed facade assembly
+   permitted by an accepted interface ADR and equivalent semantic tests.
 2. Application writes occur only through compiled commands.
 3. gRPC, MCP, CLI, and SDK paths use the same API-neutral application service, authorization layer, command runtime, and commit coordinator.
 4. The deterministic command runtime performs no network, filesystem, operating-system clock, process-global mutation, or untracked randomness.
