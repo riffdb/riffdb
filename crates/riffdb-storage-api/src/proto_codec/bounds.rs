@@ -23,6 +23,11 @@ use super::{
 const OUTBOX_INTENT: &str = "riffdb.storage.v1.StoredOutboxIntentV2";
 const MAXIMUM_WIDTH_U64: u64 = u64::MAX;
 const SIZING_EVENT_HASH: [u8; 32] = [0xff; 32];
+/// Domain-separated entity-record hash charge (same width as event hashes).
+const SIZING_ENTITY_RECORD_HASH: [u8; 32] = [0xff; 32];
+
+const _: () = assert!(SIZING_EVENT_HASH.len() == 32);
+const _: () = assert!(SIZING_ENTITY_RECORD_HASH.len() == 32);
 
 /// Codec-minted proof that complete sequence-free sizing exceeded only the
 /// accepted aggregate cap.
@@ -291,16 +296,7 @@ pub fn command_write_set_upper_bound_v1(
     let entity_reference_lens = evaluated
         .mutations()
         .iter()
-        .map(|mutation| {
-            sum_proto_fields([
-                message_field_len(
-                    1,
-                    entity_target_to_proto(mutation.post_image().target()).encoded_len(),
-                ),
-                varint_field_len(2, MAXIMUM_WIDTH_U64),
-                bytes_field_len(3, SIZING_EVENT_HASH.len()),
-            ])
-        })
+        .map(|mutation| conservative_entity_reference_payload_len(mutation.post_image().target()))
         .collect::<Result<Vec<_>, _>>()?;
     let commit_len = sizing_commit_len(
         plan_len,
@@ -480,6 +476,20 @@ fn sizing_entity_len(
         varint_field_len(3, post_image.written_by_contract().get()),
         message_field_len(4, schema_binding_len),
         bytes_field_len(5, post_image.fields_encoded_len()),
+    ])
+}
+
+/// Conservative protobuf payload length for one entity post-image reference.
+///
+/// Used by write-set reservation; tests assert this charge dominates real
+/// encoded [`CommittedEntityReferenceV2`](crate::CommittedEntityReferenceV2) lengths.
+pub fn conservative_entity_reference_payload_len(
+    target: &crate::EntityTarget,
+) -> Result<usize, DurableCodecError> {
+    sum_proto_fields([
+        message_field_len(1, entity_target_to_proto(target).encoded_len()),
+        varint_field_len(2, MAXIMUM_WIDTH_U64),
+        bytes_field_len(3, SIZING_ENTITY_RECORD_HASH.len()),
     ])
 }
 

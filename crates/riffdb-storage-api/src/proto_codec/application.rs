@@ -12,7 +12,7 @@ use crate::{
     LegacyStoredIndexEpochV1, PartitionIndexTarget, StoredCommitRecordV1, StoredDurableEventV1,
     StoredEntityRecordV1, StoredExecutionFailedV1, StoredIndexEntryV1, StoredIndexEntryV2,
     StoredIndexEpochV1, StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
-    StoredReadDependenciesV1, StoredReadDependencyV1, derive_entity_record_hash_v1,
+    StoredReadDependenciesV1, StoredReadDependencyV1,
 };
 
 use super::{
@@ -705,16 +705,122 @@ fn entity_references_from_mutations(
     mutations
         .into_iter()
         .map(|mutation| {
-            let reference = storage_result(CommittedEntityReferenceV2::from_mutation(&mutation))?;
-            // Prove the embedded image still hashes to the derived reference.
-            if !reference.matches(mutation.post_image()) {
-                return Err(DurableCodecError::corrupt());
-            }
-            let _ = derive_entity_record_hash_v1(mutation.post_image())
-                .map_err(|_| DurableCodecError::corrupt())?;
-            Ok(reference)
+            // Hash once: from_mutation already derives the post-image hash.
+            storage_result(CommittedEntityReferenceV2::from_mutation(&mutation))
         })
         .collect()
+}
+
+/// Test helper: duplicates the first entity reference in a V3 commit envelope.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub fn inject_duplicate_entity_reference_v3(
+    encoded: &[u8],
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    let item = decode_message::<wire::StoredCommitRecordV3, _, _>(COMMIT, encoded, Ok)?;
+    let mut value = item.into_parts().0;
+    if let Some(first) = value.entity_references.first().cloned() {
+        value.entity_references.push(first);
+    }
+    encode_message(COMMIT, &value)
+}
+
+/// Rewrites a durable commit envelope to current V3 entity-reference form.
+///
+/// Self-contained: hashes embedded post-images from V1/V2 payloads. Does **not**
+/// join the EVENTS table — event damage must surface as a later structural finding,
+/// not as a migration open failure.
+pub fn transcode_commit_to_entity_reference_v3(
+    encoded: &[u8],
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    if let Ok(item) = decode_message::<wire::StoredCommitRecordV3, _, _>(COMMIT, encoded, Ok) {
+        return encode_message(COMMIT, &item.into_parts().0);
+    }
+
+    if let Ok(item) = decode_message::<wire::StoredCommitRecordV2, _, _>(COMMIT_V2, encoded, Ok) {
+        let v2 = item.into_parts().0;
+        let mutations = v2
+            .mutations
+            .into_iter()
+            .map(|value| {
+                storage_result(CommittedEntityMutationV1::new(
+                    expected_from_proto(require(value.expected)?)?,
+                    entity_from_proto(require(value.post_image)?)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, DurableCodecError>>()?;
+        let entity_references = entity_references_from_mutations(mutations)?;
+        return encode_message(
+            COMMIT,
+            &wire::StoredCommitRecordV3 {
+                commit_sequence: v2.commit_sequence,
+                admission_request_id: v2.admission_request_id,
+                plan: v2.plan,
+                canonical_input_hash: v2.canonical_input_hash,
+                actor: v2.actor,
+                logical_time: v2.logical_time,
+                partition_hash: v2.partition_hash,
+                conflict_hashes: v2.conflict_hashes,
+                read_dependencies: v2.read_dependencies,
+                entity_references: entity_references
+                    .iter()
+                    .map(entity_reference_to_proto)
+                    .collect(),
+                event_references: v2.event_references,
+                declared_outcome: v2.declared_outcome,
+                provenance_id: v2.provenance_id,
+                outbox_event_ids: v2.outbox_event_ids,
+                durability_mode: v2.durability_mode,
+            },
+        );
+    }
+
+    let item = decode_message::<wire::StoredCommitRecordV1, _, _>(LEGACY_COMMIT, encoded, Ok)?;
+    let v1 = item.into_parts().0;
+    let mutations = v1
+        .mutations
+        .into_iter()
+        .map(|value| {
+            storage_result(CommittedEntityMutationV1::new(
+                expected_from_proto(require(value.expected)?)?,
+                entity_from_proto(require(value.post_image)?)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, DurableCodecError>>()?;
+    let entity_references = entity_references_from_mutations(mutations)?;
+    let event_references = v1
+        .events
+        .iter()
+        .map(|event| {
+            let event_id = event_id_from_proto(require(event.event_id)?)?;
+            let event_hash = EventHash::from_bytes(fixed(event.event_hash.clone())?);
+            Ok(event_reference_to_proto(EventReferenceV2::new(
+                event_id, event_hash,
+            )))
+        })
+        .collect::<Result<Vec<_>, DurableCodecError>>()?;
+    encode_message(
+        COMMIT,
+        &wire::StoredCommitRecordV3 {
+            commit_sequence: v1.commit_sequence,
+            admission_request_id: v1.admission_request_id,
+            plan: v1.plan,
+            canonical_input_hash: v1.canonical_input_hash,
+            actor: v1.actor,
+            logical_time: v1.logical_time,
+            partition_hash: v1.partition_hash,
+            conflict_hashes: v1.conflict_hashes,
+            read_dependencies: v1.read_dependencies,
+            entity_references: entity_references
+                .iter()
+                .map(entity_reference_to_proto)
+                .collect(),
+            event_references,
+            declared_outcome: v1.declared_outcome,
+            provenance_id: v1.provenance_id,
+            outbox_event_ids: v1.outbox_event_ids,
+            durability_mode: v1.durability_mode,
+        },
+    )
 }
 
 /// Encodes one complete authoritative commit-log record.
@@ -1182,11 +1288,13 @@ pub fn decode_commit_entity_references(
     }
 }
 
-/// Compatibility alias: legacy V1 decode name used by older call sites.
+/// Decodes a legacy V1 commit envelope with embedded events and mutations.
+///
+/// Name retained for historical call sites; this is not the current V3 decoder.
+/// Prefer [`decode_commit_record_v3`] or [`decode_commit_record_with_events`] for
+/// production materialization.
 pub fn decode_commit_record_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredCommitRecordV1>, DurableCodecError> {
-    // Prefer current V3 without events when possible is not available;
-    // legacy callers decode embedded-event V1 rows.
     decode_commit_record_legacy_v1(encoded)
 }
