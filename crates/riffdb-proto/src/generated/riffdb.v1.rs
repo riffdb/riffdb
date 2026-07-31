@@ -2515,6 +2515,8 @@ pub enum PublicErrorKind {
     OutcomeUnknown = 7,
     InternalDefect = 8,
     CommandExecutionFailed = 9,
+    HistoryIncarnationMismatch = 10,
+    Overloaded = 11,
 }
 impl PublicErrorKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -2535,6 +2537,10 @@ impl PublicErrorKind {
             Self::OutcomeUnknown => "PUBLIC_ERROR_KIND_OUTCOME_UNKNOWN",
             Self::InternalDefect => "PUBLIC_ERROR_KIND_INTERNAL_DEFECT",
             Self::CommandExecutionFailed => "PUBLIC_ERROR_KIND_COMMAND_EXECUTION_FAILED",
+            Self::HistoryIncarnationMismatch => {
+                "PUBLIC_ERROR_KIND_HISTORY_INCARNATION_MISMATCH"
+            }
+            Self::Overloaded => "PUBLIC_ERROR_KIND_OVERLOADED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -2554,6 +2560,10 @@ impl PublicErrorKind {
             "PUBLIC_ERROR_KIND_COMMAND_EXECUTION_FAILED" => {
                 Some(Self::CommandExecutionFailed)
             }
+            "PUBLIC_ERROR_KIND_HISTORY_INCARNATION_MISMATCH" => {
+                Some(Self::HistoryIncarnationMismatch)
+            }
+            "PUBLIC_ERROR_KIND_OVERLOADED" => Some(Self::Overloaded),
             _ => None,
         }
     }

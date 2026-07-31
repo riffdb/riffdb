@@ -1361,6 +1361,8 @@ fn emit_typescript_application_errors(output: &mut String) {
   "RDB-COMMAND-0102": ["command execution failed", "command", "contact_operator", []],
   "RDB-AUTH-0215": ["application capability is revoked", "authorization", "obtain_permission", ["bind_application_role"]],
   "RDB-PROTOCOL-0101": ["the RiffDB peer returned an invalid application response", "protocol", "contact_operator", []],
+  "RDB-HISTORY-0101": ["observed history predates a database restore", "history", "correct_request", ["correct_input"]],
+  "RDB-CAPACITY-0101": ["service is over capacity", "capacity", "retry", ["retry_later"]],
 } as const;
 
 export type ApplicationErrorCode = keyof typeof APPLICATION_ERROR_REGISTRY;
