@@ -1,0 +1,21 @@
+digraph G {
+  graph [rankdir=TB, bgcolor="white", pad="0.22", nodesep="0.28", ranksep="0.42", fontname="Liberation Sans", fontsize=18, label="Planned P7 robust contract-migration dependency graph", labelloc="t", labeljust="l"];
+  node [shape=box, style="rounded,filled", fontname="Liberation Sans", fontsize=9.5, margin="0.14,0.08", color="#28495F", fillcolor="#FFF7E8", fontcolor="#173042"];
+  edge [color="#738B9A", penwidth=1.2, arrowsize=0.65];
+
+  wp404 [label="WP-404\nVerified handbook", fillcolor="#DCEFF0"];
+  wp405 [label="WP-405\nArchitecture + format freeze", penwidth=2.0];
+  wp406 [label="WP-406\nriffm • IR • compatibility • lock"];
+  wp407 [label="WP-407\nSemantic coordinator + model"];
+  wp408 [label="WP-408\nredb staging + recovery"];
+  wp409 [label="WP-409\nAuthorization + public admin"];
+  wp410 [label="WP-410\nGate A: additive data"];
+  wp411 [label="WP-411\nGate B: structural evolution"];
+  wp412 [label="WP-412\nGate C: key + ownership"];
+  wp413 [label="WP-413\nInstalled acceptance + operations", penwidth=2.0];
+
+  wp404 -> wp405 -> wp406;
+  wp406 -> wp407 -> wp408 -> wp409;
+  wp409 -> wp410 -> wp411 -> wp412;
+  {wp410 wp411 wp412} -> wp413;
+}

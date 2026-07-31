@@ -6,8 +6,8 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.54
-**Status:** Application-platform implementation handoff
+**Version:** 0.56
+**Status:** Contract-migration implementation
 **Date:** 31 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
@@ -90,6 +90,8 @@
 | 0.52 | 2026-07-31 | Applied accepted ADR-0075 and planned WP-399: successor application locks compile against the exact active parent through a read-only authorized preview, lock V3 pins canonical bundle bytes as a checked artifact, deployment proves exact parent and candidate identities before mutation, exact already-active retries remain idempotent, and application check can no longer report a stale lock as exact. |
 | 0.53 | 2026-07-31 | Corrected the post-WP-399 role-reconciliation boundary and planned WP-400: locked role compilation consumes the pinned parent-aware bundle instead of recompiling successor source as genesis, every local role/query preflight completes before the first remote mutation, widened authority still requires explicit credential replacement, and CLI operation labels no longer describe successor locking as deployment. |
 | 0.54 | 2026-07-31 | Defined the public documentation handbook, its reproducible static build and generated-reference boundaries, progressive application and operator learning paths, and the same-change documentation maintenance requirement through WP-401 to WP-404. |
+| 0.55 | 2026-07-31 | Planned P7 robust offline contract migration through WP-405 to WP-413: exact parent-specific `.riffm` artifacts, a migration-required compatibility class, database-scoped staged copy and automatic rollback, immutable committed history, predecessor-write retirement, a dedicated migration capability, and gRPC/Rust SDK/CLI administration with no MCP or application-driver path. ADR-0076 through ADR-0079 remain Proposed and block production, grammar, IR, durable, permission, and protocol implementation until exact human acceptance. |
+| 0.56 | 2026-07-31 | Applied accepted ADR-0076 through ADR-0079 and completed the WP-405 architecture gate. P7 implementation may proceed in dependency order through WP-406 to WP-413 under the frozen migration compatibility, source/IR/lock, staged recovery, coordinator, permission, public API, immutable-history, predecessor-write, and automatic-rollback boundaries. |
 
 ### Normative language
 
@@ -544,6 +546,136 @@ configuration, installation, operations, compatibility, or SDK behavior MUST
 update the affected handbook page in the same change. Pull requests MUST state
 their documentation impact, and generated handbook artifacts MUST remain
 reproducible.
+
+## 4.8 Robust contract migration
+
+This section defines the accepted P7 gate. Migration remains unavailable in the
+current product until its owning work packages pass, but ADR-0076 through
+ADR-0079 now authorize implementation in dependency order.
+
+`MIG-001` A migration MUST compile from a bounded separate `.riffm` source into
+one versioned canonical `MigrationBundleV1` bound to an exact lineage, parent
+bundle hash, successor bundle hash, compiler/grammar/IR versions, source hash,
+typed plan, resource bounds, and domain-separated bundle hash. Operational
+time, actor, request, database, backup, and filesystem facts MUST NOT enter the
+artifact.
+
+`MIG-002` Contract compatibility MUST add a stable `RequiresMigration` class.
+Ordinary deployment of such a successor MUST return a structured migration-
+required result without mutation. Migration proof MUST cover every required
+change exactly; an incomplete, excessive, ambiguous, wrong-parent, or unsupported
+proof MUST remain incompatible.
+
+`MIG-003` Application source manifest V3 and lock V4 MUST preserve prior format
+meanings and pin the exact successor bundle plus at most 32 parent-specific
+canonical parent and migration bundle artifacts. A server MUST select only the
+entry matching its exact active parent and MUST NOT infer or automatically
+chain intermediate migrations.
+
+`MIG-004` Migration expressions MUST be deterministic, typed, bounded, and
+row-local. They MAY inspect canonical literals, the complete old row, and old
+key components and MAY use only the closed reviewed expression/conversion
+registry. They MUST NOT inspect another row or external input or perform a
+lookup, scan, aggregation, clock/random read, I/O, callback, SQL operation, or
+host-language escape.
+
+`MIG-005` Conversion MUST be lossless or guarded by an explicit checked
+assertion. Optional unwrapping, integer conversion, decimal rescaling, bound
+narrowing, UUID/string conversion, list conversion, and enum remapping MUST
+fail the complete preflight on any invalid row. Rounding, truncation, clamping,
+fallback-on-error, money-currency changes, and non-exact timestamp/date changes
+MUST be rejected.
+
+`MIG-006` Migration check, apply, and observation MUST use the shared API-neutral
+service, authentication, policy, redaction, and response-budget boundaries and
+one dedicated database/environment/lineage-scoped `MigrateContract` capability.
+Deploy, application, query, MCP, capability-administration, and backup/restore
+authority MUST NOT imply migration authority.
+
+`MIG-007` Migration MUST drain exactly one selected database while sibling
+databases continue serving. The selected database MUST admit no application,
+worker, subscription, or ordinary administration operation during the offline
+interval, and at most one migration operation may run process-wide.
+
+`MIG-008` Check and apply MUST use caller-stable UUIDv7 migration operation
+identity and a canonical semantic input hash. Same ID/same input MUST recover
+the same operation; same ID/different input MUST fail before drain. Acceptance
+is durable, cancellation after acceptance MUST NOT cancel the operation, and
+status polling may resume only after the selected database reopens.
+
+`MIG-009` Apply MUST repeat a complete read-only preflight after drain and before
+backup or staging. It MUST validate exact artifacts, every transform and
+successor constraint, bounded output and scratch requirements, entity-version
+capacity, and absence of unresolved Pending admissions for versions that the
+cutover retires. A preflight failure MUST leave authoritative data unchanged.
+
+`MIG-010` Apply MUST create and verify an immutable normal backup named
+`pre-migration-<operation-id>`, retain it after success, create a protected
+same-filesystem staged database from that backup, and publish only a fully
+validated stage through an atomic parent-synced replacement boundary. Caller
+paths, symlinks, `/tmp`, and cross-filesystem publication MUST NOT be accepted.
+
+`MIG-011` A commit-owned `MigrationCoordinator` MUST be the sole component that
+constructs or applies authoritative migration batches or final catalog cutover.
+Migration MUST assign no `CommitSequence`, emit no command outcome/event/outbox
+intent/command provenance, and rewrite no commit, event, outcome, provenance,
+idempotency, historical bundle, hash, or application-sequence byte. A changed
+entity MUST advance `EntityVersion` exactly once and bind the successor schema.
+Only successful final cutover MAY assign exactly one `AdministrationSequence`;
+it MUST atomically persist successor activation, write retirement, one terminal
+`ApplyContractMigration` service audit, and the permanent migration record.
+Pre-cutover failure MUST consume no administration sequence.
+
+`MIG-012` Each staged batch MUST be bounded to at most 256 input rows, at most
+64 row mutations, and the existing encoded transaction ceiling. Row/version/hash
+recheck, entity/index mutation, and in-database journal advancement MUST be one
+atomic transaction. External checksummed receipts and internal journals MUST
+reconcile restart without guessing, duplicating a transform, or exposing a
+partial stage.
+
+`MIG-013` Before publication, validation MUST completely prove catalog history,
+entity/key/schema consistency, indexes and generations, relationships,
+uniqueness, entity and aggregate invariants, commit/event/outcome/provenance/
+idempotency immutability, outbox integrity, projection state, frozen frontiers,
+and terminal migration metadata. Unknown or inconsistent evidence fails closed.
+
+`MIG-014` A new or replacement projection required by the successor MUST build
+in a fresh generation from immutable committed history through the frozen
+application frontier and MUST be ready in the stage before publication. A
+migration MUST NOT reinterpret or rewrite source event bytes.
+
+`MIG-015` Cutover MUST install a durable predecessor-write fence. New writes
+under a retired predecessor MUST be rejected. Terminal outcome resolution and
+historical inspection MUST remain available, while predecessor read-only plans
+may run only under an exact identity/type/meaning compatibility proof.
+
+`MIG-016` Fresh validation failure after publication and before readiness MUST
+automatically restore and freshly validate the operation backup, advance the
+history incarnation required by restore-rewind semantics, and durably report
+`FailedRolledBack`. No selected-database request may run between failed
+publication and completed rollback. Terminal success has no automatic rollback.
+
+`MIG-017` The public kernel API MUST add exactly three unary administration
+operations for check, apply, and operation observation, with matching Rust SDK
+and CLI methods. Apply MUST require exact migration-hash confirmation. MCP,
+TypeScript, Python, and generated application clients MUST expose no migration
+operation or authority.
+
+`MIG-018` Public migration observations and diagnostics MUST be bounded,
+structured, authorization-filtered, and redacted. They MAY expose exact
+artifact hashes, static step categories, checked counts, phase, backup name/hash,
+and closed repair codes; they MUST NOT expose row values, credentials, absolute
+paths, dependency prose, or internal sources.
+
+`MIG-019` Migration support MUST ship through separately reviewed additive,
+structural, and key/ownership gates. Stable IR tags for later gates MUST be
+frozen before parallel implementation, and an unimplemented tag MUST fail
+closed rather than silently degrade to a weaker transform.
+
+`MIG-020` Invalid predecessor data MUST be repaired only through ordinary
+compiled, authorized, idempotent, provenance-bearing predecessor commands before
+retry. Migration MUST NOT add skip-row, generic administrative edit, cross-row
+split/merge, physical purge, online dual-write, or cross-database semantics.
 
 | gRPC API | Programmatic application and administration protocol | Alternative semantics |
 | MCP API | Dynamic tools, resources, prompts, progress, cancellation, and agent-safe result shaping | Direct storage access |
@@ -5510,13 +5642,39 @@ source distribution reproduce and install under their documented toolchain.
 depend on completed WP-393 so production work does not overlap the current
 contract-evolution package.
 
+## 20.4.4 Stage P6 — public documentation handbook
+
+**Objective:** Publish and continuously verify the implemented application,
+operator, architecture, protocol, and client documentation.
+
+**Gate P6:** `HBK-001` through `HBK-011` pass. The same checked-in sources build
+the local handbook and GitHub Pages artifact, and future public changes are
+required to update affected documentation in the same change.
+
+**P6 work-package members:** WP-401 through WP-404.
+
+## 20.4.5 Stage P7 — robust offline contract migration
+
+**Objective:** Evolve authoritative application schemas without database reset,
+generic writes, history rewriting, or partially visible state.
+
+**Gate P7:** `MIG-001` through `MIG-020` pass. An exact parent-specific
+migration checks, backs up, transforms, validates, rebuilds derived state, and
+atomically publishes one selected database; every injected failure leaves the
+exact predecessor ready or the exact validated successor ready, and sibling
+databases remain isolated.
+
+**P7 work-package members:** WP-405 through WP-413. WP-405 and exact acceptance
+of ADR-0076 through ADR-0079 block all migration production implementation.
+
 ## 20.5 Stage A — single-node alpha hardening
 
 **Objective:** Turn the prototype into a stable, supportable single-node alpha for trusted design partners.
 
 **Additions:**
 
-- Stable storage-format migration framework.
+- The completed P7 contract-data migration framework plus stable storage-format
+  upgrade policy.
 - Online consistent backup and verified restore.
 - Contract language versioning and bundle signing.
 - More entity indexes and bounded indexed reads.
@@ -6535,6 +6693,7 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `SAI-*` | Exact successor application identity before mutation |
 | `PYD-*` | Python generated application driver, packaging, and language parity |
 | `HBK-*` | Public handbook, generated references, publication, and documentation maintenance |
+| `MIG-*` | Deterministic offline contract-data migration, cutover, recovery, and administration |
 | `DSL-*` | Contract language restrictions |
 | `OUT-*` | Typed outcome and idempotency behavior |
 | `TXN-*` | Command execution, conflict ownership, and validation |
