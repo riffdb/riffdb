@@ -432,7 +432,12 @@ fn apply_generation(
         .map(ProjectionGenerationPosition::frontier)
         .ok_or(ProjectionWorkerError::Integrity)?;
     let limit = StorageScanLimit::new(COMMIT_SCAN_ROWS).ok_or(ProjectionWorkerError::Integrity)?;
-    let mut scan = CommitScanRequest::initial(limit);
+    let mut scan = match frontier {
+        FrontierPosition::BeforeFirst => CommitScanRequest::initial(limit),
+        FrontierPosition::AppliedThrough(sequence) => {
+            CommitScanRequest::initial_after(sequence, limit)
+        }
+    };
     loop {
         let page = controller
             .repository()

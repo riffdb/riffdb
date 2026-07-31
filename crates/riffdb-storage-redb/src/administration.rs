@@ -246,6 +246,29 @@ fn append_audit_record(
     {
         return Err(corrupt());
     }
+    drop(table);
+    if let StoredAdministrationAuditRecordV1::Service(service) = record {
+        let index_key = crate::keys::encode_audit_by_request_key(
+            service.request_id(),
+            service.administration_sequence(),
+        );
+        let index_value = crate::codec::encode_service_audit_request_index_v1(
+            riffdb_storage_api::StoredServiceAuditRequestIndexV1::new(
+                service.request_id(),
+                service.administration_sequence(),
+            ),
+        )?;
+        let mut index = transaction
+            .open_table(crate::layout::AUDIT_BY_REQUEST)
+            .map_err(table_error)?;
+        if index
+            .insert(index_key.as_slice(), index_value.as_bytes())
+            .map_err(precommit_storage_error)?
+            .is_some()
+        {
+            return Err(corrupt());
+        }
+    }
     Ok(())
 }
 
@@ -412,12 +435,21 @@ impl AdministrationAuditReader for RedbOperationalPorts {
         let mut records = Vec::new();
         let mut bytes = 0usize;
         let mut has_more = false;
-        for entry in table.iter().map_err(precommit_storage_error)? {
+        let mut scan = match request.after() {
+            Some(after) => {
+                let after_key = encode_audit_key(after);
+                table
+                    .range::<&[u8]>((
+                        std::ops::Bound::Excluded(after_key.as_slice()),
+                        std::ops::Bound::Unbounded,
+                    ))
+                    .map_err(precommit_storage_error)?
+            }
+            None => table.iter().map_err(precommit_storage_error)?,
+        };
+        for entry in &mut scan {
             let (key, value) = entry.map_err(precommit_storage_error)?;
             let sequence = decode_audit_key(key.value()).map_err(|_| corrupt())?;
-            if request.after().is_some_and(|after| sequence <= after) {
-                continue;
-            }
             let item = decode_administration_audit_record_v1(value.value())?;
             if item.value().administration_sequence() != sequence {
                 return Err(corrupt());
