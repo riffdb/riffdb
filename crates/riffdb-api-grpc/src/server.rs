@@ -2720,9 +2720,35 @@ mod tests {
 
     #[test]
     fn assemble_batch_structural_defect_maps_to_emergency_internal() {
-        let status =
-            assemble_execute_batch_response(vec![v1::ExecuteCommandBatchItem { result: None }])
-                .expect_err("unset oneof is structural");
+        // Invalid plan_hash (31 bytes) fails validate_execute_response inside
+        // validate_public_message — not the assembler's pre-validation None guard.
+        let items = vec![v1::ExecuteCommandBatchItem {
+            result: Some(v1::execute_command_batch_item::Result::Response(
+                v1::ExecuteCommandResponse {
+                    status: v1::execute_command_response::CompletionStatus::ExecutedReadOnly as i32,
+                    commit_sequence: 0,
+                    contract_version: 1,
+                    plan_hash: vec![0; 31],
+                    outcome_type: "Ok".to_owned(),
+                    outcome: Some(v1::Value {
+                        kind: Some(v1::value::Kind::NullValue(v1::NullValue::NullValue as i32)),
+                    }),
+                    provenance_uri: String::new(),
+                    durability_mode: String::new(),
+                    outcome_uri: None,
+                    history_incarnation: 1,
+                },
+            )),
+        }];
+        assert!(
+            riffdb_proto::validate_public_message(&v1::ExecuteCommandBatchResponse {
+                responses: Vec::new(),
+                items: items.clone(),
+            })
+            .is_err()
+        );
+        let status = assemble_execute_batch_response(items)
+            .expect_err("invalid item response must fail assembled validation");
         assert_eq!(status.code(), tonic::Code::Internal);
         assert_eq!(status.message(), crate::EMERGENCY_INTERNAL_MESSAGE);
     }
