@@ -51,6 +51,7 @@ message GetCommitResponse {
     Unit not_found = 1;
     Commit found = 2;
   }
+  // Durable history incarnation fence; ≥ 1 once the database is serving.
   uint64 history_incarnation = 3;
 }
 
@@ -58,6 +59,7 @@ message CommitPage {
   repeated Commit items = 1;
   optional bytes next_cursor = 2;
   FrontierPosition observed_fence = 3;
+  // Durable history incarnation fence; ≥ 1 once the database is serving.
   uint64 history_incarnation = 4;
 }
 
@@ -86,6 +88,7 @@ enum CommitSubscriptionEndReason {
 message CommitSubscriptionTerminal {
   CommitSubscriptionEndReason reason = 1;
   FrontierPosition resume_after = 2;
+  // Durable history incarnation fence; ≥ 1 once the database is serving.
   uint64 history_incarnation = 3;
 }
 
@@ -101,6 +104,7 @@ message CommitNotification {
     Commit commit = 1;
     CommitSubscriptionTerminal terminal = 2;
   }
+  // Durable history incarnation fence; ≥ 1 once the database is serving.
   uint64 history_incarnation = 3;
 }
 

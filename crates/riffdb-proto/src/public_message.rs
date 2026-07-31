@@ -2068,6 +2068,9 @@ fn validate_get_commit_request(message: &v1::GetCommitRequest) -> Result<(), Pub
 }
 
 fn validate_get_commit_response(message: &v1::GetCommitResponse) -> Result<(), PublicWireError> {
+    if message.history_incarnation == 0 {
+        return Err(PublicWireError::InvalidIdentity);
+    }
     match message
         .result
         .as_ref()
@@ -2080,6 +2083,9 @@ fn validate_get_commit_response(message: &v1::GetCommitResponse) -> Result<(), P
 
 fn validate_commit_page(page: Option<&v1::CommitPage>) -> Result<(), PublicWireError> {
     let page = page.ok_or(PublicWireError::MissingRequiredField)?;
+    if page.history_incarnation == 0 {
+        return Err(PublicWireError::InvalidIdentity);
+    }
     if page.items.len() > MAX_PAGE_ITEMS {
         return Err(PublicWireError::TooManyItems);
     }
@@ -2132,6 +2138,9 @@ fn validate_subscribe_commits_request(
 }
 
 fn validate_commit_notification(message: &v1::CommitNotification) -> Result<(), PublicWireError> {
+    if message.history_incarnation == 0 {
+        return Err(PublicWireError::InvalidIdentity);
+    }
     match message
         .notification
         .as_ref()
@@ -2139,6 +2148,9 @@ fn validate_commit_notification(message: &v1::CommitNotification) -> Result<(), 
     {
         v1::commit_notification::Notification::Commit(commit) => validate_commit(commit),
         v1::commit_notification::Notification::Terminal(terminal) => {
+            if terminal.history_incarnation == 0 {
+                return Err(PublicWireError::InvalidIdentity);
+            }
             if !matches!(
                 v1::CommitSubscriptionEndReason::try_from(terminal.reason),
                 Ok(v1::CommitSubscriptionEndReason::LifetimeElapsed
@@ -2211,6 +2223,11 @@ fn validate_health_response(message: &v1::HealthResponse) -> Result<(), PublicWi
             Ok(())
         }
         v1::health_response::Result::Authenticated(health) => {
+            // history_incarnation may be 0 while the server is still initializing
+            // (pre-ready); once Ready it must be ≥ 1.
+            if health.status == v1::HealthStatus::Ready as i32 && health.history_incarnation == 0 {
+                return Err(PublicWireError::InvalidIdentity);
+            }
             if !matches!(
                 v1::HealthStatus::try_from(health.status),
                 Ok(v1::HealthStatus::Ready
@@ -2250,7 +2267,8 @@ fn validate_stats_request(message: &v1::StatsRequest) -> Result<(), PublicWireEr
 }
 
 fn validate_stats_response(message: &v1::StatsResponse) -> Result<(), PublicWireError> {
-    if message.active_cursors > 4_096
+    if message.history_incarnation == 0
+        || message.active_cursors > 4_096
         || message.active_commit_subscribers > 128
         || message.last_commit_sequence == Some(0)
     {
@@ -3280,6 +3298,9 @@ fn validate_discovery_fence(
     fence: Option<&v1::DiscoveryCatalogFence>,
 ) -> Result<(), PublicWireError> {
     let fence = fence.ok_or(PublicWireError::MissingRequiredField)?;
+    if fence.history_incarnation == 0 {
+        return Err(PublicWireError::InvalidIdentity);
+    }
     match fence
         .state
         .as_ref()

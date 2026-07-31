@@ -47,9 +47,10 @@ const INCIDENT_OFFSET: usize = CATALOG_EVENT_OFFSET + CATALOG_EVENT_COUNT;
 const INCIDENT_SOURCE_FAILURE_OFFSET: usize = INCIDENT_OFFSET + INCIDENT_CLASS_COUNT;
 const READINESS_FAILURE_OFFSET: usize = INCIDENT_SOURCE_FAILURE_OFFSET + 1;
 const TELEMETRY_DROPPED_OFFSET: usize = READINESS_FAILURE_OFFSET + READINESS_FAILURE_COUNT;
+const UNPROVEN_CORRUPT_TARGET_BUMP_OFFSET: usize = TELEMETRY_DROPPED_OFFSET + 1;
 
 /// Exact maximum number of metric series exported by the POC registry.
-pub const MAX_METRIC_SERIES: usize = TELEMETRY_DROPPED_OFFSET + 1;
+pub const MAX_METRIC_SERIES: usize = UNPROVEN_CORRUPT_TARGET_BUMP_OFFSET + 1;
 
 /// Maximum distinct typed command metric dimensions retained in-process.
 pub const MAX_COMMAND_METRIC_SERIES: usize = 1_024;
@@ -445,6 +446,9 @@ pub enum MetricKey {
     AuthoritativeReadinessFailure(AuthoritativeReadinessFailure),
     /// A bounded telemetry collector rejected an additional record.
     TelemetryDropped,
+    /// Destructive restore bumped history incarnation without proving target
+    /// monotonicity (corrupt/unreadable target with no retained or receipt floor).
+    UnprovenCorruptTargetHistoryBump,
 }
 
 impl MetricKey {
@@ -484,6 +488,7 @@ impl MetricKey {
                 READINESS_FAILURE_OFFSET + readiness_failure_index(reason)
             }
             Self::TelemetryDropped => TELEMETRY_DROPPED_OFFSET,
+            Self::UnprovenCorruptTargetHistoryBump => UNPROVEN_CORRUPT_TARGET_BUMP_OFFSET,
         }
     }
 
@@ -629,6 +634,11 @@ impl MetricKey {
             },
             Self::TelemetryDropped => MetricSample {
                 name: "riffdb_telemetry_dropped_total",
+                labels: none,
+                value,
+            },
+            Self::UnprovenCorruptTargetHistoryBump => MetricSample {
+                name: "riffdb_unproven_corrupt_target_history_bumps_total",
                 labels: none,
                 value,
             },
@@ -1080,6 +1090,7 @@ fn metric_keys() -> Vec<MetricKey> {
     keys.push(MetricKey::IncidentSourceFailure);
     keys.extend(readiness_failures().map(MetricKey::AuthoritativeReadinessFailure));
     keys.push(MetricKey::TelemetryDropped);
+    keys.push(MetricKey::UnprovenCorruptTargetHistoryBump);
     debug_assert_eq!(keys.len(), MAX_METRIC_SERIES);
     keys
 }

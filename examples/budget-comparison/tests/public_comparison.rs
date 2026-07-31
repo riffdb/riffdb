@@ -265,7 +265,10 @@ fn public_path_phase_diagnostics_report() -> TestResult<()> {
         json_string(&hint)
     );
     fs::write(&output, body)?;
-    println!("RIFFDB_BUDGET_PUBLIC_PATH_DIAGNOSTICS_REPORT={}", output.display());
+    println!(
+        "RIFFDB_BUDGET_PUBLIC_PATH_DIAGNOSTICS_REPORT={}",
+        output.display()
+    );
     Ok(())
 }
 

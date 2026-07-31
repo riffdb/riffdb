@@ -89,8 +89,13 @@ pub(crate) const META_ADMINISTRATION_SEQUENCE: &str = "next_administration_seque
 pub(crate) const META_CAPABILITY_BOOTSTRAP: &str = "capability_bootstrap/v1";
 pub(crate) const META_RECORD_REGISTRY: &str = "record_registry/v2";
 pub(crate) const META_HISTORY_INCARNATION: &str = "history_incarnation/v1";
+/// One-shot marker: legacy INDEX_EPOCHS prefix-keyed rows have been repaired
+/// (or proven absent) under the current registry digest. Optional; not required
+/// on open. Written after a successful `migrate_partition_index_generations`
+/// while the digest is current so reopen can skip the full secondary-index scan.
+pub(crate) const META_INDEX_EPOCH_ROWS_REPAIRED: &str = "index_epoch_rows_repaired/v1";
 
-pub(crate) const META_KEYS: [&str; 7] = [
+pub(crate) const META_KEYS: [&str; 8] = [
     META_FORMAT_VERSION,
     META_DATABASE_ID,
     META_APPLICATION_SEQUENCE,
@@ -98,6 +103,7 @@ pub(crate) const META_KEYS: [&str; 7] = [
     META_CAPABILITY_BOOTSTRAP,
     META_RECORD_REGISTRY,
     META_HISTORY_INCARNATION,
+    META_INDEX_EPOCH_ROWS_REPAIRED,
 ];
 
 #[allow(dead_code, reason = "WP-070 catalog ports consume this frozen key")]
@@ -182,9 +188,10 @@ mod tests {
                 "capability_bootstrap/v1",
                 "record_registry/v2",
                 "history_incarnation/v1",
+                "index_epoch_rows_repaired/v1",
             ]
         );
-        assert_eq!(META_KEYS.len(), 7);
+        assert_eq!(META_KEYS.len(), 8);
         assert_eq!(
             META_KEYS.into_iter().collect::<BTreeSet<_>>().len(),
             META_KEYS.len()

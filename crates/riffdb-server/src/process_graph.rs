@@ -544,6 +544,19 @@ impl RunningProductionGraph {
         self.observability.write_completion_group_snapshot()
     }
 
+    /// History incarnation retained from the successful open that built this graph.
+    ///
+    /// Available after activation even once ordinary admission is closed for
+    /// offline maintenance (corrupt-target restore floor).
+    pub(crate) fn retained_history_incarnation(&self) -> Option<u64> {
+        self.lifecycle.retained_history_incarnation()
+    }
+
+    /// Process metrics registry for maintenance-driver operator signals.
+    pub(crate) fn metrics(&self) -> riffdb_observability::MetricRegistry {
+        self.observability.metrics().clone()
+    }
+
     /// Returns the optional hosted-MCP dependencies over the shared lifecycle.
     pub(crate) fn hosted_mcp_dependencies(&self) -> Option<HostedMcpDependencies> {
         Some(HostedMcpDependencies {
