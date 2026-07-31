@@ -644,7 +644,8 @@ fn migrate_commit_entity_references(shared: &SharedRedb) -> Result<(), StorageEr
         transaction
             .set_durability(Durability::Immediate)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let events = transaction.open_table(EVENTS).map_err(table_error)?;
+        // Self-contained: hashes come from embedded post-images in the commit
+        // payload. No EVENTS join — damaged events surface as structural findings.
         let mut commits = transaction.open_table(COMMITS).map_err(table_error)?;
         let mut replacements = Vec::new();
         let mut last = None;
@@ -662,12 +663,8 @@ fn migrate_commit_entity_references(shared: &SharedRedb) -> Result<(), StorageEr
                 let (key, value) = row.map_err(precommit_storage_error)?;
                 let key = key.value().to_vec();
                 let original = value.value();
-                // Self-contained: hashes come from embedded post-images being
-                // removed during decode; no ENTITIES join.
-                let commit = decode_commit_with_event_table(original, &events)?
-                    .into_parts()
-                    .0;
-                let current = encode_commit_record_v1(&commit)?;
+                let current = riffdb_storage_api::transcode_commit_to_entity_reference_v3(original)
+                    .map_err(crate::error::codec_error)?;
                 scanned_rows = scanned_rows.saturating_add(1);
                 scanned_bytes = scanned_bytes
                     .checked_add(original.len())
@@ -692,7 +689,6 @@ fn migrate_commit_entity_references(shared: &SharedRedb) -> Result<(), StorageEr
                 .map_err(precommit_storage_error)?;
         }
         drop(commits);
-        drop(events);
         if changed {
             shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
             shared.commit_durable(transaction)?;
@@ -2571,6 +2567,193 @@ mod tests {
                 .value(),
             riffdb_storage_api::proto_codec::current_record_registry_digest()
         );
+    }
+
+    #[test]
+    fn entity_reference_migration_from_pre_audit_request_index_converges() {
+        let path = TestDatabasePath::new("entity-reference-from-audit");
+        let mut store = RedbStore::open(&path.0).expect("open empty store");
+        store
+            .initialize_database(database_id(0x30))
+            .expect("initialize");
+        let (v2, event, event_id, sequence) = v2_commit_fixture_from_legacy_v1();
+        let commit_key = encode_application_sequence_key(sequence);
+        let event_key = encode_event_key(event_id);
+        let transaction = store.shared.database.begin_write().expect("write");
+        transaction
+            .open_table(EVENTS)
+            .expect("events")
+            .insert(event_key.as_slice(), event.as_slice())
+            .expect("insert event");
+        transaction
+            .open_table(COMMITS)
+            .expect("commits")
+            .insert(commit_key.as_slice(), v2.as_slice())
+            .expect("insert v2 commit");
+        // Enter the chain at the AuditRequestIndex step: terminal publish was
+        // rewired from `current` to PRE_ENTITY_REFERENCE.
+        let predecessor = encode_record_registry_v2(SchemaHash::from_bytes(
+            PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST,
+        ))
+        .expect("encode pre-audit registry");
+        transaction
+            .open_table(META)
+            .expect("meta")
+            .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
+            .expect("install pre-audit registry");
+        transaction.commit().expect("commit fixture");
+        drop(store);
+
+        let migrated = RedbStore::open(&path.0).expect("migrate from PRE_AUDIT");
+        let read = migrated.shared.database.begin_read().expect("read");
+        let registry = read
+            .open_table(META)
+            .expect("meta")
+            .get(META_RECORD_REGISTRY)
+            .expect("get")
+            .expect("registry");
+        assert_eq!(
+            *decode_record_registry_v2(registry.value())
+                .expect("decode")
+                .value(),
+            riffdb_storage_api::proto_codec::current_record_registry_digest()
+        );
+        let commits = read.open_table(COMMITS).expect("commits");
+        let commit = commits
+            .get(commit_key.as_slice())
+            .expect("get")
+            .expect("commit");
+        assert_eq!(&commit.value()[..8], b"RDB2\x02\x11\0\x03");
+    }
+
+    #[test]
+    fn entity_reference_migration_survives_damaged_events_row() {
+        let path = TestDatabasePath::new("entity-reference-damaged-event");
+        let mut store = RedbStore::open(&path.0).expect("open empty store");
+        store
+            .initialize_database(database_id(0x31))
+            .expect("initialize");
+        let (v2, _event, _event_id, sequence) = v2_commit_fixture_from_legacy_v1();
+        let commit_key = encode_application_sequence_key(sequence);
+        let transaction = store.shared.database.begin_write().expect("write");
+        // Missing event row (commit still references it). Migration must not
+        // join EVENTS; damage surfaces later as a structural finding. A garbage
+        // EVENTS payload would also fail the general compact-row pass, which is
+        // outside this migration step.
+        transaction
+            .open_table(COMMITS)
+            .expect("commits")
+            .insert(commit_key.as_slice(), v2.as_slice())
+            .expect("insert v2 commit");
+        let predecessor =
+            encode_record_registry_v2(SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST))
+                .expect("encode predecessor");
+        transaction
+            .open_table(META)
+            .expect("meta")
+            .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
+            .expect("install predecessor");
+        transaction.commit().expect("commit fixture");
+        drop(store);
+
+        let migrated = RedbStore::open(&path.0).expect("migration must not join EVENTS");
+        let read = migrated.shared.database.begin_read().expect("read");
+        let registry = read
+            .open_table(META)
+            .expect("meta")
+            .get(META_RECORD_REGISTRY)
+            .expect("get")
+            .expect("registry");
+        assert_eq!(
+            *decode_record_registry_v2(registry.value())
+                .expect("decode")
+                .value(),
+            riffdb_storage_api::proto_codec::current_record_registry_digest()
+        );
+        let commit = read
+            .open_table(COMMITS)
+            .expect("commits")
+            .get(commit_key.as_slice())
+            .expect("get")
+            .expect("commit");
+        assert_eq!(&commit.value()[..8], b"RDB2\x02\x11\0\x03");
+    }
+
+    #[test]
+    fn entity_reference_migration_splits_501_rows_and_crash_restarts() {
+        let path = TestDatabasePath::new("entity-reference-501");
+        let mut store = RedbStore::open(&path.0).expect("open empty store");
+        store
+            .initialize_database(database_id(0x32))
+            .expect("initialize");
+        let (v2_template, event, event_id, _) = v2_commit_fixture_from_legacy_v1();
+        let event_key = encode_event_key(event_id);
+        let transaction = store.shared.database.begin_write().expect("write");
+        transaction
+            .open_table(EVENTS)
+            .expect("events")
+            .insert(event_key.as_slice(), event.as_slice())
+            .expect("insert event");
+        {
+            let mut commits = transaction.open_table(COMMITS).expect("commits");
+            // 501 rows forces at least one page split at FORMAT_MIGRATION_MAX_ROWS=500.
+            for seq in 1u64..=501 {
+                let sequence = CommitSequence::new(seq).expect("sequence");
+                let key = encode_application_sequence_key(sequence);
+                // Reuse the same V2 payload; migration rewrites by content not key.
+                commits
+                    .insert(key.as_slice(), v2_template.as_slice())
+                    .expect("insert commit row");
+            }
+        }
+        let predecessor =
+            encode_record_registry_v2(SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST))
+                .expect("encode predecessor");
+        transaction
+            .open_table(META)
+            .expect("meta")
+            .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
+            .expect("install predecessor");
+        transaction.commit().expect("commit 501-row fixture");
+        drop(store);
+
+        let interrupted = RedbTestController::return_unknown_after_commit(
+            RedbTestOperation::StorageFormatMigrationBatch,
+        );
+        assert_eq!(
+            RedbStore::open_with_test_controller(&path.0, interrupted)
+                .expect_err("page-boundary interrupt")
+                .kind(),
+            StorageErrorKind::CommitStatusUnknown
+        );
+        let migrated = RedbStore::open(&path.0).expect("resume migration converges");
+        let read = migrated.shared.database.begin_read().expect("read");
+        let registry = read
+            .open_table(META)
+            .expect("meta")
+            .get(META_RECORD_REGISTRY)
+            .expect("get")
+            .expect("registry");
+        assert_eq!(
+            *decode_record_registry_v2(registry.value())
+                .expect("decode")
+                .value(),
+            riffdb_storage_api::proto_codec::current_record_registry_digest()
+        );
+        let commits = read.open_table(COMMITS).expect("commits");
+        let mut v3_count = 0usize;
+        for row in commits.iter().expect("iter") {
+            let (_, value) = row.expect("row");
+            if value.value().starts_with(b"RDB2\x02\x11\0\x03") {
+                v3_count += 1;
+            }
+        }
+        assert_eq!(v3_count, 501, "all rows transcoded to V3");
+        drop(commits);
+        drop(read);
+        drop(migrated);
+        // Second open no-ops (all pages abort).
+        RedbStore::open(&path.0).expect("second open no-op");
     }
 
     #[test]
