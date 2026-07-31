@@ -1,6 +1,6 @@
 # ADR-0082: Single Total Order and Pre-Alpha Format Acceptances
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-31
 - **Decision owners:** RiffDB maintainers
 - **Related requirements:** `TXN-002`, `ID-004`, `STO-001`, `PERF-004`
@@ -85,4 +85,4 @@ A pre-alpha audit confirmed future retention can be built additively:
 
 ## Acceptance
 
-Pending maintainer acceptance. Doc-only; blocks no package.
+Accepted by the maintainer on 2026-07-31.
