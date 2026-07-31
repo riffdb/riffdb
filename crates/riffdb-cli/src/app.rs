@@ -169,10 +169,11 @@ fn interrupt_application_deployment_after(environment: &dyn Environment, stage: 
     }
 }
 use crate::scaffold::{
-    ApplicationCheckStatus, ScaffoldLanguage, application_contract_source,
+    ApplicationCheckStatus, PinnedLockRefresh, ScaffoldLanguage, application_contract_source,
     application_contract_version, check_application, check_application_lock, create_application,
     generate_application, load_locked_application, migrate_application_source_v2,
-    preview_application_lock, write_application_lock, write_application_lock_with_bundle,
+    preview_application_lock, refresh_application_lock_from_pinned_bundle, write_application_lock,
+    write_application_lock_with_bundle,
 };
 use crate::value::{InputValue, RecordInput, ValueError, parse_uuid};
 
@@ -299,6 +300,32 @@ pub async fn run() -> ExitCode {
             command: ApplicationCommand::Lock { source, write: true, .. }
         } if application_contract_version(Path::new(source)).is_ok_and(|version| version > 1)
     );
+    if networked_successor_lock
+        && let TopLevel::Application {
+            command:
+                ApplicationCommand::Lock {
+                    source,
+                    write: true,
+                    lock,
+                    ..
+                },
+        } = &cli.command
+    {
+        match refresh_application_lock_from_pinned_bundle(Path::new(source), Some(Path::new(lock)))
+        {
+            Ok(PinnedLockRefresh::Refreshed) => {
+                println!(
+                    "application sources, pinned contract bundle, lock, and generated bindings are exact"
+                );
+                return ExitCode::SUCCESS;
+            }
+            Ok(PinnedLockRefresh::ContractSourceChanged | PinnedLockRefresh::NotPinned) => {}
+            Err(error) => {
+                emit_scaffold_failure("riffdb application lock refresh failed", &error, cli.output);
+                return ExitCode::FAILURE;
+            }
+        }
+    }
     if let TopLevel::Application { command } = &cli.command
         && !matches!(
             command,
