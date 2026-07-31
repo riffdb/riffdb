@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use riffdb_auth::AuthenticatedPrincipal;
-use riffdb_catalog::{CatalogError, CatalogErrorKind, ResolvedExecutablePlan};
+use riffdb_catalog::{
+    CatalogError, CatalogErrorKind, ResolvedExecutablePlan, ValidatedContractBundle,
+};
 use riffdb_commit::{
     CommandExecutionAdmissionError, CommandExecutionErrorKind, CommandExecutionPreparation,
     CommandExecutionResult as CoordinatorCommandResult, CommandIdempotencyConfirmationError,
@@ -14,8 +16,8 @@ use riffdb_commit::{
     ReadOnlyExecutionPreparation, ReadOnlyExecutionResult,
 };
 use riffdb_contract_ir::{
-    CommandPlan, ExecutionClass, McpCommandToolNameV1, OutcomeSchema, RecordSchema, RecordTypeRef,
-    SchemaIr, ValueType, ValueTypeTag,
+    CommandPlan, ExecutionClass, McpCommandToolNameV1, RecordSchema, RecordTypeRef, SchemaIr,
+    ValueType, ValueTypeTag,
 };
 use riffdb_errors::{
     MAX_VALIDATION_ISSUES, MAX_VALIDATION_PATH_SEGMENTS, PublicError, ValidationCode,
@@ -28,10 +30,10 @@ use riffdb_policy::{
     PartitionConstraint, UntrustedInvocationClaims,
 };
 use riffdb_types::{
-    CanonicalCodecError, CanonicalList, CanonicalRecord, CanonicalValue, Decimal, DecimalSpec,
-    FieldId, IdempotencyKey, MAX_DECIMAL_PRECISION, Money, OutcomeId, ScopedPartitionV1,
-    ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1, ServiceOperationV1,
-    TenantScope, encode_canonical_record,
+    CanonicalCodecError, CanonicalList, CanonicalRecord, CanonicalValue, CommandId, Decimal,
+    DecimalSpec, FieldId, IdempotencyKey, MAX_DECIMAL_PRECISION, Money, OutcomeId,
+    ScopedPartitionV1, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1,
+    ServiceOperationV1, TenantScope, encode_canonical_record,
 };
 
 use crate::orchestration::{AuditScope, BegunInvocation};
@@ -107,8 +109,8 @@ impl PostEvaluationCommandAuthorizer for ServicePostEvaluationCommandAuthorizer 
 
 struct CheckedOutcomeCatalog {
     plan: OutcomePlanBinding,
-    contract_schema: SchemaIr,
-    outcomes: Vec<OutcomeSchema>,
+    command_id: CommandId,
+    bundle: ValidatedContractBundle,
     tool_name: Option<McpCommandToolNameV1>,
 }
 
@@ -123,8 +125,8 @@ impl CheckedOutcomeCatalog {
                 reference.command_plan_hash(),
                 resolved.plan().execution_class(),
             ),
-            contract_schema: resolved.bundle().bundle().schema().clone(),
-            outcomes: resolved.plan().outcomes().to_vec(),
+            command_id: reference.command_id(),
+            bundle: resolved.bundle().clone(),
             tool_name: resolved
                 .bundle()
                 .bundle()
@@ -1956,14 +1958,21 @@ fn declared_outcome_view(
             service.internal_failure(operation, InternalDefect::ProofMismatch)
         }
     };
-    let schema = outcome_catalog
-        .outcomes
+    let contract = outcome_catalog.bundle.bundle();
+    let schema = contract
+        .commands()
         .iter()
-        .find(|candidate| candidate.id() == outcome_id)
+        .find(|command| command.command_id() == outcome_catalog.command_id)
+        .and_then(|command| {
+            command
+                .outcomes()
+                .iter()
+                .find(|candidate| candidate.id() == outcome_id)
+        })
         .ok_or_else(&integrity_failure)?;
     DeclaredOutcomeView::from_checked_schema(
         outcome_catalog.plan.clone(),
-        &outcome_catalog.contract_schema,
+        contract.schema(),
         schema,
         value,
     )

@@ -1,7 +1,8 @@
 //! Canonical-envelope write-set accounting.
 
-use riffdb_proto::storage::v1 as wire;
-use riffdb_types::{CanonicalRecord, encode_canonical_record};
+use prost::Message as _;
+#[cfg(test)]
+use riffdb_types::{CanonicalRecord, CanonicalValue};
 
 use crate::{
     AtomicCommandRecordSet, CommandWriteClassBreakdownV1, CommitIntent, DurabilityMode,
@@ -12,12 +13,11 @@ use crate::{
 use super::{
     COMMIT, CanonicalStoredEnvelopeV1, DurableCodecError, DurableCodecErrorKind, ENTITY, EVENT,
     INDEX_ENTRY, INDEX_EPOCH, OUTCOME, PROVENANCE, binding_to_proto, claims_to_proto,
-    declared_outcome_to_proto, dependencies_to_proto, durability_to_proto,
-    encode_application_sequence_allocator_v1, encode_commit_record_v1, encode_durable_event_v1,
-    encode_entity_record_v1, encode_index_entry_v2, encode_index_epoch_v1, encode_outbox_intent_v1,
+    dependencies_to_proto, durability_to_proto, encode_application_sequence_allocator_v1,
+    encode_commit_record_v1, encode_durable_event_v1, encode_entity_record_v1,
+    encode_index_entry_v2, encode_index_epoch_v1, encode_outbox_intent_v1,
     encode_provenance_record_v1, encode_stored_outcome_v1, entity_target_to_proto,
-    expected_to_proto, hashes_to_proto, identity_to_proto, index_entry_to_proto,
-    index_epoch_to_proto, plan_to_proto, storage_result, timestamp_to_proto,
+    expected_to_proto, identity_to_proto, plan_to_proto, storage_result, timestamp_to_proto,
 };
 
 const OUTBOX_INTENT: &str = "riffdb.storage.v1.StoredOutboxIntentV2";
@@ -200,165 +200,158 @@ pub fn command_write_set_upper_bound_v1(
     let evaluated = intent.evaluated();
     let pending = intent.pending();
     let plan = evaluated.plan();
-    let schema_binding = DurableKeySchemaBindingV1::from_plan(plan);
-
-    let entity_messages = evaluated
+    let schema_binding = binding_to_proto(&DurableKeySchemaBindingV1::from_plan(plan));
+    let schema_binding_len = schema_binding.encoded_len();
+    let entity_payload_lens = evaluated
         .mutations()
         .iter()
-        .map(|mutation| sizing_entity(mutation, &schema_binding))
+        .map(|mutation| sizing_entity_len(mutation, schema_binding_len))
         .collect::<Result<Vec<_>, _>>()?;
-    let event_messages = evaluated
+    let event_payload_lens = evaluated
         .event_intents()
         .iter()
         .enumerate()
         .map(|(ordinal, event)| {
             let event_ordinal =
                 u32::try_from(ordinal).map_err(|_| DurableCodecError::invariant())?;
-            Ok(wire::StoredDurableEventV1 {
-                event_id: Some(wire::EventIdV1 {
-                    commit_sequence: MAXIMUM_WIDTH_U64,
-                    event_ordinal,
-                }),
-                event_type_id: event.event_type_id().get(),
-                canonical_payload: canonical_record(event.payload())?,
-                event_hash: SIZING_EVENT_HASH.to_vec(),
-            })
+            sizing_event_len(
+                event.event_type_id().get(),
+                event.payload_encoded_len(),
+                event_ordinal,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let event_id_lens = (0..evaluated.event_intents().len())
+        .map(|ordinal| {
+            let ordinal = u32::try_from(ordinal).map_err(|_| DurableCodecError::invariant())?;
+            Ok(sizing_event_id_len(ordinal))
         })
         .collect::<Result<Vec<_>, DurableCodecError>>()?;
-    let event_ids = event_messages
-        .iter()
-        .map(|event| event.event_id.ok_or_else(DurableCodecError::invariant))
-        .collect::<Result<Vec<_>, _>>()?;
     let read_dependencies = storage_result(StoredReadDependenciesV1::from_live(
         evaluated.read_dependencies(),
     ))?;
-    let identity = identity_to_proto(pending.identity());
-    let plan = plan_to_proto(plan);
-    let canonical_input_hash = pending.canonical_input_hash().as_bytes().to_vec();
-    let actor = super::actor_to_proto(pending.actor());
-    let logical_time = timestamp_to_proto(pending.logical_time().timestamp());
-    let partition_hash = intent.partition_hash().as_bytes().to_vec();
-    let conflict_hashes = hashes_to_proto(intent.conflict_hashes());
-    let admitted_claims = claims_to_proto(pending.provenance_claims());
-    let admission_request_id = pending.admission_request_id().as_bytes().to_vec();
-    let provenance_id = intent.provenance_id().as_bytes().to_vec();
-
-    let outcome = wire::StoredOutcomeV1 {
-        identity: Some(identity.clone()),
-        commit_sequence: MAXIMUM_WIDTH_U64,
-        admission_request_id: admission_request_id.clone(),
-        plan: Some(plan.clone()),
-        canonical_input_hash: canonical_input_hash.clone(),
-        actor: Some(actor.clone()),
-        logical_time: Some(logical_time),
-        partition_hash: partition_hash.clone(),
-        conflict_hashes: conflict_hashes.clone(),
-        declared_outcome: Some(declared_outcome_to_proto(evaluated.outcome())),
-        admitted_claims: Some(admitted_claims.clone()),
-        provenance_id: provenance_id.clone(),
-        durability_mode: durability_to_proto(DurabilityMode::Memory),
-        partition_key: pending.partition_key().as_bytes().to_vec(),
-    };
-    let affected_entities = entity_messages
+    let identity_len = identity_to_proto(pending.identity()).encoded_len();
+    let plan_len = plan_to_proto(plan).encoded_len();
+    let actor_len = super::actor_to_proto(pending.actor()).encoded_len();
+    let logical_time_len = timestamp_to_proto(pending.logical_time().timestamp()).encoded_len();
+    let claims_len = claims_to_proto(pending.provenance_claims()).encoded_len();
+    let declared_outcome_len = sizing_declared_outcome_len(evaluated.outcome())?;
+    let read_dependencies_len = dependencies_to_proto(&read_dependencies).encoded_len();
+    let admission_request_id_len = pending.admission_request_id().as_bytes().len();
+    let canonical_input_hash_len = pending.canonical_input_hash().as_bytes().len();
+    let partition_hash_len = intent.partition_hash().as_bytes().len();
+    let provenance_id_len = intent.provenance_id().as_bytes().len();
+    let conflict_hash_lens = intent
+        .conflict_hashes()
         .iter()
-        .map(|entity| wire::AffectedEntityV1 {
-            target: entity.target.clone(),
-            entity_version: entity.entity_version,
-        })
+        .map(|hash| hash.as_bytes().len())
         .collect::<Vec<_>>();
-    let provenance = wire::StoredProvenanceRecordV1 {
-        provenance_id: provenance_id.clone(),
-        commit_sequence: MAXIMUM_WIDTH_U64,
-        identity: Some(identity),
-        admission_request_id: admission_request_id.clone(),
-        plan: Some(plan.clone()),
-        canonical_input_hash: canonical_input_hash.clone(),
-        actor: Some(actor.clone()),
-        logical_time: Some(logical_time),
-        partition_hash: partition_hash.clone(),
-        conflict_hashes: conflict_hashes.clone(),
-        outcome_id: evaluated.outcome().outcome_id().get(),
-        affected_entities,
-        event_ids: event_ids.clone(),
-        admitted_claims: Some(admitted_claims),
-    };
-    let event_references = event_messages
+    let outcome_len = sizing_outcome_len(
+        identity_len,
+        plan_len,
+        actor_len,
+        logical_time_len,
+        claims_len,
+        declared_outcome_len,
+        admission_request_id_len,
+        canonical_input_hash_len,
+        partition_hash_len,
+        provenance_id_len,
+        pending.partition_key().as_bytes().len(),
+        &conflict_hash_lens,
+    )?;
+    let affected_entity_lens = evaluated
+        .mutations()
         .iter()
-        .map(|event| wire::EventReferenceV2 {
-            event_id: event.event_id,
-            event_hash: event.event_hash.clone(),
+        .map(|mutation| sizing_affected_entity_len(mutation, MAXIMUM_WIDTH_U64))
+        .collect::<Result<Vec<_>, _>>()?;
+    let provenance_len = sizing_provenance_len(
+        identity_len,
+        plan_len,
+        actor_len,
+        logical_time_len,
+        claims_len,
+        admission_request_id_len,
+        canonical_input_hash_len,
+        partition_hash_len,
+        provenance_id_len,
+        &conflict_hash_lens,
+        &affected_entity_lens,
+        &event_id_lens,
+    )?;
+    let event_reference_lens = event_id_lens
+        .iter()
+        .map(|event_id_len| {
+            sum_proto_fields([
+                message_field_len(1, *event_id_len),
+                bytes_field_len(2, SIZING_EVENT_HASH.len()),
+            ])
         })
-        .collect::<Vec<_>>();
-    let commit = wire::StoredCommitRecordV2 {
-        commit_sequence: MAXIMUM_WIDTH_U64,
-        admission_request_id,
-        plan: Some(plan),
-        canonical_input_hash,
-        actor: Some(actor),
-        logical_time: Some(logical_time),
-        partition_hash,
-        conflict_hashes,
-        read_dependencies: Some(dependencies_to_proto(&read_dependencies)),
-        mutations: evaluated
-            .mutations()
-            .iter()
-            .zip(entity_messages.iter().cloned())
-            .map(|(mutation, post_image)| wire::CommittedEntityMutationV1 {
-                expected: Some(expected_to_proto(expected_state(mutation))),
-                post_image: Some(post_image),
-            })
-            .collect(),
-        event_references: event_references.clone(),
-        declared_outcome: Some(declared_outcome_to_proto(evaluated.outcome())),
-        provenance_id,
-        outbox_event_ids: event_ids,
-        durability_mode: durability_to_proto(DurabilityMode::Memory),
-    };
+        .collect::<Result<Vec<_>, _>>()?;
+    let mutation_lens = evaluated
+        .mutations()
+        .iter()
+        .zip(&entity_payload_lens)
+        .map(|(mutation, entity_len)| {
+            let expected_len = expected_to_proto(expected_state(mutation)).encoded_len();
+            sum_proto_fields([
+                message_field_len(1, expected_len),
+                message_field_len(2, *entity_len),
+            ])
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let commit_len = sizing_commit_len(
+        plan_len,
+        actor_len,
+        logical_time_len,
+        declared_outcome_len,
+        read_dependencies_len,
+        admission_request_id_len,
+        canonical_input_hash_len,
+        partition_hash_len,
+        provenance_id_len,
+        &conflict_hash_lens,
+        &mutation_lens,
+        &event_reference_lens,
+        &event_id_lens,
+    )?;
 
-    let raw =
-        RawWriteClassBreakdownV1 {
-            allocator: sizing_charge(
-                super::metadata::APPLICATION,
-                &wire::StoredApplicationSequenceAllocatorV1 {
-                    state: Some(
-                        wire::stored_application_sequence_allocator_v1::State::NextCommitSequence(
-                            MAXIMUM_WIDTH_U64,
-                        ),
-                    ),
-                },
-            )?,
-            pending_resolution: 0,
-            entities: sum_sizes(
-                entity_messages
-                    .iter()
-                    .map(|value| sizing_charge(ENTITY, value)),
-            )?,
-            index_entries: sum_sizes(index_entries.iter().filter_map(|mutation| match mutation {
-                IndexEntryMutationV1::Delete(_) => None,
-                IndexEntryMutationV1::Put(value) => {
-                    Some(sizing_charge(INDEX_ENTRY, &index_entry_to_proto(value)))
-                }
-            }))?,
-            index_epochs: sum_sizes(index_epochs.iter().map(|value| {
-                sizing_charge(INDEX_EPOCH, &index_epoch_to_proto(value.post_image()))
-            }))?,
-            outcome: sizing_charge(OUTCOME, &outcome)?,
-            events: sum_sizes(
-                event_messages
-                    .iter()
-                    .map(|value| sizing_charge(EVENT, value)),
-            )?,
-            outbox_intents: sum_sizes(event_references.into_iter().map(|event_reference| {
-                sizing_charge(
-                    OUTBOX_INTENT,
-                    &wire::StoredOutboxIntentV2 {
-                        event_reference: Some(event_reference),
-                    },
-                )
-            }))?,
-            provenance: sizing_charge(PROVENANCE, &provenance)?,
-            commit: sizing_charge(COMMIT, &commit)?,
-        };
+    let raw = RawWriteClassBreakdownV1 {
+        allocator: sizing_charge_len(
+            super::metadata::APPLICATION,
+            key_len(1, prost::encoding::WireType::Varint)
+                .checked_add(prost::encoding::encoded_len_varint(MAXIMUM_WIDTH_U64))
+                .ok_or_else(DurableCodecError::invariant)?,
+        )?,
+        pending_resolution: 0,
+        entities: sum_sizes(
+            entity_payload_lens
+                .iter()
+                .map(|value| sizing_charge_len(ENTITY, *value)),
+        )?,
+        index_entries: sum_sizes(index_entries.iter().filter_map(|mutation| match mutation {
+            IndexEntryMutationV1::Delete(_) => None,
+            IndexEntryMutationV1::Put(value) => Some(
+                sizing_index_entry_len(value).and_then(|len| sizing_charge_len(INDEX_ENTRY, len)),
+            ),
+        }))?,
+        index_epochs: sum_sizes(index_epochs.iter().map(|value| {
+            sizing_index_epoch_len(value.post_image())
+                .and_then(|len| sizing_charge_len(INDEX_EPOCH, len))
+        }))?,
+        outcome: sizing_charge_len(OUTCOME, outcome_len)?,
+        events: sum_sizes(
+            event_payload_lens
+                .iter()
+                .map(|value| sizing_charge_len(EVENT, *value)),
+        )?,
+        outbox_intents: sum_sizes(event_reference_lens.iter().map(|event_reference_len| {
+            message_field_len(1, *event_reference_len)
+                .and_then(|len| sizing_charge_len(OUTBOX_INTENT, len))
+        }))?,
+        provenance: sizing_charge_len(PROVENANCE, provenance_len)?,
+        commit: sizing_charge_len(COMMIT, commit_len)?,
+    };
     finish_upper_bound(raw)
 }
 
@@ -474,18 +467,18 @@ pub fn verify_actual_write_set_charge_v1(
     }
 }
 
-fn sizing_entity(
+fn sizing_entity_len(
     mutation: &EntityMutation,
-    schema_binding: &DurableKeySchemaBindingV1,
-) -> Result<wire::StoredEntityRecordV1, DurableCodecError> {
+    schema_binding_len: usize,
+) -> Result<usize, DurableCodecError> {
     let post_image = mutation.post_image();
-    Ok(wire::StoredEntityRecordV1 {
-        target: Some(entity_target_to_proto(post_image.target())),
-        entity_version: MAXIMUM_WIDTH_U64,
-        written_by_contract: post_image.written_by_contract().get(),
-        schema_binding: Some(binding_to_proto(schema_binding)),
-        canonical_fields: canonical_record(post_image.fields())?,
-    })
+    sum_proto_fields([
+        message_field_len(1, entity_target_to_proto(post_image.target()).encoded_len()),
+        varint_field_len(2, MAXIMUM_WIDTH_U64),
+        varint_field_len(3, post_image.written_by_contract().get()),
+        message_field_len(4, schema_binding_len),
+        bytes_field_len(5, post_image.fields_encoded_len()),
+    ])
 }
 
 const fn expected_state(mutation: &EntityMutation) -> ExpectedEntityState {
@@ -495,18 +488,310 @@ const fn expected_state(mutation: &EntityMutation) -> ExpectedEntityState {
     }
 }
 
-fn canonical_record(value: &CanonicalRecord) -> Result<Vec<u8>, DurableCodecError> {
-    encode_canonical_record(value).map_err(|_| DurableCodecError::invariant())
+fn sizing_event_id_len(ordinal: u32) -> usize {
+    // Both fields are deliberately charged even when ordinal zero would be
+    // omitted by proto3. The reservation must dominate every final encoding.
+    varint_field_len(1, MAXIMUM_WIDTH_U64)
+        .and_then(|sequence| {
+            varint_field_len(2, ordinal).and_then(|ordinal| {
+                sequence
+                    .checked_add(ordinal)
+                    .ok_or_else(DurableCodecError::invariant)
+            })
+        })
+        .expect("two bounded protobuf fields fit usize")
 }
 
-fn sizing_charge<M: prost::Message>(
+fn sizing_event_len(
+    event_type_id: u32,
+    payload_encoded_len: usize,
+    ordinal: u32,
+) -> Result<usize, DurableCodecError> {
+    sum_proto_fields([
+        message_field_len(1, sizing_event_id_len(ordinal)),
+        varint_field_len(2, event_type_id),
+        bytes_field_len(3, payload_encoded_len),
+        bytes_field_len(4, SIZING_EVENT_HASH.len()),
+    ])
+}
+
+fn sizing_declared_outcome_len(
+    outcome: &crate::DeclaredOutcome,
+) -> Result<usize, DurableCodecError> {
+    sum_proto_fields([
+        varint_field_len(1, outcome.outcome_id().get()),
+        bytes_field_len(2, outcome.value_encoded_len()),
+    ])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sizing_outcome_len(
+    identity_len: usize,
+    plan_len: usize,
+    actor_len: usize,
+    logical_time_len: usize,
+    claims_len: usize,
+    declared_outcome_len: usize,
+    admission_request_id_len: usize,
+    canonical_input_hash_len: usize,
+    partition_hash_len: usize,
+    provenance_id_len: usize,
+    partition_key_len: usize,
+    conflict_hash_lens: &[usize],
+) -> Result<usize, DurableCodecError> {
+    let fixed = sum_proto_fields([
+        message_field_len(1, identity_len),
+        varint_field_len(2, MAXIMUM_WIDTH_U64),
+        bytes_field_len(3, admission_request_id_len),
+        message_field_len(4, plan_len),
+        bytes_field_len(5, canonical_input_hash_len),
+        message_field_len(6, actor_len),
+        message_field_len(7, logical_time_len),
+        bytes_field_len(8, partition_hash_len),
+        message_field_len(10, declared_outcome_len),
+        message_field_len(11, claims_len),
+        bytes_field_len(12, provenance_id_len),
+        varint_field_len(13, durability_to_proto(DurabilityMode::Memory) as u64),
+        bytes_field_len(14, partition_key_len),
+    ])?;
+    add_repeated_bytes(fixed, 9, conflict_hash_lens)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sizing_provenance_len(
+    identity_len: usize,
+    plan_len: usize,
+    actor_len: usize,
+    logical_time_len: usize,
+    claims_len: usize,
+    admission_request_id_len: usize,
+    canonical_input_hash_len: usize,
+    partition_hash_len: usize,
+    provenance_id_len: usize,
+    conflict_hash_lens: &[usize],
+    affected_entity_lens: &[usize],
+    event_id_lens: &[usize],
+) -> Result<usize, DurableCodecError> {
+    let mut total = sum_proto_fields([
+        bytes_field_len(1, provenance_id_len),
+        varint_field_len(2, MAXIMUM_WIDTH_U64),
+        message_field_len(3, identity_len),
+        bytes_field_len(4, admission_request_id_len),
+        message_field_len(5, plan_len),
+        bytes_field_len(6, canonical_input_hash_len),
+        message_field_len(7, actor_len),
+        message_field_len(8, logical_time_len),
+        bytes_field_len(9, partition_hash_len),
+        varint_field_len(11, 1_u64),
+        message_field_len(14, claims_len),
+    ])?;
+    total = add_repeated_bytes(total, 10, conflict_hash_lens)?;
+    total = add_repeated_messages(total, 12, affected_entity_lens)?;
+    add_repeated_messages(total, 13, event_id_lens)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sizing_commit_len(
+    plan_len: usize,
+    actor_len: usize,
+    logical_time_len: usize,
+    declared_outcome_len: usize,
+    read_dependencies_len: usize,
+    admission_request_id_len: usize,
+    canonical_input_hash_len: usize,
+    partition_hash_len: usize,
+    provenance_id_len: usize,
+    conflict_hash_lens: &[usize],
+    mutation_lens: &[usize],
+    event_reference_lens: &[usize],
+    event_id_lens: &[usize],
+) -> Result<usize, DurableCodecError> {
+    let mut total = sum_proto_fields([
+        varint_field_len(1, MAXIMUM_WIDTH_U64),
+        bytes_field_len(2, admission_request_id_len),
+        message_field_len(3, plan_len),
+        bytes_field_len(4, canonical_input_hash_len),
+        message_field_len(5, actor_len),
+        message_field_len(6, logical_time_len),
+        bytes_field_len(7, partition_hash_len),
+        message_field_len(9, read_dependencies_len),
+        message_field_len(12, declared_outcome_len),
+        bytes_field_len(13, provenance_id_len),
+        varint_field_len(15, durability_to_proto(DurabilityMode::Memory) as u64),
+    ])?;
+    total = add_repeated_bytes(total, 8, conflict_hash_lens)?;
+    total = add_repeated_messages(total, 10, mutation_lens)?;
+    total = add_repeated_messages(total, 11, event_reference_lens)?;
+    add_repeated_messages(total, 14, event_id_lens)
+}
+
+fn sizing_affected_entity_len(
+    mutation: &EntityMutation,
+    entity_version: u64,
+) -> Result<usize, DurableCodecError> {
+    sum_proto_fields([
+        message_field_len(
+            1,
+            entity_target_to_proto(mutation.post_image().target()).encoded_len(),
+        ),
+        varint_field_len(2, entity_version),
+    ])
+}
+
+fn sizing_index_entry_len(value: &crate::StoredIndexEntryV2) -> Result<usize, DurableCodecError> {
+    sum_proto_fields([
+        bytes_field_len(1, value.key().as_bytes().len()),
+        message_field_len(2, binding_to_proto(value.schema_binding()).encoded_len()),
+        bytes_field_len(3, value.covered_values_encoded_len()),
+        bytes_field_len(4, value.partition_key().as_bytes().len()),
+    ])
+}
+
+fn sizing_index_epoch_len(value: &crate::StoredIndexEpochV1) -> Result<usize, DurableCodecError> {
+    sum_proto_fields([
+        bytes_field_len(1, value.target().partition_key().as_bytes().len()),
+        varint_field_len(2, value.target().index_id().get()),
+        message_field_len(3, binding_to_proto(value.schema_binding()).encoded_len()),
+        varint_field_len(4, value.epoch().get()),
+    ])
+}
+
+fn sizing_charge_len(
     record_type: &'static str,
-    value: &M,
+    payload_len: usize,
 ) -> Result<usize, DurableCodecError> {
     let schema = riffdb_proto::durable::current_record_schema(record_type)
         .ok_or_else(DurableCodecError::invariant)?;
-    riffdb_proto::envelope::maximum_encoded_compact_record_bytes(schema, value.encoded_len())
+    riffdb_proto::envelope::maximum_encoded_compact_record_bytes(schema, payload_len)
         .map_err(DurableCodecError::from_encode_envelope)
+}
+
+fn key_len(field_number: u32, wire_type: prost::encoding::WireType) -> usize {
+    prost::encoding::encoded_len_varint(u64::from(field_number << 3 | wire_type as u32))
+}
+
+fn varint_field_len(field_number: u32, value: impl Into<u64>) -> Result<usize, DurableCodecError> {
+    key_len(field_number, prost::encoding::WireType::Varint)
+        .checked_add(prost::encoding::encoded_len_varint(value.into()))
+        .ok_or_else(DurableCodecError::invariant)
+}
+
+fn bytes_field_len(field_number: u32, len: usize) -> Result<usize, DurableCodecError> {
+    length_delimited_field_len(field_number, len)
+}
+
+fn message_field_len(field_number: u32, len: usize) -> Result<usize, DurableCodecError> {
+    length_delimited_field_len(field_number, len)
+}
+
+fn length_delimited_field_len(field_number: u32, len: usize) -> Result<usize, DurableCodecError> {
+    key_len(field_number, prost::encoding::WireType::LengthDelimited)
+        .checked_add(prost::encoding::encoded_len_varint(
+            u64::try_from(len).map_err(|_| DurableCodecError::invariant())?,
+        ))
+        .and_then(|value| value.checked_add(len))
+        .ok_or_else(DurableCodecError::invariant)
+}
+
+fn sum_proto_fields(
+    values: impl IntoIterator<Item = Result<usize, DurableCodecError>>,
+) -> Result<usize, DurableCodecError> {
+    sum_sizes(values)
+}
+
+fn add_repeated_bytes(
+    initial: usize,
+    field_number: u32,
+    values: &[usize],
+) -> Result<usize, DurableCodecError> {
+    values.iter().try_fold(initial, |total, len| {
+        total
+            .checked_add(bytes_field_len(field_number, *len)?)
+            .ok_or_else(DurableCodecError::invariant)
+    })
+}
+
+fn add_repeated_messages(
+    initial: usize,
+    field_number: u32,
+    values: &[usize],
+) -> Result<usize, DurableCodecError> {
+    values.iter().try_fold(initial, |total, len| {
+        total
+            .checked_add(message_field_len(field_number, *len)?)
+            .ok_or_else(DurableCodecError::invariant)
+    })
+}
+
+#[cfg(test)]
+fn canonical_record_len(value: &CanonicalRecord) -> Result<usize, DurableCodecError> {
+    canonical_record_payload_len(value, 0)?
+        .checked_add(1)
+        .filter(|len| *len <= riffdb_types::MAX_CANONICAL_DOCUMENT_BYTES)
+        .ok_or_else(DurableCodecError::invariant)
+}
+
+#[cfg(test)]
+fn canonical_record_payload_len(
+    value: &CanonicalRecord,
+    depth: usize,
+) -> Result<usize, DurableCodecError> {
+    if depth > riffdb_types::MAX_NESTING_DEPTH {
+        return Err(DurableCodecError::invariant());
+    }
+    let mut total = 5usize;
+    let mut previous = None;
+    for (field_id, field) in value.fields() {
+        if previous.is_some_and(|prior| prior >= field_id.get()) {
+            return Err(DurableCodecError::invariant());
+        }
+        previous = Some(field_id.get());
+        total = total
+            .checked_add(4)
+            .and_then(|value| {
+                canonical_value_len(field, depth + 1)
+                    .ok()
+                    .and_then(|field| value.checked_add(field))
+            })
+            .ok_or_else(DurableCodecError::invariant)?;
+    }
+    Ok(total)
+}
+
+#[cfg(test)]
+fn canonical_value_len(value: &CanonicalValue, depth: usize) -> Result<usize, DurableCodecError> {
+    if depth > riffdb_types::MAX_NESTING_DEPTH {
+        return Err(DurableCodecError::invariant());
+    }
+    let payload = match value {
+        CanonicalValue::Null => 0,
+        CanonicalValue::Bool(_) => 1,
+        CanonicalValue::I64(_) | CanonicalValue::U64(_) => 8,
+        CanonicalValue::Decimal(_) => 18,
+        CanonicalValue::Money(_) => 21,
+        CanonicalValue::String(value) => 4usize
+            .checked_add(value.as_str().len())
+            .ok_or_else(DurableCodecError::invariant)?,
+        CanonicalValue::Bytes(value) => 4usize
+            .checked_add(value.as_bytes().len())
+            .ok_or_else(DurableCodecError::invariant)?,
+        CanonicalValue::Timestamp(_) => 12,
+        CanonicalValue::Date(_) => 4,
+        CanonicalValue::Uuid(_) => 16,
+        CanonicalValue::Enum { .. } => 8,
+        CanonicalValue::List(values) => {
+            values.values().iter().try_fold(4usize, |total, value| {
+                total
+                    .checked_add(canonical_value_len(value, depth + 1)?)
+                    .ok_or_else(DurableCodecError::invariant)
+            })?
+        }
+        CanonicalValue::Record(record) => canonical_record_payload_len(record, depth)?,
+    };
+    payload
+        .checked_add(2)
+        .filter(|len| *len <= riffdb_types::MAX_CANONICAL_DOCUMENT_BYTES)
+        .ok_or_else(DurableCodecError::invariant)
 }
 
 fn sum_sizes(
@@ -540,6 +825,9 @@ fn sum_optional_envelope_charges(
 #[cfg(test)]
 mod aggregate_classification_tests {
     use super::*;
+    use riffdb_types::{
+        CanonicalBytes, CanonicalList, CanonicalString, FieldId, encode_canonical_record,
+    };
 
     #[test]
     fn only_a_successful_final_comparison_produces_the_aggregate_cap_variant() {
@@ -566,6 +854,44 @@ mod aggregate_classification_tests {
                 .expect_err("checked aggregate overflow remains a codec error")
                 .kind(),
             DurableCodecErrorKind::LimitExceeded
+        );
+    }
+
+    #[test]
+    fn structural_canonical_sizing_matches_the_canonical_encoder() {
+        let nested = CanonicalRecord::new(vec![
+            (
+                FieldId::new(1).expect("field"),
+                CanonicalValue::String(CanonicalString::new("hello".to_owned()).expect("string")),
+            ),
+            (
+                FieldId::new(2).expect("field"),
+                CanonicalValue::List(
+                    CanonicalList::new(vec![
+                        CanonicalValue::U64(u64::MAX),
+                        CanonicalValue::Bytes(
+                            CanonicalBytes::new(vec![0, 1, 2, 3]).expect("bytes"),
+                        ),
+                    ])
+                    .expect("list"),
+                ),
+            ),
+        ])
+        .expect("nested record");
+        let record = CanonicalRecord::new(vec![
+            (
+                FieldId::new(1).expect("field"),
+                CanonicalValue::Record(nested),
+            ),
+            (FieldId::new(2).expect("field"), CanonicalValue::Bool(true)),
+        ])
+        .expect("record");
+
+        assert_eq!(
+            canonical_record_len(&record).expect("structural length"),
+            encode_canonical_record(&record)
+                .expect("canonical encoding")
+                .len()
         );
     }
 

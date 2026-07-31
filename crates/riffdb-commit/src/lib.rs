@@ -78,7 +78,7 @@ pub use provenance::{ProvenanceIdSource, ProvenanceIdSourceError};
 pub use read_only_execution::{ReadOnlyExecuted, ReadOnlyExecutionResult};
 pub use read_only_preparation::{ReadOnlyExecutionPreparation, ReadOnlyExecutionPreparationError};
 pub use telemetry::{
-    CommitCallTerminal, CommitCommandTerminal, CommitGroupDispatchReason,
+    CommandPipelineStage, CommitCallTerminal, CommitCommandTerminal, CommitGroupDispatchReason,
     CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
     CommitUncertaintyResolution, CommitUncertaintyStage, NoopCommitTelemetry,
 };

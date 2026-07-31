@@ -1,14 +1,14 @@
 //! Runtime output, durable admission, and pre-commit command intent values.
 
 use std::fmt;
+use std::sync::Arc;
 
 use riffdb_types::{
     AdmittedActorContext, ApprovalId, CanonicalInputHash, CanonicalRecord, ConflictKeyHash,
     ContractVersion, EntityVersion, EventTypeId, ExecutionFailureCode, IndexEntryKey, LogicalTime,
-    MAX_CANONICAL_DOCUMENT_BYTES, MAX_COMMIT_INTENT_SEMANTIC_BYTES,
-    MAX_EVALUATED_COMMAND_SEMANTIC_BYTES, OutcomeId, PartitionKey, PartitionKeyHash, ProvenanceId,
-    ProvenanceReason, RequestId, SourceCommit, SourceRepository, encode_canonical_record,
-    hash_partition_key,
+    MAX_COMMIT_INTENT_SEMANTIC_BYTES, MAX_EVALUATED_COMMAND_SEMANTIC_BYTES, OutcomeId,
+    PartitionKey, PartitionKeyHash, ProvenanceId, ProvenanceReason, RequestId, SourceCommit,
+    SourceRepository, encode_canonical_record, hash_partition_key,
 };
 
 use crate::{
@@ -391,6 +391,7 @@ pub struct EntityPostImage {
     target: EntityTarget,
     written_by_contract: ContractVersion,
     fields: CanonicalRecord,
+    fields_encoded_len: usize,
 }
 
 impl EntityPostImage {
@@ -400,11 +401,12 @@ impl EntityPostImage {
         written_by_contract: ContractVersion,
         fields: CanonicalRecord,
     ) -> Result<Self, StorageValueError> {
-        ensure_record_bound(&fields)?;
+        let fields_encoded_len = canonical_record_bytes(&fields)?;
         Ok(Self {
             target,
             written_by_contract,
             fields,
+            fields_encoded_len,
         })
     }
 
@@ -426,12 +428,17 @@ impl EntityPostImage {
         &self.fields
     }
 
+    /// Returns the checked canonical encoding length retained at construction.
+    #[must_use]
+    pub const fn fields_encoded_len(&self) -> usize {
+        self.fields_encoded_len
+    }
+
     pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
-        let field_bytes = canonical_record_bytes(&self.fields)?;
         self.target
             .semantic_bytes()?
             .checked_add(8)
-            .and_then(|value| value.checked_add(framed_bytes(field_bytes).ok()?))
+            .and_then(|value| value.checked_add(framed_bytes(self.fields_encoded_len).ok()?))
             .ok_or(StorageValueError::SizeOverflow)
     }
 }
@@ -495,6 +502,7 @@ impl EntityMutation {
 pub struct EventIntent {
     event_type_id: EventTypeId,
     payload: CanonicalRecord,
+    payload_encoded_len: usize,
 }
 
 impl EventIntent {
@@ -503,10 +511,11 @@ impl EventIntent {
         event_type_id: EventTypeId,
         payload: CanonicalRecord,
     ) -> Result<Self, StorageValueError> {
-        ensure_record_bound(&payload)?;
+        let payload_encoded_len = canonical_record_bytes(&payload)?;
         Ok(Self {
             event_type_id,
             payload,
+            payload_encoded_len,
         })
     }
 
@@ -522,8 +531,14 @@ impl EventIntent {
         &self.payload
     }
 
+    /// Returns the checked canonical encoding length retained at construction.
+    #[must_use]
+    pub const fn payload_encoded_len(&self) -> usize {
+        self.payload_encoded_len
+    }
+
     pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
-        framed_bytes(canonical_record_bytes(&self.payload)?)?
+        framed_bytes(self.payload_encoded_len)?
             .checked_add(4)
             .ok_or(StorageValueError::SizeOverflow)
     }
@@ -534,13 +549,19 @@ impl EventIntent {
 pub struct DeclaredOutcome {
     outcome_id: OutcomeId,
     value: CanonicalRecord,
+    value_encoded: Arc<[u8]>,
 }
 
 impl DeclaredOutcome {
     /// Constructs a bounded declared business outcome.
     pub fn new(outcome_id: OutcomeId, value: CanonicalRecord) -> Result<Self, StorageValueError> {
-        ensure_record_bound(&value)?;
-        Ok(Self { outcome_id, value })
+        let value_encoded = encode_canonical_record(&value)
+            .map_err(|error| canonical_codec_storage_error(&error))?;
+        Ok(Self {
+            outcome_id,
+            value,
+            value_encoded: Arc::from(value_encoded),
+        })
     }
 
     /// Returns the stable declared outcome identity.
@@ -555,8 +576,20 @@ impl DeclaredOutcome {
         &self.value
     }
 
+    /// Returns the checked canonical encoding length retained at construction.
+    #[must_use]
+    pub fn value_encoded_len(&self) -> usize {
+        self.value_encoded.len()
+    }
+
+    /// Borrows the canonical bytes sealed with the declared value.
+    #[must_use]
+    pub fn value_encoded(&self) -> &[u8] {
+        &self.value_encoded
+    }
+
     pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
-        framed_bytes(canonical_record_bytes(&self.value)?)?
+        framed_bytes(self.value_encoded.len())?
             .checked_add(4)
             .ok_or(StorageValueError::SizeOverflow)
     }
@@ -805,7 +838,7 @@ impl fmt::Debug for CommandAdmissionExpectationV1 {
 pub struct CommitIntent {
     pending: StoredPendingAdmissionV1,
     admission_expectation: CommandAdmissionExpectationV1,
-    evaluated: EvaluatedCommand,
+    evaluated: Arc<EvaluatedCommand>,
     provenance_id: ProvenanceId,
     partition_hash: PartitionKeyHash,
     conflict_hashes: Vec<ConflictKeyHash>,
@@ -816,9 +849,10 @@ impl CommitIntent {
     /// Consumes the pre-evaluation reserve and combines it with runtime output.
     pub fn new(
         context: PreEvaluationCommitContext,
-        evaluated: EvaluatedCommand,
+        evaluated: impl Into<Arc<EvaluatedCommand>>,
         provenance_id: ProvenanceId,
     ) -> Result<Self, StorageValueError> {
+        let evaluated = evaluated.into();
         if context.pending.plan() != evaluated.plan() {
             return Err(StorageValueError::IdentityMismatch);
         }
@@ -845,7 +879,7 @@ impl CommitIntent {
     pub fn new_for_vacant_terminal_admission(
         context: PreEvaluationCommitContext,
         lookup_candidates: IdempotencyLookupCandidatesV1,
-        evaluated: EvaluatedCommand,
+        evaluated: impl Into<Arc<EvaluatedCommand>>,
         provenance_id: ProvenanceId,
     ) -> Result<Self, StorageValueError> {
         if lookup_candidates.as_slice().first() != Some(context.pending.identity()) {
@@ -870,7 +904,7 @@ impl CommitIntent {
 
     /// Borrows the unchanged deterministic runtime result.
     #[must_use]
-    pub const fn evaluated(&self) -> &EvaluatedCommand {
+    pub fn evaluated(&self) -> &EvaluatedCommand {
         &self.evaluated
     }
 
@@ -1027,13 +1061,6 @@ pub(crate) fn canonical_record_bytes(record: &CanonicalRecord) -> Result<usize, 
     encode_canonical_record(record)
         .map(|bytes| bytes.len())
         .map_err(|error| canonical_codec_storage_error(&error))
-}
-
-fn ensure_record_bound(record: &CanonicalRecord) -> Result<(), StorageValueError> {
-    if canonical_record_bytes(record)? > MAX_CANONICAL_DOCUMENT_BYTES {
-        return Err(StorageValueError::LimitExceeded);
-    }
-    Ok(())
 }
 
 fn evaluated_semantic_bytes(

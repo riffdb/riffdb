@@ -5,6 +5,7 @@
 
 use prost::Message;
 use riffdb_types::{SchemaHash, hash_schema};
+use std::sync::OnceLock;
 
 use crate::durable_wire::DurablePreflightError;
 use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
@@ -543,11 +544,16 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
 pub static CURRENT_RECORD_SCHEMAS: [RecordSchema<'static>; CURRENT_RECORD_SCHEMA_COUNT] =
     WRITABLE_RECORD_SCHEMAS;
 
+static READABLE_RECORD_REGISTRY: OnceLock<RecordRegistry<'static>> = OnceLock::new();
+static WRITABLE_RECORD_REGISTRY: OnceLock<RecordRegistry<'static>> = OnceLock::new();
+
 /// Returns the closed registry accepted while opening or migrating storage.
 #[must_use]
 pub fn readable_record_registry() -> RecordRegistry<'static> {
-    RecordRegistry::new(&READABLE_RECORD_SCHEMAS)
-        .expect("the generated readable durable registry is unique and bounded")
+    *READABLE_RECORD_REGISTRY.get_or_init(|| {
+        RecordRegistry::new(&READABLE_RECORD_SCHEMAS)
+            .expect("the generated readable durable registry is unique and bounded")
+    })
 }
 
 /// Finds one readable schema by its exact durable record-type FQN.
@@ -561,8 +567,10 @@ pub fn readable_record_schema(record_type: &str) -> Option<&'static RecordSchema
 /// Returns the closed registry of current writable roles.
 #[must_use]
 pub fn writable_record_registry() -> RecordRegistry<'static> {
-    RecordRegistry::new(&WRITABLE_RECORD_SCHEMAS)
-        .expect("the generated writable durable registry is unique and bounded")
+    *WRITABLE_RECORD_REGISTRY.get_or_init(|| {
+        RecordRegistry::new(&WRITABLE_RECORD_SCHEMAS)
+            .expect("the generated writable durable registry is unique and bounded")
+    })
 }
 
 /// Finds one current writable schema by its exact durable record-type FQN.

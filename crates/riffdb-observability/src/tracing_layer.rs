@@ -13,7 +13,7 @@ use riffdb_api_mcp::{
 use riffdb_auth::{AuthenticationDefect, AuthenticationRejection};
 use riffdb_catalog::CatalogTelemetryEvent;
 use riffdb_commit::{
-    CommandExecutionErrorKind, CommitCallTerminal, CommitCommandTerminal,
+    CommandExecutionErrorKind, CommandPipelineStage, CommitCallTerminal, CommitCommandTerminal,
     CommitGroupDispatchReason, CommitIdempotencyObservation, CommitTelemetryEvent,
     CommitUncertaintyResolution, CommitUncertaintyStage,
 };
@@ -265,6 +265,10 @@ impl TraceRecord {
 
     pub(crate) const fn commit(event: CommitTelemetryEvent) -> Self {
         let (detail_tag, value) = match event {
+            CommitTelemetryEvent::CommandPipelineStageCompleted { stage, elapsed, .. } => (
+                74 + command_pipeline_stage_tag(stage),
+                saturating_duration_microseconds(elapsed),
+            ),
             CommitTelemetryEvent::CommandGroupDispatched {
                 reason, elapsed, ..
             } => (
@@ -971,6 +975,16 @@ const fn commit_call_terminal_tag(terminal: CommitCallTerminal) -> u8 {
         CommitCallTerminal::ProvenAbort => 2,
         CommitCallTerminal::StatusUnknown => 3,
         CommitCallTerminal::Integrity => 4,
+    }
+}
+
+const fn command_pipeline_stage_tag(stage: CommandPipelineStage) -> u8 {
+    match stage {
+        CommandPipelineStage::Admission => 1,
+        CommandPipelineStage::Compatibility => 2,
+        CommandPipelineStage::Evaluation => 3,
+        CommandPipelineStage::ValidationEncodingStaging => 4,
+        CommandPipelineStage::Publication => 5,
     }
 }
 

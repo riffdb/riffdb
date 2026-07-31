@@ -26,9 +26,9 @@ use riffdb_policy::AuthorizationClock;
 
 use crate::{
     AdministrationAuditInputView, AdministrationClock, AdministrationClockError, AdmissionClock,
-    ApplicationCommitNotificationSink, CommandExecutionPreparation, CommitCommandTerminal,
-    CommitGroupDispatchReason, CommitTelemetry, CommitTelemetryEvent, CommittedOutcomeDisposition,
-    NoopCommitTelemetry, ProvenanceIdSource,
+    ApplicationCommitNotificationSink, CommandExecutionPreparation, CommandPipelineStage,
+    CommitCommandTerminal, CommitGroupDispatchReason, CommitTelemetry, CommitTelemetryEvent,
+    CommittedOutcomeDisposition, NoopCommitTelemetry, ProvenanceIdSource,
     command_execution::{
         CommandEvaluationPool, CommandExecutionError, CommandExecutionLifecycle,
         CommandExecutionResult, CoordinatorDurability, RepeatableCommandBatchPort,
@@ -2308,9 +2308,16 @@ impl CommandCoordinatorActor {
             && outcome.disposition() == CommittedOutcomeDisposition::FirstCommit
         {
             let sequence = outcome.stored_outcome().commit_sequence();
+            let publication_started = Instant::now();
             let publication = panic::catch_unwind(panic::AssertUnwindSafe(|| {
                 self.notifications.publish_first_commit(sequence)
             }));
+            self.telemetry
+                .record(CommitTelemetryEvent::CommandPipelineStageCompleted {
+                    stage: CommandPipelineStage::Publication,
+                    command_count: 1,
+                    elapsed: publication_started.elapsed(),
+                });
             if !matches!(publication, Ok(Ok(()))) {
                 self.lifecycle.stop();
             }
@@ -2367,10 +2374,17 @@ impl CommandCoordinatorActor {
             })
             .collect::<Vec<_>>();
         if !first_commit_sequences.is_empty() {
+            let publication_started = Instant::now();
             let publication = panic::catch_unwind(panic::AssertUnwindSafe(|| {
                 self.notifications
                     .publish_first_commit_group(&first_commit_sequences)
             }));
+            self.telemetry
+                .record(CommitTelemetryEvent::CommandPipelineStageCompleted {
+                    stage: CommandPipelineStage::Publication,
+                    command_count: u16::try_from(first_commit_sequences.len()).unwrap_or(u16::MAX),
+                    elapsed: publication_started.elapsed(),
+                });
             if !matches!(publication, Ok(Ok(()))) {
                 self.lifecycle.stop();
             }

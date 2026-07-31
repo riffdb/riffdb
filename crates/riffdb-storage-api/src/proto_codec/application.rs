@@ -110,8 +110,7 @@ pub(super) fn entity_to_proto(value: &StoredEntityRecordV1) -> wire::StoredEntit
         entity_version: value.entity_version().get(),
         written_by_contract: value.written_by_contract().get(),
         schema_binding: Some(binding_to_proto(value.schema_binding())),
-        canonical_fields: encode_canonical_record(value.fields())
-            .expect("checked entity record must encode"),
+        canonical_fields: value.fields_encoded().to_vec(),
     }
 }
 
@@ -131,8 +130,7 @@ pub(super) fn index_entry_to_proto(value: &StoredIndexEntryV2) -> wire::StoredIn
     wire::StoredIndexEntryV2 {
         index_entry_key: value.key().as_bytes().to_vec(),
         schema_binding: Some(binding_to_proto(value.schema_binding())),
-        canonical_covered_values: encode_canonical_record(value.covered_values())
-            .expect("checked index record must encode"),
+        canonical_covered_values: value.covered_values_encoded().to_vec(),
         partition_key: value.partition_key().as_bytes().to_vec(),
     }
 }
@@ -249,8 +247,7 @@ pub(super) fn event_to_proto(value: &StoredDurableEventV1) -> wire::StoredDurabl
     wire::StoredDurableEventV1 {
         event_id: Some(event_id_to_proto(value.event_id())),
         event_type_id: value.event_type_id().get(),
-        canonical_payload: encode_canonical_record(value.payload())
-            .expect("checked durable event must encode"),
+        canonical_payload: value.payload_encoded().to_vec(),
         event_hash: value.event_hash().as_bytes().to_vec(),
     }
 }

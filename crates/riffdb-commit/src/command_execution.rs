@@ -17,8 +17,8 @@ use riffdb_storage_api::{
 use riffdb_types::ExecutionFailureCode;
 
 use crate::{
-    AdmissionClock, AdmissionClockError, CommandExecutionPreparation, CommitCallTerminal,
-    CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
+    AdmissionClock, AdmissionClockError, CommandExecutionPreparation, CommandPipelineStage,
+    CommitCallTerminal, CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
     CommitUncertaintyResolution, CommitUncertaintyStage, CommittedOutcome,
     CommittedOutcomeDisposition, ProvenanceIdSource, ProvenanceIdSourceError,
     command_admission::{
@@ -640,12 +640,18 @@ where
     BatchSequenceAssigned<FirstStagedBatch<P>>:
         CommandCandidateSequenceAssigned<Prior = FirstStagedBatch<P>, Staged = FirstStagedBatch<P>>,
 {
+    let admission_started = Instant::now();
     let admissions = reduce_audited_command_admission_group(
         port,
         admission_clock,
         administration_clock,
         preparations,
     );
+    telemetry.record(CommitTelemetryEvent::CommandPipelineStageCompleted {
+        stage: CommandPipelineStage::Admission,
+        command_count: u16::try_from(admissions.len()).unwrap_or(u16::MAX),
+        elapsed: admission_started.elapsed(),
+    });
     let count = admissions.len();
     let mut results = (0..count).map(|_| None).collect::<Vec<_>>();
     let mut pending = Vec::new();
@@ -656,7 +662,15 @@ where
         }
     }
 
-    for group in partition_fifo_by_compatibility(pending, compatible_command_group) {
+    let compatibility_started = Instant::now();
+    let groups = partition_pending_fifo_by_compatibility(pending);
+    telemetry.record(CommitTelemetryEvent::CommandPipelineStageCompleted {
+        stage: CommandPipelineStage::Compatibility,
+        command_count: u16::try_from(groups.iter().map(Vec::len).sum::<usize>())
+            .unwrap_or(u16::MAX),
+        elapsed: compatibility_started.elapsed(),
+    });
+    for group in groups {
         if group.len() > 1 {
             let grouped = drive_compatible_pending_group(
                 port,
@@ -786,6 +800,7 @@ where
         .map_err(|error| Err(command_attempt_failure(error, lifecycle)))
 }
 
+#[cfg(test)]
 fn partition_fifo_by_compatibility<T>(
     items: Vec<T>,
     compatible: impl Fn(&[T]) -> bool,
@@ -811,21 +826,24 @@ fn partition_fifo_by_compatibility<T>(
     groups
 }
 
-fn compatible_command_group(pending: &[(usize, PendingCommandAttempts)]) -> bool {
-    let mut keys = std::collections::BTreeSet::new();
-    let mut prior_reads = std::collections::BTreeSet::new();
-    let mut prior_writes = std::collections::BTreeSet::new();
-    pending.iter().all(|(_, state)| {
-        if !state
+#[derive(Default)]
+struct CompatibleCommandGroup {
+    keys: std::collections::HashSet<riffdb_types::ConflictKey>,
+    reads: std::collections::HashSet<EntityTarget>,
+    writes: std::collections::HashSet<EntityTarget>,
+}
+
+impl CompatibleCommandGroup {
+    fn try_insert(&mut self, state: &PendingCommandAttempts) -> bool {
+        if state
             .raw_conflict_keys()
             .iter()
-            .all(|key| keys.insert(key.clone()))
+            .any(|key| self.keys.contains(key))
         {
             return false;
         }
-
-        let mut reads = std::collections::BTreeSet::new();
-        let mut writes = std::collections::BTreeSet::new();
+        let mut reads = std::collections::HashSet::new();
+        let mut writes = std::collections::HashSet::new();
         for (mode, target) in state.binding_accesses() {
             match mode {
                 riffdb_contract_ir::BindingMode::Read => {
@@ -842,20 +860,48 @@ fn compatible_command_group(pending: &[(usize, PendingCommandAttempts)]) -> bool
         // Exact validation must describe the final grouped transaction, not
         // merely the prefix visible when this candidate was staged. Reject
         // read/write and write/write overlap in either FIFO direction.
-        if !exact_accesses_are_compatible(&prior_reads, &prior_writes, &reads, &writes) {
+        if !exact_accesses_are_compatible(&self.reads, &self.writes, &reads, &writes) {
             return false;
         }
-        prior_reads.extend(reads);
-        prior_writes.extend(writes);
+        self.keys.extend(state.raw_conflict_keys().iter().cloned());
+        self.reads.extend(reads);
+        self.writes.extend(writes);
         true
-    })
+    }
+}
+
+fn partition_pending_fifo_by_compatibility(
+    pending: Vec<(usize, PendingCommandAttempts)>,
+) -> Vec<Vec<(usize, PendingCommandAttempts)>> {
+    let mut groups = Vec::new();
+    let mut current = Vec::new();
+    let mut compatibility = CompatibleCommandGroup::default();
+    for item in pending {
+        if !compatibility.try_insert(&item.1) {
+            if !current.is_empty() {
+                groups.push(std::mem::take(&mut current));
+            }
+            compatibility = CompatibleCommandGroup::default();
+            // A command's conflict keys and exact accesses are canonical and
+            // duplicate-free internally, so a fresh group must accept it.
+            if !compatibility.try_insert(&item.1) {
+                groups.push(vec![item]);
+                continue;
+            }
+        }
+        current.push(item);
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+    groups
 }
 
 fn exact_accesses_are_compatible(
-    prior_reads: &std::collections::BTreeSet<EntityTarget>,
-    prior_writes: &std::collections::BTreeSet<EntityTarget>,
-    reads: &std::collections::BTreeSet<EntityTarget>,
-    writes: &std::collections::BTreeSet<EntityTarget>,
+    prior_reads: &std::collections::HashSet<EntityTarget>,
+    prior_writes: &std::collections::HashSet<EntityTarget>,
+    reads: &std::collections::HashSet<EntityTarget>,
+    writes: &std::collections::HashSet<EntityTarget>,
 ) -> bool {
     !writes
         .iter()
@@ -1031,6 +1077,7 @@ where
     BatchSequenceAssigned<FirstStagedBatch<P>>:
         CommandCandidateSequenceAssigned<Prior = FirstStagedBatch<P>, Staged = FirstStagedBatch<P>>,
 {
+    let evaluation_started = Instant::now();
     let mut pending = std::collections::VecDeque::from(pending);
     let mut evaluated = Vec::with_capacity(pending.len());
     let mut completed = Vec::new();
@@ -1137,8 +1184,14 @@ where
             }
         }
     }
+    telemetry.record(CommitTelemetryEvent::CommandPipelineStageCompleted {
+        stage: CommandPipelineStage::Evaluation,
+        command_count: u16::try_from(evaluated.len()).unwrap_or(u16::MAX),
+        elapsed: evaluation_started.elapsed(),
+    });
 
     let mut evaluated = std::collections::VecDeque::from(evaluated);
+    let staging_started = Instant::now();
     let (first_index, first) = evaluated
         .pop_front()
         .expect("compatible command group is nonempty");
@@ -1315,6 +1368,11 @@ where
     };
 
     let batch_size = staged.len();
+    telemetry.record(CommitTelemetryEvent::CommandPipelineStageCompleted {
+        stage: CommandPipelineStage::ValidationEncodingStaging,
+        command_count: u16::try_from(batch_size).expect("group cap fits u16"),
+        elapsed: staging_started.elapsed(),
+    });
     let commit_started_at = Instant::now();
     let commit_result = staged.commit_group(audits);
     telemetry.record(CommitTelemetryEvent::CommitCallCompleted {
@@ -2432,8 +2490,8 @@ mod tests {
         key.push_uuid(&[7; 16]).expect("bounded UUID key");
         let target = EntityTarget::new(entity_type, key.finish().expect("entity key"))
             .expect("entity target");
-        let none = std::collections::BTreeSet::new();
-        let one = std::collections::BTreeSet::from([target]);
+        let none = std::collections::HashSet::new();
+        let one = std::collections::HashSet::from([target]);
 
         assert!(!exact_accesses_are_compatible(&one, &none, &none, &one));
         assert!(!exact_accesses_are_compatible(&none, &one, &one, &none));
