@@ -1846,6 +1846,47 @@ impl ReadOnlyCommandResult {
         })
     }
 
+    /// Builds a minimal empty-outcome read-only result for integration tests.
+    ///
+    /// Not a production construction path: outcomes normally come from a
+    /// catalog-validated bundle. Kept public so transport harnesses can exercise
+    /// success arms without a full catalog fixture.
+    #[doc(hidden)]
+    pub fn integration_fixture(
+        lineage: ContractLineage,
+        contract_version: ContractVersion,
+        plan_hash: PlanHash,
+        outcome_name: &str,
+    ) -> Result<Self, ServiceDtoError> {
+        let command_id = CommandId::first();
+        let outcome_id = OutcomeId::first();
+        let schema = SchemaIr::new(Vec::new(), Vec::new(), Vec::new(), Vec::new())
+            .map_err(|_| ServiceDtoError::InvalidShape)?;
+        let payload = RecordSchema::new(
+            RecordTypeRef::CommandOutcome {
+                command_id,
+                outcome_id,
+            },
+            Vec::new(),
+        )
+        .map_err(|_| ServiceDtoError::InvalidShape)?;
+        let outcome_schema = OutcomeSchema::new(command_id, outcome_id, outcome_name, payload)
+            .map_err(|_| ServiceDtoError::InvalidShape)?;
+        let outcome = DeclaredOutcomeView::from_checked_schema(
+            OutcomePlanBinding::new(
+                lineage,
+                contract_version,
+                command_id,
+                plan_hash,
+                ExecutionClass::ReadOnly,
+            ),
+            &schema,
+            &outcome_schema,
+            CanonicalRecord::new(Vec::new()).map_err(|_| ServiceDtoError::InvalidShape)?,
+        )?;
+        Self::new(outcome)
+    }
+
     /// Borrows the contract lineage.
     #[must_use]
     pub const fn lineage(&self) -> &ContractLineage {

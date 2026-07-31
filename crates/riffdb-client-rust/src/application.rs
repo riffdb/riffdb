@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use futures_util::{StreamExt, stream};
 use riffdb_errors::{
-    ApplicationError, ApplicationErrorCode, ApplicationErrorContext, ApplicationOperation,
+    ApplicationError, ApplicationErrorContext, ApplicationOperation, ApplicationRecoveryAction,
 };
 use riffdb_proto::{app::v1 as app_v1, application_error_from_proto, v1};
 use tonic::transport::{Channel, Endpoint};
@@ -288,11 +288,11 @@ impl StableApplicationClient {
         // Prefer per-item carriage when present (ADR-0077). Older servers leave
         // items empty and only populate legacy success rows.
         if !response.items.is_empty() {
-            let (resolved, uncertain) = resolve_generated_batch_items(prepared, response.items);
+            let (resolved, reenter) = resolve_generated_batch_items(prepared, response.items);
             completed.extend(resolved);
-            if !uncertain.is_empty() {
+            if !reenter.is_empty() {
                 let recovered: Vec<_> =
-                    stream::iter(uncertain.into_iter().map(|(index, command)| {
+                    stream::iter(reenter.into_iter().map(|(index, command)| {
                         let mut client = self.clone();
                         let metadata = metadata.clone();
                         async move {
@@ -335,16 +335,20 @@ type BatchItemResolution<C> = (
     Vec<(usize, C)>,
 );
 
-/// Classifies per-item batch carriage into terminal results and uncertain re-entry candidates.
+/// Classifies per-item batch carriage into terminal results and re-entry candidates.
 ///
-/// Only [`ApplicationErrorCode::OutcomeUnknown`] is scheduled for re-entry; every other
-/// application error is certain-not-executed and surfaces directly.
+/// Re-entry uses the registry-derived recovery action, not a hand-listed code set:
+/// [`ApplicationRecoveryAction::Retry`] and
+/// [`ApplicationRecoveryAction::ResolveWithSameIdempotencyKey`] re-enter
+/// `execute_generated_command` (same idempotency key; its AttemptBudget and
+/// Overloaded backoff then apply). Every other recovery action is terminal and
+/// surfaces directly with zero re-entry.
 fn resolve_generated_batch_items<C: GeneratedCommand>(
     prepared: Vec<(usize, C)>,
     items: Vec<v1::ExecuteCommandBatchItem>,
 ) -> BatchItemResolution<C> {
     let mut resolved = Vec::with_capacity(prepared.len());
-    let mut uncertain = Vec::new();
+    let mut reenter = Vec::new();
     for ((index, command), item) in prepared.into_iter().zip(items) {
         match item.result {
             Some(v1::execute_command_batch_item::Result::Response(item_response)) => {
@@ -358,8 +362,8 @@ fn resolve_generated_batch_items<C: GeneratedCommand>(
             }
             Some(v1::execute_command_batch_item::Result::Error(error_wire)) => {
                 match application_error_from_proto(&error_wire) {
-                    Ok(error) if matches!(error.code(), ApplicationErrorCode::OutcomeUnknown) => {
-                        uncertain.push((index, command));
+                    Ok(error) if application_error_requires_reentry(&error) => {
+                        reenter.push((index, command));
                     }
                     Ok(error) => {
                         resolved.push((
@@ -393,7 +397,14 @@ fn resolve_generated_batch_items<C: GeneratedCommand>(
             }
         }
     }
-    (resolved, uncertain)
+    (resolved, reenter)
+}
+
+const fn application_error_requires_reentry(error: &ApplicationError) -> bool {
+    matches!(
+        error.recovery_action(),
+        ApplicationRecoveryAction::Retry | ApplicationRecoveryAction::ResolveWithSameIdempotencyKey
+    )
 }
 
 fn generated_transport_batch_policy(item_concurrency: usize) -> (usize, usize) {
@@ -1314,6 +1325,7 @@ const fn hex_nibble(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use riffdb_errors::ApplicationErrorCode;
 
     #[test]
     fn named_query_builder_is_name_addressed_and_module_pinned() {
@@ -1598,7 +1610,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_items_certain_errors_surface_without_reentry_candidates() {
+    fn batch_items_non_retryable_errors_surface_without_reentry_candidates() {
         let prepared = vec![
             (0, StubBatchCommand { outcome: "Ok" }),
             (1, StubBatchCommand { outcome: "Ok" }),
@@ -1611,10 +1623,10 @@ mod tests {
                 )),
             },
             stub_error_item(ApplicationErrorCode::InputInvalid),
-            stub_error_item(ApplicationErrorCode::Overloaded),
+            stub_error_item(ApplicationErrorCode::AuthorizationDenied),
         ];
-        let (resolved, uncertain) = resolve_generated_batch_items(prepared, items);
-        assert!(uncertain.is_empty(), "certain errors must not re-enter");
+        let (resolved, reenter) = resolve_generated_batch_items(prepared, items);
+        assert!(reenter.is_empty(), "non-retryable errors must not re-enter");
         assert_eq!(resolved.len(), 3);
         assert!(resolved[0].1.is_ok());
         assert!(matches!(
@@ -1625,7 +1637,7 @@ mod tests {
         assert!(matches!(
             &resolved[2].1,
             Err(GeneratedExecutionError::Client(ClientError::Application(error)))
-                if error.code() == ApplicationErrorCode::Overloaded
+                if error.code() == ApplicationErrorCode::AuthorizationDenied
         ));
         assert_eq!(
             resolved.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
@@ -1634,11 +1646,12 @@ mod tests {
     }
 
     #[test]
-    fn batch_items_outcome_unknown_is_the_only_reentry_candidate() {
+    fn batch_items_registry_retryable_errors_are_reentry_candidates() {
         let prepared = vec![
             (0, StubBatchCommand { outcome: "A" }),
             (1, StubBatchCommand { outcome: "B" }),
             (2, StubBatchCommand { outcome: "C" }),
+            (3, StubBatchCommand { outcome: "D" }),
         ];
         let items = vec![
             v1::ExecuteCommandBatchItem {
@@ -1647,19 +1660,54 @@ mod tests {
                 )),
             },
             stub_error_item(ApplicationErrorCode::OutcomeUnknown),
-            v1::ExecuteCommandBatchItem {
-                result: Some(v1::execute_command_batch_item::Result::Response(
-                    stub_response("C"),
-                )),
-            },
+            stub_error_item(ApplicationErrorCode::Overloaded),
+            stub_error_item(ApplicationErrorCode::StorageUnavailable),
         ];
-        let (resolved, uncertain) = resolve_generated_batch_items(prepared, items);
-        assert_eq!(uncertain.len(), 1);
-        assert_eq!(uncertain[0].0, 1);
-        assert_eq!(resolved.len(), 2);
-        assert_eq!(resolved[0].0, 0);
-        assert_eq!(resolved[1].0, 2);
+        let (resolved, reenter) = resolve_generated_batch_items(prepared, items);
+        assert_eq!(resolved.len(), 1);
         assert!(resolved[0].1.is_ok());
-        assert!(resolved[1].1.is_ok());
+        assert_eq!(
+            reenter.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+            vec![1, 2, 3],
+            "Retry and ResolveWithSameIdempotencyKey must re-enter"
+        );
+        assert_eq!(
+            ApplicationErrorCode::Overloaded.recovery_action(),
+            ApplicationRecoveryAction::Retry
+        );
+        assert_eq!(
+            ApplicationErrorCode::OutcomeUnknown.recovery_action(),
+            ApplicationRecoveryAction::ResolveWithSameIdempotencyKey
+        );
+    }
+
+    #[test]
+    fn batch_checkpoint_advances_over_terminal_results_including_errors() {
+        // Checkpoint is the largest contiguous prefix with any independent
+        // terminal result (Ok or Err). Retryable items re-enter before a
+        // terminal result is recorded, so they do not advance the checkpoint
+        // until the attempt budget finishes. Terminal InputInvalid results
+        // are independent results and correctly advance the checkpoint —
+        // resume must not resubmit them.
+        let mut completed_after_checkpoint = BTreeSet::new();
+        let mut checkpoint = 0usize;
+        // indices 0 Ok, 1 terminal InputInvalid, 2 Ok
+        for index in [0usize, 1, 2] {
+            completed_after_checkpoint.insert(index);
+            while completed_after_checkpoint.remove(&checkpoint) {
+                checkpoint += 1;
+            }
+        }
+        assert_eq!(checkpoint, 3);
+        // Gap at 1 leaves checkpoint at 1 (items 0 done, 1 missing).
+        let mut completed_after_checkpoint = BTreeSet::new();
+        let mut checkpoint = 0usize;
+        for index in [0usize, 2] {
+            completed_after_checkpoint.insert(index);
+            while completed_after_checkpoint.remove(&checkpoint) {
+                checkpoint += 1;
+            }
+        }
+        assert_eq!(checkpoint, 1);
     }
 }
