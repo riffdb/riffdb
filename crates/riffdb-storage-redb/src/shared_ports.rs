@@ -66,6 +66,16 @@ impl RedbSharedPorts {
             shared: Arc::clone(&self.0),
         }
     }
+
+    /// Loads every active query-module pointer and its matching module body.
+    ///
+    /// Used by the process view at construction so idempotent re-activation after
+    /// restart does not integrity-fail on a cold empty view.
+    pub fn load_active_query_modules(
+        &self,
+    ) -> Result<Vec<(ActiveQueryModulePointerV1, StoredQueryModuleV1)>, StorageError> {
+        crate::administration::load_active_query_modules(&self.operational())
+    }
 }
 
 impl std::fmt::Debug for RedbSharedPorts {

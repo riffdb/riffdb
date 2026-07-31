@@ -19,12 +19,12 @@ elif [ "${1-}" = "--assert-perf-012" ]; then
     mode=--assert-perf-012
 elif [ "${1-}" = "--assert-perf-013" ]; then
     mode=--assert-perf-013
-elif [ "${1-}" = "--assert-perf-014" ]; then
-    mode=--assert-perf-014
 elif [ "${1-}" = "--smoke" ]; then
     mode=--smoke
+elif [ "${1-}" = "--checked" ]; then
+    mode=--checked
 elif [ "$#" -ne 0 ]; then
-    echo "usage: $0 [--smoke|--assert-perf-003|--assert-perf-004|--assert-perf-006|--assert-perf-008|--assert-perf-009|--assert-perf-012|--assert-perf-013|--assert-perf-014]" >&2
+    echo "usage: $0 [--smoke|--checked|--assert-perf-003|--assert-perf-004|--assert-perf-006|--assert-perf-008|--assert-perf-009|--assert-perf-012|--assert-perf-013]" >&2
     exit 2
 fi
 
