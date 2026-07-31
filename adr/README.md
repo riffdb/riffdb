@@ -92,6 +92,10 @@ direction, merged draft, or implementation choice.
 | [0071](0071-typed-saturation-and-admission.md) | Typed Saturation and Admission | Accepted |
 | [0072](0072-database-history-incarnation.md) | Database History Incarnation | Accepted |
 | [0073](0073-linear-startup-validation-and-bounded-history-access.md) | Linear Startup Validation and Bounded History Access | Accepted |
+| [0074](0074-python-application-driver.md) | Python Application Driver | Accepted |
+| [0075](0075-single-total-order-and-pre-alpha-format-acceptances.md) | Single Total Order and Pre-Alpha Format Acceptances | Proposed |
+| [0076](0076-authoritative-entity-references.md) | Authoritative Entity References | Proposed |
+| [0077](0077-batch-item-results.md) | Batch Item Results | Proposed |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
