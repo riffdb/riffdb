@@ -9,6 +9,7 @@ enum ContractCompatibilityClass {
   CONTRACT_COMPATIBILITY_CLASS_COMPATIBLE = 1;
   CONTRACT_COMPATIBILITY_CLASS_REQUIRES_EXPLICIT_VERSION = 2;
   CONTRACT_COMPATIBILITY_CLASS_INCOMPATIBLE = 3;
+  CONTRACT_COMPATIBILITY_CLASS_REQUIRES_MIGRATION = 4;
 }
 
 message ContractCompatibilityCodeCount {
@@ -174,6 +175,7 @@ message DeployContractResponse {
     CompilationDiagnostics invalid_source = 5;
     ContractDescriptor incompatible_candidate = 6;
     ExpectedApplicationIdentityMismatch expected_application_identity_mismatch = 7;
+    ContractDescriptor migration_required = 8;
   }
 }
 

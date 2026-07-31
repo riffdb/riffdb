@@ -1,7 +1,7 @@
 format=riffdb-compiler-diagnostic-fixture-v1
 
 [semantic-code-registry]
-count=29
+count=35
 code.0.id=RDB-C001
 code.0.message=contract version must be a supported nonzero integer
 code.0.help=use a base-10 application version in 1..=u64::MAX
@@ -80,15 +80,33 @@ code.24.help=declare required key-compatible fields beginning with the canonical
 code.25.id=RDB-C026
 code.25.message=a changed unique value must be computable from validated command inputs
 code.25.help=assign every changed unique component from command inputs or input-only expressions
-code.26.id=RDB-C201
-code.26.message=an identifier cannot form a valid MCP command tool-name segment
-code.26.help=start contract and command identifiers with an ASCII letter
-code.27.id=RDB-C202
-code.27.message=the complete MCP command tool name exceeds 128 bytes
-code.27.help=shorten the source contract or command identifier
-code.28.id=RDB-C203
-code.28.message=two commands normalize to the same MCP command tool name
-code.28.help=rename one command so lowercase identifiers remain distinct
+code.26.id=RDB-C027
+code.26.message=migration source does not bind the exact parent and candidate
+code.26.help=use the exact lineage, parent version, and candidate version
+code.27.id=RDB-C028
+code.27.message=a required migration proof is missing
+code.27.help=add the source clause required by the reported compatibility change
+code.28.id=RDB-C029
+code.28.message=a migration change is proved more than once
+code.28.help=retain exactly one proof for the change
+code.29.id=RDB-C030
+code.29.message=a migration clause does not correspond to the exact contract change
+code.29.help=remove the clause or compile it against the intended exact parent
+code.30.id=RDB-C031
+code.30.message=the migration step is not executable in the current implementation gate
+code.30.help=wait for the documented migration implementation gate
+code.31.id=RDB-C032
+code.31.message=the migration expression or conversion is not exact and deterministic
+code.31.help=use only the old row, canonical literals, checked operators, and closed conversions
+code.32.id=RDB-C201
+code.32.message=an identifier cannot form a valid MCP command tool-name segment
+code.32.help=start contract and command identifiers with an ASCII letter
+code.33.id=RDB-C202
+code.33.message=the complete MCP command tool name exceeds 128 bytes
+code.33.help=shorten the source contract or command identifier
+code.34.id=RDB-C203
+code.34.message=two commands normalize to the same MCP command tool name
+code.34.help=rename one command so lowercase identifiers remain distinct
 
 [RDB-C001-invalid-contract-version]
 expected=RDB-C001
@@ -354,6 +372,66 @@ diagnostic.0.message=a changed unique value must be computable from validated co
 diagnostic.0.primary=182..192
 diagnostic.0.related=none
 diagnostic.0.help=assign every changed unique component from command inputs or input-only expressions
+
+[RDB-C027-invalid-migration-identity]
+expected=RDB-C027
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C027
+diagnostic.0.message=migration source does not bind the exact parent and candidate
+diagnostic.0.primary=1000..1005
+diagnostic.0.related=none
+diagnostic.0.help=use the exact lineage, parent version, and candidate version
+
+[RDB-C028-missing-migration-proof]
+expected=RDB-C028
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C028
+diagnostic.0.message=a required migration proof is missing
+diagnostic.0.primary=1010..1015
+diagnostic.0.related=none
+diagnostic.0.help=add the source clause required by the reported compatibility change
+
+[RDB-C029-duplicate-migration-proof]
+expected=RDB-C029
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C029
+diagnostic.0.message=a migration change is proved more than once
+diagnostic.0.primary=1020..1025
+diagnostic.0.related=none
+diagnostic.0.help=retain exactly one proof for the change
+
+[RDB-C030-unnecessary-migration-proof]
+expected=RDB-C030
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C030
+diagnostic.0.message=a migration clause does not correspond to the exact contract change
+diagnostic.0.primary=1030..1035
+diagnostic.0.related=none
+diagnostic.0.help=remove the clause or compile it against the intended exact parent
+
+[RDB-C031-unsupported-migration-step]
+expected=RDB-C031
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C031
+diagnostic.0.message=the migration step is not executable in the current implementation gate
+diagnostic.0.primary=1040..1045
+diagnostic.0.related=none
+diagnostic.0.help=wait for the documented migration implementation gate
+
+[RDB-C032-invalid-migration-expression]
+expected=RDB-C032
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C032
+diagnostic.0.message=the migration expression or conversion is not exact and deterministic
+diagnostic.0.primary=1050..1055
+diagnostic.0.related=none
+diagnostic.0.help=use only the old row, canonical literals, checked operators, and closed conversions
 
 [RDB-C201-invalid-command-tool-name]
 expected=RDB-C201

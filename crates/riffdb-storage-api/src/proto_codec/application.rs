@@ -10,9 +10,9 @@ use crate::{
     AffectedEntityV1, CommittedEntityMutationV1, DurabilityMode, EncodedPageItem, EventReferenceV2,
     IndexMigrationRowEvidence, IndexMigrationSemanticRow, LegacyStoredIndexEpochV1,
     PartitionIndexTarget, StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1,
-    StoredExecutionFailedV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredIndexEpochV1,
-    StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
-    StoredReadDependencyV1,
+    StoredEventRouteV1, StoredExecutionFailedV1, StoredIndexEntryV1, StoredIndexEntryV2,
+    StoredIndexEpochV1, StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
+    StoredReadDependenciesV1, StoredReadDependencyV1,
 };
 
 use super::{
@@ -34,6 +34,7 @@ const PENDING: &str = "riffdb.storage.v1.StoredPendingAdmissionV1";
 const EXECUTION_FAILED: &str = "riffdb.storage.v1.StoredExecutionFailedV1";
 pub(super) const OUTCOME: &str = "riffdb.storage.v1.StoredOutcomeV1";
 pub(super) const EVENT: &str = "riffdb.storage.v1.StoredDurableEventV1";
+pub(super) const EVENT_ROUTE: &str = "riffdb.storage.v1.StoredEventRouteV1";
 pub(super) const PROVENANCE: &str = "riffdb.storage.v1.StoredProvenanceRecordV1";
 pub(super) const COMMIT: &str = "riffdb.storage.v1.StoredCommitRecordV2";
 const LEGACY_COMMIT: &str = "riffdb.storage.v1.StoredCommitRecordV1";
@@ -259,6 +260,24 @@ pub(super) fn event_from_proto(
         event_id_from_proto(require(value.event_id)?)?,
         EventTypeId::new(value.event_type_id).ok_or_else(DurableCodecError::corrupt)?,
         canonical_record_from_bytes(&value.canonical_payload)?,
+        EventHash::from_bytes(fixed(value.event_hash)?),
+    ))
+}
+
+fn event_route_to_proto(value: StoredEventRouteV1) -> wire::StoredEventRouteV1 {
+    wire::StoredEventRouteV1 {
+        event_id: Some(event_id_to_proto(value.event_id())),
+        event_type_id: value.event_type_id().get(),
+        event_hash: value.event_hash().as_bytes().to_vec(),
+    }
+}
+
+fn event_route_from_proto(
+    value: wire::StoredEventRouteV1,
+) -> Result<StoredEventRouteV1, DurableCodecError> {
+    Ok(StoredEventRouteV1::new(
+        event_id_from_proto(require(value.event_id)?)?,
+        EventTypeId::new(value.event_type_id).ok_or_else(DurableCodecError::corrupt)?,
         EventHash::from_bytes(fixed(value.event_hash)?),
     ))
 }
@@ -593,6 +612,20 @@ pub fn decode_durable_event_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredDurableEventV1>, DurableCodecError> {
     decode_message::<wire::StoredDurableEventV1, _, _>(EVENT, encoded, event_from_proto)
+}
+
+/// Encodes one payload-free partition event route.
+pub fn encode_event_route_v1(
+    value: StoredEventRouteV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    encode_message(EVENT_ROUTE, &event_route_to_proto(value))
+}
+
+/// Decodes one payload-free partition event route.
+pub fn decode_event_route_v1(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<StoredEventRouteV1>, DurableCodecError> {
+    decode_message::<wire::StoredEventRouteV1, _, _>(EVENT_ROUTE, encoded, event_route_from_proto)
 }
 
 /// Encodes one immutable command provenance record.

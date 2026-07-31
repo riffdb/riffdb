@@ -573,6 +573,11 @@ canonical parent and migration bundle artifacts. A server MUST select only the
 entry matching its exact active parent and MUST NOT infer or automatically
 chain intermediate migrations.
 
+The exact supported migration parent MAY be older than the successor bundle's
+immediate compilation parent. It MUST have the same lineage and a lower version,
+and its direct compatibility and proof obligations MUST be recomputed against
+the one canonical successor bundle as specified by ADR-0081.
+
 `MIG-004` Migration expressions MUST be deterministic, typed, bounded, and
 row-local. They MAY inspect canonical literals, the complete old row, and old
 key components and MAY use only the closed reviewed expression/conversion

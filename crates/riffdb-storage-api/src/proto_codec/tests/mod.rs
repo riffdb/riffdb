@@ -266,6 +266,12 @@ fn every_registered_semantic_record_round_trips_in_registry_order() {
     assert_round_trip(current, encode_index_entry_v2, decode_index_entry_v2);
 
     let atomic = sample::atomic_record_set();
+    let event = &atomic.events()[0];
+    assert_round_trip(
+        crate::StoredEventRouteV1::new(event.event_id(), event.event_type_id(), event.event_hash()),
+        |value| encode_event_route_v1(*value),
+        decode_event_route_v1,
+    );
     assert_round_trip(
         atomic.outbox_intents()[0].clone(),
         encode_outbox_intent_v1,

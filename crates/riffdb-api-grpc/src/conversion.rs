@@ -1637,6 +1637,11 @@ pub fn deploy_contract_result_to_proto(
                 contract_descriptor_to_proto(descriptor),
             )
         }
+        DeployContractResult::MigrationRequired(descriptor) => {
+            v1::deploy_contract_response::Result::MigrationRequired(contract_descriptor_to_proto(
+                descriptor,
+            ))
+        }
         DeployContractResult::Activated(descriptor) => {
             v1::deploy_contract_response::Result::Activated(contract_descriptor_to_proto(
                 descriptor,
@@ -2706,6 +2711,9 @@ pub fn contract_descriptor_to_proto(descriptor: &ContractDescriptor) -> v1::Cont
         ContractCompatibilityClass::Compatible => v1::ContractCompatibilityClass::Compatible,
         ContractCompatibilityClass::RequiresExplicitVersion => {
             v1::ContractCompatibilityClass::RequiresExplicitVersion
+        }
+        ContractCompatibilityClass::RequiresMigration => {
+            v1::ContractCompatibilityClass::RequiresMigration
         }
         ContractCompatibilityClass::Incompatible => v1::ContractCompatibilityClass::Incompatible,
     };

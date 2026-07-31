@@ -299,6 +299,18 @@ impl AuthoritativeScanReader for RedbSharedPorts {
     }
 }
 
+impl riffdb_storage_api::PartitionEventRouteReader for RedbSharedPorts {
+    fn scan_partition_event_routes(
+        &self,
+        request: riffdb_storage_api::EventRouteScanRequestV1,
+    ) -> Result<riffdb_storage_api::EventRouteScanV1, StorageError> {
+        riffdb_storage_api::PartitionEventRouteReader::scan_partition_event_routes(
+            &self.operational(),
+            request,
+        )
+    }
+}
+
 impl FilteredAuthoritativeScanReader for RedbSharedPorts {
     fn scan_index_filtered(
         &self,

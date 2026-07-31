@@ -1,0 +1,5 @@
+migration MigrationFixture from 1 to 2 {
+  transform Row {
+    set doubled = old.value + 1
+  }
+}

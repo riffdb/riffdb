@@ -1865,7 +1865,7 @@ pub struct ExpectedApplicationIdentityMismatch {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DeployContractResponse {
-    #[prost(oneof = "deploy_contract_response::Result", tags = "1, 2, 3, 4, 5, 6, 7")]
+    #[prost(oneof = "deploy_contract_response::Result", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
     pub result: ::core::option::Option<deploy_contract_response::Result>,
 }
 /// Nested message and enum types in `DeployContractResponse`.
@@ -1886,6 +1886,8 @@ pub mod deploy_contract_response {
         IncompatibleCandidate(super::ContractDescriptor),
         #[prost(message, tag = "7")]
         ExpectedApplicationIdentityMismatch(super::ExpectedApplicationIdentityMismatch),
+        #[prost(message, tag = "8")]
+        MigrationRequired(super::ContractDescriptor),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1941,6 +1943,7 @@ pub enum ContractCompatibilityClass {
     Compatible = 1,
     RequiresExplicitVersion = 2,
     Incompatible = 3,
+    RequiresMigration = 4,
 }
 impl ContractCompatibilityClass {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1955,6 +1958,7 @@ impl ContractCompatibilityClass {
                 "CONTRACT_COMPATIBILITY_CLASS_REQUIRES_EXPLICIT_VERSION"
             }
             Self::Incompatible => "CONTRACT_COMPATIBILITY_CLASS_INCOMPATIBLE",
+            Self::RequiresMigration => "CONTRACT_COMPATIBILITY_CLASS_REQUIRES_MIGRATION",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1966,6 +1970,9 @@ impl ContractCompatibilityClass {
                 Some(Self::RequiresExplicitVersion)
             }
             "CONTRACT_COMPATIBILITY_CLASS_INCOMPATIBLE" => Some(Self::Incompatible),
+            "CONTRACT_COMPATIBILITY_CLASS_REQUIRES_MIGRATION" => {
+                Some(Self::RequiresMigration)
+            }
             _ => None,
         }
     }

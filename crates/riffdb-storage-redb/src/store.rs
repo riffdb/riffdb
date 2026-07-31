@@ -27,10 +27,11 @@ use riffdb_storage_api::{
 use riffdb_types::{DatabaseId, IndexEpoch, IndexId, SchemaHash};
 
 use crate::codec::{
-    decode_administration_audit_record_v1, decode_commit_with_event_table, decode_index_entry_v2,
-    decode_index_epoch_v1, decode_legacy_index_epoch_v1, decode_outbox_with_event_table,
-    decode_service_audit_request_index_v1, encode_commit_record_v1, encode_index_epoch_v1,
-    encode_outbox_intent_v1, encode_service_audit_request_index_v1,
+    decode_administration_audit_record_v1, decode_commit_with_event_table, decode_event_route_v1,
+    decode_index_entry_v2, decode_index_epoch_v1, decode_legacy_index_epoch_v1,
+    decode_outbox_with_event_table, decode_service_audit_request_index_v1, encode_commit_record_v1,
+    encode_event_route_v1, encode_index_epoch_v1, encode_outbox_intent_v1,
+    encode_service_audit_request_index_v1,
 };
 use crate::error::{
     commit_error, database_error, precommit_storage_error, storage_error, table_error,
@@ -39,12 +40,12 @@ use crate::error::{
 use crate::gate::{ExclusiveGate, ExclusiveLease};
 use crate::hooks::{RedbTestController, RedbTestOperation};
 use crate::keys::{
-    decode_audit_by_request_key, decode_audit_key, decode_index_range_prefix_key,
-    decode_partition_index_key, encode_audit_by_request_key, encode_audit_by_request_prefix,
-    encode_partition_index_key,
+    decode_application_sequence_key, decode_audit_by_request_key, decode_audit_key,
+    decode_index_range_prefix_key, decode_partition_index_key, encode_audit_by_request_key,
+    encode_audit_by_request_prefix, encode_event_route_key, encode_partition_index_key,
 };
 use crate::layout::{
-    AUDIT, AUDIT_BY_REQUEST, BYTE_TABLES, COMMITS, EVENTS, INDEX_EPOCHS, META,
+    AUDIT, AUDIT_BY_REQUEST, BYTE_TABLES, COMMITS, EVENT_ROUTES, EVENTS, INDEX_EPOCHS, META,
     META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
     META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
     META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, OUTBOX, SECONDARY_INDEXES,
@@ -191,6 +192,7 @@ enum LayoutState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RegistryMigration {
     Current,
+    EventRoute,
     EventReferencesThenGenerations,
     Generations,
     HistoryIncarnation,
@@ -216,6 +218,11 @@ pub(crate) const PRE_HISTORY_INCARNATION_REGISTRY_DIGEST: [u8; 32] = [
 pub(crate) const PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST: [u8; 32] = [
     0xfe, 0xfb, 0x86, 0xac, 0xe8, 0x2e, 0x36, 0xc6, 0x74, 0x9f, 0x22, 0xc7, 0xb7, 0xec, 0x4c, 0x05,
     0x15, 0xa5, 0x1a, 0x14, 0xaa, 0x7d, 0xe2, 0xc2, 0x1a, 0x84, 0xee, 0x4f, 0xe0, 0x8a, 0xc2, 0xa2,
+];
+/// Registry digest immediately before partition event routes became durable.
+pub(crate) const PRE_EVENT_ROUTE_REGISTRY_DIGEST: [u8; 32] = [
+    0xe9, 0x53, 0xd2, 0xc4, 0x9f, 0x74, 0xe0, 0x28, 0xc1, 0xae, 0xc7, 0x1e, 0xed, 0xf6, 0x23, 0x14,
+    0x62, 0x3a, 0xb9, 0x5c, 0xf5, 0x33, 0xa2, 0xd6, 0x36, 0xcc, 0x6d, 0x70, 0x08, 0x42, 0x32, 0x4f,
 ];
 
 /// Last observed redb repair progress in basis points (0..=10_000), for recovery telemetry.
@@ -331,6 +338,10 @@ impl RedbStore {
                 {
                     RegistryMigration::Current
                 } else if observed.value()
+                    == &SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST)
+                {
+                    RegistryMigration::EventRoute
+                } else if observed.value()
                     == &SchemaHash::from_bytes(PRE_EVENT_REFERENCE_REGISTRY_DIGEST)
                 {
                     RegistryMigration::EventReferencesThenGenerations
@@ -357,6 +368,15 @@ impl RedbStore {
         drop(encoded_format);
         drop(metadata);
         drop(transaction);
+
+        if registry_migration == RegistryMigration::EventRoute {
+            migrate_event_routes(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST),
+                riffdb_storage_api::proto_codec::current_record_registry_digest(),
+            )?;
+        }
 
         if registry_migration == RegistryMigration::EventReferencesThenGenerations {
             migrate_event_reference_records(&self.shared)?;
@@ -401,6 +421,12 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST),
+            )?;
+            migrate_event_routes(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -492,6 +518,12 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST),
+            )?;
+            migrate_event_routes(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -554,7 +586,9 @@ impl RedbStore {
             // PRE_HISTORY_INCARNATION digest still needs row repair if a prior
             // cutover left legacy epoch rows behind a later digest bump.
             migrate_partition_index_generations(&self.shared)?;
-        } else if observed != SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST) {
+        } else if observed != SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST)
+            && observed != SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST)
+        {
             return Err(storage_error(StorageErrorKind::IncompatibleFormat));
         }
         if observed == SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST)
@@ -568,9 +602,17 @@ impl RedbStore {
             )?;
         }
         migrate_audit_request_index(&self.shared)?;
+        if observed != SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST) {
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST),
+            )?;
+        }
+        migrate_event_routes(&self.shared)?;
         publish_record_registry(
             &self.shared,
-            SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST),
+            SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST),
             current,
         )
     }
@@ -1015,6 +1057,123 @@ fn validate_partition_index_generation_rows(shared: &SharedRedb) -> Result<(), S
         }
     }
     Ok(())
+}
+
+/// Creates the partition route table and rebuilds it from authoritative commits.
+///
+/// Each batch is idempotent and bounded. A pre-existing row must exactly match
+/// the commit-linked event identity, type, and hash; otherwise startup fails
+/// closed rather than publishing a partially trustworthy routing index.
+fn migrate_event_routes(shared: &SharedRedb) -> Result<(), StorageError> {
+    ensure_event_routes_table(shared)?;
+    let mut after: Option<Vec<u8>> = None;
+    loop {
+        let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+        transaction.set_two_phase_commit(true);
+        transaction
+            .set_durability(Durability::Immediate)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let mut rows = 0usize;
+        let mut bytes = 0usize;
+        let mut changed = false;
+        let mut last_key = after.clone();
+        {
+            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+            let events = transaction.open_table(EVENTS).map_err(table_error)?;
+            let mut routes = transaction.open_table(EVENT_ROUTES).map_err(table_error)?;
+            let mut scan = match after.as_deref() {
+                Some(after_key) => commits
+                    .range::<&[u8]>((Excluded(after_key), Unbounded))
+                    .map_err(precommit_storage_error)?,
+                None => commits.iter().map_err(precommit_storage_error)?,
+            };
+            for entry in &mut scan {
+                let (key, value) = entry.map_err(precommit_storage_error)?;
+                let key_bytes = key.value().to_vec();
+                let sequence = decode_application_sequence_key(&key_bytes)
+                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+                let commit = decode_commit_with_event_table(value.value(), &events)?
+                    .into_parts()
+                    .0;
+                if commit.commit_sequence() != sequence {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                for event in commit.events() {
+                    let route = riffdb_storage_api::StoredEventRouteV1::new(
+                        event.event_id(),
+                        event.event_type_id(),
+                        event.event_hash(),
+                    );
+                    let route_key =
+                        encode_event_route_key(commit.partition_hash(), event.event_id());
+                    let encoded = encode_event_route_v1(route)?;
+                    if let Some(existing) = routes
+                        .get(route_key.as_slice())
+                        .map_err(precommit_storage_error)?
+                    {
+                        if *decode_event_route_v1(existing.value())?.value() != route {
+                            return Err(storage_error(StorageErrorKind::CorruptData));
+                        }
+                    } else {
+                        routes
+                            .insert(route_key.as_slice(), encoded.as_bytes())
+                            .map_err(precommit_storage_error)?;
+                        changed = true;
+                    }
+                    bytes = bytes
+                        .checked_add(encoded.as_bytes().len())
+                        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                }
+                bytes = bytes
+                    .checked_add(value.value().len())
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                rows = rows
+                    .checked_add(1)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                last_key = Some(key_bytes);
+                if rows >= FORMAT_MIGRATION_MAX_ROWS || bytes >= FORMAT_MIGRATION_MAX_BYTES {
+                    break;
+                }
+            }
+        }
+        if rows == 0 {
+            return transaction.abort().map_err(precommit_storage_error);
+        }
+        if changed {
+            shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+            shared.commit_durable(transaction)?;
+            shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+        } else {
+            transaction.abort().map_err(precommit_storage_error)?;
+        }
+        after = last_key;
+        if rows < FORMAT_MIGRATION_MAX_ROWS && bytes < FORMAT_MIGRATION_MAX_BYTES {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_event_routes_table(shared: &SharedRedb) -> Result<(), StorageError> {
+    let read = shared.database.begin_read().map_err(transaction_error)?;
+    let tables = read
+        .list_tables()
+        .map_err(precommit_storage_error)?
+        .map(|table| table.name().to_owned())
+        .collect::<BTreeSet<_>>();
+    drop(read);
+    if tables.iter().any(|name| name == "event_routes") {
+        return Ok(());
+    }
+    let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+    transaction.set_two_phase_commit(true);
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    drop(transaction.open_table(EVENT_ROUTES).map_err(table_error)?);
+    shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+    shared.commit_durable(transaction)?;
+    shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)
 }
 
 /// Creates `audit_by_request` when absent and backfills service-audit index rows
@@ -1735,7 +1894,12 @@ fn classify_table_names(
     // Pre-audit-request-index layout: exactly the 21-table predecessor is
     // migration-eligible and treated as initialized for open/identity probe.
     // ensure_current_storage_format creates audit_by_request before any write path.
-    let mut pre_audit_request_index = expected.clone();
+    let mut pre_event_route = expected.clone();
+    pre_event_route.remove("event_routes");
+    if tables == pre_event_route {
+        return Ok(LayoutState::Initialized);
+    }
+    let mut pre_audit_request_index = pre_event_route;
     pre_audit_request_index.remove("audit_by_request");
     if tables == pre_audit_request_index {
         return Ok(LayoutState::Initialized);
@@ -2299,6 +2463,98 @@ mod tests {
         assert_eq!(&outbox.value()[..8], b"RDB2\x02\x0f\0\x02");
         decode_outbox_with_event_table(outbox.value(), &events)
             .expect("migrated outbox proves authoritative event");
+        let metadata = read.open_table(META).expect("open metadata");
+        let registry = metadata
+            .get(META_RECORD_REGISTRY)
+            .expect("read registry")
+            .expect("registry remains");
+        assert_eq!(
+            *decode_record_registry_v2(registry.value())
+                .expect("decode registry")
+                .value(),
+            riffdb_storage_api::proto_codec::current_record_registry_digest()
+        );
+    }
+
+    #[test]
+    fn event_routes_rebuild_idempotently_before_registry_publication() {
+        let path = TestDatabasePath::new("event-route-migration");
+        let mut store = RedbStore::open(&path.0).expect("open empty store");
+        store
+            .initialize_database(database_id(0x1c))
+            .expect("initialize current database");
+
+        let event_id = EventId::new(CommitSequence::first(), 0);
+        let commit_key = encode_application_sequence_key(CommitSequence::first());
+        let event_key = encode_event_key(event_id);
+        let event = wp373_fixture_envelope("riffdb.storage.v1.StoredDurableEventV1");
+        let commit = wp373_fixture_envelope("riffdb.storage.v1.StoredCommitRecordV1");
+        let predecessor =
+            encode_record_registry_v2(SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST))
+                .expect("encode predecessor registry");
+        let transaction = store
+            .shared
+            .database
+            .begin_write()
+            .expect("begin event-route fixture");
+        transaction
+            .open_table(EVENTS)
+            .expect("open events")
+            .insert(event_key.as_slice(), event.as_slice())
+            .expect("insert authoritative event");
+        transaction
+            .open_table(COMMITS)
+            .expect("open commits")
+            .insert(commit_key.as_slice(), commit.as_slice())
+            .expect("insert historical commit");
+        transaction
+            .open_table(META)
+            .expect("open metadata")
+            .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
+            .expect("install predecessor registry");
+        transaction.commit().expect("commit predecessor fixture");
+        drop(store);
+
+        let interrupted = RedbTestController::return_unknown_after_commit(
+            RedbTestOperation::StorageFormatMigrationBatch,
+        );
+        assert_eq!(
+            RedbStore::open_with_test_controller(&path.0, interrupted)
+                .expect_err("injected postcommit uncertainty interrupts route migration")
+                .kind(),
+            StorageErrorKind::CommitStatusUnknown
+        );
+
+        let migrated = RedbStore::open(&path.0).expect("resume event-route migration");
+        let read = migrated
+            .shared
+            .database
+            .begin_read()
+            .expect("read migrated database");
+        let events = read.open_table(EVENTS).expect("open events");
+        let commits = read.open_table(COMMITS).expect("open commits");
+        let encoded_commit = commits
+            .get(commit_key.as_slice())
+            .expect("read commit")
+            .expect("commit remains");
+        let decoded_commit = decode_commit_with_event_table(encoded_commit.value(), &events)
+            .expect("decode authoritative commit")
+            .into_parts()
+            .0;
+        let event = decoded_commit.events().first().expect("commit event");
+        let route_key = encode_event_route_key(decoded_commit.partition_hash(), event_id);
+        let routes = read.open_table(EVENT_ROUTES).expect("open event routes");
+        let encoded_route = routes
+            .get(route_key.as_slice())
+            .expect("read route")
+            .expect("rebuilt route exists");
+        let route = decode_event_route_v1(encoded_route.value())
+            .expect("decode route")
+            .into_parts()
+            .0;
+        assert_eq!(route.event_id(), event.event_id());
+        assert_eq!(route.event_type_id(), event.event_type_id());
+        assert_eq!(route.event_hash(), event.event_hash());
         let metadata = read.open_table(META).expect("open metadata");
         let registry = metadata
             .get(META_RECORD_REGISTRY)

@@ -42,6 +42,11 @@ pub(crate) enum TopLevel {
         #[command(subcommand)]
         command: ApplicationCommand,
     },
+    /// Inspects exact local contract migration artifacts.
+    Migration {
+        #[command(subcommand)]
+        command: MigrationCommand,
+    },
     /// Starts the bounded local symbolic development workflow.
     Dev {
         #[arg(long, default_value = "application", value_name = "ROLE_PRESET")]
@@ -104,6 +109,25 @@ pub(crate) enum TopLevel {
     Demo {
         #[command(subcommand)]
         command: DemoCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum MigrationCommand {
+    /// Prints the exact read-only migration plan for a locked application.
+    Plan {
+        #[arg(
+            long,
+            default_value = "riffdb.application.json",
+            value_name = "APPLICATION_SOURCE"
+        )]
+        application: OsString,
+        #[arg(
+            long,
+            default_value = "riffdb.application.lock.json",
+            value_name = "APPLICATION_LOCK"
+        )]
+        lock: OsString,
     },
 }
 
@@ -658,6 +682,20 @@ mod tests {
 
     #[test]
     fn application_source_and_lock_operations_are_explicit_and_closed() {
+        assert!(matches!(
+            Cli::try_parse_from([
+                "riffdb",
+                "migration",
+                "plan",
+                "--application",
+                "custom.application.json"
+            ])
+            .expect("migration plan")
+            .command,
+            TopLevel::Migration {
+                command: MigrationCommand::Plan { application, .. }
+            } if application == "custom.application.json"
+        ));
         assert!(matches!(
             Cli::try_parse_from(["riffdb", "application", "migrate", "--to", "v2"])
                 .expect("migration preview")

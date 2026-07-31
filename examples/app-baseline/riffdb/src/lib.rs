@@ -35,7 +35,10 @@ use riffdb_ticketdesk::{
 };
 use tonic::transport::Endpoint;
 
-pub use server::{RiffDbServerSession, ServerStartOptions};
+pub use server::{
+    DATABASE_ROOT_ENV, DEFAULT_DATABASE_ROOT, RiffDbServerSession, ServerStartOptions,
+    resolve_database_root, sweep_stale_session_dirs,
+};
 
 /// Default in-flight seed commands (bounded client concurrency, not a bulk RPC).
 const DEFAULT_SEED_CONCURRENCY: usize = 128;
@@ -167,9 +170,9 @@ impl AppBackend for RiffDbPublicBackend {
                 "RDB-HISTORY-0101" => LoadErrorClass::HistoryIncarnationMismatch,
                 _ => LoadErrorClass::Other,
             },
-            RiffDbError::Connection | RiffDbError::Runtime | RiffDbError::Server => {
-                LoadErrorClass::Unavailable
-            }
+            RiffDbError::Connection
+            | RiffDbError::Runtime
+            | RiffDbError::Server { .. } => LoadErrorClass::Unavailable,
             _ => LoadErrorClass::Other,
         }
     }
@@ -875,8 +878,11 @@ pub enum RiffDbError {
     Bootstrap,
     /// Contract or query-module deploy failed.
     Deploy,
-    /// Server process failed.
-    Server,
+    /// Server process failed (includes exit status / stderr tail when known).
+    Server {
+        /// Bounded diagnostic from the harness (exit status, last stderr lines).
+        detail: String,
+    },
     /// Filesystem error.
     Io,
     /// Application semantic error with stable `RDB-*` code.
@@ -900,7 +906,7 @@ impl fmt::Display for RiffDbError {
             Self::Connection => formatter.write_str("riffdb connection failed"),
             Self::Bootstrap => formatter.write_str("riffdb bootstrap failed"),
             Self::Deploy => formatter.write_str("riffdb contract/query module deploy failed"),
-            Self::Server => formatter.write_str("riffdbd process failed"),
+            Self::Server { detail } => write!(formatter, "riffdbd process failed: {detail}"),
             Self::Io => formatter.write_str("riffdb harness io failed"),
             Self::Application { code, detail } => {
                 write!(formatter, "riffdb application {code}: {detail}")

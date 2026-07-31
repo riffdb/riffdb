@@ -8,14 +8,15 @@ use riffdb_storage_api::{
     RetainedMetadataV1, SequenceAllocationError, StorageError, StorageErrorKind,
     StoredAdministrationAuditRecordV1, StoredAdmissionStateV1, StoredCapabilityRecordV1,
     StoredCommitRecordV1, StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1,
-    StoredIndexEntryV1, StoredIndexEntryV2, StoredIndexEpochV1, StoredOutboxIntentV1,
-    StoredOutboxStatusV1, StoredProjectionApplyV1, StoredProjectionControlV1,
+    StoredEventRouteV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredIndexEpochV1,
+    StoredOutboxIntentV1, StoredOutboxStatusV1, StoredProjectionApplyV1, StoredProjectionControlV1,
     StoredProjectionStateV1, StoredProvenanceRecordV1, StoredQueryModuleAdministrationV1,
     StoredQueryModuleV1,
 };
 use riffdb_types::{
     AdministrationSequence, CapabilityTokenDigest, CommitSequence, ContractBundleHash,
-    ContractLineage, ContractVersion, EventId, ProjectionIdentity, ProvenanceId, RequestId,
+    ContractLineage, ContractVersion, EventId, PartitionKeyHash, ProjectionIdentity, ProvenanceId,
+    RequestId,
 };
 
 use crate::store::storage_error;
@@ -31,6 +32,26 @@ use crate::store::storage_error;
 pub(crate) struct SyntheticRecordCharge(EncodedContentCharge);
 
 pub(crate) const MEMORY_SYNTHETIC_RECORD_BYTES: usize = 1;
+
+/// Memory representation of the durable `(partition, event)` routing index.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct EventRouteRow {
+    pub(crate) partition_hash: PartitionKeyHash,
+    pub(crate) route: StoredEventRouteV1,
+}
+
+impl EventRouteRow {
+    pub(crate) const fn new(partition_hash: PartitionKeyHash, route: StoredEventRouteV1) -> Self {
+        Self {
+            partition_hash,
+            route,
+        }
+    }
+
+    pub(crate) const fn order_key(self) -> (PartitionKeyHash, EventId) {
+        (self.partition_hash, self.route.event_id())
+    }
+}
 
 #[allow(dead_code)]
 impl SyntheticRecordCharge {
@@ -538,6 +559,7 @@ pub(crate) struct MemoryState {
     pub(crate) committed_admissions: Vec<CommittedAdmissionIndexRow>,
     pub(crate) provenance: Vec<StoredProvenanceRecordV1>,
     pub(crate) events: Vec<StoredDurableEventV1>,
+    pub(crate) event_routes: Vec<EventRouteRow>,
     pub(crate) outbox_intents: Vec<StoredOutboxIntentV1>,
     pub(crate) outbox_statuses: Vec<StoredOutboxStatusV1>,
     /// Memory-only ordered accelerator for effective pending outbox rows.

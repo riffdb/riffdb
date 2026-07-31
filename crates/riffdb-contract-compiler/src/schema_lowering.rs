@@ -1,15 +1,16 @@
 //! Checked executable schema lowering from compiler-private typed HIR.
 
 use riffdb_contract_ir::{
-    AggregateKeyPlan, AggregateSchema, EntitySchema, EnumSchema, EnumVariantSchema, EventSchema,
-    FieldSchema, IndexSchema, InvariantPlan, KeyComponentSchema, KeyPurpose, KeySchema,
-    RecordSchema, RecordTypeRef, RelationshipSchema, SchemaIr, UniqueKeySchema, ValueType,
+    AggregateKeyPlan, AggregateSchema, EntitySchema, EnumSchema, EnumVariantSchema,
+    EventPartitionSchema, EventSchema, FieldSchema, IndexSchema, InvariantPlan, KeyComponentSchema,
+    KeyPurpose, KeySchema, RecordSchema, RecordTypeRef, RelationshipSchema, SchemaIr,
+    UniqueKeySchema, ValueType,
 };
 use riffdb_contract_syntax::Span;
 use riffdb_types::{EnumTypeId, EnumVariantId};
 
 use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
-use crate::hir::{HirInvariant, TypedContractHir};
+use crate::hir::{HirEffect, HirInvariant, TypedContractHir};
 
 /// Lowers the complete typed HIR schema into checked executable IR.
 pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerDiagnostics> {
@@ -18,8 +19,8 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
     validate_unique_declarations(hir)?;
     let enums = lower_enums(hir, &mut diagnostics);
     let entities = lower_entities(hir, &mut diagnostics);
-    let events = lower_events(hir, &mut diagnostics);
     let aggregates = lower_aggregates(hir, &mut diagnostics);
+    let events = lower_events(hir, &aggregates, &mut diagnostics);
     let relationships = lower_relationships(hir, &mut diagnostics);
     let unique_keys = lower_unique_keys(hir, &mut diagnostics);
     if !diagnostics.is_empty() {
@@ -471,28 +472,106 @@ fn lower_entities(
 
 fn lower_events(
     hir: &TypedContractHir,
+    aggregates: &[AggregateSchema],
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) -> Vec<EventSchema> {
-    hir.events
-        .iter()
-        .filter_map(|event| {
-            let fields = event
-                .fields
+    let mut result = Vec::new();
+    for event in &hir.events {
+        let fields = event
+            .fields
+            .iter()
+            .filter_map(|field| {
+                FieldSchema::new(field.id, field.name.clone(), field.value_type.clone())
+                    .map_err(|_| ir_diagnostic(field.name_span))
+                    .map_err(|diagnostic| diagnostics.push(diagnostic))
+                    .ok()
+            })
+            .collect();
+        let Ok(record) = RecordSchema::new(RecordTypeRef::Event(event.id), fields) else {
+            diagnostics.push(ir_diagnostic(event.span));
+            continue;
+        };
+        let Some(partition_span) = event.partition_span else {
+            match EventSchema::new(event.id, event.name.clone(), record) {
+                Ok(schema) => result.push(schema),
+                Err(_) => diagnostics.push(ir_diagnostic(event.span)),
+            }
+            continue;
+        };
+
+        let mut aggregate_id = None;
+        for command in &hir.commands {
+            for effect in &command.effects {
+                let HirEffect::Emit {
+                    event_id,
+                    event_span,
+                    ..
+                } = effect
+                else {
+                    continue;
+                };
+                if *event_id != event.id {
+                    continue;
+                }
+                let command_aggregate = command
+                    .bindings
+                    .iter()
+                    .find(|binding| {
+                        matches!(
+                            binding.mode,
+                            riffdb_contract_ir::BindingMode::Mutate
+                                | riffdb_contract_ir::BindingMode::Create
+                        )
+                    })
+                    .or_else(|| command.bindings.first())
+                    .and_then(|binding| hir.aggregate_for_entity(binding.entity_id))
+                    .map(|aggregate| aggregate.id);
+                let Some(command_aggregate) = command_aggregate else {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::InvalidEvent,
+                        *event_span,
+                    ));
+                    continue;
+                };
+                if aggregate_id.is_some_and(|expected| expected != command_aggregate) {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::CrossPartitionMutation,
+                        *event_span,
+                    ));
+                } else {
+                    aggregate_id = Some(command_aggregate);
+                }
+            }
+        }
+        let Some(aggregate) =
+            aggregate_id.and_then(|id| aggregates.iter().find(|aggregate| aggregate.id() == id))
+        else {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidEvent,
+                partition_span,
+            ));
+            continue;
+        };
+        let partition = EventPartitionSchema::new(
+            event
+                .partition_fields
                 .iter()
-                .filter_map(|field| {
-                    FieldSchema::new(field.id, field.name.clone(), field.value_type.clone())
-                        .map_err(|_| ir_diagnostic(field.name_span))
-                        .map_err(|diagnostic| diagnostics.push(diagnostic))
-                        .ok()
-                })
-                .collect();
-            RecordSchema::new(RecordTypeRef::Event(event.id), fields)
-                .and_then(|record| EventSchema::new(event.id, event.name.clone(), record))
-                .map_err(|_| ir_diagnostic(event.span))
-                .map_err(|diagnostic| diagnostics.push(diagnostic))
-                .ok()
-        })
-        .collect()
+                .map(|(field, _)| *field)
+                .collect(),
+            aggregate.keys().partition_schema().clone(),
+            &record,
+        );
+        match partition.and_then(|partition| {
+            EventSchema::partitioned(event.id, event.name.clone(), record, partition)
+        }) {
+            Ok(schema) => result.push(schema),
+            Err(_) => diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidEvent,
+                partition_span,
+            )),
+        }
+    }
+    result
 }
 
 fn lower_aggregates(

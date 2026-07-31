@@ -1,5 +1,6 @@
 //! Process harness that starts a real `riffdbd` for the app baseline.
 
+use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::SocketAddr;
@@ -8,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -38,6 +40,9 @@ const READY_PREFIX: &str = "riffdbd-ready-v1\t";
 const WRITE_GROUP_PREFIX: &str = "riffdb-write-completion-groups-v1\t";
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(30);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(15);
+/// Keep the last N stderr lines for crash diagnosis (panic / OOM messages).
+const STDERR_RING_LINES: usize = 80;
+const STDERR_DETAIL_CHARS: usize = 4_000;
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const BOOTSTRAP_UNIX_MILLISECONDS: u64 = 1_700_000_000_000;
 const CAPABILITY_LIFETIME_SECONDS: u32 = 3_600;
@@ -90,14 +95,26 @@ const IDEMPOTENCY_KEY_DOCUMENT: &[u8] =
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(1);
 
+/// Env override for the on-disk app-baseline database root (not `/tmp`).
+pub const DATABASE_ROOT_ENV: &str = "RIFFDB_APP_BASELINE_DB_ROOT";
+/// Default database root under the repo (real disk; gitignored via `/target/`).
+pub const DEFAULT_DATABASE_ROOT: &str = "target/app-baseline/db";
+const SESSION_DIR_PREFIX: &str = "riffdb-app-baseline-";
+
 /// Optional process overrides for a baseline `riffdbd` session.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ServerStartOptions {
     /// When set, exported as `RIFFDB_P1_COORDINATOR_WORKLOAD_CAPACITY` for the child.
     ///
     /// Used by `--load-saturate` so the live profile can reach typed overload
     /// under continuous concurrency without shortening the 150 ms admission wait.
     pub coordinator_workload_capacity: Option<u16>,
+    /// Root directory for per-run database/session dirs (real disk by default).
+    ///
+    /// Defaults to [`DEFAULT_DATABASE_ROOT`], or `RIFFDB_APP_BASELINE_DB_ROOT` when set.
+    /// Does **not** use `/tmp` (often a small ramdisk); full-scale load writes
+    /// enough durable state to exhaust a tmpfs.
+    pub database_root: Option<PathBuf>,
 }
 
 /// Owns one live `riffdbd` process and a ready public client backend.
@@ -119,7 +136,9 @@ impl RiffDbServerSession {
         riffdbd_bin: &Path,
         options: ServerStartOptions,
     ) -> Result<Self, RiffDbError> {
-        let temporary = TemporaryDirectory::new().map_err(|_| RiffDbError::Io)?;
+        let database_root = resolve_database_root(options.database_root.as_deref());
+        let temporary =
+            TemporaryDirectory::create_under(&database_root).map_err(|_| RiffDbError::Io)?;
         let database_path = temporary.path().join("riffdb.redb");
         let backup_root = temporary.path().join("backups");
         let capability_keys_path = temporary.path().join("capability.keys");
@@ -146,10 +165,13 @@ impl RiffDbServerSession {
             &idempotency_keys_path,
             options.coordinator_workload_capacity,
         )
-        .map_err(|_| RiffDbError::Server)?;
-        let address = process
-            .wait_for_ready_address()
-            .map_err(|_| RiffDbError::Server)?;
+        .map_err(|error| RiffDbError::Server {
+            detail: error.to_string(),
+        })?;
+        let address = process.wait_for_ready_address().map_err(|error| {
+            let detail = process.diagnostic_detail(&error.to_string());
+            RiffDbError::Server { detail }
+        })?;
         let endpoint = format!("http://{address}");
         let mut client = connect(&endpoint).await?;
         let token = bootstrap_deploy_and_issue(&mut client, &retained).await?;
@@ -163,7 +185,15 @@ impl RiffDbServerSession {
 
     /// Stops the server cleanly.
     pub fn shutdown(mut self) -> Result<[u64; 64], RiffDbError> {
-        self.process.shutdown_cleanly().map_err(|_| RiffDbError::Server)
+        self.process.shutdown_cleanly().map_err(|error| RiffDbError::Server {
+            detail: error.to_string(),
+        })
+    }
+
+    /// Last stderr lines captured from `riffdbd` (for crash diagnosis).
+    #[must_use]
+    pub fn stderr_tail(&self) -> String {
+        self.process.stderr_tail()
     }
 }
 
@@ -502,18 +532,73 @@ fn write_protected_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     file.sync_all()
 }
 
+/// Resolves the on-disk root for app-baseline `riffdbd` session directories.
+///
+/// Order: explicit `override_root` → `RIFFDB_APP_BASELINE_DB_ROOT` →
+/// [`DEFAULT_DATABASE_ROOT`]. Never falls back to `std::env::temp_dir()`.
+#[must_use]
+pub fn resolve_database_root(override_root: Option<&Path>) -> PathBuf {
+    if let Some(path) = override_root {
+        return path.to_path_buf();
+    }
+    if let Some(from_env) = std::env::var_os(DATABASE_ROOT_ENV) {
+        if !from_env.is_empty() {
+            return PathBuf::from(from_env);
+        }
+    }
+    PathBuf::from(DEFAULT_DATABASE_ROOT)
+}
+
+/// Removes orphaned session dirs left by killed/hung harness runs.
+///
+/// Only deletes children of `root` whose names start with
+/// `riffdb-app-baseline-`. Best-effort; errors are ignored.
+pub fn sweep_stale_session_dirs(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.starts_with(SESSION_DIR_PREFIX) {
+            continue;
+        }
+        if path.is_dir() {
+            let _ = fs::remove_dir_all(&path);
+        }
+    }
+}
+
 struct TemporaryDirectory {
     path: PathBuf,
 }
 
 impl TemporaryDirectory {
-    fn new() -> io::Result<Self> {
-        let path = std::env::temp_dir().join(format!(
-            "riffdb-app-baseline-{}-{}",
+    /// Creates a unique session dir under `root` (real disk by default).
+    ///
+    /// The returned path is **absolute**: `riffdbd` rejects relative configured
+    /// paths (`InvalidPath`). Relative roots are resolved against `cwd` then
+    /// canonicalized after creation.
+    fn create_under(root: &Path) -> io::Result<Self> {
+        let absolute_root = if root.is_absolute() {
+            root.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(root)
+        };
+        fs::create_dir_all(&absolute_root)?;
+        let absolute_root = fs::canonicalize(&absolute_root)?;
+        // Drop leftovers from prior crashes/kills so successive full loads do
+        // not accumulate multi‑GB redb files on the harness disk.
+        sweep_stale_session_dirs(&absolute_root);
+        let path = absolute_root.join(format!(
+            "{SESSION_DIR_PREFIX}{}-{}",
             std::process::id(),
             NEXT_DIR.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&path)?;
+        let path = fs::canonicalize(&path)?;
         Ok(Self { path })
     }
 
@@ -541,6 +626,7 @@ struct ServerProcess {
     reaper: Option<JoinHandle<()>>,
     stdout: Option<JoinHandle<usize>>,
     stderr: Option<JoinHandle<usize>>,
+    stderr_ring: Arc<Mutex<VecDeque<String>>>,
     exit_observed: bool,
 }
 
@@ -569,6 +655,8 @@ impl ServerProcess {
             .arg(capability_keys_path)
             .arg("--idempotency-keys")
             .arg(idempotency_keys_path)
+            // Surface panics / allocator errors in the harness tail.
+            .env("RUST_BACKTRACE", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -587,7 +675,9 @@ impl ServerProcess {
         let stdout = thread::spawn(move || {
             read_server_stdout(stdout, ready_sender, write_group_sender)
         });
-        let stderr = thread::spawn(move || drain_server_stderr(stderr));
+        let stderr_ring = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_RING_LINES)));
+        let stderr_ring_worker = Arc::clone(&stderr_ring);
+        let stderr = thread::spawn(move || drain_server_stderr(stderr, stderr_ring_worker));
         let (reaper_commands, commands) = mpsc::sync_channel(1);
         let (exit_sender, exited) = mpsc::sync_channel(1);
         let reaper = thread::spawn(move || reap_child(child, commands, exit_sender));
@@ -600,6 +690,7 @@ impl ServerProcess {
             reaper: Some(reaper),
             stdout: Some(stdout),
             stderr: Some(stderr),
+            stderr_ring,
             exit_observed: false,
         })
     }
@@ -622,6 +713,25 @@ impl ServerProcess {
             .map_err(|_| io::Error::other("bad ready address"))
     }
 
+    fn stderr_tail(&self) -> String {
+        self.stderr_ring
+            .lock()
+            .map(|ring| ring.iter().cloned().collect::<Vec<_>>().join(""))
+            .unwrap_or_default()
+    }
+
+    fn diagnostic_detail(&self, headline: &str) -> String {
+        let tail = self.stderr_tail();
+        let mut detail = headline.to_owned();
+        if !tail.is_empty() {
+            let clipped: String = tail.chars().rev().take(STDERR_DETAIL_CHARS).collect();
+            let clipped: String = clipped.chars().rev().collect();
+            detail.push_str("; stderr_tail=\n");
+            detail.push_str(&clipped);
+        }
+        detail
+    }
+
     fn shutdown_cleanly(&mut self) -> io::Result<[u64; 64]> {
         if let Some(mut stdin) = self.stdin.take() {
             let _ = stdin.write_all(b"shutdown\n");
@@ -634,14 +744,41 @@ impl ServerProcess {
                 if status.success() {
                     self.write_groups
                         .recv_timeout(PROCESS_STOP_TIMEOUT)
-                        .map_err(|_| io::Error::other("write-group report missing"))?
+                        .map_err(|_| {
+                            io::Error::other(self.diagnostic_detail(
+                                "write-group report missing after clean exit",
+                            ))
+                        })?
                 } else {
-                    Err(io::Error::other(format!("exit {status}")))
+                    let code = status
+                        .code()
+                        .map(|c| format!("exit_code={c}"))
+                        .unwrap_or_else(|| format!("exit_status={status}"));
+                    // Unix signal when available.
+                    #[cfg(unix)]
+                    let code = {
+                        use std::os::unix::process::ExitStatusExt;
+                        match status.signal() {
+                            Some(sig) => format!("{code} signal={sig}"),
+                            None => code,
+                        }
+                    };
+                    Err(io::Error::other(self.diagnostic_detail(&code)))
                 }
             }
             Err(_) => {
                 let _ = self.reaper_commands.send(ReaperCommand::Kill);
-                Err(io::Error::other("shutdown timeout"))
+                // Give the reaper a moment to deposit an exit status if kill works.
+                let after_kill = self.exited.recv_timeout(Duration::from_secs(2));
+                let headline = match after_kill {
+                    Ok(Ok(status)) => {
+                        self.exit_observed = true;
+                        format!("shutdown timeout; killed child status={status}")
+                    }
+                    Ok(Err(error)) => format!("shutdown timeout; kill wait error={error}"),
+                    Err(_) => "shutdown timeout; child unresponsive after kill".to_owned(),
+                };
+                Err(io::Error::other(self.diagnostic_detail(&headline)))
             }
         }
     }
@@ -705,7 +842,7 @@ fn parse_write_groups(encoded: &str) -> io::Result<[u64; 64]> {
         .map_err(|_| io::Error::other("invalid write-group count length"))
 }
 
-fn drain_server_stderr(stream: impl Read) -> usize {
+fn drain_server_stderr(stream: impl Read, ring: Arc<Mutex<VecDeque<String>>>) -> usize {
     let mut reader = BufReader::new(stream);
     let mut total = 0_usize;
     let mut line = String::new();
@@ -716,6 +853,14 @@ fn drain_server_stderr(stream: impl Read) -> usize {
         };
         if read == 0 {
             break;
+        }
+        // Mirror to parent stderr so panics are visible during a hung load.
+        eprint!("[riffdbd-stderr] {line}");
+        if let Ok(mut guard) = ring.lock() {
+            if guard.len() >= STDERR_RING_LINES {
+                let _ = guard.pop_front();
+            }
+            guard.push_back(line.clone());
         }
         total = total.saturating_add(read);
     }
@@ -751,5 +896,54 @@ fn reap_child(
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn database_root_prefers_explicit_override() {
+        let override_root = PathBuf::from("/data/riffdb-baseline");
+        assert_eq!(
+            resolve_database_root(Some(override_root.as_path())),
+            override_root
+        );
+    }
+
+    #[test]
+    fn default_database_root_constant_is_not_tmp() {
+        let root = PathBuf::from(DEFAULT_DATABASE_ROOT);
+        assert!(
+            !root.starts_with("/tmp") && root != std::env::temp_dir(),
+            "default root must not be temp_dir: {}",
+            root.display()
+        );
+        assert_eq!(root.as_os_str(), "target/app-baseline/db");
+        // Explicit override always wins over env/default.
+        let forced = PathBuf::from("target/app-baseline/forced-db");
+        assert_eq!(
+            resolve_database_root(Some(forced.as_path())),
+            forced
+        );
+    }
+
+    #[test]
+    fn sweep_removes_only_session_prefix_dirs() {
+        let root = std::env::temp_dir().join(format!(
+            "riffdb-baseline-sweep-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("root");
+        let stale = root.join(format!("{SESSION_DIR_PREFIX}stale"));
+        let keep = root.join("keep-me");
+        fs::create_dir_all(&stale).expect("stale");
+        fs::create_dir_all(&keep).expect("keep");
+        sweep_stale_session_dirs(&root);
+        assert!(!stale.exists());
+        assert!(keep.exists());
+        let _ = fs::remove_dir_all(&root);
     }
 }

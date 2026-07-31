@@ -16,28 +16,30 @@ use riffdb_storage_api::{
     CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
     CommitIntent, CommitScanPageV1, CommitScanRequest, CommittedBatchV1,
     CurrentIndexGenerationObservation, CurrentRangeObservation, DurabilityMode, EmptyCommandBatch,
-    EncodedPageItem, EntityObservation, EntityTarget, ExecutionFailureAdmissionRechecked,
-    ExecutionFailureAdmissionResult, ExecutionFailureAwaitingDecision,
-    ExecutionFailureTransitionPort, ExecutionFailureTransitionRequestV1, ExpectedEntityState,
-    FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
-    FilteredAuthoritativeScanReader, HistoricalPersistedKeyEvidenceV1, IdempotencyIdentity,
-    IdempotencyIdentityKey, IdempotencyLookupCandidatesV1, IndexEntryMutationV1,
-    IndexEpochPosition, IndexPartitionFilterScope, IndexRangeEntry, MAX_INDEX_SCAN_INSPECTED_BYTES,
+    EncodedPageItem, EntityObservation, EntityTarget, EventRouteScanRequestV1, EventRouteScanV1,
+    EventRouteUpperFenceV1, ExecutionFailureAdmissionRechecked, ExecutionFailureAdmissionResult,
+    ExecutionFailureAwaitingDecision, ExecutionFailureTransitionPort,
+    ExecutionFailureTransitionRequestV1, ExpectedEntityState, FilteredAuthoritativeIndexScanPage,
+    FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader,
+    HistoricalPersistedKeyEvidenceV1, IdempotencyIdentity, IdempotencyIdentityKey,
+    IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochPosition,
+    IndexPartitionFilterScope, IndexRangeEntry, MAX_INDEX_SCAN_INSPECTED_BYTES,
     MAX_INDEX_SCAN_INSPECTED_ENTRIES, MAX_SCAN_PAGE_BYTES, NonEmptyCommandBatch,
-    PartitionIndexTarget, ProvenanceIdCollision, ReadDependencies, ReadDependency, ReadSnapshot,
-    ReadSnapshotBuilder, RetainedMetadataV1, SnapshotReader, SnapshotRequest, StagedBatchMetrics,
-    StorageError, StorageErrorKind, StorageValueError, StoredAdmissionStateV1,
-    StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1, StoredExecutionFailedV1,
-    StoredIndexEpochV1, StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
-    TransactionCurrentState, TransactionCurrentStateBuilder, UniqueIndexOccupancy,
-    UniqueOccupancyKind, ValidationReadRequest, derive_event_hash_v1,
+    PartitionEventRouteReader, PartitionIndexTarget, ProvenanceIdCollision, ReadDependencies,
+    ReadDependency, ReadSnapshot, ReadSnapshotBuilder, RetainedMetadataV1, SnapshotReader,
+    SnapshotRequest, StagedBatchMetrics, StorageError, StorageErrorKind, StorageValueError,
+    StoredAdmissionStateV1, StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1,
+    StoredEventRouteV1, StoredExecutionFailedV1, StoredIndexEpochV1, StoredOutcomeV1,
+    StoredPendingAdmissionV1, StoredProvenanceRecordV1, TransactionCurrentState,
+    TransactionCurrentStateBuilder, UniqueIndexOccupancy, UniqueOccupancyKind,
+    ValidationReadRequest, derive_event_hash_v1,
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
 use crate::administration::append_service_audit_in_state;
 use crate::startup::persisted_evidence_order_key;
 use crate::state::{
-    CommitAdmissionIndexRow, CommittedAdmissionIndexRow, EntityCommitIndexRow,
+    CommitAdmissionIndexRow, CommittedAdmissionIndexRow, EntityCommitIndexRow, EventRouteRow,
     HistoricalPersistedKeyRow, HistoricalPlanReferenceRow, HistoricalPlanReferenceSource,
     MemoryIndexEntry, MemoryMetadataSlot, MemoryState, SyntheticCommandClassCharges,
     bundle_identity_evidence_order_key, memory_record_charge, unique_binary_search_by,
@@ -59,6 +61,7 @@ struct ApplicationOverlay {
     committed_admissions: Vec<CommittedAdmissionIndexRow>,
     provenance: Vec<StoredProvenanceRecordV1>,
     events: Vec<StoredDurableEventV1>,
+    event_routes: Vec<EventRouteRow>,
     outbox_intents: Vec<riffdb_storage_api::StoredOutboxIntentV1>,
     pending_outbox_events: Vec<EventId>,
     undelivered_outbox_events: Vec<EventId>,
@@ -84,6 +87,7 @@ impl ApplicationOverlay {
             committed_admissions: state.committed_admissions.clone(),
             provenance: state.provenance.clone(),
             events: state.events.clone(),
+            event_routes: state.event_routes.clone(),
             outbox_intents: state.outbox_intents.clone(),
             pending_outbox_events: state.pending_outbox_events.clone(),
             undelivered_outbox_events: state.undelivered_outbox_events.clone(),
@@ -105,6 +109,7 @@ impl ApplicationOverlay {
         state.committed_admissions = self.committed_admissions;
         state.provenance = self.provenance;
         state.events = self.events;
+        state.event_routes = self.event_routes;
         state.outbox_intents = self.outbox_intents;
         state.pending_outbox_events = self.pending_outbox_events;
         state.undelivered_outbox_events = self.undelivered_outbox_events;
@@ -1558,6 +1563,18 @@ fn apply_events(
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         };
         overlay.events.insert(event_index, event.clone());
+        let route = EventRouteRow::new(
+            records.intent().partition_hash(),
+            StoredEventRouteV1::new(event.event_id(), event.event_type_id(), event.event_hash()),
+        );
+        let route_key = route.order_key();
+        let route_index = overlay
+            .event_routes
+            .binary_search_by_key(&route_key, |row| row.order_key());
+        let Err(route_index) = route_index else {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        };
+        overlay.event_routes.insert(route_index, route);
         overlay.outbox_intents.insert(intent_index, intent.clone());
         overlay
             .pending_outbox_events
@@ -1715,6 +1732,76 @@ impl AuthoritativePointReader for MemoryOperationalPorts {
                     Err(_) => None,
                 },
             )
+        })
+    }
+}
+
+impl PartitionEventRouteReader for MemoryOperationalPorts {
+    fn scan_partition_event_routes(
+        &self,
+        request: EventRouteScanRequestV1,
+    ) -> Result<EventRouteScanV1, StorageError> {
+        self.read(|state| {
+            let partition_hash = request.partition_hash();
+            let partition_start = state
+                .event_routes
+                .partition_point(|row| row.partition_hash < partition_hash);
+            let partition_end = state
+                .event_routes
+                .partition_point(|row| row.partition_hash <= partition_hash);
+            let partition_rows = &state.event_routes[partition_start..partition_end];
+
+            let inclusive_upper = match request.inclusive_upper() {
+                Some(upper) => {
+                    if partition_rows
+                        .binary_search_by_key(&upper, |row| row.route.event_id())
+                        .is_err()
+                    {
+                        return Err(storage_error(StorageErrorKind::CorruptData));
+                    }
+                    EventRouteUpperFenceV1::Inclusive(upper)
+                }
+                None => partition_rows
+                    .last()
+                    .map_or(EventRouteUpperFenceV1::BeforeFirst, |row| {
+                        EventRouteUpperFenceV1::Inclusive(row.route.event_id())
+                    }),
+            };
+            let EventRouteUpperFenceV1::Inclusive(upper) = inclusive_upper else {
+                return EventRouteScanV1::exact_end(request, inclusive_upper, Vec::new())
+                    .map_err(corrupt_value);
+            };
+
+            let start = request.after().map_or(0, |after| {
+                partition_rows.partition_point(|row| row.route.event_id() <= after)
+            });
+            let wanted = usize::from(request.limit().get().get());
+            let mut routes = Vec::with_capacity(wanted.saturating_add(1));
+            for row in partition_rows[start..]
+                .iter()
+                .take_while(|row| row.route.event_id() <= upper)
+                .take(wanted.saturating_add(1))
+            {
+                let event_index = unique_binary_search_by(&state.events, |event| {
+                    event.event_id().cmp(&row.route.event_id())
+                })?
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+                let event = &state.events[event_index];
+                if event.event_type_id() != row.route.event_type_id()
+                    || event.event_hash() != row.route.event_hash()
+                {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                routes.push(EncodedPageItem::new(row.route, memory_record_charge()));
+            }
+
+            let has_more = routes.len() > wanted;
+            routes.truncate(wanted);
+            if has_more {
+                EventRouteScanV1::page(request, upper, routes).map_err(corrupt_value)
+            } else {
+                EventRouteScanV1::exact_end(request, inclusive_upper, routes).map_err(corrupt_value)
+            }
         })
     }
 }
@@ -2862,6 +2949,27 @@ mod tests {
                 .as_ref(),
             model.event(EventId::new(CommitSequence::first(), 0))
         );
+        let event_routes = ports
+            .scan_partition_event_routes(EventRouteScanRequestV1::initial(
+                first.intent.partition_hash(),
+                None,
+                riffdb_storage_api::EventRoutePageLimit::new(
+                    std::num::NonZeroU16::new(2).expect("nonzero route limit"),
+                )
+                .expect("route limit"),
+            ))
+            .expect("partition event routes");
+        assert!(matches!(
+            event_routes,
+            EventRouteScanV1::ExactEnd {
+                ref items,
+                inclusive_upper: EventRouteUpperFenceV1::Inclusive(upper),
+            } if items.len() == 2
+                && items[0].value().event_id() == EventId::new(CommitSequence::first(), 0)
+                && items[1].value().event_id()
+                    == EventId::new(CommitSequence::new(2).expect("second"), 0)
+                && upper == EventId::new(CommitSequence::new(2).expect("second"), 0)
+        ));
         ports
             .read(|state| {
                 assert_eq!(state.commits.len(), model.commit_count());
@@ -2881,6 +2989,7 @@ mod tests {
                     model.outbox_intent(EventId::new(CommitSequence::new(2).expect("second"), 0,))
                 );
                 assert_eq!(state.pending_outbox_events.len(), 2);
+                assert_eq!(state.event_routes.len(), 2);
                 assert_eq!(state.synthetic_charges.command_classes.len(), 2);
                 assert_eq!(state.historical_plan_references.len(), 1);
                 Ok(())

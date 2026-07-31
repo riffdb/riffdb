@@ -27,6 +27,7 @@ pub(crate) enum CommandIdentity {
     ApplicationLock,
     ApplicationDeploy,
     ApplicationBindDevRole,
+    MigrationPlan,
     ContractValidate,
     ContractDeploy,
     CommandExecute,
@@ -64,6 +65,7 @@ impl CommandIdentity {
             Self::ApplicationLock => "application.lock",
             Self::ApplicationDeploy => "application.deploy",
             Self::ApplicationBindDevRole => "application.bind_dev_role",
+            Self::MigrationPlan => "migration.plan",
             Self::ContractValidate => "contract.validate",
             Self::ContractDeploy => "contract.deploy",
             Self::CommandExecute => "command.execute",
@@ -339,6 +341,14 @@ pub(crate) fn render_contract_deploy(response: &v1::DeployContractResponse) -> T
             "incompatible_candidate",
             &IncompatibleContractResult {
                 status: "incompatible_candidate",
+                contract: ContractDescriptorWithCompatibilityDto(contract),
+            },
+        ),
+        Some(Result::MigrationRequired(contract)) => success(
+            CommandIdentity::ContractDeploy,
+            "migration_required",
+            &IncompatibleContractResult {
+                status: "migration_required",
                 contract: ContractDescriptorWithCompatibilityDto(contract),
             },
         ),
@@ -1608,6 +1618,7 @@ impl Serialize for CompatibilitySummaryDto<'_> {
             Ok(v1::ContractCompatibilityClass::RequiresExplicitVersion) => {
                 "requires_explicit_version"
             }
+            Ok(v1::ContractCompatibilityClass::RequiresMigration) => "requires_migration",
             Ok(v1::ContractCompatibilityClass::Incompatible) => "incompatible",
             _ => return Err(S::Error::custom("invalid compatibility class")),
         };

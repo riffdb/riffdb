@@ -100,7 +100,13 @@ fn run() -> Result<(), String> {
             .map_err(|error| error.to_string())?;
 
         let mut session = runtime
-            .block_on(RiffDbServerSession::start(&riffdbd))
+            .block_on(RiffDbServerSession::start_with_options(
+                &riffdbd,
+                ServerStartOptions {
+                    database_root: args.database_root.clone(),
+                    ..ServerStartOptions::default()
+                },
+            ))
             .map_err(|error| error.to_string())?;
 
         // reset is a no-op for fresh process
@@ -218,6 +224,7 @@ fn run_load(args: Args) -> Result<(), String> {
     let dataset = SeedDataset::generate(args.scale);
     let mut reports = Vec::new();
     let mut curve = Vec::new();
+    let mut deferred_failure: Option<String> = None;
 
     // Saturate is riffdb-only; never force 512 PG sessions.
     let skip_postgres = args.skip_postgres || args.load_saturate;
@@ -304,6 +311,7 @@ fn run_load(args: Args) -> Result<(), String> {
             coordinator_workload_capacity: args
                 .load_saturate
                 .then_some(SATURATE_COORDINATOR_WORKLOAD_CAPACITY),
+            database_root: args.database_root.clone(),
         };
         let mut session = runtime
             .block_on(RiffDbServerSession::start_with_options(&riffdbd, start_options))
@@ -368,13 +376,28 @@ fn run_load(args: Args) -> Result<(), String> {
             reports.push(report.to_json());
         }
         // Write-group histogram is process-lifetime; attach to the last RiffDB point.
-        let groups = session.shutdown().map_err(|error| error.to_string())?;
-        if let Some(last) = reports
-            .iter_mut()
-            .rev()
-            .find(|report| report["backend_id"].as_str() == Some("riffdb_public_grpc"))
-        {
-            last["write_completion_groups_by_size"] = json!(groups.to_vec());
+        // On crash/timeout, keep load reports and surface stderr/exit detail in JSON.
+        match session.shutdown() {
+            Ok(groups) => {
+                if let Some(last) = reports
+                    .iter_mut()
+                    .rev()
+                    .find(|report| report["backend_id"].as_str() == Some("riffdb_public_grpc"))
+                {
+                    last["write_completion_groups_by_size"] = json!(groups.to_vec());
+                }
+            }
+            Err(error) => {
+                eprintln!("riffdbd shutdown diagnostic: {error}");
+                if let Some(last) = reports
+                    .iter_mut()
+                    .rev()
+                    .find(|report| report["backend_id"].as_str() == Some("riffdb_public_grpc"))
+                {
+                    last["server_shutdown_error"] = json!(error.to_string());
+                }
+                deferred_failure = Some(error.to_string());
+            }
         }
     }
 
@@ -497,8 +520,9 @@ fn run_load(args: Args) -> Result<(), String> {
         },
         "curve": curve,
         "correctness": {
-            "clean": correctness_failures.is_empty(),
+            "clean": correctness_failures.is_empty() && deferred_failure.is_none(),
             "failures": &correctness_failures,
+            "server_shutdown_error": deferred_failure.as_ref(),
         },
         "backends": reports,
     }))
@@ -514,6 +538,9 @@ fn run_load(args: Args) -> Result<(), String> {
             "load completed with public correctness failures: {}",
             correctness_failures.join("; ")
         ));
+    }
+    if let Some(detail) = deferred_failure {
+        return Err(detail);
     }
     Ok(())
 }
@@ -745,6 +772,8 @@ struct Args {
     /// Same mix at client points 1/8/32/128 (curve evidence).
     load_concurrency_sweep: bool,
     riffdb_transport: RiffDbTransport,
+    /// On-disk root for riffdbd session DBs (default `target/app-baseline/db`).
+    database_root: Option<PathBuf>,
 }
 
 impl Args {
@@ -771,6 +800,7 @@ impl Args {
         let mut load_saturate_p99_ms = 250;
         let mut load_concurrency_sweep = false;
         let mut riffdb_transport = RiffDbTransport::PerSession;
+        let mut database_root = None;
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -880,6 +910,11 @@ impl Args {
                         "--load-riffdb-transport must be per-session or shared".to_owned()
                     })?;
                 }
+                "--database-root" => {
+                    database_root = Some(PathBuf::from(
+                        args.next().ok_or("--database-root needs a value")?,
+                    ));
+                }
                 "--help" | "-h" => {
                     return Err(
                         "usage: riffdb-app-baseline [--smoke|--full] [--samples N] [--warmup N] \
@@ -891,6 +926,7 @@ impl Args {
                          [--load-contended] [--load-saturate] [--load-saturate-p99-ms N] \
                          [--load-concurrency-sweep] \
                          [--load-riffdb-transport per-session|shared] \
+                         [--database-root PATH] \
                          [--skip-postgres] [--skip-riffdb]"
                             .to_owned(),
                     );
@@ -976,6 +1012,7 @@ impl Args {
             load_saturate_p99_ms,
             load_concurrency_sweep,
             riffdb_transport,
+            database_root,
         })
     }
 }

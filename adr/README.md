@@ -99,6 +99,7 @@ direction, merged draft, or implementation choice.
 | [0078](0078-staged-migration-storage-and-recovery.md) | Staged Migration Storage, Publication, and Recovery | Accepted |
 | [0079](0079-public-contract-migration-administration.md) | Public Contract Migration Administration | Accepted |
 | [0080](0080-partitioned-events-consumers-and-live-queries.md) | Partitioned Events, Durable Consumers, and Live Queries | Accepted |
+| [0081](0081-supported-migration-parent-and-canonical-successor.md) | Supported Migration Parent and Canonical Successor | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

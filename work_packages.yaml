@@ -6377,10 +6377,13 @@ work_packages:
   objective: Compile exact parent-specific bounded migration source into canonical typed artifacts and make locked
     applications describe every supported upgrade without mutation.
   requirements: [MIG-001, MIG-002, MIG-003, MIG-004, MIG-005, MIG-017, MIG-018, MIG-019, MIG-020]
-  required_adrs: [ADR-0002, ADR-0011, ADR-0013, ADR-0057, ADR-0066, ADR-0075, ADR-0076, ADR-0077]
-  allowed_paths: [SPEC.md, work_packages.yaml, adr/**, crates/riffdb-contract-syntax/**,
+  required_adrs: [ADR-0002, ADR-0011, ADR-0013, ADR-0057, ADR-0066, ADR-0075, ADR-0076, ADR-0077,
+    ADR-0081]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/**, crates/riffdb-types/**, crates/riffdb-contract-syntax/**,
     crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**, crates/riffdb-query-module/**,
-    crates/riffdb-diagnostics/**, crates/riffdb-cli/**, fixtures/migrations/**, fixtures/application-manifests/**,
+    crates/riffdb-diagnostics/**, crates/riffdb-catalog/**, crates/riffdb-service/**, crates/riffdb-proto/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**, crates/riffdb-cli/**,
+    proto/riffdb/v1/**, fixtures/proto/**, fixtures/compiler/**, fixtures/migrations/**, fixtures/application-manifests/**,
     fixtures/application-locks/**, fuzz/**, scripts/**, docs/**, templates/**]
   deliverables:
   - Separate bounded riffm grammar, formatter, source spans, typed MigrationBundleV1, canonical codec/hash, and all

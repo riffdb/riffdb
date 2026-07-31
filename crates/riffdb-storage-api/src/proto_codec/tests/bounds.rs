@@ -94,6 +94,12 @@ fn encoded_atomic_graph_charges_exact_bytes_and_fits_its_reservation() {
             .events()
             .iter()
             .map(|value| value.as_bytes().len())
+            .chain(
+                encoded
+                    .event_routes()
+                    .iter()
+                    .map(|value| value.as_bytes().len()),
+            )
             .sum::<usize>()
     );
     assert_eq!(

@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_contract_ir::{
     BindingId, BindingMode, BindingPlan, CommandInputSchema, CommandPlan, CommitCheckPlan,
-    ConflictDerivationPlan, EventConstruction, ExecutionClass, ExprId, ExpressionKind,
+    ConflictDerivationPlan, EventConstruction, EventSchema, ExecutionClass, ExprId, ExpressionKind,
     FieldExpression, FieldSchema, Instruction, IrValidationError, KeySchema, LocalityPlan,
     OutcomeConstruction, OutcomeSchema, RecordSchema, RecordTypeRef, RootValidationReadId,
     RootValidationReadPlan, SchemaIr,
@@ -161,6 +161,13 @@ fn lower_command(
         &mut diagnostics,
     );
     let raw_instructions = command_instructions(command, &mut diagnostics);
+    validate_event_partition_proofs(
+        schema,
+        &hir_expressions,
+        locality.as_ref(),
+        &raw_instructions,
+        &mut diagnostics,
+    );
 
     if !diagnostics.is_empty() {
         return Err(diagnostics);
@@ -342,6 +349,73 @@ fn lower_command(
         schema,
     )
     .map_err(|error| vec![ir_error_diagnostic(error, command.span)])
+}
+
+fn validate_event_partition_proofs(
+    schema: &SchemaIr,
+    expressions: &HirExpressionArena,
+    locality: Option<&LocalityPlan>,
+    instructions: &[RawInstruction],
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    for instruction in instructions {
+        let RawInstruction::EmitEvent {
+            event_id,
+            fields,
+            span,
+        } = instruction
+        else {
+            continue;
+        };
+        let Some(partition) = schema.event(*event_id).and_then(EventSchema::partition) else {
+            continue;
+        };
+        let Some(locality) = locality else {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidEvent,
+                *span,
+            ));
+            continue;
+        };
+        if partition.key_schema() != locality.partition_schema() {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::CrossPartitionMutation,
+                *span,
+            ));
+            continue;
+        }
+        let partition_expressions = partition
+            .fields()
+            .iter()
+            .map(|field_id| {
+                fields
+                    .iter()
+                    .find(|field| field.field_id() == *field_id)
+                    .map(|field| field.expression())
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(partition_expressions) = partition_expressions else {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidEvent,
+                *span,
+            ));
+            continue;
+        };
+        let supplied = partition_expressions
+            .iter()
+            .map(|expression| command_expression_fingerprint(expressions, *expression))
+            .collect::<Vec<_>>();
+        let expected = [command_expression_fingerprint(
+            expressions,
+            locality.partition_expression(),
+        )];
+        if supplied.as_slice() != expected {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::CrossPartitionMutation,
+                *span,
+            ));
+        }
+    }
 }
 
 fn normalize_outcomes<'a>(

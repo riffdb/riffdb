@@ -8,7 +8,8 @@ use std::path::PathBuf;
 
 use riffdb_contract_compiler::{
     CompilationError, CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics,
-    compile_contract_source, compile_contract_successor, validate_contract_source,
+    compile_contract_source, compile_contract_successor, compile_migration_source,
+    validate_contract_source,
 };
 use riffdb_contract_ir::{
     BinaryOperator, BindingMode, CapabilityRequirement, CommandExplain, CompatibilityClass,
@@ -25,6 +26,7 @@ use riffdb_types::{
 };
 
 const BUDGET_SOURCE: &str = include_str!("../../../contracts/examples/budget.riff");
+const MIGRATION_FIXTURE_README: &str = include_str!("../../../fixtures/migrations/README.md");
 const RELATIONSHIP_FIXTURES: &[(&str, &str)] = &[
     (
         "cross-partition.riff",
@@ -225,6 +227,111 @@ fn main() -> Result<(), Box<dyn Error>> {
     generate_relationship_source_fixtures(&fixture_root)?;
     generate_root_validation_fixtures(&fixture_root)?;
     generate_mcp_evolution_fixture(&fixture_root)?;
+    generate_migration_fixtures(&output_root)?;
+    Ok(())
+}
+
+fn generate_migration_fixtures(output_root: &std::path::Path) -> Result<(), Box<dyn Error>> {
+    const PARENT: &str = r#"contract MigrationFixture version 1 {
+  entity Row {
+    key (id: uuid)
+    field value: i64
+  }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+}
+"#;
+    const CANDIDATE: &str = r#"contract MigrationFixture version 2 {
+  entity Row {
+    key (id: uuid)
+    field value: i64
+    field doubled: i64
+  }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+}
+"#;
+    const VALID: &str = r#"migration MigrationFixture from 1 to 2 {
+  transform Row {
+    set doubled = old.value + 1
+  }
+}
+"#;
+    const INVALID: &str = r#"migration MigrationFixture from 1 to 2 {
+  transform Row {
+    set doubled =
+  }
+}
+"#;
+
+    let parent = compile_contract_source(PARENT)?;
+    let candidate = compile_contract_successor(CANDIDATE, &parent)?;
+    let migration = compile_migration_source(VALID, &parent, &candidate)?;
+    let root = output_root.join("fixtures/migrations");
+    fs::create_dir_all(&root)?;
+    fs::write(root.join("README.md"), MIGRATION_FIXTURE_README)?;
+    let source_valid = root.join("source/valid");
+    let source_invalid = root.join("source/invalid");
+    let bundle_root = root.join("bundle/v1");
+    let compatibility_root = root.join("compatibility/v1");
+    for directory in [
+        &source_valid,
+        &source_invalid,
+        &bundle_root,
+        &compatibility_root,
+    ] {
+        fs::create_dir_all(directory)?;
+    }
+    fs::write(source_valid.join("required-field.riffm"), VALID)?;
+    fs::write(source_invalid.join("missing-expression.riffm"), INVALID)?;
+    let invalid = compile_migration_source(INVALID, &parent, &candidate)
+        .expect_err("invalid fixture must fail");
+    let mut invalid_snapshot = String::new();
+    render_compilation_error(&mut invalid_snapshot, &invalid)?;
+    fs::write(
+        source_invalid.join("missing-expression.diagnostic.txt"),
+        invalid_snapshot,
+    )?;
+    fs::write(
+        bundle_root.join("parent.contract.bundle"),
+        parent.canonical_bytes(),
+    )?;
+    fs::write(
+        bundle_root.join("candidate.contract.bundle"),
+        candidate.canonical_bytes(),
+    )?;
+    fs::write(
+        bundle_root.join("required-field.migration.bundle"),
+        migration.canonical_bytes(),
+    )?;
+    fs::write(
+        bundle_root.join("required-field.migration.hash"),
+        format!("{}\n", hex(migration.bundle_hash().as_bytes())),
+    )?;
+    fs::write(
+        bundle_root.join("required-field.metadata.txt"),
+        format!(
+            concat!(
+                "format=riffdb-migration-bundle-fixture-v1\n",
+                "lineage={}\n",
+                "parent_version={}\n",
+                "parent_bundle_hash={}\n",
+                "candidate_version={}\n",
+                "candidate_bundle_hash={}\n",
+                "source_hash={}\n",
+                "step_count={}\n"
+            ),
+            migration.lineage().as_str(),
+            migration.parent_version().get(),
+            hex(migration.parent_bundle_hash().as_bytes()),
+            migration.candidate_version().get(),
+            hex(migration.candidate_bundle_hash().as_bytes()),
+            hex(migration.source_hash().as_bytes()),
+            migration.steps().len(),
+        ),
+    )?;
+    fs::write(
+        compatibility_root.join("required-field.txt"),
+        render_compatibility(&candidate)?,
+    )?;
     Ok(())
 }
 
@@ -1377,6 +1484,7 @@ fn compatibility_class(class: CompatibilityClass) -> &'static str {
     match class {
         CompatibilityClass::Compatible => "compatible",
         CompatibilityClass::RequiresExplicitVersion => "requires-explicit-version",
+        CompatibilityClass::RequiresMigration => "requires-migration",
         CompatibilityClass::Incompatible => "incompatible",
     }
 }
@@ -1995,6 +2103,46 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
         let error = validate_contract_source(&source).expect_err("invalid uniqueness fixture");
         require_semantic_code(name, code, &error)?;
         cases.push((name, code, error));
+    }
+
+    for (index, (name, code)) in [
+        (
+            "RDB-C027-invalid-migration-identity",
+            CompilerDiagnosticCode::InvalidMigrationIdentity,
+        ),
+        (
+            "RDB-C028-missing-migration-proof",
+            CompilerDiagnosticCode::MissingMigrationProof,
+        ),
+        (
+            "RDB-C029-duplicate-migration-proof",
+            CompilerDiagnosticCode::DuplicateMigrationProof,
+        ),
+        (
+            "RDB-C030-unnecessary-migration-proof",
+            CompilerDiagnosticCode::UnnecessaryMigrationProof,
+        ),
+        (
+            "RDB-C031-unsupported-migration-step",
+            CompilerDiagnosticCode::UnsupportedMigrationStep,
+        ),
+        (
+            "RDB-C032-invalid-migration-expression",
+            CompilerDiagnosticCode::InvalidMigrationExpression,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let start = 1_000 + index * 10;
+        let span = Span::new(start, start + 5).expect("migration diagnostic fixture span");
+        cases.push((
+            name,
+            code,
+            CompilationError::Semantic(CompilerDiagnostics::single(CompilerDiagnostic::new(
+                code, span,
+            ))),
+        ));
     }
 
     for (name, code, source) in [
