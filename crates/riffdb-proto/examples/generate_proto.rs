@@ -51,6 +51,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/outbox.proto",
     "riffdb/storage/v1/projection.proto",
     "riffdb/storage/v1/registry_v2.proto",
+    "riffdb/storage/v1/service_audit_request_index_v1.proto",
 ];
 const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/app/v1/application.proto",
@@ -68,6 +69,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/outbox.proto",
     "riffdb/storage/v1/projection.proto",
     "riffdb/storage/v1/registry_v2.proto",
+    "riffdb/storage/v1/service_audit_request_index_v1.proto",
     "riffdb/v1/admin.proto",
     "riffdb/v1/command.proto",
     "riffdb/v1/commit.proto",
@@ -274,6 +276,11 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
     durable(
         "history_incarnation_v1.proto",
         "StoredHistoryIncarnationV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "service_audit_request_index_v1.proto",
+        "StoredServiceAuditRequestIndexV1",
         PayloadBound::Tiny,
     ),
 ];
@@ -577,6 +584,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let history_incarnation_record = durable_registry
         .get(current_v1_record_count + 5)
         .ok_or_else(|| io::Error::other("durable history-incarnation registry is incomplete"))?;
+    let service_audit_request_index_record = durable_registry
+        .get(current_v1_record_count + 6)
+        .ok_or_else(|| {
+            io::Error::other("durable service-audit-request-index registry is incomplete")
+        })?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -651,6 +663,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/durable-history-incarnation-v1-record-bound.bin",
         &durable_record_bounds(std::slice::from_ref(history_incarnation_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-service-audit-request-index-v1-schema-hash.bin",
+        &service_audit_request_index_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-service-audit-request-index-v1-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(service_audit_request_index_record)),
     )?;
     write_artifact(
         &output_root,
@@ -919,9 +941,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 35 {
+    if DURABLE_RECORDS.len() != 36 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 35 records").into(),
+            io::Error::other("readable durable registry must contain exactly 36 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -931,7 +953,7 @@ fn build_durable_registry(
             .any(|file| file.package() != "riffdb.storage.v1")
     {
         return Err(io::Error::other(
-            "storage descriptor must contain exactly the fourteen riffdb.storage.v1 sources",
+            "storage descriptor must contain exactly the fifteen riffdb.storage.v1 sources",
         )
         .into());
     }
@@ -945,9 +967,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 85 || enum_count != 12 {
+    if message_count != 86 || enum_count != 12 {
         return Err(io::Error::other(format!(
-            "storage schema must contain 84 semantic messages plus StoredEnvelope and 12 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain 85 semantic messages plus StoredEnvelope and 12 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1138,6 +1160,10 @@ fn durable_writable_registry_fixture(
     let history_incarnation = records.get(current_v1_record_count + 5).ok_or_else(|| {
         io::Error::other("durable registry is missing StoredHistoryIncarnationV1")
     })?;
+    let service_audit_request_index =
+        records.get(current_v1_record_count + 6).ok_or_else(|| {
+            io::Error::other("durable registry is missing StoredServiceAuditRequestIndexV1")
+        })?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -1149,10 +1175,11 @@ fn durable_writable_registry_fixture(
         .chain(legacy[17..].iter())
         .chain(query_modules.iter())
         .chain(std::iter::once(history_incarnation))
+        .chain(std::iter::once(service_audit_request_index))
         .chain(std::iter::once(registry_v2));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 2);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 3);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

@@ -242,6 +242,21 @@ impl ServiceAuditGrowthHarness {
         })
     }
 
+    /// Reopens an existing fixture for continued window growth after a measurement drop.
+    pub fn reopen(path: &Path) -> Result<Self, EngineBenchmarkError> {
+        let store = RedbStore::open(path).map_err(|_| EngineBenchmarkError::Engine)?;
+        let dormant = RedbDormantPorts {
+            shared: store.shared,
+        };
+        let ports = dormant
+            .into_operational_after_catalog_validation()
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            ports,
+        })
+    }
+
     /// Appends one started/failed lifecycle per command through the real port.
     pub fn run_window(
         &mut self,
@@ -393,8 +408,10 @@ pub fn run_engine_mechanics_window(
 /// Reopens the database and proves the retained application allocator is readable.
 pub fn measure_engine_reopen(path: &Path) -> Result<Duration, EngineBenchmarkError> {
     let started = Instant::now();
-    let database = Database::create(path).map_err(|_| EngineBenchmarkError::Engine)?;
-    let transaction = database
+    let store = RedbStore::open(path).map_err(|_| EngineBenchmarkError::Engine)?;
+    let transaction = store
+        .shared
+        .database
         .begin_read()
         .map_err(|_| EngineBenchmarkError::Engine)?;
     let table = transaction
@@ -409,8 +426,31 @@ pub fn measure_engine_reopen(path: &Path) -> Result<Duration, EngineBenchmarkErr
     }
     drop(table);
     drop(transaction);
-    drop(database);
+    drop(store);
     Ok(started.elapsed())
+}
+
+/// Clean reopen through `RedbStore::open` (format migration + repair callback path).
+pub fn measure_clean_startup(path: &Path) -> Result<Duration, EngineBenchmarkError> {
+    let started = Instant::now();
+    let store = RedbStore::open(path).map_err(|_| EngineBenchmarkError::Engine)?;
+    drop(store);
+    Ok(started.elapsed())
+}
+
+/// Unclean recovery: reopen a crash-shaped snapshot with the repair callback path.
+pub fn measure_unclean_recovery(path: &Path) -> Result<Duration, EngineBenchmarkError> {
+    // Snapshot on-disk bytes while no writer is held, then reopen. Immediate
+    // durability means committed rows already survive; this still exercises the
+    // Builder repair-callback open path used after process death.
+    let snapshot = path.with_extension("unclean-snapshot.redb");
+    fs::copy(path, &snapshot).map_err(|_| EngineBenchmarkError::Engine)?;
+    let started = Instant::now();
+    let store = RedbStore::open(&snapshot).map_err(|_| EngineBenchmarkError::Engine)?;
+    drop(store);
+    let elapsed = started.elapsed();
+    let _ = fs::remove_file(&snapshot);
+    Ok(elapsed)
 }
 
 fn configure(

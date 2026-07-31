@@ -1829,3 +1829,10 @@ pub struct StoredRecordRegistryV2 {
     #[prost(bytes = "vec", tag = "1")]
     pub registry_digest: ::prost::alloc::vec::Vec<u8>,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredServiceAuditRequestIndexV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub administration_sequence: u64,
+}

@@ -98,6 +98,13 @@ copied_codec!(
     encode_history_incarnation_v1,
     decode_history_incarnation_v1
 );
+copied_codec!(
+    encode_service_audit_request_index_v1,
+    decode_service_audit_request_index_v1,
+    storage::StoredServiceAuditRequestIndexV1,
+    encode_service_audit_request_index_v1,
+    decode_service_audit_request_index_v1
+);
 
 borrowed_codec!(
     encode_contract_bundle_v1,

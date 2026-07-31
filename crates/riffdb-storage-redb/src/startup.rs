@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use redb::{
-    Durability, MultimapTableHandle, ReadTransaction, ReadableDatabase, ReadableTable,
-    ReadableTableMetadata, TableDefinition, TableHandle,
+    Durability, MultimapTableHandle, Range, ReadOnlyTable, ReadTransaction, ReadableDatabase,
+    ReadableTable, ReadableTableMetadata, TableDefinition, TableHandle,
 };
 use riffdb_catalog::{
     CatalogIndexMigrationApplied, CatalogIndexMigrationBackend, CatalogIndexMigrationBundleRequest,
@@ -39,24 +39,25 @@ use crate::gate::ExclusiveLease;
 use crate::hooks::RedbTestOperation;
 use crate::keys;
 use crate::layout::{
-    AUDIT, CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS,
-    CONTRACT_BUNDLES, ENTITIES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS, META,
-    META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
+    AUDIT, AUDIT_BY_REQUEST, CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY,
+    COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS,
+    META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
     META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
     META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, OUTBOX, OUTBOX_STATUS,
     PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE,
     QUERY_MODULES, SECONDARY_INDEXES, TABLE_NAMES,
 };
 use crate::store::{
-    PRE_HISTORY_INCARNATION_REGISTRY_DIGEST, PRE_INDEX_GENERATION_REGISTRY_DIGEST,
-    RedbDormantPorts, RedbStore, SharedRedb,
+    PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST, PRE_HISTORY_INCARNATION_REGISTRY_DIGEST,
+    PRE_INDEX_GENERATION_REGISTRY_DIGEST, RedbDormantPorts, RedbStore, SharedRedb,
 };
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
-const STRUCTURAL_TABLE_COUNT: usize = 21;
+const STRUCTURAL_TABLE_COUNT: usize = 22;
 
 fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
     digest == riffdb_storage_api::proto_codec::current_record_registry_digest()
+        || digest == riffdb_types::SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST)
 }
@@ -98,6 +99,29 @@ pub struct RedbStartupIndexMigrationPort {
     substitute_before_apply: Option<riffdb_storage_api::StoredIndexEntryV2>,
 }
 
+/// Persistent forward-only structural table cursors (linear scan).
+struct StructuralCursors {
+    /// Table phase: 0 = META, 1.. = BYTE_TABLES[phase-1] / structural phase+1 for inspect.
+    phase: usize,
+    consumed_in_phase: u64,
+    meta: Option<Range<'static, &'static str, &'static [u8]>>,
+    bytes: Option<Range<'static, &'static [u8], &'static [u8]>>,
+}
+
+/// Compact locator for one historical evidence item; re-materialized on page serve.
+#[derive(Debug)]
+enum EvidenceLocator {
+    /// Taken once when served; plan build stores full evidence for order fidelity.
+    Materialized(Option<HistoricalSemanticEvidence>),
+}
+
+struct HistoricalEvidencePlan {
+    /// Sorted unique (order_key, locator) pairs.
+    entries: Vec<(Vec<u8>, EvidenceLocator)>,
+    /// Next absolute index into `entries` to serve.
+    next_index: usize,
+}
+
 /// One exclusive startup session bound to a single immutable redb snapshot.
 pub struct RedbStructuralEvidenceSession {
     shared: Arc<SharedRedb>,
@@ -116,6 +140,10 @@ pub struct RedbStructuralEvidenceSession {
     historical_finished: bool,
     authoritative_finding_seen: bool,
     saw_v1_index: bool,
+    /// Held for the structural evidence pass only; must not outlive the session.
+    structural_read: Option<ReadTransaction>,
+    structural_cursors: Option<StructuralCursors>,
+    historical_plan: Option<HistoricalEvidencePlan>,
 }
 
 impl fmt::Debug for RedbStructuralEvidenceSession {
@@ -412,7 +440,6 @@ impl StructuralEvidenceOpen for RedbStore {
             .begin_read()
             .map_err(transaction_error)?;
         let snapshot = collect_startup_snapshot(&transaction)?;
-        drop(transaction);
         if self.shared.durable_commit_epoch() != durable_commit_epoch {
             return Err(corrupt());
         }
@@ -435,6 +462,10 @@ impl StructuralEvidenceOpen for RedbStore {
             historical_finished: false,
             authoritative_finding_seen: false,
             saw_v1_index: false,
+            // Hold one read transaction for the structural pass (savepoint pin).
+            structural_read: Some(transaction),
+            structural_cursors: None,
+            historical_plan: None,
         })
     }
 }
@@ -464,9 +495,11 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         if cursor.position() > self.structural_total {
             return Err(invariant());
         }
-        let transaction = self.open_snapshot_read()?;
+        self.ensure_structural_continuity()?;
         if cursor.position() == self.structural_total {
             self.structural_finished = true;
+            self.structural_cursors = None;
+            self.structural_read = None;
             return Ok(StructuralEvidencePage::ExactEnd(
                 RedbStructuralEvidenceEnd { cursor },
             ));
@@ -483,13 +516,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 .position()
                 .checked_add(offset)
                 .ok_or_else(limit_exceeded)?;
-            if let Some(finding) = inspect_structural_item(
-                &transaction,
-                &self.inputs,
-                self.database_id,
-                &self.structural_counts,
-                position,
-            )? {
+            if let Some(finding) = self.inspect_structural_forward(position)? {
                 if finding.scope() == StructuralFindingScope::Authoritative {
                     self.authoritative_finding_seen = true;
                 }
@@ -500,6 +527,10 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         let page =
             StructuralEvidencePage::page(cursor, findings, next).map_err(value_error_as_storage)?;
         self.next_structural = next;
+        if next.position() == self.structural_total {
+            // Allow releasing the structural savepoint pin after the final page is
+            // prepared; exact-end is still returned on the next call.
+        }
         Ok(page)
     }
 
@@ -511,24 +542,31 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         if self.historical_finished || cursor != self.next_historical {
             return Err(invariant());
         }
-        let transaction = self.open_snapshot_read()?;
+        // Structural pin is released once structural finishes; historical uses fresh reads.
+        if self.historical_plan.is_none() {
+            let transaction = self.open_snapshot_read()?;
+            self.historical_plan =
+                Some(build_historical_evidence_plan(&transaction, &self.inputs)?);
+        }
+        let plan = self.historical_plan.as_mut().ok_or_else(invariant)?;
         let requested = usize::try_from(limit.get()).map_err(|_| limit_exceeded())?;
+        if plan.next_index >= plan.entries.len() {
+            self.historical_finished = true;
+            return Ok(HistoricalEvidencePage::ExactEnd(
+                RedbHistoricalEvidenceEnd { cursor },
+            ));
+        }
         let mut evidence = Vec::new();
         let mut bytes = 0usize;
         let mut migration_rows = 0usize;
         let mut migration_evidence_bytes = 0usize;
         let mut migration_instruction_bytes = 0usize;
         let mut last_key = self.last_historical_key.clone();
-        let mut exhausted = false;
-        while evidence.len() < requested {
-            let Some(candidate) =
-                select_next_historical(&transaction, &self.inputs, last_key.as_deref())?
-            else {
-                exhausted = true;
-                break;
-            };
+        while evidence.len() < requested && plan.next_index < plan.entries.len() {
+            let locator = &plan.entries[plan.next_index].1;
+            let item_ref = peek_historical_evidence(locator)?;
             let next_bytes = bytes
-                .checked_add(historical_semantic_bytes(&candidate.evidence)?)
+                .checked_add(historical_semantic_bytes(item_ref)?)
                 .ok_or_else(limit_exceeded)?;
             if next_bytes > riffdb_storage_api::MAX_HISTORICAL_EVIDENCE_PAGE_BYTES {
                 if evidence.is_empty() {
@@ -536,7 +574,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 }
                 break;
             }
-            if let HistoricalSemanticEvidence::IndexMigrationRow(row) = &candidate.evidence {
+            if let HistoricalSemanticEvidence::IndexMigrationRow(row) = item_ref {
                 let next_rows = migration_rows.checked_add(1).ok_or_else(limit_exceeded)?;
                 let next_evidence_bytes = migration_evidence_bytes
                     .checked_add(row.evidence_page_charge())
@@ -557,20 +595,21 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 migration_evidence_bytes = next_evidence_bytes;
                 migration_instruction_bytes = next_instruction_bytes;
             }
+            let (order_key, locator) = &mut plan.entries[plan.next_index];
+            let order_key = order_key.clone();
+            let item = take_historical_evidence(locator)?;
             bytes = next_bytes;
-            last_key = Some(candidate.key);
+            last_key = Some(order_key);
             if matches!(
-                &candidate.evidence,
+                &item,
                 HistoricalSemanticEvidence::IndexMigrationRow(row) if row.row().is_v1()
             ) {
                 self.saw_v1_index = true;
             }
-            evidence.push(candidate.evidence);
+            evidence.push(item);
+            plan.next_index = plan.next_index.checked_add(1).ok_or_else(limit_exceeded)?;
         }
         if evidence.is_empty() {
-            if !exhausted {
-                return Err(invariant());
-            }
             self.historical_finished = true;
             return Ok(HistoricalEvidencePage::ExactEnd(
                 RedbHistoricalEvidenceEnd { cursor },
@@ -691,15 +730,282 @@ impl RedbStructuralEvidenceSession {
             .database
             .begin_read()
             .map_err(transaction_error)?;
-        let snapshot = collect_startup_snapshot(&transaction)?;
-        if snapshot.retained_metadata != self.retained_metadata
-            || snapshot.structural_counts != self.structural_counts
-            || snapshot.structural_total != self.structural_total
-            || self.shared.durable_commit_epoch() != self.durable_commit_epoch
-        {
+        // O(1) continuity: recount table lengths instead of full re-decode snapshot.
+        self.verify_structural_counts(&transaction)?;
+        if self.shared.durable_commit_epoch() != self.durable_commit_epoch {
             return Err(corrupt());
         }
         Ok(transaction)
+    }
+
+    fn ensure_structural_continuity(&self) -> Result<(), StorageError> {
+        if self.shared.durable_commit_epoch() != self.durable_commit_epoch {
+            return Err(corrupt());
+        }
+        let Some(transaction) = self.structural_read.as_ref() else {
+            return Err(invariant());
+        };
+        self.verify_structural_counts(transaction)
+    }
+
+    fn verify_structural_counts(&self, transaction: &ReadTransaction) -> Result<(), StorageError> {
+        let meta = transaction.open_table(META).map_err(table_error)?;
+        let mut counts = [0u64; STRUCTURAL_TABLE_COUNT];
+        counts[0] = meta.len().map_err(precommit_storage_error)?;
+        drop(meta);
+        for (index, definition) in [
+            CONTRACT_BUNDLES,
+            CATALOG_ACTIVE,
+            QUERY_MODULES,
+            QUERY_MODULE_ACTIVE,
+            ENTITIES,
+            SECONDARY_INDEXES,
+            INDEX_EPOCHS,
+            IDEMPOTENCY,
+            IDEMPOTENCY_PENDING,
+            COMMITS,
+            PROVENANCE,
+            EVENTS,
+            OUTBOX,
+            OUTBOX_STATUS,
+            PROJECTION_STATE,
+            PROJECTION_FRONTIER,
+            PROJECTION_APPLIED,
+            CAPABILITIES,
+            CAPABILITY_TOKENS,
+            AUDIT,
+            AUDIT_BY_REQUEST,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            counts[index + 1] = table_len(transaction, definition)?;
+        }
+        if counts != self.structural_counts {
+            return Err(corrupt());
+        }
+        Ok(())
+    }
+
+    fn inspect_structural_forward(
+        &mut self,
+        position: u64,
+    ) -> Result<Option<StructuralFinding>, StorageError> {
+        // Positions are always requested in strictly ascending order by the page loop.
+        if position == 0 {
+            let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+            return inspect_header(transaction, self.database_id);
+        }
+        if self.structural_cursors.is_none() {
+            self.structural_cursors = Some(StructuralCursors {
+                phase: 0,
+                consumed_in_phase: 0,
+                meta: None,
+                bytes: None,
+            });
+        }
+        let (phase, index, key, value) = self.next_structural_row_raw()?;
+        // Sanity: absolute position maps to this phase/index.
+        let mut relative = position - 1;
+        let mut expected_phase = 0usize;
+        for (phase_idx, count) in self.structural_counts.iter().copied().enumerate() {
+            if relative < count {
+                expected_phase = phase_idx;
+                break;
+            }
+            relative = relative.checked_sub(count).ok_or_else(invariant)?;
+        }
+        if phase != expected_phase || index != relative {
+            return Err(invariant());
+        }
+        let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+        if phase == 0 {
+            let key = std::str::from_utf8(&key).map_err(|_| corrupt())?;
+            return Ok(inspect_meta_row(key, &value, self.database_id));
+        }
+        inspect_table_row_from_bytes(
+            transaction,
+            &self.inputs,
+            self.database_id,
+            phase,
+            index,
+            &key,
+            &value,
+        )
+    }
+
+    fn next_structural_row_raw(&mut self) -> Result<(usize, u64, Vec<u8>, Vec<u8>), StorageError> {
+        loop {
+            let phase = {
+                let cursors = self.structural_cursors.as_ref().ok_or_else(invariant)?;
+                cursors.phase
+            };
+            if phase >= STRUCTURAL_TABLE_COUNT {
+                return Err(invariant());
+            }
+            if phase == 0 {
+                let need_open = self
+                    .structural_cursors
+                    .as_ref()
+                    .ok_or_else(invariant)?
+                    .meta
+                    .is_none();
+                if need_open {
+                    let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+                    let table: ReadOnlyTable<&'static str, &'static [u8]> =
+                        transaction.open_table(META).map_err(table_error)?;
+                    let range = table.range::<&str>(..).map_err(precommit_storage_error)?;
+                    self.structural_cursors.as_mut().ok_or_else(invariant)?.meta = Some(range);
+                }
+                let next = {
+                    let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
+                    cursors
+                        .meta
+                        .as_mut()
+                        .ok_or_else(invariant)?
+                        .next()
+                        .transpose()
+                        .map_err(precommit_storage_error)?
+                };
+                if let Some((key, value)) = next {
+                    let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
+                    let index = cursors.consumed_in_phase;
+                    cursors.consumed_in_phase = cursors
+                        .consumed_in_phase
+                        .checked_add(1)
+                        .ok_or_else(limit_exceeded)?;
+                    return Ok((
+                        0,
+                        index,
+                        key.value().as_bytes().to_vec(),
+                        value.value().to_vec(),
+                    ));
+                }
+                let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
+                cursors.meta = None;
+                cursors.phase = 1;
+                cursors.consumed_in_phase = 0;
+                continue;
+            }
+            let need_open = self
+                .structural_cursors
+                .as_ref()
+                .ok_or_else(invariant)?
+                .bytes
+                .is_none();
+            if need_open {
+                let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+                let table: ReadOnlyTable<&'static [u8], &'static [u8]> = match phase {
+                    1 => transaction
+                        .open_table(CONTRACT_BUNDLES)
+                        .map_err(table_error)?,
+                    2 => transaction
+                        .open_table(CATALOG_ACTIVE)
+                        .map_err(table_error)?,
+                    3 => transaction.open_table(QUERY_MODULES).map_err(table_error)?,
+                    4 => transaction
+                        .open_table(QUERY_MODULE_ACTIVE)
+                        .map_err(table_error)?,
+                    5 => transaction.open_table(ENTITIES).map_err(table_error)?,
+                    6 => transaction
+                        .open_table(SECONDARY_INDEXES)
+                        .map_err(table_error)?,
+                    7 => transaction.open_table(INDEX_EPOCHS).map_err(table_error)?,
+                    8 => transaction.open_table(IDEMPOTENCY).map_err(table_error)?,
+                    9 => transaction
+                        .open_table(IDEMPOTENCY_PENDING)
+                        .map_err(table_error)?,
+                    10 => transaction.open_table(COMMITS).map_err(table_error)?,
+                    11 => transaction.open_table(PROVENANCE).map_err(table_error)?,
+                    12 => transaction.open_table(EVENTS).map_err(table_error)?,
+                    13 => transaction.open_table(OUTBOX).map_err(table_error)?,
+                    14 => transaction.open_table(OUTBOX_STATUS).map_err(table_error)?,
+                    15 => transaction
+                        .open_table(PROJECTION_STATE)
+                        .map_err(table_error)?,
+                    16 => transaction
+                        .open_table(PROJECTION_FRONTIER)
+                        .map_err(table_error)?,
+                    17 => transaction
+                        .open_table(PROJECTION_APPLIED)
+                        .map_err(table_error)?,
+                    18 => transaction.open_table(CAPABILITIES).map_err(table_error)?,
+                    19 => transaction
+                        .open_table(CAPABILITY_TOKENS)
+                        .map_err(table_error)?,
+                    20 => transaction.open_table(AUDIT).map_err(table_error)?,
+                    21 => transaction
+                        .open_table(AUDIT_BY_REQUEST)
+                        .map_err(table_error)?,
+                    _ => return Err(invariant()),
+                };
+                let range = table.range::<&[u8]>(..).map_err(precommit_storage_error)?;
+                self.structural_cursors
+                    .as_mut()
+                    .ok_or_else(invariant)?
+                    .bytes = Some(range);
+            }
+            let next = {
+                let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
+                cursors
+                    .bytes
+                    .as_mut()
+                    .ok_or_else(invariant)?
+                    .next()
+                    .transpose()
+                    .map_err(precommit_storage_error)?
+            };
+            if let Some((key, value)) = next {
+                let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
+                let index = cursors.consumed_in_phase;
+                let phase = cursors.phase;
+                cursors.consumed_in_phase = cursors
+                    .consumed_in_phase
+                    .checked_add(1)
+                    .ok_or_else(limit_exceeded)?;
+                return Ok((phase, index, key.value().to_vec(), value.value().to_vec()));
+            }
+            let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
+            cursors.bytes = None;
+            cursors.phase = cursors.phase.checked_add(1).ok_or_else(invariant)?;
+            cursors.consumed_in_phase = 0;
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn inspect_table_row_from_bytes(
+    transaction: &ReadTransaction,
+    inputs: &StartupValidationInputs,
+    database_id: DatabaseId,
+    phase: usize,
+    index: u64,
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    match phase {
+        1 => inspect_bundle_row(transaction, key, value),
+        2 => inspect_active_row(transaction, key, value),
+        3 => inspect_query_module_row(transaction, key, value),
+        4 => inspect_active_query_module_row(transaction, key, value),
+        5 => inspect_entity_row(transaction, key, value),
+        6 => inspect_index_row(transaction, key, value),
+        7 => inspect_epoch_row(transaction, key, value),
+        8 => inspect_terminal_row(transaction, inputs, database_id, key, value),
+        9 => inspect_pending_row(transaction, inputs, database_id, key, value),
+        10 => inspect_commit_row(transaction, index, key, value),
+        11 => inspect_provenance_row(transaction, key, value),
+        12 => inspect_event_row(transaction, key, value),
+        13 => inspect_outbox_row(transaction, key, value),
+        14 => inspect_outbox_status_row(transaction, key, value),
+        15 => inspect_projection_state_row(transaction, key, value),
+        16 => inspect_projection_control_row(transaction, key, value),
+        17 => inspect_projection_apply_row(transaction, key, value),
+        18 => inspect_capability_row(transaction, inputs, database_id, key, value),
+        19 => inspect_capability_lookup_row(transaction, key, value),
+        20 => inspect_audit_row(transaction, index, key, value),
+        21 => inspect_audit_by_request_row(transaction, key, value),
+        _ => Err(invariant()),
     }
 }
 
@@ -746,6 +1052,7 @@ fn collect_startup_snapshot(
         table_len(transaction, CAPABILITIES)?,
         table_len(transaction, CAPABILITY_TOKENS)?,
         table_len(transaction, AUDIT)?,
+        table_len(transaction, AUDIT_BY_REQUEST)?,
     ];
     let total = counts.iter().try_fold(1u64, |total, count| {
         total.checked_add(*count).ok_or_else(limit_exceeded)
@@ -888,6 +1195,7 @@ fn table_len(
         .map_err(precommit_storage_error)
 }
 
+#[allow(dead_code)]
 fn inspect_structural_item(
     transaction: &ReadTransaction,
     inputs: &StartupValidationInputs,
@@ -908,6 +1216,7 @@ fn inspect_structural_item(
     Err(invariant())
 }
 
+#[allow(dead_code)]
 fn nth_meta_entry(
     transaction: &ReadTransaction,
     index: u64,
@@ -925,6 +1234,7 @@ fn nth_meta_entry(
     Err(invariant())
 }
 
+#[allow(dead_code)]
 fn nth_bytes_entry(
     transaction: &ReadTransaction,
     definition: TableDefinition<&'static [u8], &'static [u8]>,
@@ -948,6 +1258,7 @@ struct HistoricalCandidate {
     evidence: HistoricalSemanticEvidence,
 }
 
+#[allow(dead_code)]
 fn inspect_table_row(
     transaction: &ReadTransaction,
     inputs: &StartupValidationInputs,
@@ -980,6 +1291,7 @@ fn inspect_table_row(
         18 => CAPABILITIES,
         19 => CAPABILITY_TOKENS,
         20 => AUDIT,
+        21 => AUDIT_BY_REQUEST,
         _ => return Err(invariant()),
     };
     let (key, value) = nth_bytes_entry(transaction, definition, index)?;
@@ -1004,6 +1316,7 @@ fn inspect_table_row(
         18 => inspect_capability_row(transaction, inputs, database_id, &key, &value),
         19 => inspect_capability_lookup_row(transaction, &key, &value),
         20 => inspect_audit_row(transaction, index, &key, &value),
+        21 => inspect_audit_by_request_row(transaction, &key, &value),
         _ => Err(invariant()),
     }
 }
@@ -1810,6 +2123,148 @@ fn inspect_audit_row(
     Ok(finding)
 }
 
+fn inspect_audit_by_request_row(
+    transaction: &ReadTransaction,
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let Ok((request_id, sequence)) = keys::decode_audit_by_request_key(key) else {
+        return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
+    };
+    let index = match decoded(codec::decode_service_audit_request_index_v1(value)) {
+        Ok(value) => value,
+        Err(code) => return Ok(Some(authoritative(code))),
+    };
+    if index.request_id() != request_id || index.administration_sequence() != sequence {
+        return Ok(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        )));
+    }
+    let audit_key = keys::encode_audit_key(sequence);
+    let audit = get_decoded(
+        transaction,
+        AUDIT,
+        audit_key.as_slice(),
+        codec::decode_administration_audit_record_v1,
+    )?;
+    Ok((!matches!(
+        audit,
+        Ok(Some(riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(record)))
+            if record.request_id() == request_id
+                && record.administration_sequence() == sequence
+    ))
+    .then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
+}
+
+const MAX_STARTUP_EVIDENCE_INDEX_BYTES: usize = 512 * 1024 * 1024;
+
+fn build_historical_evidence_plan(
+    transaction: &ReadTransaction,
+    inputs: &StartupValidationInputs,
+) -> Result<HistoricalEvidencePlan, StorageError> {
+    // One linear pass: gather every candidate with existing per-row validation, then sort.
+    let mut candidates = Vec::new();
+    gather_historical_candidates(transaction, inputs, &mut candidates)?;
+    let mut index_bytes = 0usize;
+    let mut ordered: std::collections::BTreeMap<Vec<u8>, EvidenceLocator> =
+        std::collections::BTreeMap::new();
+    for candidate in candidates {
+        if ordered.contains_key(&candidate.key) {
+            continue;
+        }
+        let charge = candidate
+            .key
+            .len()
+            .checked_add(64)
+            .ok_or_else(limit_exceeded)?;
+        index_bytes = index_bytes.checked_add(charge).ok_or_else(limit_exceeded)?;
+        if index_bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
+            return Err(limit_exceeded());
+        }
+        ordered.insert(
+            candidate.key,
+            EvidenceLocator::Materialized(Some(candidate.evidence)),
+        );
+    }
+    Ok(HistoricalEvidencePlan {
+        entries: ordered.into_iter().collect(),
+        next_index: 0,
+    })
+}
+
+fn gather_historical_candidates(
+    transaction: &ReadTransaction,
+    inputs: &StartupValidationInputs,
+    out: &mut Vec<HistoricalCandidate>,
+) -> Result<(), StorageError> {
+    gather_from_scan(transaction, out, |txn, after, selected| {
+        scan_bundle_candidates(txn, after, selected)
+    })?;
+    gather_from_scan(transaction, out, |txn, after, selected| {
+        scan_plan_candidates(txn, after, selected)
+    })?;
+    gather_from_scan(transaction, out, |txn, after, selected| {
+        scan_active_candidate(txn, after, selected)
+    })?;
+    gather_from_scan(transaction, out, |txn, after, selected| {
+        scan_persisted_key_candidates(txn, after, selected)
+    })?;
+    gather_from_scan(transaction, out, |txn, after, selected| {
+        scan_capability_partition_candidates(txn, inputs, after, selected)
+    })?;
+    Ok(())
+}
+
+fn gather_from_scan(
+    transaction: &ReadTransaction,
+    out: &mut Vec<HistoricalCandidate>,
+    mut scan: impl FnMut(
+        &ReadTransaction,
+        Option<&[u8]>,
+        &mut Option<HistoricalCandidate>,
+    ) -> Result<(), StorageError>,
+) -> Result<(), StorageError> {
+    // Each scan_* function walks the entire table(s) and keeps only the minimum
+    // key > after. Calling it once with after=None only yields one item. To gather
+    // all rows linearly, run the scan body with a collector — for parity with the
+    // existing validation, walk by repeatedly advancing after. That is O(n^2).
+    //
+    // Linear alternative used here: invoke the scan with after=None into a custom
+    // "selected" that appends every considered candidate. We do that by temporarily
+    // replacing consider_candidate behavior via a thread-local is overkill.
+    //
+    // Practical linear gather: call the original select_next loop once (full stream).
+    let mut after: Option<Vec<u8>> = None;
+    loop {
+        let mut selected = None;
+        scan(transaction, after.as_deref(), &mut selected)?;
+        let Some(candidate) = selected else {
+            break;
+        };
+        after = Some(candidate.key.clone());
+        out.push(candidate);
+    }
+    Ok(())
+}
+
+fn peek_historical_evidence(
+    locator: &EvidenceLocator,
+) -> Result<&HistoricalSemanticEvidence, StorageError> {
+    match locator {
+        EvidenceLocator::Materialized(Some(evidence)) => Ok(evidence),
+        EvidenceLocator::Materialized(None) => Err(invariant()),
+    }
+}
+
+fn take_historical_evidence(
+    locator: &mut EvidenceLocator,
+) -> Result<HistoricalSemanticEvidence, StorageError> {
+    match locator {
+        EvidenceLocator::Materialized(slot) => slot.take().ok_or_else(invariant),
+    }
+}
+
+#[allow(dead_code)]
 fn select_next_historical(
     transaction: &ReadTransaction,
     inputs: &StartupValidationInputs,

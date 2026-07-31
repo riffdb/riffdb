@@ -15,6 +15,74 @@ use super::{
 };
 
 const AUDIT: &str = "riffdb.storage.v1.ServiceAuditRecordV1";
+const SERVICE_AUDIT_REQUEST_INDEX: &str = "riffdb.storage.v1.StoredServiceAuditRequestIndexV1";
+
+/// Durable secondary-index value binding one request identity to one audit sequence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StoredServiceAuditRequestIndexV1 {
+    request_id: RequestId,
+    administration_sequence: AdministrationSequence,
+}
+
+impl StoredServiceAuditRequestIndexV1 {
+    /// Constructs one self-describing index row.
+    #[must_use]
+    pub const fn new(
+        request_id: RequestId,
+        administration_sequence: AdministrationSequence,
+    ) -> Self {
+        Self {
+            request_id,
+            administration_sequence,
+        }
+    }
+
+    /// Returns the request identity.
+    #[must_use]
+    pub const fn request_id(self) -> RequestId {
+        self.request_id
+    }
+
+    /// Returns the administration sequence.
+    #[must_use]
+    pub const fn administration_sequence(self) -> AdministrationSequence {
+        self.administration_sequence
+    }
+}
+
+/// Encodes one service-audit request index row.
+pub fn encode_service_audit_request_index_v1(
+    value: StoredServiceAuditRequestIndexV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    encode_message(
+        SERVICE_AUDIT_REQUEST_INDEX,
+        &wire::StoredServiceAuditRequestIndexV1 {
+            request_id: value.request_id().as_bytes().to_vec(),
+            administration_sequence: value.administration_sequence().get(),
+        },
+    )
+}
+
+/// Decodes one service-audit request index row.
+pub fn decode_service_audit_request_index_v1(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<StoredServiceAuditRequestIndexV1>, DurableCodecError> {
+    decode_message::<wire::StoredServiceAuditRequestIndexV1, _, _>(
+        SERVICE_AUDIT_REQUEST_INDEX,
+        encoded,
+        |value| {
+            let request_id = RequestId::from_bytes(fixed(value.request_id)?)
+                .map_err(|_| DurableCodecError::corrupt())?;
+            let administration_sequence =
+                AdministrationSequence::new(value.administration_sequence)
+                    .ok_or_else(DurableCodecError::corrupt)?;
+            Ok(StoredServiceAuditRequestIndexV1::new(
+                request_id,
+                administration_sequence,
+            ))
+        },
+    )
+}
 
 fn operation_from_proto(value: i32) -> Result<ServiceOperationV1, DurableCodecError> {
     let tag = u8::try_from(value).map_err(|_| DurableCodecError::corrupt())?;
