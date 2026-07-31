@@ -1335,20 +1335,15 @@ impl RiffDbServiceInner {
             Err(error) => {
                 let fenced = matches!(error, AdministrationAuditExecutionError::CoordinatorFenced)
                     || self.executors.audit.lifecycle_state() == CoordinatorLifecycleState::Fenced;
-                let stopped =
-                    matches!(error, AdministrationAuditExecutionError::CoordinatorStopped)
-                        || matches!(
-                            self.executors.audit.lifecycle_state(),
-                            CoordinatorLifecycleState::Stopped
-                                | CoordinatorLifecycleState::Draining
-                        );
-                if fenced || stopped {
-                    Err(AuditAppendFailure::subsystem())
-                } else {
-                    // Durable transition failures are subsystem-level; they are
-                    // not request deadline/cancel/capacity.
-                    Err(AuditAppendFailure::subsystem())
+                // All coordinator-fenced / stopped / draining / durable-transition
+                // failures are subsystem-level; request-scoped causes never reach
+                // this arm (they map earlier via ControlledWaitError).
+                if fenced {
+                    self.providers.health.fail_authoritative_readiness(
+                        crate::AuthoritativeReadinessFailure::CoordinatorFenced,
+                    );
                 }
+                Err(AuditAppendFailure::subsystem())
             }
         }
     }

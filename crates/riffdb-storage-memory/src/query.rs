@@ -255,12 +255,15 @@ impl QueryReadView for MemoryQueryView<'_> {
         }
         // Continuation only when an extra matching entry was observed. Bound is
         // the last included key; the peeked row is never returned.
-        let has_more = entries.len() > page_limit;
+        // Charge the peeked row to scanned_rows so fuel accounts for the extra
+        // observation that decides continuation minting.
+        let scanned = entries.len();
+        let has_more = scanned > page_limit;
         if has_more {
             entries.truncate(page_limit);
         }
-        let scanned_rows = u64::try_from(entries.len())
-            .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+        let scanned_rows =
+            u64::try_from(scanned).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let continuation = has_more
             .then(|| entries.last().map(|entry| entry.1.as_bytes().to_vec()))
             .flatten();
