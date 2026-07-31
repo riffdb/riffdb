@@ -56,7 +56,94 @@ From the repository root:
 
 # fail unless the same-run seed and every write p50 are within 2x PostgreSQL
 ./benchmarks/run-app-baseline --full --assert-write-parity
+
+# concurrent mixed-workload load driver (closed-loop; realistic tails/contention)
+./benchmarks/run-app-baseline --smoke --load interactive --load-clients 8 \
+  --load-duration-secs 5 --load-warmup-secs 1
+
+./benchmarks/run-app-baseline --full --load agent --load-clients 32 \
+  --load-duration-secs 30 --load-warmup-secs 5
+
+# ordinary concurrent reads and writes on the same hot ticket
+./benchmarks/run-app-baseline --smoke --load interactive --load-clients 8 \
+  --load-duration-secs 5 --load-warmup-secs 1 --load-contended
 ```
+
+### Load driver (`--load`)
+
+The parity suite answers warm single-client p50 vs Postgres. The load driver
+answers concurrency, hot-key contention, and outcome mix:
+
+| Profile | Mix (approx) | Pacing |
+|---------|--------------|--------|
+| `interactive` | ~85% reads / ~12% single writes / ~3% multi-entity | continuous closed-loop; **no** `SwapMemberRoles` |
+| `agent` | more multi-entity + detail pages | bursts of 8 ops + 8 ms think-time; ~5% intentional comment replays; **no** `SwapMemberRoles` |
+| `membership_contention` | hammers `SwapMemberRoles` on the shared membership pair | continuous; **not** isolated under concurrency (intentional) |
+
+By default, each client owns an independent connection: one RiffDB HTTP/2
+connection or one PostgreSQL TCP connection. This avoids comparing a single
+multiplexed RiffDB socket with many PostgreSQL sockets. The shared RiffDB
+channel shape remains available with `--load-riffdb-transport shared`; the
+exact topology is recorded in report JSON. PostgreSQL capacity is read from
+the live server and an excessive client request is rejected rather than
+silently clamped. RiffDB is bounded at 128. Each handle is **prewarmed**
+(Postgres prepares every timed statement; RiffDB touches a cheap read) before
+the shared measure window.
+
+Open tickets for comment/close writes are selected with Zipf skew via a CDF
+`partition_point` (`--load-zipf-s`, default 1.0). Read probes use a separate
+stable ticket excluded from that pool. All load traffic targets a **single
+organization** partition (`tenant_scope=single_organization` in the report).
+
+Measurement uses a **shared `AtomicBool` stop**: coordinator opens `measuring`
+after warmup and sets `stop` after `duration`. Throughput denominator is
+**max(worker measure end) − min(worker measure start)** (exact, not sleep
+approximate). Each worker also reports its own span
+(`worker_measure_intervals_ns`).
+
+`CreateComment` and `CloseTicketWithComment` both use the Zipf write-ticket
+pool (re-close is valid; **not** single-ticket serialized). The pool is a
+seed-time Open snapshot — closes flip status mid-run without open-status
+requires today. Intentional comment replays match across backends: RiffDB
+same-key equal-input replay and a distinct PostgreSQL replay operation using
+`ON CONFLICT DO NOTHING`. Ordinary PostgreSQL creates remain strict. A replay
+draw before a worker has completed a create is executed and counted as fresh.
+
+Outcomes classify via **RiffDB `RDB-*` codes** or **PostgreSQL SQLSTATE**,
+never prose matching. `unavailable` is separate from application `conflict`
+and makes the load run fail after its report is written. Latencies use a fixed
+log-linear histogram with 16 buckets per power-of-two octave (at most 6.25%
+quantization; p50/p95/p99). Outcomes: `success`, `conflict`, `unavailable`,
+`idempotency_mismatch`, `replayed`, `error`. An idempotency mismatch is a
+harness/application correctness bug, not a contention conflict. RiffDB reports
+also attach the server
+write-completion-group histogram after shutdown.
+
+Automatic RiffDB command retry is disabled for load runs
+(`command_attempt_budget=1`), so one logical operation is one transport
+submission and conflict latency/counts cannot hide retries. Normal application
+and parity paths retain their configured uncertainty-recovery policy.
+
+The default isolates writes from the stable read-probe ticket. Pass
+`--load-contended` to retain the ordinary “view while someone comments” stress.
+A public `RDB-STORAGE-0101` is reported as `unavailable` and fails the run; the
+harness never routes around it.
+
+The first contended evidence run exposed a specific open product issue. Once
+the hot ticket exceeds the 50-row comment page, every ignored first-page
+continuation occupies one reusable cursor slot for five minutes. The accepted
+cursor contract permits 64 live cursors per principal, returns unavailable on
+exhaustion, and forbids eviction. Repeated page-one refreshes therefore
+eventually fail even though redb's read snapshot is healthy. The contended mode
+is the deterministic regression reproducer. Closing it requires an explicit
+product contract—preferably a compatible first-page-only/no-continuation option
+or a cursor-release operation—not benchmark key isolation or silent eviction.
+
+Report schema: `riffdb.app-baseline-load-suite/v1` (default path
+`target/app-baseline/load-report-v1.json`).
+
+Follow-ups not in this increment: open-loop Poisson arrivals, history-growth
+curves, crash-under-load, deploy-under-load.
 
 Or directly after provisioning:
 

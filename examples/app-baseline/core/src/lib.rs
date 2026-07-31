@@ -4,19 +4,39 @@
 
 #![forbid(unsafe_code)]
 
+mod histogram;
 mod ids;
+mod load;
 mod report;
 mod scale;
 mod scenarios;
 mod seed;
 mod timing;
 
+pub use histogram::*;
 pub use ids::*;
+pub use load::*;
 pub use report::*;
 pub use scale::*;
 pub use scenarios::*;
 pub use seed::*;
 pub use timing::*;
+
+/// Stable load-driver classification of a backend error.
+///
+/// Backends must map from typed codes (RiffDB `RDB-*` application codes or
+/// PostgreSQL SQLSTATE), never from free-form prose.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoadErrorClass {
+    /// Durable uniqueness / concurrency conflict (e.g. SQLSTATE 23505).
+    Conflict,
+    /// Same idempotency identity was reused with unequal input.
+    IdempotencyMismatch,
+    /// Temporary unavailability / capacity (e.g. RDB-STORAGE-0101).
+    Unavailable,
+    /// Any other failure.
+    Other,
+}
 
 /// Backend-neutral operations exercised by the app baseline.
 pub trait AppBackend {
@@ -28,6 +48,20 @@ pub trait AppBackend {
 
     /// Loads the deterministic seed dataset.
     fn seed(&mut self, dataset: &SeedDataset) -> Result<(), Self::Error>;
+
+    /// Prepares every statement/path used by timed load/parity operations.
+    ///
+    /// Default is a no-op. PostgreSQL must prepare its full statement set so
+    /// Parse/Describe is never paid inside a timed sample.
+    fn prewarm(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Classifies `error` for load-driver outcome metrics.
+    fn load_error_class(error: &Self::Error) -> LoadErrorClass;
+
+    /// Stable machine code for load reports (`RDB-*` or SQLSTATE), when known.
+    fn load_error_code(error: &Self::Error) -> Option<&str>;
 
     /// Primary-key ticket lookup.
     fn point_get_ticket(
@@ -86,6 +120,13 @@ pub trait AppBackend {
 
     /// Append one comment (post-seed write path).
     fn create_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error>;
+
+    /// Repeat an already-successful comment creation with the same identity and input.
+    ///
+    /// This is a distinct benchmark operation so the PostgreSQL adapter can
+    /// exercise its explicit idempotency policy without weakening ordinary
+    /// create semantics.
+    fn replay_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error>;
 
     /// Atomic multi-entity write: close ticket + create comment.
     fn close_ticket_with_comment(

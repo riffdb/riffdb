@@ -9,14 +9,14 @@ use std::time::Duration;
 
 use postgres::{Client, Config, NoTls, Row, Statement};
 use riffdb_app_baseline_core::{
-    AppBackend, CloseTicketWithCommentSeed, CommentRow, CommentSeed, LabelRow, OpenTicketWithLabelsSeed,
-    OrganizationRow, ProjectMemberRow, ProjectRow, SeedDataset, SwapMemberRolesSeed,
-    TicketDetailPage, TicketRow, TicketStatus, UserRow, UuidBytes, format_uuid,
+    AppBackend, CloseTicketWithCommentSeed, CommentRow, CommentSeed, LabelRow,
+    OpenTicketWithLabelsSeed, OrganizationRow, ProjectMemberRow, ProjectRow, SeedDataset,
+    SwapMemberRolesSeed, TicketDetailPage, TicketRow, TicketStatus, UserRow, UuidBytes,
+    format_uuid,
 };
 
 /// Digest-pinned image used by the baseline runner.
-pub const POSTGRES_IMAGE: &str =
-    "postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818";
+pub const POSTGRES_IMAGE: &str = "postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818";
 
 const SCHEMA_SQL: &str = r#"
 DROP TABLE IF EXISTS ticket_label CASCADE;
@@ -135,6 +135,12 @@ const INSERT_COMMENT_SQL: &str =
     "INSERT INTO comment(organization_id, comment_id, ticket_id, author_id, body)
      VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5)";
 
+/// Idempotent comment insert matching RiffDB same-key replay (success, no second row).
+const INSERT_COMMENT_IDEMPOTENT_SQL: &str =
+    "INSERT INTO comment(organization_id, comment_id, ticket_id, author_id, body)
+     VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5)
+     ON CONFLICT (organization_id, comment_id) DO NOTHING";
+
 const INSERT_TICKET_LABEL_SQL: &str =
     "INSERT INTO ticket_label(organization_id, ticket_id, label_id)
      VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid)";
@@ -182,7 +188,8 @@ const LIST_PROJECT_MEMBERS_SQL: &str =
      ORDER BY user_id
      LIMIT $3";
 
-const TICKET_DETAIL_SQL: &str = "SELECT t.organization_id::text, t.ticket_id::text, t.project_id::text,
+const TICKET_DETAIL_SQL: &str =
+    "SELECT t.organization_id::text, t.ticket_id::text, t.project_id::text,
             t.reporter_id::text, t.assignee_id::text, t.status, t.title,
             p.name AS project_name,
             o.name AS organization_name,
@@ -278,6 +285,55 @@ impl PostgresAppBackend {
         self.statements.insert(sql, statement.clone());
         Ok(statement)
     }
+
+    /// Prepares every statement used by timed scenarios/load workers.
+    fn prepare_all_timed_statements(&mut self) -> Result<(), PostgresError> {
+        const TIMED: &[&str] = &[
+            SELECT_TICKET_SQL,
+            SELECT_USER_SQL,
+            LIST_TICKETS_BY_PROJECT_STATUS_SQL,
+            LIST_OPEN_TICKETS_FOR_ASSIGNEE_SQL,
+            LIST_COMMENTS_SQL,
+            LIST_PROJECT_MEMBERS_SQL,
+            TICKET_DETAIL_SQL,
+            TICKET_DETAIL_LABELS_SQL,
+            COUNT_TICKET_SQL,
+            COUNT_USER_SQL,
+            CLOSE_TICKET_SQL,
+            UPDATE_MEMBER_ROLE_SQL,
+            INSERT_COMMENT_SQL,
+            INSERT_COMMENT_IDEMPOTENT_SQL,
+            OPEN_TICKET_SQL,
+            INSERT_TICKET_LABEL_SQL,
+        ];
+        for sql in TIMED {
+            let _ = self.statement(sql)?;
+        }
+        Ok(())
+    }
+
+    /// Returns a conservative load-session capacity from the live server.
+    ///
+    /// The bound leaves configured superuser-reserved slots plus two ordinary
+    /// connections for the harness/control plane. Callers reject, rather than
+    /// silently clamp, an invalid comparison.
+    pub fn load_session_capacity(&mut self) -> Result<usize, PostgresError> {
+        let max_connections = self
+            .client()?
+            .query_one("SHOW max_connections", &[])
+            .map_err(db_err)?
+            .get::<_, String>(0)
+            .parse::<usize>()
+            .map_err(|_| PostgresError::Decode)?;
+        let reserved = self
+            .client()?
+            .query_one("SHOW superuser_reserved_connections", &[])
+            .map_err(db_err)?
+            .get::<_, String>(0)
+            .parse::<usize>()
+            .map_err(|_| PostgresError::Decode)?;
+        Ok(max_connections.saturating_sub(reserved).saturating_sub(2))
+    }
 }
 
 impl AppBackend for PostgresAppBackend {
@@ -288,9 +344,44 @@ impl AppBackend for PostgresAppBackend {
         // invalidated; drop the handles before the schema they reference.
         self.statements.clear();
         let client = self.client()?;
-        client
-            .batch_execute(SCHEMA_SQL)
-            .map_err(db_err)
+        client.batch_execute(SCHEMA_SQL).map_err(db_err)
+    }
+
+    fn prewarm(&mut self) -> Result<(), Self::Error> {
+        // Open the connection and prepare every timed statement once.
+        let _ = self.client()?;
+        self.prepare_all_timed_statements()
+    }
+
+    fn load_error_class(error: &Self::Error) -> riffdb_app_baseline_core::LoadErrorClass {
+        use riffdb_app_baseline_core::LoadErrorClass;
+        match error {
+            PostgresError::Database {
+                sqlstate: Some(state),
+                ..
+            } => match state.as_str() {
+                // unique_violation / exclusion_violation
+                "23505" | "23P01" => LoadErrorClass::Conflict,
+                // cannot_connect_now / too_many_connections / admin_shutdown
+                "57P03" | "53300" | "57P01" | "57P02" | "08006" | "08001" | "08004" => {
+                    LoadErrorClass::Unavailable
+                }
+                _ => LoadErrorClass::Other,
+            },
+            PostgresError::Database { sqlstate: None, .. }
+            | PostgresError::InvalidConfiguration
+            | PostgresError::Decode => LoadErrorClass::Other,
+        }
+    }
+
+    fn load_error_code(error: &Self::Error) -> Option<&str> {
+        match error {
+            PostgresError::Database {
+                sqlstate: Some(state),
+                ..
+            } => Some(state.as_str()),
+            _ => None,
+        }
     }
 
     fn seed(&mut self, dataset: &SeedDataset) -> Result<(), Self::Error> {
@@ -306,9 +397,7 @@ impl AppBackend for PostgresAppBackend {
         let insert_ticket_label = self.statement(INSERT_TICKET_LABEL_SQL)?;
 
         let client = self.client()?;
-        let mut tx = client
-            .transaction()
-            .map_err(db_err)?;
+        let mut tx = client.transaction().map_err(db_err)?;
         for org in &dataset.organizations {
             tx.execute(
                 &insert_organization,
@@ -584,7 +673,10 @@ impl AppBackend for PostgresAppBackend {
                 ],
             )
             .map_err(db_err)?;
-        let comments = comment_rows.iter().map(decode_comment).collect::<Result<Vec<_>, _>>()?;
+        let comments = comment_rows
+            .iter()
+            .map(decode_comment)
+            .collect::<Result<Vec<_>, _>>()?;
 
         let label_rows = client
             .query(
@@ -616,7 +708,27 @@ impl AppBackend for PostgresAppBackend {
     fn create_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error> {
         let statement = self.statement(INSERT_COMMENT_SQL)?;
         let client = self.client()?;
-        // Each sample inserts a distinct comment; a conflict is a harness bug.
+        client
+            .execute(
+                &statement,
+                &[
+                    &format_uuid(comment.row.organization_id),
+                    &format_uuid(comment.row.comment_id),
+                    &format_uuid(comment.row.ticket_id),
+                    &format_uuid(comment.row.author_id),
+                    &comment.row.body,
+                ],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    fn replay_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error> {
+        // This explicit application policy mirrors RiffDB's same-key,
+        // equal-input replay: the existing row makes the repeated write a
+        // successful no-op. Ordinary creates continue to use strict INSERT.
+        let statement = self.statement(INSERT_COMMENT_IDEMPOTENT_SQL)?;
+        let client = self.client()?;
         client
             .execute(
                 &statement,
@@ -830,8 +942,13 @@ fn parse_uuid_str(text: &str) -> Result<UuidBytes, PostgresError> {
 pub enum PostgresError {
     /// URL/config invalid.
     InvalidConfiguration,
-    /// Database operation failed.
-    Database(String),
+    /// Database operation failed, with SQLSTATE when the driver supplied one.
+    Database {
+        /// Five-character SQLSTATE (e.g. `23505`), when known.
+        sqlstate: Option<String>,
+        /// Driver display text (not used for load classification).
+        message: String,
+    },
     /// Row decode failed.
     Decode,
 }
@@ -840,7 +957,17 @@ impl fmt::Display for PostgresError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidConfiguration => formatter.write_str("invalid PostgreSQL configuration"),
-            Self::Database(detail) => write!(formatter, "PostgreSQL database error: {detail}"),
+            Self::Database {
+                sqlstate: Some(state),
+                message,
+            } => write!(
+                formatter,
+                "PostgreSQL database error sqlstate={state}: {message}"
+            ),
+            Self::Database {
+                sqlstate: None,
+                message,
+            } => write!(formatter, "PostgreSQL database error: {message}"),
             Self::Decode => formatter.write_str("PostgreSQL row decode error"),
         }
     }
@@ -848,6 +975,43 @@ impl fmt::Display for PostgresError {
 
 impl Error for PostgresError {}
 
-fn db_err(error: impl fmt::Display) -> PostgresError {
-    PostgresError::Database(error.to_string())
+fn db_err(error: postgres::Error) -> PostgresError {
+    PostgresError::Database {
+        sqlstate: error.code().map(|code| code.code().to_owned()),
+        message: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use riffdb_app_baseline_core::{AppBackend, LoadErrorClass};
+
+    use super::{PostgresAppBackend, PostgresError};
+
+    fn database_error(sqlstate: &str) -> PostgresError {
+        PostgresError::Database {
+            sqlstate: Some(sqlstate.to_owned()),
+            message: "prose is deliberately ignored".to_owned(),
+        }
+    }
+
+    #[test]
+    fn load_classification_uses_sqlstate_not_message_text() {
+        assert_eq!(
+            PostgresAppBackend::load_error_class(&database_error("23505")),
+            LoadErrorClass::Conflict
+        );
+        assert_eq!(
+            PostgresAppBackend::load_error_class(&database_error("53300")),
+            LoadErrorClass::Unavailable
+        );
+        assert_eq!(
+            PostgresAppBackend::load_error_class(&database_error("22000")),
+            LoadErrorClass::Other
+        );
+        assert_eq!(
+            PostgresAppBackend::load_error_code(&database_error("23505")),
+            Some("23505")
+        );
+    }
 }

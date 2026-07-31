@@ -8,13 +8,16 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, Barrier};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use riffdb_app_baseline_core::{
-    AppBackend, BackendReport, Scale, SeedDataset, build_report, run_scenarios,
+    AppBackend, BackendReport, LoadConfig, LoadExecutionShape, RIFFDB_MAX_LOAD_CLIENTS, Scale,
+    SeedDataset, WorkloadProfile, build_report, print_load_summary, run_closed_loop_load,
+    run_scenarios,
 };
 use riffdb_app_baseline_postgres::PostgresAppBackend;
 use riffdb_app_baseline_riffdb::RiffDbServerSession;
+use serde_json::json;
 
 fn main() -> ExitCode {
     match run() {
@@ -28,6 +31,9 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let args = Args::parse(env::args().skip(1))?;
+    if args.load_profile.is_some() {
+        return run_load(args);
+    }
     let dataset = SeedDataset::generate(args.scale);
     let mut backends = Vec::new();
     let mut concurrent_reads = Vec::new();
@@ -55,9 +61,7 @@ fn run() -> Result<(), String> {
                 clients,
                 args.concurrent_operations,
                 &dataset,
-                move || {
-                    PostgresAppBackend::new(url.as_str()).map_err(|error| error.to_string())
-                },
+                move || PostgresAppBackend::new(url.as_str()).map_err(|error| error.to_string()),
             )?);
         }
         backends.push(BackendReport {
@@ -167,6 +171,196 @@ fn run() -> Result<(), String> {
     }
     if args.assert_all_parity {
         assert_all_parity(&report)?;
+    }
+    Ok(())
+}
+
+fn run_load(args: Args) -> Result<(), String> {
+    let profile = args
+        .load_profile
+        .ok_or_else(|| "internal: load profile required".to_owned())?;
+    let mut base_config = if args.scale.approximate_row_count() < 1_000 {
+        LoadConfig::smoke(profile)
+    } else {
+        LoadConfig::standard(profile, args.load_clients.unwrap_or(32))
+    };
+    if let Some(clients) = args.load_clients {
+        base_config.clients = clients.clamp(1, 128);
+    }
+    if let Some(seconds) = args.load_duration_secs {
+        base_config.duration = Duration::from_secs(seconds.max(1));
+    }
+    if let Some(seconds) = args.load_warmup_secs {
+        base_config.warmup = Duration::from_secs(seconds);
+    }
+    if let Some(zipf_s) = args.load_zipf_s {
+        base_config.zipf_s = zipf_s;
+    }
+    base_config.contended = args.load_contended;
+
+    let dataset = SeedDataset::generate(args.scale);
+    let mut reports = Vec::new();
+
+    if !args.skip_postgres {
+        let url = args
+            .postgres_url
+            .clone()
+            .or_else(|| env::var("RIFFDB_APP_BASELINE_POSTGRES_URL").ok())
+            .ok_or_else(|| {
+                "PostgreSQL required: pass --postgres-url or set RIFFDB_APP_BASELINE_POSTGRES_URL"
+                    .to_owned()
+            })?;
+        let config = base_config.clone();
+        let mut postgres = PostgresAppBackend::new(&url).map_err(|error| error.to_string())?;
+        let capacity = postgres
+            .load_session_capacity()
+            .map_err(|error| error.to_string())?;
+        if config.clients > capacity {
+            return Err(format!(
+                "--load-clients={} exceeds live PostgreSQL safe session capacity {capacity}; \
+                 raise max_connections or select no more than {capacity}",
+                config.clients
+            ));
+        }
+        postgres.reset().map_err(|error| error.to_string())?;
+        let seed_started = Instant::now();
+        postgres.seed(&dataset).map_err(|error| error.to_string())?;
+        let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        // Drop seeder before load so workers own fresh connections.
+        drop(postgres);
+        let url = Arc::new(url);
+        let report = run_closed_loop_load(
+            "postgres_sql",
+            config,
+            LoadExecutionShape {
+                transport_topology: "per_session_tcp",
+                command_attempt_budget: 1,
+            },
+            &dataset,
+            seed_ns,
+            move || {
+                let mut backend =
+                    PostgresAppBackend::new(url.as_str()).map_err(|error| error.to_string())?;
+                // Prepare every timed statement before the shared measure window.
+                backend.prewarm().map_err(|error| error.to_string())?;
+                Ok(backend)
+            },
+        )?;
+        print_load_summary(&report);
+        reports.push(report.to_json());
+    }
+
+    if !args.skip_riffdb {
+        let riffdbd = args
+            .riffdbd_bin
+            .clone()
+            .or_else(|| env::var_os("RIFFDB_APP_BASELINE_RIFFDBD_BIN").map(PathBuf::from))
+            .ok_or_else(|| {
+                "riffdbd required: pass --riffdbd-bin or set RIFFDB_APP_BASELINE_RIFFDBD_BIN"
+                    .to_owned()
+            })?;
+        if !riffdbd.is_file() {
+            return Err(format!("riffdbd binary not found: {}", riffdbd.display()));
+        }
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())?;
+
+        let mut session = runtime
+            .block_on(RiffDbServerSession::start(&riffdbd))
+            .map_err(|error| error.to_string())?;
+        session.backend.reset().map_err(|error| error.to_string())?;
+        let seed_started = Instant::now();
+        if let Err(error) = session.backend.seed(&dataset) {
+            let _ = session.shutdown();
+            return Err(error.to_string());
+        }
+        let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let prototype = session.backend.clone().with_command_attempt_budget(1);
+        let config = base_config.clone().with_client_cap(RIFFDB_MAX_LOAD_CLIENTS);
+        let transport_topology = args.riffdb_transport;
+        let mut report = run_closed_loop_load(
+            "riffdb_public_grpc",
+            config,
+            LoadExecutionShape {
+                transport_topology: transport_topology.as_report_str(),
+                command_attempt_budget: 1,
+            },
+            &dataset,
+            seed_ns,
+            move || {
+                let mut backend = match transport_topology {
+                    RiffDbTransport::PerSession => prototype.fresh_session(),
+                    RiffDbTransport::Shared => Ok(prototype.clone()),
+                }
+                .map_err(|error| error.to_string())?;
+                backend.prewarm().map_err(|error| error.to_string())?;
+                Ok(backend)
+            },
+        )?;
+        let groups = session.shutdown().map_err(|error| error.to_string())?;
+        report.write_completion_groups = Some(groups.to_vec());
+        print_load_summary(&report);
+        reports.push(report.to_json());
+    }
+
+    if reports.is_empty() {
+        return Err("no backends selected".to_owned());
+    }
+    let correctness_failures = reports
+        .iter()
+        .filter_map(|report| {
+            let backend = report["backend_id"].as_str()?;
+            let unavailable = report["aggregate"]["outcomes"]["unavailable"]
+                .as_u64()
+                .unwrap_or(0);
+            let idempotency_mismatch = report["aggregate"]["outcomes"]["idempotency_mismatch"]
+                .as_u64()
+                .unwrap_or(0);
+            let error = report["aggregate"]["outcomes"]["error"]
+                .as_u64()
+                .unwrap_or(0);
+            (unavailable > 0 || idempotency_mismatch > 0 || error > 0).then(|| {
+                format!(
+                    "{backend}: unavailable={unavailable}, \
+                     idempotency_mismatch={idempotency_mismatch}, error={error}"
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let encoded = serde_json::to_string_pretty(&json!({
+        "schema": "riffdb.app-baseline-load-suite/v1",
+        "scale": {
+            "profile": if args.scale.approximate_row_count() < 1_000 { "smoke" } else { "full" },
+            "approximate_row_count": args.scale.approximate_row_count(),
+        },
+        "comparison": {
+            "requested_clients": base_config.clients,
+            "riffdb_transport": args.riffdb_transport.as_report_str(),
+            "automatic_command_retries": false,
+            "contended": args.load_contended,
+        },
+        "correctness": {
+            "clean": correctness_failures.is_empty(),
+            "failures": &correctness_failures,
+        },
+        "backends": reports,
+    }))
+    .map_err(|error| error.to_string())?;
+    if let Some(path) = &args.output {
+        fs::write(path, format!("{encoded}\n")).map_err(|error| error.to_string())?;
+        println!("wrote {}", path.display());
+    } else {
+        println!("{encoded}");
+    }
+    if !correctness_failures.is_empty() {
+        return Err(format!(
+            "load completed with public correctness failures: {}",
+            correctness_failures.join("; ")
+        ));
     }
     Ok(())
 }
@@ -351,6 +545,29 @@ fn print_summary(report: &serde_json::Value) {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RiffDbTransport {
+    PerSession,
+    Shared,
+}
+
+impl RiffDbTransport {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "per-session" => Some(Self::PerSession),
+            "shared" => Some(Self::Shared),
+            _ => None,
+        }
+    }
+
+    const fn as_report_str(self) -> &'static str {
+        match self {
+            Self::PerSession => "per_session_http2_connection",
+            Self::Shared => "shared_http2_connection",
+        }
+    }
+}
+
 struct Args {
     scale: Scale,
     samples: usize,
@@ -364,6 +581,13 @@ struct Args {
     assert_all_parity: bool,
     concurrent_clients: Option<usize>,
     concurrent_operations: usize,
+    load_profile: Option<WorkloadProfile>,
+    load_clients: Option<usize>,
+    load_duration_secs: Option<u64>,
+    load_warmup_secs: Option<u64>,
+    load_zipf_s: Option<f64>,
+    load_contended: bool,
+    riffdb_transport: RiffDbTransport,
 }
 
 impl Args {
@@ -380,6 +604,13 @@ impl Args {
         let mut assert_all_parity = false;
         let mut concurrent_clients = None;
         let mut concurrent_operations = 200;
+        let mut load_profile = None;
+        let mut load_clients = None;
+        let mut load_duration_secs = None;
+        let mut load_warmup_secs = None;
+        let mut load_zipf_s = None;
+        let mut load_contended = false;
+        let mut riffdb_transport = RiffDbTransport::PerSession;
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -433,12 +664,62 @@ impl Args {
                         .parse()
                         .map_err(|_| "--concurrent-operations must be usize")?;
                 }
+                "--load" => {
+                    let name = args.next().ok_or("--load needs a profile name")?;
+                    load_profile = Some(WorkloadProfile::parse(&name).ok_or_else(|| {
+                        format!(
+                            "unknown load profile '{name}' (interactive|agent|membership_contention)"
+                        )
+                    })?);
+                }
+                "--load-clients" => {
+                    load_clients = Some(
+                        args.next()
+                            .ok_or("--load-clients needs a value")?
+                            .parse()
+                            .map_err(|_| "--load-clients must be usize")?,
+                    );
+                }
+                "--load-duration-secs" => {
+                    load_duration_secs = Some(
+                        args.next()
+                            .ok_or("--load-duration-secs needs a value")?
+                            .parse()
+                            .map_err(|_| "--load-duration-secs must be u64")?,
+                    );
+                }
+                "--load-warmup-secs" => {
+                    load_warmup_secs = Some(
+                        args.next()
+                            .ok_or("--load-warmup-secs needs a value")?
+                            .parse()
+                            .map_err(|_| "--load-warmup-secs must be u64")?,
+                    );
+                }
+                "--load-zipf-s" => {
+                    load_zipf_s = Some(
+                        args.next()
+                            .ok_or("--load-zipf-s needs a value")?
+                            .parse()
+                            .map_err(|_| "--load-zipf-s must be f64")?,
+                    );
+                }
+                "--load-contended" => load_contended = true,
+                "--load-riffdb-transport" => {
+                    let value = args.next().ok_or("--load-riffdb-transport needs a value")?;
+                    riffdb_transport = RiffDbTransport::parse(&value).ok_or_else(|| {
+                        "--load-riffdb-transport must be per-session or shared".to_owned()
+                    })?;
+                }
                 "--help" | "-h" => {
                     return Err(
                         "usage: riffdb-app-baseline [--smoke|--full] [--samples N] [--warmup N] \
                          [--postgres-url URL] [--riffdbd-bin PATH] [--output PATH] \
                          [--assert-write-parity|--assert-all-parity] \
                          [--concurrent-clients N] [--concurrent-operations N] \
+                         [--load interactive|agent|membership_contention] [--load-clients N] \
+                         [--load-duration-secs N] [--load-warmup-secs N] [--load-zipf-s F] \
+                         [--load-contended] [--load-riffdb-transport per-session|shared] \
                          [--skip-postgres] [--skip-riffdb]"
                             .to_owned(),
                     );
@@ -458,6 +739,29 @@ impl Args {
         if !(1..=1_000).contains(&concurrent_operations) {
             return Err("--concurrent-operations must be 1..=1000".to_owned());
         }
+        // Structural parser bound; run_load also checks live PostgreSQL capacity
+        // and RiffDB's fixed session ceiling without silently reducing parity.
+        if load_clients.is_some_and(|clients| !(1..=128).contains(&clients)) {
+            return Err("--load-clients must be 1..=128".to_owned());
+        }
+        if load_profile.is_none()
+            && (load_clients.is_some()
+                || load_duration_secs.is_some()
+                || load_warmup_secs.is_some()
+                || load_zipf_s.is_some()
+                || load_contended
+                || riffdb_transport != RiffDbTransport::PerSession)
+        {
+            return Err("--load-* options require --load".to_owned());
+        }
+        if assert_write_parity && load_profile.is_some() {
+            return Err(
+                "--assert-write-parity is only for the parity suite, not --load".to_owned(),
+            );
+        }
+        if assert_all_parity && load_profile.is_some() {
+            return Err("--assert-all-parity is only for the parity suite, not --load".to_owned());
+        }
         Ok(Self {
             scale,
             samples,
@@ -471,6 +775,13 @@ impl Args {
             assert_all_parity,
             concurrent_clients,
             concurrent_operations,
+            load_profile,
+            load_clients,
+            load_duration_secs,
+            load_warmup_secs,
+            load_zipf_s,
+            load_contended,
+            riffdb_transport,
         })
     }
 }
@@ -479,7 +790,7 @@ impl Args {
 mod tests {
     use serde_json::{Value, json};
 
-    use super::{assert_all_parity, assert_write_parity};
+    use super::{Args, RiffDbTransport, WorkloadProfile, assert_all_parity, assert_write_parity};
 
     fn parity_report(seed_ratio: f64, write_ratio: f64) -> Value {
         let scenarios = [
@@ -505,6 +816,36 @@ mod tests {
                 "scenarios": scenarios,
             }
         })
+    }
+
+    #[test]
+    fn load_flags_select_explicit_contention_and_transport_shape() {
+        let args = Args::parse(
+            [
+                "--load",
+                "agent",
+                "--load-clients",
+                "32",
+                "--load-contended",
+                "--load-riffdb-transport",
+                "shared",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .expect("load flags");
+        assert_eq!(args.load_profile, Some(WorkloadProfile::Agent));
+        assert_eq!(args.load_clients, Some(32));
+        assert!(args.load_contended);
+        assert_eq!(args.riffdb_transport, RiffDbTransport::Shared);
+    }
+
+    #[test]
+    fn load_specific_flags_require_load_mode() {
+        let error = Args::parse(["--load-contended"].into_iter().map(str::to_owned))
+            .err()
+            .expect("must reject");
+        assert_eq!(error, "--load-* options require --load");
     }
 
     #[test]

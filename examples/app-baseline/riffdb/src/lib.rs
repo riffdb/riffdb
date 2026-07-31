@@ -8,16 +8,17 @@
 
 mod server;
 
+use std::collections::{BTreeMap, VecDeque};
 use std::error::Error;
 use std::fmt;
-use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use riffdb_app_baseline_core::{
     AppBackend, CloseTicketWithCommentSeed, CommentRow, CommentSeed, LabelRow,
     OpenTicketWithLabelsSeed, OrganizationRow, ProjectMemberRow, ProjectRow, SeedDataset,
-    SwapMemberRolesSeed, TicketDetailPage, TicketRow, TicketStatus, UserRow, UuidBytes, format_uuid,
+    SwapMemberRolesSeed, TicketDetailPage, TicketRow, TicketStatus, UserRow, UuidBytes,
+    format_uuid,
 };
 use riffdb_client_rust::{
     ApplicationClientError, AttemptBudget, BearerCredential, CallMetadata, GeneratedBatchError,
@@ -28,8 +29,8 @@ use riffdb_ticketdesk::{
     CreateLabelInput, CreateOrganizationInput, CreateProjectInput, CreateTicketInput,
     CreateUserInput, GetTicketParams, GetTicketResult, GetUserParams, GetUserResult,
     ListCommentsParams, ListCommentsResult, ListTicketsByAssigneeParams,
-    ListTicketsByAssigneeResult, ListTicketsParams, ListTicketsResult, ProjectMembersParams,
-    OpenTicketWithLabelsInput, ProjectMembersResult, SwapMemberRolesInput, TicketDeskClient,
+    ListTicketsByAssigneeResult, ListTicketsParams, ListTicketsResult, OpenTicketWithLabelsInput,
+    ProjectMembersParams, ProjectMembersResult, SwapMemberRolesInput, TicketDeskClient,
     TicketPageParams, TicketPageResult,
 };
 use tonic::transport::Endpoint;
@@ -43,6 +44,7 @@ const MAX_SEED_CONCURRENCY: usize = 128;
 /// Public symbolic application backend.
 #[derive(Clone)]
 pub struct RiffDbPublicBackend {
+    endpoint: Endpoint,
     transport: StableApplicationClient,
     metadata: CallMetadata,
     command_attempts: AttemptBudget,
@@ -56,7 +58,7 @@ impl RiffDbPublicBackend {
             .map_err(|_| RiffDbError::Connection)?
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(60));
-        let transport = StableApplicationClient::connect(endpoint)
+        let transport = StableApplicationClient::connect(endpoint.clone())
             .await
             .map_err(|_| RiffDbError::Connection)?;
         let metadata = CallMetadata::authenticated(
@@ -66,11 +68,41 @@ impl RiffDbPublicBackend {
         // missing runtime is a recoverable configuration error, not a panic.
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| RiffDbError::Runtime)?;
         Ok(Self {
+            endpoint,
             transport,
             metadata,
             command_attempts: AttemptBudget::new(3).expect("positive command attempt budget"),
             runtime,
         })
+    }
+
+    /// Opens an independent HTTP/2 connection with the same bounded metadata.
+    ///
+    /// Load comparisons use this to match PostgreSQL's one-connection-per-session
+    /// topology. Credentials remain encapsulated in redacting metadata.
+    pub fn fresh_session(&self) -> Result<Self, RiffDbError> {
+        let endpoint = self.endpoint.clone();
+        let metadata = self.metadata.clone();
+        let runtime = self.runtime.clone();
+        let transport = runtime
+            .block_on(StableApplicationClient::connect(endpoint.clone()))
+            .map_err(|_| RiffDbError::Connection)?;
+        Ok(Self {
+            endpoint,
+            transport,
+            metadata,
+            command_attempts: self.command_attempts,
+            runtime,
+        })
+    }
+
+    /// Selects the explicit command transport-submission budget.
+    #[must_use]
+    pub fn with_command_attempt_budget(mut self, maximum_submissions: u32) -> Self {
+        if let Some(budget) = AttemptBudget::new(maximum_submissions) {
+            self.command_attempts = budget;
+        }
+        self
     }
 
     fn ticketdesk(&self) -> TicketDeskClient {
@@ -109,6 +141,42 @@ impl AppBackend for RiffDbPublicBackend {
         Ok(())
     }
 
+    fn prewarm(&mut self) -> Result<(), Self::Error> {
+        // gRPC channel + auth are established at connect; touch one cheap read
+        // so named-query path and HTTP/2 stream are warm before timed windows.
+        let _ = self.point_get_ticket([0; 16], [0; 16]);
+        Ok(())
+    }
+
+    fn load_error_class(error: &Self::Error) -> riffdb_app_baseline_core::LoadErrorClass {
+        use riffdb_app_baseline_core::LoadErrorClass;
+        match error {
+            RiffDbError::Application { code, .. } => match code.as_str() {
+                // Unequal same-key reuse is a harness/application bug, not contention.
+                "RDB-COMMAND-0101" => LoadErrorClass::IdempotencyMismatch,
+                // Declared command business failure (includes uniqueness-style outcomes
+                // surfaced as execution failures on some paths).
+                "RDB-COMMAND-0102" => LoadErrorClass::Conflict,
+                // Temporary storage unavailability.
+                "RDB-STORAGE-0101" => LoadErrorClass::Unavailable,
+                // Result exceeds service limit under concurrent load.
+                "RDB-RESOURCE-0101" => LoadErrorClass::Unavailable,
+                _ => LoadErrorClass::Other,
+            },
+            RiffDbError::Connection | RiffDbError::Runtime | RiffDbError::Server => {
+                LoadErrorClass::Unavailable
+            }
+            _ => LoadErrorClass::Other,
+        }
+    }
+
+    fn load_error_code(error: &Self::Error) -> Option<&str> {
+        match error {
+            RiffDbError::Application { code, .. } => Some(code.as_str()),
+            _ => None,
+        }
+    }
+
     fn seed(&mut self, dataset: &SeedDataset) -> Result<(), Self::Error> {
         self.block_on(async {
             let concurrency = seed_concurrency();
@@ -121,15 +189,12 @@ impl AppBackend for RiffDbPublicBackend {
                 + dataset.comments.len()
                 + dataset.ticket_labels.len();
             let progress = Arc::new(SeedProgress::new(total));
-            eprintln!(
-                "riffdb-seed-start\ttotal={total}\tconcurrency={concurrency}"
-            );
+            eprintln!("riffdb-seed-start\ttotal={total}\tconcurrency={concurrency}");
 
             // Phases respect foreign-key order. Each phase uses bounded public
             // transport batches; every item remains an ordinary independent
             // generated command with its own durable lifecycle.
-            let options =
-                GeneratedBatchOptions::new(concurrency).map_err(map_generated_batch)?;
+            let options = GeneratedBatchOptions::new(concurrency).map_err(map_generated_batch)?;
             macro_rules! run_seed_batches {
                 ($phase:literal, $inputs:expr, $method:ident) => {{
                     let inputs = $inputs;
@@ -137,9 +202,7 @@ impl AppBackend for RiffDbPublicBackend {
                         finish_generated_batch(
                             &progress,
                             $phase,
-                            self.ticketdesk()
-                                .$method(chunk.to_vec(), options)
-                                .await,
+                            self.ticketdesk().$method(chunk.to_vec(), options).await,
                         )?;
                     }
                 }};
@@ -153,11 +216,7 @@ impl AppBackend for RiffDbPublicBackend {
                     idempotency_key: format!("seed-org-{}", encode_short(org.organization_id)),
                 })
                 .collect::<Vec<_>>();
-            run_seed_batches!(
-                "organization",
-                organizations,
-                create_organization_batch
-            );
+            run_seed_batches!("organization", organizations, create_organization_batch);
 
             let users = dataset
                 .users
@@ -178,32 +237,28 @@ impl AppBackend for RiffDbPublicBackend {
                 .map(|project| CreateProjectInput {
                     name: project.name.clone(),
                     project_id: uuid_text(project.project_id),
-                    idempotency_key: format!(
-                        "seed-project-{}",
-                        encode_short(project.project_id)
-                    ),
+                    idempotency_key: format!("seed-project-{}", encode_short(project.project_id)),
                     organization_id: uuid_text(project.organization_id),
                 })
                 .collect::<Vec<_>>();
             run_seed_batches!("project", projects, create_project_batch);
 
-            let members = spread_conflict_domains(
-                &dataset.members,
-                |member| (member.organization_id, member.project_id),
-            )
-                .into_iter()
-                .map(|member| AddProjectMemberInput {
-                    role: member.role.clone(),
-                    user_id: uuid_text(member.user_id),
-                    project_id: uuid_text(member.project_id),
-                    idempotency_key: format!(
-                        "seed-member-{}-{}",
-                        encode_short(member.project_id),
-                        encode_short(member.user_id)
-                    ),
-                    organization_id: uuid_text(member.organization_id),
-                })
-                .collect::<Vec<_>>();
+            let members = spread_conflict_domains(&dataset.members, |member| {
+                (member.organization_id, member.project_id)
+            })
+            .into_iter()
+            .map(|member| AddProjectMemberInput {
+                role: member.role.clone(),
+                user_id: uuid_text(member.user_id),
+                project_id: uuid_text(member.project_id),
+                idempotency_key: format!(
+                    "seed-member-{}-{}",
+                    encode_short(member.project_id),
+                    encode_short(member.user_id)
+                ),
+                organization_id: uuid_text(member.organization_id),
+            })
+            .collect::<Vec<_>>();
             run_seed_batches!("member", members, add_project_member_batch);
 
             let labels = dataset
@@ -234,41 +289,36 @@ impl AppBackend for RiffDbPublicBackend {
                 .collect::<Vec<_>>();
             run_seed_batches!("ticket", tickets, create_ticket_batch);
 
-            let comments = spread_conflict_domains(
-                &dataset.comments,
-                |comment| (comment.organization_id, comment.ticket_id),
-            )
-                .into_iter()
-                .map(|comment| CreateCommentInput {
-                    body: comment.body.clone(),
-                    author_id: uuid_text(comment.author_id),
-                    ticket_id: uuid_text(comment.ticket_id),
-                    comment_id: uuid_text(comment.comment_id),
-                    idempotency_key: format!(
-                        "seed-comment-{}",
-                        encode_short(comment.comment_id)
-                    ),
-                    organization_id: uuid_text(comment.organization_id),
-                })
-                .collect::<Vec<_>>();
+            let comments = spread_conflict_domains(&dataset.comments, |comment| {
+                (comment.organization_id, comment.ticket_id)
+            })
+            .into_iter()
+            .map(|comment| CreateCommentInput {
+                body: comment.body.clone(),
+                author_id: uuid_text(comment.author_id),
+                ticket_id: uuid_text(comment.ticket_id),
+                comment_id: uuid_text(comment.comment_id),
+                idempotency_key: format!("seed-comment-{}", encode_short(comment.comment_id)),
+                organization_id: uuid_text(comment.organization_id),
+            })
+            .collect::<Vec<_>>();
             run_seed_batches!("comment", comments, create_comment_batch);
 
-            let links = spread_conflict_domains(
-                &dataset.ticket_labels,
-                |link| (link.organization_id, link.ticket_id),
-            )
-                .into_iter()
-                .map(|link| AttachLabelInput {
-                    label_id: uuid_text(link.label_id),
-                    ticket_id: uuid_text(link.ticket_id),
-                    idempotency_key: format!(
-                        "seed-link-{}-{}",
-                        encode_short(link.ticket_id),
-                        encode_short(link.label_id)
-                    ),
-                    organization_id: uuid_text(link.organization_id),
-                })
-                .collect::<Vec<_>>();
+            let links = spread_conflict_domains(&dataset.ticket_labels, |link| {
+                (link.organization_id, link.ticket_id)
+            })
+            .into_iter()
+            .map(|link| AttachLabelInput {
+                label_id: uuid_text(link.label_id),
+                ticket_id: uuid_text(link.ticket_id),
+                idempotency_key: format!(
+                    "seed-link-{}-{}",
+                    encode_short(link.ticket_id),
+                    encode_short(link.label_id)
+                ),
+                organization_id: uuid_text(link.organization_id),
+            })
+            .collect::<Vec<_>>();
             run_seed_batches!("ticket_label", links, attach_label_batch);
 
             progress.finish();
@@ -579,6 +629,12 @@ impl AppBackend for RiffDbPublicBackend {
         })
     }
 
+    fn replay_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error> {
+        // RiffDB detects the repeated idempotency key and equal typed input,
+        // returning the stored command outcome without applying a second row.
+        self.create_comment(comment)
+    }
+
     fn close_ticket_with_comment(
         &mut self,
         input: &CloseTicketWithCommentSeed,
@@ -798,7 +854,10 @@ fn map_app(error: ApplicationClientError) -> RiffDbError {
             detail.push_str(" incident=");
             detail.push_str(&incident.to_string());
         }
-        return RiffDbError::Rpc(detail);
+        return RiffDbError::Application {
+            code: semantic.code().as_str().to_owned(),
+            detail,
+        };
     }
     RiffDbError::Rpc(format!("{error:?}"))
 }
@@ -816,7 +875,14 @@ pub enum RiffDbError {
     Server,
     /// Filesystem error.
     Io,
-    /// RPC failed.
+    /// Application semantic error with stable `RDB-*` code.
+    Application {
+        /// Stable public application error code (e.g. `RDB-STORAGE-0101`).
+        code: String,
+        /// Bounded public detail (not used for load classification).
+        detail: String,
+    },
+    /// Non-application RPC/transport failure.
     Rpc(String),
     /// Runtime missing.
     Runtime,
@@ -832,6 +898,9 @@ impl fmt::Display for RiffDbError {
             Self::Deploy => formatter.write_str("riffdb contract/query module deploy failed"),
             Self::Server => formatter.write_str("riffdbd process failed"),
             Self::Io => formatter.write_str("riffdb harness io failed"),
+            Self::Application { code, detail } => {
+                write!(formatter, "riffdb application {code}: {detail}")
+            }
             Self::Rpc(detail) => write!(formatter, "riffdb rpc failed: {detail}"),
             Self::Runtime => formatter.write_str("riffdb async runtime unavailable"),
             Self::Decode => formatter.write_str("riffdb response decode failed"),
@@ -840,3 +909,37 @@ impl fmt::Display for RiffDbError {
 }
 
 impl Error for RiffDbError {}
+
+#[cfg(test)]
+mod tests {
+    use riffdb_app_baseline_core::{AppBackend, LoadErrorClass};
+
+    use super::{RiffDbError, RiffDbPublicBackend};
+
+    fn application_error(code: &str) -> RiffDbError {
+        RiffDbError::Application {
+            code: code.to_owned(),
+            detail: "bounded public detail".to_owned(),
+        }
+    }
+
+    #[test]
+    fn load_classification_uses_stable_application_code() {
+        assert_eq!(
+            RiffDbPublicBackend::load_error_class(&application_error("RDB-COMMAND-0101")),
+            LoadErrorClass::IdempotencyMismatch
+        );
+        assert_eq!(
+            RiffDbPublicBackend::load_error_class(&application_error("RDB-STORAGE-0101")),
+            LoadErrorClass::Unavailable
+        );
+        assert_eq!(
+            RiffDbPublicBackend::load_error_class(&application_error("RDB-QUERY-0101")),
+            LoadErrorClass::Other
+        );
+        assert_eq!(
+            RiffDbPublicBackend::load_error_code(&application_error("RDB-STORAGE-0101")),
+            Some("RDB-STORAGE-0101")
+        );
+    }
+}
