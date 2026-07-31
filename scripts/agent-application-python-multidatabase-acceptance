@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+temporary="$(mktemp -d)"
+trap 'rm -rf "$temporary"' EXIT
+wheel="${1:-}"
+if [[ -n "$wheel" ]]; then
+    [[ "$wheel" == /* && -f "$wheel" ]] || {
+        echo "optional wheel must be an absolute regular file" >&2
+        exit 2
+    }
+fi
+
+cargo build --quiet \
+    -p riffdb-server --bin riffdbd \
+    -p riffdb-cli --bin riffdb \
+    -p riffdb-mcp-stdio --bin riffdb-mcp
+if [[ -z "$wheel" ]]; then
+    (
+        cd clients/python/runtime
+        python3 -m maturin build --quiet --interpreter python3 \
+            --compatibility linux --out "$temporary/dist"
+    )
+    wheel="$(find "$temporary/dist" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+fi
+
+PYTHON="$(command -v python3)" ./scripts/release-source-bootstrap-smoke \
+    --binary-dir target/debug \
+    --python-wheel "$wheel"
+
+printf 'Installed Python sync/async two-database isolation acceptance passed.\n'

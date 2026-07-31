@@ -117,8 +117,8 @@ fn interrupt_application_deployment_after(environment: &dyn Environment, stage: 
 }
 use crate::scaffold::{
     ScaffoldLanguage, check_application, check_application_lock, create_application,
-    generate_application, load_locked_application, preview_application_lock,
-    write_application_lock,
+    generate_application, load_locked_application, migrate_application_source_v2,
+    preview_application_lock, write_application_lock,
 };
 use crate::value::{InputValue, RecordInput, ValueError, parse_uuid};
 
@@ -223,6 +223,7 @@ pub async fn run() -> ExitCode {
         let language = match language {
             ApplicationLanguage::Rust => ScaffoldLanguage::Rust,
             ApplicationLanguage::Typescript => ScaffoldLanguage::Typescript,
+            ApplicationLanguage::Python => ScaffoldLanguage::Python,
         };
         return match create_application(application, language, &destination) {
             Ok(()) => {
@@ -260,7 +261,36 @@ pub async fn run() -> ExitCode {
                 }
             };
         }
+        if let ApplicationCommand::Migrate { source, to, write } = command {
+            debug_assert_eq!(to, "v2");
+            return match migrate_application_source_v2(Path::new(source), *write) {
+                Ok(source) => {
+                    if *write {
+                        println!(
+                            "application source migrated to v2; lock and generated artifacts are unchanged"
+                        );
+                        ExitCode::SUCCESS
+                    } else {
+                        use std::io::Write as _;
+
+                        match io::stdout().lock().write_all(&source) {
+                            Ok(()) => ExitCode::SUCCESS,
+                            Err(_) => ExitCode::FAILURE,
+                        }
+                    }
+                }
+                Err(error) => {
+                    emit_scaffold_failure(
+                        "riffdb application migration failed",
+                        &error,
+                        cli.output,
+                    );
+                    ExitCode::FAILURE
+                }
+            };
+        }
         let result = match command {
+            ApplicationCommand::Migrate { .. } => unreachable!("migration returned above"),
             ApplicationCommand::Check { source } => check_application(Path::new(source)),
             ApplicationCommand::Preview { .. } => unreachable!("preview returned above"),
             ApplicationCommand::Lock {
@@ -538,6 +568,7 @@ async fn application_command(
             replace_expired_credential,
         ),
         ApplicationCommand::Check { .. }
+        | ApplicationCommand::Migrate { .. }
         | ApplicationCommand::Preview { .. }
         | ApplicationCommand::Lock { .. }
         | ApplicationCommand::Generate { .. } => {

@@ -10,7 +10,7 @@ use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
     ApplicationManifest, NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName,
     QueryModuleVersion, compile_application_role, generate_mcp_commands, generate_mcp_tools,
-    generate_rust_client, generate_typescript_client,
+    generate_python_client, generate_rust_client, generate_typescript_client,
 };
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
@@ -93,6 +93,7 @@ fn main() {
     fs::create_dir_all(output.join("fixtures/application-manifests"))
         .expect("manifest fixture directory");
     fs::create_dir_all(output.join("clients/typescript/ticketdesk")).expect("client directory");
+    fs::create_dir_all(output.join("clients/python/ticketdesk")).expect("client directory");
     fs::write(
         output.join("fixtures/query-modules/ticketdesk.rs"),
         generate_rust_client(&module, &contract),
@@ -103,6 +104,11 @@ fn main() {
         generate_typescript_client(&module, &contract),
     )
     .expect("TypeScript fixture");
+    fs::write(
+        output.join("clients/python/ticketdesk/generated.py"),
+        generate_python_client(&module, &contract).expect("generate Python client"),
+    )
+    .expect("Python fixture");
     let tools = generate_mcp_tools(&module).expect("generate MCP tools");
     let commands = generate_mcp_commands(&module, &contract).expect("generate MCP commands");
     let manifest = serde_json::json!({

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+python_bin="${PYTHON:-python3}"
+version="$($python_bin -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+case "$version" in
+    3.13|3.14) ;;
+    *)
+        printf 'Python 3.13 or 3.14 is required, found %s\n' "$version" >&2
+        exit 1
+        ;;
+esac
+
+temporary="$(mktemp -d)"
+trap 'rm -rf "$temporary"' EXIT
+export UV_CACHE_DIR="$temporary/uv-cache"
+
+cargo test -p riffdb-client-python-native --all-features
+cargo clippy -p riffdb-client-python-native --all-targets --all-features -- -D warnings
+pushd clients/python/runtime >/dev/null
+"$python_bin" -m maturin build \
+    --interpreter "$python_bin" \
+    --compatibility linux \
+    --out "$temporary/dist"
+popd >/dev/null
+uv venv --python "$python_bin" "$temporary/venv"
+uv pip install --python "$temporary/venv/bin/python" "$temporary"/dist/*.whl
+"$temporary/venv/bin/python" -m unittest discover -s clients/python/runtime/tests -v
+"$temporary/venv/bin/python" -c \
+    'compile(open("clients/python/ticketdesk/generated.py", encoding="utf-8").read(), "clients/python/ticketdesk/generated.py", "exec")'
+mypy --strict clients/python/runtime/src/riffdb_application
+MYPYPATH=clients/python/runtime/src \
+    mypy --strict clients/python/ticketdesk/generated.py
+mypy --strict fixtures/application-parity/python-public-api-v1.pyi
+
+printf 'Python runtime bridge, exact values, and public API checks passed.\n'

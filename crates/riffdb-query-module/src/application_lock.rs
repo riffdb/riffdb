@@ -17,6 +17,8 @@ use crate::{
 
 /// Exact application-lock schema identifier.
 pub const APPLICATION_LOCK_SCHEMA_V1: &str = "riffdb.application-lock/v1";
+/// Exact lock schema covering a generated Python artifact.
+pub const APPLICATION_LOCK_SCHEMA_V2: &str = "riffdb.application-lock/v2";
 /// Maximum accepted canonical application-lock bytes.
 pub const MAX_APPLICATION_LOCK_BYTES: usize = 4 * 1_024 * 1_024;
 /// Current tenant-unbound role-definition format.
@@ -33,6 +35,8 @@ pub enum GeneratedApplicationArtifactKind {
     Rust,
     /// TypeScript application bindings.
     TypeScript,
+    /// Python application bindings.
+    Python,
     /// MCP operation registry.
     Mcp,
 }
@@ -43,6 +47,7 @@ impl GeneratedApplicationArtifactKind {
             Self::Manifest => "manifest",
             Self::Rust => "rust",
             Self::TypeScript => "typescript",
+            Self::Python => "python",
             Self::Mcp => "mcp",
         }
     }
@@ -103,6 +108,7 @@ impl GeneratedApplicationArtifact {
 /// Canonical compiler-owned exact application lock.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApplicationLock {
+    schema: &'static str,
     source_hash: ApplicationSourceHash,
     manifest_hash: ApplicationManifestHash,
     canonical_bytes: Vec<u8>,
@@ -143,6 +149,36 @@ impl ApplicationLock {
                 ApplicationLockErrorKind::Duplicate,
             ));
         }
+        let schema = if source.schema() == crate::APPLICATION_SOURCE_SCHEMA_V2 {
+            let python_path = source.generation().python().ok_or_else(|| {
+                ApplicationLockError::new(ApplicationLockErrorKind::IdentityMismatch)
+            })?;
+            if artifacts
+                .iter()
+                .filter(|artifact| artifact.kind == GeneratedApplicationArtifactKind::Python)
+                .count()
+                != 1
+                || !artifacts.iter().any(|artifact| {
+                    artifact.kind == GeneratedApplicationArtifactKind::Python
+                        && artifact.path == python_path
+                })
+            {
+                return Err(ApplicationLockError::new(
+                    ApplicationLockErrorKind::IdentityMismatch,
+                ));
+            }
+            APPLICATION_LOCK_SCHEMA_V2
+        } else {
+            if artifacts
+                .iter()
+                .any(|artifact| artifact.kind == GeneratedApplicationArtifactKind::Python)
+            {
+                return Err(ApplicationLockError::new(
+                    ApplicationLockErrorKind::InvalidShape,
+                ));
+            }
+            APPLICATION_LOCK_SCHEMA_V1
+        };
 
         let mut sorted_modules = modules.iter().collect::<Vec<_>>();
         sorted_modules.sort_by(|left, right| left.name().cmp(right.name()));
@@ -179,7 +215,7 @@ impl ApplicationLock {
             "exact_manifest_hash": hex(manifest.identity().as_bytes()),
             "modules": module_values,
             "roles": role_values,
-            "schema": APPLICATION_LOCK_SCHEMA_V1,
+            "schema": schema,
             "source_hash": hex(source.identity().as_bytes()),
         });
         let mut canonical_bytes = serde_json::to_vec(&value)
@@ -191,6 +227,7 @@ impl ApplicationLock {
             ));
         }
         Ok(Self {
+            schema,
             source_hash: source.identity(),
             manifest_hash: manifest.identity(),
             identity: hash_application_lock(&canonical_bytes),
@@ -207,7 +244,7 @@ impl ApplicationLock {
         }
         let value: Value = serde_json::from_slice(bytes)
             .map_err(|_| ApplicationLockError::new(ApplicationLockErrorKind::InvalidJson))?;
-        validate_lock_shape(&value)?;
+        let schema = validate_lock_shape(&value)?;
         let mut canonical = serde_json::to_vec(&value)
             .map_err(|_| ApplicationLockError::new(ApplicationLockErrorKind::InvalidJson))?;
         canonical.push(b'\n');
@@ -226,6 +263,7 @@ impl ApplicationLock {
             "exact_manifest_hash",
         )?)?);
         Ok(Self {
+            schema,
             source_hash,
             manifest_hash,
             identity: hash_application_lock(&canonical),
@@ -237,6 +275,12 @@ impl ApplicationLock {
     #[must_use]
     pub const fn source_hash(&self) -> ApplicationSourceHash {
         self.source_hash
+    }
+
+    /// Exact lock schema identifier.
+    #[must_use]
+    pub const fn schema(&self) -> &'static str {
+        self.schema
     }
 
     /// Exact compatible V1 manifest identity.
@@ -387,7 +431,7 @@ fn role_value(
     }))
 }
 
-fn validate_lock_shape(value: &Value) -> Result<(), ApplicationLockError> {
+fn validate_lock_shape(value: &Value) -> Result<&'static str, ApplicationLockError> {
     let root = exact_object(
         value,
         &[
@@ -401,11 +445,15 @@ fn validate_lock_shape(value: &Value) -> Result<(), ApplicationLockError> {
             "source_hash",
         ],
     )?;
-    if required(root, "schema")?.as_str() != Some(APPLICATION_LOCK_SCHEMA_V1) {
-        return Err(ApplicationLockError::new(
-            ApplicationLockErrorKind::UnsupportedVersion,
-        ));
-    }
+    let schema = match required(root, "schema")?.as_str() {
+        Some(APPLICATION_LOCK_SCHEMA_V1) => APPLICATION_LOCK_SCHEMA_V1,
+        Some(APPLICATION_LOCK_SCHEMA_V2) => APPLICATION_LOCK_SCHEMA_V2,
+        _ => {
+            return Err(ApplicationLockError::new(
+                ApplicationLockErrorKind::UnsupportedVersion,
+            ));
+        }
+    };
     parse_hash(required(root, "source_hash")?)?;
     parse_hash(required(root, "exact_manifest_hash")?)?;
     let formats = exact_object(
@@ -447,8 +495,22 @@ fn validate_lock_shape(value: &Value) -> Result<(), ApplicationLockError> {
     }
     validate_sorted_array(required(root, "modules")?, "name", validate_module)?;
     validate_sorted_roles(required(root, "roles")?)?;
-    validate_sorted_array(required(root, "artifacts")?, "path", validate_artifact)?;
-    Ok(())
+    let artifacts = required(root, "artifacts")?;
+    validate_sorted_array(artifacts, "path", |value| validate_artifact(value, schema))?;
+    if schema == APPLICATION_LOCK_SCHEMA_V2 {
+        let python_count = artifacts
+            .as_array()
+            .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?
+            .iter()
+            .filter(|value| value.get("kind").and_then(Value::as_str) == Some("python"))
+            .count();
+        if python_count != 1 {
+            return Err(ApplicationLockError::new(
+                ApplicationLockErrorKind::InvalidShape,
+            ));
+        }
+    }
+    Ok(schema)
 }
 
 fn validate_module(value: &Value) -> Result<(), ApplicationLockError> {
@@ -546,13 +608,15 @@ fn validate_sorted_roles(value: &Value) -> Result<(), ApplicationLockError> {
     Ok(())
 }
 
-fn validate_artifact(value: &Value) -> Result<(), ApplicationLockError> {
+fn validate_artifact(value: &Value, schema: &str) -> Result<(), ApplicationLockError> {
     let artifact = exact_object(value, &["content_hash", "kind", "path"])?;
     parse_hash(required(artifact, "content_hash")?)?;
     let kind = required(artifact, "kind")?
         .as_str()
         .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
-    if !matches!(kind, "manifest" | "rust" | "typescript" | "mcp") {
+    if !matches!(kind, "manifest" | "rust" | "typescript" | "mcp")
+        && !(schema == APPLICATION_LOCK_SCHEMA_V2 && kind == "python")
+    {
         return Err(ApplicationLockError::new(
             ApplicationLockErrorKind::InvalidShape,
         ));

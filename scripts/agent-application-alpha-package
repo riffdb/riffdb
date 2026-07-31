@@ -25,7 +25,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-for tool in cargo find jq rg sha256sum sort; do
+for tool in cargo find jq python3 rg sha256sum sort uv; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "required sealed-bundle tool is missing: $tool" >&2
         exit 1
@@ -39,8 +39,28 @@ cargo build --quiet --release \
     -p riffdb-mcp-stdio --bin riffdb-mcp
 
 mkdir -p "$temporary/bin" "$temporary/.cargo" "$temporary/docs" \
-    "$temporary/evaluation" "$temporary/libexec" "$temporary/public/typescript" \
+    "$temporary/evaluation" "$temporary/libexec" "$temporary/public/python" \
+    "$temporary/public/typescript" \
     "$temporary/public/rust-sdk/crates" "$temporary/share/riffdb"
+
+python_wheel="${RIFFDB_APPLICATION_WHEEL:-}"
+if [[ -z "$python_wheel" ]]; then
+    python_build="$temporary/.python-build"
+    mkdir -p "$python_build"
+    (
+        cd "$repo_root/clients/python/runtime"
+        python3 -m maturin build --quiet --release --locked \
+            --interpreter python3 --compatibility linux --out "$python_build"
+    )
+    python_wheel="$(find "$python_build" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+fi
+python_wheel_name="$(basename "$python_wheel")"
+case "$python_wheel_name" in
+    riffdb_application-0.1.0-cp313-abi3-*.whl) ;;
+    *) echo "matching riffdb-application wheel is unavailable" >&2; exit 1 ;;
+esac
+cp "$python_wheel" "$temporary/public/python/$python_wheel_name"
+rm -rf "$temporary/.python-build"
 cp "$repo_root/target/release/riffdb" "$temporary/bin/"
 cp "$repo_root/target/release/riffdbd" "$temporary/bin/"
 cp "$repo_root/target/release/riffdb-mcp" "$temporary/bin/"
@@ -54,6 +74,7 @@ cp "$repo_root/README.md" "$temporary/docs/README.md"
 cp "$repo_root/docs/safety-by-construction.md" "$temporary/docs/"
 cp "$repo_root/docs/agent-application-alpha.md" "$temporary/docs/"
 cp "$repo_root/docs/installation.md" "$temporary/docs/"
+cp "$repo_root/docs/python-driver.md" "$temporary/docs/"
 cp "$repo_root/docs/configuration.md" "$temporary/docs/"
 cp -R "$repo_root/docs/contracts" "$temporary/docs/"
 mkdir -p "$temporary/docs/mcp"
@@ -123,6 +144,17 @@ CARGO_HOME="$temporary/.cargo" CARGO_NET_OFFLINE=true \
     --manifest-path "$temporary/public/rust-sdk/Cargo.toml" \
     -p riffdb-client-rust
 "$temporary/public/typescript/node_modules/.bin/tsc" --version >/dev/null
+
+mkdir "$temporary/.python-smoke"
+"$temporary/bin/riffdb" new python-alpha-smoke --language python \
+    --directory "$temporary/.python-smoke" >/dev/null
+(
+    cd "$temporary/.python-smoke"
+    UV_CACHE_DIR="$temporary/.uv-cache" uv sync --locked >/dev/null
+    PYTHONPATH=src UV_CACHE_DIR="$temporary/.uv-cache" \
+        uv run --locked python -m unittest discover -s tests >/dev/null
+)
+rm -rf "$temporary/.python-smoke" "$temporary/.uv-cache"
 rm -rf "$temporary/.sdk-check-target"
 
 (

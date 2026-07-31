@@ -19,9 +19,15 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+(cd clients/python/runtime && python3 -m maturin build --quiet --interpreter python3 \
+    --compatibility linux --out "$work_root/python-dist")
+python_wheel="$(find "$work_root/python-dist" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+
 "$riffdb" new order-desk --directory "$work_root/rust-one"
 "$riffdb" new order-desk --directory "$work_root/rust-two"
 "$riffdb" new order-desk --language typescript --directory "$work_root/typescript"
+RIFFDB_APPLICATION_WHEEL="$python_wheel" \
+    "$riffdb" new order-desk --language python --directory "$work_root/python"
 mkdir "$work_root/existing-empty"
 "$riffdb" new museum --directory "$work_root/existing-empty"
 
@@ -30,6 +36,7 @@ diff -ru "$work_root/rust-one" "$work_root/rust-two"
 "$repo_root/scripts/check-application-boundary" \
     "$work_root/rust-one" \
     "$work_root/typescript" \
+    "$work_root/python" \
     "$repo_root/examples/agent-alpha"
 
 if "$riffdb" new order-desk --directory "$work_root/rust-one"; then
@@ -89,6 +96,7 @@ rg -q 'pub async fn collection_page' \
 for unsafe_fixture in \
     negative-kernel-dependency \
     negative-handwritten-transport \
+    negative-python-native \
     negative-fake-generated; do
     if "$repo_root/scripts/check-application-boundary" \
         "$repo_root/fixtures/application-boundaries/$unsafe_fixture"; then
@@ -100,6 +108,13 @@ done
 (
     cd "$work_root/rust-one"
     "$riffdb" dev --seed --acceptance
+)
+
+(
+    cd "$work_root/python"
+    export UV_CACHE_DIR="$work_root/uv-cache"
+    uv sync --locked
+    PYTHONPATH=src uv run --locked python -m unittest discover -s tests -v
 )
 
 echo "riffdb new acceptance passed"

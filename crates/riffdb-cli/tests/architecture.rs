@@ -7,7 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-const DIRECT_DEPENDENCIES: [&str; 13] = [
+const DIRECT_DEPENDENCIES: [&str; 14] = [
     "base64",
     "clap",
     "riffdb-auth",
@@ -18,6 +18,7 @@ const DIRECT_DEPENDENCIES: [&str; 13] = [
     "riffdb-types",
     "serde",
     "serde_json",
+    "sha2",
     "tokio",
     "toml",
     "zeroize",
@@ -33,6 +34,7 @@ const EXACT_DEPENDENCY_ROWS: &str = concat!(
     "riffdb-types = { version = \"0.1.0\", path = \"../riffdb-types\", default-features = false }\n",
     "serde = { version = \"=1.0.229\", default-features = false, features = [\"derive\", \"std\"] }\n",
     "serde_json = { version = \"=1.0.150\", default-features = false, features = [\"std\"] }\n",
+    "sha2 = { version = \"=0.11.0\", default-features = false }\n",
     "tokio = { version = \"=1.52.0\", default-features = false, features = [\"macros\", \"rt-multi-thread\", \"signal\"] }\n",
     "toml = { version = \"=1.1.3\", default-features = false, features = [\"parse\", \"serde\", \"std\"] }\n",
     "zeroize = { version = \"=1.8.1\", default-features = false, features = [\"alloc\"] }\n",

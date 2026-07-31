@@ -13,6 +13,7 @@ EXPECTED_PACKAGES = %w[
   riffdb-auth
   riffdb-catalog
   riffdb-cli
+  riffdb-client-python-native
   riffdb-client-rust
   riffdb-commit
   riffdb-conflict
@@ -55,6 +56,10 @@ EXPECTED_MANIFESTS = {
   "riffdb-ticketdesk" => ROOT.join("examples", "ticketdesk", "Cargo.toml")
 }.freeze
 EXPECTED_FIXTURE_BINS = {
+  "riffdb-builder-mcp" => {
+    "package" => "riffdb-api-mcp",
+    "required_features" => ["stdio"]
+  },
   "riffdb-mcp-conformance-stdio" => {
     "package" => "riffdb-api-mcp",
     "required_features" => ["stdio"]
@@ -100,7 +105,9 @@ packages.each do |package|
     errors << "#{name} does not inherit workspace lints"
   end
 
-  lib_targets = package.fetch("targets").select { |target| target.fetch("kind").include?("lib") }
+  lib_targets = package.fetch("targets").select do |target|
+    (target.fetch("kind") & %w[lib rlib cdylib]).any?
+  end
   errors << "#{name} must expose exactly one library target" unless lib_targets.length == 1
   package.fetch("targets").each do |target|
     target.fetch("kind").each do |kind|

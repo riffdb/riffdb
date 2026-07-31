@@ -1,0 +1,39 @@
+[build-system]
+requires = ["maturin==1.14.1"]
+build-backend = "maturin"
+
+[project]
+name = "riffdb-application"
+version = "0.1.0"
+description = "Typed application-only client for RiffDB"
+requires-python = ">=3.13"
+license = "MIT OR Apache-2.0"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Rust",
+  "Operating System :: POSIX :: Linux",
+]
+
+[tool.maturin]
+manifest-path = "../../../crates/riffdb-client-python-native/Cargo.toml"
+module-name = "riffdb_application._native"
+python-source = "src"
+bindings = "pyo3"
+compatibility = "manylinux_2_28"
+strip = true
+include = [
+  { path = "rust-toolchain.toml", format = "sdist" },
+]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "RUF"]

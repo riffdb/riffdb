@@ -5,7 +5,7 @@ umask 077
 
 usage() {
     printf '%s\n' \
-        'usage: scripts/release-source-bootstrap-smoke [--binary-dir DIR]' >&2
+        'usage: scripts/release-source-bootstrap-smoke [--binary-dir DIR] [--python-wheel FILE]' >&2
 }
 
 fail() {
@@ -33,6 +33,7 @@ require_regular_mode() {
 }
 
 binary_dir=target/debug
+python_wheel=
 while (($#)); do
     case "$1" in
         --binary-dir)
@@ -41,6 +42,14 @@ while (($#)); do
                 exit 2
             fi
             binary_dir="$2"
+            shift 2
+            ;;
+        --python-wheel)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                usage
+                exit 2
+            fi
+            python_wheel="$2"
             shift 2
             ;;
         -h|--help)
@@ -53,6 +62,15 @@ while (($#)); do
             ;;
     esac
 done
+
+if [[ -n "$python_wheel" ]]; then
+    [[ "$python_wheel" == /* && -f "$python_wheel" && ! -L "$python_wheel" ]] \
+        || fail "Python wheel must be an absolute regular file"
+    python_wheel="$(cd "$(dirname "$python_wheel")" && pwd -P)/$(basename "$python_wheel")"
+    python_bin="${PYTHON:-python3}"
+    require_tool "$python_bin"
+    require_tool uv
+fi
 
 for tool in \
     cargo chmod cmp cp find git grep id jq mkfifo mkdir mktemp mv rm sed \
@@ -786,14 +804,25 @@ fi
 application_root="$work_root/agent-alpha application"
 mkdir -p \
     "$application_root/generated/mcp" \
+    "$application_root/generated/python" \
     "$application_root/generated/rust" \
     "$application_root/web/src/generated"
-jq '
-    del(.contract.bundle_hash)
-    | .query_modules |= map(del(.module_hash))
-    | .schema = "riffdb.application-source/v1"
-' "$repo_root/examples/agent-alpha/riffdb.application.json" \
-    >"$application_root/riffdb.application.json"
+if [[ -n "$python_wheel" ]]; then
+    jq '
+        del(.contract.bundle_hash)
+        | .query_modules |= map(del(.module_hash))
+        | .generation.python = "generated/python/client.py"
+        | .schema = "riffdb.application-source/v2"
+    ' "$repo_root/examples/agent-alpha/riffdb.application.json" \
+        >"$application_root/riffdb.application.json"
+else
+    jq '
+        del(.contract.bundle_hash)
+        | .query_modules |= map(del(.module_hash))
+        | .schema = "riffdb.application-source/v1"
+    ' "$repo_root/examples/agent-alpha/riffdb.application.json" \
+        >"$application_root/riffdb.application.json"
+fi
 cp -a "$repo_root/examples/agent-alpha/riffdb" "$application_root/"
 (
     cd "$application_root"
@@ -931,6 +960,70 @@ if ! "$bin_root/riffdb" --config "$application_client_config" --output json \
 then
     sed 's/^/application query: /' "$work_root/application-query.json" >&2 || true
     fail "bound application credential could not execute its named query"
+fi
+if [[ -n "$python_wheel" ]]; then
+    python_venv="$work_root/python-venv"
+    uv venv --python "$python_bin" "$python_venv" >/dev/null
+    uv pip install --python "$python_venv/bin/python" "$python_wheel" >/dev/null
+    cat >"$work_root/python-multidatabase.py" <<'PY'
+import asyncio
+import sys
+from uuid import UUID
+
+from client import AgentAlphaClient, AsyncAgentAlphaClient, ItemPageFound, ItemPageParams
+from riffdb_application import (
+    AsyncApplicationTransport,
+    AttemptBudget,
+    BearerCredential,
+    CallMetadata,
+    DatabaseAlias,
+    QueryOptions,
+    RiffDbApplicationError,
+    SyncApplicationTransport,
+)
+
+endpoint, credential_path = sys.argv[1:]
+credential = BearerCredential.from_protected_file(credential_path)
+item = UUID("018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10")
+
+
+def metadata(alias: str) -> CallMetadata:
+    return CallMetadata.authenticated(credential).with_database(DatabaseAlias(alias))
+
+
+with SyncApplicationTransport.connect_uri(endpoint, metadata("agent")) as transport:
+    result = AgentAlphaClient(transport, AttemptBudget(3)).item_page(ItemPageParams(item_id=item))
+    assert isinstance(result.value, ItemPageFound)
+    assert result.value.item.title == "Welcome to agent-alpha"
+
+try:
+    with SyncApplicationTransport.connect_uri(endpoint, metadata("default")) as transport:
+        AgentAlphaClient(transport, AttemptBudget(1)).item_page(ItemPageParams(item_id=item))
+except RiffDbApplicationError as error:
+    assert error.details.operation == "ExecuteQuery"
+else:
+    raise AssertionError("agent credential crossed the selected database boundary")
+
+
+async def check_async() -> None:
+    async with await AsyncApplicationTransport.connect_uri(endpoint, metadata("agent")) as transport:
+        result = await AsyncAgentAlphaClient(transport, AttemptBudget(3)).item_page(
+            ItemPageParams(item_id=item), QueryOptions()
+        )
+        assert isinstance(result.value, ItemPageFound)
+        assert result.value.item.title == "Welcome to agent-alpha"
+
+
+asyncio.run(check_async())
+print("python-multidatabase-acceptance-v1")
+PY
+    PYTHONPATH="$application_root/generated/python" \
+        "$python_venv/bin/python" "$work_root/python-multidatabase.py" \
+        "$endpoint" "$application_credential" \
+        >"$work_root/python-multidatabase.out"
+    grep -Fx 'python-multidatabase-acceptance-v1' \
+        "$work_root/python-multidatabase.out" >/dev/null \
+        || fail "installed Python client did not prove selected-database isolation"
 fi
 "$bin_root/riffdb-mcp" doctor --config "$application_mcp_config" \
     >"$work_root/application-mcp-doctor.json"

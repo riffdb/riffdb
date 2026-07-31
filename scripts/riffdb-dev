@@ -482,6 +482,22 @@ if ((acceptance)) && ((generic_application)); then
             echo "generated Rust application client returned no typed page result" >&2
             exit 1
         }
+    elif [[ -f "$application_root/pyproject.toml" ]]; then
+        command -v uv >/dev/null 2>&1 || {
+            echo "required Python runner tool is missing: uv" >&2
+            exit 1
+        }
+        python_package="$(jq -er '.application | gsub("-"; "_")' "$application_manifest")"
+        (
+            cd "$application_root"
+            uv sync --locked >/dev/null
+            PYTHONPATH=src uv run --locked python -m "$python_package" \
+                "$endpoint" "$work_root/profile.credential" default
+        ) >"$work_root/generated-application-client.stdout"
+        [[ -s "$work_root/generated-application-client.stdout" ]] || {
+            echo "generated Python application client returned no typed page result" >&2
+            exit 1
+        }
     fi
     printf '{"item_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10"}}\n' \
         >"$work_root/item-page.parameters.json"
@@ -511,8 +527,12 @@ if ((run)); then
         echo "--run requires an application repository" >&2
         exit 2
     }
-    if [[ -f "$application_root/Cargo.toml" && -f "$application_root/package.json" ]]; then
-        echo "application root contains ambiguous Rust and TypeScript runners" >&2
+    runner_count=0
+    for runner_manifest in Cargo.toml package.json pyproject.toml; do
+        [[ -f "$application_root/$runner_manifest" ]] && ((runner_count += 1))
+    done
+    if ((runner_count != 1)); then
+        echo "application root must contain exactly one supported runner manifest" >&2
         exit 2
     fi
     if [[ -f "$application_root/Cargo.toml" ]]; then
@@ -534,8 +554,20 @@ if ((run)); then
             npm run --silent build
             npm run --silent start -- "$endpoint" "$work_root/profile.credential" "$riffdb"
         )
+    elif [[ -f "$application_root/pyproject.toml" ]]; then
+        command -v uv >/dev/null 2>&1 || {
+            echo "required Python runner tool is missing: uv" >&2
+            exit 1
+        }
+        python_package="$(jq -er '.application | gsub("-"; "_")' "$application_manifest")"
+        (
+            cd "$application_root"
+            uv sync --locked >/dev/null
+            PYTHONPATH=src uv run --locked python -m "$python_package" \
+                "$endpoint" "$work_root/profile.credential" default
+        )
     else
-        echo "application root has no supported Rust or TypeScript runner" >&2
+        echo "application root has no supported runner" >&2
         exit 2
     fi
     exit 0

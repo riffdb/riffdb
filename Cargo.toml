@@ -7,6 +7,7 @@ members = [
     "crates/riffdb-catalog",
     "crates/riffdb-cli",
     "crates/riffdb-client-rust",
+    "crates/riffdb-client-python-native",
     "crates/riffdb-commit",
     "crates/riffdb-conflict",
     "crates/riffdb-contract-compiler",
@@ -54,3 +55,7 @@ unreachable_pub = "warn"
 [workspace.lints.clippy]
 correctness = { level = "warn", priority = -1 }
 await_holding_lock = "deny"
+
+[workspace.dependencies]
+pyo3 = { version = "=0.29.0", default-features = false, features = ["extension-module", "abi3-py313"] }
+pyo3-async-runtimes = { version = "=0.29.0", default-features = false, features = ["tokio-runtime"] }

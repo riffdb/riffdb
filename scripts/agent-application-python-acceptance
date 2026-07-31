@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+temporary="$(mktemp -d)"
+dev_pid=
+cleanup() {
+    if [[ -n "$dev_pid" ]] && kill -0 "$dev_pid" 2>/dev/null; then
+        kill -TERM "$dev_pid" 2>/dev/null || true
+        wait "$dev_pid" 2>/dev/null || true
+    fi
+    rm -rf "$temporary"
+}
+trap cleanup EXIT INT TERM
+export UV_CACHE_DIR="$temporary/uv-cache"
+
+cargo build --quiet -p riffdb-cli --bin riffdb
+(cd clients/python/runtime && python3 -m maturin build --quiet --interpreter python3 \
+    --compatibility linux --out "$temporary/dist")
+wheel="$(find "$temporary/dist" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+RIFFDB_APPLICATION_WHEEL="$wheel" target/debug/riffdb new python-proof \
+    --language python --directory "$temporary/python-proof"
+
+cd "$temporary/python-proof"
+uv sync --locked
+PYTHONPATH=src uv run --locked python -m unittest discover -s tests -v
+PYTHONPATH=src uv run --locked python -m py_compile \
+    src/python_proof/generated.py src/python_proof/__main__.py
+python_site="$($PWD/.venv/bin/python -c \
+    'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+MYPYPATH="src:$python_site" mypy --strict src/python_proof
+"$repo_root/target/debug/riffdb" application lock --check
+"$repo_root/scripts/check-application-boundary" .
+
+mkfifo "$temporary/dev.fifo"
+exec {dev_fd}<>"$temporary/dev.fifo"
+"$repo_root/target/debug/riffdb" dev --seed \
+    >"$temporary/dev.fifo" 2>"$temporary/dev.stderr" &
+dev_pid=$!
+ready=
+while IFS= read -r -t 60 line <&"$dev_fd"; do
+    case "$line" in
+        riffdb-dev-ready-v1$'\t'*) ready="$line"; break ;;
+    esac
+done
+[[ -n "$ready" ]] || {
+    sed -n '1,200p' "$temporary/dev.stderr" >&2
+    echo "Python development server did not become ready" >&2
+    exit 1
+}
+IFS=$'\t' read -r _ endpoint credential role <<<"$ready"
+[[ "$role" == "PythonProofApplication" && -f "$credential" ]] || {
+    echo "Python scaffold received an invalid application profile" >&2
+    exit 1
+}
+
+PYTHONPATH=src uv run --locked python -m python_proof \
+    "$endpoint" "$credential" default >"$temporary/sync.out"
+PYTHONPATH=src uv run --locked python -m python_proof \
+    "$endpoint" "$credential" default --async >"$temporary/async.out"
+diff -u "$temporary/sync.out" "$temporary/async.out"
+diff -u "$repo_root/fixtures/application-parity/python-observation-v1.json" \
+    "$temporary/sync.out"
+
+cat >"$temporary/batch.py" <<'PY'
+import asyncio
+import sys
+from uuid import UUID
+
+from python_proof.generated import (
+    AsyncPythonProofClient,
+    CreateItemInput,
+    PythonProofClient,
+)
+from riffdb_application import (
+    AsyncApplicationTransport,
+    AttemptBudget,
+    BearerCredential,
+    CallMetadata,
+    CommandBatchOptions,
+    DatabaseAlias,
+    SyncApplicationTransport,
+)
+
+endpoint, credential_path = sys.argv[1:]
+credential = BearerCredential.from_protected_file(credential_path)
+metadata = CallMetadata.authenticated(credential).with_database(DatabaseAlias("default"))
+
+
+def inputs(prefix: str, offset: int) -> tuple[CreateItemInput, ...]:
+    return tuple(
+        CreateItemInput(
+            idempotency_key=f"{prefix}-{index}",
+            item_id=UUID(f"018f0f8b-7c6d-7e31-8a4f-{offset + index:012x}"),
+            title=f"Python batch {index}",
+        )
+        for index in range(2)
+    )
+
+
+with SyncApplicationTransport.connect_uri(endpoint, metadata) as transport:
+    result = PythonProofClient(transport, AttemptBudget(3)).create_item_batch(
+        inputs("python-sync-batch", 0x100), CommandBatchOptions(concurrency=2)
+    )
+    assert result.checkpoint == 2
+    assert all(item.result is not None and item.error is None for item in result.items)
+
+
+async def check_async() -> None:
+    async with await AsyncApplicationTransport.connect_uri(endpoint, metadata) as transport:
+        result = await AsyncPythonProofClient(transport, AttemptBudget(3)).create_item_batch(
+            inputs("python-async-batch", 0x200), CommandBatchOptions(concurrency=2)
+        )
+        assert result.checkpoint == 2
+        assert all(item.result is not None and item.error is None for item in result.items)
+
+
+asyncio.run(check_async())
+PY
+PYTHONPATH=src uv run --locked python "$temporary/batch.py" "$endpoint" "$credential"
+
+cd "$repo_root"
+"$repo_root/scripts/agent-application-python-multidatabase-acceptance" "$wheel"
+
+printf 'Installed Python scaffold passed locked, sync, async, and boundary acceptance.\n'
