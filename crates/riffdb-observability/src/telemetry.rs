@@ -413,6 +413,7 @@ impl ConflictObserver for Observability {
 impl CommitTelemetry for Observability {
     fn record(&self, event: CommitTelemetryEvent) {
         match event {
+            CommitTelemetryEvent::CommandPipelineStageCompleted { .. } => {}
             CommitTelemetryEvent::CommandGroupDispatched {
                 reason,
                 selected,

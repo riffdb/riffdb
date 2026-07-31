@@ -4,6 +4,7 @@ use std::{
     error::Error,
     fmt,
     panic::{AssertUnwindSafe, catch_unwind},
+    sync::Arc,
     time::Instant,
 };
 
@@ -155,7 +156,7 @@ pub(crate) struct EvaluatedCommandAttempt {
     state: PendingCommandAttempts,
     lease: MutationLease,
     snapshot: MaterializedCommandSnapshot,
-    evaluated: EvaluatedCommand,
+    evaluated: Arc<EvaluatedCommand>,
 }
 
 impl EvaluatedCommandAttempt {
@@ -205,7 +206,7 @@ impl EvaluatedCommandAttempt {
         &self.snapshot
     }
 
-    pub(super) const fn evaluated(&self) -> &EvaluatedCommand {
+    pub(super) fn evaluated(&self) -> &EvaluatedCommand {
         &self.evaluated
     }
 
@@ -302,7 +303,7 @@ impl ProvenanceBoundCommandAttempt {
         self.attempt.materialized_snapshot()
     }
 
-    pub(super) const fn evaluated(&self) -> &EvaluatedCommand {
+    pub(super) fn evaluated(&self) -> &EvaluatedCommand {
         self.attempt.evaluated()
     }
 
@@ -907,7 +908,7 @@ pub(crate) fn evaluate_acquired_command_attempt(
                 state,
                 lease,
                 snapshot,
-                evaluated,
+                evaluated: Arc::new(evaluated),
             })
         }
         Err(ExecutionFault::Arithmetic) => {

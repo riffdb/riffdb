@@ -86,9 +86,33 @@ pub enum CommitGroupDispatchReason {
     ReceiverClosed,
 }
 
+/// Closed coordinator CPU stage used for redaction-safe decomposition.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CommandPipelineStage {
+    /// Durable admission selection and transition.
+    Admission,
+    /// Exact FIFO compatibility partition construction.
+    Compatibility,
+    /// Snapshot materialization and deterministic runtime evaluation.
+    Evaluation,
+    /// Transaction-current validation, encoding, and backend staging.
+    ValidationEncodingStaging,
+    /// Post-commit first-commit publication.
+    Publication,
+}
+
 /// One closed semantic observation from the sole-writer command path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommitTelemetryEvent {
+    /// One bounded command group completed a coordinator CPU stage.
+    CommandPipelineStageCompleted {
+        /// Closed stage identity; no application values are retained.
+        stage: CommandPipelineStage,
+        /// Commands represented by this observation.
+        command_count: u16,
+        /// Wall duration of this coordinator stage.
+        elapsed: Duration,
+    },
     /// The scheduler dispatched one ordered command group.
     CommandGroupDispatched {
         /// Closed reason collection stopped.

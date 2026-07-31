@@ -343,7 +343,7 @@ impl<C> CheckedValidatedCommand<C> {
         self.attempt.resolved_plan()
     }
 
-    pub(super) const fn evaluated(&self) -> &EvaluatedCommand {
+    pub(super) fn evaluated(&self) -> &EvaluatedCommand {
         self.attempt.evaluated()
     }
 

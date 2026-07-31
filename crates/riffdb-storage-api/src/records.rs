@@ -2,6 +2,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::sync::Arc;
 
 use riffdb_types::{
     AdmittedActorContext, CanonicalInputHash, CanonicalRecord, CommitSequence, ConflictKeyHash,
@@ -40,7 +41,8 @@ pub struct StoredEntityRecordV1 {
     entity_version: EntityVersion,
     written_by_contract: ContractVersion,
     schema_binding: DurableKeySchemaBindingV1,
-    fields: CanonicalRecord,
+    fields: Arc<CanonicalRecord>,
+    fields_encoded: Arc<[u8]>,
 }
 
 impl StoredEntityRecordV1 {
@@ -52,7 +54,9 @@ impl StoredEntityRecordV1 {
         schema_binding: DurableKeySchemaBindingV1,
         fields: CanonicalRecord,
     ) -> Result<Self, StorageValueError> {
-        if canonical_record_bytes(&fields)? > MAX_CANONICAL_DOCUMENT_BYTES {
+        let fields_encoded = encode_canonical_record(&fields)
+            .map_err(|error| canonical_codec_storage_error(&error))?;
+        if fields_encoded.len() > MAX_CANONICAL_DOCUMENT_BYTES {
             return Err(StorageValueError::LimitExceeded);
         }
         if written_by_contract != schema_binding.contract_version() {
@@ -63,7 +67,8 @@ impl StoredEntityRecordV1 {
             entity_version,
             written_by_contract,
             schema_binding,
-            fields,
+            fields: Arc::new(fields),
+            fields_encoded: Arc::from(fields_encoded),
         })
     }
 
@@ -93,12 +98,28 @@ impl StoredEntityRecordV1 {
 
     /// Borrows all canonical fields, including compatible unknown fields.
     #[must_use]
-    pub const fn fields(&self) -> &CanonicalRecord {
+    pub fn fields(&self) -> &CanonicalRecord {
         &self.fields
     }
 
+    /// Returns the checked canonical encoding length retained at construction.
+    #[must_use]
+    pub fn fields_encoded_len(&self) -> usize {
+        self.fields_encoded.len()
+    }
+
+    /// Borrows the canonical bytes sealed with the semantic record.
+    #[must_use]
+    pub fn fields_encoded(&self) -> &[u8] {
+        &self.fields_encoded
+    }
+
     pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
-        stored_entity_semantic_bytes(&self.target, &self.schema_binding, &self.fields)
+        stored_entity_semantic_bytes(
+            &self.target,
+            &self.schema_binding,
+            self.fields_encoded.len(),
+        )
     }
 }
 
@@ -155,6 +176,7 @@ pub struct StoredIndexEntryV2 {
     key: IndexEntryKey,
     schema_binding: DurableKeySchemaBindingV1,
     covered_values: CanonicalRecord,
+    covered_values_encoded: Arc<[u8]>,
     partition_key: PartitionKey,
 }
 
@@ -166,13 +188,16 @@ impl StoredIndexEntryV2 {
         covered_values: CanonicalRecord,
         partition_key: PartitionKey,
     ) -> Result<Self, StorageValueError> {
-        if canonical_record_bytes(&covered_values)? > MAX_CANONICAL_DOCUMENT_BYTES {
+        let covered_values_encoded = encode_canonical_record(&covered_values)
+            .map_err(|error| canonical_codec_storage_error(&error))?;
+        if covered_values_encoded.len() > MAX_CANONICAL_DOCUMENT_BYTES {
             return Err(StorageValueError::LimitExceeded);
         }
         let record = Self {
             key,
             schema_binding,
             covered_values,
+            covered_values_encoded: Arc::from(covered_values_encoded),
             partition_key,
         };
         let _ = record.semantic_bytes()?;
@@ -197,6 +222,18 @@ impl StoredIndexEntryV2 {
         &self.covered_values
     }
 
+    /// Returns the checked canonical encoding length retained at construction.
+    #[must_use]
+    pub fn covered_values_encoded_len(&self) -> usize {
+        self.covered_values_encoded.len()
+    }
+
+    /// Borrows the canonical bytes sealed with the semantic record.
+    #[must_use]
+    pub fn covered_values_encoded(&self) -> &[u8] {
+        &self.covered_values_encoded
+    }
+
     /// Borrows the exact canonical logical partition stored with this row.
     #[must_use]
     pub const fn partition_key(&self) -> &PartitionKey {
@@ -204,7 +241,7 @@ impl StoredIndexEntryV2 {
     }
 
     pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
-        let covered_bytes = framed_bytes(canonical_record_bytes(&self.covered_values)?)?;
+        let covered_bytes = framed_bytes(self.covered_values_encoded.len())?;
         framed_bytes(self.key.as_bytes().len())?
             .checked_add(self.schema_binding.semantic_bytes()?)
             .and_then(|value| value.checked_add(covered_bytes))
@@ -463,11 +500,11 @@ impl CommittedEntityMutationV1 {
     }
 
     fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
-        committed_entity_semantic_bytes(
+        committed_entity_semantic_bytes_from_len(
             self.expected,
             self.post_image.target(),
             self.post_image.schema_binding(),
-            self.post_image.fields(),
+            self.post_image.fields_encoded_len(),
         )
     }
 }
@@ -641,7 +678,8 @@ impl StoredOutcomeV1 {
 pub struct StoredDurableEventV1 {
     event_id: EventId,
     event_type_id: EventTypeId,
-    payload: CanonicalRecord,
+    payload: Arc<CanonicalRecord>,
+    payload_encoded: Arc<[u8]>,
     event_hash: EventHash,
 }
 
@@ -695,13 +733,16 @@ impl StoredDurableEventV1 {
         payload: CanonicalRecord,
         event_hash: EventHash,
     ) -> Result<Self, StorageValueError> {
+        let payload_encoded = encode_canonical_record(&payload)
+            .map_err(|error| canonical_codec_storage_error(&error))?;
         if derive_event_hash_v1(event_id, event_type_id, &payload)? != event_hash {
             return Err(StorageValueError::IdentityMismatch);
         }
         Ok(Self {
             event_id,
             event_type_id,
-            payload,
+            payload: Arc::new(payload),
+            payload_encoded: Arc::from(payload_encoded),
             event_hash,
         })
     }
@@ -720,8 +761,20 @@ impl StoredDurableEventV1 {
 
     /// Borrows the complete canonical event payload.
     #[must_use]
-    pub const fn payload(&self) -> &CanonicalRecord {
+    pub fn payload(&self) -> &CanonicalRecord {
         &self.payload
+    }
+
+    /// Returns the checked canonical encoding length retained at construction.
+    #[must_use]
+    pub fn payload_encoded_len(&self) -> usize {
+        self.payload_encoded.len()
+    }
+
+    /// Borrows the canonical bytes sealed with the semantic record.
+    #[must_use]
+    pub fn payload_encoded(&self) -> &[u8] {
+        &self.payload_encoded
     }
 
     /// Returns the domain-separated canonical event hash.
@@ -731,7 +784,7 @@ impl StoredDurableEventV1 {
     }
 
     fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
-        stored_event_semantic_bytes(self.event_type_id, &self.payload)
+        stored_event_semantic_bytes(self.event_type_id, self.payload_encoded.len())
     }
 }
 
@@ -1223,12 +1276,12 @@ impl StoredCommitRecordV1 {
                     mutation.expected(),
                     mutation.post_image().target(),
                     mutation.post_image().schema_binding(),
-                    mutation.post_image().fields(),
+                    mutation.post_image().fields_encoded_len(),
                 )
             }),
             self.events
                 .iter()
-                .map(|event| (event.event_type_id(), event.payload())),
+                .map(|event| (event.event_type_id(), event.payload_encoded_len())),
             &self.declared_outcome,
             self.outbox_event_ids.len(),
         )
@@ -1541,7 +1594,10 @@ impl ValidatedCommandWriteSetShapeV1 {
 /// It owns every coordinator-derived index mutation and epoch advance, preventing
 /// an equal-size shape from being substituted after preflight.
 #[derive(Clone, Eq, PartialEq)]
-pub struct CommandWriteSetPlanV1 {
+pub struct CommandWriteSetPlanV1(Arc<CommandWriteSetPlanInnerV1>);
+
+#[derive(Eq, PartialEq)]
+struct CommandWriteSetPlanInnerV1 {
     intent: CommitIntent,
     affected_targets: AffectedIndexEpochTargets,
     affected_current: AffectedEpochCurrentState,
@@ -1585,50 +1641,50 @@ impl CommandWriteSetPlanV1 {
             index_epochs,
             semantic_classes: _,
         } = shape;
-        Self {
+        Self(Arc::new(CommandWriteSetPlanInnerV1 {
             intent,
             affected_targets,
             affected_current,
             index_entries,
             index_epochs,
             charge,
-        }
+        }))
     }
 
     /// Borrows the exact retained candidate intent used for every derivation.
     #[must_use]
-    pub const fn intent(&self) -> &CommitIntent {
-        &self.intent
+    pub fn intent(&self) -> &CommitIntent {
+        &self.0.intent
     }
 
     /// Borrows the canonical affected prefix set.
     #[must_use]
-    pub const fn affected_targets(&self) -> &AffectedIndexEpochTargets {
-        &self.affected_targets
+    pub fn affected_targets(&self) -> &AffectedIndexEpochTargets {
+        &self.0.affected_targets
     }
 
     /// Borrows exact transaction-current epoch positions used by the advances.
     #[must_use]
-    pub const fn affected_current(&self) -> &AffectedEpochCurrentState {
-        &self.affected_current
+    pub fn affected_current(&self) -> &AffectedEpochCurrentState {
+        &self.0.affected_current
     }
 
     /// Borrows exact canonical index mutations.
     #[must_use]
     pub fn index_entries(&self) -> &[IndexEntryMutationV1] {
-        &self.index_entries
+        &self.0.index_entries
     }
 
     /// Borrows exact canonical affected epoch advances.
     #[must_use]
     pub fn index_epochs(&self) -> &[IndexEpochAdvanceV1] {
-        &self.index_epochs
+        &self.0.index_epochs
     }
 
     /// Returns the checked semantic and encoded capacity charge.
     #[must_use]
-    pub const fn charge(&self) -> CommandWriteSetChargeV1 {
-        self.charge
+    pub fn charge(&self) -> CommandWriteSetChargeV1 {
+        self.0.charge
     }
 
     /// Proves this plan is the exact candidate retained before capacity reservation.
@@ -1639,9 +1695,9 @@ impl CommandWriteSetPlanV1 {
         affected_targets: &AffectedIndexEpochTargets,
         affected_current: &AffectedEpochCurrentState,
     ) -> bool {
-        self.intent == *intent
-            && self.affected_targets == *affected_targets
-            && self.affected_current == *affected_current
+        self.0.intent == *intent
+            && self.0.affected_targets == *affected_targets
+            && self.0.affected_current == *affected_current
     }
 }
 
@@ -1811,7 +1867,7 @@ impl AtomicCommandRecordSet {
 
     /// Borrows the exact pending admission this record set atomically resolves.
     #[must_use]
-    pub const fn expected_pending(&self) -> &crate::StoredPendingAdmissionV1 {
+    pub fn expected_pending(&self) -> &crate::StoredPendingAdmissionV1 {
         self.write_plan.intent().pending()
     }
 
@@ -1823,7 +1879,7 @@ impl AtomicCommandRecordSet {
 
     /// Borrows the exact retained intent from which the graph was derived.
     #[must_use]
-    pub const fn intent(&self) -> &CommitIntent {
+    pub fn intent(&self) -> &CommitIntent {
         self.write_plan.intent()
     }
 
@@ -1883,7 +1939,7 @@ impl AtomicCommandRecordSet {
 
     /// Returns the pre-sequence charge cross-checked against this complete graph.
     #[must_use]
-    pub const fn presequence_charge(&self) -> CommandWriteSetChargeV1 {
+    pub fn presequence_charge(&self) -> CommandWriteSetChargeV1 {
         self.write_plan.charge()
     }
 
@@ -2058,23 +2114,21 @@ fn validate_affected_epoch_coverage(
 fn stored_entity_semantic_bytes(
     target: &EntityTarget,
     schema_binding: &DurableKeySchemaBindingV1,
-    fields: &CanonicalRecord,
+    fields_encoded_len: usize,
 ) -> Result<usize, StorageValueError> {
     target
         .semantic_bytes()?
         .checked_add(8 + 8)
         .and_then(|value| value.checked_add(schema_binding.semantic_bytes().ok()?))
-        .and_then(|value| {
-            value.checked_add(framed_bytes(canonical_record_bytes(fields).ok()?).ok()?)
-        })
+        .and_then(|value| value.checked_add(framed_bytes(fields_encoded_len).ok()?))
         .ok_or(StorageValueError::SizeOverflow)
 }
 
-fn committed_entity_semantic_bytes(
+fn committed_entity_semantic_bytes_from_len(
     expected: ExpectedEntityState,
     target: &EntityTarget,
     schema_binding: &DurableKeySchemaBindingV1,
-    fields: &CanonicalRecord,
+    fields_encoded_len: usize,
 ) -> Result<usize, StorageValueError> {
     let expected_bytes: usize = match expected {
         ExpectedEntityState::Absent => 1,
@@ -2084,16 +2138,16 @@ fn committed_entity_semantic_bytes(
         .checked_add(stored_entity_semantic_bytes(
             target,
             schema_binding,
-            fields,
+            fields_encoded_len,
         )?)
         .ok_or(StorageValueError::SizeOverflow)
 }
 
 fn stored_event_semantic_bytes(
     _event_type_id: EventTypeId,
-    payload: &CanonicalRecord,
+    payload_encoded_len: usize,
 ) -> Result<usize, StorageValueError> {
-    framed_bytes(canonical_record_bytes(payload)?)?
+    framed_bytes(payload_encoded_len)?
         .checked_add(12 + 4 + 32)
         .ok_or(StorageValueError::SizeOverflow)
 }
@@ -2188,10 +2242,10 @@ where
             ExpectedEntityState,
             &'a EntityTarget,
             &'a DurableKeySchemaBindingV1,
-            &'a CanonicalRecord,
+            usize,
         ),
     >,
-    E: IntoIterator<Item = (EventTypeId, &'a CanonicalRecord)>,
+    E: IntoIterator<Item = (EventTypeId, usize)>,
 {
     let conflict_bytes = conflict_hashes
         .len()
@@ -2207,16 +2261,22 @@ where
         .and_then(|value| value.checked_add(read_dependencies.semantic_bytes().ok()?))
         .and_then(|value| value.checked_add(4 + 4))
         .ok_or(StorageValueError::SizeOverflow)?;
-    for (expected, target, binding, fields) in mutations {
+    for (expected, target, binding, fields_encoded_len) in mutations {
         total = total
-            .checked_add(committed_entity_semantic_bytes(
-                expected, target, binding, fields,
+            .checked_add(committed_entity_semantic_bytes_from_len(
+                expected,
+                target,
+                binding,
+                fields_encoded_len,
             )?)
             .ok_or(StorageValueError::SizeOverflow)?;
     }
-    for (event_type_id, payload) in events {
+    for (event_type_id, payload_encoded_len) in events {
         total = total
-            .checked_add(stored_event_semantic_bytes(event_type_id, payload)?)
+            .checked_add(stored_event_semantic_bytes(
+                event_type_id,
+                payload_encoded_len,
+            )?)
             .ok_or(StorageValueError::SizeOverflow)?;
     }
     total
@@ -2292,11 +2352,11 @@ fn projected_atomic_semantic_breakdown(
         0usize,
         |total, mutation| -> Result<usize, StorageValueError> {
             total
-                .checked_add(committed_entity_semantic_bytes(
+                .checked_add(committed_entity_semantic_bytes_from_len(
                     expected_for(mutation),
                     mutation.target(),
                     &binding,
-                    mutation.post_image().fields(),
+                    mutation.post_image().fields_encoded_len(),
                 )?)
                 .ok_or(StorageValueError::SizeOverflow)
         },
@@ -2318,7 +2378,7 @@ fn projected_atomic_semantic_breakdown(
             total
                 .checked_add(stored_event_semantic_bytes(
                     event.event_type_id(),
-                    event.payload(),
+                    event.payload_encoded_len(),
                 )?)
                 .ok_or(StorageValueError::SizeOverflow)
         })?;
@@ -2351,13 +2411,13 @@ fn projected_atomic_semantic_breakdown(
                 expected_for(mutation),
                 mutation.target(),
                 &binding,
-                mutation.post_image().fields(),
+                mutation.post_image().fields_encoded_len(),
             )
         }),
         evaluated
             .event_intents()
             .iter()
-            .map(|event| (event.event_type_id(), event.payload())),
+            .map(|event| (event.event_type_id(), event.payload_encoded_len())),
         evaluated.outcome(),
         evaluated.event_intents().len(),
     )?;
@@ -3069,6 +3129,15 @@ mod tests {
             2
         );
         assert_eq!(larger_event.semantic_bytes() - baseline.semantic_bytes(), 3);
+    }
+
+    #[test]
+    fn cloned_write_plan_shares_the_sealed_immutable_graph() {
+        let records = atomic_record_set(10, &[10]).expect("record graph");
+        let cloned = records.write_plan.clone();
+
+        assert!(Arc::ptr_eq(&records.write_plan.0, &cloned.0));
+        assert_eq!(records.write_plan, cloned);
     }
 
     #[test]

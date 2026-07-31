@@ -320,8 +320,7 @@ pub(super) fn epoch_from_proto(
 pub(super) fn declared_outcome_to_proto(value: &DeclaredOutcome) -> wire::DeclaredOutcomeV1 {
     wire::DeclaredOutcomeV1 {
         outcome_id: value.outcome_id().get(),
-        canonical_value: encode_canonical_record(value.value())
-            .expect("checked canonical outcome must encode"),
+        canonical_value: value.value_encoded().to_vec(),
     }
 }
 

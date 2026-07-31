@@ -977,25 +977,13 @@ fn apply_entities(
     let mut table = transaction.open_table(ENTITIES).map_err(table_error)?;
     for (mutation, bytes) in records.entities().iter().zip(encoded.entities()) {
         let key = encode_entity_key(mutation.post_image().target().key());
-        let current = table.get(key).map_err(precommit_storage_error)?;
-        let observation = current
-            .as_ref()
-            .map(|value| decode_entity_record_v1(value.value()).map(decoded_value))
-            .transpose()?;
-        let matches = match (mutation.expected(), observation.as_ref()) {
-            (ExpectedEntityState::Absent, None) => true,
-            (ExpectedEntityState::Present(expected), Some(current)) => {
-                current.entity_version() == expected
-            }
-            _ => false,
-        };
-        drop(current);
-        if !matches {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        table
+        let prior = table
             .insert(key, bytes.as_bytes())
             .map_err(precommit_storage_error)?;
+        let expected_presence = matches!(mutation.expected(), ExpectedEntityState::Present(_));
+        if prior.is_some() != expected_presence {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
     }
     Ok(())
 }
@@ -1039,23 +1027,13 @@ fn apply_index_epochs(
     let mut table = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
     for (advance, bytes) in records.index_epochs().iter().zip(encoded.index_epochs()) {
         let key = encode_partition_index_key(advance.post_image().target());
-        let current = table.get(key.as_slice()).map_err(precommit_storage_error)?;
-        let observation = current
-            .as_ref()
-            .map(|value| decode_index_epoch_v1(value.value()).map(decoded_value))
-            .transpose()?;
-        let matches = match (advance.prior(), observation.as_ref()) {
-            (IndexEpochPosition::BeforeFirst, None) => true,
-            (IndexEpochPosition::Value(expected), Some(current)) => current.epoch() == expected,
-            _ => false,
-        };
-        drop(current);
-        if !matches {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        table
+        let prior = table
             .insert(key.as_slice(), bytes.as_bytes())
             .map_err(precommit_storage_error)?;
+        let expected_presence = matches!(advance.prior(), IndexEpochPosition::Value(_));
+        if prior.is_some() != expected_presence {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
     }
     Ok(())
 }
