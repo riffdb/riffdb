@@ -1527,6 +1527,86 @@ mod tests {
     }
 
     #[test]
+    fn semantic_bytes_tri_state_matches_real_encoder_lengths() {
+        // W5: pre-fence absent / post-fence None / post-fence Some must charge
+        // the same deltas the real encoder emits.
+        let checksum = BackupIntegrityChecksumV1::new(vec![0x5a; SHA256_BYTES]).expect("checksum");
+        let build = build_metadata();
+        let pre = OfflineBackupManifestV1::new_pre_fence(
+            StorageFormatVersion::V1,
+            database_id(),
+            BackupSnapshotKindV1::StorageEngineData,
+            Vec::new(),
+            None,
+            None,
+            vec![BackupArtifactChecksumV1::new(
+                NonZeroU32::MIN,
+                checksum.clone(),
+            )],
+            build.clone(),
+        )
+        .expect("pre-fence");
+        let post_none = OfflineBackupManifestV1::new(
+            StorageFormatVersion::V1,
+            database_id(),
+            BackupSnapshotKindV1::StorageEngineData,
+            Vec::new(),
+            None,
+            None,
+            None,
+            vec![BackupArtifactChecksumV1::new(
+                NonZeroU32::MIN,
+                checksum.clone(),
+            )],
+            build.clone(),
+        )
+        .expect("post-fence None");
+        let post_some = OfflineBackupManifestV1::new(
+            StorageFormatVersion::V1,
+            database_id(),
+            BackupSnapshotKindV1::StorageEngineData,
+            Vec::new(),
+            None,
+            None,
+            Some(1),
+            vec![BackupArtifactChecksumV1::new(NonZeroU32::MIN, checksum)],
+            build,
+        )
+        .expect("post-fence Some");
+
+        assert!(!pre.history_wire_tagged());
+        assert!(post_none.history_wire_tagged());
+        assert!(post_some.history_wire_tagged());
+        assert_eq!(pre.history_incarnation(), None);
+        assert_eq!(post_none.history_incarnation(), None);
+        assert_eq!(post_some.history_incarnation(), Some(1));
+
+        let encoded_pre = encode_manifest_pre_fence(&pre).expect("encode pre");
+        let encoded_none = encode_manifest(&post_none).expect("encode none");
+        let encoded_some = encode_manifest(&post_some).expect("encode some");
+
+        // Presence-tag only: post-fence None is one byte longer than pre-fence.
+        assert_eq!(encoded_none.len() - encoded_pre.len(), 1);
+        assert_eq!(
+            post_none.semantic_bytes() - pre.semantic_bytes(),
+            encoded_none.len() - encoded_pre.len(),
+            "pre-fence absent vs post-fence None semantic delta must match encoder"
+        );
+        // Some adds presence(1) + u64(8) over None's presence(0).
+        assert_eq!(encoded_some.len() - encoded_none.len(), 8);
+        assert_eq!(
+            post_some.semantic_bytes() - post_none.semantic_bytes(),
+            encoded_some.len() - encoded_none.len(),
+            "post-fence None vs Some semantic delta must match encoder"
+        );
+        assert_eq!(
+            post_some.semantic_bytes() - pre.semantic_bytes(),
+            encoded_some.len() - encoded_pre.len(),
+            "pre-fence vs post-fence Some semantic delta must match encoder"
+        );
+    }
+
+    #[test]
     fn pre_fence_manifest_and_stamp_round_trip() {
         let checksum = BackupIntegrityChecksumV1::new(vec![0x5a; SHA256_BYTES]).expect("checksum");
         let pre_fence = DatabaseFacts {

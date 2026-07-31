@@ -241,6 +241,12 @@ impl RedbSealedStagedRestore {
         &mut self,
         incarnation: u64,
     ) -> Result<(), StorageError> {
+        // Receipt authority is already durable before this stamp; a crash here
+        // resumes from the receipt value without double-advancing.
+        self.hit(
+            RedbMaintenanceFailpoint::BetweenReceiptWriteAndStagedStamp,
+            true,
+        )?;
         crate::backup::stamp_history_incarnation(&self.staged_database_file, incarnation)?;
         self.staged_history_incarnation = incarnation;
         self.sealed_artifact_checksum = sha256_file(&self.staged_database_file)?;

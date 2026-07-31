@@ -530,6 +530,7 @@ async fn run_server(
             validate_current_source,
         } => {
             let operation_id = request.operation_id();
+            let mut retained_target_history_incarnation = None;
             if validate_current_source {
                 let current = open_redb_startup_with_commit_profile(
                     config.database_path(),
@@ -544,6 +545,8 @@ async fn run_server(
                     transport.drain_after_signal().await?;
                     return Err(DaemonError::MaintenanceDriver);
                 }
+                retained_target_history_incarnation =
+                    Some(current.retained_metadata().history_incarnation());
                 drop(current);
             }
             let dependencies = maintenance_driver_dependencies(
@@ -554,6 +557,8 @@ async fn run_server(
                 &identifiers,
                 &clocks,
                 &recovery,
+                retained_target_history_incarnation,
+                None,
             )?;
             let storage = maintenance.storage();
             let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
@@ -585,6 +590,8 @@ async fn run_server(
                 &identifiers,
                 &clocks,
                 &recovery,
+                None,
+                None,
             )?;
             let storage = maintenance.storage();
             let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
@@ -935,6 +942,7 @@ async fn run_multi_database_server(
                 validate_current_source,
             } => {
                 let operation_id = request.operation_id();
+                let mut retained_target_history_incarnation = None;
                 if validate_current_source {
                     let current = open_redb_startup_with_commit_profile(
                         database.database_path(),
@@ -947,6 +955,8 @@ async fn run_multi_database_server(
                         shutdown_multi_before_ready(&mut transport, graphs).await?;
                         return Err(DaemonError::MaintenanceDriver);
                     }
+                    retained_target_history_incarnation =
+                        Some(current.retained_metadata().history_incarnation());
                     drop(current);
                 }
                 let dependencies = maintenance_driver_dependencies(
@@ -957,6 +967,8 @@ async fn run_multi_database_server(
                     &pending.identifiers,
                     &process_clocks,
                     recovery,
+                    retained_target_history_incarnation,
+                    None,
                 )?;
                 let storage = maintenance.storage();
                 let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
@@ -993,6 +1005,8 @@ async fn run_multi_database_server(
                     &pending.identifiers,
                     &process_clocks,
                     recovery,
+                    None,
+                    None,
                 )?;
                 let storage = maintenance.storage();
                 let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
@@ -1589,6 +1603,8 @@ async fn await_multi_restore_retry(
             &prepared.identifiers,
             &prepared.clocks,
             recovery,
+            None,
+            None,
         )?;
         run_offline_maintenance(&mut storage, &maintenance_lifecycle, &dependencies, request)
             .map_err(|_| DaemonError::MaintenanceDriver)?
@@ -1714,6 +1730,8 @@ async fn await_multi_recovery(
                     &prepared.identifiers,
                     &prepared.clocks,
                     recovery,
+                    None,
+                    None,
                 ) {
                     Ok(dependencies) => match run_recovery_restore(
                         &mut storage,
@@ -1804,6 +1822,11 @@ async fn replace_multi_database_generation(
         .generation
         .checked_add(1)
         .ok_or(DaemonError::MaintenanceDriver)?;
+    let retained_target_history_incarnation = generation.lifecycle.retained_history_incarnation();
+    let retained_metrics = generation
+        .graph
+        .as_ref()
+        .map(RunningProductionGraph::metrics);
     generation.lifecycle.stop();
     let (offline_service, _offline_activator, offline_issuer) =
         RiffDbService::begin_initialization();
@@ -1855,6 +1878,8 @@ async fn replace_multi_database_generation(
             &prepared.identifiers,
             &prepared.clocks,
             recovery,
+            retained_target_history_incarnation,
+            retained_metrics,
         )?;
         run_offline_maintenance(
             &mut storage,
@@ -1983,6 +2008,8 @@ async fn run_ready_generations(
     let mut stdin_thread = Some(stdin_thread);
 
     loop {
+        let retained_target_history_incarnation = generation.graph.retained_history_incarnation();
+        let retained_metrics = Some(generation.graph.metrics());
         let completion = supervise_ready_process(
             generation.graph,
             generation.routing,
@@ -2014,6 +2041,8 @@ async fn run_ready_generations(
                 &prepared.identifiers,
                 &prepared.clocks,
                 recovery,
+                retained_target_history_incarnation,
+                retained_metrics,
             )?;
             run_offline_maintenance(&mut storage, &maintenance_lifecycle, &dependencies, request)
                 .map_err(|_| DaemonError::MaintenanceDriver)?
@@ -2082,6 +2111,7 @@ fn trusted_audiences(config: &ServerConfig) -> Result<TrustedAudienceCatalog, Da
     TrustedAudienceCatalog::new(audiences).map_err(|_| DaemonError::MaintenanceDriver)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn maintenance_driver_dependencies<'a>(
     config: &ServerConfig,
     environment: &riffdb_types::Environment,
@@ -2090,6 +2120,8 @@ fn maintenance_driver_dependencies<'a>(
     identifiers: &ProductionIdentifierSources,
     clocks: &'a ProductionWallClocks,
     recovery: &'a MaintenanceRecoveryController,
+    retained_target_history_incarnation: Option<u64>,
+    metrics: Option<riffdb_observability::MetricRegistry>,
 ) -> Result<MaintenanceDriverDependencies<'a>, DaemonError> {
     Ok(MaintenanceDriverDependencies::new(
         startup_inputs.clone(),
@@ -2103,6 +2135,8 @@ fn maintenance_driver_dependencies<'a>(
         Arc::new(NoopAuthenticationTelemetry),
         Arc::new(NoopAuthorizationTelemetry),
         recovery,
+        retained_target_history_incarnation,
+        metrics,
     ))
 }
 
@@ -2244,6 +2278,8 @@ async fn run_restore_retry_until_ready(
             &prepared.identifiers,
             &prepared.clocks,
             recovery,
+            None,
+            None,
         )?;
         run_offline_maintenance(&mut storage, &maintenance_lifecycle, &dependencies, request)
             .map_err(|_| DaemonError::MaintenanceDriver)?
@@ -2420,6 +2456,8 @@ async fn run_recovery_until_ready(
                     &prepared.identifiers,
                     &prepared.clocks,
                     recovery,
+                    None,
+                    None,
                 ) {
                     Ok(dependencies) => match run_recovery_restore(
                         &mut storage,

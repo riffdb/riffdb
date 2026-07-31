@@ -23,6 +23,9 @@ pub enum RedbMaintenanceFailpoint {
     AfterNamedBackupPublication,
     /// After a private staged restore is complete and checksum-validated.
     AfterStagedMaterialization,
+    /// After receipt durable `published_history_incarnation` write, before the
+    /// staged META stamp (C2 option-b crash window).
+    BetweenReceiptWriteAndStagedStamp,
     /// Before the configured database file is atomically replaced.
     BeforeTargetPublication,
     /// After configured database replacement but before parent synchronization.
