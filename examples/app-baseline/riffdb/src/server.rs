@@ -99,8 +99,22 @@ const IDEMPOTENCY_KEY_DOCUMENT: &[u8] =
 pub const DATABASE_ROOT_ENV: &str = "RIFFDB_APP_BASELINE_DB_ROOT";
 /// Default database root under the repo (real disk; gitignored via `/target/`).
 pub const DEFAULT_DATABASE_ROOT: &str = "target/perf-db/app-baseline";
-/// Minimum free bytes required before spawning `riffdbd` (256 MiB).
-pub const MIN_FREE_BYTES: u64 = 256 * 1024 * 1024;
+/// Minimum free bytes required before spawning `riffdbd` in smoke mode (256 MiB).
+pub const MIN_FREE_BYTES_SMOKE: u64 = 256 * 1024 * 1024;
+/// Minimum free bytes required for evidentiary `--full` runs (8 GiB).
+pub const MIN_FREE_BYTES_FULL: u64 = 8 * 1024 * 1024 * 1024;
+/// Backward-compatible alias for smoke floor.
+pub const MIN_FREE_BYTES: u64 = MIN_FREE_BYTES_SMOKE;
+
+/// Free-space floor for a harness mode.
+#[must_use]
+pub const fn min_free_bytes_for_full(full: bool) -> u64 {
+    if full {
+        MIN_FREE_BYTES_FULL
+    } else {
+        MIN_FREE_BYTES_SMOKE
+    }
+}
 
 /// Optional process overrides for a baseline `riffdbd` session.
 #[derive(Clone, Debug, Default)]
@@ -118,6 +132,10 @@ pub struct ServerStartOptions {
     pub database_root: Option<PathBuf>,
     /// Permit resolving onto tmpfs/ramfs (tests only; never for published numbers).
     pub allow_tmpfs: bool,
+    /// Free-space floor before spawn (smoke 256 MiB / full 8 GiB).
+    ///
+    /// `0` means use [`MIN_FREE_BYTES_SMOKE`].
+    pub min_free_bytes: u64,
 }
 
 /// Owns one live `riffdbd` process and a ready public client backend.
@@ -242,6 +260,12 @@ impl RiffDbServerSession {
                 self.bench_root.free_bytes_at_start()
             )),
         }
+    }
+
+    /// OS process id of the `riffdbd` child (for integration kill tests).
+    #[must_use]
+    pub fn child_pid(&self) -> u32 {
+        self.process.child_id
     }
 }
 
@@ -609,12 +633,17 @@ pub fn resolve_bench_root(
     } else {
         PathBuf::from(DEFAULT_DATABASE_ROOT)
     };
+    let min_free_bytes = if options.min_free_bytes == 0 {
+        MIN_FREE_BYTES_SMOKE
+    } else {
+        options.min_free_bytes
+    };
     riffdb_bench_root::BenchRoot::resolve(riffdb_bench_root::BenchRootOptions {
         harness: "app-baseline",
         cli_override: options.database_root.clone(),
         default_root,
         allow_tmpfs: options.allow_tmpfs,
-        min_free_bytes: MIN_FREE_BYTES,
+        min_free_bytes,
     })
 }
 
@@ -650,6 +679,7 @@ enum ReaperCommand {
 }
 
 struct ServerProcess {
+    child_id: u32,
     stdin: Option<std::process::ChildStdin>,
     ready: Receiver<io::Result<String>>,
     write_groups: Receiver<io::Result<[u64; 64]>>,
@@ -660,6 +690,8 @@ struct ServerProcess {
     stderr: Option<JoinHandle<usize>>,
     stderr_ring: Arc<Mutex<VecDeque<String>>>,
     exit_observed: bool,
+    /// Cached exit once observed; subsequent [`poll_exit`] returns this.
+    cached_exit: Option<Result<ExitStatus, String>>,
 }
 
 impl ServerProcess {
@@ -699,6 +731,7 @@ impl ServerProcess {
             );
         }
         let mut child = command.spawn()?;
+        let child_id = child.id();
         let stdin = child
             .stdin
             .take()
@@ -722,6 +755,7 @@ impl ServerProcess {
         let (exit_sender, exited) = mpsc::sync_channel(1);
         let reaper = thread::spawn(move || reap_child(child, commands, exit_sender));
         Ok(Self {
+            child_id,
             stdin: Some(stdin),
             ready,
             write_groups,
@@ -732,6 +766,7 @@ impl ServerProcess {
             stderr: Some(stderr),
             stderr_ring,
             exit_observed: false,
+            cached_exit: None,
         })
     }
 
@@ -766,19 +801,32 @@ impl ServerProcess {
     }
 
     /// Non-blocking poll of the child exit channel (caches observed status).
+    ///
+    /// Once an exit is observed, subsequent calls return the **same** cached
+    /// status so [`RiffDbServerSession::server_alive`] stays truthful.
     fn poll_exit(&mut self) -> Option<io::Result<ExitStatus>> {
-        if self.exit_observed {
-            return None;
+        if let Some(cached) = &self.cached_exit {
+            return Some(match cached {
+                Ok(status) => Ok(*status),
+                Err(message) => Err(io::Error::other(message.clone())),
+            });
         }
         match self.exited.try_recv() {
             Ok(status) => {
                 self.exit_observed = true;
+                let cached = status
+                    .as_ref()
+                    .map(|s| *s)
+                    .map_err(|error| error.to_string());
+                self.cached_exit = Some(cached);
                 Some(status)
             }
             Err(mpsc::TryRecvError::Empty) => None,
             Err(mpsc::TryRecvError::Disconnected) => {
                 self.exit_observed = true;
-                Some(Err(io::Error::other("riffdbd reaper disconnected")))
+                let message = "riffdbd reaper disconnected".to_owned();
+                self.cached_exit = Some(Err(message.clone()));
+                Some(Err(io::Error::other(message)))
             }
         }
     }
@@ -804,6 +852,7 @@ impl ServerProcess {
             Ok(status) => {
                 self.exit_observed = true;
                 let status = status?;
+                self.cached_exit = Some(Ok(status));
                 if status.success() {
                     self.write_groups
                         .recv_timeout(PROCESS_STOP_TIMEOUT)
@@ -1019,6 +1068,13 @@ mod tests {
         assert!(!stale.exists());
         assert!(keep.exists());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn min_free_bytes_scales_with_mode() {
+        assert_eq!(min_free_bytes_for_full(false), MIN_FREE_BYTES_SMOKE);
+        assert_eq!(min_free_bytes_for_full(true), MIN_FREE_BYTES_FULL);
+        assert!(MIN_FREE_BYTES_FULL > MIN_FREE_BYTES_SMOKE);
     }
 
     #[test]
