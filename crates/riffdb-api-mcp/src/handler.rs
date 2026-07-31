@@ -265,13 +265,7 @@ impl McpDynamicToolDefinition {
         result_schema: SchemaDocument,
     ) -> Result<Self, McpHandlerContractError> {
         let name = name.into();
-        if name.is_empty()
-            || name.len() > 128
-            || !name.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
-            || !name
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
-        {
+        if !valid_named_query_tool_name(&name) {
             return Err(McpHandlerContractError);
         }
         Ok(Self {
@@ -1433,7 +1427,11 @@ where
                     McpRiskClass::from_fixed(definition.risk_class()).ok_or_else(internal_error)?,
                 )
             } else {
-                validate_command_tool_name(&exact_name).map_err(|_| unavailable_tool())?;
+                if validate_command_tool_name(&exact_name).is_err()
+                    && !valid_named_query_tool_name(&exact_name)
+                {
+                    return Err(unavailable_tool());
+                }
                 ensure_request_not_cancelled(cancellation.as_ref())?;
                 let invocation = self
                     .begin_invocation(extensions, cancellation.clone())
@@ -1462,11 +1460,16 @@ where
                 if resolved.name() != exact_name {
                     return Err(internal_error());
                 }
+                let risk = if resolved.annotations.read_only {
+                    McpRiskClass::ReadOnlyData
+                } else {
+                    McpRiskClass::DynamicCommand
+                };
                 (
                     McpInvocationTarget::Dynamic(exact_name),
                     resolved.input_schema().clone(),
                     resolved.result_schema().clone(),
-                    McpRiskClass::DynamicCommand,
+                    risk,
                 )
             };
 
@@ -2198,6 +2201,15 @@ fn unavailable_tool() -> McpError {
     McpError::new(ErrorCode::METHOD_NOT_FOUND, "tool unavailable", None)
 }
 
+fn valid_named_query_tool_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
 fn unavailable_resource() -> McpError {
     McpError::resource_not_found("resource unavailable", None)
 }
@@ -2795,6 +2807,35 @@ mod tests {
         .expect("dynamic tool")
     }
 
+    fn named_query_tool() -> McpDynamicToolDefinition {
+        let input_source = concat!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+            "\"additionalProperties\":false,\"properties\":{},\"required\":[],\"type\":\"object\"}"
+        );
+        let result_source = concat!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+            "\"oneOf\":[{\"additionalProperties\":false,\"properties\":{",
+            "\"outcome\":{\"const\":\"Found\",\"type\":\"string\"}},",
+            "\"required\":[\"outcome\"],\"type\":\"object\"}]}"
+        );
+        McpDynamicToolDefinition::from_discovered_query(
+            "ticket_desk_ticket_page",
+            SchemaDocument::from_canonical(
+                "compiler.named-query-input/1",
+                hash_schema(input_source.as_bytes()),
+                input_source,
+            )
+            .expect("input schema"),
+            SchemaDocument::from_canonical(
+                "compiler.named-query-result/1",
+                hash_schema(result_source.as_bytes()),
+                result_source,
+            )
+            .expect("result schema"),
+        )
+        .expect("named query tool")
+    }
+
     fn tool_page_items(
         fixed_count: u8,
         dynamic: &[McpDynamicToolDefinition],
@@ -2914,6 +2955,30 @@ mod tests {
             definition.result_schema().canonical_bytes(),
             result.canonical_bytes()
         );
+    }
+
+    #[test]
+    fn advertised_named_query_tool_is_invocable_and_accounted_as_read_only() {
+        let backend = FakeBackend::new();
+        {
+            let mut state = backend.state();
+            state.dynamic_tool = named_query_tool();
+            state.invoke_mode = InvokeMode::Success(json!({"outcome": "Found"}));
+        }
+        let telemetry = Arc::new(RecordingMcpTelemetry::default());
+        let server = RiffDbMcpServer::new_stdio_with_telemetry(backend.clone(), telemetry.clone());
+        let request = CallToolRequestParams::new("ticket_desk_ticket_page")
+            .with_arguments(serde_json::Map::new());
+        let result =
+            block_on(server.handle_call_tool_with_cancellation(request, &extensions(), None))
+                .expect("named query result");
+
+        assert_eq!(result.structured_content, Some(json!({"outcome": "Found"})));
+        assert_eq!(backend.state().resolve_calls, 1);
+        assert_eq!(backend.state().invoke_calls, 1);
+        assert!(telemetry.snapshot().contains(&McpTelemetryEvent::ToolCall {
+            risk: McpRiskClass::ReadOnlyData,
+        }));
     }
 
     #[test]

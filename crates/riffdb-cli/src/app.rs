@@ -56,6 +56,8 @@ use crate::runner::{RunnerError, RunnerStream, run_budget};
 use crate::value::format_uuid;
 
 const APPLICATION_DEPLOYMENT_STATE_SCHEMA: &str = "riffdb.application-deployment-state/v1";
+const APPLICATION_DEPLOYMENT_TEST_INTERRUPT_AFTER: &str = "RIFFDB_APPLICATION_TEST_INTERRUPT_AFTER";
+const APPLICATION_DEPLOYMENT_TEST_INTERRUPT_EXIT: i32 = 86;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -64,18 +66,54 @@ struct ApplicationDeploymentState {
     database: String,
     lock_hash: String,
     contract_deployed: bool,
+    #[serde(default)]
+    contract_bundle_hash: String,
     query_modules_deployed: Vec<String>,
+    #[serde(default)]
+    query_module_identities: Vec<ApplicationDeploymentQueryModuleState>,
     role: Option<ApplicationDeploymentRoleState>,
     seeds_completed: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+struct ApplicationDeploymentQueryModuleState {
+    module_name: String,
+    module_version: u64,
+    module_hash: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ApplicationDeploymentRoleState {
     role_name: String,
+    #[serde(default)]
+    role_identity: String,
     capability_id: String,
     bound: bool,
     authentication_audience: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ApplicationModuleIdentityError<'a> {
+    code: &'static str,
+    message: &'static str,
+    database: &'a str,
+    lock_hash: &'a str,
+    module_name: &'a str,
+    locked_module_hash: String,
+    expected_active_module_hash: Option<String>,
+    actual_active_module_hash: Option<String>,
+    recovery_action: &'static str,
+}
+
+fn interrupt_application_deployment_after(environment: &dyn Environment, stage: &str) {
+    if environment
+        .value(APPLICATION_DEPLOYMENT_TEST_INTERRUPT_AFTER)
+        .is_some_and(|value| value.as_encoded_bytes() == stage.as_bytes())
+    {
+        std::process::exit(APPLICATION_DEPLOYMENT_TEST_INTERRUPT_EXIT);
+    }
 }
 use crate::scaffold::{
     ScaffoldLanguage, check_application, check_application_lock, create_application,
@@ -539,20 +577,34 @@ async fn application_command(
         }
     };
     let state_path = deployment_root.join("deployment-state.json");
-    let mut state = match load_deployment_state(
-        &state_path,
-        config.database.as_str(),
-        &hex(locked.lock_identity().as_bytes()),
-    ) {
-        Ok(state) => state,
-        Err(()) => {
+    let requested_lock_hash = hex(locked.lock_identity().as_bytes());
+    let mut state =
+        match load_deployment_state(&state_path, config.database.as_str(), &requested_lock_hash) {
+            Ok(state) => state,
+            Err(()) => {
+                return local_error(
+                    identity,
+                    "deployment_state_inexact",
+                    "deployment state does not match the selected database and exact lock",
+                );
+            }
+        };
+    let lock_changed = state.lock_hash != requested_lock_hash;
+    if lock_changed {
+        if state.role.is_some() && (!replace_expired_credential || provision_role.is_none()) {
             return local_error(
                 identity,
-                "deployment_state_inexact",
-                "deployment state does not match the selected database and exact lock",
+                "deployment_lock_changed_requires_role_replacement",
+                "the application lock changed; explicitly replace the retained application role credential",
             );
         }
-    };
+        state.lock_hash.clone_from(&requested_lock_hash);
+        state.contract_deployed = false;
+        state.contract_bundle_hash.clear();
+        state.query_modules_deployed.clear();
+        state.query_module_identities.clear();
+        state.seeds_completed.clear();
+    }
     let metadata = match required_metadata(identity, config, environment) {
         Ok(metadata) => metadata,
         Err(terminal) => return terminal,
@@ -584,6 +636,23 @@ async fn application_command(
         Ok(response) => response,
         Err(error) => return client_error(identity, &error),
     };
+    let locked_contract = locked.manifest().contract();
+    if contract_deployment.result.as_ref().is_some_and(|result| {
+        let descriptor = match result {
+            v1::deploy_contract_response::Result::Activated(descriptor)
+            | v1::deploy_contract_response::Result::AlreadyActive(descriptor) => descriptor,
+            _ => return false,
+        };
+        descriptor.contract_lineage != locked_contract.lineage()
+            || descriptor.contract_version != locked_contract.version()
+            || descriptor.bundle_hash.as_slice() != locked_contract.bundle_hash().as_bytes()
+    }) {
+        return local_error(
+            identity,
+            "locked_contract_identity_mismatch",
+            "the deployed contract identity does not match the exact application lock",
+        );
+    }
     match contract_deployment.result {
         Some(
             v1::deploy_contract_response::Result::Activated(_)
@@ -625,7 +694,9 @@ async fn application_command(
             );
         }
     }
+    interrupt_application_deployment_after(environment, "contract_remote");
     state.contract_deployed = true;
+    state.contract_bundle_hash = hex(locked_contract.bundle_hash().as_bytes());
     if persist_deployment_state(&state_path, &state).is_err() {
         return local_error(
             identity,
@@ -647,6 +718,38 @@ async fn application_command(
                 source,
             });
         }
+        let contract_selector = app_v1::ContractSelector {
+            lineage: locked_contract.lineage().to_owned(),
+            version: locked_contract.version(),
+            bundle_hash: locked_contract.bundle_hash().as_bytes().to_vec(),
+        };
+        let inspection_request_id = match request_id() {
+            Ok(request_id) => request_id,
+            Err(error) => return client_error(identity, &error),
+        };
+        let active_module = match client
+            .get_query_module(
+                app_v1::GetQueryModuleRequest {
+                    contract: Some(contract_selector.clone()),
+                    module_hash: None,
+                    request_id: inspection_request_id,
+                },
+                &metadata,
+            )
+            .await
+        {
+            Ok(response) => response.module,
+            Err(error) => return client_error(identity, &error),
+        };
+        let expected_active_module_hash = active_module
+            .as_ref()
+            .map(|descriptor| descriptor.module_hash.clone());
+        let expected_active = match expected_active_module_hash.as_ref() {
+            Some(hash) => {
+                app_v1::deploy_query_module_request::ExpectedActive::ModuleHash(hash.clone())
+            }
+            None => app_v1::deploy_query_module_request::ExpectedActive::AbsentActive(true),
+        };
         let request_id = match request_id() {
             Ok(request_id) => request_id,
             Err(error) => return client_error(identity, &error),
@@ -654,22 +757,11 @@ async fn application_command(
         let response = match client
             .deploy_query_module(
                 app_v1::DeployQueryModuleRequest {
-                    contract: Some(app_v1::ContractSelector {
-                        lineage: locked.manifest().contract().lineage().to_owned(),
-                        version: locked.manifest().contract().version(),
-                        bundle_hash: locked
-                            .manifest()
-                            .contract()
-                            .bundle_hash()
-                            .as_bytes()
-                            .to_vec(),
-                    }),
+                    contract: Some(contract_selector),
                     module_name: module.name().to_owned(),
                     module_version: module.version(),
                     queries,
-                    expected_active: Some(
-                        app_v1::deploy_query_module_request::ExpectedActive::AnyActive(true),
-                    ),
+                    expected_active: Some(expected_active),
                     request_id,
                 },
                 &metadata,
@@ -679,16 +771,48 @@ async fn application_command(
             Ok(response) => response,
             Err(error) => return client_error(identity, &error),
         };
+        if response.module.as_ref().is_some_and(|descriptor| {
+            descriptor.module_name != module.name()
+                || descriptor.module_version != module.version()
+                || descriptor.module_hash.as_slice() != module.module_hash().as_bytes()
+                || descriptor.contract_lineage != locked_contract.lineage()
+                || descriptor.contract_version != locked_contract.version()
+                || descriptor.contract_bundle_hash.as_slice()
+                    != locked_contract.bundle_hash().as_bytes()
+        }) {
+            return local_error(
+                identity,
+                "locked_query_module_identity_mismatch",
+                "the deployed query module identity does not match the exact application lock",
+            );
+        }
         match app_v1::QueryModuleDeploymentOutcome::try_from(response.outcome).ok() {
             Some(
                 app_v1::QueryModuleDeploymentOutcome::Activated
                 | app_v1::QueryModuleDeploymentOutcome::AlreadyActive,
             ) => {}
             Some(app_v1::QueryModuleDeploymentOutcome::ExpectedActiveMismatch) => {
-                return local_error(
+                let lock_hash = hex(locked.lock_identity().as_bytes());
+                let mismatch = ApplicationModuleIdentityError {
+                    code: "active_query_module_mismatch",
+                    message: "the active query module changed during locked deployment",
+                    database: config.database.as_str(),
+                    lock_hash: &lock_hash,
+                    module_name: module.name(),
+                    locked_module_hash: hex(module.module_hash().as_bytes()),
+                    expected_active_module_hash: expected_active_module_hash.as_deref().map(hex),
+                    actual_active_module_hash: response
+                        .actual_active_module_hash
+                        .as_deref()
+                        .map(hex),
+                    recovery_action: "rerun_application_deploy",
+                };
+                return local_error_with(
                     identity,
+                    &mismatch,
                     "active_query_module_mismatch",
-                    "the selected contract has a different active query module",
+                    "the active query module changed during locked deployment",
+                    2,
                 );
             }
             Some(app_v1::QueryModuleDeploymentOutcome::VersionConflict) => {
@@ -713,6 +837,14 @@ async fn application_command(
                 );
             }
         }
+        if response.module.is_none() {
+            return local_error(
+                identity,
+                "query_module_deployment_identity_absent",
+                "query module deployment returned no verifiable module identity",
+            );
+        }
+        interrupt_application_deployment_after(environment, "query_module_remote");
         if !state
             .query_modules_deployed
             .iter()
@@ -721,6 +853,19 @@ async fn application_command(
             state.query_modules_deployed.push(module.name().to_owned());
             state.query_modules_deployed.sort();
         }
+        state
+            .query_module_identities
+            .retain(|identity| identity.module_name != module.name());
+        state
+            .query_module_identities
+            .push(ApplicationDeploymentQueryModuleState {
+                module_name: module.name().to_owned(),
+                module_version: module.version(),
+                module_hash: hex(module.module_hash().as_bytes()),
+            });
+        state
+            .query_module_identities
+            .sort_by(|left, right| left.module_name.cmp(&right.module_name));
         if persist_deployment_state(&state_path, &state).is_err() {
             return local_error(
                 identity,
@@ -733,45 +878,30 @@ async fn application_command(
     let mut application_credential = None;
     if let Some(role) = provision_role {
         let credential_path = deployment_root.join("application.credential");
-        if state
-            .role
-            .as_ref()
-            .is_some_and(|retained| retained.role_name != role)
-        {
+        let locked_manifest_path = locked.manifest_path().as_os_str().to_owned();
+        let compiled_role =
+            match compile_role_from_workspace(&locked_manifest_path, &role, tenant.as_deref()) {
+                Ok(compiled_role) => compiled_role,
+                Err(error) => return error.terminal(identity),
+            };
+        let expected_role_identity = hex(compiled_role.identity().as_bytes());
+        if state.role.as_ref().is_some_and(|retained| {
+            (retained.role_name != role
+                || (!retained.role_identity.is_empty()
+                    && retained.role_identity != expected_role_identity))
+                && !replace_expired_credential
+        }) {
             return local_error(
                 identity,
-                "deployment_role_mismatch",
-                "retained deployment state belongs to another application role",
+                "deployment_role_identity_mismatch",
+                "the retained application credential does not match the exact locked role",
             );
         }
-        if replace_expired_credential {
-            let Some(retained) = state.role.as_ref() else {
-                return local_error(
-                    identity,
-                    "credential_replacement_identity_absent",
-                    "credential replacement requires the retained old capability identity",
-                );
-            };
-            let terminal = role_command(
-                RoleCommand::Revoke {
-                    capability_id: retained.capability_id.clone(),
-                    reason: RevocationReason::Replaced,
-                },
-                config,
-                environment,
-            )
-            .await;
-            if terminal.failed() {
-                return terminal;
-            }
-            if credential_path.exists() && fs::remove_file(&credential_path).is_err() {
-                return local_error(
-                    identity,
-                    "credential_replacement_cleanup_failed",
-                    "revoked application credential could not be removed",
-                );
-            }
-            state.role = None;
+        if !replace_expired_credential
+            && let Some(retained) = state.role.as_mut()
+            && retained.role_identity.is_empty()
+        {
+            retained.role_identity.clone_from(&expected_role_identity);
             if persist_deployment_state(&state_path, &state).is_err() {
                 return local_error(
                     identity,
@@ -780,11 +910,52 @@ async fn application_command(
                 );
             }
         }
-        if credential_path.exists() && state.role.as_ref().is_none_or(|retained| !retained.bound) {
+        if replace_expired_credential {
+            match state.role.as_ref() {
+                Some(retained) => {
+                    let terminal = role_command(
+                        RoleCommand::Revoke {
+                            capability_id: retained.capability_id.clone(),
+                            reason: RevocationReason::Replaced,
+                        },
+                        config,
+                        environment,
+                    )
+                    .await;
+                    if terminal.failed() {
+                        return terminal;
+                    }
+                    if credential_path.exists() && fs::remove_file(&credential_path).is_err() {
+                        return local_error(
+                            identity,
+                            "credential_replacement_cleanup_failed",
+                            "revoked application credential could not be removed",
+                        );
+                    }
+                    state.role = None;
+                    if persist_deployment_state(&state_path, &state).is_err() {
+                        return local_error(
+                            identity,
+                            "deployment_state_write_failed",
+                            "durable deployment progress could not be retained",
+                        );
+                    }
+                }
+                None if !lock_changed => {
+                    return local_error(
+                        identity,
+                        "credential_replacement_identity_absent",
+                        "credential replacement requires the retained old capability identity",
+                    );
+                }
+                None => {}
+            }
+        }
+        if credential_path.exists() && state.role.is_none() {
             return local_error(
                 identity,
                 "credential_identity_unbound",
-                "application credential exists without matching retained role state",
+                "application credential exists without retained role identity",
             );
         }
         if !credential_path.exists() && state.role.as_ref().is_some_and(|retained| retained.bound) {
@@ -794,7 +965,7 @@ async fn application_command(
                 "retained application credential is missing; use explicit replacement",
             );
         }
-        if !credential_path.exists() {
+        if state.role.as_ref().is_none_or(|retained| !retained.bound) {
             let capability_id = match state.role.as_ref() {
                 Some(retained) => retained.capability_id.clone(),
                 None => {
@@ -812,6 +983,7 @@ async fn application_command(
                     };
                     state.role = Some(ApplicationDeploymentRoleState {
                         role_name: role.clone(),
+                        role_identity: expected_role_identity.clone(),
                         capability_id: capability_id.clone(),
                         bound: false,
                         authentication_audience: None,
@@ -852,7 +1024,7 @@ async fn application_command(
             let authentication_audience = health.authentication_audience;
             let terminal = role_command(
                 RoleCommand::Bind {
-                    manifest: locked.manifest_path().as_os_str().to_owned(),
+                    manifest: locked_manifest_path,
                     role,
                     tenant,
                     principal: format!("app:{}", locked.manifest().application_name()),
@@ -869,6 +1041,7 @@ async fn application_command(
             if terminal.failed() {
                 return terminal;
             }
+            interrupt_application_deployment_after(environment, "role_bound_remote");
             let Some(retained) = state.role.as_mut() else {
                 return invalid_input(identity);
             };
@@ -948,6 +1121,7 @@ async fn application_command(
             if terminal.failed() {
                 return terminal;
             }
+            interrupt_application_deployment_after(environment, "seed_remote");
             if !state.seeds_completed.iter().any(|item| item == source) {
                 state.seeds_completed.push(source.to_owned());
                 state.seeds_completed.sort();
@@ -1007,7 +1181,9 @@ fn load_deployment_state(
             database: database.to_owned(),
             lock_hash: lock_hash.to_owned(),
             contract_deployed: false,
+            contract_bundle_hash: String::new(),
             query_modules_deployed: Vec::new(),
+            query_module_identities: Vec::new(),
             role: None,
             seeds_completed: Vec::new(),
         });
@@ -1020,13 +1196,42 @@ fn load_deployment_state(
     let state: ApplicationDeploymentState = serde_json::from_slice(&bytes).map_err(|_| ())?;
     if state.schema != APPLICATION_DEPLOYMENT_STATE_SCHEMA
         || state.database != database
-        || state.lock_hash != lock_hash
+        || state.lock_hash.len() != 64
+        || !state
+            .lock_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         || state.query_modules_deployed.len() > 4_096
+        || state.query_module_identities.len() > 4_096
         || state.seeds_completed.len() > 4_096
+        || (!state.contract_bundle_hash.is_empty()
+            && (state.contract_bundle_hash.len() != 64
+                || !state
+                    .contract_bundle_hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))))
         || state
             .query_modules_deployed
             .windows(2)
             .any(|pair| pair[0] >= pair[1])
+        || state
+            .query_module_identities
+            .windows(2)
+            .any(|pair| pair[0].module_name >= pair[1].module_name)
+        || state.query_module_identities.iter().any(|identity| {
+            identity.module_name.is_empty()
+                || identity.module_name.len() > 256
+                || identity.module_version == 0
+                || identity.module_hash.len() != 64
+                || !identity
+                    .module_hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                || !state
+                    .query_modules_deployed
+                    .iter()
+                    .any(|name| name == &identity.module_name)
+        })
         || state
             .seeds_completed
             .windows(2)
@@ -1034,6 +1239,12 @@ fn load_deployment_state(
         || state.role.as_ref().is_some_and(|role| {
             role.role_name.is_empty()
                 || role.role_name.len() > 256
+                || (!role.role_identity.is_empty()
+                    && (role.role_identity.len() != 64
+                        || !role
+                            .role_identity
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))))
                 || parse_uuid_v7(&role.capability_id).is_none()
                 || (role.bound
                     && role
@@ -4311,9 +4522,18 @@ mod tests {
         let mut state =
             load_deployment_state(&path, "ea", &lock_hash).expect("new exact deployment state");
         state.contract_deployed = true;
+        state.contract_bundle_hash = "cd".repeat(32);
         state.query_modules_deployed.push("EaQueries".to_owned());
+        state
+            .query_module_identities
+            .push(ApplicationDeploymentQueryModuleState {
+                module_name: "EaQueries".to_owned(),
+                module_version: 1,
+                module_hash: "de".repeat(32),
+            });
         state.role = Some(ApplicationDeploymentRoleState {
             role_name: "EaApplication".to_owned(),
+            role_identity: "ef".repeat(32),
             capability_id: "01900000-0000-7000-8000-000000000001".to_owned(),
             bound: true,
             authentication_audience: Some("riffdb-grpc-loopback".to_owned()),
@@ -4337,7 +4557,31 @@ mod tests {
             "EaApplication"
         );
         assert!(load_deployment_state(&path, "default", &lock_hash).is_err());
-        assert!(load_deployment_state(&path, "ea", &"cd".repeat(32)).is_err());
+        assert_eq!(
+            load_deployment_state(&path, "ea", &"cd".repeat(32))
+                .expect("a successor lock is reconciled by deployment")
+                .lock_hash,
+            lock_hash
+        );
+
+        let legacy = serde_json::json!({
+            "schema": APPLICATION_DEPLOYMENT_STATE_SCHEMA,
+            "database": "ea",
+            "lock_hash": lock_hash,
+            "contract_deployed": true,
+            "query_modules_deployed": ["EaQueries"],
+            "role": null,
+            "seeds_completed": []
+        });
+        fs::write(
+            &path,
+            serde_json::to_vec(&legacy).expect("legacy state JSON"),
+        )
+        .expect("legacy state fixture");
+        let legacy = load_deployment_state(&path, "ea", &"ab".repeat(32))
+            .expect("legacy state remains resumable");
+        assert!(legacy.contract_bundle_hash.is_empty());
+        assert!(legacy.query_module_identities.is_empty());
         fs::remove_dir_all(directory).expect("fixture cleanup");
     }
 

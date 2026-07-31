@@ -773,6 +773,42 @@ if [[ "$(sha256sum "$database_add_config" | sed 's/ .*//')" != "$database_add_ha
     fail "duplicate database rejection changed retained configuration"
 fi
 
+for migration_phase in prepared legacy_backup_staged config_published; do
+    migration_root="$work_root/user database addition $migration_phase"
+    set_isolated_user_roots "$migration_root"
+    "$installer" install --user \
+        --from-binaries "$fixture_bin" \
+        --no-start \
+        >/dev/null
+    migration_config="$XDG_CONFIG_HOME/riffdb/riffdbd.toml"
+    migration_data="$XDG_DATA_HOME/riffdb"
+    printf '%s\n' "$migration_phase" \
+        >"$migration_data/backups/retained-$migration_phase"
+    if RIFFDB_INSTALL_TEST_INTERRUPT_AFTER="$migration_phase" \
+        "$installer" install --user --add-database ea --no-start \
+        >/dev/null 2>&1
+    then
+        fail "database addition crossed its armed $migration_phase interruption"
+    fi
+    "$installer" install --user --add-database ea --no-start >/dev/null
+    for expected in \
+        '[databases.default]' \
+        '[databases.ea]' \
+        "$migration_data/data/riffdb.redb" \
+        "$migration_data/data/ea.redb" \
+        "$migration_data/backups/default" \
+        "$migration_data/backups/ea"
+    do
+        grep -F "$expected" "$migration_config" >/dev/null \
+            || fail "resumed $migration_phase migration omitted: $expected"
+    done
+    if [[ ! -f "$migration_data/backups/default/retained-$migration_phase" \
+       || -e "$XDG_STATE_HOME/riffdb/.install-add-database-v1" \
+       || -e "$migration_data/.backups-add-database-v1" ]]; then
+        fail "resumed $migration_phase migration lost state or retained private phase files"
+    fi
+done
+
 custom_add_root="$work_root/custom database addition rejection"
 set_isolated_user_roots "$custom_add_root"
 "$installer" install --user \

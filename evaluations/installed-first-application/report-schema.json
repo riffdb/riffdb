@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "agent_identity": {"pattern": "^[A-Za-z0-9_.-]{1,128}$", "type": "string"},
+    "application_deployed": {"type": "boolean"},
+    "boundary_passed": {"type": "boolean"},
+    "bundle_hash": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "cli_named_query_passed": {"type": "boolean"},
+    "contract_bundle_hash": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "database_isolation_passed": {"type": "boolean"},
+    "explanation": {"maxLength": 4096, "minLength": 1, "type": "string"},
+    "fresh_context": {"type": "boolean"},
+    "human_interventions": {"maximum": 1000, "minimum": 0, "type": "integer"},
+    "independent": {"type": "boolean"},
+    "kernel_attempts": {"minimum": 0, "type": "integer"},
+    "least_authority_passed": {"type": "boolean"},
+    "lock_hash": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "manual_configuration_edits": {"minimum": 0, "type": "integer"},
+    "mcp_named_query_passed": {"type": "boolean"},
+    "module_hash": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "other_database": {"const": "default", "type": "string"},
+    "public_surface_only": {"type": "boolean"},
+    "rating": {"maximum": 10, "minimum": 0, "type": "number"},
+    "role_identity": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "run_id": {"pattern": "^[a-z0-9-]{1,64}$", "type": "string"},
+    "schema": {"const": "riffdb-installed-first-application-run/v1"},
+    "seed_completed": {"type": "boolean"},
+    "selected_database": {"const": "ea", "type": "string"},
+    "source_access": {
+      "additionalProperties": false,
+      "properties": {
+        "riffdb_implementation": {"type": "boolean"},
+        "ticketdesk": {"type": "boolean"}
+      },
+      "required": ["riffdb_implementation", "ticketdesk"],
+      "type": "object"
+    },
+    "time_to_complete_seconds": {"maximum": 7200, "minimum": 0, "type": "integer"},
+    "transcript_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+  },
+  "required": [
+    "schema", "run_id", "bundle_hash", "agent_identity", "independent",
+    "fresh_context", "selected_database", "other_database",
+    "human_interventions", "manual_configuration_edits", "kernel_attempts",
+    "source_access", "public_surface_only", "database_isolation_passed",
+    "application_deployed", "seed_completed", "cli_named_query_passed",
+    "mcp_named_query_passed", "least_authority_passed", "boundary_passed",
+    "lock_hash", "contract_bundle_hash", "module_hash", "role_identity",
+    "time_to_complete_seconds", "rating", "explanation", "transcript_sha256"
+  ],
+  "type": "object"
+}

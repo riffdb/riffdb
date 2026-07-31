@@ -1,0 +1,9 @@
+{
+  "schema": "riffdb-agent-application-alpha-bundle/v1",
+  "bundle_hash": "979ed8434906e06484f07dc0a749fc08dafc2a5dfb6837d9c385c08b777bd4a5",
+  "revision": "a98cecbf9da8ae8dde4278f978030a72585332d0",
+  "sealed": true,
+  "contains_ticketdesk": false,
+  "contains_riffdb_implementation": false,
+  "public_rust_sdk_source": true
+}

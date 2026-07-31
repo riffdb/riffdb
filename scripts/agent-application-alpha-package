@@ -53,7 +53,11 @@ cp "$repo_root/release/config/bootstrap-ticketdesk-dev.json" \
 cp "$repo_root/README.md" "$temporary/docs/README.md"
 cp "$repo_root/docs/safety-by-construction.md" "$temporary/docs/"
 cp "$repo_root/docs/agent-application-alpha.md" "$temporary/docs/"
+cp "$repo_root/docs/installation.md" "$temporary/docs/"
+cp "$repo_root/docs/configuration.md" "$temporary/docs/"
 cp -R "$repo_root/docs/contracts" "$temporary/docs/"
+mkdir -p "$temporary/docs/mcp"
+cp "$repo_root/docs/mcp/agent-cookbook.md" "$temporary/docs/mcp/"
 mkdir -p "$temporary/docs/getting-started"
 for document in \
     AGENT-APPLICATION-QUICKSTART.md APPLICATION-ERRORS.md APPLICATION-MANIFEST.md \
@@ -89,6 +93,13 @@ cp "$repo_root/evaluations/agent-application-alpha/event-schema.json" "$temporar
 cp "$repo_root/evaluations/agent-application-alpha/qualified-event-schema.json" \
     "$temporary/evaluation/"
 cp "$repo_root/evaluations/agent-application-alpha/report-schema.json" "$temporary/evaluation/"
+mkdir -p "$temporary/evaluation/installed-first-application"
+cp "$repo_root/evaluations/installed-first-application/BRIEF.md" \
+    "$temporary/evaluation/installed-first-application/"
+cp "$repo_root/evaluations/installed-first-application/PROTOCOL.md" \
+    "$temporary/evaluation/installed-first-application/"
+cp "$repo_root/evaluations/installed-first-application/report-schema.json" \
+    "$temporary/evaluation/installed-first-application/"
 
 "$temporary/bin/riffdb" --help >/dev/null
 mkdir "$temporary/.application-smoke"

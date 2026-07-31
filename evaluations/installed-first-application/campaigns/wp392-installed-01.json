@@ -1,0 +1,35 @@
+{
+  "schema": "riffdb-installed-first-application-campaign/v1",
+  "campaign_id": "wp392-installed-01",
+  "bundle_hash": "979ed8434906e06484f07dc0a749fc08dafc2a5dfb6837d9c385c08b777bd4a5",
+  "status": "passed",
+  "immutable": true,
+  "bundle_manifest": {
+    "path": "evaluations/installed-first-application/runs/wp392-installed-meeting-actions-terra-02/bundle.json",
+    "sha256": "65f4ee11858fe55994a4ae828238d5773ae60a870b0c283a9e30279e104fb730"
+  },
+  "bundle_checksums": {
+    "path": "evaluations/installed-first-application/runs/wp392-installed-meeting-actions-terra-02/checksums.sha256",
+    "sha256": "979ed8434906e06484f07dc0a749fc08dafc2a5dfb6837d9c385c08b777bd4a5"
+  },
+  "run": {
+    "run_id": "wp392-installed-meeting-actions-terra-02",
+    "agent_identity": "terra-wp392-installed-02",
+    "report": {
+      "path": "evaluations/installed-first-application/runs/wp392-installed-meeting-actions-terra-02/report.json",
+      "sha256": "3b176fe2de59e61ff2f4e2e6833e621beafe7a72c66de87a457593fa677a9cce"
+    },
+    "events": {
+      "path": "evaluations/installed-first-application/runs/wp392-installed-meeting-actions-terra-02/events.jsonl",
+      "sha256": "8acbb1ee39bf00e57db19c05cd661cfc99f678968bc41b2884b9adb582bb66ce"
+    },
+    "application_lock": {
+      "path": "evaluations/installed-first-application/runs/wp392-installed-meeting-actions-terra-02/riffdb.application.lock.json",
+      "sha256": "01c39b9b8c9e6b82c759ea2f5fbb7a1963f6ea6a44e635fbb3e28854535874c6"
+    },
+    "deployment_state": {
+      "path": "evaluations/installed-first-application/runs/wp392-installed-meeting-actions-terra-02/deployment-state.json",
+      "sha256": "26ecb1a14f243da36fc2f421b56c55e1a92c66c54d75779ed2e56067afccbff3"
+    }
+  }
+}

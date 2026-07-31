@@ -448,6 +448,15 @@ fn validate_schema_node(
             validate_schema_node(branch, definitions, depth + 1, false, visited)?;
         }
     }
+    if let Some(branches) = object.get("anyOf") {
+        let branches = branches.as_array().ok_or(SchemaValidationError)?;
+        if branches.is_empty() {
+            return Err(SchemaValidationError);
+        }
+        for branch in branches {
+            validate_schema_node(branch, definitions, depth + 1, false, visited)?;
+        }
+    }
     if let Some(negated) = object.get("not") {
         validate_schema_node(negated, definitions, depth + 1, false, visited)?;
     }
@@ -495,6 +504,7 @@ fn is_schema_keyword(key: &str, root: bool) -> bool {
         key,
         "$ref"
             | "additionalProperties"
+            | "anyOf"
             | "const"
             | "contentEncoding"
             | "default"
@@ -668,6 +678,13 @@ impl ValidationState<'_> {
             if matches != 1 {
                 return Err(SchemaValidationError);
             }
+        }
+        if let Some(branches) = object.get("anyOf").and_then(Value::as_array)
+            && !branches
+                .iter()
+                .any(|branch| self.validate_instance(branch, instance, depth + 1).is_ok())
+        {
+            return Err(SchemaValidationError);
         }
         self.validate_number(object, instance)?;
         self.validate_string(object, instance)?;
@@ -1279,6 +1296,42 @@ mod tests {
                 Err(SchemaValidationError)
             );
         }
+    }
+
+    #[test]
+    fn any_of_accepts_one_or_more_bounded_branches_and_rejects_no_match() {
+        let source = concat!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+            "\"additionalProperties\":false,\"properties\":{\"value\":{",
+            "\"anyOf\":[{\"type\":\"integer\"},{\"minimum\":0,\"type\":\"integer\"},",
+            "{\"type\":\"null\"}]}},\"required\":[\"value\"],\"type\":\"object\"}"
+        );
+        let schema = SchemaDocument::from_canonical(
+            "test/any-of/v1",
+            hash_schema(source.as_bytes()),
+            source,
+        )
+        .expect("bounded anyOf schema");
+        let validator = RiffDbSchemaValidator;
+        for accepted in [
+            json!({"value": 1}),
+            json!({"value": -1}),
+            json!({"value": null}),
+        ] {
+            validator
+                .validate(&schema, &accepted)
+                .expect("at least one branch matches");
+        }
+        assert_eq!(
+            validator.validate(&schema, &json!({"value": "one"})),
+            Err(SchemaValidationError)
+        );
+
+        let empty = json!({
+            "$schema": DIALECT,
+            "anyOf": []
+        });
+        assert_eq!(validate_schema_source(&empty), Err(SchemaValidationError));
     }
 
     #[test]

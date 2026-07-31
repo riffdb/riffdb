@@ -213,8 +213,36 @@ ordinary idempotent commands under the resulting application credential.
 Private lock- and database-bound progress, the application credential, and
 generated application-only `client.toml` and `mcp.toml` live beneath
 `.riffdb/deployments/<database>/`; this state records identities but is never
-an authority source. Explicit `--replace-expired-credential` revokes the
-retained old capability before creating its replacement.
+an authority source. The journal records the exact lock hash, contract bundle
+hash, query-module names, versions and hashes, compiled role identity, and
+capability ID. A deploy compares those locked identities with every server
+response; it never treats an operation name or a locally completed stage as
+proof that the active server identity matches.
+
+The deploy command is safe to rerun after interruption at contract deployment,
+query-module deployment, role binding, or any individual seed command. Remote
+success is reconciled with the retained request and capability identity before
+the next stage is published locally. Do not delete
+`.riffdb/deployments/<database>/` to recover from an uncertain deploy: rerun the
+same command with the same exact lock.
+
+Changing the application lock is a successor deployment, not a resume. When a
+prior application role exists, RiffDB refuses to mutate the server until the
+operator supplies both the role and the explicit replacement acknowledgement:
+
+```bash
+riffdb application deploy \
+  --provision-role EaApplication \
+  --replace-expired-credential \
+  --seed
+```
+
+That path deploys the exact successor, revokes the retained old capability,
+binds the role compiled from the successor lock, and atomically publishes the
+new private client and MCP configuration. A module compare-and-swap race fails
+with the database alias plus the lock, locked-module, expected-active, and
+actual-active hashes. Never copy a hash from an error into source or bypass the
+lock; rerun deployment after reconciling the competing deployment.
 
 Bootstrap defaults to `http://127.0.0.1:7443`. To select a deliberately
 reconfigured loopback listener, set an exact endpoint for that invocation:

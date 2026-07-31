@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+fail() {
+    printf 'installed first-application environment failed: %s\n' "$1" >&2
+    exit 1
+}
+
+usage() {
+    printf '%s\n' \
+        'usage: scripts/installed-first-application-environment start ROOT BINARY_DIR BUNDLE_DIR' \
+        '       scripts/installed-first-application-environment stop ROOT' >&2
+}
+
+[[ $# -ge 2 ]] || { usage; exit 2; }
+action="$1"
+root="$2"
+[[ "$root" == /* && "$root" != / && "$root" != */../* ]] \
+    || fail 'ROOT must be a narrow absolute path'
+for tool in chmod grep jq kill mkdir mkfifo mv sed setsid tail timeout; do
+    command -v "$tool" >/dev/null 2>&1 \
+        || fail "required evaluator tool is unavailable: $tool"
+done
+
+if [[ "$action" == stop ]]; then
+    [[ $# -eq 2 ]] || { usage; exit 2; }
+    marker="$root/environment.json"
+    [[ -f "$marker" && ! -L "$marker" ]] \
+        || fail 'environment marker is absent or unsafe'
+    jq -e '.schema == "riffdb-installed-evaluation-environment/v1"' \
+        "$marker" >/dev/null || fail 'environment marker is invalid'
+    pid="$(jq -er '.server_pid | strings | select(test("^[1-9][0-9]*$"))' "$marker")"
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -TERM "$pid"
+        timeout 5s tail --pid="$pid" -f /dev/null >/dev/null 2>&1 || true
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -KILL "$pid"
+        fi
+    fi
+    exit 0
+fi
+
+[[ "$action" == start && $# -eq 4 ]] || { usage; exit 2; }
+binary_dir="$3"
+bundle_dir="$4"
+[[ "$binary_dir" == /* && -d "$binary_dir" && ! -L "$binary_dir" ]] \
+    || fail 'BINARY_DIR is unavailable or unsafe'
+[[ "$bundle_dir" == /* && -d "$bundle_dir" && ! -L "$bundle_dir" ]] \
+    || fail 'BUNDLE_DIR is unavailable or unsafe'
+for binary in riffdb riffdbd riffdb-mcp; do
+    [[ -x "$binary_dir/$binary" && ! -L "$binary_dir/$binary" ]] \
+        || fail "required binary is unavailable: $binary"
+done
+[[ -f "$bundle_dir/bundle.json" && ! -L "$bundle_dir/bundle.json" ]] \
+    || fail 'sealed bundle metadata is unavailable'
+bundle_hash="$(jq -er '.bundle_hash | select(test("^[0-9a-f]{64}$"))' \
+    "$bundle_dir/bundle.json")"
+
+[[ ! -e "$root" && ! -L "$root" ]] || fail 'ROOT already exists'
+mkdir -m 0700 "$root"
+home="$root/home"
+config_home="$root/config"
+data_home="$root/data"
+state_home="$root/state"
+runtime_home="$root/runtime"
+temporary_home="$root/tmp"
+shim_dir="$root/shims"
+application_dir="$root/application"
+evidence_dir="$root/evidence"
+mkdir -m 0700 "$home" "$config_home" "$data_home" "$state_home" \
+    "$runtime_home" "$temporary_home" "$shim_dir" "$application_dir" \
+    "$evidence_dir"
+
+export HOME="$home"
+export XDG_CONFIG_HOME="$config_home"
+export XDG_DATA_HOME="$data_home"
+export XDG_STATE_HOME="$state_home"
+export XDG_RUNTIME_DIR="$runtime_home"
+export TMPDIR="$temporary_home"
+
+verify_log="$root/systemd-analyze.log"
+: >"$verify_log"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    '[[ $# -eq 3 && "$1" == --user && "$2" == verify && -f "$3" && ! -L "$3" ]]' \
+    'printf "%s\n" "$3" >>"${RIFFDB_EVALUATION_VERIFY_LOG:?}"' \
+    >"$shim_dir/systemd-analyze"
+chmod 0755 "$shim_dir/systemd-analyze"
+for command_name in codex loginctl sudo systemctl; do
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 97' >"$shim_dir/$command_name"
+    chmod 0755 "$shim_dir/$command_name"
+done
+export RIFFDB_EVALUATION_VERIFY_LOG="$verify_log"
+export PATH="$shim_dir:$PATH"
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+"$repo_root/scripts/release-source-install" install --user \
+    --database default --database ea --from-binaries "$binary_dir" --no-start \
+    >"$root/install.log" 2>"$root/install.stderr"
+
+server_config="$config_home/riffdb/riffdbd.toml"
+candidate="$root/riffdbd.toml.candidate"
+evaluation_port="${RIFFDB_EVALUATION_PORT:-17443}"
+[[ "$evaluation_port" =~ ^[1-9][0-9]{3,4}$ \
+   && "$evaluation_port" -le 65535 ]] || fail 'evaluation port is invalid'
+sed "s/^grpc_listen = \"127\\.0\\.0\\.1:7443\"$/grpc_listen = \"127.0.0.1:$evaluation_port\"/" \
+    "$server_config" >"$candidate"
+chmod 0600 "$candidate"
+mv "$candidate" "$server_config"
+grep -Fx "grpc_listen = \"127.0.0.1:$evaluation_port\"" "$server_config" >/dev/null \
+    || fail 'isolated listener rewrite was not exact'
+
+ready_fifo="$root/riffdbd-ready.fifo"
+mkfifo -m 0600 "$ready_fifo"
+setsid "$home/.local/bin/riffdbd" --config "$server_config" \
+    </dev/null >"$ready_fifo" 2>"$root/riffdbd.stderr" &
+server_pid=$!
+exec {ready_fd}<"$ready_fifo"
+if ! IFS= read -r -t 30 ready_line <&"$ready_fd"; then
+    kill -KILL "$server_pid" 2>/dev/null || true
+    fail 'installed server did not publish readiness'
+fi
+exec {ready_fd}<&-
+rm "$ready_fifo"
+case "$ready_line" in
+    riffdbd-ready-v1$'\t'127.0.0.1:*) address="${ready_line#*$'\t'}" ;;
+    *) kill -KILL "$server_pid" 2>/dev/null || true; fail 'readiness was invalid' ;;
+esac
+endpoint="http://$address"
+
+RIFFDB_ENDPOINT="$endpoint" "$repo_root/scripts/release-source-bootstrap" \
+    --user --database default >"$root/bootstrap-default.log" \
+    2>"$root/bootstrap-default.stderr"
+RIFFDB_ENDPOINT="$endpoint" "$repo_root/scripts/release-source-bootstrap" \
+    --user --database ea >"$root/bootstrap-ea.log" \
+    2>"$root/bootstrap-ea.stderr"
+
+default_config="$config_home/riffdb/client.toml"
+ea_config="$config_home/riffdb/client-ea.toml"
+for config in "$default_config" "$ea_config"; do
+    [[ -f "$config" && ! -L "$config" ]] || fail 'bootstrap omitted a client config'
+done
+"$home/.local/bin/riffdb" --config "$default_config" --output json server health \
+    >"$root/health-default.json"
+"$home/.local/bin/riffdb" --config "$ea_config" --output json server health \
+    >"$root/health-ea.json"
+
+environment="$root/environment.sh"
+{
+    printf 'export HOME=%q\n' "$home"
+    printf 'export XDG_CONFIG_HOME=%q\n' "$config_home"
+    printf 'export XDG_DATA_HOME=%q\n' "$data_home"
+    printf 'export XDG_STATE_HOME=%q\n' "$state_home"
+    printf 'export XDG_RUNTIME_DIR=%q\n' "$runtime_home"
+    printf 'export TMPDIR=%q\n' "$temporary_home"
+    printf 'export PATH=%q:$PATH\n' "$bundle_dir/bin"
+    printf 'export RIFFDB_EVALUATION_BUNDLE=%q\n' "$bundle_dir"
+    printf 'export RIFFDB_EVALUATION_BUNDLE_HASH=%q\n' "$bundle_hash"
+    printf 'export RIFFDB_EVALUATION_DATABASE_CONFIG=%q\n' "$ea_config"
+    printf 'export RIFFDB_EVALUATION_OTHER_DATABASE_CONFIG=%q\n' "$default_config"
+    printf 'export RIFFDB_EVALUATION_APPLICATION_DIR=%q\n' "$application_dir"
+    printf 'export RIFFDB_EVALUATION_EVIDENCE_DIR=%q\n' "$evidence_dir"
+} >"$environment"
+chmod 0600 "$environment"
+
+jq -n \
+    --arg pid "$server_pid" \
+    --arg bundle_hash "$bundle_hash" \
+    '{
+      schema: "riffdb-installed-evaluation-environment/v1",
+      server_pid: $pid,
+      bundle_hash: $bundle_hash,
+      databases: ["default", "ea"]
+    }' >"$root/environment.json"
+chmod 0600 "$root/environment.json"
+printf '%s\n' "$environment"
