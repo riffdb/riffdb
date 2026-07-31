@@ -15,6 +15,7 @@ const DATABASE: &str = "riffdb.storage.v1.StoredDatabaseIdentityV1";
 pub(super) const APPLICATION: &str = "riffdb.storage.v1.StoredApplicationSequenceAllocatorV1";
 const ADMINISTRATION: &str = "riffdb.storage.v1.StoredAdministrationSequenceAllocatorV1";
 const RECORD_REGISTRY: &str = "riffdb.storage.v1.StoredRecordRegistryV2";
+const HISTORY_INCARNATION: &str = "riffdb.storage.v1.StoredHistoryIncarnationV1";
 
 /// Returns the exact registry digest required by current storage-format V2.
 #[must_use]
@@ -148,6 +149,35 @@ pub fn decode_administration_sequence_allocator_v1(
                 .map(AdministrationSequenceAllocator::next)
                 .ok_or_else(DurableCodecError::corrupt),
             State::Exhausted(_) => Ok(AdministrationSequenceAllocator::Exhausted),
+        },
+    )
+}
+
+/// Encodes the durable history-incarnation metadata record.
+pub fn encode_history_incarnation_v1(
+    incarnation: u64,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    if incarnation < crate::HISTORY_INCARNATION_INITIAL {
+        return Err(DurableCodecError::corrupt());
+    }
+    encode_message(
+        HISTORY_INCARNATION,
+        &wire::StoredHistoryIncarnationV1 { incarnation },
+    )
+}
+
+/// Decodes the durable history-incarnation metadata record.
+pub fn decode_history_incarnation_v1(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<u64>, DurableCodecError> {
+    decode_message::<wire::StoredHistoryIncarnationV1, _, _>(
+        HISTORY_INCARNATION,
+        encoded,
+        |value| {
+            if value.incarnation < crate::HISTORY_INCARNATION_INITIAL {
+                return Err(DurableCodecError::corrupt());
+            }
+            Ok(value.incarnation)
         },
     )
 }

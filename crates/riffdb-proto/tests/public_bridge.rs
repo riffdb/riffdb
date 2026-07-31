@@ -48,6 +48,7 @@ fn fence(active: bool, generation: u8) -> v1::DiscoveryCatalogFence {
         }),
         server_generation: vec![generation; 16],
         operation_schemas: Some(schema_identity()),
+        history_incarnation: 1,
     }
 }
 
@@ -213,6 +214,7 @@ fn execute(status: v1::execute_command_response::CompletionStatus) -> v1::Execut
             "sync".to_owned()
         },
         outcome_uri: (!read_only).then(|| outcome_uri(&digest_tuple(1, 1))),
+        history_incarnation: 1,
     }
 }
 

@@ -436,6 +436,7 @@ impl ProductionGraphBuilder {
             database_id,
             environment,
             AgentSessionAdmissionPolicy::Discard,
+            retained_metadata.history_incarnation(),
         );
         let service: Arc<dyn ApplicationService> =
             Arc::new(activator.activate(identity, process, executors, providers));
@@ -444,6 +445,7 @@ impl ProductionGraphBuilder {
             service,
             security,
             server_generation,
+            retained_metadata.history_incarnation(),
             startup_lifecycle,
             allocator_capacity,
         ) {

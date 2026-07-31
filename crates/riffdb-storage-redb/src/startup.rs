@@ -42,17 +42,22 @@ use crate::layout::{
     AUDIT, CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS,
     CONTRACT_BUNDLES, ENTITIES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS, META,
     META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
-    META_DATABASE_ID, META_FORMAT_VERSION, META_KEYS, META_RECORD_REGISTRY, OUTBOX, OUTBOX_STATUS,
-    PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE,
-    QUERY_MODULES, SECONDARY_INDEXES, TABLE_NAMES,
+    META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION, META_KEYS,
+    META_RECORD_REGISTRY, OUTBOX, OUTBOX_STATUS, PROJECTION_APPLIED, PROJECTION_FRONTIER,
+    PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE, QUERY_MODULES, SECONDARY_INDEXES,
+    TABLE_NAMES,
 };
-use crate::store::{PRE_INDEX_GENERATION_REGISTRY_DIGEST, RedbDormantPorts, RedbStore, SharedRedb};
+use crate::store::{
+    PRE_HISTORY_INCARNATION_REGISTRY_DIGEST, PRE_INDEX_GENERATION_REGISTRY_DIGEST,
+    RedbDormantPorts, RedbStore, SharedRedb,
+};
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
 const STRUCTURAL_TABLE_COUNT: usize = 21;
 
 fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
     digest == riffdb_storage_api::proto_codec::current_record_registry_digest()
+        || digest == riffdb_types::SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST)
 }
 
@@ -781,6 +786,11 @@ fn read_retained_metadata(
     if !startup_registry_is_supported(registry) {
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     }
+    let history_incarnation = required_meta_value(
+        &meta,
+        META_HISTORY_INCARNATION,
+        codec::decode_history_incarnation_v1,
+    )?;
     let bootstrap = meta
         .get(META_CAPABILITY_BOOTSTRAP)
         .map_err(precommit_storage_error)?
@@ -816,6 +826,7 @@ fn read_retained_metadata(
         database_id,
         application,
         administration,
+        history_incarnation,
         active,
         bootstrap,
     )
@@ -1105,6 +1116,8 @@ fn inspect_meta_row(key: &str, value: &[u8], database_id: DatabaseId) -> Option<
         META_CAPABILITY_BOOTSTRAP => {
             decoded(codec::decode_capability_bootstrap_marker_v1(value)).is_ok()
         }
+        META_HISTORY_INCARNATION => decoded(codec::decode_history_incarnation_v1(value))
+            .is_ok_and(|incarnation| incarnation >= 1),
         _ => false,
     };
     (!valid).then(|| authoritative(StructuralFindingCode::MalformedRecord))

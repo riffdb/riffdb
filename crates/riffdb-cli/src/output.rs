@@ -2696,6 +2696,7 @@ mod tests {
             };
             return render_commit(&v1::GetCommitResponse {
                 result: Some(result),
+                history_incarnation: 1,
             });
         }
         if name.starts_with("projection.query.") {
@@ -3150,6 +3151,7 @@ mod tests {
             provenance_uri: optional_text(value, "provenance_uri").unwrap_or_default(),
             durability_mode: optional_text(value, "durability_mode").unwrap_or_default(),
             outcome_uri: optional_text(value, "outcome_uri"),
+            history_incarnation: 1,
         }
     }
 
@@ -3376,6 +3378,7 @@ mod tests {
                     .collect(),
                 started_at: Some(timestamp(&value["started_at"])),
                 build: Some(build(&value["build"])),
+                history_incarnation: 1,
             })
         };
         v1::HealthResponse {
@@ -3487,6 +3490,7 @@ mod tests {
 
         let commit = v1::GetCommitResponse {
             result: Some(v1::get_commit_response::Result::NotFound(v1::Unit {})),
+            history_incarnation: 1,
         };
         assert_fixture(
             &render_commit(&commit),

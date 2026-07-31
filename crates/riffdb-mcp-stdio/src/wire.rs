@@ -114,12 +114,14 @@ pub(crate) fn fixed_request_to_proto(
             FixedGrpcRequest::GetCommit(v1::GetCommitRequest {
                 request_id,
                 commit_sequence,
+                observed_history_incarnation: None,
             })
         }
         McpFixedToolRequest::ScanCommits { page } => {
             FixedGrpcRequest::ScanCommits(v1::ScanCommitsRequest {
                 request_id,
                 page: Some(page_to_proto(page)),
+                observed_history_incarnation: None,
             })
         }
         McpFixedToolRequest::TraceProvenance { selector } => {

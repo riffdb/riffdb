@@ -89,12 +89,27 @@ impl CommitApplication for RiffDbService {
     }
 }
 
+fn check_observed_history_incarnation(
+    service: &RiffDbServiceInner,
+    observed: Option<u64>,
+) -> ServiceResult<()> {
+    if let Some(observed) = observed
+        && observed != service.identity.history_incarnation()
+    {
+        return Err(ServiceFailure::Public(
+            PublicError::history_incarnation_mismatch(),
+        ));
+    }
+    Ok(())
+}
+
 async fn get_commit(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
     request: GetCommitRequest,
 ) -> ServiceResult<GetCommitResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::GetCommit;
+    check_observed_history_incarnation(&service, request.observed_history_incarnation())?;
     let sequence = request.sequence();
     let targets = ServiceAuditTargetMap::get_commit(sequence)
         .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
@@ -210,6 +225,7 @@ async fn scan_commits(
     request: ScanCommitsRequest,
 ) -> ServiceResult<ScanCommitsResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::ScanCommits;
+    check_observed_history_incarnation(&service, request.observed_history_incarnation())?;
     let page_request = request.page();
     let policy_request = OperationRequest::scan_commits(page_request.limit().get());
     let begun = service
@@ -485,6 +501,7 @@ async fn subscribe_to_commits(
     request: SubscribeToCommitsRequest,
 ) -> ServiceResult<SubscribeToCommitsResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::SubscribeToCommits;
+    check_observed_history_incarnation(&service, request.observed_history_incarnation())?;
     let policy_request = OperationRequest::subscribe_to_commits();
     let begun = service
         .begin_invocation(

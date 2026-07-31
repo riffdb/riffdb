@@ -127,8 +127,20 @@ bytes is unsupported.
 
 ## Restore Rewinds History
 
-The POC preserves the `DatabaseId` stored in the backup. It does not have a
-database incarnation or history epoch.
+The POC preserves the `DatabaseId` stored in the backup. Destructive restore
+still rewinds sequence allocators and can reuse destroyed sequence suffixes.
+
+A durable `history_incarnation` fence (ADR-0072) now makes that rewind
+detectable. The incarnation is a retained-metadata value bootstrapped to 1 and
+bumped only on destructive restore. Backups carry the value when present;
+responses that expose commit-sequence-derived positions include the current
+incarnation. Sequence-anchored requests may send optional
+`observed_history_incarnation`; when present and different from the current
+value, the server rejects with `RDB-HISTORY-0101` before any storage work.
+
+Detection residual risk: clients that omit `observed_history_incarnation` keep
+working unvalidated and can still silently bind stale observations. Adopt the
+field for any long-lived cursor, subscription, or sequence-derived assumption.
 
 A destructive restore removes every observation created after the backup's
 included frontier. The removed application and administration sequence suffixes

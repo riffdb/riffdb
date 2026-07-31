@@ -42,17 +42,23 @@ impl StorageFormatVersion {
     }
 }
 
-/// The exact six-category POC retained operational metadata surface.
+/// Bootstrap and minimum durable history-incarnation value.
+pub const HISTORY_INCARNATION_INITIAL: u64 = 1;
+
+/// The exact seven-category POC retained operational metadata surface.
 ///
 /// Absence of the active pointer and bootstrap marker is canonical during the
 /// corresponding initialization phases. No node identity, shutdown marker, or
-/// persisted integrity result is represented.
+/// persisted integrity result is represented. History incarnation is required
+/// after the history-incarnation migration and is always present on current
+/// databases.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetainedMetadataV1 {
     storage_format_version: StorageFormatVersion,
     database_id: DatabaseId,
     application_sequence: ApplicationSequenceAllocator,
     administration_sequence: AdministrationSequenceAllocator,
+    history_incarnation: u64,
     active_catalog: Option<ActiveCatalogPointerV1>,
     capability_bootstrap: Option<CapabilityBootstrapMarkerV1>,
 }
@@ -64,9 +70,13 @@ impl RetainedMetadataV1 {
         database_id: DatabaseId,
         application_sequence: ApplicationSequenceAllocator,
         administration_sequence: AdministrationSequenceAllocator,
+        history_incarnation: u64,
         active_catalog: Option<ActiveCatalogPointerV1>,
         capability_bootstrap: Option<CapabilityBootstrapMarkerV1>,
     ) -> Result<Self, StorageValueError> {
+        if history_incarnation < HISTORY_INCARNATION_INITIAL {
+            return Err(StorageValueError::InvalidShape);
+        }
         if capability_bootstrap
             .as_ref()
             .is_some_and(|marker| marker.database_id() != database_id)
@@ -78,6 +88,7 @@ impl RetainedMetadataV1 {
             database_id,
             application_sequence,
             administration_sequence,
+            history_incarnation,
             active_catalog,
             capability_bootstrap,
         })
@@ -91,6 +102,7 @@ impl RetainedMetadataV1 {
             database_id,
             application_sequence: ApplicationSequenceAllocator::initial(),
             administration_sequence: AdministrationSequenceAllocator::initial(),
+            history_incarnation: HISTORY_INCARNATION_INITIAL,
             active_catalog: None,
             capability_bootstrap: None,
         }
@@ -118,6 +130,12 @@ impl RetainedMetadataV1 {
     #[must_use]
     pub const fn administration_sequence(&self) -> AdministrationSequenceAllocator {
         self.administration_sequence
+    }
+
+    /// Returns the monotonic durable history incarnation.
+    #[must_use]
+    pub const fn history_incarnation(&self) -> u64 {
+        self.history_incarnation
     }
 
     /// Borrows the optional active-contract consistency pointer.

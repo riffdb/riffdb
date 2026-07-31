@@ -147,6 +147,7 @@ fn exact_value_execute_error_and_envelope_fields_are_frozen() {
                 ("provenance_uri", 7),
                 ("durability_mode", 8),
                 ("outcome_uri", 9),
+                ("history_incarnation", 10),
             ],
         ),
         (

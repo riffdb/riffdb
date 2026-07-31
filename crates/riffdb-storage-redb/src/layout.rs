@@ -88,14 +88,16 @@ pub(crate) const META_APPLICATION_SEQUENCE: &str = "next_application_sequence";
 pub(crate) const META_ADMINISTRATION_SEQUENCE: &str = "next_administration_sequence";
 pub(crate) const META_CAPABILITY_BOOTSTRAP: &str = "capability_bootstrap/v1";
 pub(crate) const META_RECORD_REGISTRY: &str = "record_registry/v2";
+pub(crate) const META_HISTORY_INCARNATION: &str = "history_incarnation/v1";
 
-pub(crate) const META_KEYS: [&str; 6] = [
+pub(crate) const META_KEYS: [&str; 7] = [
     META_FORMAT_VERSION,
     META_DATABASE_ID,
     META_APPLICATION_SEQUENCE,
     META_ADMINISTRATION_SEQUENCE,
     META_CAPABILITY_BOOTSTRAP,
     META_RECORD_REGISTRY,
+    META_HISTORY_INCARNATION,
 ];
 
 #[allow(dead_code, reason = "WP-070 catalog ports consume this frozen key")]
@@ -179,9 +181,10 @@ mod tests {
                 "next_administration_sequence",
                 "capability_bootstrap/v1",
                 "record_registry/v2",
+                "history_incarnation/v1",
             ]
         );
-        assert_eq!(META_KEYS.len(), 6);
+        assert_eq!(META_KEYS.len(), 7);
         assert_eq!(
             META_KEYS.into_iter().collect::<BTreeSet<_>>().len(),
             META_KEYS.len()

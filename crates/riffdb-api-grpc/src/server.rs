@@ -141,6 +141,12 @@ pub trait GrpcLifecycleRoute: Send + Sync {
     /// meaning. Initializing and stopped routes must not expose them.
     fn server_generation(&self) -> Option<[u8; 16]>;
 
+    /// Returns the durable history incarnation fixed at activation.
+    ///
+    /// Absent only while initializing or stopped. Clients use this value to
+    /// detect restore rewinds of sequence-derived observations.
+    fn history_incarnation(&self) -> Option<u64>;
+
     /// Routes restricted Health through the current API-neutral service stage.
     fn restricted_health(&self, request: HealthRequest) -> Option<ServiceFuture<'_, HealthResult>>;
 
@@ -978,6 +984,9 @@ impl ContractService for GrpcApplication {
         let generation = lifecycle
             .server_generation()
             .ok_or_else(service_not_ready)?;
+        let history_incarnation = lifecycle
+            .history_incarnation()
+            .ok_or_else(service_not_ready)?;
         let (request_id, request) = discover_command_tools_request_from_proto(message, generation)?;
         let (service, context, _cancellation) = self.normal_invocation_with(
             lifecycle.as_ref(),
@@ -987,7 +996,9 @@ impl ContractService for GrpcApplication {
         )?;
         let result = map_service(service.discover_command_tools(context, request).await)?;
         Ok(Response::new(discover_command_tools_result_to_proto(
-            &result, generation,
+            &result,
+            generation,
+            history_incarnation,
         )?))
     }
 
@@ -1000,6 +1011,9 @@ impl ContractService for GrpcApplication {
         let generation = lifecycle
             .server_generation()
             .ok_or_else(service_not_ready)?;
+        let history_incarnation = lifecycle
+            .history_incarnation()
+            .ok_or_else(service_not_ready)?;
         let (request_id, request) = discover_resources_request_from_proto(message, generation)?;
         let (service, context, _cancellation) = self.normal_invocation_with(
             lifecycle.as_ref(),
@@ -1009,7 +1023,9 @@ impl ContractService for GrpcApplication {
         )?;
         let result = map_service(service.discover_resources(context, request).await)?;
         Ok(Response::new(discover_resources_result_to_proto(
-            &result, generation,
+            &result,
+            generation,
+            history_incarnation,
         )?))
     }
 }
@@ -1022,10 +1038,21 @@ impl CommandService for GrpcApplication {
     ) -> Result<Response<v1::ExecuteCommandResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = execute_command_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::ExecuteCommand, &metadata, request_id)?;
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let history_incarnation = lifecycle
+            .history_incarnation()
+            .ok_or_else(service_not_ready)?;
+        let (service, context, _cancellation) = self.normal_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::ExecuteCommand,
+            &metadata,
+            request_id,
+        )?;
         let result = map_service(service.execute_command(context, request).await)?;
-        Ok(Response::new(execute_command_result_to_proto(&result)?))
+        Ok(Response::new(execute_command_result_to_proto(
+            &result,
+            history_incarnation,
+        )?))
     }
 
     async fn execute_batch(
@@ -1033,17 +1060,25 @@ impl CommandService for GrpcApplication {
         request: Request<v1::ExecuteCommandBatchRequest>,
     ) -> Result<Response<v1::ExecuteCommandBatchResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let history_incarnation = lifecycle
+            .history_incarnation()
+            .ok_or_else(service_not_ready)?;
         // StrictProstCodec has already validated the complete bounded batch.
         // Prepare every transport context before any semantic work begins.
         let mut invocations = Vec::with_capacity(message.commands.len());
         for command in message.commands {
             let (request_id, request) = execute_command_request_from_proto(command)?;
-            let (service, context, cancellation) =
-                self.normal_invocation(ServiceOperationV1::ExecuteCommand, &metadata, request_id)?;
+            let (service, context, cancellation) = self.normal_invocation_with(
+                lifecycle.as_ref(),
+                ServiceOperationV1::ExecuteCommand,
+                &metadata,
+                request_id,
+            )?;
             invocations.push(tokio::spawn(async move {
                 let _cancellation = cancellation;
                 let result = map_service(service.execute_command(context, request).await)?;
-                execute_command_result_to_proto(&result)
+                execute_command_result_to_proto(&result, history_incarnation)
             }));
         }
         let mut abort_on_drop = BatchTaskAbortGuard::new(&invocations);
@@ -1066,13 +1101,21 @@ impl CommandService for GrpcApplication {
     ) -> Result<Response<v1::GetOutcomeResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = resolve_outcome_request_from_proto(message)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let history_incarnation = lifecycle
+            .history_incarnation()
+            .ok_or_else(service_not_ready)?;
+        let (service, context, _cancellation) = self.normal_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::ResolveCommandOutcome,
             &metadata,
             request_id,
         )?;
         let result = map_service(service.resolve_command_outcome(context, request).await)?;
-        Ok(Response::new(resolve_outcome_result_to_proto(&result)?))
+        Ok(Response::new(resolve_outcome_result_to_proto(
+            &result,
+            history_incarnation,
+        )?))
     }
 }
 
@@ -1331,10 +1374,21 @@ impl CommitService for GrpcApplication {
     ) -> Result<Response<v1::GetCommitResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = get_commit_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::GetCommit, &metadata, request_id)?;
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let history_incarnation = lifecycle
+            .history_incarnation()
+            .ok_or_else(service_not_ready)?;
+        let (service, context, _cancellation) = self.normal_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::GetCommit,
+            &metadata,
+            request_id,
+        )?;
         let result = map_service(service.get_commit(context, request).await)?;
-        Ok(Response::new(get_commit_result_to_proto(&result)?))
+        Ok(Response::new(get_commit_result_to_proto(
+            &result,
+            history_incarnation,
+        )?))
     }
 
     async fn scan_commits(
@@ -1343,10 +1397,21 @@ impl CommitService for GrpcApplication {
     ) -> Result<Response<v1::ScanCommitsResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = scan_commits_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::ScanCommits, &metadata, request_id)?;
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let history_incarnation = lifecycle
+            .history_incarnation()
+            .ok_or_else(service_not_ready)?;
+        let (service, context, _cancellation) = self.normal_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::ScanCommits,
+            &metadata,
+            request_id,
+        )?;
         let result = map_service(service.scan_commits(context, request).await)?;
-        Ok(Response::new(scan_commits_result_to_proto(&result)?))
+        Ok(Response::new(scan_commits_result_to_proto(
+            &result,
+            history_incarnation,
+        )?))
     }
 
     async fn subscribe_commits(
@@ -1355,7 +1420,12 @@ impl CommitService for GrpcApplication {
     ) -> Result<Response<Self::SubscribeCommitsStream>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = subscribe_commits_request_from_proto(message)?;
-        let (service, context, cancellation) = self.normal_invocation(
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let history_incarnation = lifecycle
+            .history_incarnation()
+            .ok_or_else(service_not_ready)?;
+        let (service, context, cancellation) = self.normal_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::SubscribeToCommits,
             &metadata,
             request_id,
@@ -1364,6 +1434,7 @@ impl CommitService for GrpcApplication {
         Ok(Response::new(CommitNotificationStream::new(
             result.into_subscription(),
             cancellation,
+            history_incarnation,
         )))
     }
 
@@ -1415,7 +1486,8 @@ impl AdminService for GrpcApplication {
                 map_service(health.await)?
             }
         };
-        let mut response = health_result_to_proto(&result);
+        let history_incarnation = lifecycle.history_incarnation().unwrap_or(0);
+        let mut response = health_result_to_proto(&result, history_incarnation);
         response.database_alias = database_alias.to_string();
         response.authentication_audience = self
             .authentication_audience
@@ -1430,10 +1502,21 @@ impl AdminService for GrpcApplication {
     ) -> Result<Response<v1::StatsResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = statistics_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::GetStatistics, &metadata, request_id)?;
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let history_incarnation = lifecycle
+            .history_incarnation()
+            .ok_or_else(service_not_ready)?;
+        let (service, context, _cancellation) = self.normal_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::GetStatistics,
+            &metadata,
+            request_id,
+        )?;
         let result = map_service(service.statistics(context, request).await)?;
-        Ok(Response::new(statistics_result_to_proto(result)))
+        Ok(Response::new(statistics_result_to_proto(
+            result,
+            history_incarnation,
+        )))
     }
 
     async fn create_capability(
@@ -1629,14 +1712,20 @@ type NextCommitFuture = Pin<
 pub struct CommitNotificationStream {
     next: Option<NextCommitFuture>,
     _cancellation: CancellationGuard,
+    history_incarnation: u64,
     done: bool,
 }
 
 impl CommitNotificationStream {
-    fn new(subscription: Box<dyn CommitSubscription>, cancellation: CancellationGuard) -> Self {
+    fn new(
+        subscription: Box<dyn CommitSubscription>,
+        cancellation: CancellationGuard,
+        history_incarnation: u64,
+    ) -> Self {
         Self {
             next: Some(next_commit(subscription)),
             _cancellation: cancellation,
+            history_incarnation,
             done: false,
         }
     }
@@ -1667,7 +1756,7 @@ impl Stream for CommitNotificationStream {
         match result {
             Ok(event) => {
                 let terminal = matches!(event, CommitSubscriptionEvent::Terminal(_));
-                let event = commit_subscription_event_to_proto(&event);
+                let event = commit_subscription_event_to_proto(&event, self.history_incarnation);
                 if terminal || event.is_err() {
                     self.done = true;
                 } else {
@@ -1785,6 +1874,10 @@ mod tests {
             None
         }
 
+        fn history_incarnation(&self) -> Option<u64> {
+            None
+        }
+
         fn restricted_health(
             &self,
             _request: HealthRequest,
@@ -1872,6 +1965,10 @@ mod tests {
         }
 
         fn server_generation(&self) -> Option<[u8; 16]> {
+            None
+        }
+
+        fn history_incarnation(&self) -> Option<u64> {
             None
         }
 
@@ -1990,6 +2087,10 @@ mod tests {
         }
 
         fn server_generation(&self) -> Option<[u8; 16]> {
+            None
+        }
+
+        fn history_incarnation(&self) -> Option<u64> {
             None
         }
 

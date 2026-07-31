@@ -3969,18 +3969,33 @@ impl fmt::Debug for CommitView {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GetCommitRequest {
     sequence: CommitSequence,
+    observed_history_incarnation: Option<u64>,
 }
 
 impl GetCommitRequest {
-    /// Creates one exact commit lookup.
+    /// Creates one exact commit lookup without an incarnation fence check.
     #[must_use]
     pub const fn new(sequence: CommitSequence) -> Self {
-        Self { sequence }
+        Self {
+            sequence,
+            observed_history_incarnation: None,
+        }
+    }
+    /// Attaches an optional observed history incarnation for restore fencing.
+    #[must_use]
+    pub const fn with_observed_history_incarnation(mut self, observed: Option<u64>) -> Self {
+        self.observed_history_incarnation = observed;
+        self
     }
     /// Returns the requested sequence.
     #[must_use]
     pub const fn sequence(self) -> CommitSequence {
         self.sequence
+    }
+    /// Returns the caller's optional observed history incarnation.
+    #[must_use]
+    pub const fn observed_history_incarnation(self) -> Option<u64> {
+        self.observed_history_incarnation
     }
 }
 
@@ -3997,18 +4012,33 @@ pub enum GetCommitResult {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScanCommitsRequest {
     page: PageRequest,
+    observed_history_incarnation: Option<u64>,
 }
 
 impl ScanCommitsRequest {
-    /// Creates one bounded commit page request.
+    /// Creates one bounded commit page request without an incarnation fence check.
     #[must_use]
     pub const fn new(page: PageRequest) -> Self {
-        Self { page }
+        Self {
+            page,
+            observed_history_incarnation: None,
+        }
+    }
+    /// Attaches an optional observed history incarnation for restore fencing.
+    #[must_use]
+    pub const fn with_observed_history_incarnation(mut self, observed: Option<u64>) -> Self {
+        self.observed_history_incarnation = observed;
+        self
     }
     /// Returns pagination controls.
     #[must_use]
     pub const fn page(self) -> PageRequest {
         self.page
+    }
+    /// Returns the caller's optional observed history incarnation.
+    #[must_use]
+    pub const fn observed_history_incarnation(self) -> Option<u64> {
+        self.observed_history_incarnation
     }
 }
 
@@ -4203,6 +4233,7 @@ impl fmt::Debug for AuthoritativeCommitPage {
 pub struct SubscribeToCommitsRequest {
     after: Option<CommitSequence>,
     maximum_lifetime: Duration,
+    observed_history_incarnation: Option<u64>,
 }
 
 impl SubscribeToCommitsRequest {
@@ -4217,7 +4248,14 @@ impl SubscribeToCommitsRequest {
         Ok(Self {
             after,
             maximum_lifetime,
+            observed_history_incarnation: None,
         })
+    }
+    /// Attaches an optional observed history incarnation for restore fencing.
+    #[must_use]
+    pub const fn with_observed_history_incarnation(mut self, observed: Option<u64>) -> Self {
+        self.observed_history_incarnation = observed;
+        self
     }
     /// Returns the last sequence already held by the caller.
     #[must_use]
@@ -4228,6 +4266,11 @@ impl SubscribeToCommitsRequest {
     #[must_use]
     pub const fn maximum_lifetime(self) -> Duration {
         self.maximum_lifetime
+    }
+    /// Returns the caller's optional observed history incarnation.
+    #[must_use]
+    pub const fn observed_history_incarnation(self) -> Option<u64> {
+        self.observed_history_incarnation
     }
 }
 
