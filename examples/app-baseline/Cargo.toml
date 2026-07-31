@@ -32,6 +32,7 @@ await_holding_lock = "deny"
 riffdb-app-baseline-core = { path = "core", version = "0.1.0" }
 riffdb-app-baseline-postgres = { path = "postgres", version = "0.1.0" }
 riffdb-app-baseline-riffdb = { path = "riffdb", version = "0.1.0" }
+riffdb-bench-root = { path = "../../crates/riffdb-bench-root", version = "0.1.0", default-features = false }
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
 

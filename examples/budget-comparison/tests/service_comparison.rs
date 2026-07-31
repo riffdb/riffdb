@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod bench_root_support;
 mod budget_diagnostics;
 mod performance_support;
 
@@ -429,11 +430,7 @@ struct BudgetDatabase {
 
 impl BudgetDatabase {
     fn create() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "riffdb-wp125-{}-{}.redb",
-            std::process::id(),
-            NEXT_DATABASE.fetch_add(1, Ordering::Relaxed)
-        ));
+        let path = bench_root_support::unique_bench_path("riffdb-wp125").with_extension("redb");
         let mut store = RedbStore::open(&path).expect("create comparison database");
         assert_eq!(
             store

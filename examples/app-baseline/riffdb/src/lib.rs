@@ -36,8 +36,8 @@ use riffdb_ticketdesk::{
 use tonic::transport::Endpoint;
 
 pub use server::{
-    DATABASE_ROOT_ENV, DEFAULT_DATABASE_ROOT, RiffDbServerSession, ServerStartOptions,
-    resolve_database_root, sweep_stale_session_dirs,
+    DATABASE_ROOT_ENV, DEFAULT_DATABASE_ROOT, MIN_FREE_BYTES, RiffDbServerSession,
+    ServerStartOptions, resolve_bench_root, resolve_database_root, sweep_stale_session_dirs,
 };
 
 /// Default in-flight seed commands (bounded client concurrency, not a bulk RPC).
@@ -170,9 +170,9 @@ impl AppBackend for RiffDbPublicBackend {
                 "RDB-HISTORY-0101" => LoadErrorClass::HistoryIncarnationMismatch,
                 _ => LoadErrorClass::Other,
             },
-            RiffDbError::Connection
-            | RiffDbError::Runtime
-            | RiffDbError::Server { .. } => LoadErrorClass::Unavailable,
+            RiffDbError::Connection | RiffDbError::Runtime | RiffDbError::Server { .. } => {
+                LoadErrorClass::Unavailable
+            }
             _ => LoadErrorClass::Other,
         }
     }
