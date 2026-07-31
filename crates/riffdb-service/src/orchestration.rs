@@ -349,6 +349,16 @@ impl OperationAuditLifecycle {
         }
     }
 
+    /// Forces a settled terminal state after a pre-admission rejection when the
+    /// normal Started→terminal transition is unavailable.
+    pub(crate) fn force_terminal_settled_for_pre_admission(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *state = OperationAuditState::TerminalDurable;
+    }
+
     #[cfg(test)]
     pub(crate) fn mark_started_for_test(&self) {
         let mut state = self
@@ -448,6 +458,17 @@ pub(crate) fn current_operation_audit_lifecycle(
     CURRENT_AUDIT_LIFECYCLE
         .with(|lifecycles| lifecycles.borrow().last().cloned())
         .unwrap_or_else(|| Arc::new(OperationAuditLifecycle::new(operation)))
+}
+
+fn settle_lifecycle_pre_admission(lifecycle: &OperationAuditLifecycle) {
+    if lifecycle
+        .begin_terminal(ServiceAuditPhaseV1::Failed, ServiceAuditLinkV1::None)
+        .is_ok()
+    {
+        lifecycle.finish_terminal(true);
+        return;
+    }
+    lifecycle.force_terminal_settled_for_pre_admission();
 }
 
 pub(crate) fn with_operation_audit_lifecycle<T>(
@@ -667,6 +688,24 @@ impl BegunInvocation {
             .map_err(|_| AuditAppendFailure::subsystem())?;
         self.lifecycle.finish_terminal(true);
         Ok(())
+    }
+
+    /// Settles a pre-admission compound rejection without durable audit I/O.
+    ///
+    /// Used when the coordinator is saturated: no free slot remains for a Failed
+    /// append, and no durable Started was written under deferred start. Also
+    /// settles the active TLS lifecycle so the outer spawn wrapper does not
+    /// enter capacity-backed containment.
+    pub(crate) fn settle_pre_admission_rejection(&self) {
+        self.deferred_start.store(false, Ordering::Release);
+        settle_lifecycle_pre_admission(&self.lifecycle);
+        CURRENT_AUDIT_LIFECYCLE.with(|lifecycles| {
+            if let Some(current) = lifecycles.borrow().last()
+                && !Arc::ptr_eq(current, &self.lifecycle)
+            {
+                settle_lifecycle_pre_admission(current);
+            }
+        });
     }
 
     /// Separates a one-use policy proof from the invocation's terminal-audit authority.

@@ -11,7 +11,7 @@ use riffdb_catalog::CatalogTelemetryEvent;
 use riffdb_commit::CommitCommandTerminal;
 use riffdb_conflict::ConflictEventKind;
 use riffdb_policy::{AuthorizationDefect, PolicyCode};
-use riffdb_service::{AuthoritativeReadinessFailure, ServiceTerminalClass};
+use riffdb_service::{AuthoritativeReadinessFailure, CapacityRejectionStage, ServiceTerminalClass};
 use riffdb_types::{CommandId, ServiceIngressKindV1, ServiceOperationV1};
 
 use crate::IncidentClass;
@@ -34,7 +34,10 @@ const SERVICE_STREAM_OFFSET: usize = SERVICE_CURSOR_OFFSET + 1;
 const SERVICE_CURSOR_EVICTED_OFFSET: usize = SERVICE_STREAM_OFFSET + 1;
 const SERVICE_READ_RETRY_ATTEMPT_OFFSET: usize = SERVICE_CURSOR_EVICTED_OFFSET + 1;
 const SERVICE_READ_RETRY_EXHAUSTED_OFFSET: usize = SERVICE_READ_RETRY_ATTEMPT_OFFSET + 1;
-const SERVICE_TERMINAL_OFFSET: usize = SERVICE_READ_RETRY_EXHAUSTED_OFFSET + 1;
+const CAPACITY_REJECTION_STAGE_COUNT: usize = CapacityRejectionStage::ALL.len();
+const SERVICE_CAPACITY_REJECTED_OFFSET: usize = SERVICE_READ_RETRY_EXHAUSTED_OFFSET + 1;
+const SERVICE_TERMINAL_OFFSET: usize =
+    SERVICE_CAPACITY_REJECTED_OFFSET + CAPACITY_REJECTION_STAGE_COUNT;
 const AUTH_REJECTION_OFFSET: usize = SERVICE_TERMINAL_OFFSET + SERVICE_TERMINAL_COUNT;
 const AUTH_DEFECT_OFFSET: usize = AUTH_REJECTION_OFFSET + AUTH_REJECTION_COUNT;
 const POLICY_DENIAL_OFFSET: usize = AUTH_DEFECT_OFFSET + AUTH_DEFECT_COUNT;
@@ -420,6 +423,8 @@ pub enum MetricKey {
     ServiceReadRetryAttempt,
     /// Internal read retry budget was exhausted.
     ServiceReadRetryExhausted,
+    /// Command capacity admission rejected a request before accept.
+    ServiceCapacityRejected(CapacityRejectionStage),
     /// One API-neutral operation reached a closed caller-visible disposition.
     ServiceOperationTerminal(ServiceTerminalClass),
     /// Initial credential authentication rejected.
@@ -465,6 +470,9 @@ impl MetricKey {
             Self::ServiceCursorEvicted => SERVICE_CURSOR_EVICTED_OFFSET,
             Self::ServiceReadRetryAttempt => SERVICE_READ_RETRY_ATTEMPT_OFFSET,
             Self::ServiceReadRetryExhausted => SERVICE_READ_RETRY_EXHAUSTED_OFFSET,
+            Self::ServiceCapacityRejected(stage) => {
+                SERVICE_CAPACITY_REJECTED_OFFSET + capacity_rejection_stage_index(stage)
+            }
             Self::ServiceOperationTerminal(terminal) => {
                 SERVICE_TERMINAL_OFFSET + service_terminal_index(terminal)
             }
@@ -569,6 +577,20 @@ impl MetricKey {
                         value: "read_retry_exhausted",
                     }),
                     None,
+                ],
+                value,
+            },
+            Self::ServiceCapacityRejected(stage) => MetricSample {
+                name: "riffdb_service_events_total",
+                labels: [
+                    Some(MetricLabel {
+                        key: "kind",
+                        value: "capacity_rejected",
+                    }),
+                    Some(MetricLabel {
+                        key: "stage",
+                        value: capacity_rejection_stage_label(stage),
+                    }),
                 ],
                 value,
             },
@@ -1070,6 +1092,11 @@ fn metric_keys() -> Vec<MetricKey> {
     keys.push(MetricKey::ServiceReadRetryAttempt);
     keys.push(MetricKey::ServiceReadRetryExhausted);
     keys.extend(
+        CapacityRejectionStage::ALL
+            .into_iter()
+            .map(MetricKey::ServiceCapacityRejected),
+    );
+    keys.extend(
         ServiceTerminalClass::ALL
             .into_iter()
             .map(MetricKey::ServiceOperationTerminal),
@@ -1097,6 +1124,20 @@ fn metric_keys() -> Vec<MetricKey> {
 
 const fn service_operation_index(operation: ServiceOperationV1) -> usize {
     (operation.tag() - 1) as usize
+}
+
+const fn capacity_rejection_stage_index(stage: CapacityRejectionStage) -> usize {
+    match stage {
+        CapacityRejectionStage::QueueDepth => 0,
+        CapacityRejectionStage::RetainedBytes => 1,
+    }
+}
+
+const fn capacity_rejection_stage_label(stage: CapacityRejectionStage) -> &'static str {
+    match stage {
+        CapacityRejectionStage::QueueDepth => "queue_depth",
+        CapacityRejectionStage::RetainedBytes => "retained_bytes",
+    }
 }
 
 fn service_terminal_index(terminal: ServiceTerminalClass) -> usize {

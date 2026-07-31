@@ -51,6 +51,7 @@ pub use command_execution::{
 pub use command_preparation::{
     CommandCancellationHandle, CommandExecutionPreparation, CommandExecutionPreparationError,
     CommandRequestControl, PostEvaluationAuthorizationError, PostEvaluationCommandAuthorizer,
+    queued_preparation_units,
 };
 pub use control_plane::{
     ActivatedCatalog, ActivatedQueryModule, CapabilityBootstrapCompletion,
