@@ -29,6 +29,7 @@ await_holding_lock = "deny"
 
 [dependencies]
 fjall = { version = "=3.1.8", default-features = false }
+riffdb-bench-root = { version = "0.1.0", path = "../../crates/riffdb-bench-root", default-features = false }
 riffdb-storage-api = { version = "0.1.0", path = "../../crates/riffdb-storage-api", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../../crates/riffdb-types", default-features = false }
 

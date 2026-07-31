@@ -1,0 +1,110 @@
+# Benchmark integrity
+
+This note freezes the placement, leak-hygiene, and measurement protocol that
+every RiffDB performance harness must follow so published numbers are honest
+about durable media and not RAM-flattered by tmpfs.
+
+## Placement rules
+
+1. **Never put multi-GB database files on `/tmp` or any other tmpfs/ramfs**
+   unless the operator passes an explicit `--allow-tmpfs` (or equivalent) for a
+   deliberate diagnostic run. On many developer machines `/tmp` is an 8 GiB
+   tmpfs; filling it crashes unrelated processes mid-run.
+2. **Default roots live under a `perf-db` path component**, typically
+   `<crate-or-repo>/target/perf-db/<harness>/`. The `target/` tree is
+   gitignored; the `perf-db` component is the hostile-env belt for stale-dir
+   sweeps (sweeps refuse to run outside it).
+3. **Resolution order** for every harness that uses `riffdb-bench-root`:
+   - CLI `--database-root`
+   - environment `RIFFDB_BENCH_DB_ROOT`
+   - harness-specific default under `target/perf-db/<harness>/`
+4. Before any daemon spawn, the harness **classifies the medium** (`statfs` +
+   `/proc/self/mounts`) and **refuses** tmpfs/ramfs without allow. Free space
+   below the configured floor is a hard error (ENOSPC honesty).
+
+## Same-device requirement (app-baseline)
+
+When comparing RiffDB to PostgreSQL, both engines must place durable state on
+the **same physical device**:
+
+- RiffDB session dirs under `$repo/target/perf-db/app-baseline/`
+- PostgreSQL data dir bind-mounted to
+  `$repo/target/perf-db/app-baseline/postgres` (see `benchmarks/run-app-baseline`)
+
+Reports record both data-dir paths and medium classification. Operators should
+treat mixed-device comparisons as non-evidentiary.
+
+## Durability settings (PostgreSQL)
+
+Parity and write-parity gates refuse (settings message, not ratio) when any of
+`synchronous_commit`, `fsync`, or `full_page_writes` is not `on`. The harness
+also records `server_version_num`, `wal_sync_method`, and `data_directory`.
+
+## Leak hygiene
+
+- Session directories are named `riffdb-bench-<harness>-<pid>-<n>` (plus legacy
+  prefixes still recognized by the sweeper).
+- `BenchDir` removes itself on drop (including panic unwind).
+- At harness start, `sweep_stale` removes matching dirs whose pid is dead
+  (`/proc/<pid>` absent) or whose mtime is older than 24 h.
+- After a clean run the bench root should contain only the root itself (no
+  leaked multi-GB children).
+
+## Dead-peer abort
+
+Closed-loop load coordinators sleep in ≤250 ms slices and poll an abort hook.
+When `riffdbd` exits mid-load the harness fails within about two seconds with
+exit status, stderr tail, resolved database root, and free-bytes-at-start.
+Workers are joined; `BenchDir` Drop still runs. PostgreSQL load sites pass no
+abort hook.
+
+## Statistical protocol
+
+| Mode | Measure | Warmup | Default reps |
+|------|---------|--------|--------------|
+| smoke | short (5 s load) | 1 s | 1 |
+| full  | 90 s load        | 15 s | 3 |
+
+- Load duration **&lt; 60 s** is marked `non_evidentiary_window` in the report.
+- Reps execute **interleaved by backend** (`PG1, R1, PG2, R2, …`) to decorrelate
+  SSD SLC-cache state from backend identity.
+- Gated scalars report `{median, min, max, reps, spread_ratio}`;
+  `spread_ratio > 2.0` ⇒ `stability: "unstable"`.
+- `--require-stable` exits nonzero on unstable gated metrics.
+- Parity gates evaluate the **median** of reps and **refuse** (do not pass)
+  when either backend’s gated metric is unstable.
+
+## Device baseline
+
+Once per invocation the harness runs a cheap probe (no `fio` dependency):
+
+- 10 s loop of 4 KiB write + `sync_data` → `fdatasync_p50_us`, `p99_us`,
+  `fsyncs_per_s`
+- one 64 MiB buffered write + final `fdatasync` → sequential MB/s
+
+Results are embedded as `device_baseline` next to an `environment` block
+(fstype, mount options, device model when available, kernel, CPU governor).
+
+## Sweep isolation modes (app-baseline)
+
+| Mode | Flag | Semantics |
+|------|------|-----------|
+| shared daemon (default) | (none) | One `riffdbd` for the whole concurrency sweep; write-group histogram is process-lifetime and attaches to the last point as `histogram_scope: cumulative_final`. |
+| per-level daemon | `--load-sweep-per-level-daemon` | Fresh daemon per client point; histogram is that level’s cumulative shutdown report (`histogram_scope: per_level`). |
+
+Both modes remain available. Shared-daemon accumulation is deliberate history;
+per-level starts from empty retained history. Reports record
+`sweep_isolation`.
+
+## Stderr capture
+
+`riffdbd` stderr is retained in a ring buffer (200 lines / 64 KiB) and included
+in ready-timeout, shutdown-failure, and dead-peer messages. Child processes set
+`RUST_BACKTRACE=1`.
+
+## Owned helper crate
+
+`crates/riffdb-bench-root` is the shared implementation. Nested workspaces
+(`examples/app-baseline`, `examples/budget-comparison`,
+`benchmarks/command-growth`, `benchmarks/storage-fjall`) depend on it by path.
+Do not reintroduce `std::env::temp_dir()` on performance-critical paths.
