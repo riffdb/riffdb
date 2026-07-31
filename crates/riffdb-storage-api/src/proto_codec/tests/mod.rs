@@ -1,6 +1,7 @@
 //! Durable semantic codec contract tests.
 
 mod bounds;
+mod entity_references;
 mod malformed_semantic;
 mod migration;
 mod relationships;
@@ -166,14 +167,14 @@ fn semantic_wire_vectors() -> Vec<(&'static str, CanonicalStoredEnvelopeV1)> {
             decode_provenance_record_v1,
         ),
     ));
-    vectors.push((
-        "riffdb.storage.v1.StoredCommitRecordV1",
+    vectors.push(("riffdb.storage.v1.StoredCommitRecordV1", {
+        let entities = atomic.entities().to_vec();
         assert_round_trip(
             atomic.commit().clone(),
-            encode_commit_record_legacy_v1,
+            |commit| encode_commit_record_legacy_v1(commit, &entities),
             decode_commit_record_v1,
-        ),
-    ));
+        )
+    }));
 
     let (capability, lookup, marker, capability_administration) = sample::capability_records();
     vectors.push((
@@ -278,7 +279,7 @@ fn every_registered_semantic_record_round_trips_in_registry_order() {
         |bytes| decode_outbox_intent_v2(bytes, atomic.events()[0].clone()),
     );
     assert_round_trip(atomic.commit().clone(), encode_commit_record_v1, |bytes| {
-        decode_commit_record_v2(bytes, atomic.events().to_vec())
+        decode_commit_record_v3(bytes, atomic.events().to_vec())
     });
 }
 
@@ -391,9 +392,12 @@ fn index_v2_wire_fixture() -> String {
 
 fn event_reference_v2_wire_fixture() -> String {
     let atomic = sample::atomic_record_set();
+    // Outbox remains V2; current commits are V3 entity-reference records.
+    // The commit row is still emitted here so regeneration keeps event-reference
+    // companion fixtures aligned with the writable commit schema.
     let vectors = [
         (
-            "riffdb.storage.v1.StoredCommitRecordV2",
+            "riffdb.storage.v1.StoredCommitRecordV3",
             encode_commit_record_v1(atomic.commit()).expect("current commit encodes"),
         ),
         (

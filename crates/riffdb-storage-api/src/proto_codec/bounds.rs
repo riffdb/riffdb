@@ -6,8 +6,8 @@ use riffdb_types::{CanonicalRecord, CanonicalValue};
 
 use crate::{
     AtomicCommandRecordSet, CommandWriteClassBreakdownV1, CommitIntent, DurabilityMode,
-    DurableKeySchemaBindingV1, EncodedWriteSetUpperBound, EntityMutation, ExpectedEntityState,
-    IndexEntryMutationV1, IndexEpochAdvanceV1, MAX_STAGED_WRITE_BYTES, StoredReadDependenciesV1,
+    DurableKeySchemaBindingV1, EncodedWriteSetUpperBound, EntityMutation, IndexEntryMutationV1,
+    IndexEpochAdvanceV1, MAX_STAGED_WRITE_BYTES, StoredReadDependenciesV1,
 };
 
 use super::{
@@ -17,12 +17,21 @@ use super::{
     encode_commit_record_v1, encode_durable_event_v1, encode_entity_record_v1,
     encode_event_route_v1, encode_index_entry_v2, encode_index_epoch_v1, encode_outbox_intent_v1,
     encode_provenance_record_v1, encode_stored_outcome_v1, entity_target_to_proto,
-    expected_to_proto, identity_to_proto, plan_to_proto, storage_result, timestamp_to_proto,
+    identity_to_proto, plan_to_proto, storage_result, timestamp_to_proto,
 };
 
 const OUTBOX_INTENT: &str = "riffdb.storage.v1.StoredOutboxIntentV2";
 const MAXIMUM_WIDTH_U64: u64 = u64::MAX;
 const SIZING_EVENT_HASH: [u8; 32] = [0xff; 32];
+/// Domain-separated entity-record hash charge (same width as event hashes).
+const SIZING_ENTITY_RECORD_HASH: [u8; 32] = [0xff; 32];
+
+const _: () = assert!(SIZING_EVENT_HASH.len() == 32);
+// Couple to the real EntityRecordHash width (not a free-floating literal).
+const _: () = assert!(
+    SIZING_ENTITY_RECORD_HASH.len() == core::mem::size_of::<riffdb_types::EntityRecordHash>()
+);
+const _: () = assert!(SIZING_EVENT_HASH.len() == SIZING_ENTITY_RECORD_HASH.len());
 
 /// Codec-minted proof that complete sequence-free sizing exceeded only the
 /// accepted aggregate cap.
@@ -307,17 +316,10 @@ pub fn command_write_set_upper_bound_v1(
             ])
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let mutation_lens = evaluated
+    let entity_reference_lens = evaluated
         .mutations()
         .iter()
-        .zip(&entity_payload_lens)
-        .map(|(mutation, entity_len)| {
-            let expected_len = expected_to_proto(expected_state(mutation)).encoded_len();
-            sum_proto_fields([
-                message_field_len(1, expected_len),
-                message_field_len(2, *entity_len),
-            ])
-        })
+        .map(|mutation| conservative_entity_reference_payload_len(mutation.post_image().target()))
         .collect::<Result<Vec<_>, _>>()?;
     let commit_len = sizing_commit_len(
         plan_len,
@@ -330,7 +332,7 @@ pub fn command_write_set_upper_bound_v1(
         partition_hash_len,
         provenance_id_len,
         &conflict_hash_lens,
-        &mutation_lens,
+        &entity_reference_lens,
         &event_reference_lens,
         &event_id_lens,
     )?;
@@ -519,11 +521,18 @@ fn sizing_entity_len(
     ])
 }
 
-const fn expected_state(mutation: &EntityMutation) -> ExpectedEntityState {
-    match mutation.expected_version() {
-        Some(version) => ExpectedEntityState::Present(version),
-        None => ExpectedEntityState::Absent,
-    }
+/// Conservative protobuf payload length for one entity post-image reference.
+///
+/// Used by write-set reservation; tests assert this charge dominates real
+/// encoded [`CommittedEntityReferenceV2`](crate::CommittedEntityReferenceV2) lengths.
+pub fn conservative_entity_reference_payload_len(
+    target: &crate::EntityTarget,
+) -> Result<usize, DurableCodecError> {
+    sum_proto_fields([
+        message_field_len(1, entity_target_to_proto(target).encoded_len()),
+        varint_field_len(2, MAXIMUM_WIDTH_U64),
+        bytes_field_len(3, SIZING_ENTITY_RECORD_HASH.len()),
+    ])
 }
 
 fn sizing_event_id_len(ordinal: u32) -> usize {
@@ -640,7 +649,7 @@ fn sizing_commit_len(
     partition_hash_len: usize,
     provenance_id_len: usize,
     conflict_hash_lens: &[usize],
-    mutation_lens: &[usize],
+    entity_reference_lens: &[usize],
     event_reference_lens: &[usize],
     event_id_lens: &[usize],
 ) -> Result<usize, DurableCodecError> {
@@ -658,7 +667,7 @@ fn sizing_commit_len(
         varint_field_len(15, durability_to_proto(DurabilityMode::Memory) as u64),
     ])?;
     total = add_repeated_bytes(total, 8, conflict_hash_lens)?;
-    total = add_repeated_messages(total, 10, mutation_lens)?;
+    total = add_repeated_messages(total, 10, entity_reference_lens)?;
     total = add_repeated_messages(total, 11, event_reference_lens)?;
     add_repeated_messages(total, 14, event_id_lens)
 }

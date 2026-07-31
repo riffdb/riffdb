@@ -1121,9 +1121,26 @@ pub struct ExecuteCommandBatchRequest {
     pub commands: ::prost::alloc::vec::Vec<ExecuteCommandRequest>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecuteCommandBatchItem {
+    #[prost(oneof = "execute_command_batch_item::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<execute_command_batch_item::Result>,
+}
+/// Nested message and enum types in `ExecuteCommandBatchItem`.
+pub mod execute_command_batch_item {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        Response(super::ExecuteCommandResponse),
+        #[prost(message, tag = "2")]
+        Error(super::super::app::v1::ApplicationError),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteCommandBatchResponse {
     #[prost(message, repeated, tag = "1")]
     pub responses: ::prost::alloc::vec::Vec<ExecuteCommandResponse>,
+    #[prost(message, repeated, tag = "2")]
+    pub items: ::prost::alloc::vec::Vec<ExecuteCommandBatchItem>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetOutcomeRequest {

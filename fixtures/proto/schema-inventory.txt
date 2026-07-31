@@ -12,6 +12,10 @@ files
   riffdb/storage/v1/catalog.proto
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/common.proto
+  riffdb/storage/v1/entity_references_v3.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/common.proto
+    import riffdb/storage/v1/event_references_v2.proto
   riffdb/storage/v1/envelope.proto
   riffdb/storage/v1/event_references_v2.proto
     import riffdb/storage/v1/application.proto
@@ -37,6 +41,7 @@ files
     import riffdb/v1/value.proto
     import riffdb/v1/commit.proto
   riffdb/v1/command.proto
+    import riffdb/app/v1/application.proto
     import riffdb/v1/common.proto
     import riffdb/v1/value.proto
   riffdb/v1/commit.proto
@@ -275,6 +280,10 @@ messages
   riffdb.storage.v1.CommittedEntityMutationV1 fields=2
     1 expected optional .riffdb.storage.v1.ExpectedEntityStateV1
     2 post_image optional .riffdb.storage.v1.StoredEntityRecordV1
+  riffdb.storage.v1.CommittedEntityReferenceV2 fields=3
+    1 target optional .riffdb.storage.v1.EntityTargetV1
+    2 entity_version optional uint64
+    3 post_image_hash optional bytes
   riffdb.storage.v1.ContractVersionAuditTargetV1 fields=2
     1 contract_lineage optional string
     2 contract_version optional uint64
@@ -456,6 +465,22 @@ messages
     8 conflict_hashes repeated bytes
     9 read_dependencies optional .riffdb.storage.v1.StoredReadDependenciesV1
     10 mutations repeated .riffdb.storage.v1.CommittedEntityMutationV1
+    11 event_references repeated .riffdb.storage.v1.EventReferenceV2
+    12 declared_outcome optional .riffdb.storage.v1.DeclaredOutcomeV1
+    13 provenance_id optional bytes
+    14 outbox_event_ids repeated .riffdb.storage.v1.EventIdV1
+    15 durability_mode optional .riffdb.storage.v1.DurabilityModeV1
+  riffdb.storage.v1.StoredCommitRecordV3 fields=15
+    1 commit_sequence optional uint64
+    2 admission_request_id optional bytes
+    3 plan optional .riffdb.storage.v1.ExecutablePlanRefV1
+    4 canonical_input_hash optional bytes
+    5 actor optional .riffdb.storage.v1.AdmittedActorContextV1
+    6 logical_time optional .riffdb.storage.v1.TimestampV1
+    7 partition_hash optional bytes
+    8 conflict_hashes repeated bytes
+    9 read_dependencies optional .riffdb.storage.v1.StoredReadDependenciesV1
+    10 entity_references repeated .riffdb.storage.v1.CommittedEntityReferenceV2
     11 event_references repeated .riffdb.storage.v1.EventReferenceV2
     12 declared_outcome optional .riffdb.storage.v1.DeclaredOutcomeV1
     13 provenance_id optional bytes
@@ -935,10 +960,14 @@ messages
   riffdb.v1.ExactContractSelection fields=2
     1 contract_lineage optional string
     2 contract_version optional uint64
+  riffdb.v1.ExecuteCommandBatchItem fields=2
+    1 response optional .riffdb.v1.ExecuteCommandResponse oneof=result
+    2 error optional .riffdb.app.v1.ApplicationError oneof=result
   riffdb.v1.ExecuteCommandBatchRequest fields=1
     1 commands repeated .riffdb.v1.ExecuteCommandRequest
-  riffdb.v1.ExecuteCommandBatchResponse fields=1
+  riffdb.v1.ExecuteCommandBatchResponse fields=2
     1 responses repeated .riffdb.v1.ExecuteCommandResponse
+    2 items repeated .riffdb.v1.ExecuteCommandBatchItem
   riffdb.v1.ExecuteCommandRequest fields=4
     1 request_id optional bytes
     2 command_name optional string
