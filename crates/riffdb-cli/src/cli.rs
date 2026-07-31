@@ -159,6 +159,54 @@ pub(crate) enum ApplicationCommand {
         )]
         lock: OsString,
     },
+    /// Deploys one exact lock, with optional explicit role provisioning and seed.
+    Deploy {
+        #[arg(
+            default_value = "riffdb.application.json",
+            value_name = "APPLICATION_SOURCE"
+        )]
+        source: OsString,
+        #[arg(
+            long,
+            default_value = "riffdb.application.lock.json",
+            value_name = "APPLICATION_LOCK"
+        )]
+        lock: OsString,
+        #[arg(long, value_name = "ROLE")]
+        provision_role: Option<String>,
+        #[arg(long, requires = "provision_role", value_name = "TENANT")]
+        tenant: Option<String>,
+        #[arg(long, default_value = "28800", value_name = "SECONDS")]
+        lifetime_seconds: String,
+        #[arg(long, requires = "provision_role")]
+        seed: bool,
+        #[arg(long, default_value = "8", value_name = "1..32")]
+        seed_concurrency: String,
+        #[arg(long, requires = "provision_role")]
+        replace_expired_credential: bool,
+    },
+    /// Idempotently deploys and binds one explicit short-lived application role.
+    BindDevRole {
+        #[arg(
+            default_value = "riffdb.application.json",
+            value_name = "APPLICATION_SOURCE"
+        )]
+        source: OsString,
+        #[arg(
+            long,
+            default_value = "riffdb.application.lock.json",
+            value_name = "APPLICATION_LOCK"
+        )]
+        lock: OsString,
+        #[arg(long, value_name = "ROLE")]
+        role: String,
+        #[arg(long, value_name = "TENANT")]
+        tenant: Option<String>,
+        #[arg(long, default_value = "28800", value_name = "SECONDS")]
+        lifetime_seconds: String,
+        #[arg(long)]
+        replace_expired_credential: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -612,6 +660,49 @@ mod tests {
             TopLevel::Application {
                 command: ApplicationCommand::Generate { locked: true, .. }
             }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from([
+                "riffdb",
+                "application",
+                "deploy",
+                "--provision-role",
+                "TicketDeskAgent",
+                "--tenant",
+                "organization_acme",
+                "--seed",
+                "--seed-concurrency",
+                "16",
+            ])
+            .expect("locked installed deployment")
+            .command,
+            TopLevel::Application {
+                command: ApplicationCommand::Deploy {
+                    provision_role: Some(role),
+                    tenant: Some(tenant),
+                    seed: true,
+                    seed_concurrency,
+                    ..
+                }
+            } if role == "TicketDeskAgent"
+                && tenant == "organization_acme"
+                && seed_concurrency == "16"
+        ));
+        assert!(matches!(
+            Cli::try_parse_from([
+                "riffdb",
+                "application",
+                "bind-dev-role",
+                "--role",
+                "TicketDeskAgent",
+                "--tenant",
+                "organization_acme",
+            ])
+            .expect("standalone development role bind")
+            .command,
+            TopLevel::Application {
+                command: ApplicationCommand::BindDevRole { role, tenant: Some(tenant), .. }
+            } if role == "TicketDeskAgent" && tenant == "organization_acme"
         ));
     }
 

@@ -87,6 +87,7 @@ direction, merged draft, or implementation choice.
 | [0063](0063-bounded-multiple-databases-per-process.md) | Bounded Multiple Databases Per Server Process | Accepted |
 | [0064](0064-underscore-mcp-tool-names-and-agent-presentation.md) | Underscore MCP Tool Names and Agent Presentation | Accepted |
 | [0065](0065-first-real-application-experience.md) | First Real Application Experience | Accepted |
+| [0066](0066-additive-contract-evolution-and-deployment-diagnostics.md) | Additive Contract Evolution and Deployment Diagnostics | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
@@ -286,6 +287,10 @@ schema-directed natural JSON, lock-only resumable deployment, explicit
 least-authority role provisioning, application MCP named-query tools, selected
 database identity on public responses, and the installed legacy-to-multi
 acceptance gate.
+ADR-0066 has a separate acceptance reference: the maintainer's explicit
+2026-07-30 approval of bounded additive enum, entity, aggregate, relationship,
+and uniqueness evolution; explicit-version enum-variant additions; structured
+deployment diagnostics; and an operator-controlled pre-alpha dogfood reset.
 
 ## Workflow
 

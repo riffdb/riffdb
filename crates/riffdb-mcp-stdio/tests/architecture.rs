@@ -31,7 +31,7 @@ fn assert_in_order(source: &str, tokens: &[&str]) {
 }
 
 #[test]
-fn binary_uses_current_thread_runtime_and_never_writes_diagnostics_to_stdout() {
+fn binary_uses_current_thread_runtime_and_stdout_only_for_doctor_result() {
     let source = fs::read_to_string(crate_root().join("src/main.rs")).expect("read main source");
     assert!(source.contains("#[tokio::main(flavor = \"current_thread\")]"));
     assert!(
@@ -44,7 +44,14 @@ fn binary_uses_current_thread_runtime_and_never_writes_diagnostics_to_stdout() {
             .lines()
             .any(|line| line.trim_start().starts_with("print!("))
     );
-    assert!(!source.contains("stdout"));
+    assert_eq!(source.matches("std::io::stdout").count(), 1);
+    let doctor = section(
+        &source,
+        "if std::env::args_os().nth(1)",
+        "match riffdb_mcp_stdio::run().await",
+    );
+    assert!(doctor.contains("riffdb_mcp_stdio::doctor().await"));
+    assert!(doctor.contains("std::io::stdout"));
     assert!(source.contains("eprintln!"));
     assert!(source.contains("riffdb_mcp_stdio::run().await"));
 }

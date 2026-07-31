@@ -837,11 +837,13 @@ messages
     1 request_id optional bytes
     2 source optional string
     3 expected_active_version optional uint64 proto3-optional oneof=_expected_active_version
-  riffdb.v1.DeployContractResponse fields=4
+  riffdb.v1.DeployContractResponse fields=6
     1 activated optional .riffdb.v1.ContractDescriptor oneof=result
     2 already_active optional .riffdb.v1.ContractDescriptor oneof=result
     3 expected_active_version_mismatch optional .riffdb.v1.ExpectedActiveVersionMismatch oneof=result
     4 bundle_conflict optional .riffdb.v1.Unit oneof=result
+    5 invalid_source optional .riffdb.v1.CompilationDiagnostics oneof=result
+    6 incompatible_candidate optional .riffdb.v1.ContractDescriptor oneof=result
   riffdb.v1.DiscoverCommandToolsRequest fields=4
     1 request_id optional bytes
     2 page optional .riffdb.v1.PageRequest
@@ -946,9 +948,10 @@ messages
     2 schema_hash optional bytes
   riffdb.v1.GetActiveContractRequest fields=1
     1 request_id optional bytes
-  riffdb.v1.GetActiveContractResponse fields=2
+  riffdb.v1.GetActiveContractResponse fields=3
     1 absent optional .riffdb.v1.Unit oneof=result
     2 present optional .riffdb.v1.ContractDescriptor oneof=result
+    3 database_alias optional string
   riffdb.v1.GetCommitRequest fields=2
     1 request_id optional bytes
     2 commit_sequence optional uint64
@@ -998,9 +1001,11 @@ messages
     2 status optional .riffdb.v1.HealthComponentStatus
   riffdb.v1.HealthRequest fields=1
     1 request_id optional bytes proto3-optional oneof=_request_id
-  riffdb.v1.HealthResponse fields=2
+  riffdb.v1.HealthResponse fields=4
     1 pre_bootstrap optional .riffdb.v1.PreBootstrapHealth oneof=result
     2 authenticated optional .riffdb.v1.AuthenticatedHealth oneof=result
+    3 database_alias optional string
+    4 authentication_audience optional string
   riffdb.v1.IndexPage fields=3
     1 items repeated .riffdb.v1.IndexRow
     2 next_cursor optional bytes proto3-optional oneof=_next_cursor

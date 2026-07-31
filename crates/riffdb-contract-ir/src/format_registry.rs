@@ -698,6 +698,21 @@ pub(crate) const COMPATIBILITY_CODES: &[CompatibilityCodeFormat] = &[
         meaning: "added optional field",
     },
     CompatibilityCodeFormat {
+        code: "RDB-K014",
+        class_tag: compatibility_class::COMPATIBLE,
+        meaning: "added enum",
+    },
+    CompatibilityCodeFormat {
+        code: "RDB-K015",
+        class_tag: compatibility_class::COMPATIBLE,
+        meaning: "added entity",
+    },
+    CompatibilityCodeFormat {
+        code: "RDB-K016",
+        class_tag: compatibility_class::COMPATIBLE,
+        meaning: "added aggregate containing only newly added entities",
+    },
+    CompatibilityCodeFormat {
         code: "RDB-K020",
         class_tag: compatibility_class::REQUIRES_EXPLICIT_VERSION,
         meaning: "added outcome",
@@ -706,6 +721,11 @@ pub(crate) const COMPATIBILITY_CODES: &[CompatibilityCodeFormat] = &[
         code: "RDB-K021",
         class_tag: compatibility_class::REQUIRES_EXPLICIT_VERSION,
         meaning: "added optional outcome field",
+    },
+    CompatibilityCodeFormat {
+        code: "RDB-K022",
+        class_tag: compatibility_class::REQUIRES_EXPLICIT_VERSION,
+        meaning: "added enum variant",
     },
     CompatibilityCodeFormat {
         code: "RDB-K100",

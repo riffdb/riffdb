@@ -189,6 +189,31 @@ struct CompiledSymbolicApplication {
     outputs: Vec<(String, Vec<u8>)>,
 }
 
+pub(crate) struct LockedApplication {
+    root: PathBuf,
+    manifest_path: PathBuf,
+    manifest: ApplicationManifest,
+    lock_identity: riffdb_types::ApplicationLockHash,
+}
+
+impl LockedApplication {
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub(crate) fn manifest_path(&self) -> &Path {
+        &self.manifest_path
+    }
+
+    pub(crate) const fn manifest(&self) -> &ApplicationManifest {
+        &self.manifest
+    }
+
+    pub(crate) const fn lock_identity(&self) -> riffdb_types::ApplicationLockHash {
+        self.lock_identity
+    }
+}
+
 fn source_parent(path: &Path) -> &Path {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -247,6 +272,27 @@ pub(crate) fn check_application_lock(
         }
     }
     Ok(())
+}
+
+pub(crate) fn load_locked_application(
+    source_path: &Path,
+    lock_path: Option<&Path>,
+) -> Result<LockedApplication, ScaffoldError> {
+    check_application_lock(source_path, lock_path)?;
+    let root = source_parent(source_path);
+    let lock_path = workspace_lock_path(root, lock_path)?;
+    let lock = ApplicationLock::decode_canonical(&read_bounded(&lock_path, 4 * 1_024 * 1_024)?)
+        .map_err(|error| lock_diagnostic(&lock_path, error.kind()))?;
+    let manifest_path = root.join(EXACT_MANIFEST_PATH);
+    let manifest =
+        ApplicationManifest::decode_canonical(&read_bounded(&manifest_path, 4 * 1_024 * 1_024)?)
+            .map_err(|_| ScaffoldError::Manifest)?;
+    Ok(LockedApplication {
+        root: root.to_path_buf(),
+        manifest_path,
+        manifest,
+        lock_identity: lock.identity(),
+    })
 }
 
 fn generate_application_locked(source_path: &Path, lock_path: &Path) -> Result<(), ScaffoldError> {

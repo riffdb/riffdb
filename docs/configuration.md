@@ -74,6 +74,37 @@ All database, backup, and key paths across the process must be pairwise
 lexically disjoint. The process opens every database and builds every graph
 before publishing readiness. One structural startup failure stops the process.
 
+Backup roots must be siblings. This is valid:
+
+```toml
+[databases.default]
+path = "/var/lib/riffdb/data/riffdb.redb"
+backup_root = "/var/lib/riffdb/backups/default"
+environment = "local"
+
+[databases.ea]
+path = "/var/lib/riffdb/data/ea.redb"
+backup_root = "/var/lib/riffdb/backups/ea"
+environment = "local"
+```
+
+This is invalid because one configured root contains another:
+
+```toml
+[databases.default]
+path = "/var/lib/riffdb/data/riffdb.redb"
+backup_root = "/var/lib/riffdb/backups"
+environment = "local"
+
+[databases.ea]
+path = "/var/lib/riffdb/data/ea.redb"
+backup_root = "/var/lib/riffdb/backups/ea"
+environment = "local"
+```
+
+Startup reports the two conflicting logical roles and aliases, but never
+echoes configured path values.
+
 The complete document is UTF-8 and at most 65,536 bytes. Unknown tables or
 keys, duplicates, wrong types, duplicate scalar flags, missing flag values, and
 empty selected values reject. Paths are nonempty, at most 4,096 platform bytes,
@@ -189,13 +220,17 @@ Its TOML contains only:
 endpoint = "http://127.0.0.1:7443"
 database = "default"
 credential_file = "/var/lib/riffdb-mcp/credential"
+expected_audience = "riffdb-grpc-loopback"
 ```
 
 Credential selection is exactly one of `RIFFDB_MCP_CAPABILITY_TOKEN`,
 `RIFFDB_MCP_CREDENTIAL_FILE`, or `[mcp].credential_file`. The environment file
 path takes precedence over the TOML path, while simultaneous raw token and file
 selection rejects. The credential is loaded once and moved into the ordinary
-public gRPC client.
+public gRPC client. `expected_audience`, when present, is bounded target-identity
+evidence written by application provisioning; it grants no authority and has
+no flag or environment override.
 
-The bridge accepts a database alias, not a path. It does not accept a storage option, environment,
-audience override, policy, or server-side authority.
+The bridge accepts a database alias, not a path. It does not accept a storage
+option, environment, audience authority override, policy, or server-side
+authority.

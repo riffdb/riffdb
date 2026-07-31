@@ -32,10 +32,10 @@ use riffdb_service::{
     SymbolicResultField, SymbolicResultRecord, TraceProvenanceRequest, ValidateContractRequest,
 };
 use riffdb_types::{
-    CanonicalRecord, CanonicalValue, CommandId, CommitSequence, ContractLineage, ContractVersion,
-    CurrencyCode, Date, EntityKey, EntityTypeId, EnumTypeId, EnumVariantId, FieldId,
-    FrontierPosition, IdempotencyKey, IndexEpochPosition, IndexId, ProjectionId, ProvenanceId,
-    ServiceOperationV1, Timestamp,
+    Audience, CanonicalRecord, CanonicalValue, CommandId, CommitSequence, ContractLineage,
+    ContractVersion, CurrencyCode, DatabaseAlias, Date, EntityKey, EntityTypeId, EnumTypeId,
+    EnumVariantId, FieldId, FrontierPosition, IdempotencyKey, IndexEpochPosition, IndexId,
+    ProjectionId, ProvenanceId, ServiceOperationV1, Timestamp,
 };
 use serde::Serialize;
 
@@ -106,6 +106,8 @@ pub(crate) trait HostedObserverServiceCaller: Send + Sync {
 pub struct HostedServiceMcpBackend {
     service: Arc<dyn ApplicationService>,
     request_ids: Arc<dyn RequestIdSource>,
+    database_alias: DatabaseAlias,
+    authentication_audience: Audience,
 }
 
 impl HostedServiceMcpBackend {
@@ -114,10 +116,14 @@ impl HostedServiceMcpBackend {
     pub fn new(
         service: Arc<dyn ApplicationService>,
         request_ids: Arc<dyn RequestIdSource>,
+        database_alias: DatabaseAlias,
+        authentication_audience: Audience,
     ) -> Self {
         Self {
             service,
             request_ids,
+            database_alias,
+            authentication_audience,
         }
     }
 
@@ -788,7 +794,7 @@ impl HostedServiceMcpBackend {
                     .await
                     .map_err(map_service_failure)?;
                 call.complete();
-                render_active_contract_result(result)
+                render_active_contract_result(result, &self.database_alias)
             }
             McpFixedToolRequest::ExplainCommand {
                 contract,
@@ -845,7 +851,7 @@ impl HostedServiceMcpBackend {
                     .await
                     .map_err(map_service_failure)?;
                 call.complete();
-                render_health_result(result)
+                render_health_result(result, &self.database_alias, &self.authentication_audience)
             }
             McpFixedToolRequest::GetOutcomeIdentity {
                 contract_lineage,
@@ -2357,60 +2363,8 @@ fn render_validation_result(
         riffdb_service::ContractValidationResult::Valid => {
             compose(1, McpFixedResultBranch::ValidateValid, None)
         }
-        riffdb_service::ContractValidationResult::Invalid(error) => {
-            let payload = if let Some(diagnostics) = error.syntax() {
-                InvalidDiagnostics::Syntax {
-                    diagnostics: diagnostics
-                        .as_slice()
-                        .iter()
-                        .map(|diagnostic| {
-                            Ok(SyntaxDiagnostic {
-                                code: diagnostic.code().as_str().to_owned(),
-                                summary: diagnostic.code().summary().to_owned(),
-                                help: diagnostic.code().help().map(str::to_owned),
-                                span: SourceSpanPayload {
-                                    start: diagnostic.span().start(),
-                                    end: diagnostic.span().end(),
-                                },
-                                expected: diagnostic
-                                    .expected()
-                                    .iter()
-                                    .map(|value| (*value).to_owned())
-                                    .collect(),
-                            })
-                        })
-                        .collect::<Result<Vec<_>, McpBackendError>>()?,
-                }
-            } else if let Some(diagnostics) = error.semantic() {
-                InvalidDiagnostics::Semantic {
-                    diagnostics: diagnostics
-                        .as_slice()
-                        .iter()
-                        .map(|diagnostic| {
-                            Ok(SemanticDiagnostic {
-                                code: diagnostic.code().as_str().to_owned(),
-                                summary: diagnostic.code().summary().to_owned(),
-                                help: diagnostic.code().help().map(str::to_owned),
-                                primary_span: SourceSpanPayload {
-                                    start: diagnostic.primary_span().start(),
-                                    end: diagnostic.primary_span().end(),
-                                },
-                                related_span: diagnostic
-                                    .related_span()
-                                    .map(|span| {
-                                        Ok(SourceSpanPayload {
-                                            start: span.start(),
-                                            end: span.end(),
-                                        })
-                                    })
-                                    .transpose()?,
-                            })
-                        })
-                        .collect::<Result<Vec<_>, McpBackendError>>()?,
-                }
-            } else {
-                return Err(McpBackendError::InvalidResponse);
-            };
+        invalid @ riffdb_service::ContractValidationResult::Invalid(_) => {
+            let payload = compilation_diagnostics_payload(&invalid)?;
             compose(
                 1,
                 McpFixedResultBranch::ValidateInvalid,
@@ -2420,15 +2374,86 @@ fn render_validation_result(
     }
 }
 
+fn compilation_diagnostics_payload(
+    result: &riffdb_service::ContractValidationResult,
+) -> Result<InvalidDiagnostics, McpBackendError> {
+    let riffdb_service::ContractValidationResult::Invalid(error) = result else {
+        return Err(McpBackendError::InvalidResponse);
+    };
+    if let Some(diagnostics) = error.syntax() {
+        Ok(InvalidDiagnostics::Syntax {
+            diagnostics: diagnostics
+                .as_slice()
+                .iter()
+                .map(|diagnostic| {
+                    Ok(SyntaxDiagnostic {
+                        code: diagnostic.code().as_str().to_owned(),
+                        summary: diagnostic.code().summary().to_owned(),
+                        help: diagnostic.code().help().map(str::to_owned),
+                        span: SourceSpanPayload {
+                            start: diagnostic.span().start(),
+                            end: diagnostic.span().end(),
+                        },
+                        expected: diagnostic
+                            .expected()
+                            .iter()
+                            .map(|value| (*value).to_owned())
+                            .collect(),
+                    })
+                })
+                .collect::<Result<Vec<_>, McpBackendError>>()?,
+        })
+    } else if let Some(diagnostics) = error.semantic() {
+        Ok(InvalidDiagnostics::Semantic {
+            diagnostics: diagnostics
+                .as_slice()
+                .iter()
+                .map(|diagnostic| {
+                    Ok(SemanticDiagnostic {
+                        code: diagnostic.code().as_str().to_owned(),
+                        summary: diagnostic.code().summary().to_owned(),
+                        help: diagnostic.code().help().map(str::to_owned),
+                        primary_span: SourceSpanPayload {
+                            start: diagnostic.primary_span().start(),
+                            end: diagnostic.primary_span().end(),
+                        },
+                        related_span: diagnostic
+                            .related_span()
+                            .map(|span| {
+                                Ok(SourceSpanPayload {
+                                    start: span.start(),
+                                    end: span.end(),
+                                })
+                            })
+                            .transpose()?,
+                    })
+                })
+                .collect::<Result<Vec<_>, McpBackendError>>()?,
+        })
+    } else {
+        Err(McpBackendError::InvalidResponse)
+    }
+}
+
 fn render_active_contract_result(
     result: GetActiveContractResult,
+    database_alias: &DatabaseAlias,
 ) -> Result<McpToolResult, McpBackendError> {
     match result {
-        GetActiveContractResult::Absent => compose(2, McpFixedResultBranch::GetActiveAbsent, None),
+        GetActiveContractResult::Absent => compose(
+            2,
+            McpFixedResultBranch::GetActiveAbsent,
+            Some(payload_from(&ActiveContractAbsentPayload {
+                database: database_alias.as_str(),
+            })?),
+        ),
         GetActiveContractResult::Present(contract) => compose(
             2,
             McpFixedResultBranch::GetActivePresent,
-            Some(payload_from(&contract_descriptor(&contract)?)?),
+            Some(payload_from(&ActiveContractPresentPayload {
+                database: database_alias.as_str(),
+                contract: contract_descriptor(&contract)?,
+            })?),
         ),
     }
 }
@@ -2522,6 +2547,18 @@ fn render_explain_result(result: ExplainCommandResult) -> Result<McpToolResult, 
 
 fn render_deploy_result(result: DeployContractResult) -> Result<McpToolResult, McpBackendError> {
     match result {
+        DeployContractResult::InvalidSource(error) => compose(
+            4,
+            McpFixedResultBranch::DeployInvalidSource,
+            Some(payload_from(&compilation_diagnostics_payload(
+                &riffdb_service::ContractValidationResult::Invalid(error),
+            )?)?),
+        ),
+        DeployContractResult::IncompatibleCandidate(contract) => compose(
+            4,
+            McpFixedResultBranch::DeployIncompatibleCandidate,
+            Some(payload_from(&contract_descriptor(&contract)?)?),
+        ),
         DeployContractResult::Activated(contract) => compose(
             4,
             McpFixedResultBranch::DeployActivated,
@@ -2545,12 +2582,17 @@ fn render_deploy_result(result: DeployContractResult) -> Result<McpToolResult, M
     }
 }
 
-fn render_health_result(result: HealthResult) -> Result<McpToolResult, McpBackendError> {
+fn render_health_result(
+    result: HealthResult,
+    database_alias: &DatabaseAlias,
+    authentication_audience: &Audience,
+) -> Result<McpToolResult, McpBackendError> {
     match result {
         HealthResult::PreBootstrap(report) => compose(
             14,
             McpFixedResultBranch::HealthPreBootstrap,
             Some(payload_from(&PreBootstrapHealthPayload {
+                database: database_alias.as_str().to_owned(),
                 lifecycle: match report.lifecycle() {
                     riffdb_service::PreBootstrapLifecycle::InitializingValidation => {
                         "initializing_validation"
@@ -2564,7 +2606,11 @@ fn render_health_result(result: HealthResult) -> Result<McpToolResult, McpBacken
             })?),
         ),
         HealthResult::Authenticated(report) => {
-            let payload = authenticated_health_payload(&report);
+            let payload = AuthenticatedHealthToolPayload {
+                database: database_alias.as_str(),
+                audience: authentication_audience.as_str(),
+                health: authenticated_health_payload(&report),
+            };
             compose(
                 14,
                 McpFixedResultBranch::HealthAuthenticated,
@@ -4161,10 +4207,30 @@ enum GeneratedSchemaKey {
 }
 
 #[derive(Serialize)]
+struct ActiveContractAbsentPayload<'a> {
+    database: &'a str,
+}
+
+#[derive(Serialize)]
+struct ActiveContractPresentPayload<'a> {
+    database: &'a str,
+    contract: McpContractDescriptorPresentation,
+}
+
+#[derive(Serialize)]
 struct PreBootstrapHealthPayload {
+    database: String,
     lifecycle: &'static str,
     liveness: bool,
     readiness: bool,
+}
+
+#[derive(Serialize)]
+struct AuthenticatedHealthToolPayload<'a> {
+    database: &'a str,
+    audience: &'a str,
+    #[serde(flatten)]
+    health: AuthenticatedHealthPayload,
 }
 
 #[derive(Serialize)]

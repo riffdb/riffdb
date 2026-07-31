@@ -5,7 +5,8 @@ umask 077
 
 usage() {
     printf '%s\n' \
-        'usage: cargo riffdb install (--user|--system) [--database ALIAS]... [--from-binaries DIR] [--no-start]' >&2
+        'usage: cargo riffdb install (--user|--system) [--database ALIAS]... [--from-binaries DIR] [--no-start]' \
+        '       cargo riffdb install (--user|--system) --add-database ALIAS [--no-start]' >&2
 }
 
 fail() {
@@ -18,6 +19,13 @@ if [[ $# -lt 2 || "$1" != "install" ]]; then
     exit 2
 fi
 shift
+
+for install_argument in "$@"; do
+    if [[ "$install_argument" == --add-database ]]; then
+        script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+        exec "$script_root/release-source-add-database" install "$@"
+    fi
+done
 
 scope=
 binary_source=

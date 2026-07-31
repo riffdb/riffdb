@@ -5,8 +5,8 @@ schema-digest=RIFFDB-HASH-v1 domain riffdb.schema/v1 (recorded in fixed-tool-reg
 schema-sources=27
 registry-and-golden-files=3
 artifacts=30
-path=crates/riffdb-api-mcp/fixtures/fixed-tool-conversion-goldens-v1.json bytes=27239 plain_sha256=44256e494f84d5a88bf8c9c2e0a83800a2956fb3937ee704a51b51be7d54a1ab
-path=crates/riffdb-api-mcp/fixtures/fixed-tool-registry-v1.json bytes=21696 plain_sha256=1b169546f246445e24d9a9ba276608cc8539426e361a997cfb24e18e21a5a5c1
+path=crates/riffdb-api-mcp/fixtures/fixed-tool-conversion-goldens-v1.json bytes=28745 plain_sha256=de62a3dd2e112179830dc7dcc45770bfe3eb4c0618a2d766583fe965f52ac773
+path=crates/riffdb-api-mcp/fixtures/fixed-tool-registry-v1.json bytes=21739 plain_sha256=206f7c41a3cb1c42d58e000a84d406e4704982b87408be57fb5a630fefed0c36
 path=crates/riffdb-api-mcp/fixtures/resource-registry-v1.json bytes=18909 plain_sha256=58b5f78e66676b1a4e56119adb8b30937f4f43a144de91db176eb6598cc6f4d0
 path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_command_get_outcome.input.schema.json bytes=792 plain_sha256=bae0a2385cadfbc2810fd759ddd38cdc156fdbff31dd8df25b594563e2504bb0
 path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_commit_get.input.schema.json bytes=255 plain_sha256=ffbd5c47601e492d7605dca6e168d886911dab4969df73353e0d8e6fb467b080
@@ -14,11 +14,11 @@ path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_commit_get.result.schema.
 path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_commit_scan.input.schema.json bytes=328 plain_sha256=46282d18d9681d819921dba0e421d60dc92d2430f054284b0f541ae56f7ca36f
 path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_commit_scan.result.schema.json bytes=8005 plain_sha256=8e536bbefc17540e73db600362b909a41a02141f80b8c58b29b07c237b3fc1b0
 path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_deploy.input.schema.json bytes=313 plain_sha256=dd359ef8b54153f5eb62d5eecddb1e083bed335b74d379d9abeb5d4cb16b1d94
-path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_deploy.result.schema.json bytes=1464 plain_sha256=9281c8022b24d1f24911261fb26d0f5fd9da6e0b01e801fc8fa2acfb62d138dc
+path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_deploy.result.schema.json bytes=5284 plain_sha256=74d157b6cbf6234c6375b0853f34f89fea589831fd8394f06e874231d6f7a807
 path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_explain_command.input.schema.json bytes=908 plain_sha256=08b478ab59a6c6009e5cd2954794fcf16760992d43fa9ca27b0b6e11c1c4f881
 path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_explain_command.result.schema.json bytes=3900 plain_sha256=e81862b21147b6e5f4afb54bdeb5a5fb273a27f5ca828154667e7e5f03003d6a
 path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_get_active.input.schema.json bytes=133 plain_sha256=7cce9970b1299f7789482edd63b456ed5edd6cb79dd6d9be98e076866db957e5
-path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_get_active.result.schema.json bytes=961 plain_sha256=f32a6144985509337cdb2713cdfcf99ad2a5f474a53be3eb91524949c0dbc08f
+path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_get_active.result.schema.json bytes=1291 plain_sha256=c7cc7b1184dad2c20bb2381763c915b320dc403fa987ea1ba63096e0cba029fe
 path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_validate.input.schema.json bytes=199 plain_sha256=16ec0c0238e4e25374b4a33215f7fb01fe253b81664ce39a75022c89242dee29
 path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_contract_validate.result.schema.json bytes=2340 plain_sha256=cb2d019083d3751858102650b6c00d97d548a03d8da9be2fa35262b34b82ad8c
 path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_entity_get.input.schema.json bytes=1209 plain_sha256=323346e9f86fd4aa5ad638ebb75448804037edc5737a00b9af9354deec61177d
@@ -34,4 +34,4 @@ path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_projection_status.result.
 path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_provenance_trace.input.schema.json bytes=571 plain_sha256=b1a4569fc662774391c3ceedb35a2827d967e07c476600b21255fbf29479eeb5
 path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_provenance_trace.result.schema.json bytes=3637 plain_sha256=9f37f177c11865590c3d86b251b60613455496e1314fb1d3e3249f3a55baa7ed
 path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_server_health.input.schema.json bytes=133 plain_sha256=7cce9970b1299f7789482edd63b456ed5edd6cb79dd6d9be98e076866db957e5
-path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_server_health.result.schema.json bytes=2537 plain_sha256=798d498b502edcd04aa1bb5d2ac8462ea0fb0eca53f91cde63b76986e785976f
+path=crates/riffdb-api-mcp/schema/fixed-tool/v1/riffdb_server_health.result.schema.json bytes=2810 plain_sha256=c615cd36ac69f8f8d25a48948e29ab34c49daadf44c87dbd990d19b5e1d7d174

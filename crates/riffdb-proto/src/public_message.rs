@@ -1090,10 +1090,11 @@ fn validate_contract_compatibility(
 
 fn public_compatibility_code_class(code: &str) -> Option<v1::ContractCompatibilityClass> {
     match code {
-        "RDB-K001" | "RDB-K010" | "RDB-K011" | "RDB-K012" | "RDB-K013" => {
-            Some(v1::ContractCompatibilityClass::Compatible)
+        "RDB-K001" | "RDB-K010" | "RDB-K011" | "RDB-K012" | "RDB-K013" | "RDB-K014"
+        | "RDB-K015" | "RDB-K016" => Some(v1::ContractCompatibilityClass::Compatible),
+        "RDB-K020" | "RDB-K021" | "RDB-K022" => {
+            Some(v1::ContractCompatibilityClass::RequiresExplicitVersion)
         }
-        "RDB-K020" | "RDB-K021" => Some(v1::ContractCompatibilityClass::RequiresExplicitVersion),
         "RDB-K100" | "RDB-K101" | "RDB-K102" | "RDB-K103" | "RDB-K104" | "RDB-K105"
         | "RDB-K106" | "RDB-K107" | "RDB-K108" | "RDB-K109" | "RDB-K110" | "RDB-K111"
         | "RDB-K112" => Some(v1::ContractCompatibilityClass::Incompatible),
@@ -1536,7 +1537,8 @@ fn validate_deploy_contract_response(
         .ok_or(PublicWireError::MissingRequiredField)?
     {
         v1::deploy_contract_response::Result::Activated(descriptor)
-        | v1::deploy_contract_response::Result::AlreadyActive(descriptor) => {
+        | v1::deploy_contract_response::Result::AlreadyActive(descriptor)
+        | v1::deploy_contract_response::Result::IncompatibleCandidate(descriptor) => {
             validate_contract_descriptor(Some(descriptor))
         }
         v1::deploy_contract_response::Result::ExpectedActiveVersionMismatch(mismatch) => {
@@ -1547,6 +1549,9 @@ fn validate_deploy_contract_response(
             }
         }
         v1::deploy_contract_response::Result::BundleConflict(_) => Ok(()),
+        v1::deploy_contract_response::Result::InvalidSource(diagnostics) => {
+            validate_diagnostics(diagnostics)
+        }
     }
 }
 

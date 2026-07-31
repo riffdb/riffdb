@@ -50,6 +50,10 @@ Authors use names. Stable IDs, hashes, command plans, capability requirements,
 field visibility, and generated transport code belong to the compiler-owned
 lock and generated tree.
 
+See [First application authoring](AUTHORING.md) for reserved identifiers,
+namespace rules, supported comments, natural CLI/MCP JSON values, and installed
+deployment inputs.
+
 See [the command and invariant cookbook](COMMAND-INVARIANT-COOKBOOK.md) for
 safe patterns and [the Museum example](examples/museum/) for a complete
 multi-entity application.

@@ -734,6 +734,62 @@ chmod 0755 "$shim_bin/systemctl"
 export RIFFDB_TEST_SYSTEMCTL_LOG="$systemctl_log"
 export RIFFDB_TEST_SYSTEMCTL_STATE="$systemctl_state"
 
+database_add_root="$work_root/user database addition"
+set_isolated_user_roots "$database_add_root"
+"$installer" install --user \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >/dev/null
+database_add_config="$XDG_CONFIG_HOME/riffdb/riffdbd.toml"
+database_add_data="$XDG_DATA_HOME/riffdb"
+printf '%s\n' retained-backup \
+    >"$database_add_data/backups/retained-backup"
+RIFFDB_INSTALL_TEST_INTERRUPT_AFTER=paths_ready \
+    "$installer" install --user --add-database ea --no-start \
+    >/dev/null 2>&1 \
+    && fail "database addition crossed its armed interruption"
+"$installer" install --user --add-database ea --no-start >/dev/null
+for expected in \
+    '[databases.default]' \
+    '[databases.ea]' \
+    "$database_add_data/data/riffdb.redb" \
+    "$database_add_data/data/ea.redb" \
+    "$database_add_data/backups/default" \
+    "$database_add_data/backups/ea"
+do
+    grep -F "$expected" "$database_add_config" >/dev/null \
+        || fail "resumed database addition omitted: $expected"
+done
+if [[ ! -f "$database_add_data/backups/default/retained-backup" \
+   || -e "$XDG_STATE_HOME/riffdb/.install-add-database-v1" \
+   || -e "$database_add_data/.backups-add-database-v1" ]]; then
+    fail "resumed legacy migration lost a backup or retained private phase state"
+fi
+database_add_hash="$(sha256sum "$database_add_config" | sed 's/ .*//')"
+if "$installer" install --user --add-database ea --no-start >/dev/null 2>&1; then
+    fail "database addition accepted a duplicate alias"
+fi
+if [[ "$(sha256sum "$database_add_config" | sed 's/ .*//')" != "$database_add_hash" ]]; then
+    fail "duplicate database rejection changed retained configuration"
+fi
+
+custom_add_root="$work_root/custom database addition rejection"
+set_isolated_user_roots "$custom_add_root"
+"$installer" install --user \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >/dev/null
+custom_add_config="$XDG_CONFIG_HOME/riffdb/riffdbd.toml"
+printf '\n# operator-owned customization\n' >>"$custom_add_config"
+custom_add_hash="$(sha256sum "$custom_add_config" | sed 's/ .*//')"
+if "$installer" install --user --add-database ea --no-start >/dev/null 2>&1; then
+    fail "database addition rewrote a custom configuration"
+fi
+if [[ "$(sha256sum "$custom_add_config" | sed 's/ .*//')" != "$custom_add_hash" ]]; then
+    fail "custom configuration rejection changed the file"
+fi
+
+: >"$systemctl_log"
 service_root="$work_root/user service control"
 set_isolated_user_roots "$service_root"
 "$installer" install --user --from-binaries "$fixture_bin" >/dev/null
@@ -742,5 +798,83 @@ expected_systemctl_calls=$'--user daemon-reload\n--user enable riffdbd.service\n
 if [[ "$(<"$systemctl_log")" != "$expected_systemctl_calls" ]]; then
     fail "user service control did not follow inactive-start then active-restart"
 fi
+
+system_add_root="$work_root/simulated system database addition"
+system_config_root="$system_add_root/etc/riffdb"
+system_data_root="$system_add_root/var/lib/riffdb"
+mkdir -p \
+    "$system_config_root" \
+    "$system_data_root/data" \
+    "$system_data_root/backups"
+chmod 0700 \
+    "$system_add_root" \
+    "$system_add_root/etc" \
+    "$system_config_root" \
+    "$system_add_root/var" \
+    "$system_add_root/var/lib" \
+    "$system_data_root" \
+    "$system_data_root/data" \
+    "$system_data_root/backups"
+printf '%s\n' \
+    '[server]' \
+    "database = \"$system_data_root/data/riffdb.redb\"" \
+    'grpc_listen = "127.0.0.1:7443"' \
+    'environment = "local"' \
+    'audience = "riffdb-grpc-loopback"' \
+    "capability_keys = \"$system_config_root/capability.keys\"" \
+    "idempotency_keys = \"$system_config_root/idempotency.keys\"" \
+    '' \
+    '[maintenance]' \
+    "backup_root = \"$system_data_root/backups\"" \
+    >"$system_config_root/riffdbd.toml"
+chmod 0640 "$system_config_root/riffdbd.toml"
+printf '%s\n' retained-system-backup \
+    >"$system_data_root/backups/retained-system-backup"
+
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'if [[ "${1:-}" == "-v" && $# -eq 1 ]]; then exit 0; fi' \
+    'exec "$@"' \
+    >"$shim_bin/sudo"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'case "$*" in' \
+    '    "--quiet is-active riffdbd.service") exit 1 ;;' \
+    '    *) exit 98 ;;' \
+    'esac' \
+    >"$shim_bin/systemctl"
+chmod 0755 "$shim_bin/sudo" "$shim_bin/systemctl"
+
+if RIFFDB_INSTALL_TEST_MODE=1 \
+    RIFFDB_INSTALL_TEST_SYSTEM_ROOT="$system_add_root" \
+    RIFFDB_INSTALL_TEST_INTERRUPT_AFTER=legacy_backup_staged \
+    "$installer" install --system --add-database ea --no-start \
+    >/dev/null 2>&1
+then
+    fail "simulated system database addition crossed its armed interruption"
+fi
+RIFFDB_INSTALL_TEST_MODE=1 \
+    RIFFDB_INSTALL_TEST_SYSTEM_ROOT="$system_add_root" \
+    "$installer" install --system --add-database ea --no-start \
+    >/dev/null
+for expected in \
+    '[databases.default]' \
+    '[databases.ea]' \
+    "$system_data_root/data/riffdb.redb" \
+    "$system_data_root/data/ea.redb" \
+    "$system_data_root/backups/default" \
+    "$system_data_root/backups/ea"
+do
+    grep -F "$expected" "$system_config_root/riffdbd.toml" >/dev/null \
+        || fail "simulated system migration omitted: $expected"
+done
+if [[ ! -f "$system_data_root/backups/default/retained-system-backup" \
+   || -e "$system_data_root/.install-add-database-v1" \
+   || -e "$system_data_root/.backups-add-database-v1" ]]; then
+    fail "simulated system migration lost a backup or retained private phase state"
+fi
+require_regular_mode "$system_config_root/riffdbd.toml" 0640
 
 printf '%s\n' 'riffdb-release-source-install-smoke-v1: verified'

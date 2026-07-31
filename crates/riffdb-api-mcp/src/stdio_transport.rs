@@ -90,6 +90,16 @@ impl McpStdioClientActivity {
         self.authenticated_request_completed_at(self.clock.now())
     }
 
+    /// Returns whether this session completed one successful MCP initialize.
+    ///
+    /// This exposes only protocol lifecycle state so a process wrapper can
+    /// distinguish a host that closed stdin before initialization from a
+    /// defect after an established session.
+    #[must_use]
+    pub fn was_initialized(&self) -> bool {
+        self.timeline.borrow().initialized_at.is_some()
+    }
+
     fn initialized(&self) {
         self.initialized_at(self.clock.now());
     }
