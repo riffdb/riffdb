@@ -561,6 +561,17 @@ impl RunningProductionGraph {
         self.observability.write_completion_group_snapshot()
     }
 
+    /// Dispatch-reason counts plus selected/deferred totals for shutdown evidence.
+    pub(crate) fn command_group_dispatch_snapshot(
+        &self,
+    ) -> (
+        [u64; riffdb_observability::COMMAND_GROUP_DISPATCH_REASON_COUNT],
+        u64,
+        u64,
+    ) {
+        self.observability.command_group_dispatch_snapshot()
+    }
+
     /// History incarnation retained from the successful open that built this graph.
     ///
     /// Available after activation even once ordinary admission is closed for

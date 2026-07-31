@@ -434,19 +434,25 @@ impl ConflictObserver for Observability {
 impl CommitTelemetry for Observability {
     fn record(&self, event: CommitTelemetryEvent) {
         match event {
-            CommitTelemetryEvent::CommandPipelineStageCompleted { .. } => {}
+            CommitTelemetryEvent::CommandPipelineStageCompleted { stage, elapsed, .. } => {
+                self.metrics
+                    .observe_command_stage_duration(stage, duration_micros(elapsed));
+            }
             CommitTelemetryEvent::CommandGroupDispatched {
                 reason,
                 selected,
                 deferred,
                 ..
             } => {
-                saturating_increment(
-                    &self.command_group_dispatch_reasons
-                        [command_group_dispatch_reason_index(reason)],
-                );
+                let reason_index = command_group_dispatch_reason_index(reason);
+                saturating_increment(&self.command_group_dispatch_reasons[reason_index]);
                 saturating_add(&self.command_group_selected_total, u64::from(selected));
                 saturating_add(&self.command_group_deferred_total, u64::from(deferred));
+                self.metrics.record_command_group_dispatch(
+                    reason,
+                    u64::from(selected),
+                    u64::from(deferred),
+                );
             }
             CommitTelemetryEvent::StorageQueueCompleted { elapsed, .. } => {
                 self.metrics.observe_required_histogram(
@@ -486,19 +492,19 @@ impl CommitTelemetry for Observability {
                 terminal,
                 elapsed,
                 batch_size,
-                synchronous,
             } => {
                 let elapsed = duration_micros(elapsed);
                 self.metrics.observe_required_histogram(
                     RequiredHistogram::CommitDurationMicroseconds,
                     elapsed,
                 );
-                if synchronous {
-                    self.metrics.observe_required_histogram(
-                        RequiredHistogram::DurableFlushDurationMicroseconds,
-                        elapsed,
-                    );
-                }
+                // Always record flush duration: production Group durability still
+                // performs a durable commit; the previous `synchronous` gate
+                // left this histogram empty under CoordinatorDurability::Group.
+                self.metrics.observe_required_histogram(
+                    RequiredHistogram::DurableFlushDurationMicroseconds,
+                    elapsed,
+                );
                 self.metrics.observe_required_histogram(
                     RequiredHistogram::CommitBatchSize,
                     u64::from(batch_size),
@@ -525,6 +531,12 @@ impl CommitTelemetry for Observability {
                     self.metrics
                         .increment_required_counter(RequiredCounter::Commits);
                 }
+            }
+            CommitTelemetryEvent::WriterUnitCompleted { busy, idle } => {
+                self.metrics
+                    .add_writer_busy_microseconds(duration_micros(busy));
+                self.metrics
+                    .add_writer_idle_microseconds(duration_micros(idle));
             }
         }
         self.record_trace(TraceRecord::commit(event));

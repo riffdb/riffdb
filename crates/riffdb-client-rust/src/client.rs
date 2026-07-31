@@ -629,6 +629,7 @@ impl RiffDbClient {
             let request_id = request_ids
                 .next_request_id()
                 .map_err(|error| retry.request_id_failure(error))?;
+            retry.note_request_id(&request_id);
             match self
                 .create_offline_backup(create.request(request_id), metadata)
                 .await
@@ -661,6 +662,7 @@ impl RiffDbClient {
             let request_id = request_ids
                 .next_request_id()
                 .map_err(|error| retry.request_id_failure(error))?;
+            retry.note_request_id(&request_id);
             match self
                 .restore_offline_backup(restore.request(request_id), metadata)
                 .await
@@ -878,7 +880,10 @@ fn next_retry_request<S: RetryRequestIdSource>(
     }
     request_ids
         .next_request_id()
-        .map(|request_id| Some(command.request(request_id)))
+        .map(|request_id| {
+            retry.note_request_id(&request_id);
+            Some(command.request(request_id))
+        })
         .map_err(|error| retry.request_id_failure(error))
 }
 
@@ -892,7 +897,10 @@ fn next_normal_create_request<S: RetryRequestIdSource>(
     }
     request_ids
         .next_request_id()
-        .map(|request_id| Some(create.request(request_id)))
+        .map(|request_id| {
+            retry.note_request_id(&request_id);
+            Some(create.request(request_id))
+        })
         .map_err(|error| retry.request_id_failure(error))
 }
 
@@ -906,7 +914,10 @@ fn next_bootstrap_create_request<S: RetryRequestIdSource>(
     }
     request_ids
         .next_request_id()
-        .map(|request_id| Some(create.request(request_id)))
+        .map(|request_id| {
+            retry.note_request_id(&request_id);
+            Some(create.request(request_id))
+        })
         .map_err(|error| retry.request_id_failure(error))
 }
 

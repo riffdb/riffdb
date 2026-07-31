@@ -1379,7 +1379,6 @@ where
         terminal: group_commit_call_terminal(&commit_result),
         elapsed: commit_started_at.elapsed(),
         batch_size: u16::try_from(batch_size).expect("group cap fits u16"),
-        synchronous: durability == CoordinatorDurability::Sync,
     });
     match commit_result {
         CheckedCommandGroupCommitResult::Committed(outcomes) => {
@@ -1859,7 +1858,6 @@ where
         terminal: commit_call_terminal(&commit_result),
         elapsed: commit_started_at.elapsed(),
         batch_size: 1,
-        synchronous: durability == CoordinatorDurability::Sync,
     });
     match commit_result {
         CheckedCommandCommitResult::Committed(outcome) => {
