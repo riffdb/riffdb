@@ -1,6 +1,6 @@
 # ADR-0069: Linear Startup Validation and Bounded History Access
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-30
 - **Decision owners:** RiffDB maintainers
 - **Related requirements:** `PERF-003`, proposed `PERF-013`/`PERF-014`, `REC-003`
@@ -103,5 +103,5 @@ gates: startup growth sub-quadratic and bounded at the top checkpoint
 
 ## Acceptance
 
-Pending maintainer acceptance. Package H merges only after this record is
-accepted.
+The human maintainer explicitly accepted this exact record on 2026-07-30 in
+the current Claude session. Package H may merge against it.
