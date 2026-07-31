@@ -881,7 +881,7 @@ impl CommandExecutor {
 
     /// Non-blocking acquisition of retained-byte budget for one preparation.
     ///
-    /// `units` must equal [`queued_preparation_units`] for the normalized
+    /// `units` must equal [`crate::command_preparation::queued_preparation_units`] for the normalized
     /// input that will be submitted. Exhaustion returns
     /// [`CommandExecutionAdmissionError::Overloaded`].
     pub fn try_acquire_retained_bytes(
