@@ -2141,6 +2141,7 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
             "riffdb.v1.GetActiveContractResponse",
             &v1::GetActiveContractResponse {
                 result: Some(result),
+                database_alias: "default".to_owned(),
             },
         );
     }
@@ -4316,6 +4317,8 @@ fn public_pre_bootstrap_health() -> v1::HealthResponse {
                 readiness: false,
             },
         )),
+        database_alias: "default".to_owned(),
+        authentication_audience: "riffdb-grpc-loopback".to_owned(),
     }
 }
 
@@ -4345,6 +4348,8 @@ fn public_authenticated_health() -> v1::HealthResponse {
                 }),
             },
         )),
+        database_alias: "default".to_owned(),
+        authentication_audience: "riffdb-grpc-loopback".to_owned(),
     }
 }
 
@@ -5434,6 +5439,7 @@ fn response_charge_candidate(
             result: Some(v1::get_active_contract_response::Result::Present(
                 public_contract_descriptor(),
             )),
+            database_alias: "default".to_owned(),
         }
         .encode_to_vec(),
         "get_commit.found_oversize" => v1::GetCommitResponse {
@@ -5486,6 +5492,8 @@ fn response_charge_candidate(
                     readiness: false,
                 },
             )),
+            database_alias: "default".to_owned(),
+            authentication_audience: "riffdb-grpc-loopback".to_owned(),
         }
         .encode_to_vec(),
         value if value.starts_with("list_pending_outbox_deliveries.") => {
@@ -5942,6 +5950,8 @@ fn response_charge_authenticated_health() -> v1::HealthResponse {
                 }),
             },
         )),
+        database_alias: "d".repeat(64),
+        authentication_audience: "a".repeat(256),
     }
 }
 

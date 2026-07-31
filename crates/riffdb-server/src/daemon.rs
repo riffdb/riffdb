@@ -393,12 +393,17 @@ fn restore_request_from_receipt(
 
 /// Runs the production `riffdbd` process and returns a conventional exit status.
 ///
-/// Process errors are intentionally rendered as one static, nonsecret message.
+/// Configuration failures are rendered through their bounded, value-redacted
+/// diagnostics. All later process failures retain one static nonsecret message.
 #[must_use]
 pub fn riffdbd_main() -> ExitCode {
     match run_from_process(MaintenanceRecoveryController::disabled()) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(_error) => {
+        Err(DaemonError::Config(error)) => {
+            eprintln!("RDB-CONFIG-0001: {error}");
+            ExitCode::FAILURE
+        }
+        Err(_) => {
             eprintln!("riffdbd terminated without reaching a clean process boundary");
             ExitCode::FAILURE
         }
@@ -880,7 +885,11 @@ async fn run_multi_database_server(
         Arc::new(GrpcDatabaseRoutes::new(routes).map_err(|_| DaemonError::GrpcConfiguration)?);
     let limits = GrpcRequestLimits::new(REQUEST_DURATION_LIMIT)
         .map_err(|_| DaemonError::GrpcConfiguration)?;
-    let application = GrpcApplication::with_database_routes(Arc::clone(&routes), limits);
+    let application = GrpcApplication::with_database_routes_and_audience(
+        Arc::clone(&routes),
+        limits,
+        config.audience().clone(),
+    );
     let mut transport = HostedGrpc::bind(config.listen_address(), &application)?;
     drop(application);
 

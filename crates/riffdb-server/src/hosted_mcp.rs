@@ -58,8 +58,10 @@ struct HostedMcpRegistrationFactory {
 impl HostedMcpRegistrationFactory {
     fn build(
         &self,
+        database_alias: DatabaseAlias,
         dependencies: HostedMcpDependencies,
     ) -> Result<HostedMcpRegistration, HostedMcpStartError> {
+        let authentication_audience = dependencies.authentication.audience().clone();
         let configuration = HostedMcpHttpConfiguration::new(
             self.address,
             dependencies.authentication,
@@ -71,6 +73,8 @@ impl HostedMcpRegistrationFactory {
         let observer_service = Arc::new(HostedServiceMcpBackend::new(
             Arc::clone(&dependencies.service),
             observer_request_ids,
+            database_alias.clone(),
+            authentication_audience.clone(),
         ));
         let factory_service = Arc::clone(&dependencies.service);
         let factory_request_ids = dependencies.request_ids;
@@ -88,7 +92,12 @@ impl HostedMcpRegistrationFactory {
             let session = McpAdmissionSessionKey::new(format!("{SESSION_KEY_PREFIX}{sequence}"))
                 .map_err(|_| io::Error::other("hosted MCP session identity is unavailable"))?;
             let request_ids: Arc<dyn RequestIdSource> = Arc::new(factory_request_ids.clone());
-            let backend = HostedServiceMcpBackend::new(Arc::clone(&factory_service), request_ids);
+            let backend = HostedServiceMcpBackend::new(
+                Arc::clone(&factory_service),
+                request_ids,
+                database_alias.clone(),
+                authentication_audience.clone(),
+            );
             Ok(RiffDbMcpServer::with_shared_admission_and_telemetry(
                 backend,
                 McpTransportKind::StreamableHttp,
@@ -154,7 +163,7 @@ impl HostedMcp {
 
         let mut routes = BTreeMap::new();
         for (alias, dependencies) in dependencies {
-            let registration = factory.build(dependencies)?;
+            let registration = factory.build(alias.clone(), dependencies)?;
             if routes.insert(alias, registration).is_some() {
                 return Err(HostedMcpStartError::Routes);
             }
@@ -243,7 +252,7 @@ impl HostedMcp {
         alias: &DatabaseAlias,
         dependencies: HostedMcpDependencies,
     ) -> Result<(), HostedMcpStartError> {
-        let registration = self.factory.build(dependencies)?;
+        let registration = self.factory.build(alias.clone(), dependencies)?;
         if !self.routes.configured.contains(alias) {
             return Err(HostedMcpStartError::Routes);
         }

@@ -42,11 +42,28 @@ cargo riffdb bootstrap --user --database ea
 cargo riffdb bootstrap --user --database orders
 ```
 
+To add a database to an existing installer-owned user or system installation,
+use the offline migration command:
+
+```bash
+cargo riffdb install --user --add-database ea
+cargo riffdb bootstrap --user --database ea
+```
+
+The command stops an active service, preserves a legacy database as alias
+`default`, moves the legacy backup contents to `backups/default`, creates the
+new sibling root `backups/ea`, atomically publishes named configuration, and
+starts the service again. Its private phase journal makes the operation
+resumable after process or machine interruption. `--no-start` requires the
+service to already be inactive and leaves it inactive. The command accepts
+only an exact installer-generated configuration; it refuses customized TOML
+without changing it.
+
 `--database` is repeatable on install, accepts the canonical
 `[a-z][a-z0-9_-]{0,63}` alias grammar, and is bounded to 32 unique aliases.
 Repeating installation with explicit aliases requires the exact retained alias
-list. The installer never edits an existing custom server configuration to add
-or remove a database.
+list. Only `--add-database` changes an existing installer-owned registry. The
+installer never edits custom server configuration.
 
 Named bootstrap writes separate private files such as `client-ea.toml`,
 `operator-ea.credential`, `mcp-ea.toml`, and `mcp-ea.credential`. With
@@ -179,6 +196,26 @@ outbox access. After deployment, use the administrator CLI config to bind a
 compiled application role or issue an exact scoped capability, then configure
 the application or a separate MCP identity with that credential.
 
+For an exact locked application, the canonical installed workflow is:
+
+```bash
+riffdb application lock --write
+riffdb application generate --locked
+riffdb application deploy \
+  --provision-role EaApplication \
+  --tenant organization_acme \
+  --seed
+```
+
+Deployment refuses unlocked or drifted sources. Contract and query deployment
+are idempotently resumable, role creation is explicit, and seed files run as
+ordinary idempotent commands under the resulting application credential.
+Private lock- and database-bound progress, the application credential, and
+generated application-only `client.toml` and `mcp.toml` live beneath
+`.riffdb/deployments/<database>/`; this state records identities but is never
+an authority source. Explicit `--replace-expired-credential` revokes the
+retained old capability before creating its replacement.
+
 Bootstrap defaults to `http://127.0.0.1:7443`. To select a deliberately
 reconfigured loopback listener, set an exact endpoint for that invocation:
 
@@ -221,6 +258,89 @@ restarting the service.
 
 Consequently, the convenience command is not a general configuration
 migration, key-rotation, uninstall, or compatibility-aware upgrade tool.
+
+### Pre-Alpha Database Reset
+
+A reset is an offline, destructive operator action for disposable pre-alpha
+data. It is not a schema migration, is never performed by contract deployment,
+and has no runtime API. Prefer an additive successor whenever the compatibility
+rules permit it.
+
+Resetting one alias creates a new database identity. Its old operator, MCP, and
+application credentials no longer authorize the new database. Retained
+bootstrap material, capability IDs, generated client configuration, and
+application deployment progress for that alias must be archived with the old
+database and recreated.
+
+For an installer-owned user database named `ea`, first close every client that
+could restart the service, then stop the one server process that owns all
+configured aliases:
+
+```bash
+systemctl --user stop riffdbd.service
+systemctl --user is-active riffdbd.service
+```
+
+Require the second command to report `inactive`. Set the XDG roots, create a
+private timestamped archive, and move the selected database plus its
+database-bound local authority and recovery files into it:
+
+```bash
+config_root="${XDG_CONFIG_HOME:-$HOME/.config}/riffdb"
+data_root="${XDG_DATA_HOME:-$HOME/.local/share}/riffdb"
+state_root="${XDG_STATE_HOME:-$HOME/.local/state}/riffdb"
+reset_archive="$data_root/manual-reset/ea-$(date -u +%Y%m%dT%H%M%SZ)"
+install -d -m 0700 "$reset_archive/config" "$reset_archive/state"
+
+mv -- "$data_root/data/ea.redb" "$reset_archive/ea.redb"
+for path in \
+  "$config_root/operator-ea.credential" \
+  "$config_root/client-ea.toml" \
+  "$config_root/mcp-ea.credential" \
+  "$config_root/mcp-ea.toml" \
+  "$state_root/bootstrap-ea.credential" \
+  "$state_root/bootstrap-local-owner-ea.json" \
+  "$state_root/mcp-local-developer-ea.json" \
+  "$state_root/operator-capability-ea.id" \
+  "$state_root/mcp-capability-ea.pending-id" \
+  "$state_root/mcp-capability-ea.id"
+do
+  if [[ -e "$path" || -L "$path" ]]; then
+    case "$path" in
+      "$config_root"/*) mv -- "$path" "$reset_archive/config/" ;;
+      "$state_root"/*) mv -- "$path" "$reset_archive/state/" ;;
+    esac
+  fi
+done
+```
+
+Before executing this procedure, confirm the selected `[databases.ea].path` in
+the active `riffdbd.toml`; custom installations may use another path. Backups
+under `backups/ea` are deliberately retained. Do not move another alias, the
+shared capability or idempotency digest keys, or the server configuration.
+
+Start the service, bootstrap only the new empty alias, and deploy a complete
+genesis application:
+
+```bash
+systemctl --user start riffdbd.service
+cargo riffdb bootstrap --user --database ea
+
+riffdb application lock --write
+riffdb application generate --locked
+riffdb --config "$config_root/client-ea.toml" application deploy \
+  --provision-role EaApplication \
+  --tenant organization_acme \
+  --seed
+```
+
+Archive or remove the application's old `.riffdb/deployments/ea` directory
+before the final command so the application does not reuse database-bound
+deployment identities. If Codex or another MCP host retained the old
+`riffdb_ea` registration, replace it only after the new bootstrap has produced
+the new `mcp-ea.toml`. A reset is complete only after authenticated health,
+active-contract inspection, and an application query succeed against alias
+`ea`.
 Review [Upgrade and Removal](upgrade-removal.md) and compatibility policy
 before changing revisions. Use `--no-start` when replacing binaries should not
 immediately restart the existing service.

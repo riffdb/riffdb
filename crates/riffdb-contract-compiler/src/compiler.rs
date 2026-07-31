@@ -1036,6 +1036,91 @@ contract SameVersion version 1 {
     }
 
     #[test]
+    fn additive_enum_entity_and_aggregate_evolution_has_stable_classes() {
+        let genesis_source = r#"
+contract AdditiveSchema version 1 {
+  enum AttentionOrigin { AttentionOther }
+  entity Workspace { key (workspace_id: uuid) }
+  aggregate Workspaces {
+    root Workspace
+    partition_by workspace_id
+    conflict_key (workspace_id)
+  }
+}
+"#;
+        let successor_source = r#"
+contract AdditiveSchema version 2 {
+  enum AttentionOrigin { AttentionOther, Email }
+  enum EmailDraftStatus { Proposed, Approved, Discarded, Sent }
+  entity Workspace { key (workspace_id: uuid) }
+  entity EmailDraft {
+    key (workspace_id: uuid, draft_id: uuid)
+    field status: EmailDraftStatus
+  }
+  aggregate Workspaces {
+    root Workspace
+    partition_by workspace_id
+    conflict_key (workspace_id)
+  }
+  aggregate EmailDrafts {
+    root EmailDraft
+    partition_by workspace_id
+    conflict_key (workspace_id, draft_id)
+  }
+}
+"#;
+        let genesis = compile_contract_source(genesis_source).expect("genesis");
+        let successor = compile_contract_successor(successor_source, &genesis).expect("successor");
+        assert_eq!(
+            successor.compatibility().overall(),
+            CompatibilityClass::RequiresExplicitVersion
+        );
+        assert_eq!(
+            successor
+                .compatibility()
+                .entries()
+                .iter()
+                .map(|entry| entry.code())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                CompatibilityCode::AddedEnum,
+                CompatibilityCode::AddedEntity,
+                CompatibilityCode::AddedAggregate,
+                CompatibilityCode::AddedEnumVariant,
+            ])
+        );
+    }
+
+    #[test]
+    fn new_aggregate_may_not_take_ownership_of_an_existing_entity() {
+        let genesis_source = r#"
+contract AggregateOwnership version 1 {
+  entity Workspace { key (workspace_id: uuid) }
+}
+"#;
+        let successor_source = r#"
+contract AggregateOwnership version 2 {
+  entity Workspace { key (workspace_id: uuid) }
+  aggregate Workspaces {
+    root Workspace
+    partition_by workspace_id
+    conflict_key (workspace_id)
+  }
+}
+"#;
+        let genesis = compile_contract_source(genesis_source).expect("genesis");
+        let successor = compile_contract_successor(successor_source, &genesis).expect("successor");
+        assert_eq!(
+            successor.compatibility().overall(),
+            CompatibilityClass::Incompatible
+        );
+        assert!(successor.compatibility().entries().iter().any(|entry| {
+            entry.code() == CompatibilityCode::UnsupportedAddition
+                && entry.affected_path().starts_with("aggregate:")
+        }));
+    }
+
+    #[test]
     fn optional_numeric_contexts_accept_signed_minimum_decimal_and_money() {
         let source = r#"
 contract OptionalNumerics version 1 {

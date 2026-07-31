@@ -1,4 +1,4 @@
-# ADR-0066: Read Stability and Internal Retry
+# ADR-0070: Read Stability and Internal Retry
 
 - **Status:** Accepted
 - **Date:** 2026-07-30

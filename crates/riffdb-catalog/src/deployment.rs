@@ -198,7 +198,7 @@ pub(crate) fn validate_successor_compatibility(
     let recomputed = compare_successor(parent.bundle(), checked_candidate)
         .map_err(|error| CatalogError::from_ir(&error))?;
     if &recomputed != bundle.compatibility()
-        || recomputed.overall() != CompatibilityClass::Compatible
+        || recomputed.overall() == CompatibilityClass::Incompatible
     {
         return Err(CatalogError::new(CatalogErrorKind::IncompatibleContract));
     }

@@ -1,1 +1,1 @@
-{"schema":"riffdb.cli.output/v1","command":"server.health","ok":true,"result":{"status":"pre_bootstrap","lifecycle":"initializing_bootstrap","liveness":true,"readiness":false}}
+{"schema":"riffdb.cli.output/v1","command":"server.health","ok":true,"result":{"status":"pre_bootstrap","database":"default","audience":"riffdb-grpc-loopback","lifecycle":"initializing_bootstrap","liveness":true,"readiness":false}}

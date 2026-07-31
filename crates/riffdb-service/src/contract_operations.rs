@@ -26,12 +26,13 @@ use riffdb_types::{
 use crate::orchestration::{AuditScope, BegunInvocation};
 use crate::wait::{ControlledWaitError, wait_with_control};
 use crate::{
-    ContractApplication, ContractDescriptor, ContractSelection, ContractValidationResult,
-    DeployContractRequest, DeployContractResult, ExplainCommandRequest, ExplainCommandResult,
-    ExplainedCommand, GetActiveContractRequest, GetActiveContractResult, GetContractVersionRequest,
-    GetContractVersionResult, InternalDefect, PendingTerminalResponse, PortAdmissionError,
-    PortDriverStopped, RequestContext, RiffDbService, RiffDbServiceInner, ServiceAuditTargetMap,
-    ServiceFailure, ServiceFuture, ServiceResult, ValidateContractRequest, ensure_response_budget,
+    ContractApplication, ContractCompatibilityClass, ContractDescriptor, ContractSelection,
+    ContractValidationResult, DeployContractRequest, DeployContractResult, ExplainCommandRequest,
+    ExplainCommandResult, ExplainedCommand, GetActiveContractRequest, GetActiveContractResult,
+    GetContractVersionRequest, GetContractVersionResult, InternalDefect, PendingTerminalResponse,
+    PortAdmissionError, PortDriverStopped, RequestContext, RiffDbService, RiffDbServiceInner,
+    ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult, ValidateContractRequest,
+    ensure_response_budget,
 };
 
 impl ContractApplication for RiffDbService {
@@ -559,15 +560,14 @@ async fn deploy_contract(
         active.as_ref().map(ActiveCatalogSnapshot::bundle),
     ) {
         Ok(candidate) => candidate,
-        Err(_) => {
-            return Err(finish_deploy_prestart_failure(
+        Err(error) => {
+            return finish_deploy_prestart_result(
                 service,
                 &context,
                 provisional_targets,
-                ServiceAuditPhaseV1::Failed,
-                root_validation(ValidationCode::InvalidValue).into(),
+                DeployContractResult::InvalidSource(error),
             )
-            .await);
+            .await;
         }
     };
     let descriptor = contract_descriptor(&candidate);
@@ -598,6 +598,31 @@ async fn deploy_contract(
     let begun = service
         .begin_invocation(&context, operation, targets, AuditScope::Intrinsic)
         .await?;
+
+    let actual_active_version = active
+        .as_ref()
+        .map(|active| active.bundle().contract_version());
+    if descriptor.compatibility().overall() == ContractCompatibilityClass::Incompatible
+        && actual_active_version == request.expected_active_version()
+    {
+        let _fresh = begun.reauthorize(service, &context).await?;
+        let result = DeployContractResult::IncompatibleCandidate(descriptor);
+        if let Err(failure) = ensure_response_budget(&result) {
+            return Err(
+                finish_terminal_failure(service, &context, &begun, OPERATION, failure).await,
+            );
+        }
+        finish_phase(
+            service,
+            &context,
+            &begun,
+            OPERATION,
+            ServiceAuditPhaseV1::Failed,
+            ServiceAuditLinkV1::None,
+        )
+        .await?;
+        return Ok(result);
+    }
 
     let preparation = match wait_with_control(
         context.control(),
@@ -1158,6 +1183,38 @@ async fn finish_deploy_prestart_failure(
     }
 }
 
+async fn finish_deploy_prestart_result(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    targets: ServiceAuditTargetsV1,
+    result: DeployContractResult,
+) -> ServiceResult<DeployContractResult> {
+    if let Err(failure) = ensure_response_budget(&result) {
+        return Err(finish_deploy_prestart_failure(
+            service,
+            context,
+            targets,
+            ServiceAuditPhaseV1::Failed,
+            failure,
+        )
+        .await);
+    }
+    if service
+        .append_prestart_terminal_if_intrinsic(
+            context,
+            ServiceOperationV1::DeployContract,
+            targets,
+            AuditScope::Intrinsic,
+            ServiceAuditPhaseV1::Failed,
+        )
+        .await
+        .is_err()
+    {
+        return Err(PublicError::storage_unavailable().into());
+    }
+    Ok(result)
+}
+
 const fn controlled_wait_failure(error: ControlledWaitError) -> ServiceFailure {
     match error {
         ControlledWaitError::Cancelled => ServiceFailure::Cancelled,
@@ -1223,15 +1280,13 @@ const fn classify_deployment_preparation_error(
         | CatalogErrorKind::LineageMaterializationProofLimit => {
             DeploymentPreparationDisposition::Validation(ValidationCode::TooLong)
         }
-        CatalogErrorKind::IncompatibleContract => {
-            DeploymentPreparationDisposition::Validation(ValidationCode::InvalidValue)
-        }
         CatalogErrorKind::Storage | CatalogErrorKind::ActiveCatalogMismatch => {
             DeploymentPreparationDisposition::Unavailable
         }
         CatalogErrorKind::InvalidBundle
         | CatalogErrorKind::UnsupportedBundleVersion
         | CatalogErrorKind::InvalidCommandRegistry
+        | CatalogErrorKind::IncompatibleContract
         | CatalogErrorKind::UnknownExecutablePlan
         | CatalogErrorKind::InvalidHistoricalEvidence
         | CatalogErrorKind::InvalidHistoricalKey => DeploymentPreparationDisposition::Integrity,

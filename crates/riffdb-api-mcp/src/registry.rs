@@ -20,7 +20,7 @@ const SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 const MAX_SCHEMA_BYTES: usize = 65_536;
 const MAX_DYNAMIC_SCHEMA_BYTES: usize = 1_048_576;
 const MAX_FIXED_SCHEMA_BYTES: usize = 1_048_576;
-const EXPECTED_FIXED_SCHEMA_BYTES: usize = 65_533;
+const EXPECTED_FIXED_SCHEMA_BYTES: usize = 69_956;
 
 static FIXED_TOOL_REGISTRY: OnceLock<Result<FixedToolRegistry, RegistryError>> = OnceLock::new();
 static RESOURCE_REGISTRY: OnceLock<Result<ResourceRegistry, RegistryError>> = OnceLock::new();
@@ -514,7 +514,7 @@ fn load_fixed_tool_registry() -> Result<FixedToolRegistry, RegistryError> {
             != (FixedCountsWire {
                 fixed_tools: 14,
                 new_fixed_schema_sources: 27,
-                top_level_result_branches: 29,
+                top_level_result_branches: 31,
                 unique_operation_and_fixed_artifacts: 29,
             })
         || wire.schema_hashing.scheme != 1
@@ -547,7 +547,6 @@ fn load_fixed_tool_registry() -> Result<FixedToolRegistry, RegistryError> {
     {
         return Err(RegistryError);
     }
-
     if wire
         .operation_schemas
         .iter()
@@ -612,7 +611,7 @@ fn load_fixed_tool_registry() -> Result<FixedToolRegistry, RegistryError> {
         });
     }
 
-    if local_sources.len() != 27 || result_branches != 29 {
+    if local_sources.len() != 27 || result_branches != 31 {
         return Err(RegistryError);
     }
     let fixed_schema_bytes = local_sources.iter().try_fold(0_usize, |total, path| {

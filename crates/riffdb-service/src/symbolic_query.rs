@@ -1449,11 +1449,23 @@ async fn explain_named_query(
         prepare_selected_contract(&service, &context, request.contract.selection(), OPERATION)
             .await?;
     ensure_selected_hash(&request.contract, &bundle)?;
-    let module_hash = request
-        .module_hash
-        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
     let query_name = QueryOperationName::new(request.query_name.clone())
         .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
+    let module = load_query_module(
+        &service,
+        &context,
+        bundle.clone(),
+        request.module_hash,
+        OPERATION,
+    )
+    .await?
+    .ok_or_else(|| {
+        application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::ModuleUnavailable,
+        )
+    })?;
+    let module_hash = module.identity();
     let begun = begin_symbolic(
         &service,
         &context,
@@ -1462,18 +1474,6 @@ async fn explain_named_query(
         OPERATION,
     )
     .await?;
-    let module =
-        match load_query_module(&service, &context, bundle, Some(module_hash), OPERATION).await {
-            Ok(Some(module)) => module,
-            Ok(None) => {
-                let failure = application_validation_failure(
-                    ValidationCode::InvalidValue,
-                    ApplicationErrorCode::ModuleUnavailable,
-                );
-                return Err(finish_failure(&service, &context, &begun, failure).await);
-            }
-            Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
-        };
     let Some(query) = module.module().query(&request.query_name) else {
         let failure = application_validation_failure(
             ValidationCode::InvalidValue,
@@ -1503,16 +1503,13 @@ async fn execute_named_query(
         prepare_selected_contract(&service, &context, request.contract.selection(), OPERATION)
             .await?;
     ensure_selected_hash(&request.contract, &bundle)?;
-    let module_hash = request
-        .module_hash
-        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
     let query_name = QueryOperationName::new(request.query_name.clone())
         .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
     let module = load_query_module(
         &service,
         &context,
         bundle.clone(),
-        Some(module_hash),
+        request.module_hash,
         OPERATION,
     )
     .await?
@@ -1522,6 +1519,7 @@ async fn execute_named_query(
             ApplicationErrorCode::ModuleUnavailable,
         )
     })?;
+    let module_hash = module.identity();
     let query = module.module().query(&request.query_name).ok_or_else(|| {
         application_validation_failure(
             ValidationCode::InvalidValue,
@@ -1955,9 +1953,11 @@ fn coerce_natural_query_value(
                 .map_err(|_| ValidationCode::InvalidValue)?;
             Ok(SubmittedValue::Enum(SubmittedEnum::name_only(name)))
         }
-        (ValueTypeTag::Uuid, SubmittedValue::String(value)) => parse_uuid(value.as_str())
-            .map(SubmittedValue::Uuid)
-            .ok_or(ValidationCode::InvalidValue),
+        (ValueTypeTag::Uuid, SubmittedValue::String(value)) => {
+            { crate::command_operations::parse_natural_uuid(value.as_str()) }
+                .map(SubmittedValue::Uuid)
+                .ok_or(ValidationCode::InvalidValue)
+        }
         (ValueTypeTag::I64, SubmittedValue::U64(value)) => i64::try_from(*value)
             .map(SubmittedValue::I64)
             .map_err(|_| ValidationCode::InvalidValue),
@@ -1966,37 +1966,6 @@ fn coerce_natural_query_value(
             .map_err(|_| ValidationCode::InvalidValue),
         _ => Ok(submitted.clone()),
     }
-}
-
-fn parse_uuid(text: &str) -> Option<[u8; 16]> {
-    if text.len() != 36
-        || text.as_bytes().get(8) != Some(&b'-')
-        || text.as_bytes().get(13) != Some(&b'-')
-        || text.as_bytes().get(18) != Some(&b'-')
-        || text.as_bytes().get(23) != Some(&b'-')
-    {
-        return None;
-    }
-    let mut bytes = [0_u8; 16];
-    let mut output = 0;
-    let mut high = None;
-    for byte in text.bytes() {
-        if byte == b'-' {
-            continue;
-        }
-        let nibble = match byte {
-            b'0'..=b'9' => byte - b'0',
-            b'a'..=b'f' => byte - b'a' + 10,
-            _ => return None,
-        };
-        if let Some(high) = high.take() {
-            *bytes.get_mut(output)? = high << 4 | nibble;
-            output += 1;
-        } else {
-            high = Some(nibble);
-        }
-    }
-    (output == bytes.len() && high.is_none()).then_some(bytes)
 }
 
 fn query_value_type(

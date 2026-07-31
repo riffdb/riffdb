@@ -1102,6 +1102,8 @@ fn health_and_subscription_closed_bounds_are_checked() {
                 readiness: false,
             },
         )),
+        database_alias: "default".to_owned(),
+        authentication_audience: "riffdb-grpc-loopback".to_owned(),
     };
     validate_public_message(&pre_bootstrap).expect("pre-bootstrap shape");
     let mut invalid = pre_bootstrap;

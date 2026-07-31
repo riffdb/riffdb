@@ -795,6 +795,10 @@ impl DeployContractRequest {
 /// Closed semantic deployment result with no storage transition value.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DeployContractResult {
+    /// Candidate source failed with bounded compiler-owned diagnostics.
+    InvalidSource(CompilationError),
+    /// The checked successor is outside the active additive compatibility policy.
+    IncompatibleCandidate(ContractDescriptor),
     /// A new active pointer was committed.
     Activated(ContractDescriptor),
     /// The exact immutable pointer was already active.

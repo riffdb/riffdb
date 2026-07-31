@@ -8,6 +8,10 @@ A named query declares typed `$parameters`, then ordered `one`, `maybe`, or
 absence outcome; every `many` has an explicit positive `take` bound. Ordering
 is explicit and cursors are optional typed parameters.
 
+For v1 application pages, start with a fixed bound such as `take 25` or
+`take 50`. Use a `Limit` parameter only when the role can afford its full
+500-row static charge; its default does not reduce that proof obligation.
+
 One deliberately narrow collection dependency is available for operational
 junction reads. An earlier bounded `many` field may be consumed by `in` only to
 supply one component of a later `many` binding's complete primary key:

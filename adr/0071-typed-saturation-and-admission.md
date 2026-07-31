@@ -1,4 +1,4 @@
-# ADR-0067: Typed Saturation and Admission
+# ADR-0071: Typed Saturation and Admission
 
 - **Status:** Accepted
 - **Date:** 2026-07-30

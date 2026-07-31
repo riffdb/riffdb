@@ -1,4 +1,4 @@
-# ADR-0069: Linear Startup Validation and Bounded History Access
+# ADR-0073: Linear Startup Validation and Bounded History Access
 
 - **Status:** Accepted
 - **Date:** 2026-07-30
@@ -83,7 +83,7 @@ gates: startup growth sub-quadratic and bounded at the top checkpoint
 
 - Startup, activation, and recovery costs become linear in retained history;
   the 43.9 s evidence is regenerated and replaced.
-- One new durable table and registry digest step (sequenced after ADR-0068's
+- One new durable table and registry digest step (sequenced after ADR-0072's
   migration).
 - Memory no longer grows with lifetime traffic.
 - The architecture tests freezing tail-versus-full-scan invariants are

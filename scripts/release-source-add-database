@@ -1,0 +1,440 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+usage() {
+    printf '%s\n' \
+        'usage: cargo riffdb install (--user|--system) --add-database ALIAS [--no-start]' >&2
+}
+
+fail() {
+    printf 'riffdb database add: %s\n' "$1" >&2
+    exit 1
+}
+
+[[ $# -ge 1 && "$1" == install ]] || {
+    usage
+    exit 2
+}
+shift
+
+scope=
+alias=
+no_start=0
+while (($#)); do
+    case "$1" in
+        --user|--system)
+            [[ -z "$scope" ]] || {
+                usage
+                exit 2
+            }
+            scope="${1#--}"
+            shift
+            ;;
+        --add-database)
+            [[ -z "$alias" && $# -ge 2 && "$2" =~ ^[a-z][a-z0-9_-]{0,63}$ ]] || {
+                usage
+                exit 2
+            }
+            alias="$2"
+            shift 2
+            ;;
+        --no-start)
+            ((no_start == 0)) || {
+                usage
+                exit 2
+            }
+            no_start=1
+            shift
+            ;;
+        *)
+            usage
+            exit 2
+            ;;
+    esac
+done
+[[ -n "$scope" && -n "$alias" ]] || {
+    usage
+    exit 2
+}
+((EUID != 0)) || fail 'run this command as the target unprivileged user, without sudo'
+[[ "$(uname -s)" == Linux ]] || fail 'the POC installer supports Linux only'
+
+for tool in cat chmod cmp dirname id install mkdir mktemp mv rm sed stat sync systemctl tee; do
+    command -v "$tool" >/dev/null 2>&1 || fail "required tool is missing: $tool"
+done
+if [[ "$scope" == system ]]; then
+    command -v sudo >/dev/null 2>&1 || fail 'required tool is missing: sudo'
+    sudo -v
+fi
+
+test_system_root=
+if [[ -n "${RIFFDB_INSTALL_TEST_SYSTEM_ROOT:-}" ]]; then
+    [[ "$scope" == system && "${RIFFDB_INSTALL_TEST_MODE:-}" == 1 ]] \
+        || fail 'the simulated system root is available only to the installer acceptance test'
+    [[ "$RIFFDB_INSTALL_TEST_SYSTEM_ROOT" == /* \
+       && -d "$RIFFDB_INSTALL_TEST_SYSTEM_ROOT" \
+       && ! -L "$RIFFDB_INSTALL_TEST_SYSTEM_ROOT" ]] \
+        || fail 'the simulated system root must be an existing absolute non-link directory'
+    test_system_root="${RIFFDB_INSTALL_TEST_SYSTEM_ROOT%/}"
+fi
+
+temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-add-database.XXXXXX")"
+cleanup() {
+    rm -rf -- "$temporary_root"
+}
+trap cleanup EXIT INT TERM
+
+toml_quote() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\t'/\\t}"
+    printf '"%s"' "$value"
+}
+
+if [[ "$scope" == user ]]; then
+    home="${HOME:?HOME must be set}"
+    config_home="${XDG_CONFIG_HOME:-$home/.config}"
+    data_home="${XDG_DATA_HOME:-$home/.local/share}"
+    state_home="${XDG_STATE_HOME:-$home/.local/state}"
+    config_root="$config_home/riffdb"
+    data_root="$data_home/riffdb"
+    state_root="$state_home/riffdb"
+    config_path="$config_root/riffdbd.toml"
+    expected_config_mode=600
+    service_arguments=(systemctl --user)
+else
+    config_root="${test_system_root}/etc/riffdb"
+    data_root="${test_system_root}/var/lib/riffdb"
+    state_root="$data_root"
+    config_path="$config_root/riffdbd.toml"
+    expected_config_mode=640
+    service_arguments=(sudo systemctl)
+fi
+journal_path="$state_root/.install-add-database-v1"
+staged_backup_path="$data_root/.backups-add-database-v1"
+
+read_managed_file() {
+    if [[ "$scope" == user ]]; then
+        command cat -- "$1"
+    else
+        sudo cat -- "$1"
+    fi
+}
+
+managed_type() {
+    local path="$1"
+    if [[ "$scope" == user ]]; then
+        if [[ -L "$path" ]]; then
+            printf '%s\n' link
+        elif [[ -d "$path" ]]; then
+            printf '%s\n' directory
+        elif [[ -f "$path" ]]; then
+            printf '%s\n' file
+        elif [[ -e "$path" ]]; then
+            printf '%s\n' other
+        else
+            printf '%s\n' absent
+        fi
+    elif sudo test -L "$path"; then
+        printf '%s\n' link
+    elif sudo test -d "$path"; then
+        printf '%s\n' directory
+    elif sudo test -f "$path"; then
+        printf '%s\n' file
+    elif sudo test -e "$path"; then
+        printf '%s\n' other
+    else
+        printf '%s\n' absent
+    fi
+}
+
+managed_stat() {
+    if [[ "$scope" == user ]]; then
+        stat "$@"
+    else
+        sudo stat "$@"
+    fi
+}
+
+managed_sync() {
+    if [[ "$scope" == user ]]; then
+        sync -f "$1"
+    else
+        sudo sync -f "$1"
+    fi
+}
+
+ensure_managed_directory() {
+    local path="$1"
+    local type
+    type="$(managed_type "$path")"
+    if [[ "$type" == absent ]]; then
+        if [[ "$scope" == user ]]; then
+            install -d -m 0700 "$path"
+        elif [[ -n "$test_system_root" ]]; then
+            sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0700 "$path"
+        else
+            sudo install -d -o riffdb -g riffdb -m 0700 "$path"
+        fi
+    elif [[ "$type" != directory ]]; then
+        fail "managed path is not a real directory: $path"
+    fi
+}
+
+managed_move() {
+    if [[ "$scope" == user ]]; then
+        mv -- "$1" "$2"
+    else
+        sudo mv -- "$1" "$2"
+    fi
+}
+
+managed_remove_file() {
+    if [[ "$scope" == user ]]; then
+        rm -f -- "$1"
+    else
+        sudo rm -f -- "$1"
+    fi
+}
+
+copy_managed_to_local() {
+    read_managed_file "$1" >"$2"
+    chmod 0600 "$2"
+}
+
+publish_managed_file() {
+    local source="$1"
+    local destination="$2"
+    local mode="${3:-$expected_config_mode}"
+    local temporary="${destination}.new"
+    [[ "$(managed_type "$temporary")" == absent ]] \
+        || fail "stale managed publication path requires operator review: $temporary"
+    if [[ "$scope" == user ]]; then
+        install -m "$mode" "$source" "$temporary"
+        mv -- "$temporary" "$destination"
+    else
+        if [[ -n "$test_system_root" ]]; then
+            sudo install -o "$(id -u)" -g "$(id -g)" -m "$mode" /dev/null "$temporary"
+        else
+            sudo install -o root -g riffdb -m "$mode" /dev/null "$temporary"
+        fi
+        command cat -- "$source" | sudo tee -- "$temporary" >/dev/null
+        sudo mv -- "$temporary" "$destination"
+    fi
+    managed_sync "$(dirname -- "$destination")"
+}
+
+render_config() {
+    local destination="$1"
+    local legacy_default="$2"
+    shift 2
+    local configured_alias database_path
+    {
+        printf '%s\n' '[server]' 'grpc_listen = "127.0.0.1:7443"'
+        printf '%s\n' 'audience = "riffdb-grpc-loopback"'
+        if [[ "$scope" == user ]]; then
+            printf 'capability_keys = %s\n' \
+                "$(toml_quote "$config_root/capability.keys")"
+            printf 'idempotency_keys = %s\n' \
+                "$(toml_quote "$config_root/idempotency.keys")"
+        else
+            printf 'capability_keys = %s\n' \
+                "$(toml_quote "$config_root/capability.keys")"
+            printf 'idempotency_keys = %s\n' \
+                "$(toml_quote "$config_root/idempotency.keys")"
+        fi
+        for configured_alias in "$@"; do
+            if [[ "$legacy_default" == 1 && "$configured_alias" == default ]]; then
+                database_path="$data_root/data/riffdb.redb"
+            else
+                database_path="$data_root/data/$configured_alias.redb"
+            fi
+            printf '\n[databases.%s]\n' "$configured_alias"
+            printf 'path = %s\n' "$(toml_quote "$database_path")"
+            printf 'backup_root = %s\n' \
+                "$(toml_quote "$data_root/backups/$configured_alias")"
+            printf '%s\n' 'environment = "local"'
+        done
+    } >"$destination"
+    chmod 0600 "$destination"
+}
+
+render_legacy_config() {
+    local destination="$1"
+    {
+        printf '%s\n' '[server]'
+        printf 'database = %s\n' "$(toml_quote "$data_root/data/riffdb.redb")"
+        printf '%s\n' \
+            'grpc_listen = "127.0.0.1:7443"' \
+            'environment = "local"' \
+            'audience = "riffdb-grpc-loopback"'
+        if [[ "$scope" == user ]]; then
+            printf 'capability_keys = %s\n' \
+                "$(toml_quote "$config_root/capability.keys")"
+            printf 'idempotency_keys = %s\n' \
+                "$(toml_quote "$config_root/idempotency.keys")"
+        else
+            printf 'capability_keys = %s\n' \
+                "$(toml_quote "$config_root/capability.keys")"
+            printf 'idempotency_keys = %s\n' \
+                "$(toml_quote "$config_root/idempotency.keys")"
+        fi
+        printf '\n%s\n' '[maintenance]'
+        printf 'backup_root = %s\n' "$(toml_quote "$data_root/backups")"
+    } >"$destination"
+    chmod 0600 "$destination"
+}
+
+write_journal() {
+    local mode="$1"
+    local phase="$2"
+    local source="$temporary_root/journal"
+    printf 'riffdb-add-database-v1\nalias=%s\nmode=%s\nphase=%s\n' \
+        "$alias" "$mode" "$phase" >"$source"
+    chmod 0600 "$source"
+    publish_managed_file "$source" "$journal_path" 0600
+}
+
+read_journal_field() {
+    local name="$1"
+    read_managed_file "$journal_path" \
+        | sed -n "s/^${name}=\\([a-z0-9_-]*\\)$/\\1/p"
+}
+
+interrupt_after() {
+    if [[ "${RIFFDB_INSTALL_TEST_INTERRUPT_AFTER:-}" == "$1" ]]; then
+        printf 'riffdb database add: simulated interruption after %s\n' "$1" >&2
+        exit 86
+    fi
+}
+
+[[ "$(managed_type "$config_path")" == file ]] \
+    || fail 'an installer-owned RiffDB installation is required before adding a database'
+[[ "$(managed_stat -c '%a' "$config_path")" == "$expected_config_mode" ]] \
+    || fail 'server configuration has an unexpected mode'
+ensure_managed_directory "$state_root"
+ensure_managed_directory "$data_root"
+ensure_managed_directory "$data_root/data"
+
+was_active=0
+if "${service_arguments[@]}" --quiet is-active riffdbd.service; then
+    was_active=1
+    if ((no_start)); then
+        fail '--no-start requires riffdbd.service to already be inactive'
+    fi
+    "${service_arguments[@]}" stop riffdbd.service
+fi
+
+current_config="$temporary_root/current.toml"
+legacy_config="$temporary_root/legacy.toml"
+copy_managed_to_local "$config_path" "$current_config"
+render_legacy_config "$legacy_config"
+
+mode=
+aliases=()
+if [[ "$(managed_type "$journal_path")" == file ]]; then
+    [[ "$(read_managed_file "$journal_path" | sed -n '1p')" == riffdb-add-database-v1 ]] \
+        || fail 'database-addition journal is invalid'
+    [[ "$(read_journal_field alias)" == "$alias" ]] \
+        || fail 'a different database addition is already in progress'
+    mode="$(read_journal_field mode)"
+    [[ "$mode" == legacy || "$mode" == named ]] \
+        || fail 'database-addition journal has an invalid mode'
+else
+    if cmp -s "$current_config" "$legacy_config"; then
+        mode=legacy
+        aliases=(default)
+    else
+        mapfile -t aliases < <(
+            sed -n 's/^\[databases\.\([a-z][a-z0-9_-]\{0,63\}\)\]$/\1/p' \
+                "$current_config"
+        )
+        ((${#aliases[@]} > 0 && ${#aliases[@]} < 32)) \
+            || fail 'configuration is custom or has no bounded installer-owned database registry'
+        regular_config="$temporary_root/named-regular.toml"
+        migrated_config="$temporary_root/named-migrated.toml"
+        render_config "$regular_config" 0 "${aliases[@]}"
+        render_config "$migrated_config" 1 "${aliases[@]}"
+        if ! cmp -s "$current_config" "$regular_config" \
+            && ! cmp -s "$current_config" "$migrated_config"
+        then
+            fail 'configuration is not an exact installer-owned layout; no changes were made'
+        fi
+        mode=named
+    fi
+    if [[ " ${aliases[*]} " == *" $alias "* ]]; then
+        fail "database '$alias' is already configured"
+    fi
+    write_journal "$mode" prepared
+    interrupt_after prepared
+fi
+
+copy_managed_to_local "$config_path" "$current_config"
+if [[ "$mode" == legacy ]]; then
+    aliases=(default)
+else
+    mapfile -t aliases < <(
+        sed -n 's/^\[databases\.\([a-z][a-z0-9_-]\{0,63\}\)\]$/\1/p' \
+            "$current_config"
+    )
+    if ((${#aliases[@]} == 0)); then
+        mapfile -t aliases < <(
+            sed -n 's/^\[databases\.\([a-z][a-z0-9_-]\{0,63\}\)\]$/\1/p' \
+                "$temporary_root/named-migrated.toml"
+        )
+    fi
+fi
+if [[ " ${aliases[*]} " != *" $alias "* ]]; then
+    aliases+=("$alias")
+fi
+((${#aliases[@]} <= 32)) || fail 'at most 32 databases may be configured'
+
+if [[ "$mode" == legacy ]]; then
+    if [[ "$(managed_type "$data_root/backups/default")" != directory ]]; then
+        if [[ "$(managed_type "$staged_backup_path")" == absent ]]; then
+            [[ "$(managed_type "$data_root/backups")" == directory ]] \
+                || fail 'legacy backup root is missing or unsafe'
+            managed_move "$data_root/backups" "$staged_backup_path"
+            managed_sync "$data_root"
+            write_journal "$mode" legacy_backup_staged
+            interrupt_after legacy_backup_staged
+        fi
+        ensure_managed_directory "$data_root/backups"
+        if [[ "$(managed_type "$staged_backup_path")" == directory ]]; then
+            managed_move "$staged_backup_path" "$data_root/backups/default"
+            managed_sync "$data_root/backups"
+        fi
+    fi
+fi
+ensure_managed_directory "$data_root/backups/$alias"
+write_journal "$mode" paths_ready
+interrupt_after paths_ready
+
+target_config="$temporary_root/target.toml"
+if [[ "$mode" == legacy || " ${aliases[*]} " == *" default "* \
+    && "$(managed_type "$data_root/data/riffdb.redb")" != absent ]]
+then
+    render_config "$target_config" 1 "${aliases[@]}"
+else
+    render_config "$target_config" 0 "${aliases[@]}"
+fi
+publish_managed_file "$target_config" "$config_path"
+write_journal "$mode" config_published
+interrupt_after config_published
+managed_remove_file "$journal_path"
+managed_sync "$state_root"
+
+if ((no_start)); then
+    printf "Database '%s' added; riffdbd.service remains inactive.\n" "$alias"
+else
+    "${service_arguments[@]}" daemon-reload
+    if ((was_active)); then
+        "${service_arguments[@]}" start riffdbd.service
+    else
+        "${service_arguments[@]}" start riffdbd.service
+    fi
+    printf "Database '%s' added and riffdbd.service started.\n" "$alias"
+fi

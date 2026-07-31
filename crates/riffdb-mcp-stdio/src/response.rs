@@ -32,28 +32,12 @@ struct Unit {}
 pub(crate) fn validate_contract(
     response: v1::ValidateContractResponse,
 ) -> Result<McpToolResult, ResponseConversionError> {
-    use v1::compilation_diagnostics::Diagnostics;
     use v1::validate_contract_response::Result as ProtoResult;
 
     match response.result.ok_or(ResponseConversionError)? {
         ProtoResult::Valid(_) => compose(1, McpFixedResultBranch::ValidateValid, None),
         ProtoResult::Invalid(diagnostics) => {
-            let payload = match diagnostics.diagnostics.ok_or(ResponseConversionError)? {
-                Diagnostics::Syntax(list) => InvalidDiagnostics::Syntax {
-                    diagnostics: list
-                        .diagnostics
-                        .into_iter()
-                        .map(SyntaxDiagnostic::try_from)
-                        .collect::<std::result::Result<Vec<_>, _>>()?,
-                },
-                Diagnostics::Semantic(list) => InvalidDiagnostics::Semantic {
-                    diagnostics: list
-                        .diagnostics
-                        .into_iter()
-                        .map(SemanticDiagnostic::try_from)
-                        .collect::<std::result::Result<Vec<_>, _>>()?,
-                },
-            };
+            let payload = compilation_diagnostics(diagnostics)?;
             compose(
                 1,
                 McpFixedResultBranch::ValidateInvalid,
@@ -63,17 +47,47 @@ pub(crate) fn validate_contract(
     }
 }
 
+fn compilation_diagnostics(
+    diagnostics: v1::CompilationDiagnostics,
+) -> Result<InvalidDiagnostics, ResponseConversionError> {
+    use v1::compilation_diagnostics::Diagnostics;
+    match diagnostics.diagnostics.ok_or(ResponseConversionError)? {
+        Diagnostics::Syntax(list) => Ok(InvalidDiagnostics::Syntax {
+            diagnostics: list
+                .diagnostics
+                .into_iter()
+                .map(SyntaxDiagnostic::try_from)
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+        }),
+        Diagnostics::Semantic(list) => Ok(InvalidDiagnostics::Semantic {
+            diagnostics: list
+                .diagnostics
+                .into_iter()
+                .map(SemanticDiagnostic::try_from)
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+        }),
+    }
+}
+
 pub(crate) fn get_active_contract(
     response: v1::GetActiveContractResponse,
 ) -> Result<McpToolResult, ResponseConversionError> {
     use v1::get_active_contract_response::Result;
 
+    let database = response.database_alias;
     match response.result.ok_or(ResponseConversionError)? {
-        Result::Absent(_) => compose(2, McpFixedResultBranch::GetActiveAbsent, None),
+        Result::Absent(_) => compose(
+            2,
+            McpFixedResultBranch::GetActiveAbsent,
+            Some(payload_from(&ActiveContractAbsent { database })?),
+        ),
         Result::Present(contract) => compose(
             2,
             McpFixedResultBranch::GetActivePresent,
-            Some(payload_from(&ContractDescriptor::try_from(contract)?)?),
+            Some(payload_from(&ActiveContractPresent {
+                database,
+                contract: ContractDescriptor::try_from(contract)?,
+            })?),
         ),
     }
 }
@@ -122,6 +136,16 @@ pub(crate) fn deploy_contract(
     use v1::deploy_contract_response::Result;
 
     match response.result.ok_or(ResponseConversionError)? {
+        Result::InvalidSource(diagnostics) => compose(
+            4,
+            McpFixedResultBranch::DeployInvalidSource,
+            Some(payload_from(&compilation_diagnostics(diagnostics)?)?),
+        ),
+        Result::IncompatibleCandidate(contract) => compose(
+            4,
+            McpFixedResultBranch::DeployIncompatibleCandidate,
+            Some(payload_from(&ContractDescriptor::try_from(contract)?)?),
+        ),
         Result::Activated(contract) => compose(
             4,
             McpFixedResultBranch::DeployActivated,
@@ -383,9 +407,12 @@ pub(crate) fn health(
 ) -> Result<McpToolResult, ResponseConversionError> {
     use v1::health_response::Result;
 
+    let database = response.database_alias;
+    let audience = response.authentication_audience;
     match response.result.ok_or(ResponseConversionError)? {
         Result::PreBootstrap(health) => {
             let payload = PreBootstrapHealth {
+                database,
                 lifecycle: pre_bootstrap_lifecycle(health.lifecycle)?,
                 liveness: health.liveness,
                 readiness: health.readiness,
@@ -396,11 +423,18 @@ pub(crate) fn health(
                 Some(payload_from(&payload)?),
             )
         }
-        Result::Authenticated(health) => compose(
-            14,
-            McpFixedResultBranch::HealthAuthenticated,
-            Some(payload_from(&AuthenticatedHealth::try_from(health)?)?),
-        ),
+        Result::Authenticated(health) => {
+            let payload = AuthenticatedHealthTool {
+                database,
+                audience,
+                health: AuthenticatedHealth::try_from(health)?,
+            };
+            compose(
+                14,
+                McpFixedResultBranch::HealthAuthenticated,
+                Some(payload_from(&payload)?),
+            )
+        }
     }
 }
 
@@ -1347,6 +1381,17 @@ pub(crate) struct ContractDescriptor {
     plan_root_hash: McpPresentedHash,
 }
 
+#[derive(Serialize)]
+struct ActiveContractAbsent {
+    database: String,
+}
+
+#[derive(Serialize)]
+struct ActiveContractPresent {
+    database: String,
+    contract: ContractDescriptor,
+}
+
 impl TryFrom<v1::ContractDescriptor> for ContractDescriptor {
     type Error = ResponseConversionError;
 
@@ -2030,9 +2075,18 @@ impl TryFrom<v1::OutboxDeliverySummary> for OutboxItem {
 
 #[derive(Serialize)]
 struct PreBootstrapHealth {
+    database: String,
     lifecycle: &'static str,
     liveness: bool,
     readiness: bool,
+}
+
+#[derive(Serialize)]
+struct AuthenticatedHealthTool {
+    database: String,
+    audience: String,
+    #[serde(flatten)]
+    health: AuthenticatedHealth,
 }
 
 #[derive(Serialize)]
@@ -2455,6 +2509,73 @@ mod tests {
             durability_mode: String::new(),
             outcome_uri: None,
         }
+    }
+
+    #[test]
+    fn selected_database_and_audience_survive_fixed_mcp_conversion() {
+        let active = get_active_contract(v1::GetActiveContractResponse {
+            result: Some(v1::get_active_contract_response::Result::Absent(
+                v1::Unit {},
+            )),
+            database_alias: "ea".to_owned(),
+        })
+        .expect("active response");
+        assert_eq!(
+            active,
+            McpToolResult::from_serializable(&serde_json::json!({"absent": {"database": "ea"}}))
+                .expect("expected active result")
+        );
+
+        let health = health(v1::HealthResponse {
+            result: Some(v1::health_response::Result::Authenticated(
+                v1::AuthenticatedHealth {
+                    status: v1::HealthStatus::Ready as i32,
+                    active_contract_version: Some(1),
+                    last_commit_sequence: Some(2),
+                    components: Vec::new(),
+                    started_at: Some(v1::Timestamp {
+                        seconds: 3,
+                        nanos: 4,
+                    }),
+                    build: Some(v1::BuildInfo {
+                        semantic_version: "0.1.0".to_owned(),
+                        git_revision: "test".to_owned(),
+                        rust_version: "1.97.0".to_owned(),
+                        enabled_features: Vec::new(),
+                        storage_format_version: 1,
+                        contract_ir_version: 1,
+                        mcp_protocol_baseline: "2025-11-25".to_owned(),
+                    }),
+                },
+            )),
+            database_alias: "ea".to_owned(),
+            authentication_audience: "riffdb-grpc-loopback".to_owned(),
+        })
+        .expect("health response");
+        assert_eq!(
+            health,
+            McpToolResult::from_serializable(&serde_json::json!({
+                "authenticated": {
+                    "database": "ea",
+                    "audience": "riffdb-grpc-loopback",
+                    "status": "ready",
+                    "active_contract_version": "1",
+                    "last_commit_sequence": "2",
+                    "components": [],
+                    "started_at": {"seconds": "3", "nanos": 4},
+                    "build": {
+                        "semantic_version": "0.1.0",
+                        "git_revision": "test",
+                        "rust_version": "1.97.0",
+                        "enabled_features": [],
+                        "storage_format_version": 1,
+                        "contract_ir_version": 1,
+                        "mcp_protocol_baseline": "2025-11-25"
+                    }
+                }
+            }))
+            .expect("expected health result")
+        );
     }
 
     #[test]

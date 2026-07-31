@@ -119,12 +119,12 @@ jq -e '
     .counts.fixed_tools == 14 and
     .counts.new_fixed_schema_sources == 27 and
     .counts.unique_operation_and_fixed_artifacts == 29 and
-    .counts.top_level_result_branches == 29 and
+    .counts.top_level_result_branches == 31 and
     (.artifact_manifest | length) == 29 and
     (.artifact_manifest | unique | length) == 29 and
     (.tools | length) == 14 and
     ([.tools[].fixed_tool_kind] == [1,2,3,4,5,6,7,8,9,10,11,12,13,14]) and
-    ([.tools[].result_branches[]] | length) == 29 and
+    ([.tools[].result_branches[]] | length) == 31 and
     ([.tools[] | select(.annotations.readOnlyHint == false) | .name] == ["riffdb_contract_deploy"]) and
     ([.tools[] | select(.annotations.destructiveHint == true) | .name] == ["riffdb_contract_deploy"]) and
     ([.tools[] | select(.annotations.openWorldHint != false)] | length) == 0 and
@@ -253,7 +253,7 @@ done < <(
 jq -e '
     .schema == "riffdb.mcp.fixed-tool-conversion-goldens/v1" and
     (.request_cases | length) == 22 and
-    (.result_cases | length) == 29 and
+    (.result_cases | length) == 31 and
     ([.result_cases[] | select(.is_error != false)] | length) == 0 and
     (.supplemental_nested_cases | length) == 4
 ' "$conversion_goldens" >/dev/null

@@ -74,6 +74,8 @@ message HealthResponse {
     PreBootstrapHealth pre_bootstrap = 1;
     AuthenticatedHealth authenticated = 2;
   }
+  string database_alias = 3;
+  string authentication_audience = 4;
 }
 
 message StatsRequest {

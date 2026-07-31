@@ -12,7 +12,7 @@ use crate::input::{MAX_CONFIG_BYTES, read_file, validate_path};
 const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:7443";
 const DEFAULT_ATTEMPTS: u32 = 3;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct EffectiveConfig {
     pub(crate) endpoint: String,
     pub(crate) database: DatabaseAlias,
