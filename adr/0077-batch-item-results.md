@@ -49,10 +49,12 @@ individual batch items for every caller.
 
 ### Client guidance
 
-SDKs consume the item list when present; only items whose error carries
-outcome-uncertainty re-enter same-key recovery, and certain errors surface
-directly. Absent the item list (older server), existing behavior is
-unchanged.
+SDKs consume the item list when present; items whose error the registry
+classifies as retryable — recovery action retry or
+resolve-with-same-idempotency-key — re-enter bounded same-key recovery
+(preserving the pre-item-carriage retry budget), and non-retryable errors
+surface directly with no re-entry. Absent the item list (older server),
+existing behavior is unchanged.
 
 ## Consequences
 
