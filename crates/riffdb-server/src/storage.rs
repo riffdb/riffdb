@@ -1459,6 +1459,91 @@ mod tests {
         assert!(!source.contains(&[".", "await"].concat()));
     }
 
+    fn query_module_record(seed: u8) -> StoredQueryModuleV1 {
+        StoredQueryModuleV1::new(
+            riffdb_types::QueryModuleName::new("ticketdesk").expect("name"),
+            riffdb_types::QueryModuleVersion::new(u64::from(seed)).expect("version"),
+            QueryModuleHash::from_bytes([seed; 32]),
+            ContractLineage::new("view-qm").expect("lineage"),
+            ContractVersion::new(1).expect("contract version"),
+            ContractBundleHash::from_bytes([seed.wrapping_add(1); 32]),
+            vec![seed, 1, 2, 3],
+        )
+        .expect("stored query module")
+    }
+
+    #[test]
+    fn current_query_module_view_populates_on_fresh_construction() {
+        let module = query_module_record(0x11);
+        let pointer = ActiveQueryModulePointerV1::from_module(&module);
+        let mut view = CurrentQueryModuleViewState::default();
+        view.install_rebuilt(pointer.clone(), module.clone())
+            .expect("fresh install");
+        assert_eq!(
+            view.active(
+                module.contract_lineage(),
+                module.contract_version(),
+                module.contract_bundle_hash(),
+            ),
+            Some(Some(pointer))
+        );
+        assert_eq!(view.module(module.module_hash()), Some(module));
+    }
+
+    #[test]
+    fn current_query_module_view_reactivate_already_active_is_idempotent() {
+        let module = query_module_record(0x22);
+        let pointer = ActiveQueryModulePointerV1::from_module(&module);
+        // Restart-shaped reconstruction: empty view + install_rebuilt, then
+        // AlreadyActive publish with changed=false must not integrity-fail.
+        let mut view = CurrentQueryModuleViewState::default();
+        view.install_rebuilt(pointer.clone(), module.clone())
+            .expect("reconstruct from storage");
+        view.publish_activation(pointer.clone(), module.clone(), false)
+            .expect("idempotent re-activate of already-active module");
+        assert_eq!(
+            view.active(
+                module.contract_lineage(),
+                module.contract_version(),
+                module.contract_bundle_hash(),
+            ),
+            Some(Some(pointer))
+        );
+    }
+
+    #[test]
+    fn current_query_module_view_first_read_after_construction_is_warm() {
+        let module = query_module_record(0x33);
+        let pointer = ActiveQueryModulePointerV1::from_module(&module);
+        let mut view = CurrentQueryModuleViewState::default();
+        view.install_rebuilt(pointer.clone(), module.clone())
+            .expect("warm rebuild");
+        // Warm path: active() returns Some(_) meaning the cache hit and no
+        // storage fallthrough is required (Some(None) = known absent;
+        // None = cold miss). After construction this must be a warm hit.
+        let cached = view
+            .active(
+                module.contract_lineage(),
+                module.contract_version(),
+                module.contract_bundle_hash(),
+            )
+            .expect("warm cache hit, not cold miss");
+        assert_eq!(cached, Some(pointer));
+        assert_eq!(
+            view.module(module.module_hash()).expect("body warm"),
+            module
+        );
+        // Unknown contract remains cold (None) until storage is consulted.
+        assert!(
+            view.active(
+                &ContractLineage::new("other").expect("other"),
+                ContractVersion::new(9).expect("version"),
+                ContractBundleHash::from_bytes([0x99; 32]),
+            )
+            .is_none()
+        );
+    }
+
     #[test]
     fn poison_fails_closed_as_an_invariant_violation() {
         let cell = SharedStorageCell::new(());

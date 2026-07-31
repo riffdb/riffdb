@@ -1390,6 +1390,15 @@ mod tests {
             &self,
             request: CommitScanRequest,
         ) -> Result<CommitScanPageV1, StorageError> {
+            // Empty catalog has no commits. Only an initial scan with
+            // `after = None` can fence on BeforeFirst; any resume `after`
+            // must fail closed rather than silently ignore the cursor.
+            if request.after().is_some() {
+                return Err(StorageError::new(
+                    StorageErrorKind::InvariantViolation,
+                    None,
+                ));
+            }
             CommitScanPageV1::exact_end(
                 request,
                 riffdb_types::FrontierPosition::BeforeFirst,
@@ -1783,6 +1792,19 @@ mod tests {
             page.inclusive_upper(),
             riffdb_types::FrontierPosition::BeforeFirst
         );
+    }
+
+    #[test]
+    fn empty_catalog_commit_scan_rejects_resume_after_rather_than_ignoring_it() {
+        use riffdb_storage_api::StorageScanLimit;
+        let request = CommitScanRequest::initial_after(
+            riffdb_types::CommitSequence::first(),
+            StorageScanLimit::new(5).expect("limit"),
+        );
+        let error = EmptyCatalog
+            .scan_commits(request)
+            .expect_err("resume after on empty catalog must fail closed");
+        assert_eq!(error.kind(), StorageErrorKind::InvariantViolation);
     }
 
     #[test]
