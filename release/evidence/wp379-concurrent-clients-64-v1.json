@@ -1,0 +1,586 @@
+{
+  "backends": [
+    {
+      "backend_id": "postgres_sql",
+      "description": "Live PostgreSQL 18 via SQL (joins, filters, indexes)",
+      "guarantee_notes": [
+        "READ COMMITTED SQL transactions",
+        "Relational joins for ticket_detail_page",
+        "Not RiffDB command/idempotency semantics"
+      ],
+      "scenarios": [
+        {
+          "last_row_count": 1,
+          "scenario": "point_get_ticket",
+          "timing": {
+            "max_ns": 192491,
+            "mean_ns": 192491,
+            "min_ns": 192491,
+            "p50_ns": 192491,
+            "p95_ns": 192491,
+            "p99_ns": 192491,
+            "sample_count": 1,
+            "samples_ns": [
+              192491
+            ]
+          }
+        },
+        {
+          "last_row_count": 1,
+          "scenario": "point_get_user",
+          "timing": {
+            "max_ns": 114560,
+            "mean_ns": 114560,
+            "min_ns": 114560,
+            "p50_ns": 114560,
+            "p95_ns": 114560,
+            "p99_ns": 114560,
+            "sample_count": 1,
+            "samples_ns": [
+              114560
+            ]
+          }
+        },
+        {
+          "last_row_count": 4,
+          "scenario": "list_tickets_by_project_status",
+          "timing": {
+            "max_ns": 315832,
+            "mean_ns": 315832,
+            "min_ns": 315832,
+            "p50_ns": 315832,
+            "p95_ns": 315832,
+            "p99_ns": 315832,
+            "sample_count": 1,
+            "samples_ns": [
+              315832
+            ]
+          }
+        },
+        {
+          "last_row_count": 2,
+          "scenario": "list_open_tickets_for_assignee",
+          "timing": {
+            "max_ns": 150390,
+            "mean_ns": 150390,
+            "min_ns": 150390,
+            "p50_ns": 150390,
+            "p95_ns": 150390,
+            "p99_ns": 150390,
+            "sample_count": 1,
+            "samples_ns": [
+              150390
+            ]
+          }
+        },
+        {
+          "last_row_count": 3,
+          "scenario": "list_comments_for_ticket",
+          "timing": {
+            "max_ns": 137121,
+            "mean_ns": 137121,
+            "min_ns": 137121,
+            "p50_ns": 137121,
+            "p95_ns": 137121,
+            "p99_ns": 137121,
+            "sample_count": 1,
+            "samples_ns": [
+              137121
+            ]
+          }
+        },
+        {
+          "last_row_count": 3,
+          "scenario": "list_project_members",
+          "timing": {
+            "max_ns": 120600,
+            "mean_ns": 120600,
+            "min_ns": 120600,
+            "p50_ns": 120600,
+            "p95_ns": 120600,
+            "p99_ns": 120600,
+            "sample_count": 1,
+            "samples_ns": [
+              120600
+            ]
+          }
+        },
+        {
+          "last_row_count": 7,
+          "scenario": "ticket_detail_page",
+          "timing": {
+            "max_ns": 648963,
+            "mean_ns": 648963,
+            "min_ns": 648963,
+            "p50_ns": 648963,
+            "p95_ns": 648963,
+            "p99_ns": 648963,
+            "sample_count": 1,
+            "samples_ns": [
+              648963
+            ]
+          }
+        },
+        {
+          "last_row_count": 1,
+          "scenario": "create_comment",
+          "timing": {
+            "max_ns": 1050225,
+            "mean_ns": 1050225,
+            "min_ns": 1050225,
+            "p50_ns": 1050225,
+            "p95_ns": 1050225,
+            "p99_ns": 1050225,
+            "sample_count": 1,
+            "samples_ns": [
+              1050225
+            ]
+          }
+        },
+        {
+          "last_row_count": 2,
+          "scenario": "close_ticket_with_comment",
+          "timing": {
+            "max_ns": 2511481,
+            "mean_ns": 2511481,
+            "min_ns": 2511481,
+            "p50_ns": 2511481,
+            "p95_ns": 2511481,
+            "p99_ns": 2511481,
+            "sample_count": 1,
+            "samples_ns": [
+              2511481
+            ]
+          }
+        },
+        {
+          "last_row_count": 2,
+          "scenario": "swap_member_roles",
+          "timing": {
+            "max_ns": 1427976,
+            "mean_ns": 1427976,
+            "min_ns": 1427976,
+            "p50_ns": 1427976,
+            "p95_ns": 1427976,
+            "p99_ns": 1427976,
+            "sample_count": 1,
+            "samples_ns": [
+              1427976
+            ]
+          }
+        },
+        {
+          "last_row_count": 3,
+          "scenario": "open_ticket_with_labels",
+          "timing": {
+            "max_ns": 1251185,
+            "mean_ns": 1251185,
+            "min_ns": 1251185,
+            "p50_ns": 1251185,
+            "p95_ns": 1251185,
+            "p99_ns": 1251185,
+            "sample_count": 1,
+            "samples_ns": [
+              1251185
+            ]
+          }
+        }
+      ],
+      "seed_ns": 15998738,
+      "seed_rows": 276,
+      "write_completion_groups_by_size": null
+    },
+    {
+      "backend_id": "riffdb_public_grpc",
+      "description": "Live riffdbd over public gRPC (symbolic commands + named RiffQL)",
+      "guarantee_notes": [
+        "Symbolic TicketDesk commands for seed/writes",
+        "Reads via named RiffQL queries (one public RPC per page)",
+        "ticket_detail_page is one TicketPage query with dependent key batches",
+        "Synchronous durable command commits"
+      ],
+      "scenarios": [
+        {
+          "last_row_count": 1,
+          "scenario": "point_get_ticket",
+          "timing": {
+            "max_ns": 1124145,
+            "mean_ns": 1124145,
+            "min_ns": 1124145,
+            "p50_ns": 1124145,
+            "p95_ns": 1124145,
+            "p99_ns": 1124145,
+            "sample_count": 1,
+            "samples_ns": [
+              1124145
+            ]
+          }
+        },
+        {
+          "last_row_count": 1,
+          "scenario": "point_get_user",
+          "timing": {
+            "max_ns": 210881,
+            "mean_ns": 210881,
+            "min_ns": 210881,
+            "p50_ns": 210881,
+            "p95_ns": 210881,
+            "p99_ns": 210881,
+            "sample_count": 1,
+            "samples_ns": [
+              210881
+            ]
+          }
+        },
+        {
+          "last_row_count": 4,
+          "scenario": "list_tickets_by_project_status",
+          "timing": {
+            "max_ns": 266831,
+            "mean_ns": 266831,
+            "min_ns": 266831,
+            "p50_ns": 266831,
+            "p95_ns": 266831,
+            "p99_ns": 266831,
+            "sample_count": 1,
+            "samples_ns": [
+              266831
+            ]
+          }
+        },
+        {
+          "last_row_count": 2,
+          "scenario": "list_open_tickets_for_assignee",
+          "timing": {
+            "max_ns": 228621,
+            "mean_ns": 228621,
+            "min_ns": 228621,
+            "p50_ns": 228621,
+            "p95_ns": 228621,
+            "p99_ns": 228621,
+            "sample_count": 1,
+            "samples_ns": [
+              228621
+            ]
+          }
+        },
+        {
+          "last_row_count": 3,
+          "scenario": "list_comments_for_ticket",
+          "timing": {
+            "max_ns": 212631,
+            "mean_ns": 212631,
+            "min_ns": 212631,
+            "p50_ns": 212631,
+            "p95_ns": 212631,
+            "p99_ns": 212631,
+            "sample_count": 1,
+            "samples_ns": [
+              212631
+            ]
+          }
+        },
+        {
+          "last_row_count": 3,
+          "scenario": "list_project_members",
+          "timing": {
+            "max_ns": 226401,
+            "mean_ns": 226401,
+            "min_ns": 226401,
+            "p50_ns": 226401,
+            "p95_ns": 226401,
+            "p99_ns": 226401,
+            "sample_count": 1,
+            "samples_ns": [
+              226401
+            ]
+          }
+        },
+        {
+          "last_row_count": 7,
+          "scenario": "ticket_detail_page",
+          "timing": {
+            "max_ns": 286751,
+            "mean_ns": 286751,
+            "min_ns": 286751,
+            "p50_ns": 286751,
+            "p95_ns": 286751,
+            "p99_ns": 286751,
+            "sample_count": 1,
+            "samples_ns": [
+              286751
+            ]
+          }
+        },
+        {
+          "last_row_count": 1,
+          "scenario": "create_comment",
+          "timing": {
+            "max_ns": 560583,
+            "mean_ns": 560583,
+            "min_ns": 560583,
+            "p50_ns": 560583,
+            "p95_ns": 560583,
+            "p99_ns": 560583,
+            "sample_count": 1,
+            "samples_ns": [
+              560583
+            ]
+          }
+        },
+        {
+          "last_row_count": 2,
+          "scenario": "close_ticket_with_comment",
+          "timing": {
+            "max_ns": 566062,
+            "mean_ns": 566062,
+            "min_ns": 566062,
+            "p50_ns": 566062,
+            "p95_ns": 566062,
+            "p99_ns": 566062,
+            "sample_count": 1,
+            "samples_ns": [
+              566062
+            ]
+          }
+        },
+        {
+          "last_row_count": 2,
+          "scenario": "swap_member_roles",
+          "timing": {
+            "max_ns": 497782,
+            "mean_ns": 497782,
+            "min_ns": 497782,
+            "p50_ns": 497782,
+            "p95_ns": 497782,
+            "p99_ns": 497782,
+            "sample_count": 1,
+            "samples_ns": [
+              497782
+            ]
+          }
+        },
+        {
+          "last_row_count": 3,
+          "scenario": "open_ticket_with_labels",
+          "timing": {
+            "max_ns": 604703,
+            "mean_ns": 604703,
+            "min_ns": 604703,
+            "p50_ns": 604703,
+            "p95_ns": 604703,
+            "p99_ns": 604703,
+            "sample_count": 1,
+            "samples_ns": [
+              604703
+            ]
+          }
+        }
+      ],
+      "seed_ns": 36822527,
+      "seed_rows": 276,
+      "write_completion_groups_by_size": [
+        12,
+        5,
+        3,
+        4,
+        4,
+        0,
+        3,
+        0,
+        4,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        1,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "comparisons": {
+    "available": true,
+    "scenarios": [
+      {
+        "postgres_p50_ns": 192491,
+        "ratio_riffdb_over_postgres": 5.839987324082684,
+        "riffdb_p50_ns": 1124145,
+        "scenario": "point_get_ticket"
+      },
+      {
+        "postgres_p50_ns": 120600,
+        "ratio_riffdb_over_postgres": 1.8772885572139304,
+        "riffdb_p50_ns": 226401,
+        "scenario": "list_project_members"
+      },
+      {
+        "postgres_p50_ns": 114560,
+        "ratio_riffdb_over_postgres": 1.8407908519553073,
+        "riffdb_p50_ns": 210881,
+        "scenario": "point_get_user"
+      },
+      {
+        "postgres_p50_ns": 137121,
+        "ratio_riffdb_over_postgres": 1.550681514866432,
+        "riffdb_p50_ns": 212631,
+        "scenario": "list_comments_for_ticket"
+      },
+      {
+        "postgres_p50_ns": 150390,
+        "ratio_riffdb_over_postgres": 1.5201875124675843,
+        "riffdb_p50_ns": 228621,
+        "scenario": "list_open_tickets_for_assignee"
+      },
+      {
+        "postgres_p50_ns": 315832,
+        "ratio_riffdb_over_postgres": 0.8448510600572456,
+        "riffdb_p50_ns": 266831,
+        "scenario": "list_tickets_by_project_status"
+      },
+      {
+        "postgres_p50_ns": 1050225,
+        "ratio_riffdb_over_postgres": 0.5337741912447332,
+        "riffdb_p50_ns": 560583,
+        "scenario": "create_comment"
+      },
+      {
+        "postgres_p50_ns": 1251185,
+        "ratio_riffdb_over_postgres": 0.48330422759224256,
+        "riffdb_p50_ns": 604703,
+        "scenario": "open_ticket_with_labels"
+      },
+      {
+        "postgres_p50_ns": 648963,
+        "ratio_riffdb_over_postgres": 0.44186032177489315,
+        "riffdb_p50_ns": 286751,
+        "scenario": "ticket_detail_page"
+      },
+      {
+        "postgres_p50_ns": 1427976,
+        "ratio_riffdb_over_postgres": 0.34859269343462357,
+        "riffdb_p50_ns": 497782,
+        "scenario": "swap_member_roles"
+      },
+      {
+        "postgres_p50_ns": 2511481,
+        "ratio_riffdb_over_postgres": 0.22538972024872975,
+        "riffdb_p50_ns": 566062,
+        "scenario": "close_ticket_with_comment"
+      }
+    ],
+    "seed": {
+      "postgres_ns": 15998738,
+      "ratio_riffdb_over_postgres": 2.30158947536987,
+      "riffdb_ns": 36822527
+    }
+  },
+  "concurrent_point_reads": [
+    {
+      "backend_id": "postgres_sql",
+      "clients": 64,
+      "elapsed_ns": 50584636,
+      "operation_count": 12800,
+      "operations_per_client": 200,
+      "p95_ns": 461652,
+      "throughput_ops_s": 253041
+    },
+    {
+      "backend_id": "riffdb_public_grpc",
+      "clients": 64,
+      "elapsed_ns": 358804444,
+      "operation_count": 12800,
+      "operations_per_client": 200,
+      "p95_ns": 2377741,
+      "throughput_ops_s": 35674
+    }
+  ],
+  "configuration": {
+    "distribution_method": "nearest-rank p50/p95/p99",
+    "list_limit": 50,
+    "measured_samples": 1,
+    "timing_source": "std::time::Instant",
+    "warmup_iterations": 0
+  },
+  "domain": "TicketDesk",
+  "limitations": [
+    "Application-equivalent baseline, not SQL plan equivalence.",
+    "PostgreSQL uses SQL joins/filters; RiffDB uses symbolic commands and named RiffQL queries over public gRPC.",
+    "Not the frozen WP-200 budget-comparison publication suite.",
+    "Results are architectural feedback for optimization prioritization, not marketing claims.",
+    "Write scenarios execute one new durable write per measured sample on both backends (no idempotent replays).",
+    "PostgreSQL runs behind a Docker userland port proxy; RiffDB listens directly on loopback."
+  ],
+  "report_id": "ticketdesk-app-baseline",
+  "scale": {
+    "approximate_row_count": 276,
+    "comments_per_ticket": 3,
+    "labels_per_org": 4,
+    "labels_per_ticket": 2,
+    "members_per_project": 3,
+    "organizations": 2,
+    "profile": "smoke",
+    "projects_per_org": 2,
+    "tickets_per_project": 10,
+    "users_per_org": 5
+  },
+  "schema": "riffdb.app-baseline/v1",
+  "tables": [
+    "organization",
+    "app_user",
+    "project",
+    "project_member",
+    "ticket",
+    "comment",
+    "label",
+    "ticket_label"
+  ]
+}

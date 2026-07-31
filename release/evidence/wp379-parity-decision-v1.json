@@ -1,0 +1,54 @@
+{
+  "schema": "riffdb.performance-parity-decision/v1",
+  "work_package": "WP-379",
+  "requirement": "PERF-008",
+  "decision": "not_eligible",
+  "alpha_bundle_eligible": false,
+  "standard_durability_profile": "standard",
+  "full_application": {
+    "report": "wp379-app-baseline-v1.json",
+    "sha256": "74590da7799aa6b428bf565fca21d55a1c9e678a6c9f65e220d9dcd962459b91",
+    "postgres_seed_ns": 646676326,
+    "riffdb_seed_ns": 1503077417,
+    "seed_ratio": 2.324311802625043,
+    "seed_ratio_limit": 1.1,
+    "seed_passed": false,
+    "all_mutation_p50_passed": true,
+    "all_read_p50_passed": false
+  },
+  "concurrent_reports": [
+    {
+      "clients": 1,
+      "report": "wp379-concurrent-clients-1-v1.json",
+      "sha256": "1ec67aaa854f84388af4ca7a72d7f39a2a0b8922284b5cc1af76722fc3ab1ce7"
+    },
+    {
+      "clients": 8,
+      "report": "wp379-concurrent-clients-8-v1.json",
+      "sha256": "f0cdbc0fb29029d809344314f42097cf44728e75cd087547ef03c633b7b3c228"
+    },
+    {
+      "clients": 32,
+      "report": "wp379-concurrent-clients-32-v1.json",
+      "sha256": "946bbf1a286f44b21706cb143a232c6136019ab578f3b9028a7cab42e55d28f2"
+    },
+    {
+      "clients": 64,
+      "report": "wp379-concurrent-clients-64-v1.json",
+      "sha256": "f7f8ef41f12b7ab553e9d5eddc6cecfe067746be4f845590393350d7f95b475b"
+    }
+  ],
+  "passed": [
+    "every full-scale representative mutation p50 is below same-run PostgreSQL",
+    "semantic, storage, coordinator, restart, generated-artifact, format, and Clippy checks pass"
+  ],
+  "misses": [
+    "full seed is 2.3243 times PostgreSQL, above the 1.10 limit",
+    "warm point and list reads remain above the 1.10 PostgreSQL p50 ratio",
+    "the concurrent PERF-008 assertion command exits nonzero"
+  ],
+  "environment_notes": [
+    "the default-port server configuration subprocess test could not bind 127.0.0.1:7443 because another process owned that port; explicit ephemeral-port server tests passed"
+  ],
+  "next_action": "Do not start WP-370. Profile and remove the remaining application-service, idempotency-selection, and read-response fixed costs, then rerun WP-379 without changing thresholds."
+}
