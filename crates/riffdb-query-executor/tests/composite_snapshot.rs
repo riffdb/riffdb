@@ -48,6 +48,10 @@ struct FakeView {
 impl QueryReadView for FakeView {
     type Error = ();
 
+    fn fault(&self, _error: &Self::Error) -> riffdb_query_executor::QueryBackendFault {
+        riffdb_query_executor::QueryBackendFault::Unavailable
+    }
+
     fn application_head(&self) -> u64 {
         self.head
     }
@@ -465,6 +469,10 @@ struct ReportedWorkView {
 
 impl QueryReadView for ReportedWorkView {
     type Error = ();
+
+    fn fault(&self, _error: &Self::Error) -> riffdb_query_executor::QueryBackendFault {
+        riffdb_query_executor::QueryBackendFault::Unavailable
+    }
 
     fn application_head(&self) -> u64 {
         1

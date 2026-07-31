@@ -319,6 +319,11 @@ impl ServiceTelemetry for Observability {
                 MetricKey::ServiceStreamClosedByPolicy,
                 TraceRecord::service_stream_closed_by_policy(),
             ),
+            // Package R events: retained by production counters; fixed-cardinality
+            // metric series expansion is deferred until the next metrics layout cut.
+            ServiceTelemetryEvent::CursorEvicted
+            | ServiceTelemetryEvent::ReadRetryAttempt { .. }
+            | ServiceTelemetryEvent::ReadRetryExhausted { .. } => return,
         };
         self.metrics.increment(metric);
         self.record_trace(trace);

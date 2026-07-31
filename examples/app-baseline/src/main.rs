@@ -323,12 +323,26 @@ fn run_load(args: Args) -> Result<(), String> {
             let error = report["aggregate"]["outcomes"]["error"]
                 .as_u64()
                 .unwrap_or(0);
-            (unavailable > 0 || idempotency_mismatch > 0 || error > 0).then(|| {
-                format!(
-                    "{backend}: unavailable={unavailable}, \
+            let mut parts = Vec::new();
+            if unavailable > 0 || idempotency_mismatch > 0 || error > 0 {
+                parts.push(format!(
+                    "unavailable={unavailable}, \
                      idempotency_mismatch={idempotency_mismatch}, error={error}"
-                )
-            })
+                ));
+            }
+            if args.load_contended {
+                // Contended profile requires every weighted op to land at least
+                // one success against the shared hot ticket.
+                if let Some(by_op) = report["by_op"].as_object() {
+                    for (op, stats) in by_op {
+                        let success = stats["outcomes"]["success"].as_u64().unwrap_or(0);
+                        if success == 0 {
+                            parts.push(format!("op {op} has zero successes"));
+                        }
+                    }
+                }
+            }
+            (!parts.is_empty()).then(|| format!("{backend}: {}", parts.join("; ")))
         })
         .collect::<Vec<_>>();
     let encoded = serde_json::to_string_pretty(&json!({

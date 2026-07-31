@@ -1061,6 +1061,15 @@ impl RedbDormantPorts {
 }
 
 impl RedbOperationalPorts {
+    /// Returns a cloneable pure-read handle over the same activated database.
+    ///
+    /// Mutation exclusion is the exclusive mutation gate, not handle uniqueness.
+    /// The shared handle implements only `&self` storage ports.
+    #[must_use]
+    pub fn shared_ports(&self) -> crate::shared_ports::RedbSharedPorts {
+        crate::shared_ports::RedbSharedPorts::new(Arc::clone(&self.shared))
+    }
+
     pub(crate) fn begin_read(&self) -> Result<ReadTransaction, StorageError> {
         self.shared.database.begin_read().map_err(transaction_error)
     }

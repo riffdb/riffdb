@@ -1672,6 +1672,8 @@ fn authoritative_failure(
 ) -> ServiceFailure {
     match error {
         AuthoritativeReadError::Unavailable => PublicError::storage_unavailable().into(),
+        AuthoritativeReadError::Cancelled => ServiceFailure::Cancelled,
+        AuthoritativeReadError::DeadlineExceeded => ServiceFailure::DeadlineExceeded,
         AuthoritativeReadError::Integrity | AuthoritativeReadError::InvalidContinuation => {
             lower_integrity_failure(service, operation)
         }

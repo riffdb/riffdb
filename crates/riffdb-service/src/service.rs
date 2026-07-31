@@ -239,6 +239,7 @@ pub(crate) struct RiffDbServiceInner {
     pub(crate) providers: ServiceProviders,
     pub(crate) cursors: ServiceCursorRegistries,
     pub(crate) pre_bootstrap_health: Arc<PreBootstrapHealthAdmission>,
+    pub(crate) audit_failures: crate::orchestration::AuditFailureTracker,
     active_commit_subscribers: Arc<AtomicU16>,
 }
 
@@ -375,6 +376,7 @@ impl RiffDbService {
                 providers,
                 cursors,
                 pre_bootstrap_health,
+                audit_failures: crate::orchestration::AuditFailureTracker::new(),
                 active_commit_subscribers: Arc::new(AtomicU16::new(0)),
             }),
         }
