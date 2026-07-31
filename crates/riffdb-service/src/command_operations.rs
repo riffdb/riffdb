@@ -22,8 +22,8 @@ use riffdb_contract_ir::{
     ValueType, ValueTypeTag,
 };
 use riffdb_errors::{
-    MAX_VALIDATION_ISSUES, MAX_VALIDATION_PATH_SEGMENTS, PublicError, ValidationCode,
-    ValidationIssue, ValidationIssues, ValidationPath, ValidationPathSegment,
+    MAX_VALIDATION_ISSUES, MAX_VALIDATION_PATH_SEGMENTS, PublicError, PublicErrorKind,
+    ValidationCode, ValidationIssue, ValidationIssues, ValidationPath, ValidationPathSegment,
 };
 use riffdb_invariant::{EvaluationError, derive_input_command_facts};
 use riffdb_policy::{
@@ -56,10 +56,27 @@ use crate::{
     ensure_response_budget,
 };
 
-/// One group-commit turn at queue depth 128 — absolute admission wait cap.
+/// Absolute closed admission wait across queue-depth and retained-byte stages
+/// (ADR-0071: at most one group-commit turn at depth). Both stages share one
+/// deadline computed at the first wait; a queue wait that consumes the budget
+/// leaves retained-byte acquisition with no additional wait window.
+///
+/// Fairness note: `try_reserve` may barge ahead of waiters parked on
+/// `reserve_capacity`, so rejections under sustained depth tend to concentrate
+/// on the oldest waiters (those that have already spent budget in the wait).
+/// This is accepted for the POC; a later fairness pass may use a single
+/// admission queue if agent-facing equity requires it.
 const COMMAND_ADMISSION_MAX_WAIT: Duration = Duration::from_millis(150);
 /// Below this remaining client deadline, reject immediately rather than wait.
 const COMMAND_ADMISSION_MIN_REMAINING: Duration = Duration::from_millis(25);
+
+/// Returns whether `failure` is the typed capacity rejection (queue or bytes).
+fn is_capacity_overload(failure: &ServiceFailure) -> bool {
+    matches!(
+        failure.public_error().map(PublicError::kind),
+        Some(PublicErrorKind::Overloaded)
+    )
+}
 
 impl CommandApplication for RiffDbService {
     fn execute_command(
@@ -242,20 +259,17 @@ async fn execute_read_only(
     .map_err(|error| input_error(service, ServiceOperationV1::ExecuteCommand, error))?;
     let facts = derive_input_command_facts(initial.plan(), normalized.clone())
         .map_err(|error| evaluation_error(service, ServiceOperationV1::ExecuteCommand, error))?;
+    // Capacity admission precedes audit start, re-authorization, and preparation.
+    // Rejecting before begin_invocation avoids a durable Started with no terminal
+    // when the scarce channel cannot host a Failed append (ADR-0071 / I4).
+    let permit = match admit_command_capacity(service, context, &normalized).await {
+        Ok(permit) => permit,
+        Err(failure) => return Err(failure),
+    };
     let operation = command_operation(&initial, CommandExecutionClass::ReadOnly, &facts);
     let begun = service
         .begin_invocation(context, operation, targets, AuditScope::StandardRead)
         .await?;
-
-    // Capacity admission precedes re-authorization and preparation construction.
-    let permit = match admit_command_capacity(service, context, &normalized).await {
-        Ok(permit) => permit,
-        Err(failure) => {
-            return Err(
-                finish_failure(service, context, &begun, failure, TerminalKind::Ordinary).await,
-            );
-        }
-    };
 
     let expected_plan = active.catalog_request.clone();
     let resolved = initial;
@@ -595,12 +609,20 @@ async fn execute_mutation(
         let permit = match admit_command_capacity(service, context, &normalized).await {
             Ok(permit) => permit,
             Err(failure) => {
-                // Capacity admission is always pre-accept. Never spend a
-                // coordinator slot on terminal audit here: under saturation that
-                // slot is the scarce resource, and rewriting overload into
-                // storage_unavailable would destroy the typed contract.
-                invocation.settle_pre_admission_rejection();
-                return Err(failure);
+                // ADR-0071: capacity-only audit skip when no durable Started.
+                // Draining/Stopped/Fenced/Cancelled still append via finish_failure.
+                if is_capacity_overload(&failure) && invocation.is_deferred_start_pending() {
+                    invocation.settle_pre_admission_rejection();
+                    return Err(failure);
+                }
+                return Err(finish_failure(
+                    service,
+                    context,
+                    invocation,
+                    failure,
+                    TerminalKind::Ordinary,
+                )
+                .await);
             }
         };
 
@@ -2129,6 +2151,11 @@ async fn finish_failure_with_link(
         .is_err()
     {
         service.note_audit_failure(begun.operation());
+        // Never rewrite a typed capacity rejection into storage_unavailable:
+        // the audit append failed because the same saturated channel is full.
+        if is_capacity_overload(&failure) {
+            return failure;
+        }
         return if terminal.audit_failure_is_outcome_unknown() {
             PublicError::outcome_unknown().into()
         } else {
@@ -2250,31 +2277,29 @@ async fn admit_command_capacity(
 
     match service.executors.command.try_reserve_capacity() {
         Ok(permit) => {
-            return attach_retained_bytes(service, permit, units, operation, ingress);
+            // No queue wait: open the absolute window only if retained bytes wait.
+            return attach_retained_bytes(
+                service, context, permit, units, operation, ingress, None,
+            )
+            .await;
         }
         Err(CommandExecutionAdmissionError::Overloaded) => {}
         Err(error) => return Err(map_command_admission(service, error)),
     }
 
-    let now = Instant::now();
-    let request_deadline = context.control().deadline();
-    let remaining = request_deadline.saturating_duration_since(now);
-    if remaining < COMMAND_ADMISSION_MIN_REMAINING {
-        record_capacity_rejected(
-            service,
-            operation,
-            ingress,
-            CapacityRejectionStage::QueueDepth,
-        );
-        return Err(PublicError::overloaded().into());
-    }
-    let floor_deadline = request_deadline
-        .checked_sub(COMMAND_ADMISSION_MIN_REMAINING)
-        .unwrap_or(now);
-    let capped_deadline = now
-        .checked_add(COMMAND_ADMISSION_MAX_WAIT)
-        .unwrap_or(Instant::now());
-    let admission_deadline = floor_deadline.min(capped_deadline);
+    // First wait is queue depth — open the absolute closed admission window here.
+    let admission_deadline = match admission_deadline(context) {
+        Ok(deadline) => deadline,
+        Err(AdmissionBudget::RejectImmediately) => {
+            record_capacity_rejected(
+                service,
+                operation,
+                ingress,
+                CapacityRejectionStage::QueueDepth,
+            );
+            return Err(PublicError::overloaded().into());
+        }
+    };
 
     match wait_for_admission_capacity(
         context.control(),
@@ -2284,7 +2309,19 @@ async fn admit_command_capacity(
     )
     .await
     {
-        Ok(Ok(permit)) => attach_retained_bytes(service, permit, units, operation, ingress),
+        Ok(Ok(permit)) => {
+            // Share remaining budget with retained-byte stage (not a second +150 ms).
+            attach_retained_bytes(
+                service,
+                context,
+                permit,
+                units,
+                operation,
+                ingress,
+                Some(admission_deadline),
+            )
+            .await
+        }
         Ok(Err(error)) => Err(map_command_admission(service, error)),
         Err(AdmissionWaitError::Cancelled) => Err(ServiceFailure::Cancelled),
         Err(AdmissionWaitError::AdmissionCapExceeded) => {
@@ -2299,18 +2336,97 @@ async fn admit_command_capacity(
     }
 }
 
-fn attach_retained_bytes(
+/// Closed reason the request budget cannot host an admission wait.
+enum AdmissionBudget {
+    RejectImmediately,
+}
+
+fn admission_deadline(context: &RequestContext) -> Result<Instant, AdmissionBudget> {
+    let now = Instant::now();
+    let request_deadline = context.control().deadline();
+    let remaining = request_deadline.saturating_duration_since(now);
+    if remaining < COMMAND_ADMISSION_MIN_REMAINING {
+        return Err(AdmissionBudget::RejectImmediately);
+    }
+    let floor_deadline = request_deadline
+        .checked_sub(COMMAND_ADMISSION_MIN_REMAINING)
+        .unwrap_or(now);
+    let capped_deadline = now.checked_add(COMMAND_ADMISSION_MAX_WAIT).unwrap_or(now);
+    Ok(floor_deadline.min(capped_deadline))
+}
+
+/// Attaches retained-byte budget under the shared absolute admission deadline.
+///
+/// `opened_deadline` is `Some` when queue depth already opened the closed window;
+/// retained bytes then use only the remainder. When `None`, this stage is the
+/// first wait and opens the window itself (still one absolute 150 ms, not stacked).
+async fn attach_retained_bytes(
     service: &RiffDbServiceInner,
+    context: &RequestContext,
     permit: CommandExecutionCapacityPermit,
     units: u32,
     operation: ServiceOperationV1,
     ingress: riffdb_types::ServiceIngressKindV1,
+    opened_deadline: Option<Instant>,
 ) -> Result<CommandExecutionCapacityPermit, ServiceFailure> {
     match service.executors.command.try_acquire_retained_bytes(units) {
-        Ok(byte_permit) => Ok(permit.with_retained_bytes(byte_permit, units)),
+        Ok(byte_permit) => return Ok(permit.with_retained_bytes(byte_permit, units)),
         Err(CommandExecutionAdmissionError::Overloaded)
-        | Err(CommandExecutionAdmissionError::RetainedByteCapacityExceeded) => {
-            // Drop queue permit on the Overloaded path — no leak.
+        | Err(CommandExecutionAdmissionError::RetainedByteCapacityExceeded) => {}
+        Err(error) => {
+            drop(permit);
+            return Err(map_command_admission(service, error));
+        }
+    }
+
+    let admission_deadline = match opened_deadline {
+        Some(deadline) => {
+            // Remainder of the shared window only.
+            if Instant::now() >= deadline {
+                drop(permit);
+                record_capacity_rejected(
+                    service,
+                    operation,
+                    ingress,
+                    CapacityRejectionStage::RetainedBytes,
+                );
+                return Err(PublicError::overloaded().into());
+            }
+            deadline
+        }
+        None => match admission_deadline(context) {
+            Ok(deadline) => deadline,
+            Err(AdmissionBudget::RejectImmediately) => {
+                drop(permit);
+                record_capacity_rejected(
+                    service,
+                    operation,
+                    ingress,
+                    CapacityRejectionStage::RetainedBytes,
+                );
+                return Err(PublicError::overloaded().into());
+            }
+        },
+    };
+
+    match wait_for_admission_capacity(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        admission_deadline,
+        service.executors.command.acquire_retained_bytes(units),
+    )
+    .await
+    {
+        Ok(Ok(byte_permit)) => Ok(permit.with_retained_bytes(byte_permit, units)),
+        Ok(Err(error)) => {
+            drop(permit);
+            Err(map_command_admission(service, error))
+        }
+        Err(AdmissionWaitError::Cancelled) => {
+            drop(permit);
+            Err(ServiceFailure::Cancelled)
+        }
+        Err(AdmissionWaitError::AdmissionCapExceeded) => {
             drop(permit);
             record_capacity_rejected(
                 service,
@@ -2319,10 +2435,6 @@ fn attach_retained_bytes(
                 CapacityRejectionStage::RetainedBytes,
             );
             Err(PublicError::overloaded().into())
-        }
-        Err(error) => {
-            drop(permit);
-            Err(map_command_admission(service, error))
         }
     }
 }
@@ -3522,5 +3634,41 @@ contract LargeDecimalInput version 1 {
         assert!(TerminalKind::DurableFailure.audit_failure_is_outcome_unknown());
         assert!(TerminalKind::OutcomeUncertain.audit_failure_is_outcome_unknown());
         assert!(TerminalKind::KnownCommitMappingFailure.audit_failure_is_outcome_unknown());
+    }
+
+    #[test]
+    fn capacity_overload_detector_is_strict() {
+        assert!(is_capacity_overload(&PublicError::overloaded().into()));
+        assert!(!is_capacity_overload(
+            &PublicError::storage_unavailable().into()
+        ));
+        assert!(!is_capacity_overload(&ServiceFailure::Cancelled));
+        assert!(!is_capacity_overload(&ServiceFailure::DeadlineExceeded));
+    }
+
+    #[test]
+    fn permit_unit_mismatch_admission_maps_to_internal_not_overload() {
+        // Pure mapping: undersized permit is an internal defect, never RDB-CAPACITY.
+        let error = CommandExecutionAdmissionError::PermitUnitMismatch;
+        assert_eq!(
+            format!("{error}"),
+            "command capacity permit retained-byte units undershoot preparation"
+        );
+        assert!(!matches!(
+            error,
+            CommandExecutionAdmissionError::Overloaded
+                | CommandExecutionAdmissionError::RetainedByteCapacityExceeded
+        ));
+    }
+
+    #[test]
+    fn non_capacity_admission_errors_are_not_overload() {
+        for error in [
+            CommandExecutionAdmissionError::Draining,
+            CommandExecutionAdmissionError::Stopped,
+            CommandExecutionAdmissionError::Fenced,
+        ] {
+            assert!(!matches!(error, CommandExecutionAdmissionError::Overloaded));
+        }
     }
 }

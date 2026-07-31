@@ -27,7 +27,7 @@ use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Streaming};
 
 use crate::application::contextualize_command_client_error;
-use crate::command::{RetryDecision, RetryState};
+use crate::command::{RetryDecision, RetryState, apply_overloaded_backoff};
 use crate::generated::{GeneratedCommand, GeneratedCommandError};
 use crate::status::{
     ClientError, ProtocolFailure, ProtocolFailureKind, checked_application_status, checked_status,
@@ -569,7 +569,9 @@ impl RiffDbClient {
     /// Executes one immutable command with an explicit total submission bound.
     ///
     /// Retryable checked failures are resubmitted immediately with a fresh
-    /// outer request ID. This method never sleeps, applies jitter, or mutates
+    /// outer request ID. Overloaded retries apply bounded backoff (command
+    /// module); other retryables resubmit immediately without inventing a
+    /// generic retry policy. This method never mutates
     /// the command name, selected version, or opaque input.
     pub async fn execute_with_retry(
         &mut self,
@@ -634,6 +636,9 @@ impl RiffDbClient {
                 Ok(response) => return Ok(response),
                 Err(error) => match retry.handle_failure(error) {
                     RetryDecision::Retry => {}
+                    RetryDecision::RetryAfter(delay) => {
+                        apply_overloaded_backoff(delay).await;
+                    }
                     RetryDecision::Return(error) => return Err(error),
                 },
             }
@@ -663,6 +668,9 @@ impl RiffDbClient {
                 Ok(response) => return Ok(response),
                 Err(error) => match retry.handle_failure(error) {
                     RetryDecision::Retry => {}
+                    RetryDecision::RetryAfter(delay) => {
+                        apply_overloaded_backoff(delay).await;
+                    }
                     RetryDecision::Return(error) => return Err(error),
                 },
             }
@@ -789,6 +797,9 @@ async fn execute_retry_attempts<T: ExecuteRetryAttempt, S: RetryRequestIdSource>
             Ok(response) => return Ok(response),
             Err(error) => match retry.handle_failure(error) {
                 RetryDecision::Retry => {}
+                RetryDecision::RetryAfter(delay) => {
+                    apply_overloaded_backoff(delay).await;
+                }
                 RetryDecision::Return(error) => return Err(error),
             },
         }
@@ -817,6 +828,9 @@ async fn normal_capability_retry_attempts<
             Ok(response) => return Ok(response),
             Err(error) => match retry.handle_failure(error) {
                 RetryDecision::Retry => {}
+                RetryDecision::RetryAfter(delay) => {
+                    apply_overloaded_backoff(delay).await;
+                }
                 RetryDecision::Return(error) => return Err(error),
             },
         }
@@ -845,6 +859,9 @@ async fn bootstrap_capability_retry_attempts<
             Ok(response) => return Ok(response),
             Err(error) => match retry.handle_failure(error) {
                 RetryDecision::Retry => {}
+                RetryDecision::RetryAfter(delay) => {
+                    apply_overloaded_backoff(delay).await;
+                }
                 RetryDecision::Return(error) => return Err(error),
             },
         }

@@ -332,6 +332,10 @@ impl ServiceTelemetry for Observability {
                 return;
             }
             ServiceTelemetryEvent::CapacityRejected { stage, .. } => {
+                // Stage-only aggregate counter (bounded cardinality). There is
+                // no operation-level capacity metric: ServiceOperationTerminal
+                // is keyed only by terminal class. Operation/ingress live on
+                // the per-request trace path only.
                 self.metrics
                     .increment(MetricKey::ServiceCapacityRejected(stage));
                 return;
