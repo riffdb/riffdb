@@ -551,10 +551,10 @@ pub fn validate_execute_command_batch_exchange(
     validate_public_message(request)?;
     validate_public_message(response)?;
     if !response.items.is_empty() {
+        // Field-1 length/consistency vs items is enforced by validate_structure
+        // (via validate_public_message above). Exchange only checks the
+        // request/response length relation.
         if request.commands.len() != response.items.len() {
-            return Err(PublicWireError::InconsistentFields);
-        }
-        if !response.responses.is_empty() && response.responses.len() != response.items.len() {
             return Err(PublicWireError::InconsistentFields);
         }
         return Ok(());
@@ -4549,6 +4549,7 @@ fn preflight_execute_batch_request(input: &[u8]) -> Result<(), PublicWireError> 
 }
 
 fn preflight_application_error_public(input: &[u8]) -> Result<(), PublicWireError> {
+    // Pure preflight only emits structural classes (never registry/context).
     match crate::preflight_application_error(input) {
         Ok(()) => Ok(()),
         Err(crate::ApplicationErrorWireError::MalformedEncoding)
@@ -4560,7 +4561,14 @@ fn preflight_application_error_public(input: &[u8]) -> Result<(), PublicWireErro
         | Err(crate::ApplicationErrorWireError::MessageTooLarge) => {
             Err(PublicWireError::PreflightLimitExceeded)
         }
-        Err(_) => Err(PublicWireError::InconsistentFields),
+        Err(
+            crate::ApplicationErrorWireError::UnknownCode
+            | crate::ApplicationErrorWireError::UnknownOperation
+            | crate::ApplicationErrorWireError::UnknownFix
+            | crate::ApplicationErrorWireError::InconsistentRegistry
+            | crate::ApplicationErrorWireError::InvalidContext
+            | crate::ApplicationErrorWireError::MissingInternalIncident,
+        ) => unreachable!("application-error preflight never returns registry errors"),
     }
 }
 

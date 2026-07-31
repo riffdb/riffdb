@@ -49,9 +49,12 @@ Successful and declared business outcomes are terminal per item. Add
 `--error-outcome OutcomeName` to classify a durable declared outcome as a
 recorded item failure for import policy purposes. Authorization, contract,
 validation, and idempotency-reuse failures are also terminal and resumable.
-Transport uncertainty, cancellation, deadlines, and storage unavailability
-remain pending; a later invocation resubmits the identical command input and
-key through normal idempotency recovery.
+Registry-retryable failures (capacity, storage unavailability, outcome
+uncertainty, and other codes whose recovery action is `Retry` or
+`ResolveWithSameIdempotencyKey`) re-enter same-key recovery for that item
+only, under the caller's attempt budget and Overloaded backoff. Cancellation,
+deadlines, response-size, and emergency containment still fail the whole
+transport batch RPC.
 
 The checkpoint is also the stable receipt. It is replaced atomically after each
 completed item. A killed client may lose only knowledge of a completion, never
@@ -83,14 +86,22 @@ independent per-item results.
 
 Current servers return an always-populated, input-ordered item list on the
 batch response (ADR-0077). Each item is either the ordinary command response
-or a typed application error that names the batch operation. Application
-failures (including capacity rejection) are certain-not-executed for that
-item alone and surface without discarding sibling successes. Only
-outcome-uncertainty re-enters same-key recovery for the affected item; other
-items are left alone. Service-control failures (cancellation, deadline,
-response size, emergency containment) still fail the whole transport RPC.
-Older servers that omit the item list keep the historical whole-RPC recovery
-path.
+or a typed application error that names the batch operation. Sibling
+successes stay intact when one item fails. The Rust SDK classifies each item
+error by its registry-derived recovery action: `Retry` and
+`ResolveWithSameIdempotencyKey` re-enter that item through ordinary
+same-idempotency-key recovery (with the same attempt budget and Overloaded
+backoff as a single command); other recovery actions surface immediately as
+certain failures with zero re-entry. Service-control failures (cancellation,
+deadline, response size, emergency containment) still fail the whole
+transport RPC. Older servers that omit the item list keep the historical
+whole-RPC recovery path.
+
+A batch checkpoint is the largest contiguous input prefix that already has
+an independent terminal result (success or non-reentered failure after the
+item's attempt budget). Resume skips that prefix and never resubmits those
+indices; retryable items are re-entered inside the original batch call before
+the checkpoint advances past them.
 
 ## Why batching is not a bulk-write API
 
