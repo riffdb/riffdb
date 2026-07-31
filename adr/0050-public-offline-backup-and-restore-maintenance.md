@@ -325,6 +325,15 @@ and non-reusing sequence policy are deferred beyond the POC and require a new
 ADR. No implementation may imply that preserved `DatabaseId` preserves the
 destroyed history.
 
+### Superseded limitation (ADR-0072)
+
+ADR-0072 adds a durable, monotonic `history_incarnation` retained-metadata
+fence bumped only on destructive restore. Sequence-anchored public requests may
+optionally validate an `observed_history_incarnation` and receive
+`RDB-HISTORY-0101` on mismatch. Sequence reuse after restore remains possible;
+the limitation narrows from "undetectable" to "detectable by participating
+clients." Residual risk for non-participating clients remains documented.
+
 ## Consequences
 
 - Backup and restore use the normal public-client and shared service/policy

@@ -354,6 +354,7 @@ impl BudgetServiceHarness {
             database_id(),
             environment(),
             AgentSessionAdmissionPolicy::Discard,
+            1,
         );
         let process = ServiceProcessMetadata::new(
             timestamp(BASE_SECONDS),

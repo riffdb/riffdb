@@ -24,7 +24,9 @@ mod startup;
 mod store;
 mod transient;
 
-pub use backup::{RedbOfflineBackup, RedbOfflineRestore};
+pub use backup::{
+    RedbOfflineBackup, RedbOfflineRestore, read_history_incarnation, stamp_history_incarnation,
+};
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use fixtures::downgrade_all_index_rows_to_v1_fixture;

@@ -432,6 +432,8 @@ mod tests {
             provenance_uri: "riffdb://provenance/019bf6aa-a640-7de6-89c9-8a7f70bbbd23".to_owned(),
             durability_mode: "sync".to_owned(),
             outcome_uri: None,
+
+            history_incarnation: 1,
         };
         validate_execute_response(&response).expect("valid response");
 
@@ -496,6 +498,8 @@ mod tests {
             provenance_uri: "riffdb://provenance/019bf6aa-a640-7de6-89c9-8a7f70bbbd23".to_owned(),
             durability_mode: String::new(),
             outcome_uri: None,
+
+            history_incarnation: 1,
         };
 
         for mode in ["sync", "group", "memory"] {

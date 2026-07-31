@@ -2169,6 +2169,7 @@ async fn commit_command(
             v1::GetCommitRequest {
                 request_id,
                 commit_sequence,
+                observed_history_incarnation: None,
             },
             &metadata,
         )

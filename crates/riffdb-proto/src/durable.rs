@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 35;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 36;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 30;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 31;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -58,6 +58,14 @@ const INDEX_GENERATION_V2_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
 const INDEX_GENERATION_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-index-generation-v2-record-bound.bin"
+));
+const HISTORY_INCARNATION_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-history-incarnation-v1-schema-hash.bin"
+));
+const HISTORY_INCARNATION_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-history-incarnation-v1-record-bound.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
@@ -140,6 +148,19 @@ const fn index_generation_v2_record_bound(offset: usize) -> usize {
         INDEX_GENERATION_V2_RECORD_BOUND_BYTES[offset + 1],
         INDEX_GENERATION_V2_RECORD_BOUND_BYTES[offset + 2],
         INDEX_GENERATION_V2_RECORD_BOUND_BYTES[offset + 3],
+    ]) as usize
+}
+
+const fn history_incarnation_v1_schema_hash() -> SchemaHash {
+    SchemaHash::from_bytes(*HISTORY_INCARNATION_V1_SCHEMA_HASH_BYTES)
+}
+
+const fn history_incarnation_v1_record_bound(offset: usize) -> usize {
+    u32::from_be_bytes([
+        HISTORY_INCARNATION_V1_RECORD_BOUND_BYTES[offset],
+        HISTORY_INCARNATION_V1_RECORD_BOUND_BYTES[offset + 1],
+        HISTORY_INCARNATION_V1_RECORD_BOUND_BYTES[offset + 2],
+        HISTORY_INCARNATION_V1_RECORD_BOUND_BYTES[offset + 3],
     ]) as usize
 }
 
@@ -322,6 +343,16 @@ const INDEX_GENERATION_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::n
 )
 .with_compact_identity(10, 2);
 
+const HISTORY_INCARNATION_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredHistoryIncarnationV1",
+    history_incarnation_v1_schema_hash(),
+    history_incarnation_v1_record_bound(0),
+    history_incarnation_v1_record_bound(4),
+    preflight_payload::<34>,
+    validate_payload::<34, v1::StoredHistoryIncarnationV1>,
+)
+.with_compact_identity(31, 1);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -418,6 +449,10 @@ readable_message!(
     v1::StoredIndexGenerationV2,
     INDEX_GENERATION_V2_RECORD_SCHEMA
 );
+readable_message!(
+    v1::StoredHistoryIncarnationV1,
+    HISTORY_INCARNATION_V1_RECORD_SCHEMA
+);
 
 writable_message!(v1::StoredStorageFormatVersionV1);
 writable_message!(v1::StoredDatabaseIdentityV1);
@@ -449,6 +484,7 @@ writable_message!(v1::StoredRecordRegistryV2);
 writable_message!(v1::StoredCommitRecordV2);
 writable_message!(v1::StoredOutboxIntentV2);
 writable_message!(v1::StoredIndexGenerationV2);
+writable_message!(v1::StoredHistoryIncarnationV1);
 
 /// Encodes one sealed generated message after the same allocation-free shape preflight.
 pub fn encode_current_message<M: WritableRecordMessage>(
@@ -503,6 +539,7 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     COMMIT_V2_RECORD_SCHEMA,
     OUTBOX_INTENT_V2_RECORD_SCHEMA,
     INDEX_GENERATION_V2_RECORD_SCHEMA,
+    HISTORY_INCARNATION_V1_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
 ];
 
@@ -537,6 +574,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     CURRENT_V1_RECORD_SCHEMAS[26],
     CURRENT_V1_RECORD_SCHEMAS[27],
     CURRENT_V1_RECORD_SCHEMAS[28],
+    HISTORY_INCARNATION_V1_RECORD_SCHEMA,
     REGISTRY_V2_RECORD_SCHEMA,
 ];
 

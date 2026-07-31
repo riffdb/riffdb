@@ -66,6 +66,7 @@ pub struct ServiceIdentity {
     database_id: DatabaseId,
     environment: Environment,
     agent_session_policy: AgentSessionAdmissionPolicy,
+    history_incarnation: u64,
 }
 
 impl ServiceIdentity {
@@ -75,11 +76,13 @@ impl ServiceIdentity {
         database_id: DatabaseId,
         environment: Environment,
         agent_session_policy: AgentSessionAdmissionPolicy,
+        history_incarnation: u64,
     ) -> Self {
         Self {
             database_id,
             environment,
             agent_session_policy,
+            history_incarnation,
         }
     }
 
@@ -99,6 +102,12 @@ impl ServiceIdentity {
     #[must_use]
     pub const fn agent_session_policy(&self) -> AgentSessionAdmissionPolicy {
         self.agent_session_policy
+    }
+
+    /// Returns the durable history incarnation fixed at process activation.
+    #[must_use]
+    pub const fn history_incarnation(&self) -> u64 {
+        self.history_incarnation
     }
 }
 

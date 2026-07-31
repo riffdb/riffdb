@@ -1521,6 +1521,11 @@ pub mod stored_administration_sequence_allocator_v1 {
         Exhausted(super::UnitV1),
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredHistoryIncarnationV1 {
+    #[prost(uint64, tag = "1")]
+    pub incarnation: u64,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredOutboxIntentV1 {
     #[prost(message, optional, tag = "1")]
