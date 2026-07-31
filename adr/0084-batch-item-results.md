@@ -1,6 +1,6 @@
 # ADR-0084: Batch Item Results
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-31
 - **Decision owners:** RiffDB maintainers
 - **Related requirements:** `ID-004`, `REC-001`
@@ -80,5 +80,5 @@ existing behavior is unchanged.
 
 ## Acceptance
 
-Pending maintainer acceptance. Package B merges only after this record is
+Accepted by the maintainer on 2026-07-31.
 accepted.

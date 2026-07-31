@@ -1,6 +1,6 @@
 # ADR-0083: Authoritative Entity References
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-31
 - **Decision owners:** RiffDB maintainers
 - **Related requirements:** `STO-001`, `TXN-004`, `REC-003`
@@ -79,5 +79,5 @@ commit surface is unchanged (it already exposes key and version only).
 
 ## Acceptance
 
-Pending maintainer acceptance. Package E merges only after this record is
+Accepted by the maintainer on 2026-07-31.
 accepted.
