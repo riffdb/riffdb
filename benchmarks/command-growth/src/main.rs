@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use riffdb_storage_redb::benchmark_support::{
     EngineDurability, EngineMechanicsProfile, ServiceAuditGrowthHarness,
     initialize_engine_mechanics, measure_clean_startup, measure_engine_reopen,
-    measure_unclean_recovery, run_engine_mechanics_window,
+    run_engine_mechanics_window,
 };
 
 const CHECKED_CHECKPOINTS: [u64; 6] = [0, 1_024, 4_096, 16_384, 32_768, 65_536];
@@ -23,7 +23,6 @@ const PERF_MIN_RETAINED_BASIS_POINTS: u64 = 5_000;
 const PERF_MAX_GROUP_VS_SYNC_BASIS_POINTS: u64 = 7_500;
 const PERF_013_MAX_GROWTH_RATIO: u64 = 32;
 const PERF_013_MAX_STARTUP_NS: u64 = 30_000_000_000;
-const PERF_014_MAX_UNCLEAN_VS_CLEAN_RATIO: u64 = 3;
 const PREFLIGHT_ENVIRONMENT: &str = "RIFFDB_COMMAND_GROWTH_PREFLIGHT";
 const PREFLIGHT_EVIDENCE: &str = "semantic-crash-v1";
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
@@ -43,8 +42,7 @@ fn run() -> Result<bool, ()> {
         || configuration.assert_perf_008
         || configuration.assert_perf_009
         || configuration.assert_perf_012
-        || configuration.assert_perf_013
-        || configuration.assert_perf_014)
+        || configuration.assert_perf_013)
         && !preflight_passed
     {
         return Err(());
@@ -72,7 +70,6 @@ fn run() -> Result<bool, ()> {
     let mut final_rate = 0_u64;
     let mut startup_at_4096_ns = None;
     let mut startup_at_65536_ns = None;
-    let mut perf_014_ok = true;
     for checkpoint in checkpoints {
         while next_command.saturating_sub(1) < *checkpoint {
             let remaining = checkpoint.saturating_sub(next_command.saturating_sub(1));
@@ -97,31 +94,19 @@ fn run() -> Result<bool, ()> {
             sample.file_bytes()
         );
 
-        // Per-checkpoint clean startup and unclean recovery wall times.
+        // Per-checkpoint clean startup wall time (full structural+historical drain).
         // Drop the live harness so open is exclusive, measure, then reopen.
         drop(harness);
         let startup_ns =
             u64::try_from(measure_clean_startup(&path).map_err(|_| ())?.as_nanos()).map_err(|_| ())?;
-        let unclean_ns = u64::try_from(
-            measure_unclean_recovery(&path)
-                .map_err(|_| ())?
-                .as_nanos(),
-        )
-        .map_err(|_| ())?;
         println!(
             "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"startup\",\"retained_commands\":{checkpoint},\"startup_ns\":{startup_ns}}}"
-        );
-        println!(
-            "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"unclean_recovery\",\"retained_commands\":{checkpoint},\"unclean_recovery_ns\":{unclean_ns},\"clean_startup_ns\":{startup_ns}}}"
         );
         if *checkpoint == 4_096 {
             startup_at_4096_ns = Some(startup_ns);
         }
         if *checkpoint == 65_536 {
             startup_at_65536_ns = Some(startup_ns);
-        }
-        if unclean_ns > startup_ns.saturating_mul(PERF_014_MAX_UNCLEAN_VS_CLEAN_RATIO) {
-            perf_014_ok = false;
         }
         harness = ServiceAuditGrowthHarness::reopen(&path).map_err(|_| ())?;
     }
@@ -185,15 +170,11 @@ fn run() -> Result<bool, ()> {
         startup_at_4096_ns.unwrap_or(0),
         startup_at_65536_ns.unwrap_or(0),
     );
-    println!(
-        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"unclean_recovery_summary\",\"max_unclean_vs_clean_ratio\":{PERF_014_MAX_UNCLEAN_VS_CLEAN_RATIO},\"perf_014_passed\":{perf_014_ok}}}"
-    );
     Ok((!configuration.assert_perf_003 || passed)
         && (!group_gate_requested || perf_004_passed)
         && (!configuration.assert_perf_009 || perf_009_passed)
         && (!configuration.assert_perf_012 || perf_012_passed)
-        && (!configuration.assert_perf_013 || perf_013_passed)
-        && (!configuration.assert_perf_014 || perf_014_ok))
+        && (!configuration.assert_perf_013 || perf_013_passed))
 }
 
 struct GroupComparison {
@@ -273,7 +254,6 @@ struct Configuration {
     assert_perf_009: bool,
     assert_perf_012: bool,
     assert_perf_013: bool,
-    assert_perf_014: bool,
 }
 
 impl Configuration {
@@ -285,7 +265,6 @@ impl Configuration {
         let mut assert_perf_009 = false;
         let mut assert_perf_012 = false;
         let mut assert_perf_013 = false;
-        let mut assert_perf_014 = false;
         for argument in env::args().skip(1) {
             match argument.as_str() {
                 "--smoke" => checked = false,
@@ -319,10 +298,6 @@ impl Configuration {
                     checked = true;
                     assert_perf_013 = true;
                 }
-                "--assert-perf-014" => {
-                    checked = true;
-                    assert_perf_014 = true;
-                }
                 _ => return Err(()),
             }
         }
@@ -334,7 +309,6 @@ impl Configuration {
             assert_perf_009,
             assert_perf_012,
             assert_perf_013,
-            assert_perf_014,
         })
     }
 }

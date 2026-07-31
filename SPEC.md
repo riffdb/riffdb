@@ -2272,6 +2272,8 @@ the uncertain-write `CoordinatorFenced` state.
 | `meta` | UTF-8 system key | Versioned metadata value |
 | `contract_bundles` | lineage byte length as `u32` big endian + exact lineage UTF-8 + contract version as `u64` big endian | Contract bundle envelope |
 | `catalog_active` | exact byte `0x01` | Active contract version and hash |
+| `query_modules` | exact 32-byte module hash | Immutable stored query-module body envelope |
+| `query_module_active` | lineage + contract version + bundle hash | Active query-module pointer identity for one contract |
 | `entities` | exact canonical `EntityKey` bytes | Entity record envelope |
 | `secondary_indexes` | exact canonical `IndexEntryKey` bytes | Index entry envelope including covered values |
 | `index_epochs` | exact canonical index-range-prefix bytes | Monotonic validation epoch envelope |
@@ -2288,10 +2290,12 @@ the uncertain-write `CoordinatorFenced` state.
 | `capabilities` | `0x01` + stable `CapabilityId` | Versioned capability grant and lifecycle record with repeated typed digest reference |
 | `capability_tokens` | `0x01` + digest scheme + digest-key ID + digest | Versioned lookup containing exactly one `CapabilityId` |
 | `audit` | `0x01` + administration sequence | Versioned registered catalog/capability-administration or service-audit record in one ordered sequence space with disjoint closed payload registries |
+| `audit_by_request` | request-id bytes + administration sequence big endian | Self-verifying service-audit secondary index envelope (ADR-0073) |
 
 The only `meta` keys are the exact UTF-8 strings `format_version`,
-`database_id`, `next_application_sequence`, `next_administration_sequence`, and
-`capability_bootstrap/v1`. The active-contract metadata category is represented
+`database_id`, `next_application_sequence`, `next_administration_sequence`,
+`capability_bootstrap/v1`, `record_registry/v2`, `history_incarnation/v1`, and
+`index_epoch_rows_repaired/v1`. The active-contract metadata category is represented
 once by `catalog_active/0x01`; it is not duplicated in `meta`. Physical keys use
 the complete canonical key bytes named above and MUST NOT prepend a redundant
 entity type, index ID, or other owner field already present in that canonical
@@ -2310,15 +2314,17 @@ offline operation that closes or replaces this database.
 
 `STO-011` Table names and key prefixes are storage-format API and require migration planning after POC format freeze.
 
-`STO-012` The POC durable operational metadata MUST contain exactly these six
+`STO-012` The POC durable operational metadata MUST contain exactly these
 categories: storage format version; the permanent `DatabaseId`; application
 commit allocator state; administration audit allocator state; the active
-contract pointer and its catalog-consistency data; and the singleton
-`capability_bootstrap/v1` marker. Application and administration allocator
-metadata starts at 1; zero is unassigned and every advance uses checked
-arithmetic. Committing the maximum representable sequence atomically leaves the
-corresponding allocator in an explicit exhausted semantic state; it never wraps
-or advertises another numeric value.
+contract pointer and its catalog-consistency data; the singleton
+`capability_bootstrap/v1` marker; the compact `record_registry/v2` digest; the
+`history_incarnation/v1` fence (ADR-0072); and the optional
+`index_epoch_rows_repaired/v1` one-shot repair marker. Application and
+administration allocator metadata starts at 1; zero is unassigned and every
+advance uses checked arithmetic. Committing the maximum representable sequence
+atomically leaves the corresponding allocator in an explicit exhausted semantic
+state; it never wraps or advertises another numeric value.
 
 The POC defines no durable node identity, clean-shutdown marker, or persisted
 last-successful-integrity-check value. Every production startup MUST run the

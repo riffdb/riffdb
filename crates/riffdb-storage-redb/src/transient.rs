@@ -5,7 +5,7 @@ use std::ops::Bound::{Excluded, Unbounded};
 
 use redb::{ReadTransaction, ReadableTable};
 use riffdb_storage_api::{OutboxDeliveryStateV1, StorageError, StorageErrorKind};
-use riffdb_types::{EventId, RequestId};
+use riffdb_types::EventId;
 
 use crate::codec::decode_outbox_status_v1;
 use crate::error::{precommit_storage_error, table_error};
@@ -30,16 +30,7 @@ pub(crate) enum TransientIndexState {
     Invalid,
 }
 
-#[allow(dead_code)]
 pub(crate) enum TransientIndexDelta {
-    Composite(Vec<TransientIndexDelta>),
-    /// Retained for call-site compatibility; service-audit lookup is durable.
-    ServiceAuditAppended {
-        request_id: RequestId,
-        sequence: riffdb_types::AdministrationSequence,
-    },
-    /// Retained for call-site compatibility; service-audit lookup is durable.
-    ServiceAuditGroupAppended(Vec<(RequestId, riffdb_types::AdministrationSequence)>),
     PendingOutboxInserted(Vec<EventId>),
     PendingOutboxMembership {
         event_id: EventId,
@@ -92,15 +83,6 @@ impl TransientIndexes {
 
     pub(crate) fn apply(&mut self, delta: TransientIndexDelta) {
         match delta {
-            TransientIndexDelta::Composite(deltas) => {
-                for delta in deltas {
-                    self.apply(delta);
-                }
-            }
-            TransientIndexDelta::ServiceAuditAppended { .. }
-            | TransientIndexDelta::ServiceAuditGroupAppended(_) => {
-                // Durable AUDIT_BY_REQUEST is authoritative; no in-memory map.
-            }
             TransientIndexDelta::PendingOutboxInserted(events) => {
                 let (Some(pending), Some(undelivered)) = (
                     self.pending_outbox.as_mut(),

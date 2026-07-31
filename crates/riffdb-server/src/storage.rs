@@ -266,15 +266,21 @@ impl CurrentCatalogView {
     }
 }
 
-const MAX_CURRENT_QUERY_MODULE_VIEW_RECORDS: usize = 4_096;
+/// Active-pointer map is catalog-cardinality-bounded (one entry per exact
+/// contract identity). Bodies are LRU-cached by hash under this cap.
+const MAX_CURRENT_QUERY_MODULE_BODY_CACHE: usize = 4_096;
 
 #[derive(Default)]
 struct CurrentQueryModuleViewState {
-    /// Active pointer keyed by (lineage, version, bundle_hash) identity string.
+    /// Active pointer keyed by exact contract identity.
     active: BTreeMap<
         (ContractLineage, ContractVersion, ContractBundleHash),
         ActiveQueryModulePointerV1,
     >,
+    /// Negative cache for contract identities with no active module.
+    known_absent: BTreeSet<(ContractLineage, ContractVersion, ContractBundleHash)>,
+    known_absent_order: VecDeque<(ContractLineage, ContractVersion, ContractBundleHash)>,
+    /// Module body cache (hash → body); request path serves hashes when present.
     modules: BTreeMap<QueryModuleHash, StoredQueryModuleV1>,
     module_order: VecDeque<QueryModuleHash>,
 }
@@ -293,6 +299,8 @@ impl CurrentQueryModuleViewState {
             pointer.contract_version(),
             pointer.contract_bundle_hash(),
         );
+        self.known_absent.remove(&key);
+        self.known_absent_order.retain(|existing| existing != &key);
         self.active.insert(key, pointer);
         self.insert_module(module)?;
         Ok(())
@@ -315,6 +323,8 @@ impl CurrentQueryModuleViewState {
         if !changed && self.active.get(&key) != Some(&pointer) {
             return Err(poisoned_storage_bridge());
         }
+        self.known_absent.remove(&key);
+        self.known_absent_order.retain(|existing| existing != &key);
         self.active.insert(key, pointer);
         self.insert_module(module)?;
         Ok(())
@@ -324,9 +334,12 @@ impl CurrentQueryModuleViewState {
         let hash = module.module_hash();
         if let std::collections::btree_map::Entry::Occupied(mut entry) = self.modules.entry(hash) {
             entry.insert(module);
+            // LRU touch.
+            self.module_order.retain(|existing| *existing != hash);
+            self.module_order.push_back(hash);
             return Ok(());
         }
-        while self.modules.len() >= MAX_CURRENT_QUERY_MODULE_VIEW_RECORDS {
+        while self.modules.len() >= MAX_CURRENT_QUERY_MODULE_BODY_CACHE {
             let Some(evict) = self.module_order.pop_front() else {
                 break;
             };
@@ -342,10 +355,40 @@ impl CurrentQueryModuleViewState {
         lineage: &ContractLineage,
         contract_version: ContractVersion,
         contract_bundle_hash: ContractBundleHash,
-    ) -> Option<ActiveQueryModulePointerV1> {
-        self.active
-            .get(&(lineage.clone(), contract_version, contract_bundle_hash))
-            .cloned()
+    ) -> Option<Option<ActiveQueryModulePointerV1>> {
+        let key = (lineage.clone(), contract_version, contract_bundle_hash);
+        if let Some(pointer) = self.active.get(&key) {
+            return Some(Some(pointer.clone()));
+        }
+        if self.known_absent.contains(&key) {
+            return Some(None);
+        }
+        None
+    }
+
+    fn note_absent(
+        &mut self,
+        lineage: &ContractLineage,
+        contract_version: ContractVersion,
+        contract_bundle_hash: ContractBundleHash,
+    ) {
+        let key = (lineage.clone(), contract_version, contract_bundle_hash);
+        if self.active.contains_key(&key) || self.known_absent.contains(&key) {
+            return;
+        }
+        while self.known_absent.len() >= MAX_CURRENT_QUERY_MODULE_BODY_CACHE {
+            if let Some(evict) = self.known_absent_order.pop_front() {
+                self.known_absent.remove(&evict);
+            } else {
+                break;
+            }
+        }
+        self.known_absent.insert(key.clone());
+        self.known_absent_order.push_back(key);
+    }
+
+    fn module(&self, hash: QueryModuleHash) -> Option<StoredQueryModuleV1> {
+        self.modules.get(&hash).cloned()
     }
 }
 
@@ -355,11 +398,12 @@ struct CurrentQueryModuleView {
 
 impl CurrentQueryModuleView {
     fn rebuild(ports: &RedbSharedPorts) -> Result<Self, StorageError> {
-        // Start empty; activations and explicit reads warm the view. Full inventory of
-        // every historical query-module pointer is not required at process start.
-        let _ = ports;
+        let mut state = CurrentQueryModuleViewState::default();
+        for (pointer, module) in ports.load_active_query_modules()? {
+            state.install_rebuilt(pointer, module)?;
+        }
         Ok(Self {
-            state: RwLock::new(CurrentQueryModuleViewState::default()),
+            state: RwLock::new(state),
         })
     }
 
@@ -469,7 +513,13 @@ impl CurrentCapabilityViewState {
     }
 
     fn note_absent(&mut self, digest: CapabilityTokenDigest) {
-        if self.digests.contains_key(&digest) || self.known_absent_digests.contains(&digest) {
+        if self.digests.contains_key(&digest) {
+            return;
+        }
+        if self.known_absent_digests.contains(&digest) {
+            // True LRU: refresh recency without growing the set.
+            self.known_absent_order.retain(|value| *value != digest);
+            self.known_absent_order.push_back(digest);
             return;
         }
         while self.known_absent_digests.len() >= MAX_KNOWN_ABSENT_CAPABILITY_DIGESTS {
@@ -723,7 +773,15 @@ impl QueryModuleRepository for SharedRedbOperationalPorts {
         &self,
         module_hash: QueryModuleHash,
     ) -> Result<Option<StoredQueryModuleV1>, StorageError> {
-        QueryModuleRepository::read_query_module(&self.shared, module_hash)
+        if let Some(module) = self.query_modules.read()?.module(module_hash) {
+            return Ok(Some(module));
+        }
+        let module = QueryModuleRepository::read_query_module(&self.shared, module_hash)?;
+        if let Some(module) = module.as_ref() {
+            let mut view = self.query_modules.write()?;
+            view.insert_module(module.clone())?;
+        }
+        Ok(module)
     }
 
     fn read_active_query_module(
@@ -732,12 +790,12 @@ impl QueryModuleRepository for SharedRedbOperationalPorts {
         contract_version: ContractVersion,
         contract_bundle_hash: ContractBundleHash,
     ) -> Result<Option<ActiveQueryModulePointerV1>, StorageError> {
-        if let Some(active) =
+        if let Some(cached) =
             self.query_modules
                 .read()?
                 .active(lineage, contract_version, contract_bundle_hash)
         {
-            return Ok(Some(active));
+            return Ok(cached);
         }
         // Cold path once: load from storage and publish into the process view.
         let active = QueryModuleRepository::read_active_query_module(
@@ -746,12 +804,15 @@ impl QueryModuleRepository for SharedRedbOperationalPorts {
             contract_version,
             contract_bundle_hash,
         )?;
-        if let Some(pointer) = active.as_ref() {
-            let module =
-                QueryModuleRepository::read_query_module(&self.shared, pointer.module_hash())?
-                    .ok_or_else(poisoned_storage_bridge)?;
-            let mut view = self.query_modules.write()?;
-            view.install_rebuilt(pointer.clone(), module)?;
+        let mut view = self.query_modules.write()?;
+        match active.as_ref() {
+            Some(pointer) => {
+                let module =
+                    QueryModuleRepository::read_query_module(&self.shared, pointer.module_hash())?
+                        .ok_or_else(poisoned_storage_bridge)?;
+                view.install_rebuilt(pointer.clone(), module)?;
+            }
+            None => view.note_absent(lineage, contract_version, contract_bundle_hash),
         }
         Ok(active)
     }
@@ -978,6 +1039,21 @@ impl CapabilityReader for SharedRedbOperationalPorts {
         if let Some(cached) = view.resolve(candidates) {
             return Ok(cached);
         }
+        // Re-validate Found records under the write lock so a concurrent revoke
+        // cannot install a stale Active view after an eviction gap.
+        let result = match &result {
+            CapabilityLookupResult::Found(record) => {
+                let fresh =
+                    CapabilityReader::read_capability(&self.shared, record.capability_id())?
+                        .ok_or_else(poisoned_storage_bridge)
+                        .map_err(|error| self.current_view_failure(error))?;
+                if fresh.token_digest() != record.token_digest() {
+                    return Err(self.current_view_failure(poisoned_storage_bridge()));
+                }
+                CapabilityLookupResult::Found(Box::new(fresh))
+            }
+            other => other.clone(),
+        };
         if let Err(error) = view.note_lookup(candidates, &result) {
             return Err(self.current_view_failure(error));
         }
@@ -1381,6 +1457,91 @@ mod tests {
 
         assert!(!source.contains(&["async", " fn"].concat()));
         assert!(!source.contains(&[".", "await"].concat()));
+    }
+
+    fn query_module_record(seed: u8) -> StoredQueryModuleV1 {
+        StoredQueryModuleV1::new(
+            riffdb_types::QueryModuleName::new("ticketdesk").expect("name"),
+            riffdb_types::QueryModuleVersion::new(u64::from(seed)).expect("version"),
+            QueryModuleHash::from_bytes([seed; 32]),
+            ContractLineage::new("view-qm").expect("lineage"),
+            ContractVersion::new(1).expect("contract version"),
+            ContractBundleHash::from_bytes([seed.wrapping_add(1); 32]),
+            vec![seed, 1, 2, 3],
+        )
+        .expect("stored query module")
+    }
+
+    #[test]
+    fn current_query_module_view_populates_on_fresh_construction() {
+        let module = query_module_record(0x11);
+        let pointer = ActiveQueryModulePointerV1::from_module(&module);
+        let mut view = CurrentQueryModuleViewState::default();
+        view.install_rebuilt(pointer.clone(), module.clone())
+            .expect("fresh install");
+        assert_eq!(
+            view.active(
+                module.contract_lineage(),
+                module.contract_version(),
+                module.contract_bundle_hash(),
+            ),
+            Some(Some(pointer))
+        );
+        assert_eq!(view.module(module.module_hash()), Some(module));
+    }
+
+    #[test]
+    fn current_query_module_view_reactivate_already_active_is_idempotent() {
+        let module = query_module_record(0x22);
+        let pointer = ActiveQueryModulePointerV1::from_module(&module);
+        // Restart-shaped reconstruction: empty view + install_rebuilt, then
+        // AlreadyActive publish with changed=false must not integrity-fail.
+        let mut view = CurrentQueryModuleViewState::default();
+        view.install_rebuilt(pointer.clone(), module.clone())
+            .expect("reconstruct from storage");
+        view.publish_activation(pointer.clone(), module.clone(), false)
+            .expect("idempotent re-activate of already-active module");
+        assert_eq!(
+            view.active(
+                module.contract_lineage(),
+                module.contract_version(),
+                module.contract_bundle_hash(),
+            ),
+            Some(Some(pointer))
+        );
+    }
+
+    #[test]
+    fn current_query_module_view_first_read_after_construction_is_warm() {
+        let module = query_module_record(0x33);
+        let pointer = ActiveQueryModulePointerV1::from_module(&module);
+        let mut view = CurrentQueryModuleViewState::default();
+        view.install_rebuilt(pointer.clone(), module.clone())
+            .expect("warm rebuild");
+        // Warm path: active() returns Some(_) meaning the cache hit and no
+        // storage fallthrough is required (Some(None) = known absent;
+        // None = cold miss). After construction this must be a warm hit.
+        let cached = view
+            .active(
+                module.contract_lineage(),
+                module.contract_version(),
+                module.contract_bundle_hash(),
+            )
+            .expect("warm cache hit, not cold miss");
+        assert_eq!(cached, Some(pointer));
+        assert_eq!(
+            view.module(module.module_hash()).expect("body warm"),
+            module
+        );
+        // Unknown contract remains cold (None) until storage is consulted.
+        assert!(
+            view.active(
+                &ContractLineage::new("other").expect("other"),
+                ContractVersion::new(9).expect("version"),
+                ContractBundleHash::from_bytes([0x99; 32]),
+            )
+            .is_none()
+        );
     }
 
     #[test]

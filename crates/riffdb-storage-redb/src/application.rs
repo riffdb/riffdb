@@ -264,21 +264,17 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
             .iter()
             .flat_map(|records| records.events().iter().map(|event| event.event_id()))
             .collect::<Vec<_>>();
-        let mut deltas = records
-            .iter()
-            .map(|record| TransientIndexDelta::ServiceAuditAppended {
-                request_id: record.request_id(),
-                sequence: record.administration_sequence(),
-            })
-            .collect::<Vec<_>>();
-        if !pending_events.is_empty() {
-            deltas.push(TransientIndexDelta::PendingOutboxInserted(pending_events));
-        }
+        // AUDIT_BY_REQUEST is written durably inside stage_service_audit_group_in_write;
+        // only outbox accelerators remain in the transient delta path.
+        let delta = if pending_events.is_empty() {
+            None
+        } else {
+            Some(TransientIndexDelta::PendingOutboxInserted(pending_events))
+        };
         stage_application_allocator(self.core.access.transaction()?, self.core.allocator)?;
-        self.core.access.commit_for_with_delta(
-            RedbTestOperation::CommandBatch,
-            Some(TransientIndexDelta::Composite(deltas)),
-        )?;
+        self.core
+            .access
+            .commit_for_with_delta(RedbTestOperation::CommandBatch, delta)?;
         Ok(audited)
     }
 

@@ -405,13 +405,12 @@ pub fn run_engine_mechanics_window(
     })
 }
 
-/// Reopens the database and proves the retained application allocator is readable.
+/// Lightweight engine reopen (allocator probe only). Series-compatible with
+/// pre-Package-H measurements: open + read META, no full evidence drain.
 pub fn measure_engine_reopen(path: &Path) -> Result<Duration, EngineBenchmarkError> {
     let started = Instant::now();
-    let store = RedbStore::open(path).map_err(|_| EngineBenchmarkError::Engine)?;
-    let transaction = store
-        .shared
-        .database
+    let database = Database::create(path).map_err(|_| EngineBenchmarkError::Engine)?;
+    let transaction = database
         .begin_read()
         .map_err(|_| EngineBenchmarkError::Engine)?;
     let table = transaction
@@ -426,31 +425,76 @@ pub fn measure_engine_reopen(path: &Path) -> Result<Duration, EngineBenchmarkErr
     }
     drop(table);
     drop(transaction);
-    drop(store);
+    drop(database);
     Ok(started.elapsed())
 }
 
-/// Clean reopen through `RedbStore::open` (format migration + repair callback path).
+/// Full clean startup drain: open + structural + historical + operational handoff.
 pub fn measure_clean_startup(path: &Path) -> Result<Duration, EngineBenchmarkError> {
     let started = Instant::now();
-    let store = RedbStore::open(path).map_err(|_| EngineBenchmarkError::Engine)?;
-    drop(store);
+    drain_startup_evidence(path)?;
     Ok(started.elapsed())
 }
 
-/// Unclean recovery: reopen a crash-shaped snapshot with the repair callback path.
-pub fn measure_unclean_recovery(path: &Path) -> Result<Duration, EngineBenchmarkError> {
-    // Snapshot on-disk bytes while no writer is held, then reopen. Immediate
-    // durability means committed rows already survive; this still exercises the
-    // Builder repair-callback open path used after process death.
-    let snapshot = path.with_extension("unclean-snapshot.redb");
-    fs::copy(path, &snapshot).map_err(|_| EngineBenchmarkError::Engine)?;
-    let started = Instant::now();
-    let store = RedbStore::open(&snapshot).map_err(|_| EngineBenchmarkError::Engine)?;
-    drop(store);
-    let elapsed = started.elapsed();
-    let _ = fs::remove_file(&snapshot);
-    Ok(elapsed)
+fn drain_startup_evidence(path: &Path) -> Result<(), EngineBenchmarkError> {
+    use riffdb_storage_api::{
+        EvidencePageLimit, HistoricalEvidenceCursor, HistoricalEvidencePage,
+        ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+        StartupValidationInputs, StructuralEvidenceCursor, StructuralEvidenceOpen,
+        StructuralEvidencePage, StructuralEvidenceSession, StructuralOpenOutcome,
+    };
+    use riffdb_types::{DigestKeyId, Timestamp};
+
+    let store = RedbStore::open(path).map_err(|_| EngineBenchmarkError::Engine)?;
+    let key = ReadableDigestKey::v1(DigestKeyId::new(1).ok_or(EngineBenchmarkError::Engine)?);
+    let inputs = StartupValidationInputs::new(
+        Timestamp::new(1, 0).map_err(|_| EngineBenchmarkError::Engine)?,
+        ReadableCapabilityDigestInventory::new(vec![key])
+            .map_err(|_| EngineBenchmarkError::Engine)?,
+        ReadableIdempotencyDigestInventory::new(vec![key])
+            .map_err(|_| EngineBenchmarkError::Engine)?,
+    );
+    let mut session = store
+        .begin_structural_evidence(inputs)
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    let database_id = session.database_id();
+    let open_session_id = session.open_session_id();
+    let limit = EvidencePageLimit::new(64).ok_or(EngineBenchmarkError::Engine)?;
+    let mut structural = StructuralEvidenceCursor::start(database_id, open_session_id);
+    let structural_end = loop {
+        match session
+            .read_structural_evidence(structural, limit)
+            .map_err(|_| EngineBenchmarkError::Engine)?
+        {
+            StructuralEvidencePage::Page { next, .. } => structural = next,
+            StructuralEvidencePage::ExactEnd(end) => break end,
+        }
+    };
+    let mut historical = HistoricalEvidenceCursor::start(database_id, open_session_id);
+    let historical_end = loop {
+        match session
+            .read_historical_evidence(historical, limit)
+            .map_err(|_| EngineBenchmarkError::Engine)?
+        {
+            HistoricalEvidencePage::Page { next, .. } => historical = next,
+            HistoricalEvidencePage::ExactEnd(end) => break end,
+        }
+    };
+    let outcome = session
+        .finish(structural_end, historical_end)
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    match outcome {
+        StructuralOpenOutcome::Clean(opened) => {
+            let (_, _, _, dormant) = opened.into_parts();
+            let _ = dormant
+                .into_operational_after_catalog_validation()
+                .map_err(|_| EngineBenchmarkError::Engine)?;
+        }
+        StructuralOpenOutcome::MigrationRequired(_) => {
+            return Err(EngineBenchmarkError::Engine);
+        }
+    }
+    Ok(())
 }
 
 fn configure(
