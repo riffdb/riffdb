@@ -997,6 +997,20 @@ pub trait OperationalStatusPort: Send + Sync {
     >;
 }
 
+/// Closed stage at which command capacity admission rejected a request.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CapacityRejectionStage {
+    /// Coordinator queue depth is full.
+    QueueDepth,
+    /// Independent retained-byte budget is exhausted.
+    RetainedBytes,
+}
+
+impl CapacityRejectionStage {
+    /// Every rejection stage in stable metric order.
+    pub const ALL: [Self; 2] = [Self::QueueDepth, Self::RetainedBytes];
+}
+
 /// Redaction-safe service orchestration telemetry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceTelemetryEvent {
@@ -1039,6 +1053,15 @@ pub enum ServiceTelemetryEvent {
     },
     /// A post-establishment stream was closed at a current-policy safe point.
     StreamClosedByPolicy,
+    /// Command capacity admission rejected the request before accept.
+    CapacityRejected {
+        /// Closed service operation.
+        operation: riffdb_types::ServiceOperationV1,
+        /// Trusted transport classification fixed by the request context.
+        ingress: riffdb_types::ServiceIngressKindV1,
+        /// Closed capacity stage that rejected the request.
+        stage: CapacityRejectionStage,
+    },
 }
 
 /// Closed terminal classes for API-neutral service telemetry.

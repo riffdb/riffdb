@@ -19,9 +19,9 @@ use riffdb_catalog::{
 };
 use riffdb_commit::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
-    ApplicationCommitNotificationError, ApplicationCommitNotificationSink, CoordinatorDurability,
-    CoordinatorWorkloadCapacity, ProvenanceIdSource, ProvenanceIdSourceError,
-    RunningCommandCoordinator,
+    ApplicationCommitNotificationError, ApplicationCommitNotificationSink,
+    CommandExecutionCapacityPermit, CoordinatorDurability, CoordinatorWorkloadCapacity,
+    ProvenanceIdSource, ProvenanceIdSourceError, RunningCommandCoordinator,
 };
 use riffdb_conflict::{ConflictManager, ConflictManagerConfig, ShardedConflictManager};
 use riffdb_contract_compiler::{compile_contract_source, compile_contract_successor};
@@ -176,6 +176,21 @@ impl ServiceHarness {
         )
     }
 
+    /// Command harness with a single coordinator workload slot for saturation tests.
+    pub(crate) fn command_capacity_one() -> Self {
+        Self::compose_with_additional_commands_and_capacity(
+            ReadCommitMode::ImmediateNotFound,
+            false,
+            true,
+            false,
+            false,
+            false,
+            0,
+            1,
+            true,
+        )
+    }
+
     pub(crate) fn command_with_failing_incident_source() -> Self {
         Self::compose(
             ReadCommitMode::ImmediateNotFound,
@@ -261,6 +276,31 @@ impl ServiceHarness {
         pre_bootstrap: bool,
         additional_commands: usize,
     ) -> Self {
+        Self::compose_with_additional_commands_and_capacity(
+            read_mode,
+            allow_read_commit,
+            restrict_command_partition,
+            fail_incident_source,
+            broad_operations,
+            pre_bootstrap,
+            additional_commands,
+            8,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compose_with_additional_commands_and_capacity(
+        read_mode: ReadCommitMode,
+        allow_read_commit: bool,
+        restrict_command_partition: bool,
+        fail_incident_source: bool,
+        broad_operations: bool,
+        pre_bootstrap: bool,
+        additional_commands: usize,
+        workload_capacity: u16,
+        direct_empty_idempotency: bool,
+    ) -> Self {
         let database = if pre_bootstrap {
             AuditDatabase::create_pre_bootstrap(broad_operations)
         } else {
@@ -304,12 +344,18 @@ impl ServiceHarness {
             capability_order,
             discovery_order,
         ));
-        let coordinator = start_coordinator(database.open());
+        let coordinator = start_coordinator_with_capacity(database.open(), workload_capacity);
+        let mut inspector =
+            coordinator.command_idempotency_inspector(Arc::new(FixedDigestProvider));
+        if direct_empty_idempotency {
+            // Saturation tests hold the writer queue; inspect must not share it.
+            inspector = inspector.with_direct_repository(Arc::new(EmptyAdmissionLookup));
+        }
         let executors = ServiceExecutors::new(
             coordinator.administration_audit_executor(),
             coordinator.control_plane_executor(),
             coordinator.command_executor(),
-            coordinator.command_idempotency_inspector(Arc::new(FixedDigestProvider)),
+            inspector,
         );
         let telemetry = Arc::new(HarnessTelemetry::default());
         let health = Arc::new(HarnessHealth::default());
@@ -368,7 +414,15 @@ impl ServiceHarness {
     }
 
     pub(crate) fn context(&self, request_seed: u8) -> (RequestContext, RequestCancellationHandle) {
-        let (control, cancellation) = RequestControl::new(Instant::now() + Duration::from_secs(30));
+        self.context_with_deadline(request_seed, Instant::now() + Duration::from_secs(30))
+    }
+
+    pub(crate) fn context_with_deadline(
+        &self,
+        request_seed: u8,
+        deadline: Instant,
+    ) -> (RequestContext, RequestCancellationHandle) {
+        let (control, cancellation) = RequestControl::new(deadline);
         (
             RequestContext::new(
                 request_id(request_seed),
@@ -392,6 +446,28 @@ impl ServiceHarness {
 
     pub(crate) fn close_pre_bootstrap_health(&self) {
         self.pre_bootstrap.close();
+    }
+
+    /// Holds one command coordinator workload slot for capacity-saturation tests.
+    pub(crate) fn hold_command_capacity(&self) -> CommandExecutionCapacityPermit {
+        self.coordinator
+            .as_ref()
+            .expect("coordinator is running")
+            .command_executor()
+            .try_reserve_capacity()
+            .expect("hold one free command workload slot")
+    }
+
+    /// Returns whether the next non-blocking command reservation is overload.
+    pub(crate) fn try_command_capacity_is_full(&self) -> bool {
+        matches!(
+            self.coordinator
+                .as_ref()
+                .expect("coordinator is running")
+                .command_executor()
+                .try_reserve_capacity(),
+            Err(riffdb_commit::CommandExecutionAdmissionError::Overloaded)
+        )
     }
 
     pub(crate) fn deploy_request(&self) -> DeployContractRequest {
@@ -1754,13 +1830,46 @@ fn startup_inputs() -> StartupValidationInputs {
     )
 }
 
+/// Read-only idempotency lane that always reports no durable admission state.
+///
+/// Production uses a shared storage reader; the harness only needs Absent so
+/// inspect does not compete with the command writer queue under capacity tests.
+struct EmptyAdmissionLookup;
+
+impl riffdb_storage_api::AdmissionLookupRepository for EmptyAdmissionLookup {
+    fn lookup_admission(
+        &self,
+        _candidates: riffdb_storage_api::IdempotencyLookupCandidatesV1,
+    ) -> Result<riffdb_storage_api::AdmissionLookupResultV1, riffdb_storage_api::StorageError> {
+        Ok(riffdb_storage_api::AdmissionLookupResultV1::NotFound)
+    }
+
+    fn lookup_admission_group(
+        &self,
+        candidates: Vec<riffdb_storage_api::IdempotencyLookupCandidatesV1>,
+    ) -> Result<Vec<riffdb_storage_api::AdmissionLookupResultV1>, riffdb_storage_api::StorageError>
+    {
+        Ok(candidates
+            .into_iter()
+            .map(|_| riffdb_storage_api::AdmissionLookupResultV1::NotFound)
+            .collect())
+    }
+}
+
 fn start_coordinator(ports: RedbOperationalPorts) -> RunningCommandCoordinator {
+    start_coordinator_with_capacity(ports, 8)
+}
+
+fn start_coordinator_with_capacity(
+    ports: RedbOperationalPorts,
+    workload_capacity: u16,
+) -> RunningCommandCoordinator {
     let conflicts: Arc<dyn ConflictManager> = Arc::new(
         ShardedConflictManager::new(ConflictManagerConfig::default())
             .expect("start conflict manager"),
     );
     RunningCommandCoordinator::start(
-        CoordinatorWorkloadCapacity::new(8).expect("nonzero coordinator capacity"),
+        CoordinatorWorkloadCapacity::new(workload_capacity).expect("nonzero coordinator capacity"),
         CoordinatorDurability::Sync,
         ports,
         conflicts,

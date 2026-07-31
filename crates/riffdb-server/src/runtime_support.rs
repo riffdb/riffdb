@@ -492,6 +492,7 @@ pub(crate) struct ProductionServiceTelemetry {
     read_retry_attempt: AtomicU64,
     read_retry_exhausted: AtomicU64,
     stream_closed_by_policy: AtomicU64,
+    capacity_rejected: AtomicU64,
 }
 
 impl ProductionServiceTelemetry {
@@ -505,6 +506,7 @@ impl ProductionServiceTelemetry {
             read_retry_attempt: self.read_retry_attempt.load(Ordering::Relaxed),
             read_retry_exhausted: self.read_retry_exhausted.load(Ordering::Relaxed),
             stream_closed_by_policy: self.stream_closed_by_policy.load(Ordering::Relaxed),
+            capacity_rejected: self.capacity_rejected.load(Ordering::Relaxed),
         }
     }
 }
@@ -520,6 +522,7 @@ impl ServiceTelemetry for ProductionServiceTelemetry {
             ServiceTelemetryEvent::ReadRetryAttempt { .. } => &self.read_retry_attempt,
             ServiceTelemetryEvent::ReadRetryExhausted { .. } => &self.read_retry_exhausted,
             ServiceTelemetryEvent::StreamClosedByPolicy => &self.stream_closed_by_policy,
+            ServiceTelemetryEvent::CapacityRejected { .. } => &self.capacity_rejected,
         };
         saturating_increment(counter);
     }
@@ -542,6 +545,7 @@ pub(crate) struct ServiceTelemetrySnapshot {
     pub(crate) read_retry_attempt: u64,
     pub(crate) read_retry_exhausted: u64,
     pub(crate) stream_closed_by_policy: u64,
+    pub(crate) capacity_rejected: u64,
 }
 
 fn saturating_increment(counter: &AtomicU64) {
@@ -873,6 +877,7 @@ mod tests {
                 read_retry_attempt: 0,
                 read_retry_exhausted: 0,
                 stream_closed_by_policy: 1,
+                capacity_rejected: 0,
             }
         );
         assert_eq!(
