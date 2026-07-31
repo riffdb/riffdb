@@ -77,7 +77,10 @@ command -v rustc >/dev/null 2>&1 || {
 }
 
 mkdir -p "$SCRIPT_DIR/target"
-DATABASE_ROOT="$SCRIPT_DIR/target/database-roots"
+DATABASE_ROOT="$SCRIPT_DIR/target/perf-db/poc-semantic-workloads"
+export RIFFDB_BENCH_DB_ROOT="$DATABASE_ROOT"
+# Transition release: keep TMPDIR redirection so older path deps still land on disk.
+export TMPDIR="$DATABASE_ROOT"
 [ ! -L "$DATABASE_ROOT" ] || {
     printf '%s\n' "benchmark database root must not be a symbolic link" >&2
     exit 1

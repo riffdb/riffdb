@@ -69,6 +69,10 @@
 - [System Overview](architecture/OVERVIEW.md)
 - [Command Execution Path](architecture/COMMAND-PATH.md)
 
+# Performance
+
+- [Benchmark Integrity](performance/benchmark-integrity.md)
+
 # Reference
 
 - [CLI Reference](reference/CLI.md)

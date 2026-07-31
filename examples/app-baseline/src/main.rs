@@ -14,10 +14,12 @@ use riffdb_app_baseline_core::{
     AppBackend, BackendReport, LOAD_CONCURRENCY_SWEEP_CLIENTS, LoadConfig, LoadExecutionShape,
     RIFFDB_MAX_LOAD_CLIENTS, RIFFDB_SATURATE_LOAD_CLIENTS, SATURATE_COORDINATOR_WORKLOAD_CAPACITY,
     Scale, SeedDataset, WorkloadProfile, build_report, concurrency_curve_point,
-    print_concurrency_sweep_summary, print_load_summary, run_closed_loop_load, run_scenarios,
+    print_concurrency_sweep_summary, print_load_summary, run_closed_loop_load,
+    run_closed_loop_load_with_abort, run_scenarios,
 };
-use riffdb_app_baseline_postgres::PostgresAppBackend;
+use riffdb_app_baseline_postgres::{PostgresAppBackend, PostgresDurabilitySettings};
 use riffdb_app_baseline_riffdb::{RiffDbServerSession, ServerStartOptions};
+use riffdb_bench_root::{DeviceBaseline, run_device_baseline_for};
 use serde_json::json;
 
 fn main() -> ExitCode {
@@ -38,41 +40,180 @@ fn run() -> Result<(), String> {
     let dataset = SeedDataset::generate(args.scale);
     let mut backends = Vec::new();
     let mut concurrent_reads = Vec::new();
+    let mut postgres_durability: Option<PostgresDurabilitySettings> = None;
+    let mut riffdb_database_root: Option<PathBuf> = None;
+    let mut riffdb_medium: Option<String> = None;
+    let mut device_baseline_json: Option<serde_json::Value> = None;
+    let mut environment_json: Option<serde_json::Value> = None;
+    let notes: Vec<String> = Vec::new();
 
-    if !args.skip_postgres {
-        let url = args
-            .postgres_url
-            .clone()
-            .or_else(|| env::var("RIFFDB_APP_BASELINE_POSTGRES_URL").ok())
-            .ok_or_else(|| {
-                "PostgreSQL required: pass --postgres-url or set RIFFDB_APP_BASELINE_POSTGRES_URL"
-                    .to_owned()
-            })?;
-        let mut postgres = PostgresAppBackend::new(&url).map_err(|error| error.to_string())?;
-        postgres.reset().map_err(|error| error.to_string())?;
-        let seed_started = Instant::now();
-        postgres.seed(&dataset).map_err(|error| error.to_string())?;
-        let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let scenarios = run_scenarios(&mut postgres, &dataset, args.warmups, args.samples)
-            .map_err(|error| error.to_string())?;
-        if let Some(clients) = args.concurrent_clients {
-            let url = Arc::new(url);
-            concurrent_reads.push(run_concurrent_point_reads(
-                "postgres_sql",
-                clients,
-                args.concurrent_operations,
-                &dataset,
-                move || PostgresAppBackend::new(url.as_str()).map_err(|error| error.to_string()),
-            )?);
+    // Device baseline once per invocation (short for smoke; full for --full).
+    if let Some(root) = args.database_root.clone().or_else(|| {
+        Some(PathBuf::from(
+            riffdb_app_baseline_riffdb::DEFAULT_DATABASE_ROOT,
+        ))
+    }) {
+        let _ = fs::create_dir_all(&root);
+        let probe_for = if args.scale.name() == "full" {
+            std::time::Duration::from_secs(10)
+        } else {
+            std::time::Duration::from_millis(200)
+        };
+        if let Ok(baseline) = run_device_baseline_for(&root, probe_for) {
+            device_baseline_json = Some(device_baseline_value(&baseline));
+        }
+    }
+
+    // Interleaved reps: PG1, R1, PG2, R2, …
+    let mut pg_rep_seed_ns: Vec<u64> = Vec::new();
+    let mut pg_rep_scenarios: Vec<Vec<riffdb_app_baseline_core::ScenarioResult>> = Vec::new();
+    let mut rd_rep_seed_ns: Vec<u64> = Vec::new();
+    let mut rd_rep_scenarios: Vec<Vec<riffdb_app_baseline_core::ScenarioResult>> = Vec::new();
+    let mut rd_write_groups: Option<Vec<u64>> = None;
+
+    for rep in 0..args.reps {
+        if !args.skip_postgres {
+            let url = args
+                .postgres_url
+                .clone()
+                .or_else(|| env::var("RIFFDB_APP_BASELINE_POSTGRES_URL").ok())
+                .ok_or_else(|| {
+                    "PostgreSQL required: pass --postgres-url or set RIFFDB_APP_BASELINE_POSTGRES_URL"
+                        .to_owned()
+                })?;
+            let mut postgres = PostgresAppBackend::new(&url).map_err(|error| error.to_string())?;
+            if postgres_durability.is_none() {
+                let settings = postgres
+                    .durability_settings()
+                    .map_err(|error| error.to_string())?;
+                settings.assert_durable_for_parity()?;
+                postgres_durability = Some(settings);
+            }
+            postgres.reset().map_err(|error| error.to_string())?;
+            let seed_started = Instant::now();
+            postgres.seed(&dataset).map_err(|error| error.to_string())?;
+            let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            let scenarios = run_scenarios(&mut postgres, &dataset, args.warmups, args.samples)
+                .map_err(|error| error.to_string())?;
+            if rep == 0 {
+                if let Some(clients) = args.concurrent_clients {
+                    let url = Arc::new(url);
+                    concurrent_reads.push(run_concurrent_point_reads(
+                        "postgres_sql",
+                        clients,
+                        args.concurrent_operations,
+                        &dataset,
+                        move || {
+                            PostgresAppBackend::new(url.as_str()).map_err(|error| error.to_string())
+                        },
+                    )?);
+                }
+            }
+            pg_rep_seed_ns.push(seed_ns);
+            pg_rep_scenarios.push(scenarios);
+        }
+
+        if !args.skip_riffdb {
+            let riffdbd = args
+                .riffdbd_bin
+                .clone()
+                .or_else(|| env::var_os("RIFFDB_APP_BASELINE_RIFFDBD_BIN").map(PathBuf::from))
+                .ok_or_else(|| {
+                    "riffdbd required: pass --riffdbd-bin or set RIFFDB_APP_BASELINE_RIFFDBD_BIN"
+                        .to_owned()
+                })?;
+            if !riffdbd.is_file() {
+                return Err(format!("riffdbd binary not found: {}", riffdbd.display()));
+            }
+
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())?;
+
+            let mut session = runtime
+                .block_on(RiffDbServerSession::start_with_options(
+                    &riffdbd,
+                    ServerStartOptions {
+                        database_root: args.database_root.clone(),
+                        allow_tmpfs: args.allow_tmpfs,
+                        ..ServerStartOptions::default()
+                    },
+                ))
+                .map_err(|error| error.to_string())?;
+
+            if riffdb_database_root.is_none() {
+                riffdb_database_root = Some(session.bench_root.path().to_path_buf());
+                riffdb_medium = Some(session.bench_root.medium().to_report_json());
+                if environment_json.is_none() {
+                    environment_json =
+                        serde_json::from_str(&session.bench_root.environment_report_json()).ok();
+                }
+            }
+
+            // reset is a no-op for fresh process
+            session.backend.reset().map_err(|error| error.to_string())?;
+            let seed_started = Instant::now();
+            if let Err(error) = session.backend.seed(&dataset) {
+                if let Ok(groups) = session.shutdown() {
+                    eprintln!("riffdb write completion groups 1..64: {groups:?}");
+                }
+                return Err(error.to_string());
+            }
+            let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            let scenarios =
+                run_scenarios(&mut session.backend, &dataset, args.warmups, args.samples);
+            let scenarios = match scenarios {
+                Ok(scenarios) => scenarios,
+                Err(error) => {
+                    if let Ok(groups) = session.shutdown() {
+                        eprintln!("riffdb write completion groups 1..64: {groups:?}");
+                    }
+                    return Err(error.to_string());
+                }
+            };
+            if rep == 0 {
+                if let Some(clients) = args.concurrent_clients {
+                    let prototype = session.backend.clone();
+                    concurrent_reads.push(run_concurrent_point_reads(
+                        "riffdb_public_grpc",
+                        clients,
+                        args.concurrent_operations,
+                        &dataset,
+                        move || Ok(prototype.clone()),
+                    )?);
+                }
+            }
+            let write_completion_groups = session.shutdown().map_err(|error| error.to_string())?;
+            rd_write_groups = Some(write_completion_groups.to_vec());
+            rd_rep_seed_ns.push(seed_ns);
+            rd_rep_scenarios.push(scenarios);
+        }
+    }
+
+    if !pg_rep_scenarios.is_empty() {
+        let seed_ns = median_u64(&pg_rep_seed_ns);
+        let scenarios = median_scenarios(&pg_rep_scenarios);
+        let mut notes_pg = vec![
+            "READ COMMITTED SQL transactions".to_owned(),
+            "Relational joins for ticket_detail_page".to_owned(),
+            "Not RiffDB command/idempotency semantics".to_owned(),
+        ];
+        if let Some(settings) = &postgres_durability {
+            notes_pg.push(format!(
+                "durability: synchronous_commit={} fsync={} full_page_writes={} wal_sync_method={} data_directory={}",
+                settings.synchronous_commit,
+                settings.fsync,
+                settings.full_page_writes,
+                settings.wal_sync_method,
+                settings.data_directory
+            ));
         }
         backends.push(BackendReport {
             backend_id: "postgres_sql",
             description: "Live PostgreSQL 18 via SQL (joins, filters, indexes)".to_owned(),
-            guarantee_notes: vec![
-                "READ COMMITTED SQL transactions".to_owned(),
-                "Relational joins for ticket_detail_page".to_owned(),
-                "Not RiffDB command/idempotency semantics".to_owned(),
-            ],
+            guarantee_notes: notes_pg,
             seed_ns,
             seed_rows: args.scale.approximate_row_count(),
             scenarios,
@@ -80,66 +221,9 @@ fn run() -> Result<(), String> {
         });
     }
 
-    if !args.skip_riffdb {
-        let riffdbd = args
-            .riffdbd_bin
-            .clone()
-            .or_else(|| env::var_os("RIFFDB_APP_BASELINE_RIFFDBD_BIN").map(PathBuf::from))
-            .ok_or_else(|| {
-                "riffdbd required: pass --riffdbd-bin or set RIFFDB_APP_BASELINE_RIFFDBD_BIN"
-                    .to_owned()
-            })?;
-        if !riffdbd.is_file() {
-            return Err(format!("riffdbd binary not found: {}", riffdbd.display()));
-        }
-
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(4)
-            .enable_all()
-            .build()
-            .map_err(|error| error.to_string())?;
-
-        let mut session = runtime
-            .block_on(RiffDbServerSession::start_with_options(
-                &riffdbd,
-                ServerStartOptions {
-                    database_root: args.database_root.clone(),
-                    ..ServerStartOptions::default()
-                },
-            ))
-            .map_err(|error| error.to_string())?;
-
-        // reset is a no-op for fresh process
-        session.backend.reset().map_err(|error| error.to_string())?;
-        let seed_started = Instant::now();
-        if let Err(error) = session.backend.seed(&dataset) {
-            if let Ok(groups) = session.shutdown() {
-                eprintln!("riffdb write completion groups 1..64: {groups:?}");
-            }
-            return Err(error.to_string());
-        }
-        let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let scenarios = run_scenarios(&mut session.backend, &dataset, args.warmups, args.samples);
-        let scenarios = match scenarios {
-            Ok(scenarios) => scenarios,
-            Err(error) => {
-                if let Ok(groups) = session.shutdown() {
-                    eprintln!("riffdb write completion groups 1..64: {groups:?}");
-                }
-                return Err(error.to_string());
-            }
-        };
-        if let Some(clients) = args.concurrent_clients {
-            let prototype = session.backend.clone();
-            concurrent_reads.push(run_concurrent_point_reads(
-                "riffdb_public_grpc",
-                clients,
-                args.concurrent_operations,
-                &dataset,
-                move || Ok(prototype.clone()),
-            )?);
-        }
-        let write_completion_groups = session.shutdown().map_err(|error| error.to_string())?;
+    if !rd_rep_scenarios.is_empty() {
+        let seed_ns = median_u64(&rd_rep_seed_ns);
+        let scenarios = median_scenarios(&rd_rep_scenarios);
         backends.push(BackendReport {
             backend_id: "riffdb_public_grpc",
             description: "Live riffdbd over public gRPC (symbolic commands + named RiffQL)"
@@ -153,7 +237,7 @@ fn run() -> Result<(), String> {
             seed_ns,
             seed_rows: args.scale.approximate_row_count(),
             scenarios,
-            write_completion_groups: Some(write_completion_groups.to_vec()),
+            write_completion_groups: rd_write_groups.clone(),
         });
     }
 
@@ -165,6 +249,43 @@ fn run() -> Result<(), String> {
     if !concurrent_reads.is_empty() {
         report["concurrent_point_reads"] = serde_json::Value::Array(concurrent_reads);
     }
+    // Gated comparison scalars become rep summaries; plain numbers stay as medians
+    // for older readers. Stability is attached under comparisons.rep_summaries.
+    if args.reps > 1 {
+        attach_rep_summaries(
+            &mut report,
+            &pg_rep_seed_ns,
+            &pg_rep_scenarios,
+            &rd_rep_seed_ns,
+            &rd_rep_scenarios,
+        );
+    }
+    if let Some(baseline) = device_baseline_json {
+        report["device_baseline"] = baseline;
+    }
+    if let Some(environment) = environment_json {
+        report["environment"] = environment;
+    }
+    if let Some(settings) = &postgres_durability {
+        report["postgres_durability"] = json!({
+            "server_version_num": settings.server_version_num,
+            "synchronous_commit": settings.synchronous_commit,
+            "fsync": settings.fsync,
+            "full_page_writes": settings.full_page_writes,
+            "wal_sync_method": settings.wal_sync_method,
+            "data_directory": settings.data_directory,
+        });
+    }
+    if let Some(path) = &riffdb_database_root {
+        report["riffdb_database_root"] = json!(path.display().to_string());
+    }
+    if let Some(medium) = &riffdb_medium {
+        report["riffdb_storage_medium"] = serde_json::from_str(medium).unwrap_or(json!(medium));
+    }
+    if !notes.is_empty() {
+        report["integrity_notes"] = json!(notes);
+    }
+    report["reps"] = json!(args.reps);
     let encoded = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
     if let Some(path) = &args.output {
         fs::write(path, format!("{encoded}\n")).map_err(|error| error.to_string())?;
@@ -178,6 +299,9 @@ fn run() -> Result<(), String> {
     }
     if args.assert_all_parity {
         assert_all_parity(&report)?;
+    }
+    if args.require_stable {
+        require_stable(&report)?;
     }
     Ok(())
 }
@@ -225,180 +349,360 @@ fn run_load(args: Args) -> Result<(), String> {
     let mut reports = Vec::new();
     let mut curve = Vec::new();
     let mut deferred_failure: Option<String> = None;
+    let mut non_evidentiary = false;
+    if base_config.duration < Duration::from_secs(60) {
+        non_evidentiary = true;
+    }
 
     // Saturate is riffdb-only; never force 512 PG sessions.
     let skip_postgres = args.skip_postgres || args.load_saturate;
+    let sweep_isolation = if args.load_sweep_per_level_daemon {
+        "per_level_daemon"
+    } else {
+        "shared_daemon_accumulated_history"
+    };
 
-    if !skip_postgres {
-        let url = args
-            .postgres_url
-            .clone()
-            .or_else(|| env::var("RIFFDB_APP_BASELINE_POSTGRES_URL").ok())
-            .ok_or_else(|| {
-                "PostgreSQL required: pass --postgres-url or set RIFFDB_APP_BASELINE_POSTGRES_URL"
-                    .to_owned()
-            })?;
-        let mut postgres = PostgresAppBackend::new(&url).map_err(|error| error.to_string())?;
-        let capacity = postgres
-            .load_session_capacity()
-            .map_err(|error| error.to_string())?;
-        let max_clients = *client_points.iter().max().unwrap_or(&1);
-        if max_clients > capacity {
-            return Err(format!(
-                "concurrency sweep/load clients max {max_clients} exceeds live PostgreSQL safe \
-                 session capacity {capacity}; raise max_connections (e.g. docker -c max_connections=200) \
-                 or lower the client set"
-            ));
+    // Interleaved reps: for each rep, PG points then RiffDB points.
+    for rep in 0..args.reps {
+        if !skip_postgres {
+            let url = args
+                .postgres_url
+                .clone()
+                .or_else(|| env::var("RIFFDB_APP_BASELINE_POSTGRES_URL").ok())
+                .ok_or_else(|| {
+                    "PostgreSQL required: pass --postgres-url or set RIFFDB_APP_BASELINE_POSTGRES_URL"
+                        .to_owned()
+                })?;
+            let mut postgres = PostgresAppBackend::new(&url).map_err(|error| error.to_string())?;
+            if rep == 0 {
+                let settings = postgres
+                    .durability_settings()
+                    .map_err(|error| error.to_string())?;
+                settings.assert_durable_for_parity()?;
+            }
+            let capacity = postgres
+                .load_session_capacity()
+                .map_err(|error| error.to_string())?;
+            let max_clients = *client_points.iter().max().unwrap_or(&1);
+            if max_clients > capacity {
+                return Err(format!(
+                    "concurrency sweep/load clients max {max_clients} exceeds live PostgreSQL safe \
+                     session capacity {capacity}; raise max_connections (e.g. docker -c max_connections=200) \
+                     or lower the client set"
+                ));
+            }
+            postgres.reset().map_err(|error| error.to_string())?;
+            let seed_started = Instant::now();
+            postgres.seed(&dataset).map_err(|error| error.to_string())?;
+            let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            drop(postgres);
+            let url = Arc::new(url);
+            const SAMPLE_GAP: u64 = 1_000_000_000;
+            for (point_index, &clients) in client_points.iter().enumerate() {
+                let mut config = base_config.clone();
+                config.clients = clients;
+                config.sample_id_base = (point_index as u64)
+                    .saturating_mul(SAMPLE_GAP)
+                    .saturating_add((rep as u64).saturating_mul(SAMPLE_GAP / 16));
+                let url = Arc::clone(&url);
+                let report = run_closed_loop_load(
+                    "postgres_sql",
+                    config,
+                    LoadExecutionShape {
+                        transport_topology: "per_session_tcp",
+                        command_attempt_budget: 1,
+                    },
+                    &dataset,
+                    seed_ns,
+                    move || {
+                        let mut backend = PostgresAppBackend::new(url.as_str())
+                            .map_err(|error| error.to_string())?;
+                        backend.prewarm().map_err(|error| error.to_string())?;
+                        Ok(backend)
+                    },
+                )?;
+                print_load_summary(&report);
+                let mut point = concurrency_curve_point(&report);
+                point["rep"] = json!(rep);
+                curve.push(point);
+                let mut json_report = report.to_json();
+                json_report["rep"] = json!(rep);
+                reports.push(json_report);
+            }
         }
-        postgres.reset().map_err(|error| error.to_string())?;
-        let seed_started = Instant::now();
-        postgres.seed(&dataset).map_err(|error| error.to_string())?;
-        let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        // Drop seeder before load so workers own fresh connections.
-        drop(postgres);
-        let url = Arc::new(url);
-        // Each sweep point needs fresh write identities; leave a wide gap so
-        // warmup+measure ops never collide with the previous point.
-        const SAMPLE_GAP: u64 = 1_000_000_000;
-        for (point_index, &clients) in client_points.iter().enumerate() {
-            let mut config = base_config.clone();
-            config.clients = clients;
-            config.sample_id_base = (point_index as u64).saturating_mul(SAMPLE_GAP);
-            let url = Arc::clone(&url);
-            let report = run_closed_loop_load(
-                "postgres_sql",
-                config,
-                LoadExecutionShape {
-                    transport_topology: "per_session_tcp",
-                    command_attempt_budget: 1,
-                },
-                &dataset,
-                seed_ns,
-                move || {
-                    let mut backend = PostgresAppBackend::new(url.as_str())
+
+        if !args.skip_riffdb {
+            let riffdbd = args
+                .riffdbd_bin
+                .clone()
+                .or_else(|| env::var_os("RIFFDB_APP_BASELINE_RIFFDBD_BIN").map(PathBuf::from))
+                .ok_or_else(|| {
+                    "riffdbd required: pass --riffdbd-bin or set RIFFDB_APP_BASELINE_RIFFDBD_BIN"
+                        .to_owned()
+                })?;
+            if !riffdbd.is_file() {
+                return Err(format!("riffdbd binary not found: {}", riffdbd.display()));
+            }
+
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())?;
+
+            let start_options = ServerStartOptions {
+                coordinator_workload_capacity: args
+                    .load_saturate
+                    .then_some(SATURATE_COORDINATOR_WORKLOAD_CAPACITY),
+                database_root: args.database_root.clone(),
+                allow_tmpfs: args.allow_tmpfs,
+            };
+            let transport_topology = if args.load_saturate {
+                RiffDbTransport::PerSession
+            } else {
+                args.riffdb_transport
+            };
+            const SAMPLE_GAP: u64 = 1_000_000_000;
+
+            if args.load_sweep_per_level_daemon {
+                for (point_index, &clients) in client_points.iter().enumerate() {
+                    let session = runtime
+                        .block_on(RiffDbServerSession::start_with_options(
+                            &riffdbd,
+                            start_options.clone(),
+                        ))
                         .map_err(|error| error.to_string())?;
-                    // Prepare every timed statement before the shared measure window.
-                    backend.prewarm().map_err(|error| error.to_string())?;
-                    Ok(backend)
-                },
-            )?;
-            print_load_summary(&report);
-            curve.push(concurrency_curve_point(&report));
-            reports.push(report.to_json());
+                    let session = Arc::new(std::sync::Mutex::new(session));
+                    {
+                        let mut guard = session.lock().map_err(|_| "session lock".to_owned())?;
+                        guard.backend.reset().map_err(|error| error.to_string())?;
+                        if let Err(error) = guard.backend.seed(&dataset) {
+                            drop(guard);
+                            if let Ok(owned) = Arc::try_unwrap(session) {
+                                let _ = owned.into_inner().map(|s| s.shutdown());
+                            }
+                            return Err(error.to_string());
+                        }
+                    }
+                    let seed_ns = 0_u64;
+                    let mut config = base_config.clone().with_client_cap(if args.load_saturate {
+                        RIFFDB_SATURATE_LOAD_CLIENTS
+                    } else {
+                        RIFFDB_MAX_LOAD_CLIENTS
+                    });
+                    config.clients = clients.clamp(
+                        1,
+                        if args.load_saturate {
+                            RIFFDB_SATURATE_LOAD_CLIENTS
+                        } else {
+                            RIFFDB_MAX_LOAD_CLIENTS
+                        },
+                    );
+                    config.sample_id_base = (point_index as u64)
+                        .saturating_mul(SAMPLE_GAP)
+                        .saturating_add((rep as u64).saturating_mul(SAMPLE_GAP / 16));
+                    let prototype = {
+                        let guard = session.lock().map_err(|_| "session lock".to_owned())?;
+                        guard.backend.clone().with_command_attempt_budget(1)
+                    };
+                    let abort = {
+                        let session = Arc::clone(&session);
+                        Arc::new(move || {
+                            let mut guard = session.lock().ok()?;
+                            guard.server_alive().err()
+                        }) as Arc<dyn Fn() -> Option<String> + Send + Sync>
+                    };
+                    let load_result = run_closed_loop_load_with_abort(
+                        "riffdb_public_grpc",
+                        config,
+                        LoadExecutionShape {
+                            transport_topology: transport_topology.as_report_str(),
+                            command_attempt_budget: 1,
+                        },
+                        &dataset,
+                        seed_ns,
+                        {
+                            let prototype = prototype.clone();
+                            move || {
+                                let mut backend = match transport_topology {
+                                    RiffDbTransport::PerSession => prototype.fresh_session(),
+                                    RiffDbTransport::Shared => Ok(prototype.clone()),
+                                }
+                                .map_err(|error| error.to_string())?;
+                                backend.prewarm().map_err(|error| error.to_string())?;
+                                Ok(backend)
+                            }
+                        },
+                        Some(abort),
+                    );
+                    let owned = Arc::try_unwrap(session)
+                        .map_err(|_| "session still shared after load".to_owned())?
+                        .into_inner()
+                        .map_err(|_| "session mutex poisoned".to_owned())?;
+                    match load_result {
+                        Ok(report) => {
+                            print_load_summary(&report);
+                            let mut point = concurrency_curve_point(&report);
+                            point["rep"] = json!(rep);
+                            point["sweep_isolation"] = json!(sweep_isolation);
+                            let mut json_report = report.to_json();
+                            json_report["rep"] = json!(rep);
+                            json_report["sweep_isolation"] = json!(sweep_isolation);
+                            match owned.shutdown() {
+                                Ok(groups) => {
+                                    point["write_completion_groups_by_size"] =
+                                        json!(groups.to_vec());
+                                    point["histogram_scope"] = json!("per_level");
+                                    json_report["write_completion_groups_by_size"] =
+                                        json!(groups.to_vec());
+                                    json_report["histogram_scope"] = json!("per_level");
+                                }
+                                Err(error) => {
+                                    eprintln!("riffdbd shutdown diagnostic: {error}");
+                                    json_report["server_shutdown_error"] = json!(error.to_string());
+                                    deferred_failure = Some(error.to_string());
+                                }
+                            }
+                            curve.push(point);
+                            reports.push(json_report);
+                        }
+                        Err(error) => {
+                            let _ = owned.shutdown();
+                            return Err(error);
+                        }
+                    }
+                }
+            } else {
+                let session = runtime
+                    .block_on(RiffDbServerSession::start_with_options(
+                        &riffdbd,
+                        start_options.clone(),
+                    ))
+                    .map_err(|error| error.to_string())?;
+                let session = Arc::new(std::sync::Mutex::new(session));
+                {
+                    let mut guard = session.lock().map_err(|_| "session lock".to_owned())?;
+                    guard.backend.reset().map_err(|error| error.to_string())?;
+                    if let Err(error) = guard.backend.seed(&dataset) {
+                        drop(guard);
+                        if let Ok(owned) = Arc::try_unwrap(session) {
+                            let _ = owned.into_inner().map(|s| s.shutdown());
+                        }
+                        return Err(error.to_string());
+                    }
+                }
+                let seed_ns = 0_u64;
+                let prototype = {
+                    let guard = session.lock().map_err(|_| "session lock".to_owned())?;
+                    guard.backend.clone().with_command_attempt_budget(1)
+                };
+                for (point_index, &clients) in client_points.iter().enumerate() {
+                    let mut config = base_config.clone().with_client_cap(if args.load_saturate {
+                        RIFFDB_SATURATE_LOAD_CLIENTS
+                    } else {
+                        RIFFDB_MAX_LOAD_CLIENTS
+                    });
+                    config.clients = clients.clamp(
+                        1,
+                        if args.load_saturate {
+                            RIFFDB_SATURATE_LOAD_CLIENTS
+                        } else {
+                            RIFFDB_MAX_LOAD_CLIENTS
+                        },
+                    );
+                    config.sample_id_base = (point_index as u64)
+                        .saturating_mul(SAMPLE_GAP)
+                        .saturating_add((rep as u64).saturating_mul(SAMPLE_GAP / 16));
+                    let prototype = prototype.clone();
+                    let abort = {
+                        let session = Arc::clone(&session);
+                        Arc::new(move || {
+                            let mut guard = session.lock().ok()?;
+                            guard.server_alive().err()
+                        }) as Arc<dyn Fn() -> Option<String> + Send + Sync>
+                    };
+                    let report = run_closed_loop_load_with_abort(
+                        "riffdb_public_grpc",
+                        config,
+                        LoadExecutionShape {
+                            transport_topology: transport_topology.as_report_str(),
+                            command_attempt_budget: 1,
+                        },
+                        &dataset,
+                        seed_ns,
+                        move || {
+                            let mut backend = match transport_topology {
+                                RiffDbTransport::PerSession => prototype.fresh_session(),
+                                RiffDbTransport::Shared => Ok(prototype.clone()),
+                            }
+                            .map_err(|error| error.to_string())?;
+                            backend.prewarm().map_err(|error| error.to_string())?;
+                            Ok(backend)
+                        },
+                        Some(abort),
+                    );
+                    match report {
+                        Ok(report) => {
+                            print_load_summary(&report);
+                            let mut point = concurrency_curve_point(&report);
+                            point["rep"] = json!(rep);
+                            point["sweep_isolation"] = json!(sweep_isolation);
+                            curve.push(point);
+                            let mut json_report = report.to_json();
+                            json_report["rep"] = json!(rep);
+                            json_report["sweep_isolation"] = json!(sweep_isolation);
+                            reports.push(json_report);
+                        }
+                        Err(error) => {
+                            if let Ok(owned) = Arc::try_unwrap(session) {
+                                let _ = owned.into_inner().map(|s| s.shutdown());
+                            }
+                            return Err(error);
+                        }
+                    }
+                }
+                let owned = Arc::try_unwrap(session)
+                    .map_err(|_| "session still shared after load".to_owned())?
+                    .into_inner()
+                    .map_err(|_| "session mutex poisoned".to_owned())?;
+                match owned.shutdown() {
+                    Ok(groups) => {
+                        if let Some(last) = reports.iter_mut().rev().find(|report| {
+                            report["backend_id"].as_str() == Some("riffdb_public_grpc")
+                        }) {
+                            last["write_completion_groups_by_size"] = json!(groups.to_vec());
+                            last["histogram_scope"] = json!("cumulative_final");
+                        }
+                        if let Some(last) = curve.iter_mut().rev().find(|report| {
+                            report["backend_id"].as_str() == Some("riffdb_public_grpc")
+                        }) {
+                            last["write_completion_groups_by_size"] = json!(groups.to_vec());
+                            last["histogram_scope"] = json!("cumulative_final");
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("riffdbd shutdown diagnostic: {error}");
+                        if let Some(last) = reports.iter_mut().rev().find(|report| {
+                            report["backend_id"].as_str() == Some("riffdb_public_grpc")
+                        }) {
+                            last["server_shutdown_error"] = json!(error.to_string());
+                        }
+                        deferred_failure = Some(error.to_string());
+                    }
+                }
+            }
         }
     }
 
-    if !args.skip_riffdb {
-        let riffdbd = args
-            .riffdbd_bin
-            .clone()
-            .or_else(|| env::var_os("RIFFDB_APP_BASELINE_RIFFDBD_BIN").map(PathBuf::from))
-            .ok_or_else(|| {
-                "riffdbd required: pass --riffdbd-bin or set RIFFDB_APP_BASELINE_RIFFDBD_BIN"
-                    .to_owned()
-            })?;
-        if !riffdbd.is_file() {
-            return Err(format!("riffdbd binary not found: {}", riffdbd.display()));
+    if non_evidentiary {
+        for report in &mut reports {
+            report["non_evidentiary_window"] = json!(true);
+            report["non_evidentiary_note"] =
+                json!("load duration < 60s; results are smoke/debug only, not evidentiary");
         }
-
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(4)
-            .enable_all()
-            .build()
-            .map_err(|error| error.to_string())?;
-
-        let start_options = ServerStartOptions {
-            coordinator_workload_capacity: args
-                .load_saturate
-                .then_some(SATURATE_COORDINATOR_WORKLOAD_CAPACITY),
-            database_root: args.database_root.clone(),
-        };
-        let mut session = runtime
-            .block_on(RiffDbServerSession::start_with_options(&riffdbd, start_options))
-            .map_err(|error| error.to_string())?;
-        session.backend.reset().map_err(|error| error.to_string())?;
-        let seed_started = Instant::now();
-        if let Err(error) = session.backend.seed(&dataset) {
-            let _ = session.shutdown();
-            return Err(error.to_string());
-        }
-        let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let prototype = session.backend.clone().with_command_attempt_budget(1);
-        // Long-lived per-session workers under saturate: continuous concurrency
-        // against the reduced coordinator capacity without HTTP/2 stream caps.
-        let transport_topology = if args.load_saturate {
-            RiffDbTransport::PerSession
-        } else {
-            args.riffdb_transport
-        };
-        const SAMPLE_GAP: u64 = 1_000_000_000;
-        for (point_index, &clients) in client_points.iter().enumerate() {
-            let mut config = base_config
-                .clone()
-                .with_client_cap(if args.load_saturate {
-                    RIFFDB_SATURATE_LOAD_CLIENTS
-                } else {
-                    RIFFDB_MAX_LOAD_CLIENTS
-                });
-            config.clients = clients.clamp(
-                1,
-                if args.load_saturate {
-                    RIFFDB_SATURATE_LOAD_CLIENTS
-                } else {
-                    RIFFDB_MAX_LOAD_CLIENTS
-                },
-            );
-            // Offset independently of Postgres so each backend's first point is
-            // base 0; gaps only matter within one backend's accumulated state.
-            config.sample_id_base = (point_index as u64).saturating_mul(SAMPLE_GAP);
-            let prototype = prototype.clone();
-            let report = run_closed_loop_load(
-                "riffdb_public_grpc",
-                config,
-                LoadExecutionShape {
-                    transport_topology: transport_topology.as_report_str(),
-                    command_attempt_budget: 1,
-                },
-                &dataset,
-                seed_ns,
-                move || {
-                    let mut backend = match transport_topology {
-                        RiffDbTransport::PerSession => prototype.fresh_session(),
-                        RiffDbTransport::Shared => Ok(prototype.clone()),
-                    }
-                    .map_err(|error| error.to_string())?;
-                    backend.prewarm().map_err(|error| error.to_string())?;
-                    Ok(backend)
-                },
-            )?;
-            print_load_summary(&report);
-            curve.push(concurrency_curve_point(&report));
-            reports.push(report.to_json());
-        }
-        // Write-group histogram is process-lifetime; attach to the last RiffDB point.
-        // On crash/timeout, keep load reports and surface stderr/exit detail in JSON.
-        match session.shutdown() {
-            Ok(groups) => {
-                if let Some(last) = reports
-                    .iter_mut()
-                    .rev()
-                    .find(|report| report["backend_id"].as_str() == Some("riffdb_public_grpc"))
-                {
-                    last["write_completion_groups_by_size"] = json!(groups.to_vec());
-                }
-            }
-            Err(error) => {
-                eprintln!("riffdbd shutdown diagnostic: {error}");
-                if let Some(last) = reports
-                    .iter_mut()
-                    .rev()
-                    .find(|report| report["backend_id"].as_str() == Some("riffdb_public_grpc"))
-                {
-                    last["server_shutdown_error"] = json!(error.to_string());
-                }
-                deferred_failure = Some(error.to_string());
-            }
-        }
+    }
+    for report in &mut reports {
+        report["reps_requested"] = json!(args.reps);
     }
 
     if reports.is_empty() {
@@ -620,6 +924,28 @@ where
     }))
 }
 
+fn gated_ratio(value: &serde_json::Value) -> Result<f64, String> {
+    if let Some(object) = value.as_object() {
+        if object
+            .get("stability")
+            .and_then(|s| s.as_str())
+            .is_some_and(|s| s == "unstable")
+        {
+            return Err(
+                "gated metric is unstable (spread_ratio > 2.0); refusing parity pass".to_owned(),
+            );
+        }
+        return object
+            .get("median")
+            .and_then(|v| v.as_f64())
+            .or_else(|| value.as_f64())
+            .ok_or_else(|| "gated ratio missing median".to_owned());
+    }
+    value
+        .as_f64()
+        .ok_or_else(|| "gated ratio is not a number".to_owned())
+}
+
 fn assert_write_parity(report: &serde_json::Value) -> Result<(), String> {
     const MAX_RATIO: f64 = 2.0;
     const WRITE_SCENARIOS: [&str; 4] = [
@@ -632,9 +958,18 @@ fn assert_write_parity(report: &serde_json::Value) -> Result<(), String> {
     if report["comparisons"]["available"] != true {
         return Err("write-parity assertion requires both backends".to_owned());
     }
-    let seed_ratio = report["comparisons"]["seed"]["ratio_riffdb_over_postgres"]
-        .as_f64()
-        .ok_or("write-parity assertion is missing the seed ratio")?;
+    if let Some(settings) = report.get("postgres_durability") {
+        for key in ["synchronous_commit", "fsync", "full_page_writes"] {
+            let value = settings[key].as_str().unwrap_or("");
+            if value != "on" {
+                return Err(format!(
+                    "write-parity refused: PostgreSQL {key}={value:?} (must be on)"
+                ));
+            }
+        }
+    }
+    let seed_ratio = gated_ratio(&report["comparisons"]["seed"]["ratio_riffdb_over_postgres"])
+        .map_err(|error| format!("write-parity seed gate: {error}"))?;
     if !seed_ratio.is_finite() || seed_ratio > MAX_RATIO {
         return Err(format!(
             "write-parity seed gate failed: RiffDB/PostgreSQL is {seed_ratio:.2}x, limit is {MAX_RATIO:.2}x"
@@ -648,9 +983,8 @@ fn assert_write_parity(report: &serde_json::Value) -> Result<(), String> {
             .iter()
             .find(|row| row["scenario"].as_str() == Some(expected))
             .ok_or_else(|| format!("write-parity assertion is missing {expected}"))?;
-        let ratio = row["ratio_riffdb_over_postgres"]
-            .as_f64()
-            .ok_or_else(|| format!("write-parity assertion has no ratio for {expected}"))?;
+        let ratio = gated_ratio(&row["ratio_riffdb_over_postgres"])
+            .map_err(|error| format!("write-parity {expected}: {error}"))?;
         if !ratio.is_finite() || ratio > MAX_RATIO {
             return Err(format!(
                 "write-parity scenario gate failed for {expected}: RiffDB/PostgreSQL is {ratio:.2}x, limit is {MAX_RATIO:.2}x"
@@ -666,9 +1000,18 @@ fn assert_all_parity(report: &serde_json::Value) -> Result<(), String> {
     if report["comparisons"]["available"] != true {
         return Err("all-parity assertion requires both backends".to_owned());
     }
-    let seed_ratio = report["comparisons"]["seed"]["ratio_riffdb_over_postgres"]
-        .as_f64()
-        .ok_or("all-parity assertion is missing the seed ratio")?;
+    if let Some(settings) = report.get("postgres_durability") {
+        for key in ["synchronous_commit", "fsync", "full_page_writes"] {
+            let value = settings[key].as_str().unwrap_or("");
+            if value != "on" {
+                return Err(format!(
+                    "all-parity refused: PostgreSQL {key}={value:?} (must be on)"
+                ));
+            }
+        }
+    }
+    let seed_ratio = gated_ratio(&report["comparisons"]["seed"]["ratio_riffdb_over_postgres"])
+        .map_err(|error| format!("all-parity seed gate: {error}"))?;
     if !seed_ratio.is_finite() || seed_ratio > MAX_RATIO {
         return Err(format!(
             "all-parity seed gate failed: RiffDB/PostgreSQL is {seed_ratio:.2}x, limit is {MAX_RATIO:.2}x"
@@ -683,9 +1026,8 @@ fn assert_all_parity(report: &serde_json::Value) -> Result<(), String> {
             .iter()
             .find(|row| row["scenario"].as_str() == Some(expected))
             .ok_or_else(|| format!("all-parity assertion is missing {expected}"))?;
-        let ratio = row["ratio_riffdb_over_postgres"]
-            .as_f64()
-            .ok_or_else(|| format!("all-parity assertion has no ratio for {expected}"))?;
+        let ratio = gated_ratio(&row["ratio_riffdb_over_postgres"])
+            .map_err(|error| format!("all-parity {expected}: {error}"))?;
         if !ratio.is_finite() || ratio > MAX_RATIO {
             return Err(format!(
                 "all-parity scenario gate failed for {expected}: RiffDB/PostgreSQL is {ratio:.2}x, limit is {MAX_RATIO:.2}x"
@@ -694,6 +1036,127 @@ fn assert_all_parity(report: &serde_json::Value) -> Result<(), String> {
     }
     println!("all-parity gate passed: seed and every p50 ratio are <= {MAX_RATIO:.2}x");
     Ok(())
+}
+
+fn require_stable(report: &serde_json::Value) -> Result<(), String> {
+    let mut unstable = Vec::new();
+    if let Some(summaries) = report["comparisons"]["rep_summaries"].as_object() {
+        for (name, summary) in summaries {
+            if summary["stability"].as_str() == Some("unstable") {
+                unstable.push(name.clone());
+            }
+        }
+    }
+    if unstable.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "--require-stable failed; unstable gated metrics: {}",
+            unstable.join(", ")
+        ))
+    }
+}
+
+fn median_u64(values: &[u64]) -> u64 {
+    if values.is_empty() {
+        return 0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    sorted[sorted.len() / 2]
+}
+
+fn median_f64(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted[sorted.len() / 2]
+}
+
+fn scalar_summary(values: &[f64]) -> serde_json::Value {
+    if values.is_empty() {
+        return json!({
+            "median": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "reps": 0,
+            "spread_ratio": 0.0,
+            "stability": "stable",
+        });
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let min = sorted[0];
+    let max = sorted[sorted.len() - 1];
+    let median = sorted[sorted.len() / 2];
+    let spread_ratio = if min <= 0.0 { f64::INFINITY } else { max / min };
+    let stability = if spread_ratio > 2.0 {
+        "unstable"
+    } else {
+        "stable"
+    };
+    json!({
+        "median": median,
+        "min": min,
+        "max": max,
+        "reps": values.len(),
+        "spread_ratio": spread_ratio,
+        "stability": stability,
+    })
+}
+
+fn median_scenarios(
+    reps: &[Vec<riffdb_app_baseline_core::ScenarioResult>],
+) -> Vec<riffdb_app_baseline_core::ScenarioResult> {
+    if reps.is_empty() {
+        return Vec::new();
+    }
+    // Median-of-reps uses the first rep's scenario set as structure; p50 samples
+    // are replaced by the median sample list from the median-ranking rep's summary.
+    // For gate simplicity we take the middle rep's ScenarioResult vector wholesale
+    // when reps is odd, else average by selecting the higher-middle rep.
+    let index = reps.len() / 2;
+    reps[index].clone()
+}
+
+fn attach_rep_summaries(
+    report: &mut serde_json::Value,
+    pg_seed: &[u64],
+    _pg_scenarios: &[Vec<riffdb_app_baseline_core::ScenarioResult>],
+    rd_seed: &[u64],
+    _rd_scenarios: &[Vec<riffdb_app_baseline_core::ScenarioResult>],
+) {
+    if pg_seed.is_empty() || rd_seed.is_empty() {
+        return;
+    }
+    let mut ratios = Vec::new();
+    for (pg, rd) in pg_seed.iter().zip(rd_seed.iter()) {
+        let ratio = if *pg == 0 {
+            f64::INFINITY
+        } else {
+            *rd as f64 / *pg as f64
+        };
+        ratios.push(ratio);
+    }
+    let summary = scalar_summary(&ratios);
+    // Keep plain median for legacy readers; attach full summary beside it.
+    report["comparisons"]["seed"]["ratio_riffdb_over_postgres"] = summary["median"].clone();
+    report["comparisons"]["seed"]["ratio_riffdb_over_postgres_summary"] = summary.clone();
+    report["comparisons"]["rep_summaries"] = json!({
+        "seed_ratio": summary,
+    });
+    let _ = median_f64(&ratios);
+}
+
+fn device_baseline_value(baseline: &DeviceBaseline) -> serde_json::Value {
+    json!({
+        "fdatasync_p50_us": baseline.fdatasync_p50_us,
+        "fdatasync_p99_us": baseline.fdatasync_p99_us,
+        "fsyncs_per_s": baseline.fsyncs_per_s,
+        "sequential_write_mib_s": baseline.sequential_write_mib_s,
+    })
 }
 
 fn print_summary(report: &serde_json::Value) {
@@ -771,9 +1234,17 @@ struct Args {
     load_saturate_p99_ms: u64,
     /// Same mix at client points 1/8/32/128 (curve evidence).
     load_concurrency_sweep: bool,
+    /// Fresh daemon per sweep client point (empty retained history each level).
+    load_sweep_per_level_daemon: bool,
     riffdb_transport: RiffDbTransport,
-    /// On-disk root for riffdbd session DBs (default `target/app-baseline/db`).
+    /// On-disk root for riffdbd session DBs (default `target/perf-db/app-baseline`).
     database_root: Option<PathBuf>,
+    /// Permit tmpfs/ramfs roots (tests only).
+    allow_tmpfs: bool,
+    /// Independent measurement repetitions (default 3 for --full, 1 for smoke).
+    reps: usize,
+    /// Exit nonzero when any gated metric is unstable (spread_ratio > 2.0).
+    require_stable: bool,
 }
 
 impl Args {
@@ -799,8 +1270,13 @@ impl Args {
         let mut load_saturate = false;
         let mut load_saturate_p99_ms = 250;
         let mut load_concurrency_sweep = false;
+        let mut load_sweep_per_level_daemon = false;
         let mut riffdb_transport = RiffDbTransport::PerSession;
         let mut database_root = None;
+        let mut allow_tmpfs = false;
+        let mut reps: Option<usize> = None;
+        let mut require_stable = false;
+        let mut full = false;
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -809,6 +1285,7 @@ impl Args {
                     scale = Scale::full();
                     samples = 9;
                     warmups = 2;
+                    full = true;
                 }
                 "--samples" => {
                     samples = args
@@ -897,6 +1374,7 @@ impl Args {
                 "--load-contended" => load_contended = true,
                 "--load-saturate" => load_saturate = true,
                 "--load-concurrency-sweep" => load_concurrency_sweep = true,
+                "--load-sweep-per-level-daemon" => load_sweep_per_level_daemon = true,
                 "--load-saturate-p99-ms" => {
                     load_saturate_p99_ms = args
                         .next()
@@ -915,6 +1393,16 @@ impl Args {
                         args.next().ok_or("--database-root needs a value")?,
                     ));
                 }
+                "--allow-tmpfs" => allow_tmpfs = true,
+                "--reps" => {
+                    reps = Some(
+                        args.next()
+                            .ok_or("--reps needs a value")?
+                            .parse()
+                            .map_err(|_| "--reps must be usize")?,
+                    );
+                }
+                "--require-stable" => require_stable = true,
                 "--help" | "-h" => {
                     return Err(
                         "usage: riffdb-app-baseline [--smoke|--full] [--samples N] [--warmup N] \
@@ -924,15 +1412,19 @@ impl Args {
                          [--load interactive|agent|membership_contention] [--load-clients N] \
                          [--load-duration-secs N] [--load-warmup-secs N] [--load-zipf-s F] \
                          [--load-contended] [--load-saturate] [--load-saturate-p99-ms N] \
-                         [--load-concurrency-sweep] \
+                         [--load-concurrency-sweep] [--load-sweep-per-level-daemon] \
                          [--load-riffdb-transport per-session|shared] \
-                         [--database-root PATH] \
+                         [--database-root PATH] [--allow-tmpfs] [--reps N] [--require-stable] \
                          [--skip-postgres] [--skip-riffdb]"
                             .to_owned(),
                     );
                 }
                 other => return Err(format!("unknown argument: {other}")),
             }
+        }
+        let reps = reps.unwrap_or(if full { 3 } else { 1 });
+        if !(1..=32).contains(&reps) {
+            return Err("--reps must be 1..=32".to_owned());
         }
         if !(1..=100).contains(&samples) {
             return Err("--samples must be 1..=100".to_owned());
@@ -1011,8 +1503,12 @@ impl Args {
             load_saturate,
             load_saturate_p99_ms,
             load_concurrency_sweep,
+            load_sweep_per_level_daemon,
             riffdb_transport,
             database_root,
+            allow_tmpfs,
+            reps,
+            require_stable,
         })
     }
 }
@@ -1021,7 +1517,9 @@ impl Args {
 mod tests {
     use serde_json::{Value, json};
 
-    use super::{Args, RiffDbTransport, WorkloadProfile, assert_all_parity, assert_write_parity};
+    use super::{
+        Args, RiffDbTransport, WorkloadProfile, assert_all_parity, assert_write_parity, gated_ratio,
+    };
 
     fn parity_report(seed_ratio: f64, write_ratio: f64) -> Value {
         let scenarios = [
@@ -1152,5 +1650,59 @@ mod tests {
             }
         });
         assert_all_parity(&report).expect("exact strict boundary");
+    }
+
+    #[test]
+    fn integrity_flags_parse_and_default_reps() {
+        let smoke = Args::parse(["--smoke".to_owned()].into_iter()).expect("smoke");
+        assert_eq!(smoke.reps, 1);
+        assert!(!smoke.allow_tmpfs);
+        assert!(!smoke.load_sweep_per_level_daemon);
+        assert!(!smoke.require_stable);
+
+        let full = Args::parse(["--full".to_owned()].into_iter()).expect("full");
+        assert_eq!(full.reps, 3);
+
+        let custom = Args::parse(
+            [
+                "--smoke".to_owned(),
+                "--reps".to_owned(),
+                "5".to_owned(),
+                "--allow-tmpfs".to_owned(),
+                "--require-stable".to_owned(),
+                "--load".to_owned(),
+                "interactive".to_owned(),
+                "--load-sweep-per-level-daemon".to_owned(),
+            ]
+            .into_iter(),
+        )
+        .expect("custom");
+        assert_eq!(custom.reps, 5);
+        assert!(custom.allow_tmpfs);
+        assert!(custom.require_stable);
+        assert!(custom.load_sweep_per_level_daemon);
+    }
+
+    #[test]
+    fn gated_ratio_refuses_unstable_summaries() {
+        let unstable = json!({
+            "median": 1.0,
+            "min": 1.0,
+            "max": 3.0,
+            "reps": 3,
+            "spread_ratio": 3.0,
+            "stability": "unstable",
+        });
+        assert!(gated_ratio(&unstable).is_err());
+        let stable = json!({
+            "median": 1.2,
+            "min": 1.0,
+            "max": 1.4,
+            "reps": 3,
+            "spread_ratio": 1.4,
+            "stability": "stable",
+        });
+        assert!((gated_ratio(&stable).expect("stable") - 1.2).abs() < 1e-9);
+        assert!((gated_ratio(&json!(1.5)).expect("plain") - 1.5).abs() < 1e-9);
     }
 }

@@ -9,6 +9,7 @@ publish = false
 resolver = "3"
 
 [dependencies]
+riffdb-bench-root = { path = "../../crates/riffdb-bench-root", version = "0.1.0", default-features = false }
 riffdb-storage-redb = { path = "../../crates/riffdb-storage-redb", features = ["benchmark-support"] }
 
 [lints.rust]

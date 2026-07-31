@@ -11,9 +11,8 @@ use crate::{
     EncodedPageItem, EventReferenceV2, IndexMigrationRowEvidence, IndexMigrationSemanticRow,
     LegacyStoredIndexEpochV1, PartitionIndexTarget, StoredCommitRecordV1, StoredDurableEventV1,
     StoredEntityRecordV1, StoredEventRouteV1, StoredExecutionFailedV1, StoredIndexEntryV1,
-    StoredIndexEntryV2,
-    StoredIndexEpochV1, StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
-    StoredReadDependenciesV1, StoredReadDependencyV1,
+    StoredIndexEntryV2, StoredIndexEpochV1, StoredOutcomeV1, StoredPendingAdmissionV1,
+    StoredProvenanceRecordV1, StoredReadDependenciesV1, StoredReadDependencyV1,
 };
 
 use super::{

@@ -1701,6 +1701,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "riffdb-bench-root"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+]
+
+[[package]]
 name = "riffdb-catalog"
 version = "0.1.0"
 dependencies = [

@@ -143,14 +143,25 @@ else
     report="${output:-$repo_root/$out_dir/report-v1.json}"
 fi
 
+# Both engines place durable state under the same real-disk tree by default.
+if [[ -z "$database_root" ]]; then
+    database_root="$repo_root/target/perf-db/app-baseline"
+fi
+mkdir -p "$database_root"
+postgres_database_root="$database_root/postgres"
+mkdir -p "$postgres_database_root"
+
 postgres_container="riffdb-app-baseline-$$"
 postgres_started=0
 cleanup() {
     if ((postgres_started)); then
+        docker exec "$postgres_container" \
+            chmod -R a+rwx /var/lib/postgresql >/dev/null 2>&1 || true
         docker rm -f "$postgres_container" >/dev/null 2>&1 || true
+        rm -rf "$postgres_database_root" || true
     fi
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 extra_args=()
 if [[ "$mode" == full ]]; then
@@ -172,7 +183,7 @@ fi
 [[ -n "$load_saturate_p99_ms" ]] && extra_args+=(--load-saturate-p99-ms "$load_saturate_p99_ms")
 ((load_concurrency_sweep)) && extra_args+=(--load-concurrency-sweep)
 [[ -n "$load_riffdb_transport" ]] && extra_args+=(--load-riffdb-transport "$load_riffdb_transport")
-[[ -n "$database_root" ]] && extra_args+=(--database-root "$database_root")
+extra_args+=(--database-root "$database_root")
 ((skip_postgres)) && extra_args+=(--skip-postgres)
 ((skip_riffdb)) && extra_args+=(--skip-riffdb)
 ((assert_write_parity)) && extra_args+=(--assert-write-parity)
@@ -192,10 +203,12 @@ if ((skip_postgres == 0)); then
         if ((load_concurrency_sweep)); then
             pg_args+=(-c max_connections=200)
         fi
+        # Bind-mount PG data onto the same real-disk tree as RiffDB.
         docker run -d --rm --name "$postgres_container" \
             -e POSTGRES_USER=riffdb \
             -e POSTGRES_PASSWORD=riffdb \
             -e POSTGRES_DB=riffdb_app_baseline \
+            --mount "type=bind,source=$postgres_database_root,target=/var/lib/postgresql" \
             -p 127.0.0.1::5432 \
             "$image" "${pg_args[@]}" >/dev/null
         postgres_started=1

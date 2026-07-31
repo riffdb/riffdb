@@ -319,14 +319,17 @@ impl LoadConfig {
         }
     }
 
-    /// Fuller defaults for iterative optimization.
+    /// Fuller defaults for iterative optimization / evidentiary windows.
+    ///
+    /// Measure 90 s with 15 s warmup so published numbers are not noise from a
+    /// short burst. Smoke profiles stay short via [`Self::smoke`].
     #[must_use]
     pub fn standard(profile: WorkloadProfile, clients: usize) -> Self {
         Self {
             profile,
             clients: clients.clamp(1, 128),
-            duration: Duration::from_secs(30),
-            warmup: Duration::from_secs(5),
+            duration: Duration::from_secs(90),
+            warmup: Duration::from_secs(15),
             zipf_s: 1.0,
             rng_seed: 0x000A_11CE_BEEF,
             contended: false,
@@ -577,6 +580,37 @@ where
     B::Error: Send + 'static,
     Factory: Fn() -> Result<B, String> + Send + Sync + 'static,
 {
+    run_closed_loop_load_with_abort(
+        backend_id,
+        config,
+        execution_shape,
+        dataset,
+        seed_ns,
+        factory,
+        None,
+    )
+}
+
+/// Like [`run_closed_loop_load`] with an optional mid-load abort hook.
+///
+/// The coordinator sleeps in ≤250 ms slices and polls `abort`. When the hook
+/// returns `Some(reason)`, workers are stopped and the function returns
+/// `Err("backend died mid-load: {reason}")` so a dead peer cannot burn the
+/// full measurement window.
+pub fn run_closed_loop_load_with_abort<B, Factory>(
+    backend_id: &'static str,
+    config: LoadConfig,
+    execution_shape: LoadExecutionShape,
+    dataset: &SeedDataset,
+    seed_ns: u64,
+    factory: Factory,
+    abort: Option<std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+) -> Result<LoadReport, String>
+where
+    B: AppBackend + Send + 'static,
+    B::Error: Send + 'static,
+    Factory: Fn() -> Result<B, String> + Send + Sync + 'static,
+{
     let client_ceiling = if config.saturate {
         RIFFDB_SATURATE_LOAD_CLIENTS
     } else {
@@ -779,10 +813,10 @@ where
     go.wait();
     // Shared warmup: all workers already issuing discarded traffic.
     if !config.warmup.is_zero() {
-        thread::sleep(config.warmup);
+        sleep_with_abort(config.warmup, abort.as_ref())?;
     }
     measuring.store(true, Ordering::Release);
-    thread::sleep(config.duration);
+    sleep_with_abort(config.duration, abort.as_ref())?;
     stop.store(true, Ordering::Release);
 
     let mut merged: Vec<(LoadOp, OpStats)> = LoadOp::all()
@@ -1236,27 +1270,110 @@ pub fn concurrency_curve_point(report: &LoadReport) -> serde_json::Value {
     })
 }
 
+/// Coordinator sleep sliced at 250 ms so a dead peer aborts mid-window.
+fn sleep_with_abort(
+    total: Duration,
+    abort: Option<&std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+) -> Result<(), String> {
+    const SLICE: Duration = Duration::from_millis(250);
+    let deadline = Instant::now() + total;
+    loop {
+        if let Some(hook) = abort {
+            if let Some(reason) = hook() {
+                return Err(format!("backend died mid-load: {reason}"));
+            }
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(());
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        thread::sleep(remaining.min(SLICE));
+    }
+}
+
+/// Modal group size and share of commands in groups larger than one.
+#[must_use]
+pub fn write_group_summary(groups: &[u64]) -> (Option<usize>, f64) {
+    let mut total = 0_u64;
+    let mut multi = 0_u64;
+    let mut modal_size = None;
+    let mut modal_count = 0_u64;
+    for (index, count) in groups.iter().enumerate() {
+        let size = index + 1;
+        total = total.saturating_add(*count);
+        if size > 1 {
+            multi = multi.saturating_add(*count);
+        }
+        if *count > modal_count {
+            modal_count = *count;
+            modal_size = Some(size);
+        }
+    }
+    let grouped_fraction = if total == 0 {
+        0.0
+    } else {
+        multi as f64 / total as f64
+    };
+    (modal_size, grouped_fraction)
+}
+
 /// Prints a concurrency-sweep table (throughput and p50 vs client count).
 pub fn print_concurrency_sweep_summary(points: &[serde_json::Value]) {
     if points.is_empty() {
         return;
     }
     println!("\n== concurrency sweep curve ==");
-    println!(
-        "{:<22} {:>8} {:>12} {:>10} {:>10} {:>12}",
-        "backend", "clients", "ops/s", "p50_ms", "p99_ms", "write_p50_ms"
-    );
+    let has_groups = points.iter().any(|p| {
+        p.get("write_completion_groups_by_size")
+            .and_then(|v| v.as_array())
+            .is_some()
+    });
+    if has_groups {
+        println!(
+            "{:<22} {:>8} {:>12} {:>10} {:>10} {:>12} {:>8} {:>10}",
+            "backend",
+            "clients",
+            "ops/s",
+            "p50_ms",
+            "p99_ms",
+            "write_p50_ms",
+            "modal_g",
+            "grp_frac"
+        );
+    } else {
+        println!(
+            "{:<22} {:>8} {:>12} {:>10} {:>10} {:>12}",
+            "backend", "clients", "ops/s", "p50_ms", "p99_ms", "write_p50_ms"
+        );
+    }
     for point in points {
         let backend = point["backend_id"].as_str().unwrap_or("?");
         let clients = point["clients"].as_u64().unwrap_or(0);
         let thr = point["throughput_ops_s"].as_u64().unwrap_or(0);
         let p50 = point["aggregate_p50_ns"].as_u64().unwrap_or(0) as f64 / 1e6;
         let p99 = point["aggregate_p99_ns"].as_u64().unwrap_or(0) as f64 / 1e6;
-        let write_p50 = point["create_comment_p50_ns"]
-            .as_u64()
-            .unwrap_or(0) as f64
-            / 1e6;
-        println!("{backend:<22} {clients:>8} {thr:>12} {p50:>10.3} {p99:>10.3} {write_p50:>12.3}");
+        let write_p50 = point["create_comment_p50_ns"].as_u64().unwrap_or(0) as f64 / 1e6;
+        if has_groups {
+            let (modal, frac) = point
+                .get("write_completion_groups_by_size")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    let groups: Vec<u64> = arr.iter().filter_map(|x| x.as_u64()).collect();
+                    write_group_summary(&groups)
+                })
+                .unwrap_or((None, 0.0));
+            let modal_s = modal
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| "-".to_owned());
+            println!(
+                "{backend:<22} {clients:>8} {thr:>12} {p50:>10.3} {p99:>10.3} {write_p50:>12.3} {modal_s:>8} {frac:>10.3}"
+            );
+        } else {
+            println!(
+                "{backend:<22} {clients:>8} {thr:>12} {p50:>10.3} {p99:>10.3} {write_p50:>12.3}"
+            );
+        }
     }
     // Relative thr vs each backend's 1-client point when present.
     for backend in ["postgres_sql", "riffdb_public_grpc"] {
@@ -1370,5 +1487,51 @@ mod tests {
         let (replay, replayed) = select_comment_input(&probes, ticket, 43, true, Some(&input));
         assert!(replayed);
         assert_eq!(replay, input);
+    }
+
+    #[test]
+    fn abort_hook_interrupts_sliced_sleep_within_two_seconds() {
+        let started = Instant::now();
+        let abort: std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync> =
+            std::sync::Arc::new({
+                let start = Instant::now();
+                move || {
+                    if start.elapsed() >= Duration::from_millis(100) {
+                        Some("unit-test-kill".to_owned())
+                    } else {
+                        None
+                    }
+                }
+            });
+        let result = sleep_with_abort(Duration::from_secs(30), Some(&abort));
+        assert!(result.is_err(), "expected abort error, got {result:?}");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("backend died mid-load"),
+            "unexpected message: {err}"
+        );
+        assert!(
+            started.elapsed() <= Duration::from_secs(2),
+            "abort took too long: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn standard_load_window_is_evidentiary() {
+        let config = LoadConfig::standard(WorkloadProfile::Interactive, 8);
+        assert_eq!(config.duration, Duration::from_secs(90));
+        assert_eq!(config.warmup, Duration::from_secs(15));
+    }
+
+    #[test]
+    fn write_group_summary_reports_modal_and_grouped_fraction() {
+        let mut groups = [0_u64; 64];
+        groups[0] = 10; // size 1
+        groups[3] = 30; // size 4 modal
+        groups[7] = 10; // size 8
+        let (modal, frac) = write_group_summary(&groups);
+        assert_eq!(modal, Some(4));
+        assert!((frac - 0.8).abs() < 1e-9);
     }
 }
