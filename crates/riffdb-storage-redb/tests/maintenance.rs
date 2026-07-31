@@ -910,6 +910,109 @@ fn pre_fence_receipt_decode_round_trips_without_published_incarnation() {
 }
 
 #[test]
+fn resume_after_between_receipt_and_stamp_converges_to_receipt_value() {
+    // W4: crash window between durable receipt published-incarnation write and
+    // staged stamp; resume must use the receipt value and keep target bytes
+    // identical to the staged seal.
+    let root = TestRoot::new("receipt-stamp-window");
+    let database = root.join("database.redb");
+    let backup_root = root.join("backups");
+    initialize(&database);
+    let failpoint = RedbMaintenanceTestController::return_at(
+        RedbMaintenanceFailpoint::BetweenReceiptWriteAndStagedStamp,
+    );
+    let (mut storage, _) =
+        RedbMaintenanceStorage::open_with_test_controller(&database, &backup_root, failpoint)
+            .expect("open maintenance");
+    let (_manifest, manifest_identity) = create_completed_named_backup(&mut storage, 0x81);
+
+    let mut restore = receipt(0x82, OfflineMaintenanceOperationKind::RestoreBackup);
+    advance_offline(&mut restore);
+    storage
+        .create_or_read_receipt(&restore)
+        .expect("create restore receipt");
+    let staged = storage
+        .stage_restore(restore.operation_id(), restore.backup_name())
+        .expect("stage");
+    let staged_database_id = complete_structural_validation(staged.staged_database_file());
+    let mut sealed = staged
+        .seal_after_validation(staged_database_id)
+        .expect("seal");
+    let staged_before = sealed.staged_history_incarnation();
+    let published = staged_before.max(1) + 1;
+
+    restore
+        .record_staged_database_id(staged_database_id)
+        .expect("staged id");
+    restore
+        .record_manifest_identity(manifest_identity)
+        .expect("manifest");
+    restore
+        .record_published_incarnation(published)
+        .expect("receipt authority");
+    storage
+        .replace_receipt(&restore)
+        .expect("durable receipt before stamp");
+
+    // Failpoint fires at the start of apply_published — receipt is durable,
+    // staged is not yet stamped.
+    let err = sealed
+        .apply_published_history_incarnation(published)
+        .expect_err("between receipt and stamp");
+    assert_eq!(err.kind(), StorageErrorKind::CommitStatusUnknown);
+    assert_eq!(
+        sealed.staged_history_incarnation(),
+        staged_before,
+        "failed stamp must not mutate sealed staged incarnation"
+    );
+
+    // Resume: re-apply from receipt; stamping is idempotent and converges.
+    sealed
+        .apply_published_history_incarnation(published)
+        .expect("resume stamp from receipt");
+    assert_eq!(sealed.staged_history_incarnation(), published);
+    let result = storage
+        .publish_sealed_restore(
+            sealed,
+            OfflineRestoreOverwritePolicyV1::ExplicitlyAllowDestructive,
+        )
+        .expect("publish after resume");
+    assert!(matches!(
+        result,
+        riffdb_storage_api::OfflineRestoreResultV1::Restored { .. }
+    ));
+    assert_eq!(
+        riffdb_storage_redb::read_history_incarnation(&database).expect("target"),
+        Some(published)
+    );
+    let loaded = storage
+        .read_receipt(restore.operation_id())
+        .expect("read")
+        .expect("present");
+    assert_eq!(loaded.published_history_incarnation(), Some(published));
+
+    // Target must match the staged seal (byte-identical invariant).
+    restore
+        .advance(OfflineMaintenanceReceiptTransitionV1::phase(
+            OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
+        ))
+        .expect("published phase");
+    storage
+        .replace_receipt(&restore)
+        .expect("persist published");
+    let reconciliation = storage.reconcile().expect("reconcile");
+    let evidence = reconciliation
+        .operations()
+        .iter()
+        .find(|evidence| evidence.operation_id() == restore.operation_id())
+        .expect("restore evidence");
+    assert!(
+        evidence.configured_target_matches(),
+        "resumed stamp+publish must keep target byte-identical to staged seal"
+    );
+}
+
+#[test]
 fn named_backup_staged_validation_and_exact_file_publication_reuse_wp070() {
     let root = TestRoot::new("staged-roundtrip");
     let database = root.join("database.redb");

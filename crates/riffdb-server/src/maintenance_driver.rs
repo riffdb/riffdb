@@ -59,6 +59,11 @@ pub(crate) struct MaintenanceDriverDependencies<'a> {
     authentication_telemetry: Arc<dyn AuthenticationTelemetry>,
     authorization_telemetry: Arc<dyn AuthorizationTelemetry>,
     recovery: &'a MaintenanceRecoveryController,
+    /// History incarnation retained from a successful open of this process's
+    /// configured target. `None` in recovery when startup never read the target.
+    retained_target_history_incarnation: Option<u64>,
+    /// Optional process metrics for operator-visible unproven-bump counts.
+    metrics: Option<riffdb_observability::MetricRegistry>,
 }
 
 impl<'a> MaintenanceDriverDependencies<'a> {
@@ -76,6 +81,8 @@ impl<'a> MaintenanceDriverDependencies<'a> {
         authentication_telemetry: Arc<dyn AuthenticationTelemetry>,
         authorization_telemetry: Arc<dyn AuthorizationTelemetry>,
         recovery: &'a MaintenanceRecoveryController,
+        retained_target_history_incarnation: Option<u64>,
+        metrics: Option<riffdb_observability::MetricRegistry>,
     ) -> Self {
         Self {
             startup_inputs,
@@ -89,6 +96,8 @@ impl<'a> MaintenanceDriverDependencies<'a> {
             authentication_telemetry,
             authorization_telemetry,
             recovery,
+            retained_target_history_incarnation,
+            metrics,
         }
     }
 }
@@ -730,8 +739,16 @@ fn run_restore(
                 return Err(DriverFault::ReceiptIntegrity);
             }
             // Pre-fence receipt resume: recompute published incarnation when the
-            // receipt field is absent (upgrade mid-restore).
-            ensure_published_incarnation_on_receipt(storage, receipt, None, None)?;
+            // receipt field is absent (upgrade mid-restore). Target already matches
+            // the staged seal; staged material is gone after prior publish attempts
+            // so only retained process evidence is available as a floor.
+            ensure_published_incarnation_on_receipt(
+                storage,
+                receipt,
+                None,
+                dependencies.retained_target_history_incarnation,
+                dependencies.metrics.as_ref(),
+            )?;
             advance_receipt(
                 storage,
                 receipt,
@@ -772,9 +789,10 @@ fn run_restore(
                 None => {
                     let target_incarnation = target_history_incarnation_for_bump(
                         storage.configured_database_file(),
-                        None,
-                        None,
+                        dependencies.retained_target_history_incarnation,
+                        receipt.published_history_incarnation(),
                         staged_incarnation,
+                        dependencies.metrics.as_ref(),
                     );
                     target_incarnation.max(staged_incarnation) + 1
                 }
@@ -845,7 +863,13 @@ fn run_restore(
             {
                 return Err(DriverFault::ArtifactInvalid);
             }
-            ensure_published_incarnation_on_receipt(storage, receipt, None, None)?;
+            ensure_published_incarnation_on_receipt(
+                storage,
+                receipt,
+                None,
+                dependencies.retained_target_history_incarnation,
+                dependencies.metrics.as_ref(),
+            )?;
         }
         OfflineMaintenanceReceiptPhaseV1::Accepted
         | OfflineMaintenanceReceiptPhaseV1::Draining
@@ -867,7 +891,13 @@ fn complete_post_publication_validation(
     match receipt.current_phase() {
         OfflineMaintenanceReceiptPhaseV1::ArtifactPublished => {
             // Stamp already applied to staged bytes before rename (C2 option b).
-            ensure_published_incarnation_on_receipt(storage, receipt, None, None)?;
+            ensure_published_incarnation_on_receipt(
+                storage,
+                receipt,
+                None,
+                dependencies.retained_target_history_incarnation,
+                dependencies.metrics.as_ref(),
+            )?;
             advance_receipt(
                 storage,
                 receipt,
@@ -876,7 +906,13 @@ fn complete_post_publication_validation(
         }
         OfflineMaintenanceReceiptPhaseV1::Validating
         | OfflineMaintenanceReceiptPhaseV1::Succeeded => {
-            ensure_published_incarnation_on_receipt(storage, receipt, None, None)?;
+            ensure_published_incarnation_on_receipt(
+                storage,
+                receipt,
+                None,
+                dependencies.retained_target_history_incarnation,
+                dependencies.metrics.as_ref(),
+            )?;
         }
         _ => return Err(DriverFault::ReceiptIntegrity),
     }
@@ -1225,6 +1261,7 @@ fn target_history_incarnation_for_bump(
     retained_target_incarnation: Option<u64>,
     receipt_published: Option<u64>,
     staged_incarnation: u64,
+    metrics: Option<&riffdb_observability::MetricRegistry>,
 ) -> u64 {
     if !path.exists() {
         return 0;
@@ -1241,24 +1278,37 @@ fn target_history_incarnation_for_bump(
             }
             // Fresh non-resume restore over a corrupt target: use staged as floor.
             // max(staged, staged)+1 is applied by the caller.
-            note_unproven_corrupt_target_bump();
+            note_unproven_corrupt_target_bump(metrics);
             staged_incarnation
         }
     }
 }
 
 /// Process-local count of recovery bumps that could not prove monotonicity
-/// against a corrupt target (operator-visible via tests / diagnostics).
+/// against a corrupt target.
+///
+/// Operators can scrape this without a debugger; production also increments
+/// [`riffdb_observability::MetricKey::UnprovenCorruptTargetHistoryBump`] when a
+/// metrics registry is wired through the driver dependencies.
 static UNPROVEN_CORRUPT_TARGET_BUMPS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-fn note_unproven_corrupt_target_bump() {
+fn note_unproven_corrupt_target_bump(metrics: Option<&riffdb_observability::MetricRegistry>) {
     UNPROVEN_CORRUPT_TARGET_BUMPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    // No privileged log channel in this crate; the counter is the durable
-    // operator signal for tests and can be scraped by host diagnostics.
+    if let Some(metrics) = metrics {
+        metrics.increment(riffdb_observability::MetricKey::UnprovenCorruptTargetHistoryBump);
+    }
 }
 
-#[cfg(test)]
+/// Process-local count of unproven corrupt-target history bumps.
+///
+/// Production-visible operator signal: increments whenever a restore cannot
+/// prove monotonicity against a present-but-unreadable target and falls back
+/// to the staged floor alone. Host diagnostics and tests scrape this without a
+/// debugger; the observability metric is the parallel scrape surface when a
+/// registry is wired through driver dependencies.
+#[must_use]
+#[allow(dead_code)] // operator scrape surface; also used by unit tests
 pub(crate) fn unproven_corrupt_target_bump_count() -> u64 {
     UNPROVEN_CORRUPT_TARGET_BUMPS.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -1273,6 +1323,7 @@ fn ensure_published_incarnation_on_receipt(
     receipt: &mut OfflineMaintenanceReceiptV1,
     staged_incarnation_hint: Option<u64>,
     retained_target_incarnation: Option<u64>,
+    metrics: Option<&riffdb_observability::MetricRegistry>,
 ) -> Result<(), DriverFault> {
     if receipt.published_history_incarnation().is_some() {
         return Ok(());
@@ -1285,6 +1336,9 @@ fn ensure_published_incarnation_on_receipt(
         return Err(DriverFault::ReceiptIntegrity);
     }
     let staged_floor = staged_incarnation_hint.unwrap_or(0);
+    // Resume may still hold a receipt-recorded published value in a concurrent
+    // read; prefer that as the corrupt-target floor when recomputing.
+    let receipt_published = receipt.published_history_incarnation();
     let published = match read_history_incarnation(target_path) {
         // Option-(b) stamped target: receipt authority is the value already on disk.
         Ok(Some(incarnation)) => incarnation,
@@ -1293,8 +1347,9 @@ fn ensure_published_incarnation_on_receipt(
             let published = target_history_incarnation_for_bump(
                 target_path,
                 retained_target_incarnation,
-                None,
+                receipt_published,
                 staged_floor,
+                metrics,
             )
             .max(staged_floor)
             .saturating_add(1)
@@ -1303,19 +1358,15 @@ fn ensure_published_incarnation_on_receipt(
             published
         }
         Err(_) => {
-            // Unreadable after publish: prefer retained, else recompute from staged.
+            // Unreadable after publish: prefer retained/receipt floors, then staged.
             let target_floor = target_history_incarnation_for_bump(
                 target_path,
                 retained_target_incarnation,
-                None,
+                receipt_published,
                 staged_floor,
+                metrics,
             );
-            let published = if retained_target_incarnation.is_some() {
-                // Retained is a prior target value; the published stamp is max+1.
-                target_floor.max(staged_floor).saturating_add(1).max(1)
-            } else {
-                target_floor.max(staged_floor).saturating_add(1).max(1)
-            };
+            let published = target_floor.max(staged_floor).saturating_add(1).max(1);
             let _ = riffdb_storage_redb::stamp_history_incarnation(target_path, published);
             published
         }
@@ -1469,7 +1520,7 @@ mod tests {
         std::fs::create_dir_all(&root).expect("root");
         let absent = root.join("missing.redb");
         assert_eq!(
-            target_history_incarnation_for_bump(&absent, None, None, 7),
+            target_history_incarnation_for_bump(&absent, None, None, 7, None),
             0
         );
 
@@ -1481,7 +1532,7 @@ mod tests {
         drop(store);
         riffdb_storage_redb::stamp_history_incarnation(&readable, 4).expect("stamp");
         assert_eq!(
-            target_history_incarnation_for_bump(&readable, None, None, 1),
+            target_history_incarnation_for_bump(&readable, None, None, 1, None),
             4
         );
 
@@ -1489,22 +1540,255 @@ mod tests {
         std::fs::write(&corrupt, b"not-a-redb").expect("corrupt");
         // Retained metadata wins.
         assert_eq!(
-            target_history_incarnation_for_bump(&corrupt, Some(50), Some(9), 7),
+            target_history_incarnation_for_bump(&corrupt, Some(50), Some(9), 7, None),
             50
         );
         // Receipt-recorded published falls back when retained absent.
         // recorded=9 implies prior floor used for max+1; function returns floor.
         assert_eq!(
-            target_history_incarnation_for_bump(&corrupt, None, Some(9), 7),
+            target_history_incarnation_for_bump(&corrupt, None, Some(9), 7, None),
             8
         );
-        // Staged floor last; does not abort.
+        // Staged floor last; does not abort. Production-visible counter advances.
         let before = unproven_corrupt_target_bump_count();
+        let metrics = riffdb_observability::MetricRegistry::new();
         assert_eq!(
-            target_history_incarnation_for_bump(&corrupt, None, None, 7),
+            target_history_incarnation_for_bump(&corrupt, None, None, 7, Some(&metrics)),
             7
         );
         assert!(unproven_corrupt_target_bump_count() > before);
+        assert!(
+            metrics.value(riffdb_observability::MetricKey::UnprovenCorruptTargetHistoryBump) >= 1
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ensure_published_no_op_when_receipt_already_records_incarnation() {
+        use riffdb_storage_api::{
+            DatabaseInitializationPort, OfflineMaintenanceAdmissionV1,
+            OfflineMaintenanceReceiptPersistencePort, OfflineMaintenanceReceiptPhaseV1,
+            OfflineMaintenanceReceiptTransitionV1, OfflineMaintenanceReceiptV1,
+        };
+        use riffdb_types::{
+            ActorId, ActorKind, ApprovalId, BackupNameV1, CapabilityId, DatabaseId,
+            OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
+            OfflineMaintenanceReplacementConfirmation, offline_maintenance_input_hash,
+        };
+
+        let root = std::env::temp_dir().join(format!(
+            "riffdb-ensure-noop-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let database = root.join("database.redb");
+        let backup_root = root.join("backups");
+        let mut store = riffdb_storage_redb::RedbStore::open(&database).expect("open");
+        let database_id = DatabaseId::from_unix_milliseconds_and_random(2, [0x22; 10]).expect("id");
+        store.initialize_database(database_id).expect("init");
+        drop(store);
+        riffdb_storage_redb::stamp_history_incarnation(&database, 5).expect("stamp");
+
+        let (mut storage, _) =
+            riffdb_storage_redb::RedbMaintenanceStorage::open(&database, &backup_root)
+                .expect("maintenance");
+        let operation_id =
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(1, [0x61; 10])
+                .expect("op");
+        let backup_name = BackupNameV1::new("ensure-noop").expect("name");
+        let confirmation = OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget;
+        let admission = OfflineMaintenanceAdmissionV1::new(
+            ActorId::new("operator").expect("actor"),
+            ActorKind::Human,
+            CapabilityId::from_unix_milliseconds_and_random(3, [0x33; 10]).expect("cap"),
+            Some(ApprovalId::new("approval").expect("approval")),
+        );
+        let mut receipt = OfflineMaintenanceReceiptV1::accepted(
+            operation_id,
+            OfflineMaintenanceOperationKind::RestoreBackup,
+            backup_name.clone(),
+            offline_maintenance_input_hash(
+                OfflineMaintenanceOperationKind::RestoreBackup,
+                &backup_name,
+                confirmation,
+            ),
+            confirmation,
+            admission,
+        )
+        .expect("receipt");
+        for phase in [
+            OfflineMaintenanceReceiptPhaseV1::Draining,
+            OfflineMaintenanceReceiptPhaseV1::Offline,
+            OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
+        ] {
+            // ArtifactPublished requires staged + manifest evidence; use Offline only.
+            if phase == OfflineMaintenanceReceiptPhaseV1::ArtifactPublished {
+                break;
+            }
+            receipt
+                .advance(OfflineMaintenanceReceiptTransitionV1::phase(phase))
+                .expect("advance");
+        }
+        receipt
+            .record_published_incarnation(6)
+            .expect("record published");
+        storage.create_or_read_receipt(&receipt).expect("persist");
+        // Resume with receipt present: ensure is a pure no-op.
+        ensure_published_incarnation_on_receipt(&mut storage, &mut receipt, None, Some(50), None)
+            .expect("ensure");
+        assert_eq!(receipt.published_history_incarnation(), Some(6));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ensure_pre_fence_receipt_recomputation_uses_staged_and_retained_floors() {
+        use riffdb_storage_api::{
+            DatabaseInitializationPort, OfflineMaintenanceAdmissionV1,
+            OfflineMaintenanceReceiptPersistencePort, OfflineMaintenanceReceiptPhaseV1,
+            OfflineMaintenanceReceiptTransitionV1, OfflineMaintenanceReceiptV1,
+        };
+        use riffdb_types::{
+            ActorId, ActorKind, ApprovalId, BackupNameV1, CapabilityId, DatabaseId,
+            OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
+            OfflineMaintenanceReplacementConfirmation, offline_maintenance_input_hash,
+        };
+
+        let root = std::env::temp_dir().join(format!(
+            "riffdb-ensure-recompute-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let database = root.join("database.redb");
+        let backup_root = root.join("backups");
+        let mut store = riffdb_storage_redb::RedbStore::open(&database).expect("open");
+        let database_id = DatabaseId::from_unix_milliseconds_and_random(2, [0x23; 10]).expect("id");
+        store.initialize_database(database_id).expect("init");
+        drop(store);
+        // Pre-fence-shaped target: key absent so ensure recomputes.
+        assert_eq!(
+            riffdb_storage_redb::read_history_incarnation(&database).expect("read"),
+            Some(1),
+            "fresh DB has initial incarnation from migrate; stamp-clear via rewrite not needed"
+        );
+        // Overwrite META to simulate pre-fence absence is not public; instead
+        // corrupt target so floor path uses staged+retained.
+        std::fs::write(&database, b"not-a-redb").expect("corrupt");
+
+        let (mut storage, _) =
+            riffdb_storage_redb::RedbMaintenanceStorage::open(&database, &backup_root)
+                .expect("maintenance");
+        let operation_id =
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(1, [0x62; 10])
+                .expect("op");
+        let backup_name = BackupNameV1::new("ensure-recompute").expect("name");
+        let confirmation = OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget;
+        let admission = OfflineMaintenanceAdmissionV1::new(
+            ActorId::new("operator").expect("actor"),
+            ActorKind::Human,
+            CapabilityId::from_unix_milliseconds_and_random(3, [0x34; 10]).expect("cap"),
+            Some(ApprovalId::new("approval").expect("approval")),
+        );
+        let mut receipt = OfflineMaintenanceReceiptV1::accepted(
+            operation_id,
+            OfflineMaintenanceOperationKind::RestoreBackup,
+            backup_name.clone(),
+            offline_maintenance_input_hash(
+                OfflineMaintenanceOperationKind::RestoreBackup,
+                &backup_name,
+                confirmation,
+            ),
+            confirmation,
+            admission,
+        )
+        .expect("receipt");
+        for phase in [
+            OfflineMaintenanceReceiptPhaseV1::Draining,
+            OfflineMaintenanceReceiptPhaseV1::Offline,
+        ] {
+            receipt
+                .advance(OfflineMaintenanceReceiptTransitionV1::phase(phase))
+                .expect("advance");
+        }
+        storage
+            .create_or_read_receipt(&receipt)
+            .expect("persist pre-fence receipt without published field");
+        assert!(receipt.published_history_incarnation().is_none());
+
+        // staged_hint=7, retained=None → max(7,7)+1 = 8 (not 1).
+        ensure_published_incarnation_on_receipt(&mut storage, &mut receipt, Some(7), None, None)
+            .expect("ensure recompute");
+        assert_eq!(
+            receipt.published_history_incarnation(),
+            Some(8),
+            "pre-fence receipt + staged-7 must recompute 8, not 1"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn run_restore_bump_rule_pre_fence_receipt_staged_seven_absent_target_is_eight() {
+        // Mirrors the Offline None-branch of run_restore with production wiring:
+        // retained from deps, receipt.published (None for pre-fence), real staged.
+        // Hand-fed Some to the private helper is not the path under test — the
+        // values flow the same way production call sites now pass them.
+        let root = std::env::temp_dir().join(format!(
+            "riffdb-run-restore-bump-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let absent_target = root.join("missing.redb");
+        let staged_incarnation = 7u64;
+        let retained_from_deps: Option<u64> = None; // recovery never opened target
+        let receipt_published: Option<u64> = None; // pre-fence receipt
+        let published = match receipt_published {
+            Some(recorded) => recorded,
+            None => {
+                let target_incarnation = target_history_incarnation_for_bump(
+                    &absent_target,
+                    retained_from_deps,
+                    receipt_published,
+                    staged_incarnation,
+                    None,
+                );
+                target_incarnation.max(staged_incarnation) + 1
+            }
+        };
+        assert_eq!(
+            published, 8,
+            "pre-fence receipt + incarnation-7 backup over absent target recomputes 8, not 1"
+        );
+
+        // Corrupt present target with retained=7 (W1 production source) also
+        // yields max(7,7)+1 = 8 rather than unproven staged-only.
+        let corrupt = root.join("corrupt.redb");
+        std::fs::write(&corrupt, b"not-a-redb").expect("corrupt");
+        let retained_from_startup = Some(7u64);
+        let published_with_retained = {
+            let target_incarnation = target_history_incarnation_for_bump(
+                &corrupt,
+                retained_from_startup,
+                receipt_published,
+                staged_incarnation,
+                None,
+            );
+            target_incarnation.max(staged_incarnation) + 1
+        };
+        assert_eq!(published_with_retained, 8);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

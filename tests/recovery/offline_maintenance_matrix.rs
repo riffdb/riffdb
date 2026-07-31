@@ -627,6 +627,9 @@ const fn failpoint_name(failpoint: RedbMaintenanceFailpoint) -> &'static str {
         RedbMaintenanceFailpoint::AfterReceiptParentSync => "after-receipt-parent-sync",
         RedbMaintenanceFailpoint::AfterNamedBackupPublication => "after-named-backup-publication",
         RedbMaintenanceFailpoint::AfterStagedMaterialization => "after-staged-materialization",
+        RedbMaintenanceFailpoint::BetweenReceiptWriteAndStagedStamp => {
+            "between-receipt-write-and-staged-stamp"
+        }
         RedbMaintenanceFailpoint::BeforeTargetPublication => "before-target-publication",
         RedbMaintenanceFailpoint::AfterTargetPublication => "after-target-publication",
         RedbMaintenanceFailpoint::AfterTargetParentSync => "after-target-parent-sync",
@@ -642,6 +645,9 @@ fn parse_failpoint(value: &str) -> Option<RedbMaintenanceFailpoint> {
         "after-receipt-parent-sync" => RedbMaintenanceFailpoint::AfterReceiptParentSync,
         "after-named-backup-publication" => RedbMaintenanceFailpoint::AfterNamedBackupPublication,
         "after-staged-materialization" => RedbMaintenanceFailpoint::AfterStagedMaterialization,
+        "between-receipt-write-and-staged-stamp" => {
+            RedbMaintenanceFailpoint::BetweenReceiptWriteAndStagedStamp
+        }
         "before-target-publication" => RedbMaintenanceFailpoint::BeforeTargetPublication,
         "after-target-publication" => RedbMaintenanceFailpoint::AfterTargetPublication,
         "after-target-parent-sync" => RedbMaintenanceFailpoint::AfterTargetParentSync,
