@@ -32,8 +32,9 @@ use riffdb_types::{
     OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation, OutcomeId,
     PartitionKey, PartitionKeyHash, PlanHash, ProjectionGeneration, ProjectionGroupKey,
     ProjectionGroupKeyBuilder, ProjectionGroupPrefix, ProjectionId, ProjectionIdentity,
-    ProvenanceId, RequestId, RevocationReasonCodeV1, SchemaHash, SourceCommit, SourceHash,
-    SourceRepository, TenantScope, Timestamp, hash_schema, offline_maintenance_input_hash,
+    ProvenanceId, QueryModuleHash, QueryModuleName, QueryModuleVersion, QueryOperationName,
+    RequestId, RevocationReasonCodeV1, SchemaHash, SourceCommit, SourceHash, SourceRepository,
+    TenantScope, Timestamp, hash_schema, offline_maintenance_input_hash,
 };
 
 use crate::{
@@ -106,6 +107,10 @@ impl RequestCharge {
             self.add_framed_bytes(lineage.as_bytes().len())?;
             self.add(8)?;
             self.add(32)?;
+            self.add(STRUCTURAL_OPTION_BYTES)?;
+            if fence.active_query_module_hash().is_some() {
+                self.add(32)?;
+            }
         }
         for identity in [
             fence.operation_schemas().command_operation_envelope(),
@@ -6792,6 +6797,7 @@ pub enum DiscoveryCatalogStateRef<'a> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiscoveryCatalogFence {
     state: DiscoveryCatalogState,
+    active_query_module_hash: Option<QueryModuleHash>,
     operation_schemas: OperationSchemaCatalogIdentity,
 }
 
@@ -6801,6 +6807,7 @@ impl DiscoveryCatalogFence {
     pub const fn no_active_contract(operation_schemas: OperationSchemaCatalogIdentity) -> Self {
         Self {
             state: DiscoveryCatalogState::NoActiveContract,
+            active_query_module_hash: None,
             operation_schemas,
         }
     }
@@ -6819,6 +6826,27 @@ impl DiscoveryCatalogFence {
                 version,
                 bundle_hash,
             },
+            active_query_module_hash: None,
+            operation_schemas,
+        }
+    }
+
+    /// Creates an active-contract fence including the exact active query-module identity.
+    #[must_use]
+    pub const fn active_contract_with_query_module(
+        lineage: ContractLineage,
+        version: ContractVersion,
+        bundle_hash: ContractBundleHash,
+        active_query_module_hash: Option<QueryModuleHash>,
+        operation_schemas: OperationSchemaCatalogIdentity,
+    ) -> Self {
+        Self {
+            state: DiscoveryCatalogState::ActiveContract {
+                lineage,
+                version,
+                bundle_hash,
+            },
+            active_query_module_hash,
             operation_schemas,
         }
     }
@@ -6844,6 +6872,12 @@ impl DiscoveryCatalogFence {
     #[must_use]
     pub const fn operation_schemas(&self) -> &OperationSchemaCatalogIdentity {
         &self.operation_schemas
+    }
+
+    /// Returns the exact active query-module identity included in this catalog.
+    #[must_use]
+    pub const fn active_query_module_hash(&self) -> Option<QueryModuleHash> {
+        self.active_query_module_hash
     }
 }
 
@@ -6940,6 +6974,187 @@ pub struct CommandToolDescriptor {
     command_id: CommandId,
     input_schema: GeneratedSchemaArtifact,
     outcome_schema: GeneratedSchemaArtifact,
+}
+
+/// One bounded compiler-generated named-query JSON Schema artifact.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NamedQueryToolSchemaArtifact {
+    schema_hash: SchemaHash,
+    canonical_json: String,
+}
+
+impl NamedQueryToolSchemaArtifact {
+    /// Checks the canonical source bound and repeats its typed content identity.
+    pub fn new(canonical_json: impl Into<String>) -> Result<Self, ServiceDtoError> {
+        let canonical_json = canonical_json.into();
+        if canonical_json.is_empty() {
+            return Err(ServiceDtoError::Empty);
+        }
+        if canonical_json.len() > MAX_OPERATION_SCHEMA_SOURCE_BYTES {
+            return Err(ServiceDtoError::TooLong);
+        }
+        Ok(Self {
+            schema_hash: hash_schema(canonical_json.as_bytes()),
+            canonical_json,
+        })
+    }
+
+    /// Reconstructs one public artifact while verifying its repeated hash.
+    pub fn from_public_parts(
+        schema_hash: SchemaHash,
+        canonical_json: impl Into<String>,
+    ) -> Result<Self, ServiceDtoError> {
+        let artifact = Self::new(canonical_json)?;
+        if artifact.schema_hash != schema_hash {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        Ok(artifact)
+    }
+
+    /// Returns the exact typed content identity.
+    #[must_use]
+    pub const fn schema_hash(&self) -> SchemaHash {
+        self.schema_hash
+    }
+
+    /// Borrows the exact canonical JSON bytes.
+    #[must_use]
+    pub fn canonical_json(&self) -> &str {
+        &self.canonical_json
+    }
+}
+
+/// One visible deployed named-query tool.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NamedQueryToolDescriptor {
+    name: String,
+    source_query: QueryOperationName,
+    lineage: ContractLineage,
+    version: ContractVersion,
+    module_name: QueryModuleName,
+    module_version: QueryModuleVersion,
+    module_hash: QueryModuleHash,
+    input_schema: NamedQueryToolSchemaArtifact,
+    result_schema: NamedQueryToolSchemaArtifact,
+}
+
+impl NamedQueryToolDescriptor {
+    /// Checks the exact compiler-owned tool-name derivation and immutable identities.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        name: impl Into<String>,
+        source_query: QueryOperationName,
+        lineage: ContractLineage,
+        version: ContractVersion,
+        module_name: QueryModuleName,
+        module_version: QueryModuleVersion,
+        module_hash: QueryModuleHash,
+        input_schema: NamedQueryToolSchemaArtifact,
+        result_schema: NamedQueryToolSchemaArtifact,
+    ) -> Result<Self, ServiceDtoError> {
+        let name = name.into();
+        if name.len() > 128
+            || name != named_query_tool_name(module_name.as_str(), source_query.as_str())
+        {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        Ok(Self {
+            name,
+            source_query,
+            lineage,
+            version,
+            module_name,
+            module_version,
+            module_hash,
+            input_schema,
+            result_schema,
+        })
+    }
+
+    /// Borrows the exact compiler-owned public tool name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// Borrows the exact source query name.
+    #[must_use]
+    pub const fn source_query(&self) -> &QueryOperationName {
+        &self.source_query
+    }
+    /// Borrows the contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+    /// Returns the exact contract version.
+    #[must_use]
+    pub const fn version(&self) -> ContractVersion {
+        self.version
+    }
+    /// Borrows the query-module name.
+    #[must_use]
+    pub const fn module_name(&self) -> &QueryModuleName {
+        &self.module_name
+    }
+    /// Returns the query-module version.
+    #[must_use]
+    pub const fn module_version(&self) -> QueryModuleVersion {
+        self.module_version
+    }
+    /// Returns the immutable query-module identity.
+    #[must_use]
+    pub const fn module_hash(&self) -> QueryModuleHash {
+        self.module_hash
+    }
+    /// Borrows the generated input schema.
+    #[must_use]
+    pub const fn input_schema(&self) -> &NamedQueryToolSchemaArtifact {
+        &self.input_schema
+    }
+    /// Borrows the generated result schema.
+    #[must_use]
+    pub const fn result_schema(&self) -> &NamedQueryToolSchemaArtifact {
+        &self.result_schema
+    }
+
+    fn compact(&self) -> CompactNamedQueryToolDescriptor {
+        CompactNamedQueryToolDescriptor {
+            name: self.name.clone(),
+            source_query: self.source_query.clone(),
+            lineage: self.lineage.clone(),
+            version: self.version,
+            module_name: self.module_name.clone(),
+            module_version: self.module_version,
+            module_hash: self.module_hash,
+            input_schema_hash: self.input_schema.schema_hash,
+            result_schema_hash: self.result_schema.schema_hash,
+        }
+    }
+}
+
+fn named_query_tool_name(module_name: &str, query_name: &str) -> String {
+    format!(
+        "{}_{}",
+        snake_tool_segment(module_name),
+        snake_tool_segment(query_name)
+    )
+}
+
+fn snake_tool_segment(name: &str) -> String {
+    let mut output = String::new();
+    let mut word_start = true;
+    for character in name.chars() {
+        if !character.is_ascii_alphanumeric() {
+            word_start = true;
+            continue;
+        }
+        if (character.is_ascii_uppercase() && !word_start) || (word_start && !output.is_empty()) {
+            output.push('_');
+        }
+        output.push(character.to_ascii_lowercase());
+        word_start = false;
+    }
+    output
 }
 
 impl CommandToolDescriptor {
@@ -7125,6 +7340,8 @@ pub enum CommandToolDiscoveryItem {
     Fixed(FixedToolKind),
     /// One compiler-owned dynamic command tool.
     Command(Box<CommandToolDescriptor>),
+    /// One compiler-owned deployed named-query tool.
+    NamedQuery(Box<NamedQueryToolDescriptor>),
 }
 
 /// Body-free identity of one generated compiler schema.
@@ -7167,6 +7384,68 @@ pub struct CompactCommandToolDescriptor {
     command_id: CommandId,
     input_schema: GeneratedSchemaIdentity,
     outcome_schema: GeneratedSchemaIdentity,
+}
+
+/// Identity-only projection of one deployed named-query tool.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompactNamedQueryToolDescriptor {
+    name: String,
+    source_query: QueryOperationName,
+    lineage: ContractLineage,
+    version: ContractVersion,
+    module_name: QueryModuleName,
+    module_version: QueryModuleVersion,
+    module_hash: QueryModuleHash,
+    input_schema_hash: SchemaHash,
+    result_schema_hash: SchemaHash,
+}
+
+impl CompactNamedQueryToolDescriptor {
+    /// Borrows the exact compiler-owned tool name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// Borrows the exact source query name.
+    #[must_use]
+    pub const fn source_query(&self) -> &QueryOperationName {
+        &self.source_query
+    }
+    /// Borrows the contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+    /// Returns the exact contract version.
+    #[must_use]
+    pub const fn version(&self) -> ContractVersion {
+        self.version
+    }
+    /// Borrows the query-module name.
+    #[must_use]
+    pub const fn module_name(&self) -> &QueryModuleName {
+        &self.module_name
+    }
+    /// Returns the query-module version.
+    #[must_use]
+    pub const fn module_version(&self) -> QueryModuleVersion {
+        self.module_version
+    }
+    /// Returns the immutable query-module identity.
+    #[must_use]
+    pub const fn module_hash(&self) -> QueryModuleHash {
+        self.module_hash
+    }
+    /// Returns the input-schema identity.
+    #[must_use]
+    pub const fn input_schema_hash(&self) -> SchemaHash {
+        self.input_schema_hash
+    }
+    /// Returns the result-schema identity.
+    #[must_use]
+    pub const fn result_schema_hash(&self) -> SchemaHash {
+        self.result_schema_hash
+    }
 }
 
 impl CompactCommandToolDescriptor {
@@ -7214,6 +7493,8 @@ pub enum CompactCommandToolDiscoveryItem {
     Fixed(FixedToolKind),
     /// One identity-only dynamic command tool.
     Command(Box<CompactCommandToolDescriptor>),
+    /// One identity-only deployed named-query tool.
+    NamedQuery(Box<CompactNamedQueryToolDescriptor>),
 }
 
 impl CommandToolDiscoveryItem {
@@ -7223,6 +7504,9 @@ impl CommandToolDiscoveryItem {
             Self::Command(descriptor) => {
                 CompactCommandToolDiscoveryItem::Command(Box::new(descriptor.compact()))
             }
+            Self::NamedQuery(descriptor) => {
+                CompactCommandToolDiscoveryItem::NamedQuery(Box::new(descriptor.compact()))
+            }
         }
     }
 
@@ -7231,7 +7515,7 @@ impl CommandToolDiscoveryItem {
     pub const fn fixed_tool_tag(&self) -> Option<u8> {
         match self {
             Self::Fixed(kind) => Some(kind.tag()),
-            Self::Command(_) => None,
+            Self::Command(_) | Self::NamedQuery(_) => None,
         }
     }
 }
@@ -7242,17 +7526,17 @@ impl CompactCommandToolDiscoveryItem {
     pub const fn fixed_tool_tag(&self) -> Option<u8> {
         match self {
             Self::Fixed(kind) => Some(kind.tag()),
-            Self::Command(_) => None,
+            Self::Command(_) | Self::NamedQuery(_) => None,
         }
     }
 }
 
 fn validate_command_tool_order(items: &[CommandToolDiscoveryItem]) -> Result<(), ServiceDtoError> {
     let mut last_fixed = None;
-    let mut last_command: Option<&McpCommandToolNameV2> = None;
+    let mut last_dynamic: Option<&str> = None;
     for item in items {
         match item {
-            CommandToolDiscoveryItem::Fixed(fixed) if last_command.is_none() => {
+            CommandToolDiscoveryItem::Fixed(fixed) if last_dynamic.is_none() => {
                 if last_fixed.is_some_and(|prior| prior >= *fixed) {
                     return Err(if last_fixed == Some(*fixed) {
                         ServiceDtoError::Duplicate
@@ -7264,15 +7548,26 @@ fn validate_command_tool_order(items: &[CommandToolDiscoveryItem]) -> Result<(),
             }
             CommandToolDiscoveryItem::Fixed(_) => return Err(ServiceDtoError::InvalidShape),
             CommandToolDiscoveryItem::Command(descriptor) => {
-                let name = descriptor.name();
-                if last_command.is_some_and(|prior| prior >= name) {
-                    return Err(if last_command == Some(name) {
+                let name = descriptor.name().as_str();
+                if last_dynamic.is_some_and(|prior| prior >= name) {
+                    return Err(if last_dynamic == Some(name) {
                         ServiceDtoError::Duplicate
                     } else {
                         ServiceDtoError::InvalidShape
                     });
                 }
-                last_command = Some(name);
+                last_dynamic = Some(name);
+            }
+            CommandToolDiscoveryItem::NamedQuery(descriptor) => {
+                let name = descriptor.name();
+                if last_dynamic.is_some_and(|prior| prior >= name) {
+                    return Err(if last_dynamic == Some(name) {
+                        ServiceDtoError::Duplicate
+                    } else {
+                        ServiceDtoError::InvalidShape
+                    });
+                }
+                last_dynamic = Some(name);
             }
         }
     }
@@ -7283,10 +7578,10 @@ fn validate_compact_command_tool_order(
     items: &[CompactCommandToolDiscoveryItem],
 ) -> Result<(), ServiceDtoError> {
     let mut last_fixed = None;
-    let mut last_command: Option<&McpCommandToolNameV2> = None;
+    let mut last_dynamic: Option<&str> = None;
     for item in items {
         match item {
-            CompactCommandToolDiscoveryItem::Fixed(fixed) if last_command.is_none() => {
+            CompactCommandToolDiscoveryItem::Fixed(fixed) if last_dynamic.is_none() => {
                 if last_fixed.is_some_and(|prior| prior >= *fixed) {
                     return Err(if last_fixed == Some(*fixed) {
                         ServiceDtoError::Duplicate
@@ -7298,15 +7593,26 @@ fn validate_compact_command_tool_order(
             }
             CompactCommandToolDiscoveryItem::Fixed(_) => return Err(ServiceDtoError::InvalidShape),
             CompactCommandToolDiscoveryItem::Command(descriptor) => {
-                let name = descriptor.name();
-                if last_command.is_some_and(|prior| prior >= name) {
-                    return Err(if last_command == Some(name) {
+                let name = descriptor.name().as_str();
+                if last_dynamic.is_some_and(|prior| prior >= name) {
+                    return Err(if last_dynamic == Some(name) {
                         ServiceDtoError::Duplicate
                     } else {
                         ServiceDtoError::InvalidShape
                     });
                 }
-                last_command = Some(name);
+                last_dynamic = Some(name);
+            }
+            CompactCommandToolDiscoveryItem::NamedQuery(descriptor) => {
+                let name = descriptor.name();
+                if last_dynamic.is_some_and(|prior| prior >= name) {
+                    return Err(if last_dynamic == Some(name) {
+                        ServiceDtoError::Duplicate
+                    } else {
+                        ServiceDtoError::InvalidShape
+                    });
+                }
+                last_dynamic = Some(name);
             }
         }
     }
@@ -9752,6 +10058,65 @@ contract OutcomeShapes version 1 {
                 command.command_id(),
                 name.tool_name().clone(),
             )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn named_query_discovery_binds_module_identity_schemas_and_fence() {
+        let source = concat!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+            "\"additionalProperties\":false,\"properties\":{},\"required\":[],\"type\":\"object\"}"
+        );
+        let schema = NamedQueryToolSchemaArtifact::new(source).expect("bounded schema");
+        let lineage = ContractLineage::new("TicketDesk").expect("lineage");
+        let module_name = QueryModuleName::new("TicketDesk").expect("module name");
+        let module_version = QueryModuleVersion::new(2).expect("module version");
+        let module_hash = QueryModuleHash::from_bytes([0x71; 32]);
+        let query_name = QueryOperationName::new("TicketPage").expect("query name");
+        let descriptor = NamedQueryToolDescriptor::new(
+            "ticket_desk_ticket_page",
+            query_name.clone(),
+            lineage.clone(),
+            ContractVersion::new(7).expect("contract version"),
+            module_name.clone(),
+            module_version,
+            module_hash,
+            schema.clone(),
+            schema.clone(),
+        )
+        .expect("exact generated identity");
+        assert_eq!(descriptor.module_hash(), module_hash);
+        assert_eq!(
+            NamedQueryToolDescriptor::new(
+                "ticket_desk_other_page",
+                query_name,
+                lineage.clone(),
+                ContractVersion::new(7).expect("contract version"),
+                module_name,
+                module_version,
+                module_hash,
+                schema.clone(),
+                schema,
+            ),
+            Err(ServiceDtoError::IdentityMismatch)
+        );
+
+        let operation_schemas = OperationSchemaCatalog::accepted()
+            .expect("accepted operation schemas")
+            .identity();
+        let fence = DiscoveryCatalogFence::active_contract_with_query_module(
+            lineage,
+            ContractVersion::new(7).expect("contract version"),
+            ContractBundleHash::from_bytes([0x42; 32]),
+            Some(module_hash),
+            operation_schemas,
+        );
+        assert_eq!(fence.active_query_module_hash(), Some(module_hash));
+        assert!(
+            validate_command_tool_order(&[CommandToolDiscoveryItem::NamedQuery(Box::new(
+                descriptor
+            ))])
             .is_ok()
         );
     }

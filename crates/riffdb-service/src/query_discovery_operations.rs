@@ -7,7 +7,9 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::time::Instant;
 
-use riffdb_catalog::{CatalogError, CatalogErrorKind, ValidatedContractBundle};
+use riffdb_catalog::{
+    CatalogError, CatalogErrorKind, ValidatedContractBundle, ValidatedQueryModule,
+};
 use riffdb_contract_ir::{
     BoundProjectionGroupSchema, EntitySchema, GeneratedSchemaArtifact, IndexSchema, RecordSchema,
     SchemaArtifactKey, SchemaIr, ValueType,
@@ -19,13 +21,16 @@ use riffdb_errors::{
 use riffdb_invariant::{EvaluationError, ExpressionValueSource, evaluate_expression};
 use riffdb_policy::{
     AuthorizedOperation, CommandToolCandidate, DiscoveryResource, DiscoveryVisibility,
-    EntitySchemaCandidate, FixedToolCandidate, MAX_DISCOVERY_PAGE_ITEMS, OperationRequest,
-    OperationTenantScope, OutputClassification, PartitionConstraint, ResourceDiscoveryVisibility,
+    EntitySchemaCandidate, FixedToolCandidate, MAX_DISCOVERY_PAGE_ITEMS, NamedQueryToolCandidate,
+    OperationRequest, OperationTenantScope, OutputClassification, PartitionConstraint,
+    ResourceDiscoveryVisibility,
 };
+use riffdb_query_module::generate_mcp_tools;
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, ContractLineage, EntityKey, FieldId,
     MAX_CAPABILITY_FIELD_VISIBILITY, PartitionKey, PartitionScopeV1, ProjectionGeneration,
-    ScopedPartitionV1, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceOperationV1, TenantScope,
+    QueryOperationName, ScopedPartitionV1, ServiceAuditLinkV1, ServiceAuditPhaseV1,
+    ServiceOperationV1, TenantScope,
 };
 
 use crate::command_operations::{SubmittedValueMaterializationError, materialize_submitted_value};
@@ -40,17 +45,17 @@ use crate::{
     DiscoverResourcesResult, DiscoveryCatalogFence, DiscoveryRepresentation, EntityView,
     FieldSelection, FixedToolKind, GetEntityRequest, GetEntityResult, GetProjectionStatusRequest,
     GetProjectionStatusResult, IndexRowView, IndexScanCursorLookup, IndexScanCursorPolicy,
-    IndexScanCursorState, IndexScanFence, InternalDefect, OperationSchemaCatalog, Page, PageLimit,
-    PortAdmissionError, PortDriverStopped, ProjectionCursorLookup, ProjectionCursorPolicy,
-    ProjectionCursorState, ProjectionPageFence, ProjectionPortError, ProjectionPortReady,
-    ProjectionPortRequest, ProjectionPortResult, ProjectionStateFence, QueryApplication,
-    QueryProjectionReady, QueryProjectionRequest, QueryProjectionResult, RequestContext,
-    ResourceDescriptor, ResourceDiscoveryCursorLookup, ResourceDiscoveryCursorState,
-    ResourceDiscoveryCursorVisibility, RiffDbService, RiffDbServiceInner, ScanIndexRequest,
-    ScanIndexResult, ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult,
-    ServiceTelemetryEvent, SubmittedValue, ensure_response_budget,
-    fit_full_command_discovery_page_items, fit_full_resource_discovery_page_items, fit_page_items,
-    fit_sparse_page_items,
+    IndexScanCursorState, IndexScanFence, InternalDefect, NamedQueryToolDescriptor,
+    NamedQueryToolSchemaArtifact, OperationSchemaCatalog, Page, PageLimit, PortAdmissionError,
+    PortDriverStopped, ProjectionCursorLookup, ProjectionCursorPolicy, ProjectionCursorState,
+    ProjectionPageFence, ProjectionPortError, ProjectionPortReady, ProjectionPortRequest,
+    ProjectionPortResult, ProjectionStateFence, QueryApplication, QueryProjectionReady,
+    QueryProjectionRequest, QueryProjectionResult, RequestContext, ResourceDescriptor,
+    ResourceDiscoveryCursorLookup, ResourceDiscoveryCursorState, ResourceDiscoveryCursorVisibility,
+    RiffDbService, RiffDbServiceInner, ScanIndexRequest, ScanIndexResult, ServiceAuditTargetMap,
+    ServiceFailure, ServiceFuture, ServiceResult, ServiceTelemetryEvent, SubmittedValue,
+    ensure_response_budget, fit_full_command_discovery_page_items,
+    fit_full_resource_discovery_page_items, fit_page_items, fit_sparse_page_items,
 };
 use crate::{CursorAccessError, CursorContractIdentity};
 
@@ -1295,7 +1300,22 @@ async fn discover_command_tools(
             return Err(finish_failure(&service, &context, &begun, failure).await);
         }
     };
-    let fence = discovery_catalog_fence(active.as_ref(), operation_schemas.identity());
+    let active_query_module = match active.as_ref() {
+        Some(bundle) => {
+            match read_active_query_module_for_discovery(&service, &context, bundle.clone()).await {
+                Ok(module) => module,
+                Err(failure) => {
+                    return Err(finish_failure(&service, &context, &begun, failure).await);
+                }
+            }
+        }
+        None => None,
+    };
+    let fence = discovery_catalog_fence(
+        active.as_ref(),
+        active_query_module.as_ref(),
+        operation_schemas.identity(),
+    );
     if request.prior_fence() == Some(&fence) {
         drop(authorization);
         let result = match DiscoverCommandToolsResult::catalog_unchanged(&request, fence) {
@@ -1373,7 +1393,74 @@ async fn discover_command_tools(
         }
     }
     command_entries.sort_unstable_by(|left, right| left.1.name().cmp(right.1.name()));
+    let mut query_entries = Vec::new();
+    if let Some(module) = active_query_module.as_ref() {
+        let generated = match generate_mcp_tools(module.module()) {
+            Ok(generated) => generated,
+            Err(_) => {
+                let failure = lower_integrity_failure(&service, OPERATION);
+                return Err(finish_failure(&service, &context, &begun, failure).await);
+            }
+        };
+        if generated.len() != module.module().queries().len() {
+            let failure = lower_integrity_failure(&service, OPERATION);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+        for (query, generated) in module.module().queries().iter().zip(generated) {
+            let query_name = match QueryOperationName::new(query.name().to_owned()) {
+                Ok(query_name) => query_name,
+                Err(_) => {
+                    let failure = lower_integrity_failure(&service, OPERATION);
+                    return Err(finish_failure(&service, &context, &begun, failure).await);
+                }
+            };
+            let input_schema = match NamedQueryToolSchemaArtifact::new(generated.input_schema) {
+                Ok(schema) => schema,
+                Err(_) => {
+                    let failure = lower_integrity_failure(&service, OPERATION);
+                    return Err(finish_failure(&service, &context, &begun, failure).await);
+                }
+            };
+            let result_schema = match NamedQueryToolSchemaArtifact::new(generated.result_schema) {
+                Ok(schema) => schema,
+                Err(_) => {
+                    let failure = lower_integrity_failure(&service, OPERATION);
+                    return Err(finish_failure(&service, &context, &begun, failure).await);
+                }
+            };
+            let descriptor = match NamedQueryToolDescriptor::new(
+                generated.name,
+                query_name.clone(),
+                module.module().contract_lineage().clone(),
+                module.module().contract_version(),
+                module.module().name().clone(),
+                module.module().version(),
+                module.identity(),
+                input_schema,
+                result_schema,
+            ) {
+                Ok(descriptor) => descriptor,
+                Err(_) => {
+                    let failure = lower_integrity_failure(&service, OPERATION);
+                    return Err(finish_failure(&service, &context, &begun, failure).await);
+                }
+            };
+            query_entries.push((
+                NamedQueryToolCandidate::new(
+                    module.module().contract_lineage().clone(),
+                    module.identity(),
+                    query_name,
+                ),
+                descriptor,
+            ));
+        }
+    }
+    query_entries.sort_unstable_by(|left, right| left.1.name().cmp(right.1.name()));
     let command_candidates = command_entries
+        .iter()
+        .map(|(candidate, _)| candidate.clone())
+        .collect::<Vec<_>>();
+    let query_candidates = query_entries
         .iter()
         .map(|(candidate, _)| candidate.clone())
         .collect::<Vec<_>>();
@@ -1383,6 +1470,7 @@ async fn discover_command_tools(
         &begun,
         authorization,
         &command_candidates,
+        &query_candidates,
     )
     .await?;
     let (_, completion) = begun.into_initial_authorization_and_completion();
@@ -1405,13 +1493,6 @@ async fn discover_command_tools(
             },
             None => None,
         };
-        let effective_visibility = constrain_command_discovery_visibility(
-            current_visibility,
-            prior_state
-                .as_deref()
-                .map(CommandDiscoveryCursorState::visibility),
-        )
-        .ok_or_else(invalid_cursor_failure)?;
         let effective_limit = prior_state
             .as_deref()
             .map_or(page_request.limit(), |prior| {
@@ -1423,11 +1504,43 @@ async fn discover_command_tools(
             .map(FixedToolKind::from_policy)
             .map(CommandToolDiscoveryItem::Fixed)
             .collect::<Vec<_>>();
-        catalog.extend(
-            command_entries
-                .into_iter()
-                .map(|(_, descriptor)| CommandToolDiscoveryItem::Command(Box::new(descriptor))),
-        );
+        let mut dynamic = command_entries
+            .into_iter()
+            .enumerate()
+            .map(|(index, (_, descriptor))| {
+                (
+                    descriptor.name().as_str().to_owned(),
+                    current_visibility.command_tools[index],
+                    CommandToolDiscoveryItem::Command(Box::new(descriptor)),
+                )
+            })
+            .chain(
+                query_entries
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (_, descriptor))| {
+                        (
+                            descriptor.name().to_owned(),
+                            current_visibility.named_query_tools[index],
+                            CommandToolDiscoveryItem::NamedQuery(Box::new(descriptor)),
+                        )
+                    }),
+            )
+            .collect::<Vec<_>>();
+        dynamic.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        if dynamic.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err(service.internal_failure(OPERATION, InternalDefect::LowerIntegrity));
+        }
+        let mut combined_visibility = current_visibility.fixed_tools;
+        combined_visibility.extend(dynamic.iter().map(|(_, visible, _)| *visible));
+        let effective_visibility = constrain_command_discovery_visibility(
+            combined_visibility,
+            prior_state
+                .as_deref()
+                .map(CommandDiscoveryCursorState::visibility),
+        )
+        .ok_or_else(invalid_cursor_failure)?;
+        catalog.extend(dynamic.into_iter().map(|(_, _, item)| item));
         if catalog.len() != effective_visibility.len() {
             return Err(service.internal_failure(OPERATION, InternalDefect::ProofMismatch));
         }
@@ -1559,7 +1672,7 @@ async fn discover_resources(
             return Err(finish_failure(&service, &context, &begun, failure).await);
         }
     };
-    let fence = discovery_catalog_fence(active.as_ref(), operation_schemas.identity());
+    let fence = discovery_catalog_fence(active.as_ref(), None, operation_schemas.identity());
     if request.prior_fence() == Some(&fence) {
         drop(authorization);
         let result = match DiscoverResourcesResult::catalog_unchanged(&request, fence) {
@@ -1844,22 +1957,33 @@ async fn read_current_discovery_catalog(
     Ok((active, authorization))
 }
 
+struct ToolDiscoveryVisibility {
+    fixed_tools: Vec<bool>,
+    command_tools: Vec<bool>,
+    named_query_tools: Vec<bool>,
+}
+
 async fn filter_command_discovery_visibility(
     service: &RiffDbServiceInner,
     context: &RequestContext,
     begun: &BegunInvocation,
     first_authorization: Box<AuthorizedOperation>,
-    candidates: &[CommandToolCandidate],
-) -> ServiceResult<Vec<bool>> {
+    command_candidates: &[CommandToolCandidate],
+    named_query_candidates: &[NamedQueryToolCandidate],
+) -> ServiceResult<ToolDiscoveryVisibility> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::DiscoverCommandTools;
-    let batch_count = candidates.len().div_ceil(MAX_DISCOVERY_PAGE_ITEMS).max(1);
     let mut first_authorization = Some(first_authorization);
     let mut fixed_visibility = None;
-    let mut command_visibility = Vec::with_capacity(candidates.len());
-    for batch_index in 0..batch_count {
-        let start = batch_index * MAX_DISCOVERY_PAGE_ITEMS;
-        let end = (start + MAX_DISCOVERY_PAGE_ITEMS).min(candidates.len());
-        let batch = &candidates[start..end];
+    let mut command_visibility = Vec::with_capacity(command_candidates.len());
+    let mut named_query_visibility = Vec::with_capacity(named_query_candidates.len());
+    let mut command_start = 0usize;
+    let mut query_start = 0usize;
+    loop {
+        let command_end = (command_start + MAX_DISCOVERY_PAGE_ITEMS).min(command_candidates.len());
+        let remaining = MAX_DISCOVERY_PAGE_ITEMS - (command_end - command_start);
+        let query_end = (query_start + remaining).min(named_query_candidates.len());
+        let command_batch = &command_candidates[command_start..command_end];
+        let query_batch = &named_query_candidates[query_start..query_end];
         let authorization = match first_authorization.take() {
             Some(authorization) => authorization,
             None => begun.reauthorize(service, context).await?,
@@ -1875,7 +1999,11 @@ async fn filter_command_discovery_visibility(
                 return Err(finish_failure(service, context, begun, failure).await);
             }
         };
-        let visibility = match discovery.tool_catalog(FixedToolCandidate::ALL.as_slice(), batch) {
+        let visibility = match discovery.tool_catalog(
+            FixedToolCandidate::ALL.as_slice(),
+            command_batch,
+            query_batch,
+        ) {
             Ok(visibility) => visibility,
             Err(_) => {
                 let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
@@ -1883,7 +2011,8 @@ async fn filter_command_discovery_visibility(
             }
         };
         if visibility.fixed_tools().len() != FixedToolCandidate::ALL.len()
-            || visibility.command_tools().len() != batch.len()
+            || visibility.command_tools().len() != command_batch.len()
+            || visibility.named_query_tools().len() != query_batch.len()
         {
             let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
             return Err(finish_failure(service, context, begun, failure).await);
@@ -1907,13 +2036,28 @@ async fn filter_command_discovery_visibility(
                 .iter()
                 .map(|visibility| *visibility == DiscoveryVisibility::Visible),
         );
+        named_query_visibility.extend(
+            visibility
+                .named_query_tools()
+                .iter()
+                .map(|visibility| *visibility == DiscoveryVisibility::Visible),
+        );
+        command_start = command_end;
+        query_start = query_end;
+        if command_start == command_candidates.len() && query_start == named_query_candidates.len()
+        {
+            break;
+        }
     }
-    let Some(mut visibility) = fixed_visibility else {
+    let Some(fixed_tools) = fixed_visibility else {
         let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
         return Err(finish_failure(service, context, begun, failure).await);
     };
-    visibility.extend(command_visibility);
-    Ok(visibility)
+    Ok(ToolDiscoveryVisibility {
+        fixed_tools,
+        command_tools: command_visibility,
+        named_query_tools: named_query_visibility,
+    })
 }
 
 async fn filter_resource_discovery_visibility(
@@ -2118,16 +2262,46 @@ fn append_contract_resources(
 
 fn discovery_catalog_fence(
     active: Option<&ValidatedContractBundle>,
+    active_query_module: Option<&ValidatedQueryModule>,
     operation_schemas: crate::OperationSchemaCatalogIdentity,
 ) -> DiscoveryCatalogFence {
     match active {
         None => DiscoveryCatalogFence::no_active_contract(operation_schemas),
-        Some(bundle) => DiscoveryCatalogFence::active_contract(
+        Some(bundle) => DiscoveryCatalogFence::active_contract_with_query_module(
             bundle.lineage().clone(),
             bundle.contract_version(),
             bundle.bundle_hash(),
+            active_query_module.map(ValidatedQueryModule::identity),
             operation_schemas,
         ),
+    }
+}
+
+async fn read_active_query_module_for_discovery(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    contract: ValidatedContractBundle,
+) -> ServiceResult<Option<ValidatedQueryModule>> {
+    let Some(modules) = service.providers.query_modules.as_ref() else {
+        return Ok(None);
+    };
+    match wait_with_control(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        modules.prepare_active_query_module(context.control(), contract),
+    )
+    .await
+    {
+        Ok(Ok(module)) => Ok(module),
+        Ok(Err(crate::QueryModuleReadError::Unavailable)) => {
+            Err(PublicError::storage_unavailable().into())
+        }
+        Ok(Err(crate::QueryModuleReadError::Integrity)) => Err(service.internal_failure(
+            ServiceOperationV1::DiscoverCommandTools,
+            InternalDefect::LowerIntegrity,
+        )),
+        Err(ControlledWaitError::Cancelled) => Err(ServiceFailure::Cancelled),
+        Err(ControlledWaitError::DeadlineExceeded) => Err(ServiceFailure::DeadlineExceeded),
     }
 }
 

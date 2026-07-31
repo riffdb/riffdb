@@ -609,10 +609,11 @@ messages
     1 seconds optional sint64
     2 nanos optional uint32
   riffdb.storage.v1.UnitV1 fields=0
-  riffdb.v1.ActiveDiscoveryCatalogFence fields=3
+  riffdb.v1.ActiveDiscoveryCatalogFence fields=4
     1 contract_lineage optional string
     2 contract_version optional uint64
     3 bundle_hash optional bytes
+    4 active_query_module_hash optional bytes
   riffdb.v1.AdmittedActor fields=4
     1 principal_id optional string
     2 actor_kind optional .riffdb.v1.ActorKind
@@ -714,9 +715,10 @@ messages
     5 command_id optional uint32
     6 input_schema optional .riffdb.v1.GeneratedSchemaArtifact
     7 outcome_schema optional .riffdb.v1.GeneratedSchemaArtifact
-  riffdb.v1.CommandToolDiscoveryItem fields=2
+  riffdb.v1.CommandToolDiscoveryItem fields=3
     1 fixed_tool optional .riffdb.v1.FixedToolKind oneof=item
     2 command_tool optional .riffdb.v1.CommandToolDescriptor oneof=item
+    3 named_query_tool optional .riffdb.v1.NamedQueryToolDescriptor oneof=item
   riffdb.v1.CommandToolDiscoveryPage fields=4
     1 items repeated .riffdb.v1.CommandToolDiscoveryItem
     2 next_cursor optional bytes proto3-optional oneof=_next_cursor
@@ -763,9 +765,10 @@ messages
     5 command_id optional uint32
     6 input_schema optional .riffdb.v1.GeneratedSchemaIdentity
     7 outcome_schema optional .riffdb.v1.GeneratedSchemaIdentity
-  riffdb.v1.CompactCommandToolDiscoveryItem fields=2
+  riffdb.v1.CompactCommandToolDiscoveryItem fields=3
     1 fixed_tool optional .riffdb.v1.FixedToolKind oneof=item
     2 command_tool optional .riffdb.v1.CompactCommandToolDescriptor oneof=item
+    3 named_query_tool optional .riffdb.v1.CompactNamedQueryToolDescriptor oneof=item
   riffdb.v1.CompactCommandToolDiscoveryPage fields=3
     1 items repeated .riffdb.v1.CompactCommandToolDiscoveryItem
     2 next_cursor optional bytes proto3-optional oneof=_next_cursor
@@ -774,6 +777,16 @@ messages
     1 contract_lineage optional string
     2 entity_type_id optional uint32
     3 schema optional .riffdb.v1.GeneratedSchemaIdentity
+  riffdb.v1.CompactNamedQueryToolDescriptor fields=9
+    1 tool_name optional string
+    2 source_query optional string
+    3 contract_lineage optional string
+    4 contract_version optional uint64
+    5 query_module_name optional string
+    6 query_module_version optional uint64
+    7 query_module_hash optional bytes
+    8 input_schema_hash optional bytes
+    9 result_schema_hash optional bytes
   riffdb.v1.CompactResourceDescriptor fields=10
     1 active_contract optional .riffdb.v1.Unit oneof=resource
     2 contract_version optional .riffdb.v1.ContractVersionResource oneof=resource
@@ -1046,6 +1059,19 @@ messages
     1 contract_lineage optional string
     2 query_module_hash optional bytes
     3 query_name optional string
+  riffdb.v1.NamedQueryToolDescriptor fields=9
+    1 tool_name optional string
+    2 source_query optional string
+    3 contract_lineage optional string
+    4 contract_version optional uint64
+    5 query_module_name optional string
+    6 query_module_version optional uint64
+    7 query_module_hash optional bytes
+    8 input_schema optional .riffdb.v1.NamedQueryToolSchemaArtifact
+    9 result_schema optional .riffdb.v1.NamedQueryToolSchemaArtifact
+  riffdb.v1.NamedQueryToolSchemaArtifact fields=2
+    1 schema_hash optional bytes
+    2 canonical_json optional string
   riffdb.v1.NormalCapabilityCreated fields=2
     1 transition optional .riffdb.v1.CapabilityTransition
     2 token optional string

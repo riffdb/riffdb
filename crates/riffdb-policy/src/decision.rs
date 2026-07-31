@@ -12,12 +12,14 @@ use riffdb_types::{
 
 use crate::operation::{
     ApplicationQueryTarget, FieldRequirement, PermissionRequirement, command_tool_permission,
-    fixed_tool_permission_kind, resource_field_requirement, resource_permission,
+    fixed_tool_permission_kind, named_query_tool_permission, resource_field_requirement,
+    resource_permission,
 };
 use crate::{
     AgentSessionAdmissionPolicy, AuthorizedCapabilityMutationPreparation,
     AuthorizedCommandExecution, CommandAuthorizationBindingError, CommandToolCandidate,
-    DiscoveryResource, FixedToolCandidate, OperationRequest, UntrustedInvocationClaims,
+    DiscoveryResource, FixedToolCandidate, NamedQueryToolCandidate, OperationRequest,
+    UntrustedInvocationClaims,
 };
 
 /// Maximum dynamic tool or resource candidates filtered by one safe-point proof.
@@ -893,6 +895,7 @@ impl std::error::Error for DiscoveryFilterError {}
 pub struct ToolCatalogVisibility {
     fixed_tools: Vec<DiscoveryVisibility>,
     command_tools: Vec<DiscoveryVisibility>,
+    named_query_tools: Vec<DiscoveryVisibility>,
 }
 
 impl ToolCatalogVisibility {
@@ -906,6 +909,12 @@ impl ToolCatalogVisibility {
     #[must_use]
     pub fn command_tools(&self) -> &[DiscoveryVisibility] {
         &self.command_tools
+    }
+
+    /// Returns masks corresponding positionally to the supplied named-query candidates.
+    #[must_use]
+    pub fn named_query_tools(&self) -> &[DiscoveryVisibility] {
+        &self.named_query_tools
     }
 }
 
@@ -940,7 +949,8 @@ impl AuthorizedDiscovery {
     pub fn tool_catalog(
         self,
         fixed_candidates: &[FixedToolCandidate],
-        candidates: &[CommandToolCandidate],
+        command_candidates: &[CommandToolCandidate],
+        named_query_candidates: &[NamedQueryToolCandidate],
     ) -> Result<ToolCatalogVisibility, DiscoveryFilterError> {
         if self.request.operation() != ServiceOperationV1::DiscoverCommandTools {
             return Err(DiscoveryFilterError::CatalogMismatch);
@@ -948,22 +958,34 @@ impl AuthorizedDiscovery {
         if fixed_candidates != FixedToolCandidate::ALL.as_slice() {
             return Err(DiscoveryFilterError::FixedToolInventoryMismatch);
         }
-        if candidates.len() > MAX_DISCOVERY_PAGE_ITEMS {
+        if command_candidates
+            .len()
+            .checked_add(named_query_candidates.len())
+            .is_none_or(|count| count > MAX_DISCOVERY_PAGE_ITEMS)
+        {
             return Err(DiscoveryFilterError::TooManyCandidates);
         }
         let fixed_tools = fixed_candidates
             .iter()
             .map(|candidate| self.fixed_tool_visibility(*candidate))
             .collect();
-        let command_tools = candidates
+        let command_tools = command_candidates
             .iter()
             .map(|candidate| {
-                let globally_scoped = matches!(self.grant.tenant_scope(), TenantScope::Global);
-                let all_partitions = matches!(self.grant.partition_scope(), PartitionScopeV1::All);
-                if globally_scoped
-                    && all_partitions
-                    && check_permission(&self.grant, &command_tool_permission(candidate))
-                        == PermissionCheck::Allowed
+                if check_permission(&self.grant, &command_tool_permission(candidate))
+                    == PermissionCheck::Allowed
+                {
+                    DiscoveryVisibility::Visible
+                } else {
+                    DiscoveryVisibility::Hidden
+                }
+            })
+            .collect();
+        let named_query_tools = named_query_candidates
+            .iter()
+            .map(|candidate| {
+                if check_permission(&self.grant, &named_query_tool_permission(candidate))
+                    == PermissionCheck::Allowed
                 {
                     DiscoveryVisibility::Visible
                 } else {
@@ -974,6 +996,7 @@ impl AuthorizedDiscovery {
         Ok(ToolCatalogVisibility {
             fixed_tools,
             command_tools,
+            named_query_tools,
         })
     }
 
@@ -1548,7 +1571,7 @@ mod tests {
     }
 
     #[test]
-    fn command_discovery_is_exact_approval_and_scope_filtered() {
+    fn application_tool_discovery_is_exact_and_invocation_scope_neutral() {
         let candidate = CommandToolCandidate::new(lineage(), CommandId::first());
         let permission = CapabilityPermissionV1::InvokeCommand(lineage(), CommandId::first());
         let visible = discovery(
@@ -1564,41 +1587,126 @@ mod tests {
         .tool_catalog(
             FixedToolCandidate::ALL.as_slice(),
             std::slice::from_ref(&candidate),
+            &[],
         )
         .expect("bounded catalog");
         assert_eq!(visible.command_tools(), &[DiscoveryVisibility::Visible]);
 
-        for denied_grant in [
-            grant(
-                TenantScope::Global,
-                explicit_partition(),
-                vec![permission.clone()],
-                Vec::new(),
-                Vec::new(),
-            ),
-            grant(
-                TenantScope::Global,
-                PartitionScopeV1::All,
-                vec![permission.clone()],
-                Vec::new(),
-                vec![CapabilityPermissionKindV1::InvokeCommand],
-            ),
-            grant(
+        let approval_hidden = grant(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            vec![permission.clone()],
+            Vec::new(),
+            vec![CapabilityPermissionKindV1::InvokeCommand],
+        );
+        let hidden = discovery(OperationRequest::discover_command_tools(), approval_hidden)
+            .tool_catalog(
+                FixedToolCandidate::ALL.as_slice(),
+                std::slice::from_ref(&candidate),
+                &[],
+            )
+            .expect("bounded catalog");
+        assert_eq!(hidden.command_tools(), &[DiscoveryVisibility::Hidden]);
+
+        for (tenant_scope, partition_scope) in [
+            (TenantScope::Global, explicit_partition()),
+            (
                 TenantScope::Tenant(riffdb_types::TenantId::new("tenant-a").expect("valid tenant")),
                 PartitionScopeV1::All,
-                vec![permission.clone()],
+            ),
+        ] {
+            let scoped = discovery(
+                OperationRequest::discover_command_tools(),
+                grant(
+                    tenant_scope,
+                    partition_scope,
+                    vec![permission.clone()],
+                    Vec::new(),
+                    Vec::new(),
+                ),
+            )
+            .tool_catalog(
+                FixedToolCandidate::ALL.as_slice(),
+                std::slice::from_ref(&candidate),
+                &[],
+            )
+            .expect("bounded catalog");
+            assert_eq!(scoped.command_tools(), &[DiscoveryVisibility::Visible]);
+        }
+    }
+
+    #[test]
+    fn named_query_discovery_is_exact_module_and_name_filtered() {
+        let module_hash = riffdb_types::QueryModuleHash::from_bytes([0x71; 32]);
+        let query_name = riffdb_types::QueryOperationName::new("TicketPage")
+            .expect("valid query operation name");
+        let candidate =
+            crate::NamedQueryToolCandidate::new(lineage(), module_hash, query_name.clone());
+        let permission =
+            CapabilityPermissionV1::ExecuteNamedQuery(lineage(), module_hash, query_name);
+
+        let visible = discovery(
+            OperationRequest::discover_command_tools(),
+            grant(
+                TenantScope::Global,
+                PartitionScopeV1::All,
+                vec![permission],
                 Vec::new(),
                 Vec::new(),
             ),
-        ] {
-            let hidden = discovery(OperationRequest::discover_command_tools(), denied_grant)
-                .tool_catalog(
-                    FixedToolCandidate::ALL.as_slice(),
-                    std::slice::from_ref(&candidate),
-                )
-                .expect("bounded catalog");
-            assert_eq!(hidden.command_tools(), &[DiscoveryVisibility::Hidden]);
-        }
+        )
+        .tool_catalog(
+            FixedToolCandidate::ALL.as_slice(),
+            &[],
+            std::slice::from_ref(&candidate),
+        )
+        .expect("bounded catalog");
+        assert_eq!(visible.named_query_tools(), &[DiscoveryVisibility::Visible]);
+
+        let tenant_visible = discovery(
+            OperationRequest::discover_command_tools(),
+            grant(
+                TenantScope::Tenant(riffdb_types::TenantId::new("tenant-a").expect("valid tenant")),
+                explicit_partition(),
+                vec![CapabilityPermissionV1::ExecuteNamedQuery(
+                    lineage(),
+                    module_hash,
+                    riffdb_types::QueryOperationName::new("TicketPage")
+                        .expect("valid query operation name"),
+                )],
+                Vec::new(),
+                Vec::new(),
+            ),
+        )
+        .tool_catalog(
+            FixedToolCandidate::ALL.as_slice(),
+            &[],
+            std::slice::from_ref(&candidate),
+        )
+        .expect("bounded catalog");
+        assert_eq!(
+            tenant_visible.named_query_tools(),
+            &[DiscoveryVisibility::Visible]
+        );
+
+        let hidden = discovery(
+            OperationRequest::discover_command_tools(),
+            grant(
+                TenantScope::Global,
+                PartitionScopeV1::All,
+                vec![CapabilityPermissionV1::ExecuteNamedQuery(
+                    lineage(),
+                    riffdb_types::QueryModuleHash::from_bytes([0x72; 32]),
+                    riffdb_types::QueryOperationName::new("TicketPage")
+                        .expect("valid query operation name"),
+                )],
+                Vec::new(),
+                Vec::new(),
+            ),
+        )
+        .tool_catalog(FixedToolCandidate::ALL.as_slice(), &[], &[candidate])
+        .expect("bounded catalog");
+        assert_eq!(hidden.named_query_tools(), &[DiscoveryVisibility::Hidden]);
     }
 
     #[test]
@@ -1635,7 +1743,7 @@ mod tests {
                         Vec::new(),
                     ),
                 )
-                .tool_catalog(FixedToolCandidate::ALL.as_slice(), &[])
+                .tool_catalog(FixedToolCandidate::ALL.as_slice(), &[], &[])
                 .expect("bounded catalog")
                 .fixed_tools()[FixedToolCandidate::ALL
                     .iter()
@@ -1782,7 +1890,7 @@ mod tests {
                 Vec::new(),
             ),
         )
-        .tool_catalog(FixedToolCandidate::ALL.as_slice(), &candidates);
+        .tool_catalog(FixedToolCandidate::ALL.as_slice(), &candidates, &[]);
         assert_eq!(result, Err(DiscoveryFilterError::TooManyCandidates));
     }
 

@@ -258,6 +258,33 @@ impl McpDynamicToolDefinition {
         )
     }
 
+    /// Builds one compiler-owned read-only named-query presentation.
+    pub fn from_discovered_query(
+        name: impl Into<String>,
+        input_schema: SchemaDocument,
+        result_schema: SchemaDocument,
+    ) -> Result<Self, McpHandlerContractError> {
+        let name = name.into();
+        if name.is_empty()
+            || name.len() > 128
+            || !name.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return Err(McpHandlerContractError);
+        }
+        Ok(Self {
+            name,
+            title: None,
+            description: None,
+            annotations: McpDynamicToolAnnotations::new(true, false, true, false),
+            input_schema,
+            outcome_schema: result_schema.clone(),
+            result_schema,
+        })
+    }
+
     /// Checks exact name, presentation bounds, and mechanical result composition.
     pub fn new(
         name: impl Into<String>,
@@ -2837,6 +2864,56 @@ mod tests {
             .build()
             .expect("runtime")
             .block_on(future)
+    }
+
+    #[test]
+    fn named_query_tools_are_read_only_and_preserve_compiler_schemas() {
+        let input_source = concat!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+            "\"additionalProperties\":false,\"properties\":{},\"required\":[],\"type\":\"object\"}"
+        );
+        let result_source = concat!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+            "\"oneOf\":[{\"additionalProperties\":false,\"properties\":{",
+            "\"outcome\":{\"const\":\"Found\",\"type\":\"string\"}},",
+            "\"required\":[\"outcome\"],\"type\":\"object\"}]}"
+        );
+        let input = SchemaDocument::from_canonical(
+            "compiler.named-query-input/1",
+            hash_schema(input_source.as_bytes()),
+            input_source,
+        )
+        .expect("input schema");
+        let result = SchemaDocument::from_canonical(
+            "compiler.named-query-result/1",
+            hash_schema(result_source.as_bytes()),
+            result_source,
+        )
+        .expect("result schema");
+
+        let definition = McpDynamicToolDefinition::from_discovered_query(
+            "ticket_desk_ticket_page",
+            input.clone(),
+            result.clone(),
+        )
+        .expect("named-query tool");
+
+        assert_eq!(
+            definition.annotations,
+            McpDynamicToolAnnotations::new(true, false, true, false)
+        );
+        assert_eq!(
+            definition.input_schema().canonical_bytes(),
+            input.canonical_bytes()
+        );
+        assert_eq!(
+            definition.outcome_schema().canonical_bytes(),
+            result.canonical_bytes()
+        );
+        assert_eq!(
+            definition.result_schema().canonical_bytes(),
+            result.canonical_bytes()
+        );
     }
 
     #[test]

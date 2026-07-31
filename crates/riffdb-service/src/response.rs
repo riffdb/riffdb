@@ -12,17 +12,18 @@ use riffdb_types::{
 use crate::{
     BuildInfo, CheckSymbolicQueryResult, CheckedSymbolicQuery, CommandToolDescriptor,
     CommandToolDiscoveryItem, CommitScanFence, CommitSubscriptionEvent, CommitView,
-    CompactCommandToolDescriptor, CompactCommandToolDiscoveryItem, CompactResourceDescriptor,
-    CompactResourceDescriptorRef, ContractDescriptor, ContractValidationResult,
-    CreateCapabilityResult, CursorToken, DeclaredOutcomeView, DeployContractResult,
-    DeployQueryModuleResult, DescribeSymbolicContractResult, DiscoverCommandToolsResult,
-    DiscoverCommandToolsResultRef, DiscoverResourcesResult, DiscoverResourcesResultRef,
-    DiscoveryCatalogFence, DiscoveryCatalogStateRef, DurableEventView, EntityView,
-    ExecuteCommandResult, ExecuteSymbolicQueryResult, ExplainCommandResult,
+    CompactCommandToolDescriptor, CompactCommandToolDiscoveryItem, CompactNamedQueryToolDescriptor,
+    CompactResourceDescriptor, CompactResourceDescriptorRef, ContractDescriptor,
+    ContractValidationResult, CreateCapabilityResult, CursorToken, DeclaredOutcomeView,
+    DeployContractResult, DeployQueryModuleResult, DescribeSymbolicContractResult,
+    DiscoverCommandToolsResult, DiscoverCommandToolsResultRef, DiscoverResourcesResult,
+    DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryCatalogStateRef, DurableEventView,
+    EntityView, ExecuteCommandResult, ExecuteSymbolicQueryResult, ExplainCommandResult,
     ExplainSymbolicQueryResult, GeneratedSchemaIdentity, GetActiveContractResult, GetCommitResult,
     GetContractVersionResult, GetEntityResult, GetOfflineMaintenanceOperationResult,
     GetProjectionStatusResult, HealthReport, HealthResult, IndexRowView, IndexScanFence,
-    JournaledCommandResult, ListPendingOutboxDeliveriesResult, NormalCreateCapabilityResult,
+    JournaledCommandResult, ListPendingOutboxDeliveriesResult, NamedQueryToolDescriptor,
+    NamedQueryToolSchemaArtifact, NormalCreateCapabilityResult,
     OfflineMaintenanceOperationObservation, OfflineMaintenanceStartResult, OperationSchemaArtifact,
     OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
     OutboxDeliverySummary, Page, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
@@ -1298,6 +1299,53 @@ impl ServiceResponseCharge for CompactCommandToolDescriptor {
     }
 }
 
+impl ServiceResponseCharge for NamedQueryToolSchemaArtifact {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.bytes(self.schema_hash().as_bytes().len())?;
+        charge.bytes(self.canonical_json().len())?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceResponseCharge for NamedQueryToolDescriptor {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.bytes(self.name().len())?;
+        charge.bytes(self.source_query().as_str().len())?;
+        charge_lineage(&mut charge, self.lineage())?;
+        charge.fields(2)?;
+        charge.bytes(self.module_name().as_str().len())?;
+        charge.fields(1)?;
+        charge.bytes(self.module_hash().as_bytes().len())?;
+        charge.nested(self.input_schema())?;
+        charge.nested(self.result_schema())?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceResponseCharge for CompactNamedQueryToolDescriptor {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.bytes(self.name().len())?;
+        charge.bytes(self.source_query().as_str().len())?;
+        charge_lineage(&mut charge, self.lineage())?;
+        charge.fields(2)?;
+        charge.bytes(self.module_name().as_str().len())?;
+        charge.fields(1)?;
+        charge.bytes(self.module_hash().as_bytes().len())?;
+        charge.bytes(self.input_schema_hash().as_bytes().len())?;
+        charge.bytes(self.result_schema_hash().as_bytes().len())?;
+        Ok(charge.finish())
+    }
+}
+
 impl ServiceResponseCharge for OperationSchemaIdentity {
     fn service_response_charge_v1(
         &self,
@@ -1358,6 +1406,9 @@ impl ServiceResponseCharge for DiscoveryCatalogFence {
             charge.fields(2)?;
             charge_lineage(&mut charge, lineage)?;
             charge.bytes(32)?;
+            if self.active_query_module_hash().is_some() {
+                charge.bytes(32)?;
+            }
         }
         charge.nested(self.operation_schemas())?;
         Ok(charge.finish())
@@ -1371,6 +1422,7 @@ impl ServiceResponseCharge for CommandToolDiscoveryItem {
         let descriptor = match self {
             Self::Fixed(_) => None,
             Self::Command(descriptor) => Some(descriptor.service_response_charge_v1()?),
+            Self::NamedQuery(descriptor) => Some(descriptor.service_response_charge_v1()?),
         };
         raw_command_tool_discovery_item_charge(descriptor)
     }
@@ -1383,6 +1435,7 @@ impl ServiceResponseCharge for CompactCommandToolDiscoveryItem {
         let descriptor = match self {
             Self::Fixed(_) => None,
             Self::Command(descriptor) => Some(descriptor.service_response_charge_v1()?),
+            Self::NamedQuery(descriptor) => Some(descriptor.service_response_charge_v1()?),
         };
         let result = raw_command_tool_discovery_item_charge(descriptor)?;
         if result.bytes() > MAX_COMPACT_DISCOVERY_ITEM_BYTES {
@@ -1624,6 +1677,9 @@ seal_response_types!(
     ListPendingOutboxDeliveriesResult,
     CommandToolDescriptor,
     CompactCommandToolDescriptor,
+    NamedQueryToolSchemaArtifact,
+    NamedQueryToolDescriptor,
+    CompactNamedQueryToolDescriptor,
     CommandToolDiscoveryItem,
     CompactCommandToolDiscoveryItem,
     GeneratedSchemaIdentity,
