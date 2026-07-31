@@ -1518,6 +1518,11 @@ async fn await_multi_restore_retry(
     let operation_id = receipt.operation_id();
     let input_hash = receipt.input_hash();
     let routing = lifecycle.runtime_routing();
+    // The narrow retry host discards the validated startup, so the target's
+    // durable fence must be captured before the handoff. Without it the restore
+    // driver has no monotonicity evidence if the target becomes unreadable.
+    let retained_target_history_incarnation =
+        Some(startup.retained_metadata().history_incarnation());
     let retry_host = RunningRestoreRetryHost::start(
         startup,
         operation_id,
@@ -1603,7 +1608,7 @@ async fn await_multi_restore_retry(
             &prepared.identifiers,
             &prepared.clocks,
             recovery,
-            None,
+            retained_target_history_incarnation,
             None,
         )?;
         run_offline_maintenance(&mut storage, &maintenance_lifecycle, &dependencies, request)
@@ -2178,6 +2183,11 @@ async fn run_restore_retry_until_ready(
     let input_hash = receipt.input_hash();
     let listen_address = transport.local_address();
     let routing = lifecycle.runtime_routing();
+    // The narrow retry host discards the validated startup, so the target's
+    // durable fence must be captured before the handoff. Without it the restore
+    // driver has no monotonicity evidence if the target becomes unreadable.
+    let retained_target_history_incarnation =
+        Some(startup.retained_metadata().history_incarnation());
     let retry_host = match RunningRestoreRetryHost::start(
         startup,
         operation_id,
@@ -2278,7 +2288,7 @@ async fn run_restore_retry_until_ready(
             &prepared.identifiers,
             &prepared.clocks,
             recovery,
-            None,
+            retained_target_history_incarnation,
             None,
         )?;
         run_offline_maintenance(&mut storage, &maintenance_lifecycle, &dependencies, request)
@@ -3519,6 +3529,56 @@ mod tests {
         assert!(driver < fresh_generation);
         assert!(!retry.contains("ProductionGraphBuilder"));
         assert!(!retry.contains("HostedMcp::bind"));
+    }
+
+    #[test]
+    fn restore_retry_resumption_carries_the_target_fence_past_the_narrow_host() {
+        // The narrow host consumes the validated startup and drops its retained
+        // metadata, so both retry supervisors must read the target's history
+        // incarnation before the handoff and hand it to the restore driver.
+        let source = include_str!("daemon.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .expect("daemon architecture boundary")
+            .0;
+        for (supervisor, next) in [
+            (
+                "async fn await_multi_restore_retry(",
+                "async fn await_multi_recovery(",
+            ),
+            (
+                "async fn run_restore_retry_until_ready(",
+                "async fn run_recovery_until_ready(",
+            ),
+        ] {
+            let body = production
+                .split_once(supervisor)
+                .and_then(|(_, tail)| tail.split_once(next))
+                .map(|(body, _)| body)
+                .unwrap_or_else(|| panic!("{supervisor} body"));
+            let capture = body
+                .find("startup.retained_metadata().history_incarnation()")
+                .unwrap_or_else(|| panic!("{supervisor} must capture the target fence"));
+            let handoff = body
+                .find("RunningRestoreRetryHost::start(")
+                .unwrap_or_else(|| panic!("{supervisor} narrow host start"));
+            let dependencies = body
+                .find("maintenance_driver_dependencies(")
+                .unwrap_or_else(|| panic!("{supervisor} driver dependencies"));
+            assert!(
+                capture < handoff,
+                "{supervisor} must read the fence before surrendering the startup"
+            );
+            assert!(handoff < dependencies);
+            let arguments = body[dependencies..]
+                .split_once(")?;")
+                .map(|(head, _)| head)
+                .unwrap_or_else(|| panic!("{supervisor} dependency arguments"));
+            assert!(
+                arguments.contains("retained_target_history_incarnation,"),
+                "{supervisor} must pass the captured fence to the restore driver"
+            );
+        }
     }
 
     #[test]
