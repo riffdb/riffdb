@@ -2,11 +2,12 @@
 
 #![forbid(unsafe_code)]
 
+mod bench_root_support;
+
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 const POSTGRES_IMAGE: &str = "postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818";
 const PUBLIC_RUN_SUCCESS: &[u8] =
@@ -92,14 +93,10 @@ fn safety_package_is_nonproduction_and_cannot_enter_benchmarks() -> TestResult<(
 
 #[test]
 fn benchmark_manifest_scan_ignores_generated_target_trees() -> TestResult<()> {
-    static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
-
-    let root = std::env::temp_dir().join(format!(
-        "riffdb-wp139-target-scan-{}-{}",
-        std::process::id(),
-        NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::create_dir(&root)?;
+    let owned = bench_root_support::unique_bench_dir("wp139-target-scan");
+    let root = owned.path().to_path_buf();
+    // Keep owned alive for the test body (Drop cleans the tree).
+    let _owned = owned;
     let cleanup = TestDirectory(root.clone());
     fs::create_dir(root.join("source"))?;
     fs::write(

@@ -6,8 +6,11 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicU64, Ordering};
 
+use riffdb_bench_root::{
+    BenchDir, BenchRoot, BenchRootOptions, default_perf_db_root, run_device_baseline_for,
+    sweep_stale,
+};
 use riffdb_storage_redb::benchmark_support::{
     EngineDurability, EngineMechanicsProfile, ServiceAuditGrowthHarness,
     initialize_engine_mechanics, measure_clean_startup, measure_engine_reopen,
@@ -25,7 +28,6 @@ const PERF_013_MAX_GROWTH_RATIO: u64 = 32;
 const PERF_013_MAX_STARTUP_NS: u64 = 30_000_000_000;
 const PREFLIGHT_ENVIRONMENT: &str = "RIFFDB_COMMAND_GROWTH_PREFLIGHT";
 const PREFLIGHT_EVIDENCE: &str = "semantic-crash-v1";
-static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 
 fn main() -> ExitCode {
     match run() {
@@ -47,96 +49,150 @@ fn run() -> Result<bool, ()> {
     {
         return Err(());
     }
-    let root = TempRoot::new()?;
-    let path = root.path().join("service-audit-growth.redb");
-    let mut harness = ServiceAuditGrowthHarness::new(&path).map_err(|_| ())?;
-    let (checkpoints, window) = if configuration.checked {
-        (&CHECKED_CHECKPOINTS[..], CHECKED_WINDOW)
-    } else {
-        (&SMOKE_CHECKPOINTS[..], SMOKE_WINDOW)
-    };
-
+    let default_root =
+        default_perf_db_root(Path::new(env!("CARGO_MANIFEST_DIR")), "command-growth");
+    let bench_root = BenchRoot::resolve(BenchRootOptions {
+        harness: "command-growth",
+        cli_override: configuration.database_root.clone(),
+        default_root,
+        allow_tmpfs: configuration.allow_tmpfs,
+        min_free_bytes: 64 * 1024 * 1024,
+    })
+    .map_err(|error| {
+        eprintln!("command-growth root: {error}");
+    })?;
+    let _ = sweep_stale(&bench_root);
+    let baseline = run_device_baseline_for(
+        bench_root.path(),
+        std::time::Duration::from_millis(if configuration.checked { 10_000 } else { 100 }),
+    )
+    .ok();
+    if let Some(baseline) = &baseline {
+        println!(
+            "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"device_baseline\",\"fdatasync_p50_us\":{},\"fdatasync_p99_us\":{},\"fsyncs_per_s\":{:.3},\"sequential_write_mib_s\":{:.3}}}",
+            baseline.fdatasync_p50_us,
+            baseline.fdatasync_p99_us,
+            baseline.fsyncs_per_s,
+            baseline.sequential_write_mib_s
+        );
+    }
     println!(
-        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"configuration\",\"workload\":\"service_audit_started_failed_pair\",\"acknowledgement_durability\":\"sync\",\"redb_commit_profile\":\"standard\",\"engine_durability\":\"immediate_one_phase\",\"durable_commits_per_command\":2,\"group_commands\":1,\"window_commands\":{window},\"semantic_preflight\":\"{}\"}}",
-        if preflight_passed {
-            "passed"
-        } else {
-            "not_run"
-        }
+        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"environment\",\"body\":{}}}",
+        bench_root.environment_report_json()
     );
 
-    let mut next_command = 1_u64;
-    let mut first_rate = None;
-    let mut final_rate = 0_u64;
-    let mut startup_at_4096_ns = None;
-    let mut startup_at_65536_ns = None;
-    for checkpoint in checkpoints {
-        while next_command.saturating_sub(1) < *checkpoint {
-            let remaining = checkpoint.saturating_sub(next_command.saturating_sub(1));
-            let chunk = usize::try_from(remaining.min(256)).map_err(|_| ())?;
-            harness.run_window(next_command, chunk).map_err(|_| ())?;
-            next_command = next_command
-                .checked_add(u64::try_from(chunk).map_err(|_| ())?)
-                .ok_or(())?;
-        }
-        let sample = harness.run_window(next_command, window).map_err(|_| ())?;
-        next_command = next_command
-            .checked_add(u64::try_from(window).map_err(|_| ())?)
-            .ok_or(())?;
-        let elapsed_ns = u64::try_from(sample.append().as_nanos()).map_err(|_| ())?;
-        let rate = commands_per_second(sample.commands(), elapsed_ns)?;
-        first_rate.get_or_insert(rate);
-        final_rate = rate;
-        println!(
-            "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"window\",\"retained_commands_before\":{checkpoint},\"commands\":{},\"audit_records_per_command\":2,\"queue_wait_ns\":0,\"semantic_evaluation_ns\":{},\"transaction_current_table_and_durable_commit_ns\":{elapsed_ns},\"commands_per_second\":{rate},\"file_bytes\":{}}}",
-            sample.commands(),
-            sample.preparation().as_nanos(),
-            sample.file_bytes()
-        );
+    let mut startup_4096_reps = Vec::new();
+    let mut startup_65536_reps = Vec::new();
+    let mut group_summaries = Vec::new();
+    let mut growth_summaries = Vec::new();
 
-        // Per-checkpoint clean startup wall time (full structural+historical drain).
-        // Drop the live harness so open is exclusive, measure, then reopen.
+    for rep in 0..configuration.reps {
+        let dir = BenchDir::create(&bench_root, "command-growth").map_err(|_| ())?;
+        let path = dir.path().join("service-audit-growth.redb");
+        let mut harness = ServiceAuditGrowthHarness::new(&path).map_err(|_| ())?;
+        let (checkpoints, window) = if configuration.checked {
+            (&CHECKED_CHECKPOINTS[..], CHECKED_WINDOW)
+        } else {
+            (&SMOKE_CHECKPOINTS[..], SMOKE_WINDOW)
+        };
+
+        if rep == 0 {
+            println!(
+                "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"configuration\",\"workload\":\"service_audit_started_failed_pair\",\"acknowledgement_durability\":\"sync\",\"redb_commit_profile\":\"standard\",\"engine_durability\":\"immediate_one_phase\",\"durable_commits_per_command\":2,\"group_commands\":1,\"window_commands\":{window},\"reps\":{},\"semantic_preflight\":\"{}\"}}",
+                configuration.reps,
+                if preflight_passed {
+                    "passed"
+                } else {
+                    "not_run"
+                }
+            );
+        }
+
+        let mut next_command = 1_u64;
+        let mut first_rate = None;
+        let mut final_rate = 0_u64;
+        let mut startup_at_4096_ns = None;
+        let mut startup_at_65536_ns = None;
+        for checkpoint in checkpoints {
+            while next_command.saturating_sub(1) < *checkpoint {
+                let remaining = checkpoint.saturating_sub(next_command.saturating_sub(1));
+                let chunk = usize::try_from(remaining.min(256)).map_err(|_| ())?;
+                harness.run_window(next_command, chunk).map_err(|_| ())?;
+                next_command = next_command
+                    .checked_add(u64::try_from(chunk).map_err(|_| ())?)
+                    .ok_or(())?;
+            }
+            let sample = harness.run_window(next_command, window).map_err(|_| ())?;
+            next_command = next_command
+                .checked_add(u64::try_from(window).map_err(|_| ())?)
+                .ok_or(())?;
+            let elapsed_ns = u64::try_from(sample.append().as_nanos()).map_err(|_| ())?;
+            let rate = commands_per_second(sample.commands(), elapsed_ns)?;
+            first_rate.get_or_insert(rate);
+            final_rate = rate;
+            println!(
+                "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"window\",\"rep\":{rep},\"retained_commands_before\":{checkpoint},\"commands\":{},\"audit_records_per_command\":2,\"queue_wait_ns\":0,\"semantic_evaluation_ns\":{},\"transaction_current_table_and_durable_commit_ns\":{elapsed_ns},\"commands_per_second\":{rate},\"file_bytes\":{}}}",
+                sample.commands(),
+                sample.preparation().as_nanos(),
+                sample.file_bytes()
+            );
+
+            drop(harness);
+            let startup_ns =
+                u64::try_from(measure_clean_startup(&path).map_err(|_| ())?.as_nanos())
+                    .map_err(|_| ())?;
+            println!(
+                "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"startup\",\"rep\":{rep},\"retained_commands\":{checkpoint},\"startup_ns\":{startup_ns}}}"
+            );
+            if *checkpoint == 4_096 {
+                startup_at_4096_ns = Some(startup_ns);
+            }
+            if *checkpoint == 65_536 {
+                startup_at_65536_ns = Some(startup_ns);
+            }
+            harness = ServiceAuditGrowthHarness::reopen(&path).map_err(|_| ())?;
+        }
+
         drop(harness);
-        let startup_ns =
-            u64::try_from(measure_clean_startup(&path).map_err(|_| ())?.as_nanos()).map_err(|_| ())?;
+        let recovery_ns = u64::try_from(measure_engine_reopen(&path).map_err(|_| ())?.as_nanos())
+            .map_err(|_| ())?;
         println!(
-            "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"startup\",\"retained_commands\":{checkpoint},\"startup_ns\":{startup_ns}}}"
+            "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"recovery\",\"rep\":{rep},\"retained_commands\":{},\"engine_reopen_ns\":{recovery_ns}}}",
+            next_command.saturating_sub(1)
         );
-        if *checkpoint == 4_096 {
-            startup_at_4096_ns = Some(startup_ns);
+        let comparison = run_mechanics_comparison(dir.path(), configuration.checked, rep)?;
+        let first_rate = first_rate.ok_or(())?;
+        let retained_basis_points = final_rate.checked_mul(10_000).ok_or(())? / first_rate.max(1);
+        growth_summaries.push((first_rate, final_rate, retained_basis_points));
+        if let Some(v) = startup_at_4096_ns {
+            startup_4096_reps.push(v);
         }
-        if *checkpoint == 65_536 {
-            startup_at_65536_ns = Some(startup_ns);
+        if let Some(v) = startup_at_65536_ns {
+            startup_65536_reps.push(v);
         }
-        harness = ServiceAuditGrowthHarness::reopen(&path).map_err(|_| ())?;
+        group_summaries.push(comparison);
     }
 
-    drop(harness);
-    let recovery_ns =
-        u64::try_from(measure_engine_reopen(&path).map_err(|_| ())?.as_nanos()).map_err(|_| ())?;
-    println!(
-        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"recovery\",\"retained_commands\":{},\"engine_reopen_ns\":{recovery_ns}}}",
-        next_command.saturating_sub(1)
-    );
-    let comparison = run_mechanics_comparison(root.path(), configuration.checked)?;
-    let first_rate = first_rate.ok_or(())?;
-    let retained_basis_points = final_rate.checked_mul(10_000).ok_or(())? / first_rate.max(1);
+    let (first_rate, final_rate, retained_basis_points) = median_growth(&growth_summaries)?;
     let passed = final_rate >= PERF_MIN_COMMANDS_PER_SECOND
         && retained_basis_points >= PERF_MIN_RETAINED_BASIS_POINTS;
     println!(
-        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"summary\",\"first_commands_per_second\":{first_rate},\"final_commands_per_second\":{final_rate},\"retained_basis_points\":{retained_basis_points},\"minimum_commands_per_second\":{PERF_MIN_COMMANDS_PER_SECOND},\"minimum_retained_basis_points\":{PERF_MIN_RETAINED_BASIS_POINTS},\"perf_003_passed\":{passed}}}"
+        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"summary\",\"first_commands_per_second\":{first_rate},\"final_commands_per_second\":{final_rate},\"retained_basis_points\":{retained_basis_points},\"minimum_commands_per_second\":{PERF_MIN_COMMANDS_PER_SECOND},\"minimum_retained_basis_points\":{PERF_MIN_RETAINED_BASIS_POINTS},\"reps\":{},\"perf_003_passed\":{passed}}}",
+        configuration.reps
     );
+    let comparison = median_group(&group_summaries)?;
     let group_basis_points = comparison.group_elapsed_ns.checked_mul(10_000).ok_or(())?
         / comparison.sync_elapsed_ns.max(1);
     let perf_004_passed = comparison.group_commands == 16
         && comparison.commands >= 32
         && group_basis_points <= PERF_MAX_GROUP_VS_SYNC_BASIS_POINTS;
     println!(
-        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"group_summary\",\"sync_elapsed_ns\":{},\"group_elapsed_ns\":{},\"commands\":{},\"group_commands\":{},\"group_vs_sync_basis_points\":{group_basis_points},\"maximum_group_vs_sync_basis_points\":{PERF_MAX_GROUP_VS_SYNC_BASIS_POINTS},\"engine_durability\":\"immediate_two_phase\",\"perf_004_passed\":{perf_004_passed},\"perf_006_mechanics_passed\":{perf_004_passed},\"perf_008_mechanics_passed\":{perf_004_passed}}}",
+        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"group_summary\",\"sync_elapsed_ns\":{},\"group_elapsed_ns\":{},\"commands\":{},\"group_commands\":{},\"group_vs_sync_basis_points\":{group_basis_points},\"maximum_group_vs_sync_basis_points\":{PERF_MAX_GROUP_VS_SYNC_BASIS_POINTS},\"engine_durability\":\"immediate_two_phase\",\"reps\":{},\"perf_004_passed\":{perf_004_passed},\"perf_006_mechanics_passed\":{perf_004_passed},\"perf_008_mechanics_passed\":{perf_004_passed}}}",
         comparison.sync_elapsed_ns,
         comparison.group_elapsed_ns,
         comparison.commands,
         comparison.group_commands,
+        configuration.reps
     );
     let standard_vs_hardened_basis_points = comparison
         .standard_elapsed_ns
@@ -148,33 +204,42 @@ fn run() -> Result<bool, ()> {
         && comparison.hardened_elapsed_ns > 0;
     println!(
         "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"commit_profile_summary\",\"standard_profile\":\"immediate_one_phase\",\"hardened_profile\":\"immediate_two_phase\",\"standard_elapsed_ns\":{},\"hardened_elapsed_ns\":{},\"standard_vs_hardened_basis_points\":{standard_vs_hardened_basis_points},\"semantic_contract\":\"acknowledgement_survives_crash\",\"perf_009_passed\":{perf_009_passed}}}",
-        comparison.standard_elapsed_ns,
-        comparison.hardened_elapsed_ns,
+        comparison.standard_elapsed_ns, comparison.hardened_elapsed_ns,
     );
     let perf_012_passed = preflight_passed;
     println!(
         "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"generation_summary\",\"identity\":\"partition_index\",\"maximum_advances_per_distinct_pair_per_command\":1,\"prefix_fanout\":false,\"semantic_preflight\":\"{}\",\"perf_012_passed\":{perf_012_passed}}}",
-        if preflight_passed { "passed" } else { "not_run" },
+        if preflight_passed {
+            "passed"
+        } else {
+            "not_run"
+        },
     );
     let group_gate_requested =
         configuration.assert_group_mechanics || configuration.assert_perf_008;
-    let perf_013_passed = match (startup_at_4096_ns, startup_at_65536_ns) {
-        (Some(at_4096), Some(at_65536)) => {
-            let ratio = at_65536 / at_4096.max(1);
-            ratio <= PERF_013_MAX_GROWTH_RATIO && at_65536 <= PERF_013_MAX_STARTUP_NS
+    let startup_at_4096_ns = median_u64(&startup_4096_reps);
+    let startup_at_65536_ns = median_u64(&startup_65536_reps);
+    let perf_013_passed = if configuration.assert_perf_013 {
+        if startup_at_4096_ns > 0 && startup_at_65536_ns > 0 {
+            let ratio = startup_at_65536_ns / startup_at_4096_ns.max(1);
+            ratio <= PERF_013_MAX_GROWTH_RATIO && startup_at_65536_ns <= PERF_013_MAX_STARTUP_NS
+        } else {
+            false
         }
-        _ => !configuration.assert_perf_013,
+    } else {
+        true
     };
     println!(
-        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"startup_summary\",\"startup_at_4096_ns\":{},\"startup_at_65536_ns\":{},\"max_growth_ratio\":{PERF_013_MAX_GROWTH_RATIO},\"max_startup_ns\":{PERF_013_MAX_STARTUP_NS},\"perf_013_passed\":{perf_013_passed}}}",
-        startup_at_4096_ns.unwrap_or(0),
-        startup_at_65536_ns.unwrap_or(0),
+        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"startup_summary\",\"startup_at_4096_ns\":{startup_at_4096_ns},\"startup_at_65536_ns\":{startup_at_65536_ns},\"max_growth_ratio\":{PERF_013_MAX_GROWTH_RATIO},\"max_startup_ns\":{PERF_013_MAX_STARTUP_NS},\"reps\":{},\"perf_013_passed\":{perf_013_passed}}}",
+        configuration.reps
     );
-    Ok((!configuration.assert_perf_003 || passed)
+    let all_passed = (!configuration.assert_perf_003 || passed)
         && (!group_gate_requested || perf_004_passed)
         && (!configuration.assert_perf_009 || perf_009_passed)
         && (!configuration.assert_perf_012 || perf_012_passed)
-        && (!configuration.assert_perf_013 || perf_013_passed))
+        && (!configuration.assert_perf_013 || perf_013_passed);
+    let _ = fs::metadata(bench_root.path());
+    Ok(all_passed)
 }
 
 struct GroupComparison {
@@ -186,7 +251,7 @@ struct GroupComparison {
     group_commands: usize,
 }
 
-fn run_mechanics_comparison(root: &Path, checked: bool) -> Result<GroupComparison, ()> {
+fn run_mechanics_comparison(root: &Path, checked: bool, rep: usize) -> Result<GroupComparison, ()> {
     let commands = if checked { 128 } else { 32 };
     let mut sync_elapsed_ns = None;
     let mut group_elapsed_ns = None;
@@ -215,7 +280,7 @@ fn run_mechanics_comparison(root: &Path, checked: bool) -> Result<GroupCompariso
             group_elapsed_ns = Some(elapsed_ns);
         }
         println!(
-            "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"mechanics_comparison\",\"engine_durability\":\"{}\",\"group_commands\":{},\"commands\":{},\"elapsed_ns\":{},\"admission_table_page_work_ns\":{},\"admission_commit_and_flush_ns\":{},\"terminal_table_page_work_ns\":{},\"terminal_commit_and_flush_ns\":{}}}",
+            "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"mechanics_comparison\",\"rep\":{rep},\"engine_durability\":\"{}\",\"group_commands\":{},\"commands\":{},\"elapsed_ns\":{},\"admission_table_page_work_ns\":{},\"admission_commit_and_flush_ns\":{},\"terminal_table_page_work_ns\":{},\"terminal_commit_and_flush_ns\":{}}}",
             durability.label(),
             profile.group_commands(),
             commands,
@@ -245,7 +310,59 @@ fn commands_per_second(commands: usize, elapsed_ns: u64) -> Result<u64, ()> {
         .ok_or(())
 }
 
-#[derive(Clone, Copy)]
+fn median_u64(values: &[u64]) -> u64 {
+    if values.is_empty() {
+        return 0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    sorted[sorted.len() / 2]
+}
+
+fn median_growth(values: &[(u64, u64, u64)]) -> Result<(u64, u64, u64), ()> {
+    if values.is_empty() {
+        return Err(());
+    }
+    let mut first: Vec<_> = values.iter().map(|v| v.0).collect();
+    let mut final_rate: Vec<_> = values.iter().map(|v| v.1).collect();
+    let mut retained: Vec<_> = values.iter().map(|v| v.2).collect();
+    first.sort_unstable();
+    final_rate.sort_unstable();
+    retained.sort_unstable();
+    let mid = values.len() / 2;
+    Ok((first[mid], final_rate[mid], retained[mid]))
+}
+
+fn median_group(values: &[GroupComparison]) -> Result<GroupComparison, ()> {
+    if values.is_empty() {
+        return Err(());
+    }
+    let mid = values.len() / 2;
+    Ok(GroupComparison {
+        sync_elapsed_ns: median_u64(&values.iter().map(|v| v.sync_elapsed_ns).collect::<Vec<_>>()),
+        group_elapsed_ns: median_u64(
+            &values
+                .iter()
+                .map(|v| v.group_elapsed_ns)
+                .collect::<Vec<_>>(),
+        ),
+        standard_elapsed_ns: median_u64(
+            &values
+                .iter()
+                .map(|v| v.standard_elapsed_ns)
+                .collect::<Vec<_>>(),
+        ),
+        hardened_elapsed_ns: median_u64(
+            &values
+                .iter()
+                .map(|v| v.hardened_elapsed_ns)
+                .collect::<Vec<_>>(),
+        ),
+        commands: values[mid].commands,
+        group_commands: values[mid].group_commands,
+    })
+}
+
 struct Configuration {
     checked: bool,
     assert_perf_003: bool,
@@ -254,6 +371,9 @@ struct Configuration {
     assert_perf_009: bool,
     assert_perf_012: bool,
     assert_perf_013: bool,
+    database_root: Option<PathBuf>,
+    allow_tmpfs: bool,
+    reps: usize,
 }
 
 impl Configuration {
@@ -265,38 +385,81 @@ impl Configuration {
         let mut assert_perf_009 = false;
         let mut assert_perf_012 = false;
         let mut assert_perf_013 = false;
-        for argument in env::args().skip(1) {
+        let mut database_root = None;
+        let mut allow_tmpfs = false;
+        let mut reps = 1_usize;
+        let mut args = env::args().skip(1).peekable();
+        while let Some(argument) = args.next() {
             match argument.as_str() {
-                "--smoke" => checked = false,
-                "--checked" => checked = true,
+                "--smoke" => {
+                    checked = false;
+                    reps = 1;
+                }
+                "--checked" => {
+                    checked = true;
+                    if reps == 1 {
+                        reps = 3;
+                    }
+                }
                 "--assert-perf-003" => {
                     checked = true;
                     assert_perf_003 = true;
+                    if reps == 1 {
+                        reps = 3;
+                    }
                 }
                 "--assert-perf-004" => {
                     checked = true;
                     assert_group_mechanics = true;
+                    if reps == 1 {
+                        reps = 3;
+                    }
                 }
                 "--assert-perf-006" => {
                     checked = true;
                     assert_group_mechanics = true;
+                    if reps == 1 {
+                        reps = 3;
+                    }
                 }
                 "--assert-perf-008" => {
                     checked = true;
                     assert_group_mechanics = true;
                     assert_perf_008 = true;
+                    if reps == 1 {
+                        reps = 3;
+                    }
                 }
                 "--assert-perf-009" => {
                     checked = true;
                     assert_perf_009 = true;
+                    if reps == 1 {
+                        reps = 3;
+                    }
                 }
                 "--assert-perf-012" => {
                     checked = true;
                     assert_perf_012 = true;
+                    if reps == 1 {
+                        reps = 3;
+                    }
                 }
                 "--assert-perf-013" => {
                     checked = true;
                     assert_perf_013 = true;
+                    if reps == 1 {
+                        reps = 3;
+                    }
+                }
+                "--database-root" => {
+                    database_root = Some(PathBuf::from(args.next().ok_or(())?));
+                }
+                "--allow-tmpfs" => allow_tmpfs = true,
+                "--reps" => {
+                    reps = args.next().ok_or(())?.parse().map_err(|_| ())?;
+                    if !(1..=32).contains(&reps) {
+                        return Err(());
+                    }
                 }
                 _ => return Err(()),
             }
@@ -309,31 +472,10 @@ impl Configuration {
             assert_perf_009,
             assert_perf_012,
             assert_perf_013,
+            database_root,
+            allow_tmpfs,
+            reps,
         })
-    }
-}
-
-struct TempRoot(PathBuf);
-
-impl TempRoot {
-    fn new() -> Result<Self, ()> {
-        let path = env::temp_dir().join(format!(
-            "riffdb-command-growth-{}-{}",
-            std::process::id(),
-            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&path).map_err(|_| ())?;
-        Ok(Self(path))
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempRoot {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 
@@ -360,5 +502,15 @@ mod tests {
             .expect("checked checkpoints");
         assert!(maximum <= 65_536);
         assert!(u64::try_from(CHECKED_WINDOW).expect("window") <= maximum);
+    }
+
+    #[test]
+    fn default_root_is_under_perf_db() {
+        let root = default_perf_db_root(
+            Path::new("/repo/benchmarks/command-growth"),
+            "command-growth",
+        );
+        assert!(root.to_string_lossy().contains("perf-db"));
+        assert!(!root.starts_with("/tmp"));
     }
 }

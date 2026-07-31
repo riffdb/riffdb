@@ -4,6 +4,7 @@ members = [
     "crates/riffdb-api-grpc",
     "crates/riffdb-api-mcp",
     "crates/riffdb-auth",
+    "crates/riffdb-bench-root",
     "crates/riffdb-catalog",
     "crates/riffdb-cli",
     "crates/riffdb-client-rust",
