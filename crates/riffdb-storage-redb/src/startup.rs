@@ -123,8 +123,10 @@ struct EntityChain {
 const ENTITY_CHAIN_ORPHAN_REPORT_CAP: usize = 16;
 /// Max structural findings emitted for unconsumed/overflow orphans:
 /// up to [`ENTITY_CHAIN_ORPHAN_REPORT_CAP`] detail findings plus one aggregate
-/// when the true count exceeds the cap (truncation-visible).
+/// when the true problem count exceeds the cap (truncation-visible).
 const ENTITY_CHAIN_ORPHAN_FINDING_CAP: usize = ENTITY_CHAIN_ORPHAN_REPORT_CAP + 1;
+// Finishing-page reservation requires room for the bounded orphan set.
+const _: () = assert!(riffdb_storage_api::MAX_INTEGRITY_FINDINGS > ENTITY_CHAIN_ORPHAN_FINDING_CAP);
 
 /// Compact locator for one historical evidence item; page serve re-materializes
 /// by point lookup (no retained canonical payloads).
@@ -582,11 +584,9 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         let mut inspected = remaining.min(u64::from(limit.get())).min(finding_bound);
         // Last advancing page must reserve room for the bounded orphan set so
         // findings never require a non-advancing terminal drain.
+        // row_budget is provably > 0 via the compile-time guard above.
         if inspected == remaining {
             let row_budget = finding_bound.saturating_sub(ENTITY_CHAIN_ORPHAN_FINDING_CAP as u64);
-            if row_budget == 0 {
-                return Err(invariant());
-            }
             if inspected > row_budget {
                 inspected = row_budget;
             }
@@ -969,9 +969,10 @@ impl RedbStructuralEvidenceSession {
         state.orphans_queued = true;
         // Detail findings are bounded and carry no identity (StructuralFinding
         // has only scope+code). Emit at most CAP detail copies, plus one
-        // aggregate when the true problem count exceeds the cap or capacity
-        // overflow dropped targets — truncation is visible. Never mass-fail
-        // intact entity rows.
+        // aggregate when the detail list is truncated — either unconsumed+
+        // reported-orphans exceed CAP, or the overflow list itself filled and
+        // more map-capacity rejects were dropped (NEW-8: not on bare overflow
+        // with a short detail list). Never mass-fail intact entity rows.
         let unconsumed = state.chains.values().filter(|c| !c.consumed).count();
         let detail_total = unconsumed.saturating_add(state.orphan_targets.len());
         let detail_emitted = detail_total.min(ENTITY_CHAIN_ORPHAN_REPORT_CAP);
@@ -979,23 +980,21 @@ impl RedbStructuralEvidenceSession {
             self.pending_entity_orphan_findings
                 .push_back(authoritative(StructuralFindingCode::CrossLinkMismatch));
         }
-        if detail_total > ENTITY_CHAIN_ORPHAN_REPORT_CAP || state.overflow {
+        let detail_truncated = detail_total > ENTITY_CHAIN_ORPHAN_REPORT_CAP;
+        let overflow_list_truncated =
+            state.overflow && state.orphan_targets.len() >= ENTITY_CHAIN_ORPHAN_REPORT_CAP;
+        if detail_truncated || overflow_list_truncated {
             self.pending_entity_orphan_findings
                 .push_back(authoritative(StructuralFindingCode::CrossLinkMismatch));
         }
     }
 
+    /// Marks the chain for one ENTITIES row as consumed (O(log N) map lookup).
     fn mark_entity_row_seen(&mut self, key: &riffdb_types::EntityKey) {
         let Some(state) = self.entity_chains.as_mut() else {
             return;
         };
-        // A physical ENTITIES row exists for this key: never report its chain
-        // as an orphan, regardless of decode/binding/history failures.
-        for (target, chain) in state.chains.iter_mut() {
-            if target.key() == key {
-                chain.consumed = true;
-            }
-        }
+        mark_entity_chain_consumed(&mut state.chains, key);
     }
 
     fn inspect_entity_row_with_chains(
@@ -1005,9 +1004,10 @@ impl RedbStructuralEvidenceSession {
     ) -> Result<Option<StructuralFinding>, StorageError> {
         self.ensure_entity_chains_built()?;
         let Ok(decoded_key) = keys::decode_entity_key(key) else {
+            // Raw key undecodable: cannot reconstruct a target (ledgered).
             return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
         };
-        // Mark before any semantic early-return (NEW-2).
+        // Mark before any semantic early-return (NEW-2), O(log N) (NEW-6).
         self.mark_entity_row_seen(&decoded_key);
 
         let record = match decoded(codec::decode_entity_record_v1(value)) {
@@ -3402,6 +3402,23 @@ fn record_orphan_target(
         && !orphan_targets.iter().any(|t| t == &target)
     {
         orphan_targets.push(target);
+    }
+}
+
+/// Marks one chain consumed from a decoded ENTITIES key (O(log N)).
+///
+/// The entity-key envelope carries the type id, so the row target is
+/// reconstructed without scanning the map (NEW-6).
+fn mark_entity_chain_consumed(
+    chains: &mut std::collections::BTreeMap<riffdb_storage_api::EntityTarget, EntityChain>,
+    key: &riffdb_types::EntityKey,
+) {
+    let Ok(target) = riffdb_storage_api::EntityTarget::new(key.entity_type_id(), key.clone())
+    else {
+        return;
+    };
+    if let Some(chain) = chains.get_mut(&target) {
+        chain.consumed = true;
     }
 }
 
@@ -6050,7 +6067,8 @@ contract RedbMigration version 1 {
 
     #[test]
     fn entity_chain_missing_bundle_marks_row_not_orphan() {
-        // NEW-2: entity row exists with missing binding bundle → own finding, no orphan.
+        // NEW-2: commit-referenced entity with missing binding owns a chain;
+        // row finding is MissingCrossLink and must NOT also orphan.
         let path = TestDatabasePath::new("entity-missing-bundle");
         let id = database_id(0x97);
         let store = initialized_store(&path, id);
@@ -6062,8 +6080,8 @@ contract RedbMigration version 1 {
             CommandId::first(),
             PlanHash::from_bytes([0x4b; 32]),
         );
-        let good = history_entity(1, EntityVersion::first(), b"good", &bundle);
-        // Entity with a binding that does not exist in CONTRACT_BUNDLES.
+        // Entity with a binding that does not exist in CONTRACT_BUNDLES, but is
+        // commit-referenced so it owns a chain slot.
         let entity_type = EntityTypeId::new(7).expect("type");
         let mut key = EntityKeyBuilder::new(entity_type);
         key.push_u64(2).expect("key");
@@ -6087,15 +6105,12 @@ contract RedbMigration version 1 {
             record,
         )
         .expect("entity");
-        // Commit only references `good` so the missing-binding entity is still
-        // present as a row (consumed) but has no commit chain — history fails
-        // with MissingCrossLink from binding, not as an orphan CrossLinkMismatch.
-        let commit = history_commit(CommitSequence::first(), plan, &[&good]);
+        let commit = history_commit(CommitSequence::first(), plan, &[&missing_binding_entity]);
         write_entities_and_commits(
             &store,
             id,
             &bundle,
-            &[good, missing_binding_entity],
+            std::slice::from_ref(&missing_binding_entity),
             &[commit],
         );
 
@@ -6108,22 +6123,19 @@ contract RedbMigration version 1 {
             "missing binding must produce MissingCrossLink: {:?}",
             finding_codes(&findings)
         );
-        // No unconsumed-chain orphan: the missing-binding row was marked seen.
-        // (Commit may still reference only `good`; the extra entity has no chain
-        // so it cannot produce an unconsumed-chain CrossLinkMismatch.)
         assert_eq!(
             count_code(&findings, StructuralFindingCode::CrossLinkMismatch),
             0,
-            "entity row with missing bundle must not emit orphan CrossLinkMismatch: {:?}",
+            "commit-referenced row with missing bundle must not orphan: {:?}",
             finding_codes(&findings)
         );
     }
 
     #[test]
-    fn entity_orphan_drain_completes_with_small_page_limit() {
-        // NEW-1(a): orphan findings pending near terminal; small page limit;
-        // session must complete (never non-advancing page) and report them.
-        let path = TestDatabasePath::new("entity-orphan-small-limit");
+    fn entity_orphan_drain_on_single_finishing_page() {
+        // NEW-1(a): empty-ENTITIES orphan, limit=256, structural_total < 239 →
+        // single finishing page executes the reserved orphan drain.
+        let path = TestDatabasePath::new("entity-orphan-finish");
         let store = initialized_store(&path, database_id(0x98));
         let bundle = stored_bundle("entity-history", 1, b"entity-history-bundle");
         let plan = ExecutablePlanRef::new(
@@ -6140,47 +6152,45 @@ contract RedbMigration version 1 {
         let mut session = store
             .begin_structural_evidence(inputs())
             .expect("begin structural");
+        assert!(
+            session.structural_total < 239,
+            "fixture must be a single finishing page under limit=256 (total={})",
+            session.structural_total
+        );
+        let large = EvidencePageLimit::new(256).expect("limit");
         let mut cursor =
             StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
         let mut collected = Vec::new();
-        let tiny = EvidencePageLimit::new(1).expect("limit");
-        loop {
-            match session
-                .read_structural_evidence(cursor, tiny)
-                .expect("structural page must advance (NEW-1)")
-            {
-                StructuralEvidencePage::Page {
-                    start,
-                    findings,
-                    next,
-                } => {
-                    assert_eq!(start, cursor);
-                    assert!(
-                        next.position() > start.position(),
-                        "page must advance: start={} next={}",
-                        start.position(),
-                        next.position()
-                    );
-                    collected.extend(findings);
-                    cursor = next;
-                }
-                StructuralEvidencePage::ExactEnd(end) => {
-                    assert_eq!(end.cursor(), cursor);
-                    break;
-                }
-            }
+        let mut advancing_pages = 0u32;
+        while let StructuralEvidencePage::Page {
+            start,
+            findings,
+            next,
+        } = session
+            .read_structural_evidence(cursor, large)
+            .expect("finishing page must advance and drain orphans")
+        {
+            assert!(next.position() > start.position());
+            advancing_pages += 1;
+            collected.extend(findings);
+            cursor = next;
         }
+        assert_eq!(
+            advancing_pages, 1,
+            "expected exactly one finishing page for total < 239"
+        );
         assert!(
             count_code(&collected, StructuralFindingCode::CrossLinkMismatch) >= 1,
-            "orphan findings must be reported: {:?}",
+            "orphan findings must drain on the finishing page: {:?}",
             finding_codes(&collected)
         );
     }
 
     #[test]
-    fn entity_orphan_drain_survives_saturated_finding_pages() {
-        // NEW-1(b): many row findings fill pages; orphans still pending; session completes.
-        let path = TestDatabasePath::new("entity-orphan-saturated");
+    fn entity_orphan_drain_after_reservation_clamp() {
+        // NEW-1(b): structural_total in 240..=255 → reservation clamp splits the
+        // would-be finishing page; follow-up page drains orphans.
+        let path = TestDatabasePath::new("entity-orphan-clamp");
         let store = initialized_store(&path, database_id(0x99));
         let bundle = stored_bundle("entity-history", 1, b"entity-history-bundle");
         let plan = ExecutablePlanRef::new(
@@ -6191,47 +6201,129 @@ contract RedbMigration version 1 {
             PlanHash::from_bytes([0x4d; 32]),
         );
         let ghost = history_entity(1, EntityVersion::first(), b"ghost", &bundle);
-        // 280 commit rows (each MissingCrossLink for missing entity) + empty ENTITIES
-        // forces multi-page saturation past MAX_INTEGRITY_FINDINGS=256.
-        let mut commits = Vec::new();
-        for seq in 1u64..=280 {
+        // Probe baseline size with one commit, then pad commits to land total
+        // in 240..=255.
+        write_entities_and_commits(
+            &store,
+            database_id(0x99),
+            &bundle,
+            &[],
+            &[history_commit(
+                CommitSequence::first(),
+                plan.clone(),
+                &[&ghost],
+            )],
+        );
+        let baseline = {
+            let session = store
+                .begin_structural_evidence(inputs())
+                .expect("baseline session");
+            session.structural_total
+        };
+        // Re-open after the baseline session consumes the store handle.
+        let store = RedbStore::open(&path.0).expect("reopen");
+        // Each additional commit also adds outcome + provenance rows (+3 total).
+        // Need structural_total in 240..=255.
+        let target_total = 248u64;
+        assert!(
+            baseline < target_total,
+            "baseline {baseline} already exceeds clamp window"
+        );
+        let extra_needed = target_total.saturating_sub(baseline);
+        // Rough: each commit group adds ~3 rows; overshoot slightly then trim.
+        let extra_commits = (extra_needed / 3) + 2;
+        let mut commits = vec![history_commit(
+            CommitSequence::first(),
+            plan.clone(),
+            &[&ghost],
+        )];
+        for seq in 2..=(1 + extra_commits) {
             commits.push(history_commit(
                 CommitSequence::new(seq).expect("seq"),
                 plan.clone(),
                 &[&ghost],
             ));
         }
+        // Rewrite fixture with padded commits.
         write_entities_and_commits(&store, database_id(0x99), &bundle, &[], &commits);
-
         let mut session = store
             .begin_structural_evidence(inputs())
             .expect("begin structural");
-        // Large page limit to saturate finding capacity on intermediate pages.
+        let total = session.structural_total;
+        assert!(
+            (240..=255).contains(&total),
+            "need total in 240..=255 for clamp (got {total}; baseline was {baseline}, commits={})",
+            commits.len()
+        );
+
         let large = EvidencePageLimit::new(256).expect("limit");
         let mut cursor =
             StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
         let mut collected = Vec::new();
+        let mut advancing_pages = 0u32;
         while let StructuralEvidencePage::Page {
             start,
             findings,
             next,
         } = session
             .read_structural_evidence(cursor, large)
-            .expect("saturated pages must still advance and complete")
+            .expect("clamp + follow-up finishing page must complete")
         {
             assert!(next.position() > start.position());
+            advancing_pages += 1;
             collected.extend(findings);
             cursor = next;
         }
         assert!(
-            count_code(&collected, StructuralFindingCode::CrossLinkMismatch) >= 1,
-            "orphans must drain despite saturated row findings: {:?}",
-            finding_codes(&collected)
+            advancing_pages >= 2,
+            "reservation clamp must force ≥2 advancing pages (got {advancing_pages}, total={total})"
         );
         assert!(
-            count_code(&collected, StructuralFindingCode::MissingCrossLink) >= 1,
-            "row findings present: {}",
-            collected.len()
+            count_code(&collected, StructuralFindingCode::CrossLinkMismatch) >= 1,
+            "orphans must drain after clamp: {:?}",
+            finding_codes(&collected)
+        );
+    }
+
+    #[test]
+    fn mark_entity_chain_consumed_is_logarithmic_not_quadratic() {
+        // NEW-6: O(N log N) map lookup vs O(N²) full-map scan.
+        // Reviewer measured quadratic mark alone at ~181ms @ 8k (release);
+        // logarithmic marking of 8k entries is sub-millisecond even in debug.
+        use std::time::Instant;
+        let mut chains = std::collections::BTreeMap::new();
+        let mut keys = Vec::new();
+        const N: u64 = 8_000;
+        for i in 1..=N {
+            let entity_type = EntityTypeId::new(7).expect("type");
+            let mut key = EntityKeyBuilder::new(entity_type);
+            key.push_u64(i).expect("component");
+            let entity_key = key.finish().expect("key");
+            let target = EntityTarget::new(entity_type, entity_key.clone()).expect("target");
+            chains.insert(
+                target,
+                EntityChain {
+                    version: EntityVersion::first(),
+                    hash: riffdb_types::EntityRecordHash::from_bytes([0xab; 32]),
+                    intact: true,
+                    consumed: false,
+                },
+            );
+            keys.push(entity_key);
+        }
+        let started = Instant::now();
+        for key in &keys {
+            mark_entity_chain_consumed(&mut chains, key);
+        }
+        let elapsed = started.elapsed();
+        assert!(
+            chains.values().all(|c| c.consumed),
+            "every chain must be marked"
+        );
+        // Quadratic 8k was ~181ms release; allow 50ms debug headroom for log-time.
+        assert!(
+            elapsed.as_millis() < 50,
+            "marking {N} chains took {elapsed:?} (expected O(N log N) ≪ 50ms)"
         );
     }
 
