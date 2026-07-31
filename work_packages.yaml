@@ -5843,7 +5843,7 @@ work_packages:
   - PostgreSQL-versus-RiffDB example selectable as its own database
   acceptance_commands:
   - ./scripts/release-source-bootstrap-smoke
-  - ./scripts/release-install-smoke
+  - ./scripts/release-source-install-smoke
   - cargo test -p riffdb-cli --all-features
   - cargo test -p riffdb-mcp-stdio --all-features
   - ./scripts/check-generated
@@ -5893,11 +5893,144 @@ work_packages:
   acceptance_commands:
   - cargo test --workspace --all-features
   - ./scripts/release-source-bootstrap-smoke
-  - ./scripts/release-install-smoke
+  - ./scripts/release-source-install-smoke
   - ./scripts/check-generated
   - ./scripts/check-requirement-coverage
   - cargo fmt --all -- --check
   - cargo clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: One installed daemon serves two isolated applications through every supported client, all MCP tools are
     underscore-only and agent-callable, and cross-database and crash tests preserve every existing semantic guarantee.
+  human_review_triggers: *id001
+- id: WP-386
+  name: First real application interface freeze
+  depends_on:
+  - WP-385
+  objective: Freeze offline database addition, natural symbolic JSON, lock-only deployment, selected-database response
+    identity, application MCP discovery, and safe diagnostics before their implementations change public surfaces.
+  requirements: [DX-001, DX-002, DX-003, DX-004, DX-005, DX-006, DX-007, DX-008, DX-009, DX-010, DX-011, DX-012]
+  required_adrs: [ADR-0055, ADR-0056, ADR-0057, ADR-0062, ADR-0063, ADR-0065]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/**, proto/**, fixtures/proto/**, docs/architecture/**]
+  deliverables:
+  - Accepted first-real-application record and exact additive public interface fixture
+  - Requirement and work-package coverage for every implementation slice
+  acceptance_commands:
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  exit_gate: Every public, operational, authorization, recovery, and compatibility decision is accepted before code changes.
+  human_review_triggers: *id001
+- id: WP-387
+  name: Journaled database addition and safe startup diagnostics
+  depends_on: [WP-386]
+  objective: Add one database to installer-owned user or system configuration without manual edits or loss of legacy state.
+  requirements: [DX-001, DX-002, DX-003]
+  required_adrs: [ADR-0063, ADR-0065]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-server/**, scripts/**, xtask/**, release/**, tests/**, docs/**]
+  deliverables:
+  - User and system --add-database workflow with private resumable phase state
+  - Legacy default preservation and sibling backup-root migration
+  - Safe config-check and startup diagnostics
+  acceptance_commands:
+  - cargo test -p riffdb-server --all-features
+  - ./scripts/release-source-install-smoke
+  - cargo fmt --all -- --check
+  - cargo clippy -p riffdb-server --all-targets --all-features -- -D warnings
+  exit_gate: Interrupted legacy-to-multi migration resumes and startup failures name a safe actionable configuration cause.
+  human_review_triggers: *id001
+- id: WP-388
+  name: Schema-directed application JSON and symbolic failures
+  depends_on: [WP-386]
+  objective: Make every application surface consume the same natural schema-directed JSON and return name-only errors.
+  requirements: [DX-004, DX-005, DX-008]
+  required_adrs: [ADR-0055, ADR-0065]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-errors/**, crates/riffdb-service/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-client-rust/**, crates/riffdb-cli/**, proto/**, fixtures/**, tests/**, docs/**]
+  deliverables:
+  - Natural value parity across CLI, batch, MCP, Rust, and TypeScript
+  - Inline, @file, stdin, and legacy input sources with distinct diagnostics
+  - Symbolic field/type and module/query failures with no numeric IDs
+  acceptance_commands:
+  - cargo test -p riffdb-service -p riffdb-api-grpc -p riffdb-api-mcp -p riffdb-cli --all-features
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Equivalent natural input behaves identically on every surface and all public failures are actionable and redacted.
+  human_review_triggers: *id001
+- id: WP-389
+  name: Locked installed application deployment and provisioning
+  depends_on: [WP-387, WP-388]
+  objective: Deploy, explicitly provision, and seed an exact locked application through one resumable installed workflow.
+  requirements: [DX-006, DX-007, DX-008]
+  required_adrs: [ADR-0057, ADR-0062, ADR-0065]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-client-rust/**,
+    scripts/**, fixtures/**, tests/**, docs/**]
+  deliverables:
+  - Lock-only application deploy with deterministic resumable stages
+  - Explicit short-lived role provisioning and per-database private state
+  - Application-credential command-batch seed and standalone bind-dev-role
+  acceptance_commands:
+  - cargo test -p riffdb-cli -p riffdb-query-module --all-features
+  - ./scripts/check-application-bindings
+  - cargo fmt --all -- --check
+  - cargo clippy -p riffdb-cli --all-targets --all-features -- -D warnings
+  exit_gate: One command resumes exact deployment/provision/seed without hidden authority or handwritten identities.
+  human_review_triggers: *id001
+- id: WP-390
+  name: Application MCP tools, selected database identity, and doctor
+  depends_on: [WP-388, WP-389]
+  objective: Make the selected database and authorized named application operations obvious on every public agent surface.
+  requirements: [DX-009, DX-010, DX-011]
+  required_adrs: [ADR-0040, ADR-0064, ADR-0065]
+  allowed_paths: [SPEC.md, work_packages.yaml, proto/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**, crates/riffdb-client-rust/**, crates/riffdb-cli/**, fixtures/**,
+    tests/**, scripts/**, docs/**]
+  deliverables:
+  - Database alias and audience on public health/active-contract responses
+  - Authorized deployed named-query MCP tools
+  - Application MCP configuration, doctor operation, and pre-initialize EOF diagnostic
+  acceptance_commands:
+  - cargo test -p riffdb-api-grpc -p riffdb-api-mcp -p riffdb-mcp-stdio --all-features
+  - cargo test --test mcp_conformance --all-features
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  exit_gate: Agents can verify their database and discover only role-authorized application tools with a distinct credential.
+  human_review_triggers: *id001
+- id: WP-391
+  name: First real application authoring reference
+  depends_on: [WP-386]
+  objective: Publish a complete generated and tested authoring reference for contracts, RiffQL, values, deployment, and MCP.
+  requirements: [DX-003, DX-004, DX-005, DX-012]
+  required_adrs: [ADR-0002, ADR-0055, ADR-0065]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-cli/**, docs/**, fixtures/**, scripts/**, tests/**]
+  deliverables:
+  - Generated reserved-word, comment, and exact namespace reference
+  - Fixed-take-first RiffQL guidance and actionable cost diagnostics
+  - Installed multi-database application and two-credential MCP recipe
+  acceptance_commands:
+  - cargo test -p riffdb-contract-syntax -p riffdb-contract-compiler -p riffdb-query-compiler --all-features
+  - ./scripts/check-generated
+  - cargo fmt --all -- --check
+  exit_gate: A fresh agent can complete the installed workflow from public docs without searching implementation source.
+  human_review_triggers: *id001
+- id: WP-392
+  name: Installed first real application acceptance
+  depends_on: [WP-387, WP-388, WP-389, WP-390, WP-391]
+  objective: Prove the complete legacy-to-multi installed application workflow under interruption and independent agent use.
+  requirements: [DX-001, DX-002, DX-003, DX-004, DX-005, DX-006, DX-007, DX-008, DX-009, DX-010, DX-011, DX-012]
+  required_adrs: [ADR-0065]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/**, proto/**, fixtures/**, tests/**, scripts/**, release/**, docs/**,
+    examples/**]
+  deliverables:
+  - User and simulated-system legacy migration and application acceptance
+  - Process interruption matrix for migration, deployment, role binding, and seed
+  - Fresh independent-agent report with no manual configuration or source inspection
+  acceptance_commands:
+  - cargo test --workspace --all-features
+  - ./scripts/release-source-install-smoke
+  - ./scripts/release-source-bootstrap-smoke
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A fresh agent completes the installed multi-database application using only public surfaces and least authority.
   human_review_triggers: *id001

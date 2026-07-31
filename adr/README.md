@@ -86,6 +86,7 @@ direction, merged draft, or implementation choice.
 | [0062](0062-generic-deployment-required-capability-administration.md) | Generic Deployment-Required Capability Administration | Accepted |
 | [0063](0063-bounded-multiple-databases-per-process.md) | Bounded Multiple Databases Per Server Process | Accepted |
 | [0064](0064-underscore-mcp-tool-names-and-agent-presentation.md) | Underscore MCP Tool Names and Agent Presentation | Accepted |
+| [0065](0065-first-real-application-experience.md) | First Real Application Experience | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
@@ -278,6 +279,13 @@ ADR-0064 has a separate acceptance reference: the maintainer's explicit
 2026-07-30 approval of the incompatible pre-alpha underscore-only MCP tool-name
 cut, with no dotted aliases, plus bounded actionable input diagnostics,
 agent-facing generated command documentation, and an agent cookbook.
+ADR-0065 has a separate acceptance reference: the maintainer's explicit
+2026-07-30 approval of the complete First Real Application Experience plan,
+including journaled offline database addition for user and system installs,
+schema-directed natural JSON, lock-only resumable deployment, explicit
+least-authority role provisioning, application MCP named-query tools, selected
+database identity on public responses, and the installed legacy-to-multi
+acceptance gate.
 
 ## Workflow
 

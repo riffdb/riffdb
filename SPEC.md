@@ -84,6 +84,7 @@
 | 0.46 | 2026-07-30 | Applied accepted ADR-0061 and planned WP-371 through WP-375: application durability is a semantic acknowledgement and visibility guarantee; normal synchronous commands may transition atomically from vacant identity to terminal graph after bounded side-effect-free preparation; the standard application profile uses redb Immediate one-phase checksum commits while a hardened two-phase oracle remains; storage format V2 compacts per-row framing and references one authoritative event payload; conservative partition/index generations replace prefix fan-out; and visible non-durable chaining remains prohibited. |
 | 0.47 | 2026-07-30 | Planned WP-376 through WP-379 after post-WP-375 evidence identified timer-wheel parks, remaining immutable-artifact clones, repeated checked decoding, quadratic group compatibility, and sequence-free sizing construction as the residual application-path costs. The packages retain every authorization safe point, canonical durable validation, transaction-current recheck, one ordered writer, and Immediate acknowledgement boundary; WP-370 now depends on the renewed PERF-008 gate. |
 | 0.48 | 2026-07-30 | Applied accepted ADR-0063 and ADR-0064: one standalone process may host at most 32 independently durable databases selected before authentication, and every MCP tool now uses the underscore-only pre-alpha compatibility surface with actionable redacted input diagnostics and invocation-oriented command documentation. |
+| 0.49 | 2026-07-30 | Applied accepted ADR-0065 and planned WP-386 through WP-392: installer-owned configurations gain resumable offline database addition, application values become schema-directed and symbolic, installed deployment consumes exact locks with explicit least-authority provisioning, public responses identify the selected database, and MCP exposes authorized named operations with an explicit doctor path. |
 
 ### Normative language
 
@@ -276,6 +277,67 @@ remain bounded.
 storage key, contract IR, plan hash, idempotency identity, provenance, or v1
 `riffdb://` locator bytes. A locator MUST be resolved only inside the
 already-selected database context.
+
+## 4.3 First real application experience
+
+`DX-001` The source installer MUST support a bounded, offline, resumable
+addition of one canonical database alias to installer-owned user and system
+configurations. Legacy state MUST become alias `default` without changing its
+database bytes, `DatabaseId`, credentials, or backup contents.
+
+`DX-002` Database-add migration MUST stop or require an inactive service,
+reject active maintenance and custom or ambiguous configuration, journal every
+filesystem/configuration phase privately, publish atomically, and resume safely
+after interruption. It MUST NOT provide runtime attach, detach, create, or drop.
+
+`DX-003` Server configuration failures MUST expose one bounded stable safe code,
+database aliases and path roles when applicable, and actionable guidance. They
+MUST NOT expose absolute paths, credentials, submitted values, arbitrary
+dependency prose, or internal sources.
+
+`DX-004` Symbolic application JSON MUST be resolved against the selected
+compiled schema so CLI, batch, MCP, Rust, and TypeScript accept the same natural
+value shapes without requiring compiler IDs. Existing tagged symbolic values
+MUST remain accepted for compatibility.
+
+`DX-005` Every application input, query-module, and named-query failure MUST
+name the authorized operation and symbolic path plus expected public type when
+known. An application-facing error MUST NOT expose numeric schema IDs, raw
+values, hidden schema, or internal source.
+
+`DX-006` `riffdb application deploy` MUST verify one exact compiler-owned lock
+and every generated artifact before mutation, then idempotently deploy its
+contract and query modules with bounded resumable stage state. It MUST NOT
+claim cross-operation atomicity or accept an unlocked mode.
+
+`DX-007` Application role provisioning MUST be explicit, derive only the named
+locked role, retain the capability identity and private application/MCP
+configuration, and use the application credential for seed commands. Operator
+or authoring authority MUST NOT enter application execution.
+
+`DX-008` A named query without an explicit module hash MUST select only the
+active query module for the selected contract. No active module and no query
+with the requested name MUST be distinct structured failures; explicit hashes
+MUST retain exact historical pinning.
+
+`DX-009` Successful health and active-contract responses MUST report the
+selected canonical database alias through gRPC, CLI, SDK, hosted MCP, and stdio
+MCP. Authenticated health MUST report the configured public authentication
+audience. Neither value may enter durable identities or authorization search.
+
+`DX-010` Application-role MCP discovery MUST expose authorized deployed named
+queries and compiled commands as typed tools. The bootstrap MCP developer
+credential MUST remain control-plane-only and a second application MCP
+configuration MUST use the bound application credential.
+
+`DX-011` The stdio MCP bridge MUST provide a non-serving doctor operation and
+distinguish EOF before MCP initialization from a protocol-service failure
+without exposing credentials or unrestricted configuration.
+
+`DX-012` The public authoring kit MUST document reserved contract words, exact
+name scopes, line-comment support, natural JSON shapes, fixed RiffQL page
+bounds, legacy-to-multi migration, locked deployment, and the two-credential
+MCP model from authoritative registries and tested examples.
 | gRPC API | Programmatic application and administration protocol | Alternative semantics |
 | MCP API | Dynamic tools, resources, prompts, progress, cancellation, and agent-safe result shaping | Direct storage access |
 | CLI | Local operator and demo workflows over public APIs | Hidden privileged mutation path |
