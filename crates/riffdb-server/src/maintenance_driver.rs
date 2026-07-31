@@ -27,7 +27,8 @@ use riffdb_storage_api::{
 };
 use riffdb_storage_redb::{
     RedbCommitProfile, RedbMaintenanceOperationEvidence, RedbMaintenanceStorage,
-    RedbSealedStagedRestore, RedbStagedRestore,
+    RedbSealedStagedRestore, RedbStagedRestore, read_history_incarnation,
+    stamp_history_incarnation,
 };
 use riffdb_types::{
     Audience, Environment, OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
@@ -726,7 +727,10 @@ fn run_restore(
         {
             drop(credential);
             drop(prepared);
-            if receipt.manifest_identity().is_none() || receipt.staged_database_id().is_none() {
+            if receipt.manifest_identity().is_none()
+                || receipt.staged_database_id().is_none()
+                || receipt.published_history_incarnation().is_none()
+            {
                 return Err(DriverFault::ReceiptIntegrity);
             }
             advance_receipt(
@@ -755,12 +759,26 @@ fn run_restore(
                     )?
                 }
             };
+            // Missing or unreadable target is treated as incarnation 0 for the bump.
+            let target_incarnation = read_history_incarnation(storage.configured_database_file())
+                .ok()
+                .flatten()
+                .unwrap_or(0);
+            let staged_incarnation = prepared.sealed.staged_history_incarnation();
+            if let Some(manifest_incarnation) = prepared.sealed.manifest().history_incarnation()
+                && manifest_incarnation > staged_incarnation
+            {
+                return Err(DriverFault::ArtifactInvalid);
+            }
+            let published_incarnation = target_incarnation.max(staged_incarnation) + 1;
             let manifest_identity = prepared.sealed.manifest_identity().clone();
             update_receipt(storage, receipt, |candidate| {
                 candidate.record_staged_database_id(manifest_identity.database_id())?;
-                candidate.record_manifest_identity(manifest_identity.clone())
+                candidate.record_manifest_identity(manifest_identity.clone())?;
+                candidate.record_published_incarnation(published_incarnation)
             })?;
             let overwrite_policy = overwrite_policy(receipt.replacement_confirmation());
+            // Pure file swap — no writes between staging validation and rename.
             let publication = storage.publish_sealed_restore(prepared.sealed, overwrite_policy);
             let manifest = match publication {
                 Ok(OfflineRestoreResultV1::Restored { manifest }) => *manifest,
@@ -831,6 +849,13 @@ fn complete_post_publication_validation(
 ) -> Result<CheckedRedbStartup, DriverFault> {
     match receipt.current_phase() {
         OfflineMaintenanceReceiptPhaseV1::ArtifactPublished => {
+            if receipt.operation_kind() == OfflineMaintenanceOperationKind::RestoreBackup {
+                let published = receipt
+                    .published_history_incarnation()
+                    .ok_or(DriverFault::ReceiptIntegrity)?;
+                stamp_history_incarnation(storage.configured_database_file(), published)
+                    .map_err(DriverFault::ArtifactStorage)?;
+            }
             advance_receipt(
                 storage,
                 receipt,
@@ -850,6 +875,15 @@ fn complete_post_publication_validation(
         dependencies.application_commit_profile,
     )
     .map_err(|_| DriverFault::Validation)?;
+    if receipt.operation_kind() == OfflineMaintenanceOperationKind::RestoreBackup {
+        let expected = receipt
+            .published_history_incarnation()
+            .ok_or(DriverFault::ReceiptIntegrity)?;
+        let observed = startup.retained_metadata().history_incarnation();
+        if observed != expected {
+            return Err(DriverFault::Validation);
+        }
+    }
     let expected_database_id = match receipt.operation_kind() {
         OfflineMaintenanceOperationKind::CreateBackup => receipt.source_database_id(),
         OfflineMaintenanceOperationKind::RestoreBackup => receipt.staged_database_id(),

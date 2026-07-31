@@ -152,6 +152,13 @@ impl RedbStagedRestore {
         }
         let database = validate_database_semantics(&self.staged_database_file, &self.manifest)?;
         drop(database);
+        let staged_history_incarnation =
+            crate::backup::read_history_incarnation(&self.staged_database_file)?.unwrap_or(0);
+        if let Some(manifest_incarnation) = self.manifest.history_incarnation()
+            && manifest_incarnation > staged_history_incarnation
+        {
+            return Err(corrupt());
+        }
         let sealed_artifact_checksum = sha256_file(&self.staged_database_file)?;
         self.verify_paths()?;
         Ok(RedbSealedStagedRestore {
@@ -161,6 +168,7 @@ impl RedbStagedRestore {
             configured_database_file: self.configured_database_file,
             manifest: self.manifest,
             manifest_identity: self.manifest_identity,
+            staged_history_incarnation,
             sealed_artifact_checksum,
             backup_directory_guard: self.backup_directory_guard,
             configured_parent_guard: self.configured_parent_guard,
@@ -195,6 +203,7 @@ pub struct RedbSealedStagedRestore {
     configured_database_file: PathBuf,
     manifest: OfflineBackupManifestV1,
     manifest_identity: OfflineBackupManifestIdentityV1,
+    staged_history_incarnation: u64,
     sealed_artifact_checksum: BackupIntegrityChecksumV1,
     backup_directory_guard: PinnedDirectory,
     configured_parent_guard: PinnedDirectory,
@@ -207,6 +216,18 @@ impl RedbSealedStagedRestore {
     #[must_use]
     pub const fn manifest_identity(&self) -> &OfflineBackupManifestIdentityV1 {
         &self.manifest_identity
+    }
+
+    /// Borrows the sealed offline backup manifest.
+    #[must_use]
+    pub const fn manifest(&self) -> &OfflineBackupManifestV1 {
+        &self.manifest
+    }
+
+    /// Returns the staged META history incarnation (0 when the key was absent).
+    #[must_use]
+    pub const fn staged_history_incarnation(&self) -> u64 {
+        self.staged_history_incarnation
     }
 
     pub(super) const fn operation_id(&self) -> OfflineMaintenanceOperationId {

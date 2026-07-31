@@ -13,13 +13,14 @@ use redb::{
 };
 use riffdb_storage_api::{
     ApplicationSequenceAllocator, DatabaseIdentityProbe, DatabaseIdentityProbePort,
-    DatabaseInitializationPort, DatabaseInitializationResult, StorageError, StorageErrorKind,
-    StorageFormatVersion, StoredIndexEpochV1,
+    DatabaseInitializationPort, DatabaseInitializationResult, HISTORY_INCARNATION_INITIAL,
+    StorageError, StorageErrorKind, StorageFormatVersion, StoredIndexEpochV1,
     proto_codec::{
         decode_administration_sequence_allocator_v1, decode_application_sequence_allocator_v1,
-        decode_database_identity_v1, decode_record_registry_v2, decode_storage_format_version_v1,
-        encode_administration_sequence_allocator_v1, encode_application_sequence_allocator_v1,
-        encode_database_identity_v1, encode_record_registry_v2, encode_storage_format_version_v1,
+        decode_database_identity_v1, decode_history_incarnation_v1, decode_record_registry_v2,
+        decode_storage_format_version_v1, encode_administration_sequence_allocator_v1,
+        encode_application_sequence_allocator_v1, encode_database_identity_v1,
+        encode_history_incarnation_v1, encode_record_registry_v2, encode_storage_format_version_v1,
         transcode_durable_record_to_v2,
     },
 };
@@ -42,7 +43,8 @@ use crate::keys::{
 use crate::layout::{
     BYTE_TABLES, COMMITS, EVENTS, INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE,
     META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP, META_DATABASE_ID, META_FORMAT_VERSION,
-    META_KEYS, META_RECORD_REGISTRY, OUTBOX, SECONDARY_INDEXES, TABLE_NAMES, create_all_tables,
+    META_HISTORY_INCARNATION, META_KEYS, META_RECORD_REGISTRY, OUTBOX, SECONDARY_INDEXES,
+    TABLE_NAMES, create_all_tables,
 };
 use crate::transient::{TransientIndexDelta, TransientIndexState, TransientIndexes};
 
@@ -187,6 +189,7 @@ enum RegistryMigration {
     Current,
     EventReferencesThenGenerations,
     Generations,
+    HistoryIncarnation,
 }
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
@@ -198,6 +201,11 @@ const PRE_EVENT_REFERENCE_REGISTRY_DIGEST: [u8; 32] = [
 pub(crate) const PRE_INDEX_GENERATION_REGISTRY_DIGEST: [u8; 32] = [
     0x0f, 0xab, 0x09, 0x09, 0x1b, 0x8f, 0x56, 0xc3, 0xbe, 0xb9, 0x3a, 0x05, 0x75, 0x56, 0xfb, 0x3d,
     0x12, 0x83, 0xa0, 0x77, 0x55, 0xa9, 0x20, 0xd3, 0xe4, 0xa9, 0x73, 0x04, 0xd8, 0x21, 0x40, 0xb3,
+];
+/// Registry digest at the history-incarnation branch base (pre-fence current).
+pub(crate) const PRE_HISTORY_INCARNATION_REGISTRY_DIGEST: [u8; 32] = [
+    0x25, 0xbd, 0x75, 0xfe, 0x14, 0xf1, 0xd7, 0x58, 0x60, 0x16, 0xe5, 0xa6, 0x12, 0x32, 0xd8, 0xc5,
+    0x8f, 0x15, 0xcf, 0xe8, 0x38, 0xc9, 0x38, 0xce, 0x2a, 0x57, 0xda, 0xa4, 0x15, 0x73, 0x62, 0xa9,
 ];
 
 impl RedbStore {
@@ -302,6 +310,10 @@ impl RedbStore {
                     == &SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST)
                 {
                     RegistryMigration::Generations
+                } else if observed.value()
+                    == &SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST)
+                {
+                    RegistryMigration::HistoryIncarnation
                 } else {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
@@ -330,6 +342,19 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST),
+            )?;
+        }
+        if matches!(
+            registry_migration,
+            RegistryMigration::EventReferencesThenGenerations
+                | RegistryMigration::Generations
+                | RegistryMigration::HistoryIncarnation
+        ) {
+            migrate_history_incarnation(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -409,6 +434,12 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST),
+            )?;
+            migrate_history_incarnation(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -433,11 +464,40 @@ impl RedbStore {
     }
 
     pub(crate) fn complete_partition_index_generation_migration(&self) -> Result<(), StorageError> {
-        migrate_partition_index_generations(&self.shared)?;
+        let observed = {
+            let transaction = self
+                .shared
+                .database
+                .begin_read()
+                .map_err(transaction_error)?;
+            let metadata = transaction.open_table(META).map_err(table_error)?;
+            let encoded = metadata
+                .get(META_RECORD_REGISTRY)
+                .map_err(precommit_storage_error)?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            *decode_record_registry_v2(encoded.value())
+                .map_err(crate::error::codec_error)?
+                .value()
+        };
+        let current = riffdb_storage_api::proto_codec::current_record_registry_digest();
+        if observed == current {
+            return Ok(());
+        }
+        if observed == SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST) {
+            migrate_partition_index_generations(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST),
+            )?;
+        } else if observed != SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST) {
+            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        }
+        migrate_history_incarnation(&self.shared)?;
         publish_record_registry(
             &self.shared,
-            SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST),
-            riffdb_storage_api::proto_codec::current_record_registry_digest(),
+            SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST),
+            current,
         )
     }
 
@@ -827,6 +887,34 @@ fn validate_partition_index_generation_rows(shared: &SharedRedb) -> Result<(), S
         }
     }
     Ok(())
+}
+
+/// Inserts `history_incarnation/v1 = 1` when absent. Idempotent; does not change an
+/// existing value (restore is the only path that advances the incarnation).
+fn migrate_history_incarnation(shared: &SharedRedb) -> Result<(), StorageError> {
+    let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+    transaction.set_two_phase_commit(true);
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let mut metadata = transaction.open_table(META).map_err(table_error)?;
+    if metadata
+        .get(META_HISTORY_INCARNATION)
+        .map_err(precommit_storage_error)?
+        .is_some()
+    {
+        drop(metadata);
+        return transaction.abort().map_err(precommit_storage_error);
+    }
+    let encoded = encode_history_incarnation_v1(HISTORY_INCARNATION_INITIAL)
+        .map_err(crate::error::codec_error)?;
+    metadata
+        .insert(META_HISTORY_INCARNATION, encoded.as_bytes())
+        .map_err(precommit_storage_error)?;
+    drop(metadata);
+    shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+    shared.commit_durable(transaction)?;
+    shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)
 }
 
 fn publish_record_registry(
@@ -1400,6 +1488,8 @@ fn write_initial_metadata(
         riffdb_storage_api::AdministrationSequenceAllocator::initial(),
     )
     .map_err(crate::error::codec_error)?;
+    let history = encode_history_incarnation_v1(HISTORY_INCARNATION_INITIAL)
+        .map_err(crate::error::codec_error)?;
 
     let mut table = transaction.open_table(META).map_err(table_error)?;
     table
@@ -1416,6 +1506,9 @@ fn write_initial_metadata(
         .map_err(precommit_storage_error)?;
     table
         .insert(META_RECORD_REGISTRY, registry.as_bytes())
+        .map_err(precommit_storage_error)?;
+    table
+        .insert(META_HISTORY_INCARNATION, history.as_bytes())
         .map_err(precommit_storage_error)?;
     Ok(())
 }
@@ -1478,6 +1571,9 @@ where
                 {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
+            }
+            META_HISTORY_INCARNATION => {
+                decode_history_incarnation_v1(value.value()).map_err(crate::error::codec_error)?;
             }
             _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
         }

@@ -854,6 +854,10 @@ impl GrpcLifecycleRoute for MaintenanceRoute {
         None
     }
 
+    fn history_incarnation(&self) -> Option<u64> {
+        Some(1)
+    }
+
     fn restricted_health(
         &self,
         _request: HealthRequest,
@@ -931,6 +935,10 @@ impl GrpcLifecycleRoute for ActiveRoute {
 
     fn server_generation(&self) -> Option<[u8; 16]> {
         Some(SERVER_GENERATION)
+    }
+
+    fn history_incarnation(&self) -> Option<u64> {
+        Some(1)
     }
 
     fn restricted_health(
