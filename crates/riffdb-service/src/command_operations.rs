@@ -2243,6 +2243,8 @@ fn map_authoritative_error(
 ) -> ServiceFailure {
     match error {
         AuthoritativeReadError::Unavailable => PublicError::storage_unavailable().into(),
+        AuthoritativeReadError::Cancelled => ServiceFailure::Cancelled,
+        AuthoritativeReadError::DeadlineExceeded => ServiceFailure::DeadlineExceeded,
         AuthoritativeReadError::Integrity | AuthoritativeReadError::InvalidContinuation => {
             service.internal_failure(operation, InternalDefect::LowerIntegrity)
         }

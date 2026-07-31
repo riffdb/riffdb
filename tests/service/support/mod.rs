@@ -3424,12 +3424,12 @@ impl CatalogReadPort for HarnessPorts {
         })
     }
 
-    fn prepare_contract_version(
-        &self,
-        _control: &RequestControl,
+    fn prepare_contract_version<'a>(
+        &'a self,
+        _control: &'a RequestControl,
         lineage: ContractLineage,
         version: ContractVersion,
-    ) -> PortFuture<'_, Option<ValidatedContractBundle>, CatalogError> {
+    ) -> PortFuture<'a, Option<ValidatedContractBundle>, CatalogError> {
         self.shared
             .prepare_contract_version_calls
             .fetch_add(1, Ordering::AcqRel);
@@ -3443,11 +3443,11 @@ impl CatalogReadPort for HarnessPorts {
         Box::pin(async move { Ok(bundle) })
     }
 
-    fn reserve_active_catalog(
-        &self,
-        _control: &RequestControl,
+    fn reserve_active_catalog<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<(), Option<ActiveCatalogSnapshot>, CatalogError>,
         PortAdmissionError,
     > {
@@ -3472,11 +3472,11 @@ impl CatalogReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(ActiveCatalogPermit { shared }) as _) })
     }
 
-    fn reserve_contract_version(
-        &self,
-        _control: &RequestControl,
+    fn reserve_contract_version<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             (ContractLineage, ContractVersion),
             Option<ValidatedContractBundle>,
@@ -3488,11 +3488,11 @@ impl CatalogReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(ContractVersionPermit { shared }) as _) })
     }
 
-    fn executable_plan(
-        &self,
-        _control: &RequestControl,
+    fn executable_plan<'a>(
+        &'a self,
+        _control: &'a RequestControl,
         request: CatalogExecutablePlanRequest,
-    ) -> PortFuture<'_, ResolvedExecutablePlan, CatalogError> {
+    ) -> PortFuture<'a, ResolvedExecutablePlan, CatalogError> {
         let panic = self
             .shared
             .panic_executable_plan
@@ -3514,12 +3514,12 @@ impl CatalogReadPort for HarnessPorts {
         })
     }
 
-    fn prepare_deployment(
-        &self,
-        _control: &RequestControl,
+    fn prepare_deployment<'a>(
+        &'a self,
+        _control: &'a RequestControl,
         candidate: ContractBundle,
         expected_active_version: Option<ContractVersion>,
-    ) -> PortFuture<'_, CatalogPreparationResult, CatalogError> {
+    ) -> PortFuture<'a, CatalogPreparationResult, CatalogError> {
         let shared = Arc::clone(&self.shared);
         Box::pin(async move {
             shared.prepare_deployment_started.notify_one();
@@ -3538,11 +3538,11 @@ impl CatalogReadPort for HarnessPorts {
 }
 
 impl AuthoritativeReadPort for HarnessPorts {
-    fn reserve_read_entity(
-        &self,
-        _control: &RequestControl,
+    fn reserve_read_entity<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             AuthoritativeEntityRequest,
             Option<AuthoritativeEntitySnapshot>,
@@ -3554,11 +3554,11 @@ impl AuthoritativeReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(ReadEntityPermit { shared }) as _) })
     }
 
-    fn reserve_scan_index(
-        &self,
-        _control: &RequestControl,
+    fn reserve_scan_index<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             AuthoritativeIndexRequest,
             AuthoritativeIndexPage,
@@ -3570,11 +3570,11 @@ impl AuthoritativeReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(ScanIndexPermit { shared }) as _) })
     }
 
-    fn reserve_read_outcome(
-        &self,
-        _control: &RequestControl,
+    fn reserve_read_outcome<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             AuthoritativeOutcomeRequest,
             Option<AuthoritativeOutcomeSnapshot>,
@@ -3589,11 +3589,11 @@ impl AuthoritativeReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(ReadOutcomePermit { shared }) as _) })
     }
 
-    fn reserve_read_commit(
-        &self,
-        _control: &RequestControl,
+    fn reserve_read_commit<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             CommitSequence,
             Option<AuthoritativeCommitSnapshot>,
@@ -3615,11 +3615,11 @@ impl AuthoritativeReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(ReadCommitPermit { shared }) as _) })
     }
 
-    fn reserve_scan_commits(
-        &self,
-        _control: &RequestControl,
+    fn reserve_scan_commits<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             AuthoritativeCommitScanRequest,
             AuthoritativeCommitPage,
@@ -3631,11 +3631,11 @@ impl AuthoritativeReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(ScanCommitsPermit { shared }) as _) })
     }
 
-    fn reserve_subscribe_to_commits(
-        &self,
-        _control: &RequestControl,
+    fn reserve_subscribe_to_commits<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             AuthoritativeCommitSubscriptionRequest,
             Box<dyn CommitNotificationSource>,
@@ -3647,11 +3647,11 @@ impl AuthoritativeReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(SubscribeCommitPermit { shared }) as _) })
     }
 
-    fn reserve_trace_provenance(
-        &self,
-        _control: &RequestControl,
+    fn reserve_trace_provenance<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             riffdb_policy::ProvenanceSelector,
             Option<AuthoritativeProvenanceSnapshot>,
@@ -3663,11 +3663,11 @@ impl AuthoritativeReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(TraceProvenancePermit { shared }) as _) })
     }
 
-    fn read_capability_revoke_target(
-        &self,
-        _control: &RequestControl,
+    fn read_capability_revoke_target<'a>(
+        &'a self,
+        _control: &'a RequestControl,
         capability_id: riffdb_types::CapabilityId,
-    ) -> PortFuture<'_, CapabilityRevokeTargetSnapshot, AuthoritativeReadError> {
+    ) -> PortFuture<'a, CapabilityRevokeTargetSnapshot, AuthoritativeReadError> {
         let panic = self
             .shared
             .panic_revoke_target_read

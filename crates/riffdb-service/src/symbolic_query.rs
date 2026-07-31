@@ -1691,6 +1691,9 @@ async fn execute_compiled_query(
                 return Err(finish_failure(&service, &context, &begun, failure).await);
             }
             Err(CursorAccessError::Unavailable) => {
+                // Cursor resolve unavailability is retryable only when it arises
+                // from transient registry/clock state; resolve before the retry
+                // loop so a stale/invalid token is never re-run.
                 let failure = PublicError::storage_unavailable().into();
                 return Err(finish_failure(&service, &context, &begun, failure).await);
             }
@@ -1706,50 +1709,93 @@ async fn execute_compiled_query(
         .await?
         .into_application_query()
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
-    let snapshot = match execute_authorized_query_page(
-        execution_authorization,
-        executor.as_ref(),
-        &program,
-        &parameters,
-        prior.as_deref().map(QueryCursorState::continuation),
-    ) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            let failure = execution_failure(&service, OPERATION, error);
-            return Err(finish_failure(&service, &context, &begun, failure).await);
-        }
+
+    // Query execution and continuation registration retry together; audit
+    // begin/finish stay outside the loop.
+    let (snapshot, cursor_guard) = match crate::read_retry::with_read_retry(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        service.providers.telemetry.as_ref(),
+        OPERATION,
+        |_attempt| {
+            let execution_authorization = &execution_authorization;
+            let program = &program;
+            let parameters = &parameters;
+            let prior_cont = prior.as_deref().map(QueryCursorState::continuation);
+            let cursor_lookup = cursor_lookup.clone();
+            let principal = context.principal().principal_id().clone();
+            let executor = executor.as_ref();
+            let cursors = &service.cursors;
+            let service = &service;
+            let telemetry = service.providers.telemetry.as_ref();
+            async move {
+                let snapshot = match execute_authorized_query_page(
+                    execution_authorization,
+                    executor,
+                    program,
+                    parameters,
+                    prior_cont,
+                ) {
+                    Ok(snapshot) => snapshot,
+                    Err(QueryExecutionError::BackendUnavailable) => {
+                        return Err(Ok(
+                            crate::read_retry::RetryableReadFault::BackendUnavailable,
+                        ));
+                    }
+                    Err(error) => {
+                        return Err(Err(execution_failure(service, OPERATION, error)));
+                    }
+                };
+                let continuation = match (snapshot.continuation_binding(), snapshot.continuation())
+                {
+                    (Some(binding), Some(lower)) => QueryContinuation::checked(
+                        binding.to_owned(),
+                        lower.to_vec(),
+                        snapshot.index_epochs().clone(),
+                    ),
+                    (None, None) => None,
+                    _ => {
+                        return Err(Err(
+                            service.internal_failure(OPERATION, InternalDefect::ProofMismatch)
+                        ));
+                    }
+                };
+                let cursor_guard = match continuation {
+                    Some(continuation) => {
+                        match cursors.register_query_unpublished(
+                            &principal,
+                            cursor_lookup,
+                            QueryCursorState::new(continuation),
+                        ) {
+                            Ok(guard) => {
+                                if guard.capacity_evicted() {
+                                    telemetry.record(crate::ServiceTelemetryEvent::CursorEvicted);
+                                }
+                                Some(guard)
+                            }
+                            Err(_) => {
+                                return Err(Ok(
+                                    crate::read_retry::RetryableReadFault::CursorUnavailable,
+                                ));
+                            }
+                        }
+                    }
+                    None => None,
+                };
+                Ok((snapshot, cursor_guard))
+            }
+        },
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
     };
     if minimum_application_head.is_some_and(|minimum| snapshot.application_head() < minimum) {
         let failure = PublicError::concurrency_deadline_exceeded().into();
         return Err(finish_failure(&service, &context, &begun, failure).await);
     }
     begun.reauthorize(&service, &context).await?;
-    let continuation = match (snapshot.continuation_binding(), snapshot.continuation()) {
-        (Some(binding), Some(lower)) => QueryContinuation::checked(
-            binding.to_owned(),
-            lower.to_vec(),
-            snapshot.index_epochs().clone(),
-        ),
-        (None, None) => None,
-        _ => {
-            let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
-            return Err(finish_failure(&service, &context, &begun, failure).await);
-        }
-    };
-    let cursor_guard = match continuation {
-        Some(continuation) => match service.cursors.register_query_unpublished(
-            context.principal().principal_id(),
-            cursor_lookup,
-            QueryCursorState::new(continuation),
-        ) {
-            Ok(guard) => Some(guard),
-            Err(_) => {
-                let failure = PublicError::storage_unavailable().into();
-                return Err(finish_failure(&service, &context, &begun, failure).await);
-            }
-        },
-        None => None,
-    };
     let mut result =
         ExecuteSymbolicQueryResult::from_snapshot(&program, &snapshot, bundle.bundle());
     if let Some(module_hash) = module_hash {
@@ -2107,7 +2153,7 @@ fn application_query_target(
 }
 
 fn execute_authorized_query_page(
-    authorization: AuthorizedApplicationQuery,
+    authorization: &AuthorizedApplicationQuery,
     executor: &dyn riffdb_query_executor::QueryExecutionPort,
     program: &QueryAccessProgramV1,
     parameters: &QueryParameters,
@@ -2148,9 +2194,12 @@ fn execution_failure(
             )
         }
         QueryExecutionError::BackendUnavailable => PublicError::storage_unavailable().into(),
-        QueryExecutionError::BoundExceeded | QueryExecutionError::FuelExhausted => {
-            ServiceFailure::ResponseTooLarge
+        QueryExecutionError::BackendIntegrity => {
+            service.internal_failure(operation, InternalDefect::LowerIntegrity)
         }
+        QueryExecutionError::BackendLimitExceeded
+        | QueryExecutionError::BoundExceeded
+        | QueryExecutionError::FuelExhausted => ServiceFailure::ResponseTooLarge,
         QueryExecutionError::MissingField { .. }
         | QueryExecutionError::InvalidDependentKey { .. }
         | QueryExecutionError::InvalidProgram

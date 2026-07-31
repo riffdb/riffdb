@@ -488,6 +488,9 @@ pub(crate) struct ProductionServiceTelemetry {
     audit_unavailable: AtomicU64,
     internal_integrity: AtomicU64,
     cursor_unavailable: AtomicU64,
+    cursor_evicted: AtomicU64,
+    read_retry_attempt: AtomicU64,
+    read_retry_exhausted: AtomicU64,
     stream_closed_by_policy: AtomicU64,
 }
 
@@ -498,6 +501,9 @@ impl ProductionServiceTelemetry {
             audit_unavailable: self.audit_unavailable.load(Ordering::Relaxed),
             internal_integrity: self.internal_integrity.load(Ordering::Relaxed),
             cursor_unavailable: self.cursor_unavailable.load(Ordering::Relaxed),
+            cursor_evicted: self.cursor_evicted.load(Ordering::Relaxed),
+            read_retry_attempt: self.read_retry_attempt.load(Ordering::Relaxed),
+            read_retry_exhausted: self.read_retry_exhausted.load(Ordering::Relaxed),
             stream_closed_by_policy: self.stream_closed_by_policy.load(Ordering::Relaxed),
         }
     }
@@ -510,6 +516,9 @@ impl ServiceTelemetry for ProductionServiceTelemetry {
             ServiceTelemetryEvent::AuditUnavailable { .. } => &self.audit_unavailable,
             ServiceTelemetryEvent::InternalIntegrity { .. } => &self.internal_integrity,
             ServiceTelemetryEvent::CursorUnavailable => &self.cursor_unavailable,
+            ServiceTelemetryEvent::CursorEvicted => &self.cursor_evicted,
+            ServiceTelemetryEvent::ReadRetryAttempt { .. } => &self.read_retry_attempt,
+            ServiceTelemetryEvent::ReadRetryExhausted { .. } => &self.read_retry_exhausted,
             ServiceTelemetryEvent::StreamClosedByPolicy => &self.stream_closed_by_policy,
         };
         saturating_increment(counter);
@@ -529,6 +538,9 @@ pub(crate) struct ServiceTelemetrySnapshot {
     pub(crate) audit_unavailable: u64,
     pub(crate) internal_integrity: u64,
     pub(crate) cursor_unavailable: u64,
+    pub(crate) cursor_evicted: u64,
+    pub(crate) read_retry_attempt: u64,
+    pub(crate) read_retry_exhausted: u64,
     pub(crate) stream_closed_by_policy: u64,
 }
 
@@ -857,6 +869,9 @@ mod tests {
                 audit_unavailable: 1,
                 internal_integrity: 1,
                 cursor_unavailable: 1,
+                cursor_evicted: 0,
+                read_retry_attempt: 0,
+                read_retry_exhausted: 0,
                 stream_closed_by_policy: 1,
             }
         );
