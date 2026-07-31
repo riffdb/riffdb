@@ -1,6 +1,6 @@
 # ADR-0077: Batch Item Results
 
-- **Status:** Accepted
+- **Status:** Proposed
 - **Date:** 2026-07-31
 - **Decision owners:** RiffDB maintainers
 - **Related requirements:** `ID-004`, `REC-001`
