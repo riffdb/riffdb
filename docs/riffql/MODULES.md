@@ -30,10 +30,10 @@ The compiler emits:
 For TicketDesk, the generated MCP names are:
 
 ```text
-ticketdesk.list_tickets
+ticketdesk_list_tickets
 ticketdesk.project_members
 ticketdesk.project_summary
-ticketdesk.ticket_page
+ticketdesk_ticket_page
 ```
 
 Generated MCP operations are read-only and non-destructive. They complement

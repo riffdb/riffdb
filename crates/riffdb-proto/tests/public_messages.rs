@@ -178,6 +178,7 @@ fn explained_command() -> v1::ExplainCommandResponse {
                 contract: Some(contract_descriptor()),
                 command_id: 1,
                 plan_hash: vec![0x55; 32],
+                tool_name: "riffdb_cmd_legalspend_reserve".to_owned(),
                 explanation: Some(v1::CommandExplain {
                     command_id: 1,
                     execution_class: v1::ExecutionClass::IdempotentMutation as i32,

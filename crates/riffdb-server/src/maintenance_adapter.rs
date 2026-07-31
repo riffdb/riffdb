@@ -28,7 +28,7 @@ use riffdb_types::{
     OfflineMaintenanceInputHash, OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
     OfflineMaintenanceReplacementConfirmation,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::maintenance_lifecycle::{MaintenanceLifecycle, MaintenanceReceiptClaim};
 use crate::port_driver::{BlockingPortDriver, BlockingPortExecutor};
@@ -62,10 +62,12 @@ pub(crate) fn shared_maintenance_storage(
 pub(crate) enum MaintenanceTrigger {
     CreateBackup {
         request: CreateOfflineBackupRequest,
+        start_ready: oneshot::Receiver<()>,
     },
     RestoreBackup {
         request: RestoreOfflineBackupRequest,
         credential: riffdb_auth::RetainedOpaqueCredential,
+        start_ready: oneshot::Receiver<()>,
     },
     RecoveryRestore {
         restore: RecoveryOfflineMaintenanceRestore,
@@ -77,9 +79,20 @@ impl MaintenanceTrigger {
     /// Returns the caller-stable operation identity.
     pub(crate) const fn operation_id(&self) -> OfflineMaintenanceOperationId {
         match self {
-            Self::CreateBackup { request } => request.operation_id(),
+            Self::CreateBackup { request, .. } => request.operation_id(),
             Self::RestoreBackup { request, .. } => request.operation_id(),
             Self::RecoveryRestore { restore, .. } => restore.request().operation_id(),
+        }
+    }
+
+    /// Waits until the durable start adapter has released its receipt lock and
+    /// returned the start result to the service job.
+    pub(crate) async fn wait_for_start_ready(&mut self) -> Result<(), ()> {
+        match self {
+            Self::CreateBackup { start_ready, .. } | Self::RestoreBackup { start_ready, .. } => {
+                start_ready.await.map_err(|_| ())
+            }
+            Self::RecoveryRestore { .. } => Ok(()),
         }
     }
 }
@@ -317,6 +330,7 @@ impl fmt::Debug for ServerOfflineMaintenanceCoordinator {
 struct PreparedStart {
     receipt: OfflineMaintenanceReceiptV1,
     trigger: MaintenanceTrigger,
+    start_ready: Option<oneshot::Sender<()>>,
 }
 
 fn admit_restore_retry(
@@ -394,35 +408,42 @@ fn admit_start(
     controller: &MaintenanceController,
     request: AuthorizedOfflineMaintenanceStart,
 ) -> Result<OfflineMaintenanceStartResult, OfflineMaintenanceStartPortError> {
-    let prepared = prepare_start(request)?;
+    let mut prepared = prepare_start(request)?;
     let operation_id = prepared.receipt.operation_id();
     let mut storage = lock_start_storage(controller, operation_id)?;
 
     let existing = storage
         .read_receipt(operation_id)
         .map_err(|error| map_start_read_error(controller, operation_id, error))?;
-    if let Some(existing) = existing {
-        return resolve_existing(controller, &mut storage, prepared, existing);
-    }
-
-    // A previously admitted operation may have closed routing after this
-    // request reserved its blocking permit. Only exact duplicates above may
-    // resolve while ordinary admission is frozen.
-    if !controller.lifecycle.ordinary_admission_available() {
-        return Err(OfflineMaintenanceStartPortError::Unavailable);
-    }
-
-    match storage
-        .create_or_read_receipt(&prepared.receipt)
-        .map_err(|error| map_receipt_create_error(controller, operation_id, error))?
-    {
-        OfflineMaintenanceReceiptCreateResultV1::Existing(existing) => {
-            resolve_existing(controller, &mut storage, prepared, *existing)
+    let start_ready = prepared
+        .start_ready
+        .take()
+        .expect("a prepared maintenance start owns one readiness sender");
+    let result = if let Some(existing) = existing {
+        resolve_existing(controller, &mut storage, prepared, existing)
+    } else {
+        // A previously admitted operation may have closed routing after this
+        // request reserved its blocking permit. Only exact duplicates above may
+        // resolve while ordinary admission is frozen.
+        if !controller.lifecycle.ordinary_admission_available() {
+            return Err(OfflineMaintenanceStartPortError::Unavailable);
         }
-        OfflineMaintenanceReceiptCreateResultV1::Created => {
-            admit_created(controller, &mut storage, prepared)
+
+        match storage
+            .create_or_read_receipt(&prepared.receipt)
+            .map_err(|error| map_receipt_create_error(controller, operation_id, error))?
+        {
+            OfflineMaintenanceReceiptCreateResultV1::Existing(existing) => {
+                resolve_existing(controller, &mut storage, prepared, *existing)
+            }
+            OfflineMaintenanceReceiptCreateResultV1::Created => {
+                admit_created(controller, &mut storage, prepared)
+            }
         }
-    }
+    };
+    drop(storage);
+    let _ = start_ready.send(());
+    result
 }
 
 fn prepare_start(
@@ -433,6 +454,7 @@ fn prepare_start(
             request,
             authorization,
         } => {
+            let (start_ready, ready) = oneshot::channel();
             let policy_request = OfflineMaintenanceAuthorizationRequest::create_backup(
                 request.operation_id(),
                 request.input_hash(),
@@ -453,7 +475,11 @@ fn prepare_start(
                 .map_err(|_| OfflineMaintenanceStartPortError::Integrity)?;
             Ok(PreparedStart {
                 receipt,
-                trigger: MaintenanceTrigger::CreateBackup { request },
+                trigger: MaintenanceTrigger::CreateBackup {
+                    request,
+                    start_ready: ready,
+                },
+                start_ready: Some(start_ready),
             })
         }
         AuthorizedOfflineMaintenanceStart::RestoreBackup {
@@ -461,6 +487,7 @@ fn prepare_start(
             authorization,
             credential,
         } => {
+            let (start_ready, ready) = oneshot::channel();
             let policy_request = OfflineMaintenanceAuthorizationRequest::restore_backup(
                 request.operation_id(),
                 request.input_hash(),
@@ -484,7 +511,9 @@ fn prepare_start(
                 trigger: MaintenanceTrigger::RestoreBackup {
                     request,
                     credential,
+                    start_ready: ready,
                 },
+                start_ready: Some(start_ready),
             })
         }
     }
@@ -517,7 +546,9 @@ fn admit_created(
     storage: &mut RedbMaintenanceStorage,
     prepared: PreparedStart,
 ) -> Result<OfflineMaintenanceStartResult, OfflineMaintenanceStartPortError> {
-    let PreparedStart { receipt, trigger } = prepared;
+    let PreparedStart {
+        receipt, trigger, ..
+    } = prepared;
     let operation_id = receipt.operation_id();
     if controller.lifecycle.begin(operation_id).is_err() {
         // A restore bearer must be gone before a terminal receipt is persisted.
@@ -620,7 +651,9 @@ fn resolve_existing(
     prepared: PreparedStart,
     existing: OfflineMaintenanceReceiptV1,
 ) -> Result<OfflineMaintenanceStartResult, OfflineMaintenanceStartPortError> {
-    let PreparedStart { receipt, trigger } = prepared;
+    let PreparedStart {
+        receipt, trigger, ..
+    } = prepared;
     if existing.operation_id() != receipt.operation_id() {
         return Err(OfflineMaintenanceStartPortError::Integrity);
     }
@@ -932,9 +965,14 @@ mod tests {
         receipt
             .record_source_database_id(database_id(seed))
             .expect("source database");
+        let (start_ready, ready) = oneshot::channel();
         PreparedStart {
             receipt,
-            trigger: MaintenanceTrigger::CreateBackup { request },
+            trigger: MaintenanceTrigger::CreateBackup {
+                request,
+                start_ready: ready,
+            },
+            start_ready: Some(start_ready),
         }
     }
 

@@ -1,4 +1,4 @@
 version=1
 contract=LegalSpend
-command=1 source=CreateBudget tool=riffdb.cmd.legalspend.createbudget
-command=2 source=AllocateBudget tool=riffdb.cmd.legalspend.allocatebudget
+command=1 source=CreateBudget tool=riffdb_cmd_legalspend_createbudget
+command=2 source=AllocateBudget tool=riffdb_cmd_legalspend_allocatebudget

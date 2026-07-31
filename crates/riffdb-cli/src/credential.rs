@@ -47,7 +47,8 @@ pub(crate) fn normal_credential(
             let credential =
                 load_protected_bearer_credential(path).map_err(|_| CredentialError::Invalid)?;
             Ok(NormalCredential {
-                metadata: CallMetadata::authenticated(credential),
+                metadata: CallMetadata::authenticated(credential)
+                    .with_database(config.database.clone()),
                 file: Some(path.clone()),
             })
         }
@@ -59,7 +60,8 @@ pub(crate) fn normal_credential(
             let text = std::str::from_utf8(&bytes).map_err(|_| CredentialError::Invalid)?;
             let credential = BearerCredential::new(text).map_err(|_| CredentialError::Invalid)?;
             Ok(NormalCredential {
-                metadata: CallMetadata::authenticated(credential),
+                metadata: CallMetadata::authenticated(credential)
+                    .with_database(config.database.clone()),
                 file: None,
             })
         }
@@ -72,12 +74,15 @@ pub(crate) struct BootstrapMaterial {
 }
 
 impl BootstrapMaterial {
-    pub(crate) fn metadata(&self) -> Result<BootstrapCallMetadata, CredentialError> {
+    pub(crate) fn metadata(
+        &self,
+        database: riffdb_types::DatabaseAlias,
+    ) -> Result<BootstrapCallMetadata, CredentialError> {
         let text = std::str::from_utf8(self.credential.token().expose_secret())
             .map_err(|_| CredentialError::BootstrapInvalid)?;
         let credential = TransportBootstrapCredential::new(text)
             .map_err(|_| CredentialError::BootstrapInvalid)?;
-        Ok(BootstrapCallMetadata::new(credential))
+        Ok(BootstrapCallMetadata::new(credential).with_database(database))
     }
 }
 
@@ -447,6 +452,7 @@ mod tests {
     fn config(file: Option<PathBuf>) -> EffectiveConfig {
         EffectiveConfig {
             endpoint: "http://127.0.0.1:7443".to_owned(),
+            database: riffdb_types::DatabaseAlias::default_alias(),
             output: OutputMode::Json,
             max_attempts: 3,
             credential_file: file,

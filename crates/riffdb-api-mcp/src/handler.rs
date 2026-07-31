@@ -1451,7 +1451,9 @@ where
             self.telemetry.record(McpTelemetryEvent::SchemaFailure {
                 phase: McpSchemaFailurePhase::Input,
             });
-            return Err(invalid_tool_arguments());
+            return Err(invalid_tool_arguments_with_detail(
+                RiffDbSchemaValidator.input_violation(&input_schema, &arguments),
+            ));
         }
 
         let request = McpToolInvocation {
@@ -2157,6 +2159,10 @@ fn invalid_tool_arguments() -> McpError {
     McpError::invalid_params("invalid tool arguments", None)
 }
 
+fn invalid_tool_arguments_with_detail(violation: crate::schema::InputSchemaViolation) -> McpError {
+    McpError::invalid_params("invalid tool arguments", Some(violation.as_json()))
+}
+
 fn invalid_progress_request() -> McpError {
     McpError::invalid_params("invalid progress request", None)
 }
@@ -2715,7 +2721,7 @@ mod tests {
     }
 
     fn dynamic_tool() -> McpDynamicToolDefinition {
-        dynamic_tool_named("riffdb.cmd.orders.place")
+        dynamic_tool_named("riffdb_cmd_orders_place")
     }
 
     fn dynamic_tool_named(name: impl Into<String>) -> McpDynamicToolDefinition {
@@ -2807,7 +2813,7 @@ mod tests {
             "provenance_uri": "riffdb://provenance/00000000-0001-7000-8000-000000000000",
             "durability_mode": "sync",
             "outcome_uri": concat!(
-                "riffdb://outcome/actor/orders/1/riffdb.cmd.orders.place/",
+                "riffdb://outcome/actor/orders/1/riffdb_cmd_orders_place/",
                 "AQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
             )
         })
@@ -2920,7 +2926,7 @@ mod tests {
         assert_eq!(fixed.items().len(), 14);
 
         let dynamic: Vec<_> = (0..MAX_MCP_DISCOVERY_PAGE_ITEMS)
-            .map(|index| dynamic_tool_named(format!("riffdb.cmd.budget.command{index:03}")))
+            .map(|index| dynamic_tool_named(format!("riffdb_cmd_budget_command{index:03}")))
             .collect();
         for (fixed_count, expected_maximum) in [(0, 500), (14, 486)] {
             let maximum = maximum_dynamic_page_count(fixed_count, &dynamic);
@@ -2944,7 +2950,7 @@ mod tests {
             } else {
                 let mut over = tool_page_items(fixed_count, &dynamic, maximum);
                 over.push(McpToolDiscoveryItem::Dynamic(Box::new(dynamic_tool_named(
-                    "riffdb.cmd.budget.overflow",
+                    "riffdb_cmd_budget_overflow",
                 ))));
                 assert_eq!(
                     McpToolPage::new(over, Some([0xff; 16])).expect_err("item count over maximum"),
@@ -2956,7 +2962,7 @@ mod tests {
         let maximum_metadata: Vec<_> = (0..MAX_MCP_DISCOVERY_PAGE_ITEMS)
             .map(|index| {
                 dynamic_tool_named_with_metadata(
-                    format!("riffdb.cmd.maximum.command{index:03}"),
+                    format!("riffdb_cmd_maximum_command{index:03}"),
                     Some("t".repeat(MAX_MCP_DYNAMIC_TOOL_TITLE_BYTES)),
                     Some("d".repeat(MAX_MCP_DYNAMIC_TOOL_DESCRIPTION_BYTES)),
                 )
@@ -2981,10 +2987,10 @@ mod tests {
             block_on(server.handle_list_tools(None, &extensions, None)).expect("tool page");
 
         assert_eq!(result.tools.len(), 15);
-        assert_eq!(result.tools[0].name, "riffdb.contract.validate");
+        assert_eq!(result.tools[0].name, "riffdb_contract_validate");
         assert_eq!(
             result.tools.last().expect("dynamic").name,
-            "riffdb.cmd.orders.place"
+            "riffdb_cmd_orders_place"
         );
         assert_eq!(
             result.next_cursor.as_deref(),
@@ -3092,13 +3098,27 @@ mod tests {
         let backend = FakeBackend::new();
         let telemetry = Arc::new(RecordingMcpTelemetry::default());
         let server = RiffDbMcpServer::new_stdio_with_telemetry(backend.clone(), telemetry.clone());
-        let request = CallToolRequestParams::new("riffdb.server.health")
+        let request = CallToolRequestParams::new("riffdb_server_health")
             .with_arguments(json!({"unexpected": true}).as_object().unwrap().clone());
         let error =
             block_on(server.handle_call_tool_with_cancellation(request, &extensions(), None))
                 .expect_err("invalid fixed input");
 
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+        assert_eq!(
+            error.data,
+            Some(json!({
+                "schema": "riffdb.mcp.input-error/v1",
+                "code": "unexpected_property",
+                "path": "/unexpected",
+                "expected": "declared property",
+            }))
+        );
+        assert!(
+            !serde_json::to_string(&error)
+                .expect("error JSON")
+                .contains("true")
+        );
         assert_eq!(backend.state().invoke_calls, 0);
         assert!(backend.state().begin_ids.is_empty());
         assert_eq!(
@@ -3128,7 +3148,7 @@ mod tests {
     fn dynamic_call_uses_fresh_resolve_and_execute_contexts() {
         let backend = FakeBackend::new();
         let server = RiffDbMcpServer::new_stdio(backend.clone());
-        let request = CallToolRequestParams::new("riffdb.cmd.orders.place")
+        let request = CallToolRequestParams::new("riffdb_cmd_orders_place")
             .with_arguments(json!({"value": "one"}).as_object().unwrap().clone());
         let result =
             block_on(server.handle_call_tool_with_cancellation(request, &extensions(), None))
@@ -3148,7 +3168,7 @@ mod tests {
         let backend = FakeBackend::new();
         backend.state().dynamic_available = false;
         let server = RiffDbMcpServer::new_stdio(backend.clone());
-        let request = CallToolRequestParams::new("riffdb.cmd.orders.place")
+        let request = CallToolRequestParams::new("riffdb_cmd_orders_place")
             .with_arguments(json!({"value": "one"}).as_object().unwrap().clone());
         let error =
             block_on(server.handle_call_tool_with_cancellation(request, &extensions(), None))
@@ -3165,7 +3185,7 @@ mod tests {
         backend.state().invoke_mode = InvokeMode::PublicAuthorization;
         let telemetry = Arc::new(RecordingMcpTelemetry::default());
         let server = RiffDbMcpServer::new_stdio_with_telemetry(backend, telemetry.clone());
-        let request = CallToolRequestParams::new("riffdb.cmd.orders.place")
+        let request = CallToolRequestParams::new("riffdb_cmd_orders_place")
             .with_arguments(json!({"value": "one"}).as_object().unwrap().clone());
         let result =
             block_on(server.handle_call_tool_with_cancellation(request, &extensions(), None))
@@ -3177,7 +3197,7 @@ mod tests {
         assert_eq!(result.content.len(), 1);
         assert!(encoded.contains("authorization_denied"));
         assert!(!encoded.contains("AuthenticatedMarker"));
-        assert!(!encoded.contains("riffdb.cmd.orders.place"));
+        assert!(!encoded.contains("riffdb_cmd_orders_place"));
         assert!(telemetry.snapshot().contains(&McpTelemetryEvent::ToolCall {
             risk: McpRiskClass::DynamicCommand,
         }));
@@ -3314,7 +3334,7 @@ mod tests {
             .code,
             ErrorCode(-32_000)
         );
-        let request = CallToolRequestParams::new("riffdb.cmd.orders.place")
+        let request = CallToolRequestParams::new("riffdb_cmd_orders_place")
             .with_arguments(json!({"value": "one"}).as_object().unwrap().clone());
         assert_eq!(
             block_on(server.handle_call_tool_with_cancellation(request, &extensions, Some(signal)))
@@ -3371,7 +3391,7 @@ mod tests {
             request_id: invoke_id,
         });
         let invoke_server = RiffDbMcpServer::new_stdio(invoke_backend.clone());
-        let request = CallToolRequestParams::new("riffdb.cmd.orders.place")
+        let request = CallToolRequestParams::new("riffdb_cmd_orders_place")
             .with_arguments(json!({"value": "one"}).as_object().unwrap().clone());
         let error = block_on(invoke_server.handle_call_tool_with_cancellation(
             request,
@@ -3484,7 +3504,7 @@ mod tests {
         let backend = FakeBackend::new();
         backend.state().invoke_mode = InvokeMode::Success(json!({"status": "wrong"}));
         let server = RiffDbMcpServer::new_stdio(backend.clone());
-        let request = CallToolRequestParams::new("riffdb.cmd.orders.place")
+        let request = CallToolRequestParams::new("riffdb_cmd_orders_place")
             .with_arguments(json!({"value": "one"}).as_object().unwrap().clone());
         let error =
             block_on(server.handle_call_tool_with_cancellation(request, &extensions(), None))
@@ -3492,7 +3512,7 @@ mod tests {
         assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
 
         backend.state().invoke_mode = InvokeMode::TargetUnavailable;
-        let request = CallToolRequestParams::new("riffdb.cmd.orders.place")
+        let request = CallToolRequestParams::new("riffdb_cmd_orders_place")
             .with_arguments(json!({"value": "one"}).as_object().unwrap().clone());
         assert_eq!(
             block_on(server.handle_call_tool_with_cancellation(request, &extensions(), None,))
@@ -3502,7 +3522,7 @@ mod tests {
         );
 
         backend.state().invoke_mode = InvokeMode::InvalidResponse;
-        let request = CallToolRequestParams::new("riffdb.cmd.orders.place")
+        let request = CallToolRequestParams::new("riffdb_cmd_orders_place")
             .with_arguments(json!({"value": "one"}).as_object().unwrap().clone());
         assert_eq!(
             block_on(server.handle_call_tool_with_cancellation(request, &extensions(), None,))
@@ -3512,7 +3532,7 @@ mod tests {
         );
 
         backend.state().invoke_mode = InvokeMode::Cancelled;
-        let request = CallToolRequestParams::new("riffdb.cmd.orders.place")
+        let request = CallToolRequestParams::new("riffdb_cmd_orders_place")
             .with_arguments(json!({"value": "one"}).as_object().unwrap().clone());
         let cancellation =
             block_on(server.handle_call_tool_with_cancellation(request, &extensions(), None))

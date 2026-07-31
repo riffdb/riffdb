@@ -1,11 +1,12 @@
 //! Owned loopback HTTP transport for the native MCP service.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::IntoFuture;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use axum::Router;
@@ -13,12 +14,15 @@ use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{Request, Response, StatusCode};
 use axum::routing::any;
+use riffdb_api_grpc::DATABASE_METADATA_KEY;
 use riffdb_api_mcp::{
     HostedMcpHttpConfiguration, HostedMcpHttpConfigurationError, HostedMcpHttpRegistration,
     HostedMcpSessionMaintenanceError, HostedServiceMcpBackend, McpAdmissionSessionKey,
-    McpInflightLimiter, McpRateLimitConfig, McpRateLimiter, McpTransportKind, RequestIdSource,
-    RiffDbMcpServer, SystemMcpMonotonicClock, SystemMcpRateClock, register_hosted_service_mcp_http,
+    McpInflightLimiter, McpMonotonicClock, McpRateLimitConfig, McpRateLimiter, McpTransportKind,
+    RequestIdSource, RiffDbMcpServer, SystemMcpMonotonicClock, SystemMcpRateClock,
+    register_hosted_service_mcp_http,
 };
+use riffdb_types::{DatabaseAlias, MAX_DATABASES_PER_PROCESS};
 use tokio::sync::oneshot;
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::{Instant, MissedTickBehavior};
@@ -35,45 +39,45 @@ type HostedMcpRegistration = HostedMcpHttpRegistration<HostedMcpService>;
 
 /// One bound MCP listener plus its session-maintenance owner.
 pub(crate) struct HostedMcp {
-    registration: HostedMcpRegistration,
+    routes: HostedMcpRoutes,
+    factory: HostedMcpRegistrationFactory,
     shutdown: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<(), HostedMcpTaskError>>,
 }
 
-impl HostedMcp {
-    pub(crate) async fn bind(
-        address: SocketAddr,
-        allowed_origins: &[String],
+#[derive(Clone)]
+struct HostedMcpRegistrationFactory {
+    address: SocketAddr,
+    allowed_origins: Arc<[String]>,
+    rate_limiter: Arc<McpRateLimiter<SystemMcpRateClock>>,
+    monotonic_clock: Arc<dyn McpMonotonicClock>,
+    inflight: Arc<McpInflightLimiter>,
+    session_sequence: Arc<AtomicU64>,
+}
+
+impl HostedMcpRegistrationFactory {
+    fn build(
+        &self,
         dependencies: HostedMcpDependencies,
-    ) -> Result<Self, HostedMcpStartError> {
+    ) -> Result<HostedMcpRegistration, HostedMcpStartError> {
         let configuration = HostedMcpHttpConfiguration::new(
-            address,
+            self.address,
             dependencies.authentication,
-            allowed_origins.iter().cloned(),
+            self.allowed_origins.iter().cloned(),
         )
         .map_err(HostedMcpStartError::Configuration)?;
-        let listener = tokio::net::TcpListener::bind(configuration.bind_address())
-            .await
-            .map_err(HostedMcpStartError::Listener)?;
-        let rate_limiter = Arc::new(McpRateLimiter::new(
-            SystemMcpRateClock::new(),
-            McpRateLimitConfig::poc_default(),
-        ));
-        let monotonic_clock = Arc::new(SystemMcpMonotonicClock::new());
-        let inflight = Arc::new(McpInflightLimiter::new());
-        let session_sequence = Arc::new(AtomicU64::new(0));
-
         let observer_request_ids: Arc<dyn RequestIdSource> =
             Arc::new(dependencies.request_ids.clone());
         let observer_service = Arc::new(HostedServiceMcpBackend::new(
             Arc::clone(&dependencies.service),
             observer_request_ids,
         ));
-
         let factory_service = Arc::clone(&dependencies.service);
         let factory_request_ids = dependencies.request_ids;
         let factory_telemetry = dependencies.telemetry;
-        let factory = move || {
+        let session_sequence = Arc::clone(&self.session_sequence);
+        let inflight = Arc::clone(&self.inflight);
+        let service_factory = move || {
             let sequence = session_sequence
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                     current.checked_add(1)
@@ -93,19 +97,78 @@ impl HostedMcp {
                 Arc::clone(&factory_telemetry),
             ))
         };
-        let registration = register_hosted_service_mcp_http(
+        Ok(register_hosted_service_mcp_http(
             configuration,
             dependencies.authenticator,
-            monotonic_clock,
-            rate_limiter,
+            Arc::clone(&self.monotonic_clock),
+            Arc::clone(&self.rate_limiter),
             observer_service,
-            factory,
-        );
+            service_factory,
+        ))
+    }
+}
+
+impl HostedMcp {
+    pub(crate) async fn bind(
+        address: SocketAddr,
+        allowed_origins: &[String],
+        dependencies: HostedMcpDependencies,
+    ) -> Result<Self, HostedMcpStartError> {
+        Self::bind_routes(
+            address,
+            allowed_origins,
+            [(DatabaseAlias::default_alias(), dependencies)],
+        )
+        .await
+    }
+
+    pub(crate) async fn bind_routes(
+        address: SocketAddr,
+        allowed_origins: &[String],
+        dependencies: impl IntoIterator<Item = (DatabaseAlias, HostedMcpDependencies)>,
+    ) -> Result<Self, HostedMcpStartError> {
+        let dependencies = dependencies.into_iter().collect::<Vec<_>>();
+        if dependencies.is_empty() || dependencies.len() > MAX_DATABASES_PER_PROCESS {
+            return Err(HostedMcpStartError::Routes);
+        }
+        let configuration = HostedMcpHttpConfiguration::new(
+            address,
+            dependencies[0].1.authentication.clone(),
+            allowed_origins.iter().cloned(),
+        )
+        .map_err(HostedMcpStartError::Configuration)?;
+        let listener = tokio::net::TcpListener::bind(configuration.bind_address())
+            .await
+            .map_err(HostedMcpStartError::Listener)?;
+        let factory = HostedMcpRegistrationFactory {
+            address,
+            allowed_origins: Arc::from(allowed_origins.to_vec()),
+            rate_limiter: Arc::new(McpRateLimiter::new(
+                SystemMcpRateClock::new(),
+                McpRateLimitConfig::poc_default(),
+            )),
+            monotonic_clock: Arc::new(SystemMcpMonotonicClock::new()),
+            inflight: Arc::new(McpInflightLimiter::new()),
+            session_sequence: Arc::new(AtomicU64::new(0)),
+        };
+
+        let mut routes = BTreeMap::new();
+        for (alias, dependencies) in dependencies {
+            let registration = factory.build(dependencies)?;
+            if routes.insert(alias, registration).is_some() {
+                return Err(HostedMcpStartError::Routes);
+            }
+        }
+        let configured = Arc::new(routes.keys().cloned().collect());
+        let routes = HostedMcpRoutes {
+            active: Arc::new(RwLock::new(routes)),
+            configured,
+        };
         let application = Router::new()
             .fallback(any(proxy))
-            .with_state(registration.clone());
+            .with_state(routes.clone());
         let (shutdown, stopped) = oneshot::channel();
-        let registration_for_maintenance = registration.clone();
+        let routes_for_maintenance = routes.clone();
         let task = tokio::spawn(async move {
             let server = axum::serve(
                 listener,
@@ -127,17 +190,23 @@ impl HostedMcp {
                         return result.map_err(|_| HostedMcpTaskError::Server);
                     }
                     _ = interval.tick() => {
-                        registration_for_maintenance
-                            .expire_due_sessions()
-                            .await
+                        let registrations = routes_for_maintenance
+                            .snapshot()
                             .map_err(HostedMcpTaskError::Maintenance)?;
+                        for registration in &registrations {
+                            registration
+                                .expire_due_sessions()
+                                .await
+                                .map_err(HostedMcpTaskError::Maintenance)?;
+                        }
                     }
                 }
             }
         });
 
         Ok(Self {
-            registration,
+            routes,
+            factory,
             shutdown: Some(shutdown),
             task,
         })
@@ -148,7 +217,9 @@ impl HostedMcp {
     }
 
     pub(crate) fn begin_shutdown(&mut self) {
-        self.registration.shutdown();
+        for registration in self.routes.snapshot().unwrap_or_default() {
+            registration.shutdown();
+        }
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
@@ -166,6 +237,57 @@ impl HostedMcp {
         let completion = (&mut self.task).await;
         classify_completion(&completion)
     }
+
+    pub(crate) fn replace(
+        &self,
+        alias: &DatabaseAlias,
+        dependencies: HostedMcpDependencies,
+    ) -> Result<(), HostedMcpStartError> {
+        let registration = self.factory.build(dependencies)?;
+        if !self.routes.configured.contains(alias) {
+            return Err(HostedMcpStartError::Routes);
+        }
+        let mut routes = self
+            .routes
+            .active
+            .write()
+            .map_err(|_| HostedMcpStartError::Routes)?;
+        if let Some(existing) = routes.insert(alias.clone(), registration) {
+            existing.shutdown();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn suspend(&self, alias: &DatabaseAlias) -> Result<(), HostedMcpStartError> {
+        if !self.routes.configured.contains(alias) {
+            return Err(HostedMcpStartError::Routes);
+        }
+        let registration = self
+            .routes
+            .active
+            .write()
+            .map_err(|_| HostedMcpStartError::Routes)?
+            .remove(alias);
+        if let Some(registration) = registration {
+            registration.shutdown();
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct HostedMcpRoutes {
+    active: Arc<RwLock<BTreeMap<DatabaseAlias, HostedMcpRegistration>>>,
+    configured: Arc<BTreeSet<DatabaseAlias>>,
+}
+
+impl HostedMcpRoutes {
+    fn snapshot(&self) -> Result<Vec<HostedMcpRegistration>, HostedMcpSessionMaintenanceError> {
+        self.active
+            .read()
+            .map(|routes| routes.values().cloned().collect())
+            .map_err(|_| HostedMcpSessionMaintenanceError)
+    }
 }
 
 impl fmt::Debug for HostedMcp {
@@ -175,10 +297,31 @@ impl fmt::Debug for HostedMcp {
 }
 
 async fn proxy(
-    State(registration): State<HostedMcpRegistration>,
+    State(routes): State<HostedMcpRoutes>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: Request<Body>,
 ) -> Response<Body> {
+    let mut values = request.headers().get_all(DATABASE_METADATA_KEY).iter();
+    let selected = values.next();
+    if values.next().is_some() {
+        return database_route_rejection();
+    }
+    let singleton = routes.configured.len() == 1;
+    let registration = match routes.active.read() {
+        Ok(routes) => match selected {
+            Some(value) => value
+                .to_str()
+                .ok()
+                .and_then(|value| DatabaseAlias::new(value).ok())
+                .and_then(|alias| routes.get(&alias).cloned()),
+            None if singleton => routes.values().next().cloned(),
+            None => None,
+        },
+        Err(_) => None,
+    };
+    let Some(registration) = registration else {
+        return database_route_rejection();
+    };
     let Ok(mut connection) = registration.service_for_peer(peer) else {
         return Response::builder()
             .status(StatusCode::FORBIDDEN)
@@ -189,6 +332,13 @@ async fn proxy(
         Ok(response) => response.map(Body::new),
         Err(never) => match never {},
     }
+}
+
+fn database_route_rejection() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(Body::empty())
+        .expect("the static MCP route rejection response is valid")
 }
 
 fn classify_completion(
@@ -211,6 +361,7 @@ enum HostedMcpTaskError {
 pub(crate) enum HostedMcpStartError {
     Configuration(HostedMcpHttpConfigurationError),
     Listener(io::Error),
+    Routes,
 }
 
 impl fmt::Debug for HostedMcpStartError {
@@ -230,6 +381,7 @@ impl std::error::Error for HostedMcpStartError {
         match self {
             Self::Configuration(source) => Some(source),
             Self::Listener(source) => Some(source),
+            Self::Routes => None,
         }
     }
 }

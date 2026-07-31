@@ -921,13 +921,14 @@ messages
   riffdb.v1.ExplainCommandResponse fields=2
     1 not_found optional .riffdb.v1.Unit oneof=result
     2 found optional .riffdb.v1.ExplainedCommand oneof=result
-  riffdb.v1.ExplainedCommand fields=6
+  riffdb.v1.ExplainedCommand fields=7
     1 contract optional .riffdb.v1.ContractDescriptor
     2 command_id optional uint32
     3 plan_hash optional bytes
     4 explanation optional .riffdb.v1.CommandExplain
     5 input_schema optional .riffdb.v1.GeneratedSchemaArtifact
     6 outcome_schema optional .riffdb.v1.GeneratedSchemaArtifact
+    7 tool_name optional string
   riffdb.v1.ExplicitPartitionScope fields=1
     1 partitions repeated .riffdb.v1.ScopedPartition
   riffdb.v1.FieldSelection fields=1

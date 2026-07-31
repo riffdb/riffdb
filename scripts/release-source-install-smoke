@@ -669,6 +669,46 @@ if [[ -e "$existing_config/idempotency.keys" \
     fail "existing-database key-loss rejection changed durable state"
 fi
 
+named_root="$work_root/named database install"
+set_isolated_user_roots "$named_root"
+"$installer" install --user \
+    --database ea \
+    --database orders \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >/dev/null
+named_config="$XDG_CONFIG_HOME/riffdb/riffdbd.toml"
+for expected in \
+    '[databases.ea]' \
+    '[databases.orders]' \
+    "$XDG_DATA_HOME/riffdb/data/ea.redb" \
+    "$XDG_DATA_HOME/riffdb/data/orders.redb" \
+    "$XDG_DATA_HOME/riffdb/backups/ea" \
+    "$XDG_DATA_HOME/riffdb/backups/orders"
+do
+    grep -F "$expected" "$named_config" >/dev/null \
+        || fail "named installation omitted: $expected"
+done
+if grep -E '^database = ' "$named_config" >/dev/null \
+   || grep -Fx '[maintenance]' "$named_config" >/dev/null; then
+    fail "named installation mixed legacy database configuration"
+fi
+"$installer" install --user \
+    --database ea \
+    --database orders \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >/dev/null
+if "$installer" install --user \
+    --database ea \
+    --database another \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >/dev/null 2>&1
+then
+    fail "named installation accepted aliases different from retained configuration"
+fi
+
 systemctl_log="$work_root/systemctl-user-calls.log"
 systemctl_state="$work_root/systemctl-user-active"
 : >"$systemctl_log"

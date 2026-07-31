@@ -2,7 +2,7 @@
 
 use riffdb_contract_ir::{
     CommandPlan, CompatibilityReport, ContractBundle, GeneratedSchemaArtifact, LineageLedgerV1,
-    McpCommandNameRegistryV1, ParentBundleRef, ProjectionPlan, SchemaIr, StableIdNamespace,
+    McpCommandNameRegistryV2, ParentBundleRef, ProjectionPlan, SchemaIr, StableIdNamespace,
     StableIdNamespaceTag, StableIdentity, required_lineage_allocation_namespaces,
 };
 use riffdb_types::{ContractLineage, SourceHash};
@@ -15,7 +15,7 @@ pub(crate) struct BundleParts {
     pub(crate) schema: SchemaIr,
     pub(crate) commands: Vec<CommandPlan>,
     pub(crate) projections: Vec<ProjectionPlan>,
-    pub(crate) mcp_names: McpCommandNameRegistryV1,
+    pub(crate) mcp_names: McpCommandNameRegistryV2,
 }
 
 pub(crate) fn assemble_bundle(

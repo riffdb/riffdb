@@ -55,12 +55,12 @@ fn print_help() {
 RiffDB source installation
 
 Usage:
-  cargo riffdb install (--user|--system) [--from-binaries DIR] [--no-start]
-  cargo riffdb bootstrap (--user|--system) [--register-codex]
+  cargo riffdb install (--user|--system) [--database ALIAS]... [--from-binaries DIR] [--no-start]
+  cargo riffdb bootstrap (--user|--system) [--database ALIAS] [--register-codex]
 
 Commands:
   install    Build and install the three binaries, configuration, and systemd unit
-  bootstrap  Create local operator authority and a restricted MCP capability
+  bootstrap  Create generic operator authority and an MCP developer capability
 "
     );
 }

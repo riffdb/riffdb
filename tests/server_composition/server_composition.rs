@@ -53,8 +53,8 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const BOOTSTRAP_UNIX_MILLISECONDS: u64 = 1_700_000_100_000;
 const CAPABILITY_LIFETIME_SECONDS: u32 = 3_600;
 const INVALID_CAPABILITY_TOKEN: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh4";
-const CREATE_BUDGET_TOOL: &str = "riffdb.cmd.legalspend.createbudget";
-const ALLOCATE_BUDGET_TOOL: &str = "riffdb.cmd.legalspend.allocatebudget";
+const CREATE_BUDGET_TOOL: &str = "riffdb_cmd_legalspend_createbudget";
+const ALLOCATE_BUDGET_TOOL: &str = "riffdb_cmd_legalspend_allocatebudget";
 const FISCAL_YEAR: i64 = 2027;
 const ORGANIZATION_ID: [u8; 16] = [0x11; 16];
 const MATTER_ID: [u8; 16] = [0x22; 16];
@@ -184,11 +184,7 @@ async fn real_process_hosts_policy_filtered_mcp_and_stops_on_sigterm() -> TestRe
     assert_eq!(grpc_dynamic_tools, expected_dynamic_tools);
 
     execute_projection_fixture(&mut client, &authenticated).await?;
-    let projection = bounded_rpc(
-        "gRPC read-after-sequence projection query",
-        client.query_projection(projection_request(PROJECTION_WAIT_NANOS)?, &authenticated),
-    )
-    .await?;
+    let projection = await_projection_ready(&mut client, &authenticated).await?;
     assert_projection_ready(&projection)?;
 
     let degraded_health = bounded_rpc(
@@ -254,20 +250,23 @@ async fn real_process_hosts_policy_filtered_mcp_and_stops_on_sigterm() -> TestRe
     let tools_text = tools.body_text()?;
     let mut mcp_dynamic_tools: Vec<_> = json_string_property_values(tools_text, "name")?
         .into_iter()
-        .filter(|name| name.starts_with("riffdb.cmd."))
+        .filter(|name| name.starts_with("riffdb_cmd_"))
         .collect();
     mcp_dynamic_tools.sort_unstable();
-    assert_eq!(mcp_dynamic_tools, grpc_dynamic_tools);
+    assert_eq!(
+        mcp_dynamic_tools, grpc_dynamic_tools,
+        "hosted MCP tools/list response: {tools_text}"
+    );
     assert!(
         json_string_property_values(tools_text, "name")?
             .iter()
-            .any(|name| name == "riffdb.server.health"),
+            .any(|name| name == "riffdb_server_health"),
         "hosted MCP omitted the policy-visible fixed Health tool"
     );
 
     let projection_call = concat!(
         r#"{"id":3,"jsonrpc":"2.0","method":"tools/call","params":{"#,
-        r#""name":"riffdb.projection.query","arguments":{"#,
+        r#""name":"riffdb_projection_query","arguments":{"#,
         r#""contract":{"active":{}},"leading_components":[],"page":{"limit":10},"#,
         r#""projection_id":1,"required_sequence":"2","wait_nanos":"0"}}}"#
     );
@@ -335,6 +334,38 @@ async fn execute_projection_fixture(
     Ok(())
 }
 
+async fn await_projection_ready(
+    client: &mut RiffDbClient,
+    metadata: &CallMetadata,
+) -> TestResult<v1::QueryProjectionResponse> {
+    const MAX_BUILD_OBSERVATIONS: usize = 256;
+
+    for _ in 0..MAX_BUILD_OBSERVATIONS {
+        let response = bounded_rpc(
+            "gRPC read-after-sequence projection query",
+            client.query_projection(projection_request(PROJECTION_WAIT_NANOS)?, metadata),
+        )
+        .await?;
+        let building = matches!(
+            response.result.as_ref(),
+            Some(v1::query_projection_response::Result::Degraded(degraded))
+                if matches!(
+                    degraded.reason.as_ref().and_then(|reason| reason.reason.as_ref()),
+                    Some(
+                        v1::projection_unavailable_reason::Reason::Building(_)
+                            | v1::projection_unavailable_reason::Reason::Rebuilding(_)
+                    )
+                )
+        );
+        if !building {
+            return Ok(response);
+        }
+    }
+    Err(test_failure(
+        "projection remained in a build lifecycle after 256 explicit observations",
+    ))
+}
+
 fn projection_request(wait_nanos: u64) -> TestResult<v1::QueryProjectionRequest> {
     Ok(v1::QueryProjectionRequest {
         request_id: fresh_request_id_bytes()?,
@@ -358,9 +389,16 @@ fn active_contract() -> v1::ContractSelection {
 
 fn assert_projection_ready(response: &v1::QueryProjectionResponse) -> TestResult<()> {
     let Some(v1::query_projection_response::Result::Ready(ready)) = response.result.as_ref() else {
-        return Err(test_failure(
-            "projection did not satisfy read-after-sequence through commit 2",
-        ));
+        let branch = match response.result.as_ref() {
+            None => "missing",
+            Some(v1::query_projection_response::Result::Ready(_)) => "ready",
+            Some(v1::query_projection_response::Result::WaitTimedOut(_)) => "wait_timed_out",
+            Some(v1::query_projection_response::Result::Degraded(_)) => "degraded",
+            Some(v1::query_projection_response::Result::Invalid(_)) => "invalid",
+        };
+        return Err(test_failure(format!(
+            "projection did not satisfy read-after-sequence through commit 2: {branch}"
+        )));
     };
     assert_applied_through(ready.frontier.as_ref(), 2)?;
     let page = ready

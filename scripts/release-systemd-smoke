@@ -302,7 +302,7 @@ if [[ -n "$riffdb_cli" ]]; then
           id: 3,
           method: "tools/call",
           params: {
-            name: "riffdb.server.health",
+            name: "riffdb_server_health",
             arguments: {}
           }
         }' >>"$work_root/mcp-input.jsonl"
@@ -317,7 +317,7 @@ if [[ -n "$riffdb_cli" ]]; then
           response(1).result.protocolVersion == "2025-11-25"
           and (response(2).result.tools | type == "array" and length > 0)
           and any(response(2).result.tools[];
-                  .name == "riffdb.server.health")
+                  .name == "riffdb_server_health")
           and (response(3).result.structuredContent.authenticated as $health
                | ($health.status == "ready" or $health.status == "degraded")
                and $health.active_contract_version == "1"

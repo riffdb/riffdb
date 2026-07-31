@@ -1,11 +1,12 @@
 //! Tonic service implementations over the API-neutral application service.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
@@ -23,13 +24,14 @@ use riffdb_service::{
     RestoreRetryOfflineMaintenanceApplication, ServiceFuture, ServiceResult,
 };
 use riffdb_types::{
-    ContractLineage, ContractVersion, OfflineMaintenanceInputHash, OfflineMaintenanceOperationId,
-    RequestId, ServiceOperationV1,
+    ContractLineage, ContractVersion, DatabaseAlias, MAX_DATABASES_PER_PROCESS,
+    OfflineMaintenanceInputHash, OfflineMaintenanceOperationId, RequestId, ServiceOperationV1,
 };
 use tonic::codegen::tokio_stream::Stream;
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status};
 
+use crate::DATABASE_METADATA_KEY;
 use crate::authentication::{
     AUTHORIZATION_METADATA_KEY, BOOTSTRAP_TOKEN_METADATA_KEY, UNAUTHENTICATED_MESSAGE,
     authenticate_and_retain_normal_request, authenticate_normal_request,
@@ -162,6 +164,95 @@ pub trait GrpcLifecycleRoute: Send + Sync {
     /// Applies the terminal lifecycle disposition for an admitted first deployment.
     fn finish_deployment(&self, completion: GrpcDeploymentCompletion);
 }
+
+/// Bounded selector registry for independently owned database lifecycle routes.
+pub struct GrpcDatabaseRoutes {
+    routes: RwLock<BTreeMap<DatabaseAlias, Arc<dyn GrpcLifecycleRoute>>>,
+}
+
+impl GrpcDatabaseRoutes {
+    /// Constructs a canonical registry. Duplicate, empty, or oversized
+    /// registries fail before a transport can be served.
+    pub fn new(
+        routes: impl IntoIterator<Item = (DatabaseAlias, Arc<dyn GrpcLifecycleRoute>)>,
+    ) -> Result<Self, GrpcDatabaseRoutesError> {
+        let mut checked = BTreeMap::new();
+        for (alias, route) in routes {
+            if checked.len() >= MAX_DATABASES_PER_PROCESS || checked.insert(alias, route).is_some()
+            {
+                return Err(GrpcDatabaseRoutesError);
+            }
+        }
+        if checked.is_empty() {
+            return Err(GrpcDatabaseRoutesError);
+        }
+        Ok(Self {
+            routes: RwLock::new(checked),
+        })
+    }
+
+    fn single(route: Arc<dyn GrpcLifecycleRoute>) -> Self {
+        Self {
+            routes: RwLock::new(BTreeMap::from([(DatabaseAlias::default_alias(), route)])),
+        }
+    }
+
+    /// Atomically replaces one existing alias after its old graph is closed.
+    pub fn replace(
+        &self,
+        alias: &DatabaseAlias,
+        route: Arc<dyn GrpcLifecycleRoute>,
+    ) -> Result<(), GrpcDatabaseRoutesError> {
+        let mut routes = self.routes.write().map_err(|_| GrpcDatabaseRoutesError)?;
+        let existing = routes.get_mut(alias).ok_or(GrpcDatabaseRoutesError)?;
+        *existing = route;
+        Ok(())
+    }
+
+    fn select(&self, metadata: &MetadataMap) -> Option<Arc<dyn GrpcLifecycleRoute>> {
+        let routes = self.routes.read().ok()?;
+        let mut selectors = metadata.get_all(DATABASE_METADATA_KEY).iter();
+        let selected = selectors.next();
+        if selectors.next().is_some() {
+            return None;
+        }
+        match selected {
+            Some(value) => {
+                let alias = value
+                    .to_str()
+                    .ok()
+                    .and_then(|value| DatabaseAlias::new(value).ok())?;
+                routes.get(&alias).cloned()
+            }
+            None if routes.len() == 1 => routes.values().next().cloned(),
+            None => None,
+        }
+    }
+}
+
+impl fmt::Debug for GrpcDatabaseRoutes {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GrpcDatabaseRoutes")
+            .field(
+                "database_count",
+                &self.routes.read().map_or(0, |routes| routes.len()),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+/// A database route registry violated its closed count or uniqueness rules.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GrpcDatabaseRoutesError;
+
+impl fmt::Display for GrpcDatabaseRoutesError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("invalid gRPC database route registry")
+    }
+}
+
+impl Error for GrpcDatabaseRoutesError {}
 
 /// Closed transport-local offline-maintenance admission registry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -314,7 +405,7 @@ impl fmt::Debug for CheckedGrpcRestoreRetrySecurityContext {
 /// One transport adapter shared by all five generated gRPC services.
 #[derive(Clone)]
 pub struct GrpcApplication {
-    lifecycle: Arc<dyn GrpcLifecycleRoute>,
+    routes: Arc<GrpcDatabaseRoutes>,
     limits: GrpcRequestLimits,
 }
 
@@ -322,7 +413,19 @@ impl GrpcApplication {
     /// Wires transport-only dependencies around the shared application service.
     #[must_use]
     pub fn new(lifecycle: Arc<dyn GrpcLifecycleRoute>, limits: GrpcRequestLimits) -> Self {
-        Self { lifecycle, limits }
+        Self {
+            routes: Arc::new(GrpcDatabaseRoutes::single(lifecycle)),
+            limits,
+        }
+    }
+
+    /// Wires transport-only dependencies around a checked multi-database route registry.
+    #[must_use]
+    pub fn with_database_routes(
+        routes: Arc<GrpcDatabaseRoutes>,
+        limits: GrpcRequestLimits,
+    ) -> Self {
+        Self { routes, limits }
     }
 
     /// Builds the bounded contract service without enabling compression.
@@ -405,38 +508,50 @@ impl GrpcApplication {
         ),
         Status,
     > {
-        let (service, security) = self.normal_admission(operation)?;
+        let lifecycle = self.select_lifecycle(metadata)?;
+        self.normal_invocation_with(lifecycle.as_ref(), operation, metadata, request_id)
+    }
+
+    fn normal_invocation_with(
+        &self,
+        lifecycle: &dyn GrpcLifecycleRoute,
+        operation: ServiceOperationV1,
+        metadata: &MetadataMap,
+        request_id: RequestId,
+    ) -> Result<
+        (
+            Arc<dyn ApplicationService>,
+            RequestContext,
+            CancellationGuard,
+        ),
+        Status,
+    > {
+        let (service, security) = self.normal_admission(lifecycle, operation)?;
         let (context, cancellation) = self.normal_context(metadata, request_id, &security)?;
         Ok((service, context, cancellation))
     }
 
     fn normal_admission(
         &self,
+        lifecycle: &dyn GrpcLifecycleRoute,
         operation: ServiceOperationV1,
     ) -> Result<(Arc<dyn ApplicationService>, CheckedGrpcSecurityContext), Status> {
-        let service = self
-            .lifecycle
+        let service = lifecycle
             .admit_authenticated(operation)
             .ok_or_else(service_not_ready)?;
-        let security = self
-            .lifecycle
-            .security_context()
-            .ok_or_else(service_not_ready)?;
+        let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
         Ok((service, security))
     }
 
     fn ready_maintenance_admission(
         &self,
+        lifecycle: &dyn GrpcLifecycleRoute,
         operation: GrpcOfflineMaintenanceOperation,
     ) -> Result<(Arc<dyn ApplicationService>, CheckedGrpcSecurityContext), Status> {
-        let service = self
-            .lifecycle
+        let service = lifecycle
             .admit_offline_maintenance(operation)
             .ok_or_else(service_not_ready)?;
-        let security = self
-            .lifecycle
-            .security_context()
-            .ok_or_else(service_not_ready)?;
+        let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
         Ok((service, security))
     }
 
@@ -527,13 +642,21 @@ impl GrpcApplication {
         ))
     }
 
-    fn bootstrap_security(&self) -> Result<CheckedGrpcSecurityContext, Status> {
-        if !self.lifecycle.bootstrap_available() {
+    fn bootstrap_security(
+        &self,
+        lifecycle: &dyn GrpcLifecycleRoute,
+    ) -> Result<CheckedGrpcSecurityContext, Status> {
+        if !lifecycle.bootstrap_available() {
             return Err(service_not_ready());
         }
-        self.lifecycle
-            .security_context()
-            .ok_or_else(service_not_ready)
+        lifecycle.security_context().ok_or_else(service_not_ready)
+    }
+
+    fn select_lifecycle(
+        &self,
+        metadata: &MetadataMap,
+    ) -> Result<Arc<dyn GrpcLifecycleRoute>, Status> {
+        self.routes.select(metadata).ok_or_else(service_not_ready)
     }
 }
 
@@ -761,13 +884,18 @@ impl ContractService for GrpcApplication {
         request: Request<v1::DeployContractRequest>,
     ) -> Result<Response<v1::DeployContractResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
         let (request_id, request) = deploy_contract_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::DeployContract, &metadata, request_id)?;
-        let lifecycle = DeploymentLifecycleGuard::new(self.lifecycle.as_ref());
+        let (service, context, _cancellation) = self.normal_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::DeployContract,
+            &metadata,
+            request_id,
+        )?;
+        let lifecycle_guard = DeploymentLifecycleGuard::new(lifecycle.as_ref());
         let result = service.deploy_contract(context, request).await;
         let completion = classify_grpc_deployment_completion(&result);
-        lifecycle.complete(completion);
+        lifecycle_guard.complete(completion);
         let result = map_service(result)?;
         Ok(Response::new(deploy_contract_result_to_proto(&result)))
     }
@@ -803,13 +931,14 @@ impl ContractService for GrpcApplication {
         &self,
         request: Request<v1::DiscoverCommandToolsRequest>,
     ) -> Result<Response<v1::DiscoverCommandToolsResponse>, Status> {
-        let generation = self
-            .lifecycle
+        let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let generation = lifecycle
             .server_generation()
             .ok_or_else(service_not_ready)?;
-        let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = discover_command_tools_request_from_proto(message, generation)?;
-        let (service, context, _cancellation) = self.normal_invocation(
+        let (service, context, _cancellation) = self.normal_invocation_with(
+            lifecycle.as_ref(),
             ServiceOperationV1::DiscoverCommandTools,
             &metadata,
             request_id,
@@ -824,14 +953,18 @@ impl ContractService for GrpcApplication {
         &self,
         request: Request<v1::DiscoverResourcesRequest>,
     ) -> Result<Response<v1::DiscoverResourcesResponse>, Status> {
-        let generation = self
-            .lifecycle
+        let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let generation = lifecycle
             .server_generation()
             .ok_or_else(service_not_ready)?;
-        let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = discover_resources_request_from_proto(message, generation)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::DiscoverResources, &metadata, request_id)?;
+        let (service, context, _cancellation) = self.normal_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::DiscoverResources,
+            &metadata,
+            request_id,
+        )?;
         let result = map_service(service.discover_resources(context, request).await)?;
         Ok(Response::new(discover_resources_result_to_proto(
             &result, generation,
@@ -1212,11 +1345,16 @@ impl AdminService for GrpcApplication {
         request: Request<v1::HealthRequest>,
     ) -> Result<Response<v1::HealthResponse>, Status> {
         let (metadata, peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
         let (request_id, request) = health_request_from_proto(message)?;
         let result = match request_id {
             Some(request_id) => {
-                let (service, context, _cancellation) =
-                    self.normal_invocation(ServiceOperationV1::GetHealth, &metadata, request_id)?;
+                let (service, context, _cancellation) = self.normal_invocation_with(
+                    lifecycle.as_ref(),
+                    ServiceOperationV1::GetHealth,
+                    &metadata,
+                    request_id,
+                )?;
                 map_service(
                     service
                         .health(HealthContext::authenticated(context), request)
@@ -1229,8 +1367,7 @@ impl AdminService for GrpcApplication {
                 {
                     return Err(unauthenticated());
                 }
-                let health = self
-                    .lifecycle
+                let health = lifecycle
                     .restricted_health(request)
                     .ok_or_else(unauthenticated)?;
                 map_service(health.await)?
@@ -1256,10 +1393,11 @@ impl AdminService for GrpcApplication {
         request: Request<v1::CreateCapabilityRequest>,
     ) -> Result<Response<v1::CreateCapabilityResponse>, Status> {
         let (metadata, peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
         match v1::CapabilityCreateMode::try_from(message.mode).map_err(|_| invalid_request())? {
             v1::CapabilityCreateMode::Normal => {
-                let (service, security) =
-                    self.normal_admission(ServiceOperationV1::CreateCapability)?;
+                let (service, security) = self
+                    .normal_admission(lifecycle.as_ref(), ServiceOperationV1::CreateCapability)?;
                 let (request_id, request) =
                     normal_create_capability_request_from_proto(message, &security.authentication)?;
                 let (context, _cancellation) =
@@ -1269,20 +1407,17 @@ impl AdminService for GrpcApplication {
                 Ok(Response::new(create_capability_result_to_proto(&result)?))
             }
             v1::CapabilityCreateMode::Bootstrap => {
-                let security = self.bootstrap_security()?;
+                let security = self.bootstrap_security(lifecycle.as_ref())?;
                 let (request_id, request) =
                     bootstrap_capability_request_from_proto(message, &security.authentication)?;
                 let (context, _cancellation) =
                     self.bootstrap_context(&metadata, peer, request_id, &security)?;
-                let service = self
-                    .lifecycle
-                    .begin_bootstrap()
-                    .ok_or_else(service_not_ready)?;
-                let lifecycle = BootstrapLifecycleGuard::new(self.lifecycle.as_ref());
+                let service = lifecycle.begin_bootstrap().ok_or_else(service_not_ready)?;
+                let lifecycle_guard = BootstrapLifecycleGuard::new(lifecycle.as_ref());
                 let invocation = CreateCapabilityInvocation::Bootstrap { context, request };
                 let result = service.create_capability(invocation).await;
                 let completion = classify_bootstrap_completion(&result);
-                lifecycle.complete(completion);
+                lifecycle_guard.complete(completion);
                 let result = map_service(result)?;
                 Ok(Response::new(create_capability_result_to_proto(&result)?))
             }
@@ -1327,9 +1462,12 @@ impl AdminService for GrpcApplication {
         &self,
         request: Request<v1::CreateOfflineBackupRequest>,
     ) -> Result<Response<v1::CreateOfflineBackupResponse>, Status> {
-        let (service, security) =
-            self.ready_maintenance_admission(GrpcOfflineMaintenanceOperation::CreateBackup)?;
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, security) = self.ready_maintenance_admission(
+            lifecycle.as_ref(),
+            GrpcOfflineMaintenanceOperation::CreateBackup,
+        )?;
         let (request_id, request) = create_offline_backup_request_from_proto(message)?;
         let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
         let result = map_service(service.create_offline_backup(context, request).await)?;
@@ -1345,39 +1483,32 @@ impl AdminService for GrpcApplication {
         request: Request<v1::RestoreOfflineBackupRequest>,
     ) -> Result<Response<v1::RestoreOfflineBackupResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
         let (request_id, request) = restore_offline_backup_request_from_proto(message)?;
         let operation_id = request.operation_id();
         let input_hash = request.input_hash();
-        let ready = self.lifecycle.admit_offline_maintenance(
-            GrpcOfflineMaintenanceOperation::RestoreBackup {
+        let ready =
+            lifecycle.admit_offline_maintenance(GrpcOfflineMaintenanceOperation::RestoreBackup {
                 operation_id,
                 input_hash,
-            },
-        );
+            });
         let retry = ready
             .is_none()
-            .then(|| self.lifecycle.admit_restore_retry(operation_id, input_hash))
+            .then(|| lifecycle.admit_restore_retry(operation_id, input_hash))
             .flatten();
         let recovery = (ready.is_none() && retry.is_none())
-            .then(|| {
-                self.lifecycle
-                    .admit_recovery_restore(operation_id, input_hash)
-            })
+            .then(|| lifecycle.admit_recovery_restore(operation_id, input_hash))
             .flatten();
         let result = match (ready, retry, recovery) {
             (Some(service), None, None) => {
-                let security = self
-                    .lifecycle
-                    .security_context()
-                    .ok_or_else(service_not_ready)?;
+                let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
                 let (context, credential, _cancellation) =
                     self.restore_context(&metadata, request_id, &security)?;
                 let invocation = RestoreOfflineBackupInvocation::new(context, request, credential);
                 map_service(service.restore_offline_backup(invocation).await)?
             }
             (None, Some(service), None) => {
-                let security = self
-                    .lifecycle
+                let security = lifecycle
                     .restore_retry_security_context()
                     .ok_or_else(service_not_ready)?;
                 let (context, credential, _cancellation) =
@@ -1403,9 +1534,12 @@ impl AdminService for GrpcApplication {
         &self,
         request: Request<v1::GetOfflineMaintenanceOperationRequest>,
     ) -> Result<Response<v1::GetOfflineMaintenanceOperationResponse>, Status> {
-        let (service, security) =
-            self.ready_maintenance_admission(GrpcOfflineMaintenanceOperation::GetOperation)?;
         let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, security) = self.ready_maintenance_admission(
+            lifecycle.as_ref(),
+            GrpcOfflineMaintenanceOperation::GetOperation,
+        )?;
         let (request_id, request) = get_offline_maintenance_operation_request_from_proto(message)?;
         let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
         let result = map_service(
@@ -1863,20 +1997,55 @@ mod tests {
     #[test]
     fn initializing_adapter_requires_no_full_application_service() {
         let route = Arc::new(InitializingRoute::without_security());
-        let adapter = GrpcApplication::new(
-            route.clone(),
-            GrpcRequestLimits::new(Duration::from_secs(30)).expect("valid request limit"),
-        );
-        let status = match adapter
-            .lifecycle
-            .admit_authenticated(ServiceOperationV1::GetEntity)
-        {
+        let status = match route.admit_authenticated(ServiceOperationV1::GetEntity) {
             Some(_) => panic!("initializing route must not expose a full service"),
             None => service_not_ready(),
         };
         assert_eq!(status.code(), tonic::Code::Unavailable);
         assert!(status.details().is_empty());
         assert_eq!(route.security_fetches.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn database_routes_select_exactly_once_and_missing_is_singleton_only() {
+        let alpha: Arc<dyn GrpcLifecycleRoute> = Arc::new(InitializingRoute::without_security());
+        let beta: Arc<dyn GrpcLifecycleRoute> = Arc::new(InitializingRoute::without_security());
+        let routes = GrpcDatabaseRoutes::new([
+            (
+                DatabaseAlias::new("alpha").expect("alias"),
+                Arc::clone(&alpha),
+            ),
+            (
+                DatabaseAlias::new("beta").expect("alias"),
+                Arc::clone(&beta),
+            ),
+        ])
+        .expect("routes");
+        assert!(routes.select(&MetadataMap::new()).is_none());
+
+        let mut selected = MetadataMap::new();
+        selected.insert(DATABASE_METADATA_KEY, "beta".parse().expect("metadata"));
+        let route = routes.select(&selected).expect("selected beta");
+        assert!(Arc::ptr_eq(&route, &beta));
+        let replacement: Arc<dyn GrpcLifecycleRoute> =
+            Arc::new(InitializingRoute::without_security());
+        routes
+            .replace(
+                &DatabaseAlias::new("beta").expect("alias"),
+                replacement.clone(),
+            )
+            .expect("replace existing alias");
+        let route = routes.select(&selected).expect("selected replacement");
+        assert!(Arc::ptr_eq(&route, &replacement));
+
+        selected.append(DATABASE_METADATA_KEY, "alpha".parse().expect("metadata"));
+        assert!(routes.select(&selected).is_none());
+
+        let singleton = GrpcDatabaseRoutes::single(alpha);
+        assert!(singleton.select(&MetadataMap::new()).is_some());
+        let mut unknown = MetadataMap::new();
+        unknown.insert(DATABASE_METADATA_KEY, "unknown".parse().expect("metadata"));
+        assert!(singleton.select(&unknown).is_none());
     }
 
     #[test]
@@ -2055,7 +2224,7 @@ mod tests {
         );
 
         let status = adapter
-            .bootstrap_security()
+            .bootstrap_security(route.as_ref())
             .expect_err("initializing bootstrap must not fetch security");
 
         assert_eq!(status.code(), tonic::Code::Unavailable);

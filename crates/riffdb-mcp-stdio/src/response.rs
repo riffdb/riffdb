@@ -1052,6 +1052,7 @@ fn explained_command_presentation(
     explained: v1::ExplainedCommand,
 ) -> Result<McpExplainedCommandPresentation, ResponseConversionError> {
     let command_id = explained.command_id;
+    let tool_name = explained.tool_name.clone();
     let explanation = explained.explanation.ok_or(ResponseConversionError)?;
     if explanation.command_id != command_id {
         return Err(ResponseConversionError);
@@ -1108,6 +1109,7 @@ fn explained_command_presentation(
     McpExplainedCommandPresentation::new(
         contract_presentation(explained.contract.ok_or(ResponseConversionError)?)?,
         source_command,
+        tool_name,
         exact_hash(&explained.plan_hash)?,
         explanation,
         input_schema,
@@ -2420,7 +2422,7 @@ mod tests {
         )
         .expect("outcome schema");
         riffdb_api_mcp::McpDynamicToolDefinition::from_discovered_command(
-            "riffdb.cmd.legalspend.allocatebudget",
+            "riffdb_cmd_legalspend_allocatebudget",
             input_schema,
             outcome_schema,
         )

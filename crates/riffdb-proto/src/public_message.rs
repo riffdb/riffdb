@@ -49,9 +49,9 @@ const JSON_SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema"
 const OPERATION_ENVELOPE_SCHEMA_ID: &str = "riffdb.command-operation-envelope/v1";
 const GET_OUTCOME_RESULT_SCHEMA_ID: &str = "riffdb.command-get-outcome-result/v1";
 const OPERATION_ENVELOPE_SCHEMA_HASH: &str =
-    "781ff93c2dbfd2ee2bec286f7810300a0fec0a170548b1405cb8ba2ac8d90398";
+    "1f83b878c052f53c6eb733b67cd7926fb7ea3729f1d469e0fd9aa8a13f6b44d2";
 const GET_OUTCOME_RESULT_SCHEMA_HASH: &str =
-    "4056f01c297120b06ac905f33482132a9085865975ada36e2396a61ebf19fc0d";
+    "0c1f33fbc613b9e87c4a54ccc2f7c1d426625cc0cb98237e2bded4bec073ddde";
 
 type DiagnosticRegistryEntry = (&'static str, Option<&'static str>);
 type DiagnosticRegistry = fn(&str) -> Option<DiagnosticRegistryEntry>;
@@ -1423,7 +1423,7 @@ fn validate_command_explain(explain: Option<&v1::CommandExplain>) -> Result<(), 
 
 fn validate_explained_command(command: &v1::ExplainedCommand) -> Result<(), PublicWireError> {
     validate_contract_descriptor(command.contract.as_ref())?;
-    if command.command_id == 0 {
+    if command.command_id == 0 || !valid_mcp_tool_name(&command.tool_name) {
         return Err(PublicWireError::InvalidIdentity);
     }
     hash(&command.plan_hash)?;
@@ -3074,28 +3074,12 @@ fn validate_generated_schema_identity(
 }
 
 fn valid_mcp_tool_name(value: &str) -> bool {
-    let Some((contract, command)) = mcp_tool_name_segments(value) else {
-        return false;
-    };
-    let valid_segment = |segment: &str| {
-        segment
-            .as_bytes()
-            .first()
-            .is_some_and(u8::is_ascii_lowercase)
-            && segment
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
-    };
     value.len() <= MAX_MCP_COMMAND_TOOL_NAME_BYTES
-        && valid_segment(contract)
-        && valid_segment(command)
-}
-
-fn mcp_tool_name_segments(value: &str) -> Option<(&str, &str)> {
-    let mut segments = value.strip_prefix("riffdb.cmd.")?.split('.');
-    let contract = segments.next()?;
-    let command = segments.next()?;
-    segments.next().is_none().then_some((contract, command))
+        && value.starts_with("riffdb_cmd_")
+        && value.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 fn normalized_mcp_segment_matches(source: &str, normalized: &str) -> bool {
@@ -3111,11 +3095,20 @@ fn mcp_tool_name_matches_declared_source(
     contract_source: &str,
     command_source: Option<&str>,
 ) -> bool {
-    let Some((contract, command)) = mcp_tool_name_segments(value) else {
+    if !contract_source.is_ascii() {
+        return false;
+    }
+    let mut prefix = String::from("riffdb_cmd_");
+    prefix.extend(
+        contract_source
+            .bytes()
+            .map(|byte| char::from(byte.to_ascii_lowercase())),
+    );
+    prefix.push('_');
+    let Some(command) = value.strip_prefix(&prefix) else {
         return false;
     };
-    normalized_mcp_segment_matches(contract_source, contract)
-        && command_source.is_none_or(|source| normalized_mcp_segment_matches(source, command))
+    command_source.is_none_or(|source| normalized_mcp_segment_matches(source, command))
 }
 
 fn validate_command_tool_descriptor(

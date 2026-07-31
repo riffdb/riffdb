@@ -131,7 +131,9 @@ fn bootstrap_durability_and_demo_process_boundaries_are_structural() {
     let material = bootstrap
         .find("bootstrap_material(")
         .expect("durable material");
-    let metadata = bootstrap.find("material.metadata()").expect("metadata");
+    let metadata = bootstrap
+        .find("material.metadata(config.database.clone())")
+        .expect("database-bound metadata");
     let connect = bootstrap
         .find("connect(config)")
         .expect("public connection");

@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.45
+**Version:** 0.48
 **Status:** Application-platform implementation handoff
 **Date:** 30 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -83,6 +83,7 @@
 | 0.45 | 2026-07-30 | Applied accepted ADR-0060 and planned WP-367 through WP-370: bounded oldest-item group collection, grouped historical idempotency selection, count-and-byte queue bounds, concurrent redb MVCC reads, exact transient outbox readiness, immutable cached command/query artifacts, bounded parallel deterministic preparation, and strict same-run application parity evidence while retaining one admission-ordered writer, fresh authorization, transaction-current validation, two Immediate durable transitions, and every fail-closed recovery guarantee. |
 | 0.46 | 2026-07-30 | Applied accepted ADR-0061 and planned WP-371 through WP-375: application durability is a semantic acknowledgement and visibility guarantee; normal synchronous commands may transition atomically from vacant identity to terminal graph after bounded side-effect-free preparation; the standard application profile uses redb Immediate one-phase checksum commits while a hardened two-phase oracle remains; storage format V2 compacts per-row framing and references one authoritative event payload; conservative partition/index generations replace prefix fan-out; and visible non-durable chaining remains prohibited. |
 | 0.47 | 2026-07-30 | Planned WP-376 through WP-379 after post-WP-375 evidence identified timer-wheel parks, remaining immutable-artifact clones, repeated checked decoding, quadratic group compatibility, and sequence-free sizing construction as the residual application-path costs. The packages retain every authorization safe point, canonical durable validation, transaction-current recheck, one ordered writer, and Immediate acknowledgement boundary; WP-370 now depends on the renewed PERF-008 gate. |
+| 0.48 | 2026-07-30 | Applied accepted ADR-0063 and ADR-0064: one standalone process may host at most 32 independently durable databases selected before authentication, and every MCP tool now uses the underscore-only pre-alpha compatibility surface with actionable redacted input diagnostics and invocation-oriented command documentation. |
 
 ### Normative language
 
@@ -209,6 +210,7 @@ These decisions are binding for the POC unless changed through an ADR reviewed b
 | Shared service core | `API-001` gRPC, CLI, Rust SDK, and MCP MUST invoke the same application service and authorization layer. | Avoids semantic drift and privileged side paths. |
 | Closed application authority | `SAFE-001` through `SAFE-003` separate exact named stable-application operations, explicitly granted ad-hoc agent queries, and raw kernel administration. | Makes reviewed application behavior enforceable instead of relying on SDK convention or table-shaped permissions. |
 | Native MCP | `MCP-001` MCP MUST be an in-repository first-class interface, not a separate integration maintained against internal APIs. | The product is designed for autonomous agents and should expose its semantics directly. |
+| Bounded multi-database process | `MDB-001` One standalone server process MAY host one through 32 configured databases, but every database MUST retain independent durable, lifecycle, authorization, catalog, sequence, coordinator, and maintenance state. | Avoids one-service-per-application overhead without weakening database isolation. |
 | No replication in POC | `REP-001` The POC MUST preserve replicated-state-machine-shaped boundaries but MUST NOT implement Raft. | Prevents consensus engineering from obscuring the semantic proof. |
 
 ---
@@ -233,6 +235,47 @@ These decisions are binding for the POC unless changed through an ADR reviewed b
 | Commit log and provenance | Durable ordered record of committed declared outcomes and mutations | Projection-specific state or ADR-0012 terminal non-commit admission failures |
 | Outbox worker | Deliver durable events with explicit delivery policy | Command transaction execution |
 | Projection worker | Consume contiguous commits and advance a durable frontier | Direct mutation of source entities |
+
+## 4.2 Multiple databases in one process
+
+`MDB-002` Every configured database MUST have a canonical operator-visible
+`DatabaseAlias` matching `[a-z][a-z0-9_-]{0,63}`; aliases MUST be unique and
+processed in ascending byte order.
+
+`MDB-003` A public request MUST resolve exactly one configured database before
+credential lookup, authorization, lifecycle admission, or application-service
+entry. The server MUST NOT search databases for a credential match.
+
+`MDB-004` gRPC and hosted MCP MUST accept the exact `riffdb-database` selector;
+stdio MCP, CLI, and SDK configuration MUST bind the same alias and propagate it
+on every request. An absent selector MAY resolve implicitly only when exactly
+one database is configured.
+
+`MDB-005` An absent selector with multiple configured databases, or a duplicate,
+malformed, or unknown selector, MUST fail before credential lookup with bounded,
+existence-blind behavior. A credential from another database MUST be
+indistinguishable from any other invalid credential.
+
+`MDB-006` No command, read, transaction, query, capability, projection, outbox,
+subscription, backup, restore, or maintenance operation may span databases.
+Maintenance and readiness state for one database MUST NOT drain another.
+
+`MDB-007` Process startup MUST open and structurally validate every configured
+database before serving. Failure of any configured database MUST block public
+serving; shutdown MUST stop admission and drain every configured graph.
+
+`MDB-008` Existing single-database configuration MUST remain valid as one
+implicit alias named `default`. The legacy form and the multi-database
+`[databases]` form MUST NOT be mixed.
+
+`MDB-009` Database paths, backup roots, and protected process key paths MUST be
+pairwise lexically disjoint. Aggregate and per-database process resources MUST
+remain bounded.
+
+`MDB-010` Database aliases MUST NOT change existing `DatabaseId`, durable record,
+storage key, contract IR, plan hash, idempotency identity, provenance, or v1
+`riffdb://` locator bytes. A locator MUST be resolved only inside the
+already-selected database context.
 | gRPC API | Programmatic application and administration protocol | Alternative semantics |
 | MCP API | Dynamic tools, resources, prompts, progress, cancellation, and agent-safe result shaping | Direct storage access |
 | CLI | Local operator and demo workflows over public APIs | Hidden privileged mutation path |
@@ -1080,17 +1123,17 @@ pub struct ContractBundle {
     pub commands: Vec<CommandPlan>,
     pub queries: Vec<QueryPlan>,
     pub projections: Vec<ProjectionPlan>,
-    pub mcp_command_names: McpCommandNameRegistryV1,
+    pub mcp_command_names: McpCommandNameRegistryV2,
     pub compatibility: CompatibilityReport,
     pub compiler_version: String,
     pub ir_format_version: u32,
 }
 ```
 
-`McpCommandNameRegistryV1` is the checked, versioned ADR-0020 registry. It binds
+`McpCommandNameRegistryV2` is the checked, versioned ADR-0020 registry. It binds
 the exact contract lineage and source contract identifier, and contains one
 entry per executable command with its nonzero `CommandId`, exact source command
-identifier, and complete `McpCommandToolNameV1`. Entries are ordered by
+identifier, and complete `McpCommandToolNameV2`. Entries are ordered by
 `CommandId`; missing, duplicate, reordered, misbound, noncanonical,
 over-length, or colliding entries reject. The registry is part of canonical
 bundle serialization and hashing. The exact Rust representation remains owned
@@ -3073,13 +3116,13 @@ Every command authorized for the connected principal is exposed as an MCP tool g
 ### Naming
 
 ```text
-riffdb.cmd.<contract-segment>.<command-segment>
+riffdb_cmd_<contract-segment>_<command-segment>
 ```
 
 Example:
 
 ```text
-riffdb.cmd.legalspend.allocatebudget
+riffdb_cmd_legalspend_allocatebudget
 ```
 
 - Each segment is derived from the exact source contract or command identifier
@@ -3090,7 +3133,7 @@ riffdb.cmd.legalspend.allocatebudget
 - After mapping, each segment MUST match `[a-z][a-z0-9_]*`. An empty segment, a
   source identifier beginning with an underscore, or any other invalid segment
   rejects compilation.
-- The complete ASCII name, including `riffdb.cmd.` and both separators, MUST be
+- The complete ASCII name, including `riffdb_cmd_` and both separators, MUST be
   at most 128 bytes inclusive. A 129-byte name rejects and is never truncated.
 - WP-040 MUST reject every complete-name normalization collision and MUST NOT
   append an ordinal, hash, version, or other suffix. It emits the checked,
@@ -3127,7 +3170,7 @@ lowercase hexadecimal characters, and `outcome` matches the inserted exact
 compiler union. The composer does not maintain a second command-specific schema
 source or modify a bundle/hash.
 
-The fixed `riffdb.command.get_outcome` tool instead always advertises the
+The fixed `riffdb_command_get_outcome` tool instead always advertises the
 invocation-independent `riffdb.command-get-outcome-result/v1` schema. It has
 exactly a closed `{ "status": "not_found" }` branch and a closed replay branch
 whose ordered fields are `status`, `commit_sequence`, `contract_version`,
@@ -3165,26 +3208,36 @@ stdio adapters use the same common renderer.
 
 `MCP-024` Mutating command tools MUST require a caller-supplied idempotency key. The MCP adapter MUST NOT silently invent a new key on retry.
 
+`MCP-025` Invalid tool-input diagnostics MUST return at most one deterministic,
+bounded, redacted first violation containing a stable code, JSON Pointer, and
+public schema-derived expectation, and MUST NOT echo submitted values or
+internal error sources.
+
+`MCP-026` Every fixed and generated MCP tool name MUST match
+`[a-z][a-z0-9_]{0,127}`. Generated command tools MUST use
+`riffdb_cmd_<contract-segment>_<command-segment>` under ADR-0064, and the server
+MUST NOT advertise or dispatch dotted compatibility aliases.
+
 The MCP protocol request identifier and the service-generated outer `RequestId` are transport metadata, not the contract's caller-supplied `idempotency_key`. MCP invocation creates a fresh outer `RequestId` while preserving the caller key in the validated tool arguments.
 
 ## 12.5 Fixed administrative and read tools
 
 | Tool | Risk class | POC | Purpose |
 |---|---|---|---|
-| `riffdb.contract.validate` | Read-only compute | Required | Compile source and return diagnostics and plan summary without deployment. |
-| `riffdb.contract.get_active` | Read-only | Required | Return active contract metadata and resource link. |
-| `riffdb.contract.explain_command` | Read-only compute | Required | Explain partition, conflict, reads, writes, invariants, outcomes, and cost class. |
-| `riffdb.contract.deploy` | Administrative mutation | Required, dev capability only | Deploy a validated bundle using expected active version and approval metadata. |
-| `riffdb.command.get_outcome` | Read-only | Required | Resolve an uncertain command by principal scope, command, and idempotency key. |
-| `riffdb.entity.get` | Read-only data | Required | Fetch one entity with policy filtering. |
-| `riffdb.entity.scan_index` | Bounded read | Required after index support | Scan a declared index with limit and opaque cursor. |
-| `riffdb.commit.get` | Administrative read | Required | Fetch one commit record with redaction. |
-| `riffdb.commit.scan` | Bounded administrative read | Required | Scan commits with cursor, principal policy, and limit. |
-| `riffdb.provenance.trace` | Administrative read | Required | Return causal metadata and linked resources. |
-| `riffdb.projection.query` | Read-only data | Required | Query a projection with optional `after_sequence` wait. |
-| `riffdb.projection.status` | Read-only | Required | Return frontier and lifecycle state. |
-| `riffdb.outbox.list_pending` | Administrative read | Required | Inspect pending deliveries without payload fields the caller cannot read. |
-| `riffdb.server.health` | Read-only | Required | Return readiness, active contract, last commit, and degraded components. |
+| `riffdb_contract_validate` | Read-only compute | Required | Compile source and return diagnostics and plan summary without deployment. |
+| `riffdb_contract_get_active` | Read-only | Required | Return active contract metadata and resource link. |
+| `riffdb_contract_explain_command` | Read-only compute | Required | Explain partition, conflict, reads, writes, invariants, outcomes, and cost class. |
+| `riffdb_contract_deploy` | Administrative mutation | Required, dev capability only | Deploy a validated bundle using expected active version and approval metadata. |
+| `riffdb_command_get_outcome` | Read-only | Required | Resolve an uncertain command by principal scope, command, and idempotency key. |
+| `riffdb_entity_get` | Read-only data | Required | Fetch one entity with policy filtering. |
+| `riffdb_entity_scan_index` | Bounded read | Required after index support | Scan a declared index with limit and opaque cursor. |
+| `riffdb_commit_get` | Administrative read | Required | Fetch one commit record with redaction. |
+| `riffdb_commit_scan` | Bounded administrative read | Required | Scan commits with cursor, principal policy, and limit. |
+| `riffdb_provenance_trace` | Administrative read | Required | Return causal metadata and linked resources. |
+| `riffdb_projection_query` | Read-only data | Required | Query a projection with optional `after_sequence` wait. |
+| `riffdb_projection_status` | Read-only | Required | Return frontier and lifecycle state. |
+| `riffdb_outbox_list_pending` | Administrative read | Required | Inspect pending deliveries without payload fields the caller cannot read. |
+| `riffdb_server_health` | Read-only | Required | Return readiness, active contract, last commit, and degraded components. |
 
 Administrative tools MUST be absent from `tools/list` when the session lacks permission, rather than merely failing after selection.
 
@@ -3289,6 +3342,12 @@ the URI as authority.
 `MCP-032` Contract deployment MUST trigger resource list or update notifications when negotiated.
 
 `MCP-033` Resource reads MUST enforce bounded payload sizes and MAY return resource links to paginated detail instead of embedding large data.
+
+`MCP-034` Generated command documentation MUST provide an invocation-oriented
+guide derived only from authorized compiler-owned public metadata, including
+the exact tool name, inputs, examples, outcomes, retry guidance, and a link to
+the detailed plan resource. Detailed executable IR remains in the plan resource
+and generated documentation MUST NOT invent business prose.
 
 Every content read is service-mediated and reruns current authorization, audit,
 obligations, bounds, and redaction. Active contract uses `GetActiveContract`;
@@ -5539,7 +5598,7 @@ match result.outcome {
 
 ```json
 {
-  "name": "riffdb.cmd.legalspend.allocatebudget",
+  "name": "riffdb_cmd_legalspend_allocatebudget",
   "arguments": {
     "idempotency_key": "budget-allocation-019bf6aa-7fb0-7aa5-8511-4f983a741e31",
     "organization_id": "019bf6aa-89a5-7785-91f8-16e7dcf50404",
@@ -5564,7 +5623,7 @@ Representative structured result:
   },
   "provenance_uri": "riffdb://provenance/019bf6aa-a640-7de6-89c9-8a7f70bbbd23",
   "durability_mode": "sync",
-  "outcome_uri": "riffdb://outcome/agent_01/legalspend/2/riffdb.cmd.legalspend.allocatebudget/AQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  "outcome_uri": "riffdb://outcome/agent_01/legalspend/2/riffdb_cmd_legalspend_allocatebudget/AQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 }
 ```
 
@@ -6183,6 +6242,7 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `REC-*` | Restart and recovery behavior |
 | `API-*` | Shared service and public API |
 | `MCP-*` | Model Context Protocol interface |
+| `MDB-*` | Multiple isolated databases in one standalone process |
 | `SEC-*` | Authorization, capabilities, and data handling |
 | `EFF-*` | Durable effect and outbox semantics |
 | `PRJ-*` | Projection semantics |

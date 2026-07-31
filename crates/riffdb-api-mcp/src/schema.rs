@@ -15,6 +15,7 @@ const COMMAND_ENVELOPE_ID: &str = "riffdb.command-operation-envelope/v1";
 const MAX_SCHEMA_DEPTH: usize = 64;
 const MAX_INSTANCE_DEPTH: usize = 32;
 const MAX_VALIDATION_NODES: usize = 262_144;
+const MAX_INPUT_VIOLATION_PATH_BYTES: usize = 512;
 
 /// The fail-closed validator for the exact JSON Schema subset emitted by RiffDB.
 #[derive(Clone, Copy, Debug, Default)]
@@ -33,6 +34,22 @@ impl RiffDbSchemaValidator {
             visited: 0,
         };
         state.validate_instance(&root, instance, 0)
+    }
+
+    /// Returns one deterministic, redacted first violation for invalid tool input.
+    pub(crate) fn input_violation(
+        self,
+        schema: &SchemaDocument,
+        instance: &Value,
+    ) -> InputSchemaViolation {
+        let root = Value::Object(schema.json_object());
+        diagnose_input_violation(&root, &root, instance, "", 0).unwrap_or_else(|| {
+            InputSchemaViolation::new(
+                InputViolationCode::ConstraintFailed,
+                "",
+                "declared schema constraint",
+            )
+        })
     }
 }
 
@@ -102,6 +119,219 @@ impl fmt::Display for SchemaValidationError {
 }
 
 impl Error for SchemaValidationError {}
+
+/// Stable public code for one redacted tool-input violation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InputViolationCode {
+    RequiredPropertyMissing,
+    UnexpectedProperty,
+    WrongType,
+    ConstraintFailed,
+    OneOfNoMatch,
+}
+
+impl InputViolationCode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::RequiredPropertyMissing => "required_property_missing",
+            Self::UnexpectedProperty => "unexpected_property",
+            Self::WrongType => "wrong_type",
+            Self::ConstraintFailed => "constraint_failed",
+            Self::OneOfNoMatch => "one_of_no_match",
+        }
+    }
+}
+
+/// One bounded public-safe MCP input diagnostic.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InputSchemaViolation {
+    code: InputViolationCode,
+    path: String,
+    expected: &'static str,
+}
+
+impl InputSchemaViolation {
+    fn new(code: InputViolationCode, path: &str, expected: &'static str) -> Self {
+        Self {
+            code,
+            path: bounded_pointer(path),
+            expected,
+        }
+    }
+
+    pub(crate) fn as_json(&self) -> Value {
+        serde_json::json!({
+            "schema": "riffdb.mcp.input-error/v1",
+            "code": self.code.as_str(),
+            "path": self.path,
+            "expected": self.expected,
+        })
+    }
+}
+
+fn diagnose_input_violation(
+    root: &Value,
+    schema: &Value,
+    instance: &Value,
+    path: &str,
+    depth: usize,
+) -> Option<InputSchemaViolation> {
+    let mut validation = ValidationState { root, visited: 0 };
+    if validation
+        .validate_instance(schema, instance, depth)
+        .is_ok()
+    {
+        return None;
+    }
+    if depth > MAX_INSTANCE_DEPTH {
+        return Some(InputSchemaViolation::new(
+            InputViolationCode::ConstraintFailed,
+            path,
+            "bounded nesting depth",
+        ));
+    }
+    if schema == &Value::Bool(false) {
+        return Some(InputSchemaViolation::new(
+            InputViolationCode::ConstraintFailed,
+            path,
+            "accepted value",
+        ));
+    }
+    let object = schema.as_object()?;
+    if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+        let target = resolve_input_reference(root, reference)?;
+        return diagnose_input_violation(root, target, instance, path, depth + 1);
+    }
+    if object.contains_key("oneOf") || object.contains_key("anyOf") {
+        return Some(InputSchemaViolation::new(
+            InputViolationCode::OneOfNoMatch,
+            path,
+            "one declared alternative",
+        ));
+    }
+    if let Some(expected) = object.get("type").and_then(Value::as_str)
+        && !instance_has_type(instance, expected)
+    {
+        return Some(InputSchemaViolation::new(
+            InputViolationCode::WrongType,
+            path,
+            public_type_expectation(expected),
+        ));
+    }
+
+    if let Some(properties) = object.get("properties").and_then(Value::as_object)
+        && let Some(instance_object) = instance.as_object()
+    {
+        if let Some(required) = object.get("required").and_then(Value::as_array) {
+            for name in required.iter().filter_map(Value::as_str) {
+                if !instance_object.contains_key(name) {
+                    let child = push_pointer(path, name);
+                    return Some(InputSchemaViolation::new(
+                        InputViolationCode::RequiredPropertyMissing,
+                        &child,
+                        "required property",
+                    ));
+                }
+            }
+        }
+        if object.get("additionalProperties") == Some(&Value::Bool(false)) {
+            for name in instance_object.keys() {
+                if !properties.contains_key(name) {
+                    let child = push_pointer(path, name);
+                    return Some(InputSchemaViolation::new(
+                        InputViolationCode::UnexpectedProperty,
+                        &child,
+                        "declared property",
+                    ));
+                }
+            }
+        }
+        for (name, child_schema) in properties {
+            if let Some(child_instance) = instance_object.get(name) {
+                let child_path = push_pointer(path, name);
+                if let Some(violation) = diagnose_input_violation(
+                    root,
+                    child_schema,
+                    child_instance,
+                    &child_path,
+                    depth + 1,
+                ) {
+                    return Some(violation);
+                }
+            }
+        }
+    }
+
+    if let Some(items) = object.get("items")
+        && let Some(values) = instance.as_array()
+    {
+        for (index, value) in values.iter().enumerate() {
+            let child_path = push_pointer(path, &index.to_string());
+            if let Some(violation) =
+                diagnose_input_violation(root, items, value, &child_path, depth + 1)
+            {
+                return Some(violation);
+            }
+        }
+    }
+
+    Some(InputSchemaViolation::new(
+        InputViolationCode::ConstraintFailed,
+        path,
+        "declared schema constraint",
+    ))
+}
+
+fn resolve_input_reference<'a>(root: &'a Value, reference: &str) -> Option<&'a Value> {
+    let name = reference.strip_prefix("#/$defs/")?;
+    root.get("$defs")?.get(name)
+}
+
+fn instance_has_type(instance: &Value, expected: &str) -> bool {
+    match expected {
+        "null" => instance.is_null(),
+        "boolean" => instance.is_boolean(),
+        "integer" => instance.as_i64().is_some() || instance.as_u64().is_some(),
+        "string" => instance.is_string(),
+        "object" => instance.is_object(),
+        "array" => instance.is_array(),
+        _ => false,
+    }
+}
+
+fn public_type_expectation(expected: &str) -> &'static str {
+    match expected.as_bytes() {
+        b"null" => "null",
+        b"boolean" => "boolean",
+        b"integer" => "integer",
+        b"string" => "string",
+        b"object" => "object",
+        b"array" => "array",
+        _ => "declared JSON type",
+    }
+}
+
+fn push_pointer(path: &str, component: &str) -> String {
+    let mut output = String::with_capacity(path.len().saturating_add(component.len() + 1));
+    output.push_str(path);
+    output.push('/');
+    for character in component.chars() {
+        match character {
+            '~' => output.push_str("~0"),
+            '/' => output.push_str("~1"),
+            _ => output.push(character),
+        }
+    }
+    output
+}
+
+fn bounded_pointer(path: &str) -> String {
+    if path.len() <= MAX_INPUT_VIOLATION_PATH_BYTES {
+        path.to_owned()
+    } else {
+        String::new()
+    }
+}
 
 /// A command result schema could not be composed without changing identities.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -847,7 +1077,7 @@ fn accepted_pattern(pattern: &str) -> bool {
             | "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
             | "^[A-Z]{3}$"
             | "^[A-Za-z_][A-Za-z0-9_]{0,255}$"
-            | "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb\\.cmd\\.[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$"
+            | "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$"
             | "^riffdb://provenance/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
     ) || decimal_pattern_shape(pattern).is_some()
 }
@@ -873,7 +1103,7 @@ fn pattern_matches(pattern: &str, text: &str) -> bool {
         "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" => uuid_shape(text, false),
         "^[A-Z]{3}$" => is_currency(text),
         "^[A-Za-z_][A-Za-z0-9_]{0,255}$" => source_name(text),
-        "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb\\.cmd\\.[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$" =>
+        "^riffdb://outcome/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/(?:[A-Za-z0-9._~-]|%[0-9A-F]{2})+/[1-9][0-9]*/riffdb_cmd_[a-z][a-z0-9_]*_[a-z][a-z0-9_]*/[A-Za-z0-9_-]{50}$" =>
         {
             matches!(
                 parse_resource_locator(text),
@@ -1157,7 +1387,7 @@ mod tests {
             "provenance_uri": "riffdb://provenance/00000000-0001-7000-8000-000000000000",
             "durability_mode": "sync",
             "outcome_uri": concat!(
-                "riffdb://outcome/actor/orders/1/riffdb.cmd.orders.place/",
+                "riffdb://outcome/actor/orders/1/riffdb_cmd_orders_place/",
                 "AQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
             )
         });

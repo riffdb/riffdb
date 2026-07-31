@@ -5,7 +5,8 @@
 
 use std::error::Error;
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -73,6 +74,122 @@ fn explicitly_selected_toml_can_supply_every_server_field() -> TestResult<()> {
 }
 
 #[test]
+fn two_named_databases_start_on_one_listener_and_create_isolated_files() -> TestResult<()> {
+    let root = TestRoot::new("named-databases")?;
+    let paths = ProcessPaths::new(root.path())?;
+    let alpha = root.path().join("alpha.redb");
+    let beta = root.path().join("beta.redb");
+    let alpha_backups = root.path().join("alpha-backups");
+    let beta_backups = root.path().join("beta-backups");
+    fs::create_dir_all(&alpha_backups)?;
+    fs::create_dir_all(&beta_backups)?;
+    let document = format!(
+        "[server]\n\
+         grpc_listen = \"127.0.0.1:0\"\n\
+         audience = \"riffdb-grpc-loopback\"\n\
+         capability_keys = {capability_keys:?}\n\
+         idempotency_keys = {idempotency_keys:?}\n\
+         \n\
+         [databases.alpha]\n\
+         path = {alpha:?}\n\
+         backup_root = {alpha_backups:?}\n\
+         environment = \"development\"\n\
+         \n\
+         [databases.beta]\n\
+         path = {beta:?}\n\
+         backup_root = {beta_backups:?}\n\
+         environment = \"development\"\n",
+        capability_keys = paths
+            .capability_keys
+            .to_str()
+            .ok_or("non-UTF-8 capability path")?,
+        idempotency_keys = paths
+            .idempotency_keys
+            .to_str()
+            .ok_or("non-UTF-8 idempotency path")?,
+        alpha = alpha.to_str().ok_or("non-UTF-8 alpha path")?,
+        beta = beta.to_str().ok_or("non-UTF-8 beta path")?,
+        alpha_backups = alpha_backups
+            .to_str()
+            .ok_or("non-UTF-8 alpha backup path")?,
+        beta_backups = beta_backups.to_str().ok_or("non-UTF-8 beta backup path")?,
+    );
+    let config = root.path().join("riffdb-multi.toml");
+    fs::write(&config, document)?;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_riffdbd"));
+    clear_server_environment(&mut command);
+    command.arg("--config").arg(config);
+    run_to_readiness_and_shutdown(command)?;
+    if !alpha.is_file() || !beta.is_file() {
+        return Err("named databases did not create two isolated storage files".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn hosted_mcp_selects_a_named_database_before_authentication() -> TestResult<()> {
+    let root = TestRoot::new("named-hosted-mcp")?;
+    let paths = ProcessPaths::new(root.path())?;
+    let mcp_address = reserve_loopback_address()?;
+    let alpha = root.path().join("alpha.redb");
+    let beta = root.path().join("beta.redb");
+    let alpha_backups = root.path().join("alpha-backups");
+    let beta_backups = root.path().join("beta-backups");
+    fs::create_dir_all(&alpha_backups)?;
+    fs::create_dir_all(&beta_backups)?;
+    let document = format!(
+        "[server]\n\
+         grpc_listen = \"127.0.0.1:0\"\n\
+         mcp_listen = {mcp_listen:?}\n\
+         audience = \"riffdb-grpc-loopback\"\n\
+         capability_keys = {capability_keys:?}\n\
+         idempotency_keys = {idempotency_keys:?}\n\
+         \n\
+         [databases.alpha]\n\
+         path = {alpha:?}\n\
+         backup_root = {alpha_backups:?}\n\
+         environment = \"development\"\n\
+         \n\
+         [databases.beta]\n\
+         path = {beta:?}\n\
+         backup_root = {beta_backups:?}\n\
+         environment = \"development\"\n",
+        mcp_listen = mcp_address.to_string(),
+        capability_keys = paths
+            .capability_keys
+            .to_str()
+            .ok_or("non-UTF-8 capability path")?,
+        idempotency_keys = paths
+            .idempotency_keys
+            .to_str()
+            .ok_or("non-UTF-8 idempotency path")?,
+        alpha = alpha.to_str().ok_or("non-UTF-8 alpha path")?,
+        beta = beta.to_str().ok_or("non-UTF-8 beta path")?,
+        alpha_backups = alpha_backups
+            .to_str()
+            .ok_or("non-UTF-8 alpha backup path")?,
+        beta_backups = beta_backups.to_str().ok_or("non-UTF-8 beta backup path")?,
+    );
+    let config = root.path().join("riffdb-hosted-mcp.toml");
+    fs::write(&config, document)?;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_riffdbd"));
+    clear_server_environment(&mut command);
+    command.arg("--config").arg(config);
+    run_to_readiness_with(command, || {
+        assert_hosted_mcp_status(mcp_address, &[], 404)?;
+        assert_hosted_mcp_status(
+            mcp_address,
+            &[("riffdb-database", "alpha"), ("riffdb-database", "beta")],
+            404,
+        )?;
+        assert_hosted_mcp_status(mcp_address, &[("riffdb-database", "INVALID")], 404)?;
+        assert_hosted_mcp_status(mcp_address, &[("riffdb-database", "unknown")], 404)?;
+        assert_hosted_mcp_status(mcp_address, &[("riffdb-database", "alpha")], 401)?;
+        Ok(())
+    })
+}
+
+#[test]
 fn safe_defaults_start_from_an_explicit_working_directory() -> TestResult<()> {
     let root = TestRoot::new("defaults")?;
     let config_root = root.path().join("config");
@@ -84,7 +201,10 @@ fn safe_defaults_start_from_an_explicit_working_directory() -> TestResult<()> {
 
     let mut command = Command::new(env!("CARGO_BIN_EXE_riffdbd"));
     clear_server_environment(&mut command);
-    command.current_dir(root.path());
+    command
+        .current_dir(root.path())
+        .arg("--listen")
+        .arg("127.0.0.1:0");
     run_to_readiness_and_shutdown(command)?;
     if !root.path().join("data/riffdb.redb").is_file() {
         return Err("default database path was not opened".into());
@@ -159,7 +279,14 @@ fn clear_server_environment(command: &mut Command) {
     }
 }
 
-fn run_to_readiness_and_shutdown(mut command: Command) -> TestResult<()> {
+fn run_to_readiness_and_shutdown(command: Command) -> TestResult<()> {
+    run_to_readiness_with(command, || Ok(()))
+}
+
+fn run_to_readiness_with(
+    mut command: Command,
+    after_readiness: impl FnOnce() -> TestResult<()>,
+) -> TestResult<()> {
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -185,8 +312,16 @@ fn run_to_readiness_and_shutdown(mut command: Command) -> TestResult<()> {
         .map_err(|_| "riffdbd readiness timed out")??;
     if !line.starts_with(READY_PREFIX) || line.len() > 256 {
         let _ = child.kill();
-        return Err("riffdbd emitted an invalid readiness line".into());
+        let _ = child.wait();
+        let _ = stdout_thread.join();
+        let stderr = stderr_thread.join().map_err(|_| "stderr reader panicked")?;
+        return Err(format!(
+            "riffdbd emitted an invalid readiness line: {}",
+            String::from_utf8_lossy(&stderr)
+        )
+        .into());
     }
+    let assertion = after_readiness();
     let mut stdin = child.stdin.take().ok_or("missing child stdin")?;
     stdin.write_all(b"shutdown\n")?;
     stdin.flush()?;
@@ -201,6 +336,45 @@ fn run_to_readiness_and_shutdown(mut command: Command) -> TestResult<()> {
             String::from_utf8_lossy(&stderr)
         )
         .into());
+    }
+    assertion
+}
+
+fn reserve_loopback_address() -> TestResult<SocketAddr> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let address = listener.local_addr()?;
+    drop(listener);
+    Ok(address)
+}
+
+fn assert_hosted_mcp_status(
+    address: SocketAddr,
+    headers: &[(&str, &str)],
+    expected: u16,
+) -> TestResult<()> {
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    write!(
+        stream,
+        "POST /mcp HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n"
+    )?;
+    for (name, value) in headers {
+        write!(stream, "{name}: {value}\r\n")?;
+    }
+    stream.write_all(b"\r\n{}")?;
+    stream.flush()?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    let status = response
+        .lines()
+        .next()
+        .and_then(|line| line.split_ascii_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or("hosted MCP returned an invalid HTTP status line")?;
+    if status != expected {
+        return Err(format!("hosted MCP returned status {status}, expected {expected}").into());
     }
     Ok(())
 }

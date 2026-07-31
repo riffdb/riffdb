@@ -763,6 +763,12 @@ fn canonical_value_len(value: &CanonicalValue, depth: usize) -> Result<usize, Du
     if depth > riffdb_types::MAX_NESTING_DEPTH {
         return Err(DurableCodecError::invariant());
     }
+    if let CanonicalValue::Record(record) = value {
+        return canonical_record_payload_len(record, depth)?
+            .checked_add(1)
+            .filter(|len| *len <= riffdb_types::MAX_CANONICAL_DOCUMENT_BYTES)
+            .ok_or_else(DurableCodecError::invariant);
+    }
     let payload = match value {
         CanonicalValue::Null => 0,
         CanonicalValue::Bool(_) => 1,
@@ -786,7 +792,7 @@ fn canonical_value_len(value: &CanonicalValue, depth: usize) -> Result<usize, Du
                     .ok_or_else(DurableCodecError::invariant)
             })?
         }
-        CanonicalValue::Record(record) => canonical_record_payload_len(record, depth)?,
+        CanonicalValue::Record(_) => unreachable!("record sizing returns above"),
     };
     payload
         .checked_add(2)
@@ -878,6 +884,7 @@ mod aggregate_classification_tests {
             ),
         ])
         .expect("nested record");
+        let nested_expected = nested.clone();
         let record = CanonicalRecord::new(vec![
             (
                 FieldId::new(1).expect("field"),
@@ -887,6 +894,12 @@ mod aggregate_classification_tests {
         ])
         .expect("record");
 
+        assert_eq!(
+            canonical_record_len(&nested_expected).expect("nested structural length"),
+            encode_canonical_record(&nested_expected)
+                .expect("nested canonical encoding")
+                .len()
+        );
         assert_eq!(
             canonical_record_len(&record).expect("structural length"),
             encode_canonical_record(&record)

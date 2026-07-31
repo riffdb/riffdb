@@ -87,6 +87,7 @@ use crate::storage::SharedRedbOperationalPorts;
 const P1_COORDINATOR_WORKLOAD_CAPACITY: u16 = 128;
 
 /// One checked secret-key snapshot shared by startup, maintenance, and a graph generation.
+#[derive(Clone)]
 pub(crate) struct ProductionDigestKeys {
     capability: Arc<CapabilityDigestKeyProvider>,
     idempotency: Arc<IdempotencyDigestKeyProvider>,
@@ -158,6 +159,7 @@ impl ProductionGraphBuilder {
         activator: RiffDbServiceActivator,
         digest_keys: ProductionDigestKeys,
         config: &ServerConfig,
+        environment: Environment,
         started_at: Timestamp,
         build: BuildInfo,
         identifiers: ProductionIdentifierSources,
@@ -173,7 +175,7 @@ impl ProductionGraphBuilder {
             startup,
             activator,
             digest_keys,
-            environment: config.environment().clone(),
+            environment,
             grpc_audience,
             mcp_audience,
             trusted_audiences,

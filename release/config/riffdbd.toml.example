@@ -12,3 +12,11 @@ idempotency_keys = "/etc/riffdb/idempotency.keys"
 
 [maintenance]
 backup_root = "/var/lib/riffdb/backups"
+
+# To host multiple databases, replace server.database, server.environment, and
+# the maintenance table with one table per alias. Do not combine both forms.
+#
+# [databases.application_one]
+# path = "/var/lib/riffdb/data/application-one.redb"
+# backup_root = "/var/lib/riffdb/backups/application-one"
+# environment = "local"

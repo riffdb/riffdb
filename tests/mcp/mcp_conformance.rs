@@ -563,7 +563,7 @@ fn assert_transcript_semantics(transcript: &Transcript) {
     assert!(
         tools
             .iter()
-            .any(|tool| tool["name"] == "riffdb.server.health")
+            .any(|tool| tool["name"] == "riffdb_server_health")
     );
 
     let resources = result(&transcript.resources)["resources"]
@@ -579,7 +579,7 @@ fn assert_transcript_semantics(transcript: &Transcript) {
         template["uriTemplate"]
             == concat!(
                 "riffdb://outcome/{principal}/LegalSpend/2/",
-                "riffdb.cmd.legalspend.allocatebudget/{key_hash}"
+                "riffdb_cmd_legalspend_allocatebudget/{key_hash}"
             )
     }));
 
@@ -648,7 +648,7 @@ fn contract_deploy_changes_active_session_catalog_and_emits_list_notifications()
         2,
         "tools/call",
         Some(json!({
-            "name": "riffdb.contract.deploy",
+            "name": "riffdb_contract_deploy",
             "arguments": {
                 "source": "contract LegalSpend version 3 {}"
             }

@@ -1539,6 +1539,7 @@ pub fn explain_command_result_to_proto(
             v1::explain_command_response::Result::Found(v1::ExplainedCommand {
                 contract: Some(contract_descriptor_to_proto(command.contract())),
                 command_id: command.command_id().get(),
+                tool_name: command.tool_name().as_str().to_owned(),
                 plan_hash: command.plan_hash().as_bytes().to_vec(),
                 explanation: Some(explanation),
                 input_schema: Some(input_schema),
@@ -3563,7 +3564,7 @@ mod tests {
     #[test]
     fn locator_outcome_request_is_exclusive_and_never_recovers_a_raw_key() {
         let uri = concat!(
-            "riffdb://outcome/principal/budget/1/riffdb.cmd.budget.reserve/",
+            "riffdb://outcome/principal/budget/1/riffdb_cmd_budget_reserve/",
             "AQAAAAF3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3dw"
         );
         let request = v1::GetOutcomeRequest {

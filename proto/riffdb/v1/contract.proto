@@ -129,6 +129,7 @@ message ExplainedCommand {
   CommandExplain explanation = 4;
   GeneratedSchemaArtifact input_schema = 5;
   GeneratedSchemaArtifact outcome_schema = 6;
+  string tool_name = 7;
 }
 
 message ExplainCommandResponse {

@@ -31,7 +31,7 @@ use crate::{
     EnumVariantSchema, EventConstruction, EventSchema, ExecutionClass, ExprId, ExpressionArena,
     ExpressionKind, FieldExpression, FieldSchema, GeneratedSchemaArtifact, IndexSchema,
     Instruction, InvariantPlan, IrValidationError, KeyComponentSchema, KeyPurpose, KeySchema,
-    LocalityPlan, McpCommandNameEntryV1, McpCommandNameRegistryV1, ObjectConstruction,
+    LocalityPlan, McpCommandNameEntryV2, McpCommandNameRegistryV2, ObjectConstruction,
     OutcomeConstruction, OutcomeSchema, ProjectionFrontierPolicy, ProjectionGroupComponentSchema,
     ProjectionGroupSchema, ProjectionMeasurePlan, ProjectionPlan, RecordSchema, RecordTypeRef,
     RetryPolicy, SchemaIr, UnaryOperator, ValueType, ValueTypeTag, checked_len,
@@ -682,7 +682,7 @@ pub struct ContractBundle {
     commands: Vec<CommandPlan>,
     projections: Vec<ProjectionPlan>,
     schema_artifacts: Vec<GeneratedSchemaArtifact>,
-    mcp_command_names: McpCommandNameRegistryV1,
+    mcp_command_names: McpCommandNameRegistryV2,
     compatibility: CompatibilityReport,
     canonical_bytes: Vec<u8>,
     bundle_hash: ContractBundleHash,
@@ -702,7 +702,7 @@ impl ContractBundle {
         mut commands: Vec<CommandPlan>,
         mut projections: Vec<ProjectionPlan>,
         mut schema_artifacts: Vec<GeneratedSchemaArtifact>,
-        mcp_command_names: McpCommandNameRegistryV1,
+        mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
         let compiler_version = compiler_version.into();
@@ -871,7 +871,7 @@ impl ContractBundle {
     }
     /// Checked compiler-owned MCP registry.
     #[must_use]
-    pub const fn mcp_command_names(&self) -> &McpCommandNameRegistryV1 {
+    pub const fn mcp_command_names(&self) -> &McpCommandNameRegistryV2 {
         &self.mcp_command_names
     }
     /// Reproducible compatibility report.
@@ -1638,7 +1638,7 @@ fn compute_plan_root_hash(
 pub(crate) fn validate_mcp_registry(
     lineage: &ContractLineage,
     commands: &[CommandPlan],
-    registry: &McpCommandNameRegistryV1,
+    registry: &McpCommandNameRegistryV2,
 ) -> Result<(), IrValidationError> {
     if registry.lineage() != lineage || registry.entries().len() != commands.len() {
         return Err(IrValidationError::InvalidMcpName {
@@ -2493,7 +2493,7 @@ fn encode_projection_component(
 
 fn encode_mcp_registry(
     writer: &mut Writer,
-    registry: &McpCommandNameRegistryV1,
+    registry: &McpCommandNameRegistryV2,
 ) -> Result<(), IrValidationError> {
     writer.u32(registry.version())?;
     writer.string(registry.lineage().as_str())?;
@@ -4066,10 +4066,10 @@ fn decode_schema_artifacts(
 
 fn decode_mcp_registry(
     reader: &mut Reader<'_>,
-) -> Result<McpCommandNameRegistryV1, IrValidationError> {
+) -> Result<McpCommandNameRegistryV2, IrValidationError> {
     require_version(
         reader.u32()?,
-        crate::MCP_COMMAND_NAME_REGISTRY_VERSION_V1,
+        crate::MCP_COMMAND_NAME_REGISTRY_VERSION_V2,
         "MCP command-name registry",
     )?;
     let lineage =
@@ -4080,14 +4080,14 @@ fn decode_mcp_registry(
     let count = decode_len_with_minimum(reader, "MCP command-name entries", 4_096, 8)?;
     let mut entries = Vec::with_capacity(count);
     for _ in 0..count {
-        entries.push(McpCommandNameEntryV1::new(
+        entries.push(McpCommandNameEntryV2::new(
             decode_command_id(reader)?,
             &source_contract_name,
             reader.string(256)?,
             reader.string(crate::MAX_MCP_COMMAND_TOOL_NAME_BYTES)?,
         )?);
     }
-    McpCommandNameRegistryV1::new(lineage, source_contract_name, entries)
+    McpCommandNameRegistryV2::new(lineage, source_contract_name, entries)
 }
 
 fn decode_compatibility(
@@ -4166,7 +4166,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
-            McpCommandNameRegistryV1::new(lineage, "TestContract", vec![]).expect("registry"),
+            McpCommandNameRegistryV2::new(lineage, "TestContract", vec![]).expect("registry"),
             CompatibilityReport::genesis(),
         )
         .expect("bundle")
@@ -4189,17 +4189,17 @@ mod tests {
         let contract_name = "LegalSpend2";
         let lineage = ContractLineage::new(contract_name).expect("lineage");
         let mut entries = [
-            (11, "Rebuild2", "riffdb.cmd.legalspend2.rebuild2"),
-            (2, "Run", "riffdb.cmd.legalspend2.run"),
+            (11, "Rebuild2", "riffdb_cmd_legalspend2_rebuild2"),
+            (2, "Run", "riffdb_cmd_legalspend2_run"),
             (
                 10,
                 "Allocate_Budget",
-                "riffdb.cmd.legalspend2.allocate_budget",
+                "riffdb_cmd_legalspend2_allocate_budget",
             ),
-            (1, "Z", "riffdb.cmd.legalspend2.z"),
+            (1, "Z", "riffdb_cmd_legalspend2_z"),
         ]
         .map(|(id, source, tool)| {
-            McpCommandNameEntryV1::new(
+            McpCommandNameEntryV2::new(
                 CommandId::new(id).expect("command ID"),
                 contract_name,
                 source,
@@ -4208,7 +4208,7 @@ mod tests {
             .expect("entry")
         });
         let expected_registry =
-            McpCommandNameRegistryV1::new(lineage.clone(), contract_name, entries.to_vec())
+            McpCommandNameRegistryV2::new(lineage.clone(), contract_name, entries.to_vec())
                 .expect("registry");
         let mut expected_writer = Writer::new(4_096);
         encode_mcp_registry(&mut expected_writer, &expected_registry).expect("encode registry");
@@ -4224,21 +4224,21 @@ mod tests {
                 ))
                 .collect::<Vec<_>>(),
             vec![
-                (1, "Z", "riffdb.cmd.legalspend2.z"),
-                (2, "Run", "riffdb.cmd.legalspend2.run"),
+                (1, "Z", "riffdb_cmd_legalspend2_z"),
+                (2, "Run", "riffdb_cmd_legalspend2_run"),
                 (
                     10,
                     "Allocate_Budget",
-                    "riffdb.cmd.legalspend2.allocate_budget",
+                    "riffdb_cmd_legalspend2_allocate_budget",
                 ),
-                (11, "Rebuild2", "riffdb.cmd.legalspend2.rebuild2"),
+                (11, "Rebuild2", "riffdb_cmd_legalspend2_rebuild2"),
             ]
         );
 
         let mut permutations = 0;
         visit_permutations(&mut entries, 0, &mut |permutation| {
             let registry =
-                McpCommandNameRegistryV1::new(lineage.clone(), contract_name, permutation.to_vec())
+                McpCommandNameRegistryV2::new(lineage.clone(), contract_name, permutation.to_vec())
                     .expect("permuted registry");
             assert_eq!(registry, expected_registry);
             let mut writer = Writer::new(4_096);
@@ -4436,7 +4436,7 @@ mod tests {
             vec![plan],
             vec![],
             vec![],
-            McpCommandNameRegistryV1::new(lineage, "DifferentLineage", vec![]).expect("registry"),
+            McpCommandNameRegistryV2::new(lineage, "DifferentLineage", vec![]).expect("registry"),
             CompatibilityReport::genesis(),
         );
         assert!(matches!(

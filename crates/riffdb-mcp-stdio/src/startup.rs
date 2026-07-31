@@ -96,7 +96,7 @@ impl std::error::Error for StdioRunError {}
 pub async fn bootstrap() -> Result<StdioBootstrap, StdioStartupError> {
     telemetry::install()?;
     let config = load_process_config()?;
-    let (endpoint, credential) = config.into_parts();
+    let (endpoint, database, credential) = config.into_parts();
     let endpoint = endpoint
         .parse()
         .map_err(|_| StdioStartupError::Configuration)?;
@@ -105,7 +105,7 @@ pub async fn bootstrap() -> Result<StdioBootstrap, StdioStartupError> {
         .map_err(|_| StdioStartupError::Connection)?;
     Ok(StdioBootstrap {
         client,
-        metadata: CallMetadata::authenticated(credential),
+        metadata: CallMetadata::authenticated(credential).with_database(database),
     })
 }
 

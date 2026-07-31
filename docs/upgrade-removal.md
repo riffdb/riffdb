@@ -86,16 +86,16 @@ not revoke the record inside that backup.
 
 The convenience bootstrap retains the operator and MCP capability IDs in the
 operator's private XDG state root. Treat the owner and MCP capabilities as
-independent: owner bootstrap can succeed before a deterministic contract or
-health failure prevents MCP creation. Resolve each identity whose retained
-state shows that submission may have begun. Rerun the same
+independent: owner bootstrap can succeed before a deterministic capability
+request or health failure prevents MCP creation. Resolve each identity whose
+retained state shows that submission may have begun. Rerun the same
 `cargo riffdb bootstrap` invocation when it can resolve that uncertainty;
 correct a deterministic pre-MCP failure before retrying. Do not delete
 `bootstrap.credential`, `mcp-capability.pending-id`, credential candidates, or
 related recovery state while a server-side outcome is uncertain.
 
 When `mcp-capability.id` exists and bootstrap is terminal, revoke that
-restricted MCP capability while the server is running and the operator
+generic MCP developer capability while the server is running and the operator
 credential is still valid:
 
 ```bash

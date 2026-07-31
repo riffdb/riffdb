@@ -121,11 +121,27 @@ mutable checkout helper as an interactive administrator tool, not as a command
 to allowlist in `sudoers`.
 
 Install and bootstrap are intentionally separate. Bootstrap creates the first
-durable human capability, deploys the checked budget contract, creates a
-restricted MCP capability, and writes private client configuration. POC
-capabilities expire after at most 30 days and are not automatically renewed.
-See [Installation](docs/installation.md) for paths, `--no-start`, systemd user
-manager requirements, rerun limits, and advanced bundle/manual procedures.
+durable administrator, creates a generic MCP developer capability, and writes
+private client configuration. It does not deploy an application contract. The
+developer can validate and deploy a contract; exact application command and
+data access is granted afterward through application roles or scoped
+capabilities. POC capabilities expire after at most 30 days and are not
+automatically renewed. See [Installation](docs/installation.md) for paths,
+`--no-start`, systemd user manager requirements, rerun limits, and advanced
+bundle/manual procedures.
+
+To install one daemon with multiple isolated databases, name them before the
+first service start and bootstrap each alias independently:
+
+```bash
+cargo riffdb install --user --database ea --database orders
+cargo riffdb bootstrap --user --database ea --register-codex
+cargo riffdb bootstrap --user --database orders --register-codex
+```
+
+The generated MCP registrations are `riffdb_ea` and `riffdb_orders`; each
+credential, client config, contract catalog, sequence, and durable file remains
+bound to only its selected database.
 
 ## Manual Build
 
@@ -163,6 +179,36 @@ deployment, follow [Installation](docs/installation.md). The exact server,
 client, hosted MCP, and stdio bridge settings are in
 [Configuration](docs/configuration.md).
 
+One daemon may host up to 32 isolated named databases. Select one on every
+public client:
+
+```bash
+riffdb --database ea --config "$HOME/.config/riffdb/client.toml" server health
+riffdb-mcp --database ea --config "$HOME/.config/riffdb/mcp.toml"
+```
+
+For an MCP host using project `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "riffdb_ea": {
+      "command": "/home/you/.local/bin/riffdb-mcp",
+      "args": [
+        "--config",
+        "/home/you/.config/riffdb/mcp.toml",
+        "--database",
+        "ea"
+      ]
+    }
+  }
+}
+```
+
+Each alias has its own contract catalog, credentials, command history, commit
+sequence, projections, outbox, and storage. There are no cross-database
+operations.
+
 A verified binary bundle also contains `demo`. From its extracted root,
 `./demo --assert` starts a disposable server, writes and queries the bundled
 budget example through public binaries, and shuts down with SIGTERM. It uses no
@@ -181,6 +227,9 @@ recovery matrix, a mismatched fixture, or an unmet engine-comparison dependency
 is an error.
 
 ## Operations
+
+For agent-facing value formats, retries, discovery, and command resources, see
+the [MCP agent cookbook](docs/mcp/agent-cookbook.md).
 
 - [Installation and systemd](docs/installation.md)
 - [Configuration reference](docs/configuration.md)

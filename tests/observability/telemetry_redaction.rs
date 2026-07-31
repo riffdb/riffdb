@@ -42,6 +42,7 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::layer::{Context, SubscriberExt};
 
 const SECRET_CANARY: &str = "riffdb-secret-token-canary-never-export";
+static SUBSCRIBER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 struct ScriptedIncidentIds {
     values: Mutex<VecDeque<Result<IncidentId, IncidentIdSourceError>>>,
@@ -281,6 +282,9 @@ fn health_separates_authoritative_readiness_from_derived_degradation() {
 
 #[test]
 fn trace_layer_rejects_text_fields_and_foreign_targets() {
+    let _subscriber_test = SUBSCRIBER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let layer = SafeTraceLayer::new(8).expect("bounded layer");
     let collector = layer.collector();
     let subscriber = tracing_subscriber::registry().with(layer);
@@ -301,6 +305,9 @@ fn trace_layer_rejects_text_fields_and_foreign_targets() {
 
 #[test]
 fn request_spans_have_only_closed_correlation_fields() {
+    let _subscriber_test = SUBSCRIBER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let subscriber = tracing_subscriber::registry();
     tracing::subscriber::with_default(subscriber, || {
         let span = request_span(
@@ -706,6 +713,9 @@ impl Visit for TextVisitor<'_> {
 
 #[test]
 fn supported_api_redacts_before_both_subscriber_layers() {
+    let _subscriber_test = SUBSCRIBER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let safe = SafeTraceLayer::new(8).expect("safe layer");
     let safe_records = safe.collector();
     let sibling = SiblingCapture::default();

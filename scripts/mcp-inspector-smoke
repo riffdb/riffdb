@@ -145,22 +145,22 @@ run_inspector \
     --method resources/list
 
 EXPECTED_TOOL_NAMES='[
-    "riffdb.contract.validate",
-    "riffdb.contract.get_active",
-    "riffdb.contract.explain_command",
-    "riffdb.contract.deploy",
-    "riffdb.command.get_outcome",
-    "riffdb.entity.get",
-    "riffdb.entity.scan_index",
-    "riffdb.commit.get",
-    "riffdb.commit.scan",
-    "riffdb.provenance.trace",
-    "riffdb.projection.query",
-    "riffdb.projection.status",
-    "riffdb.outbox.list_pending",
-    "riffdb.server.health",
-    "riffdb.cmd.legalspend.allocatebudget",
-    "riffdb.cmd.legalspend.retiredbudget"
+    "riffdb_contract_validate",
+    "riffdb_contract_get_active",
+    "riffdb_contract_explain_command",
+    "riffdb_contract_deploy",
+    "riffdb_command_get_outcome",
+    "riffdb_entity_get",
+    "riffdb_entity_scan_index",
+    "riffdb_commit_get",
+    "riffdb_commit_scan",
+    "riffdb_provenance_trace",
+    "riffdb_projection_query",
+    "riffdb_projection_status",
+    "riffdb_outbox_list_pending",
+    "riffdb_server_health",
+    "riffdb_cmd_legalspend_allocatebudget",
+    "riffdb_cmd_legalspend_retiredbudget"
 ]'
 EXPECTED_RESOURCE_URIS='[
     "riffdb://contract/active",

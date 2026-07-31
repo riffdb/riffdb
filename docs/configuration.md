@@ -16,6 +16,10 @@ A present invalid higher-precedence value rejects instead of falling through.
 The TOML path is selected by `--config`, then `RIFFDB_CONFIG`, then absence.
 There is no implicit configuration-file discovery.
 
+The legacy database, environment, and backup settings below define one database
+with alias `default`. A process may instead define 1 through 32
+`[databases.<alias>]` tables. Mixing the legacy and named forms rejects.
+
 | Setting | CLI | Environment | TOML | Default | Restart | Impact |
 |---|---|---|---|---|---|---|
 | Database | `--database` | `RIFFDB_DATABASE` | `server.database` | `data/riffdb.redb` | Yes | Correctness, storage compatibility |
@@ -44,6 +48,31 @@ idempotency_keys = "/etc/riffdb/idempotency.keys"
 [maintenance]
 backup_root = "/var/lib/riffdb/backups"
 ```
+
+The equivalent multi-database form is:
+
+```toml
+[server]
+grpc_listen = "127.0.0.1:7443"
+audience = "riffdb-grpc-loopback"
+capability_keys = "/etc/riffdb/capability.keys"
+idempotency_keys = "/etc/riffdb/idempotency.keys"
+
+[databases.ea]
+path = "/var/lib/riffdb/data/ea.redb"
+backup_root = "/var/lib/riffdb/backups/ea"
+environment = "local"
+
+[databases.budget_demo]
+path = "/var/lib/riffdb/data/budget-demo.redb"
+backup_root = "/var/lib/riffdb/backups/budget-demo"
+environment = "local"
+```
+
+Aliases match `[a-z][a-z0-9_-]{0,63}`, sort by canonical bytes, and are unique.
+All database, backup, and key paths across the process must be pairwise
+lexically disjoint. The process opens every database and builds every graph
+before publishing readiness. One structural startup failure stops the process.
 
 The complete document is UTF-8 and at most 65,536 bytes. Unknown tables or
 keys, duplicates, wrong types, duplicate scalar flags, missing flag values, and
@@ -116,6 +145,7 @@ first:
 | Field | Flag | Environment | TOML | Default |
 |---|---|---|---|---|
 | Endpoint | `--endpoint` | `RIFFDB_ENDPOINT` | `client.endpoint` | `http://127.0.0.1:7443` |
+| Database | `--database` | `RIFFDB_DATABASE` | `client.database` | `default` |
 | Output | `--output` | `RIFFDB_OUTPUT` | `client.output` | `human` |
 | Attempts | `--max-attempts` | `RIFFDB_MAX_ATTEMPTS` | `client.max_attempts` | `3` |
 | Credential file | `--credential-file` | `RIFFDB_CREDENTIAL_FILE` | `client.credential_file` | absent |
@@ -144,17 +174,20 @@ The bridge accepts only:
 ```text
 --config PATH
 --endpoint LOOPBACK_HTTP_ENDPOINT
+--database DATABASE
 ```
 
 Configuration path precedence is `--config`, `RIFFDB_MCP_CONFIG`, then absent.
 Endpoint precedence is `--endpoint`, `RIFFDB_MCP_ENDPOINT`, `[mcp].endpoint`,
-then `http://127.0.0.1:7443`.
+then `http://127.0.0.1:7443`. Database precedence is `--database`,
+`RIFFDB_MCP_DATABASE`, `[mcp].database`, then `default`.
 
 Its TOML contains only:
 
 ```toml
 [mcp]
 endpoint = "http://127.0.0.1:7443"
+database = "default"
 credential_file = "/var/lib/riffdb-mcp/credential"
 ```
 
@@ -164,5 +197,5 @@ path takes precedence over the TOML path, while simultaneous raw token and file
 selection rejects. The credential is loaded once and moved into the ordinary
 public gRPC client.
 
-The bridge does not accept a database path, storage option, environment,
+The bridge accepts a database alias, not a path. It does not accept a storage option, environment,
 audience override, policy, or server-side authority.

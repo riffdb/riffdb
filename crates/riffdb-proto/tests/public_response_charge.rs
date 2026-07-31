@@ -112,12 +112,12 @@ fn every_service_charge_case_covers_its_public_encoding() {
         actual["discover_resources.full_one_over"].3,
         FULL_DISCOVERY_CEILING + 1
     );
-    assert_eq!(actual["operation_schema_catalog.accepted"].3, 7_882);
+    assert_eq!(actual["operation_schema_catalog.accepted"].3, 7_864);
     assert_eq!(actual["discover_command_tools.compact_item_max"].3, 1_369);
     assert_eq!(actual["discover_command_tools.compact_page_max"].3, 335_729);
     assert_eq!(
         actual["discover_command_tools.full_max_dynamic"].3,
-        2_106_529
+        2_106_511
     );
     assert_eq!(actual["discover_resources.compact_item_max"].3, 1_480);
     assert_eq!(actual["discover_resources.compact_page_max"].3, 320_872);
@@ -137,7 +137,7 @@ fn every_service_charge_case_covers_its_public_encoding() {
     );
     assert_eq!(
         encoded_lengths["discover_command_tools.full_max_dynamic"],
-        2_105_539
+        2_105_521
     );
     assert_eq!(
         encoded_lengths["discover_resources.compact_item_max"],

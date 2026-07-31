@@ -27,11 +27,31 @@ cargo riffdb install --user
 cargo riffdb bootstrap --user
 ```
 
-To register the restricted MCP capability with Codex during bootstrap:
+To register the generic MCP developer capability with Codex during bootstrap:
 
 ```bash
 cargo riffdb bootstrap --user --register-codex
 ```
+
+To create several isolated databases under one service, provide every alias on
+the first install and then bootstrap them separately:
+
+```bash
+cargo riffdb install --user --database ea --database orders
+cargo riffdb bootstrap --user --database ea
+cargo riffdb bootstrap --user --database orders
+```
+
+`--database` is repeatable on install, accepts the canonical
+`[a-z][a-z0-9_-]{0,63}` alias grammar, and is bounded to 32 unique aliases.
+Repeating installation with explicit aliases requires the exact retained alias
+list. The installer never edits an existing custom server configuration to add
+or remove a database.
+
+Named bootstrap writes separate private files such as `client-ea.toml`,
+`operator-ea.credential`, `mcp-ea.toml`, and `mcp-ea.credential`. With
+`--register-codex`, it registers `riffdb_ea`. The unsuffixed filenames and
+registration name remain the compatibility form for alias `default`.
 
 For a machine-wide service, select the same scope in both phases:
 
@@ -45,7 +65,8 @@ validates the shared release service assets but does not execute this source
 installer's privileged account, `/etc`, or `/usr/local` flow. Perform the first
 privileged installation and service-start acceptance on the intended
 disposable or staging host, review every `sudo` prompt, and require
-authenticated RiffDB Health before admitting use.
+authenticated RiffDB Health to report the exact deployment-required state
+before creating the first application.
 
 Always invoke these as the intended unprivileged operator. Never use
 `sudo cargo riffdb ...`; the installer rejects a root caller. The system
@@ -66,7 +87,7 @@ unprivileged process opens and streams each checkout or build source.
 |---|---|---|
 | Product binaries | `$HOME/.local/bin/{riffdbd,riffdb,riffdb-mcp}` | `/usr/local/bin/{riffdbd,riffdb,riffdb-mcp}` |
 | Server configuration and digest keys | `${XDG_CONFIG_HOME:-$HOME/.config}/riffdb/` | `/etc/riffdb/` |
-| Database and backups | `${XDG_DATA_HOME:-$HOME/.local/share}/riffdb/data/riffdb.redb` and `.../backups/` | `/var/lib/riffdb/data/riffdb.redb` and `/var/lib/riffdb/backups/` |
+| Database and backups | `${XDG_DATA_HOME:-$HOME/.local/share}/riffdb/data/riffdb.redb` and `.../backups/`, or `<alias>.redb` and `backups/<alias>/` | `/var/lib/riffdb/data/riffdb.redb` and `/var/lib/riffdb/backups/`, or `<alias>.redb` and `backups/<alias>/` |
 | Service unit | `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/riffdbd.service` | `/etc/systemd/system/riffdbd.service` |
 | Service state/working directory | `${XDG_STATE_HOME:-$HOME/.local/state}/riffdb/` | `/var/lib/riffdb/` |
 | Service accounts | Current user | `riffdb` and `riffdb-mcp` |
@@ -132,23 +153,31 @@ separate bootstrap command:
 1. submits the one-time first-human bootstrap through loopback gRPC;
 2. durably retains uncertainty-recovery material before submission;
 3. writes private operator CLI configuration and credential files;
-4. validates and deploys `contracts/examples/budget.riff`;
-5. creates a separate capability and config for `riffdb-mcp`, limited to
-   catalog/health reads and checked LegalSpend command, entity, and projection
-   access, with no global commit or provenance reads; and
+4. leaves the active contract catalog empty;
+5. creates a separate generic developer capability and config for
+   `riffdb-mcp`, limited to contract validation, contract catalog reads,
+   contract deployment, and authenticated health; and
 6. with `--register-codex`, runs `codex mcp add riffdb -- ...` only after the
    database and MCP credential are ready.
 
 These are authoritative database operations, not local file setup. A failure
-after bootstrap may leave the database successfully bootstrapped even when a
-later deployment, MCP capability, or Codex-registration step failed. Rerun the
-same bootstrap command: it preserves retained bootstrap material and pending
+after owner bootstrap may leave the database successfully bootstrapped even
+when later MCP-capability creation or Codex registration failed. Rerun the same
+bootstrap command: it preserves retained bootstrap material and pending
 capability identity so uncertainty is resolved rather than assigned a new
 identity. It refuses to replace changed credential/config files or an existing
 Codex MCP entry named `riffdb`. Codex currently exposes replacement-capable
 `mcp add`, not an atomic create-if-absent operation, so use
 `--register-codex` only while no other process is changing that user's Codex
 MCP configuration.
+
+The MCP developer can author, validate, and deploy an application contract
+without installation choosing an application. Because application permissions
+name exact contract lineage and stable IDs, the pre-deployment capability does
+not grant wildcard command, entity, index, projection, commit, provenance, or
+outbox access. After deployment, use the administrator CLI config to bind a
+compiled application role or issue an exact scoped capability, then configure
+the application or a separate MCP identity with that credential.
 
 Bootstrap defaults to `http://127.0.0.1:7443`. To select a deliberately
 reconfigured loopback listener, set an exact endpoint for that invocation:
@@ -165,7 +194,7 @@ scope. Running both on one host requires distinct server listen ports and
 separate operator XDG config/state roots; otherwise their service listeners and
 private client filenames collide.
 
-The generated owner capability requests 30 days and the restricted MCP
+The generated owner capability requests 30 days and the MCP developer
 capability requests less than 30 days. The POC does not renew either
 automatically. Create replacement capabilities through the authenticated
 public service before the current administrative capability expires.

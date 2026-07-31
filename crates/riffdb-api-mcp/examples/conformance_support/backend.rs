@@ -24,10 +24,10 @@ use serde_json::{Value, json};
 use tokio::sync::Notify;
 
 pub(crate) const CAPABILITY_TOKEN: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
-pub(crate) const STABLE_TOOL: &str = "riffdb.cmd.legalspend.allocatebudget";
-pub(crate) const STALE_TOOL: &str = "riffdb.cmd.legalspend.retiredbudget";
-pub(crate) const DEPLOYED_TOOL: &str = "riffdb.cmd.legalspend.reviewbudget";
-pub(crate) const UNKNOWN_TOOL: &str = "riffdb.cmd.legalspend.unknown";
+pub(crate) const STABLE_TOOL: &str = "riffdb_cmd_legalspend_allocatebudget";
+pub(crate) const STALE_TOOL: &str = "riffdb_cmd_legalspend_retiredbudget";
+pub(crate) const DEPLOYED_TOOL: &str = "riffdb_cmd_legalspend_reviewbudget";
+pub(crate) const UNKNOWN_TOOL: &str = "riffdb_cmd_legalspend_unknown";
 pub(crate) const ACTIVE_CONTRACT_URI: &str = "riffdb://contract/active";
 pub(crate) const COMMAND_PLAN_URI: &str = "riffdb://command/LegalSpend/2/plan";
 pub(crate) const PROJECTION_STATUS_URI: &str = "riffdb://projection/LegalSpend/1/status";
@@ -243,7 +243,7 @@ impl McpBackend for ConformanceBackend {
         self.state.invocation.fetch_add(1, Ordering::AcqRel);
         Box::pin(async move {
             match request.target() {
-                McpInvocationTarget::Fixed { tag: 4, name } if name == "riffdb.contract.deploy" => {
+                McpInvocationTarget::Fixed { tag: 4, name } if name == "riffdb_contract_deploy" => {
                     invocation.admit(McpRateTarget::Service(ServiceOperationV1::DeployContract))?;
                     let arguments: Value = request
                         .arguments()
@@ -306,7 +306,7 @@ impl McpBackend for ConformanceBackend {
                 },
                 "outcome_uri": concat!(
                     "riffdb://outcome/conformance-agent/LegalSpend/2/",
-                    "riffdb.cmd.legalspend.allocatebudget/",
+                    "riffdb_cmd_legalspend_allocatebudget/",
                     "AQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
                 ),
                 "plan_hash": "3333333333333333333333333333333333333333333333333333333333333333",
@@ -553,7 +553,7 @@ fn template_resources() -> Result<Vec<McpResourceDescriptor>, McpBackendError> {
             "command_outcome",
             concat!(
                 "riffdb://outcome/{principal}/LegalSpend/2/",
-                "riffdb.cmd.legalspend.allocatebudget/{key_hash}"
+                "riffdb_cmd_legalspend_allocatebudget/{key_hash}"
             ),
         ),
         ("commit.class_template", "riffdb://commit/{sequence}"),

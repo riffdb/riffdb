@@ -46,7 +46,7 @@ generate_inventory() {
     local output="$1" file bytes digest
     {
         printf 'riffdb-wp140-interface-checkpoint-v1\n'
-        printf 'compatibility-status=accepted-by-human-maintainer-2026-07-23\n'
+        printf 'compatibility-status=accepted-by-human-maintainer-2026-07-30\n'
         printf 'plain-digest=sha256-of-exact-file-bytes\n'
         printf 'schema-digest=RIFFDB-HASH-v1 domain riffdb.schema/v1 (recorded in fixed-tool-registry-v1.json)\n'
         printf 'schema-sources=27\n'
@@ -113,7 +113,7 @@ registry_aggregate="$(jq -r '.fixed_schema_ledger.canonical_source_bytes' "$fixe
 
 jq -e '
     .schema == "riffdb.mcp.fixed-tool-registry/v1" and
-    .compatibility_checkpoint == "accepted-by-human-maintainer-2026-07-23" and
+    .compatibility_checkpoint == "accepted-by-human-maintainer-2026-07-30" and
     .schema_hashing.scheme == 1 and
     .schema_hashing.domain == "riffdb.schema/v1" and
     .counts.fixed_tools == 14 and
@@ -125,8 +125,8 @@ jq -e '
     (.tools | length) == 14 and
     ([.tools[].fixed_tool_kind] == [1,2,3,4,5,6,7,8,9,10,11,12,13,14]) and
     ([.tools[].result_branches[]] | length) == 29 and
-    ([.tools[] | select(.annotations.readOnlyHint == false) | .name] == ["riffdb.contract.deploy"]) and
-    ([.tools[] | select(.annotations.destructiveHint == true) | .name] == ["riffdb.contract.deploy"]) and
+    ([.tools[] | select(.annotations.readOnlyHint == false) | .name] == ["riffdb_contract_deploy"]) and
+    ([.tools[] | select(.annotations.destructiveHint == true) | .name] == ["riffdb_contract_deploy"]) and
     ([.tools[] | select(.annotations.openWorldHint != false)] | length) == 0 and
     .fixed_schema_ledger.component_ceiling_bytes == 1048576 and
     .fixed_schema_ledger.service_discovery_ceiling_bytes == 2621440 and
@@ -158,20 +158,20 @@ jq -e '
 expected_tool_tuples="$(mktemp)"
 actual_tool_tuples="$(mktemp)"
 printf '%s\n' \
-    '1|riffdb.contract.validate|ContractService|ValidateContract|ValidateContract' \
-    '2|riffdb.contract.get_active|ContractService|GetActiveContract|GetActiveContract' \
-    '3|riffdb.contract.explain_command|ContractService|ExplainCommand|ExplainCommand' \
-    '4|riffdb.contract.deploy|ContractService|DeployContract|DeployContract' \
-    '5|riffdb.command.get_outcome|CommandService|GetOutcome|ResolveCommandOutcome' \
-    '6|riffdb.entity.get|QueryService|GetEntity|GetEntity' \
-    '7|riffdb.entity.scan_index|QueryService|ScanIndex|ScanIndex' \
-    '8|riffdb.commit.get|CommitService|GetCommit|GetCommit' \
-    '9|riffdb.commit.scan|CommitService|ScanCommits|ScanCommits' \
-    '10|riffdb.provenance.trace|CommitService|TraceProvenance|TraceProvenance' \
-    '11|riffdb.projection.query|QueryService|QueryProjection|QueryProjection' \
-    '12|riffdb.projection.status|QueryService|GetProjectionStatus|GetProjectionStatus' \
-    '13|riffdb.outbox.list_pending|AdminService|ListPendingOutboxDeliveries|ListPendingOutboxDeliveries' \
-    '14|riffdb.server.health|AdminService|Health|Health' \
+    '1|riffdb_contract_validate|ContractService|ValidateContract|ValidateContract' \
+    '2|riffdb_contract_get_active|ContractService|GetActiveContract|GetActiveContract' \
+    '3|riffdb_contract_explain_command|ContractService|ExplainCommand|ExplainCommand' \
+    '4|riffdb_contract_deploy|ContractService|DeployContract|DeployContract' \
+    '5|riffdb_command_get_outcome|CommandService|GetOutcome|ResolveCommandOutcome' \
+    '6|riffdb_entity_get|QueryService|GetEntity|GetEntity' \
+    '7|riffdb_entity_scan_index|QueryService|ScanIndex|ScanIndex' \
+    '8|riffdb_commit_get|CommitService|GetCommit|GetCommit' \
+    '9|riffdb_commit_scan|CommitService|ScanCommits|ScanCommits' \
+    '10|riffdb_provenance_trace|CommitService|TraceProvenance|TraceProvenance' \
+    '11|riffdb_projection_query|QueryService|QueryProjection|QueryProjection' \
+    '12|riffdb_projection_status|QueryService|GetProjectionStatus|GetProjectionStatus' \
+    '13|riffdb_outbox_list_pending|AdminService|ListPendingOutboxDeliveries|ListPendingOutboxDeliveries' \
+    '14|riffdb_server_health|AdminService|Health|Health' \
     > "$expected_tool_tuples"
 jq -r '
     .tools[] |
@@ -193,16 +193,16 @@ rm -f "$expected_tool_tuples" "$actual_tool_tuples"
 jq -e '
     .operation_schemas == [
       {
-        "canonical_bytes":2561,
+        "canonical_bytes":2549,
         "owner":"riffdb-service",
-        "schema_hash":"781ff93c2dbfd2ee2bec286f7810300a0fec0a170548b1405cb8ba2ac8d90398",
+        "schema_hash":"1f83b878c052f53c6eb733b67cd7926fb7ea3729f1d469e0fd9aa8a13f6b44d2",
         "schema_id":"riffdb.command-operation-envelope/v1",
         "source_path":"crates/riffdb-service/schema/riffdb.command-operation-envelope-v1.schema.json"
       },
       {
-        "canonical_bytes":4745,
+        "canonical_bytes":4739,
         "owner":"riffdb-service",
-        "schema_hash":"4056f01c297120b06ac905f33482132a9085865975ada36e2396a61ebf19fc0d",
+        "schema_hash":"0c1f33fbc613b9e87c4a54ccc2f7c1d426625cc0cb98237e2bded4bec073ddde",
         "schema_id":"riffdb.command-get-outcome-result/v1",
         "source_path":"crates/riffdb-service/schema/riffdb.command-get-outcome-result-v1.schema.json"
       }
@@ -210,7 +210,7 @@ jq -e '
     all(.tools[];
       .input_schema.schema_id == ("riffdb.fixed-tool/" + .name + "/input/v1") and
       .input_schema.source_path == ("crates/riffdb-api-mcp/schema/fixed-tool/v1/" + .name + ".input.schema.json") and
-      if .name == "riffdb.command.get_outcome" then
+      if .name == "riffdb_command_get_outcome" then
         .result_schema.schema_id == "riffdb.command-get-outcome-result/v1" and
         .result_schema.source_path == "crates/riffdb-service/schema/riffdb.command-get-outcome-result-v1.schema.json"
       else
@@ -296,7 +296,7 @@ fi
 
 jq -e '
     .schema == "riffdb.mcp.resource-registry/v1" and
-    .compatibility_checkpoint == "accepted-by-human-maintainer-2026-07-23" and
+    .compatibility_checkpoint == "accepted-by-human-maintainer-2026-07-30" and
     .counts == {"concrete":9,"content_goldens":12,"entries":12,"subscribable":4,"templates":3} and
     (.entries | length) == 12 and
     ([.entries[].descriptor_branch] == [
@@ -327,7 +327,7 @@ printf '%s\n' \
     'entity_schema|resources/list|riffdb://entity/<lineage>/<entity-id>/schema|application/schema+json|false' \
     'command_plan|resources/list|riffdb://command/<lineage>/<command-id>/plan|application/json|true' \
     'command_documentation|resources/list|riffdb://command/<lineage>/<command-id>/docs|text/markdown|false' \
-    'command_outcome|resources/templates/list|riffdb://outcome/{principal}/LegalSpend/2/riffdb.cmd.legalspend.allocatebudget/{key_hash}|application/json|false' \
+    'command_outcome|resources/templates/list|riffdb://outcome/{principal}/LegalSpend/2/riffdb_cmd_legalspend_allocatebudget/{key_hash}|application/json|false' \
     'commit.class_template|resources/templates/list|riffdb://commit/{sequence}|application/json|false' \
     'commit.commit_sequence|resources/list|riffdb://commit/<sequence>|application/json|false' \
     'provenance.class_template|resources/templates/list|riffdb://provenance/{provenance_id}|application/json|false' \

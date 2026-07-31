@@ -392,7 +392,7 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 13 | `commands` | u32 count + CommandBundleEntry[] |
 | 14 | `projections` | u32 count + ProjectionBundleEntry[] |
 | 15 | `schema_artifacts` | u32 count + GeneratedSchemaArtifact[] |
-| 16 | `mcp_names` | McpCommandNameRegistryV1 |
+| 16 | `mcp_names` | McpCommandNameRegistryV2 |
 | 17 | `compatibility` | CompatibilityReport |
 
 ### ParentBundleRef
@@ -748,16 +748,16 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 2 | `canonical_json` | bytes |
 | 3 | `schema_hash` | 32 bytes |
 
-### McpCommandNameRegistryV1
+### McpCommandNameRegistryV2
 
 | # | Field | Encoding |
 |---:|---|---|
 | 1 | `version` | u32 = 1 |
 | 2 | `lineage` | string |
 | 3 | `source_contract_name` | string |
-| 4 | `entries` | u32 count + McpCommandNameEntryV1[] |
+| 4 | `entries` | u32 count + McpCommandNameEntryV2[] |
 
-### McpCommandNameEntryV1
+### McpCommandNameEntryV2
 
 | # | Field | Encoding |
 |---:|---|---|

@@ -31,7 +31,7 @@
         ],
         "type": "object"
       },
-      "name": "agent_alpha.create_item",
+      "name": "agent_alpha_create_item",
       "plan_hash": "1c556595b9c28cdd10c24500e2b5c448ab4aa80a1b5f8c6afc64c5570d65c8ba",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -116,7 +116,7 @@
         "type": "object"
       },
       "module_hash": "30408cd94c7b82ab8dcf38557af7dc7ab0db223f6350abf7b81b52d6238be16d",
-      "name": "agent_alpha.item_page",
+      "name": "agent_alpha_item_page",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [

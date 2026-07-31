@@ -372,28 +372,28 @@ pub enum McpProvenanceSelector {
 /// One decoded fixed-tool request.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum McpFixedToolRequest {
-    /// `riffdb.contract.validate`.
+    /// `riffdb_contract_validate`.
     ValidateContract {
         /// Bounded contract source.
         source: String,
     },
-    /// `riffdb.contract.get_active`.
+    /// `riffdb_contract_get_active`.
     GetActiveContract,
-    /// `riffdb.contract.explain_command`.
+    /// `riffdb_contract_explain_command`.
     ExplainCommand {
         /// Active or exact contract selection.
         contract: McpContractSelection,
         /// Exact source command name.
         command_name: String,
     },
-    /// `riffdb.contract.deploy`.
+    /// `riffdb_contract_deploy`.
     DeployContract {
         /// Bounded candidate source.
         source: String,
         /// Optional active-version precondition.
         expected_active_version: Option<u64>,
     },
-    /// `riffdb.command.get_outcome` raw identity branch.
+    /// `riffdb_command_get_outcome` raw identity branch.
     GetOutcomeIdentity {
         /// Exact contract lineage.
         contract_lineage: String,
@@ -402,12 +402,12 @@ pub enum McpFixedToolRequest {
         /// Caller-supplied idempotency key.
         idempotency_key: String,
     },
-    /// `riffdb.command.get_outcome` locator branch.
+    /// `riffdb_command_get_outcome` locator branch.
     GetOutcomeLocator {
         /// Canonical outcome resource URI.
         outcome_uri: String,
     },
-    /// `riffdb.entity.get`.
+    /// `riffdb_entity_get`.
     GetEntity {
         /// Active or exact contract selection.
         contract: McpContractSelection,
@@ -418,7 +418,7 @@ pub enum McpFixedToolRequest {
         /// Strictly increasing field projection.
         fields: Vec<u32>,
     },
-    /// `riffdb.entity.scan_index`.
+    /// `riffdb_entity_scan_index`.
     ScanIndex {
         /// Active or exact contract selection.
         contract: McpContractSelection,
@@ -431,22 +431,22 @@ pub enum McpFixedToolRequest {
         /// Bounded page controls.
         page: McpPageRequest,
     },
-    /// `riffdb.commit.get`.
+    /// `riffdb_commit_get`.
     GetCommit {
         /// Nonzero commit sequence.
         commit_sequence: u64,
     },
-    /// `riffdb.commit.scan`.
+    /// `riffdb_commit_scan`.
     ScanCommits {
         /// Bounded page controls.
         page: McpPageRequest,
     },
-    /// `riffdb.provenance.trace`.
+    /// `riffdb_provenance_trace`.
     TraceProvenance {
         /// Exact trace selector.
         selector: McpProvenanceSelector,
     },
-    /// `riffdb.projection.query`.
+    /// `riffdb_projection_query`.
     QueryProjection {
         /// Active or exact contract selection.
         contract: McpContractSelection,
@@ -461,33 +461,33 @@ pub enum McpFixedToolRequest {
         /// Bounded page controls.
         page: McpPageRequest,
     },
-    /// `riffdb.projection.status`.
+    /// `riffdb_projection_status`.
     GetProjectionStatus {
         /// Active or exact contract selection.
         contract: McpContractSelection,
         /// Stable projection ID.
         projection_id: u32,
     },
-    /// `riffdb.outbox.list_pending`.
+    /// `riffdb_outbox_list_pending`.
     ListPendingOutboxDeliveries {
         /// Bounded page controls.
         page: McpPageRequest,
     },
-    /// `riffdb.server.health`.
+    /// `riffdb_server_health`.
     Health,
-    /// `riffdb.contract.describe`.
+    /// `riffdb_contract_describe`.
     DescribeContract {
         /// Active by default or an exact contract selection.
         contract: Option<McpContractSelection>,
     },
-    /// `riffdb.query.check`.
+    /// `riffdb_query_check`.
     CheckQuery {
         /// Active by default or an exact contract selection.
         contract: Option<McpContractSelection>,
         /// Exact bounded RiffQL source.
         source: String,
     },
-    /// `riffdb.query.explain`.
+    /// `riffdb_query_explain`.
     ExplainQuery {
         /// Active by default or an exact contract selection.
         contract: Option<McpContractSelection>,
@@ -505,7 +505,7 @@ pub enum McpFixedToolRequest {
         /// Optional opaque application-query cursor.
         cursor: Option<String>,
     },
-    /// `riffdb.command.run`.
+    /// `riffdb_command_run`.
     RunCommand {
         /// Exact compiled command source name.
         command_name: String,

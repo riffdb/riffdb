@@ -13,7 +13,8 @@ use crate::schema::RiffDbSchemaValidator;
 use crate::{
     MCP_OUTBOUND_MESSAGE_MAX_BYTES, McpMarkdownBuilder, McpMarkdownDocument, McpPresentationError,
     McpPresentedHash, McpPresentedU64, McpResourceJson, SchemaDocument,
-    format_contract_version_locator_from_public, format_projection_status_locator_from_public,
+    format_command_plan_locator_from_public, format_contract_version_locator_from_public,
+    format_projection_status_locator_from_public, validate_command_tool_name,
 };
 
 const MAX_COMPATIBILITY_CODES: usize = 20;
@@ -356,6 +357,7 @@ impl McpCommandExplanationPresentation {
 pub struct McpExplainedCommandPresentation {
     contract: McpContractDescriptorPresentation,
     source_command: String,
+    tool_name: String,
     plan_hash: McpPresentedHash,
     explanation: McpCommandExplanationPresentation,
     input_schema: SchemaDocument,
@@ -367,13 +369,15 @@ impl McpExplainedCommandPresentation {
     pub fn new(
         contract: McpContractDescriptorPresentation,
         source_command: impl Into<String>,
+        tool_name: impl Into<String>,
         plan_hash: [u8; 32],
         explanation: McpCommandExplanationPresentation,
         input_schema: SchemaDocument,
         outcome_schema: SchemaDocument,
     ) -> Result<Self, McpPresentationError> {
         let source_command = source_command.into();
-        if !is_source_name(&source_command) {
+        let tool_name = tool_name.into();
+        if !is_source_name(&source_command) || validate_command_tool_name(&tool_name).is_err() {
             return Err(McpPresentationError);
         }
         let command_id = explanation.command_id();
@@ -387,6 +391,7 @@ impl McpExplainedCommandPresentation {
         Ok(Self {
             contract,
             source_command,
+            tool_name,
             plan_hash: presented_hash(plan_hash)?,
             explanation,
             input_schema,
@@ -404,6 +409,12 @@ impl McpExplainedCommandPresentation {
     #[must_use]
     pub fn source_command(&self) -> &str {
         &self.source_command
+    }
+
+    /// Borrows the exact compiler-owned MCP tool name.
+    #[must_use]
+    pub fn tool_name(&self) -> &str {
+        &self.tool_name
     }
 
     /// Borrows the checked public explanation.
@@ -485,61 +496,72 @@ pub fn render_command_documentation(
         outcome_examples.push(example);
     }
 
-    let identity = serde_json::json!({
-        "command_id": command.explanation.command_id,
-        "contract_lineage": command.contract.contract_lineage(),
-        "contract_version": command.contract.contract_version().to_string(),
-        "plan_hash": command.plan_hash,
-        "source_command": command.source_command,
-    });
-    let identity =
-        bounded_json::to_string(&identity, MCP_OUTBOUND_MESSAGE_MAX_BYTES).map_err(presentation)?;
-    let execution = execution_facts(&command.explanation)?;
-    let input = bounded_json::to_string(&input_example, MCP_OUTBOUND_MESSAGE_MAX_BYTES)
-        .map_err(presentation)?;
+    let input_table = input_field_guide(&command.input_schema)?;
+    let call = bounded_json::to_string(
+        &serde_json::json!({
+            "name": command.tool_name,
+            "arguments": input_example,
+        }),
+        MCP_OUTBOUND_MESSAGE_MAX_BYTES,
+    )
+    .map_err(presentation)?;
+    let plan_uri = format_command_plan_locator_from_public(
+        command.contract.contract_lineage(),
+        command.explanation.command_id,
+    )
+    .map_err(|_| McpPresentationError)?;
 
     let mut builder = McpMarkdownBuilder::new();
     builder
         .push_heading(1, &command.source_command)
         .map_err(presentation)?
-        .push_heading(2, "Identity")
+        .push_paragraph(&format!(
+            "Execute the compiled {} command from contract {} version {}.",
+            command.source_command,
+            command.contract.contract_lineage(),
+            command.contract.contract_version()
+        ))
         .map_err(presentation)?
-        .push_preformatted(&identity)
+        .push_heading(2, "MCP Tool")
         .map_err(presentation)?
-        .push_heading(2, "Execution Plan")
+        .push_preformatted(&command.tool_name)
         .map_err(presentation)?
-        .push_preformatted(&execution)
+        .push_heading(2, "Inputs")
         .map_err(presentation)?
-        .push_heading(2, "Explanation")
+        .push_preformatted(&input_table)
         .map_err(presentation)?
-        .push_preformatted(command.explanation.rendered_text())
+        .push_heading(2, "Call Example")
+        .map_err(presentation)?
+        .push_preformatted(&call)
         .map_err(presentation)?;
     if command.explanation.execution_class() == McpCommandExecutionClass::IdempotentMutation {
         builder
+            .push_heading(2, "Retry and Uncertainty")
+            .map_err(presentation)?
             .push_idempotent_mutation_cancellation_notice()
             .map_err(presentation)?;
     }
     builder
-        .push_heading(2, "Input Example")
-        .map_err(presentation)?
-        .push_preformatted(&input)
-        .map_err(presentation)?
-        .push_heading(2, "Outcome Examples")
+        .push_heading(2, "Declared Outcomes")
         .map_err(presentation)?;
     for (index, example) in outcome_examples.iter().enumerate() {
+        let outcome_name = declared_outcome_name(example).unwrap_or_else(|| {
+            index
+                .checked_add(1)
+                .map_or_else(|| "Outcome".to_owned(), |value| format!("Outcome {value}"))
+        });
         builder
-            .push_heading(
-                3,
-                &index
-                    .checked_add(1)
-                    .ok_or(McpPresentationError)?
-                    .to_string(),
-            )
+            .push_heading(3, &outcome_name)
             .map_err(presentation)?;
         let example = bounded_json::to_string(example, MCP_OUTBOUND_MESSAGE_MAX_BYTES)
             .map_err(presentation)?;
         builder.push_preformatted(&example).map_err(presentation)?;
     }
+    builder
+        .push_heading(2, "Plan Resource")
+        .map_err(presentation)?
+        .push_preformatted(&plan_uri)
+        .map_err(presentation)?;
     builder.finish().map_err(presentation)
 }
 
@@ -917,22 +939,87 @@ fn bounded_sorted_refs(values: &[McpBindingFieldReferencePresentation]) -> bool 
     values.len() <= MAX_EXPLANATION_ITEMS && values.windows(2).all(|pair| pair[0] < pair[1])
 }
 
-fn execution_facts(
-    explanation: &McpCommandExplanationPresentation,
-) -> Result<String, McpPresentationError> {
-    let value = serde_json::json!({
-        "binding_ids": explanation.binding_ids,
-        "command_id": explanation.command_id,
-        "conflict_key_count": explanation.conflict_key_count,
-        "event_type_ids": explanation.event_type_ids,
-        "execution_class": explanation.execution_class,
-        "invariant_ids": explanation.invariant_ids,
-        "outcome_ids": explanation.outcome_ids,
-        "partition_component_count": explanation.partition_component_count,
-        "read_fields": explanation.read_fields,
-        "write_fields": explanation.write_fields,
-    });
-    bounded_json::to_string(&value, MCP_OUTBOUND_MESSAGE_MAX_BYTES).map_err(presentation)
+fn input_field_guide(schema: &SchemaDocument) -> Result<String, McpPresentationError> {
+    let root = schema.json_object();
+    let properties = root
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or(McpPresentationError)?;
+    let required = root
+        .get("required")
+        .and_then(Value::as_array)
+        .ok_or(McpPresentationError)?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut output = String::from("field\trequired\ttype\tconstraints");
+    for (name, field) in properties {
+        let object = field.as_object().ok_or(McpPresentationError)?;
+        let kind = object
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("declared union");
+        let mut constraints = Vec::new();
+        if object.get("pattern").and_then(Value::as_str) == Some(UUID_PATTERN) {
+            constraints.push("UUID");
+        } else if object.contains_key("pattern") {
+            constraints.push("pattern");
+        }
+        if let (Some(precision), Some(scale)) = (
+            object
+                .get("x-riffdb-decimalPrecision")
+                .and_then(Value::as_u64),
+            object.get("x-riffdb-decimalScale").and_then(Value::as_u64),
+        ) {
+            constraints.push(if precision == scale {
+                "fixed-scale decimal"
+            } else {
+                "decimal"
+            });
+        }
+        if object.contains_key("minimum") {
+            constraints.push("minimum");
+        }
+        if object.contains_key("maximum") {
+            constraints.push("maximum");
+        }
+        if object.contains_key("minLength") || object.contains_key("x-riffdb-minUtf8Bytes") {
+            constraints.push("minimum length");
+        }
+        if object.contains_key("maxLength") || object.contains_key("x-riffdb-maxUtf8Bytes") {
+            constraints.push("maximum length");
+        }
+        output.push('\n');
+        output.push_str(name);
+        output.push('\t');
+        output.push_str(if required.contains(name.as_str()) {
+            "yes"
+        } else {
+            "no"
+        });
+        output.push('\t');
+        output.push_str(kind);
+        output.push('\t');
+        let constraint_text = if constraints.is_empty() {
+            "none".to_owned()
+        } else {
+            constraints.join(", ")
+        };
+        output.push_str(&constraint_text);
+        if output.len() > MCP_OUTBOUND_MESSAGE_MAX_BYTES {
+            return Err(McpPresentationError);
+        }
+    }
+    Ok(output)
+}
+
+fn declared_outcome_name(example: &Value) -> Option<String> {
+    let object = example.as_object()?;
+    object
+        .get("type")
+        .or_else(|| object.get("outcome"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 fn minimal_example(
@@ -1279,6 +1366,7 @@ mod tests {
         McpExplainedCommandPresentation::new(
             descriptor(),
             "AllocateBudget",
+            "riffdb_cmd_legalspend_allocatebudget",
             [0x33; 32],
             explanation(),
             input,
@@ -1402,16 +1490,25 @@ mod tests {
         assert_eq!(first, second);
         let text = first.as_str();
         assert!(text.starts_with("# AllocateBudget\n"));
-        assert!(text.contains("## Identity\n"));
-        assert!(text.contains("## Execution Plan\n"));
-        assert!(text.contains("## Explanation\n"));
-        assert!(text.contains("## Input Example\n"));
-        assert!(text.contains("## Outcome Examples\n"));
+        assert!(text.contains("## MCP Tool\n"));
+        assert!(text.contains("riffdb_cmd_legalspend_allocatebudget"));
+        assert!(text.contains("## Inputs\n"));
+        assert!(text.contains("field required type constraints"));
+        assert!(text.contains("## Call Example\n"));
+        assert!(text.contains("## Retry and Uncertainty\n"));
+        assert!(text.contains("## Declared Outcomes\n"));
+        assert!(text.contains("## Plan Resource\n"));
+        assert!(text.contains("riffdb://command/LegalSpend/2/plan"));
+        assert!(!text.contains("## Execution Plan\n"));
         assert_eq!(text.matches("\n### ").count(), 4);
         assert!(text.contains(crate::MCP_IDEMPOTENT_MUTATION_CANCELLATION_NOTICE));
         assert!(text.contains("\"idempotency_key\":\"a\""));
         assert!(text.contains("\"type\":\"Allocated\""));
         assert!(!text.contains("Allocates an approved amount"));
+        assert_eq!(
+            text,
+            include_str!("../fixtures/command-documentation-v2.md")
+        );
     }
 
     #[test]

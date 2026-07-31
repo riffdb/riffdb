@@ -9,6 +9,8 @@ pub(crate) struct Cli {
     pub(crate) config: Option<OsString>,
     #[arg(long, global = true, value_name = "LOOPBACK_HTTP_ENDPOINT")]
     pub(crate) endpoint: Option<String>,
+    #[arg(long, global = true, value_name = "DATABASE")]
+    pub(crate) database: Option<String>,
     #[arg(long, global = true, value_enum, value_name = "human|json")]
     pub(crate) output: Option<OutputMode>,
     #[arg(long, global = true, value_name = "1..10")]

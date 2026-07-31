@@ -5,7 +5,7 @@ umask 077
 
 usage() {
     printf '%s\n' \
-        'usage: cargo riffdb install (--user|--system) [--from-binaries DIR] [--no-start]' >&2
+        'usage: cargo riffdb install (--user|--system) [--database ALIAS]... [--from-binaries DIR] [--no-start]' >&2
 }
 
 fail() {
@@ -22,6 +22,7 @@ shift
 scope=
 binary_source=
 no_start=0
+database_aliases=()
 while (($#)); do
     case "$1" in
         --user|--system)
@@ -48,6 +49,18 @@ while (($#)); do
             no_start=1
             shift
             ;;
+        --database)
+            [[ $# -ge 2 && "$2" =~ ^[a-z][a-z0-9_-]{0,63}$ ]] || {
+                usage
+                exit 2
+            }
+            ((${#database_aliases[@]} < 32)) || fail 'at most 32 databases may be configured'
+            for configured_alias in "${database_aliases[@]}"; do
+                [[ "$configured_alias" != "$2" ]] || fail 'database aliases must be unique'
+            done
+            database_aliases+=("$2")
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -70,7 +83,7 @@ fi
 script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "$script_root/.." && pwd -P)"
 
-for tool in cat chmod find id install ln mktemp mv od rm stat tail tr uname; do
+for tool in cat chmod cmp find id install ln mktemp mv od rm stat tail tr uname; do
     command -v "$tool" >/dev/null 2>&1 \
         || fail "required tool is missing: $tool"
 done
@@ -382,16 +395,52 @@ render_user_config() {
     local idempotency_keys="$config_root/idempotency.keys"
     {
         printf '%s\n' '[server]'
-        printf 'database = %s\n' "$(toml_quote "$database")"
+        if ((${#database_aliases[@]} == 0)); then
+            printf 'database = %s\n' "$(toml_quote "$database")"
+        fi
         printf '%s\n' 'grpc_listen = "127.0.0.1:7443"'
-        printf '%s\n' 'environment = "local"'
+        if ((${#database_aliases[@]} == 0)); then
+            printf '%s\n' 'environment = "local"'
+        fi
         printf '%s\n' 'audience = "riffdb-grpc-loopback"'
         printf 'capability_keys = %s\n' "$(toml_quote "$capability_keys")"
         printf 'idempotency_keys = %s\n' "$(toml_quote "$idempotency_keys")"
-        printf '\n%s\n' '[maintenance]'
-        printf 'backup_root = %s\n' "$(toml_quote "$backups")"
+        if ((${#database_aliases[@]} == 0)); then
+            printf '\n%s\n' '[maintenance]'
+            printf 'backup_root = %s\n' "$(toml_quote "$backups")"
+        else
+            local alias
+            for alias in "${database_aliases[@]}"; do
+                printf '\n[databases.%s]\n' "$alias"
+                printf 'path = %s\n' \
+                    "$(toml_quote "$data_root/data/$alias.redb")"
+                printf 'backup_root = %s\n' \
+                    "$(toml_quote "$data_root/backups/$alias")"
+                printf '%s\n' 'environment = "local"'
+            done
+        fi
     } >"$destination"
     chmod 0600 "$destination"
+}
+
+render_system_config() {
+    local destination="$1"
+    {
+        printf '%s\n' \
+            '[server]' \
+            'grpc_listen = "127.0.0.1:7443"' \
+            'audience = "riffdb-grpc-loopback"' \
+            'capability_keys = "/etc/riffdb/capability.keys"' \
+            'idempotency_keys = "/etc/riffdb/idempotency.keys"'
+        local alias
+        for alias in "${database_aliases[@]}"; do
+            printf '\n[databases.%s]\n' "$alias"
+            printf 'path = "/var/lib/riffdb/data/%s.redb"\n' "$alias"
+            printf 'backup_root = "/var/lib/riffdb/backups/%s"\n' "$alias"
+            printf '%s\n' 'environment = "local"'
+        done
+    } >"$destination"
+    chmod 0640 "$destination"
 }
 
 render_user_unit() {
@@ -636,6 +685,13 @@ install_user() {
 
     if [[ "$config_type" == file ]]; then
         validate_owned_file "$config_path" 0600 "$current_uid" "$current_gid"
+        if ((${#database_aliases[@]} != 0)); then
+            new_temporary_root user-config-check material_root
+            config_source="$material_root/riffdbd.toml"
+            render_user_config "$config_source" "$config_root" "$data_root"
+            cmp -s "$config_source" "$config_path" \
+                || fail 'requested database aliases do not match existing server configuration'
+        fi
     elif [[ "$config_type" == absent ]]; then
         new_temporary_root user-config material_root
         config_source="$material_root/riffdbd.toml"
@@ -995,10 +1051,25 @@ install_system() {
 
     if [[ "$config_type" == file ]]; then
         validate_system_file "$config_path" 0640 0 "$riffdb_gid"
+        if ((${#database_aliases[@]} != 0)); then
+            new_temporary_root system-config-check material_root
+            config_source="$material_root/riffdbd.toml"
+            render_system_config "$config_source"
+            sudo cmp -s "$config_source" "$config_path" \
+                || fail 'requested database aliases do not match existing system configuration'
+        fi
     elif [[ "$config_type" == absent ]]; then
-        publish_system_file \
-            "$repo_root/release/config/riffdbd.toml.example" \
-            "$config_path" 0640 root riffdb
+        if ((${#database_aliases[@]} == 0)); then
+            publish_system_file \
+                "$repo_root/release/config/riffdbd.toml.example" \
+                "$config_path" 0640 root riffdb
+        else
+            new_temporary_root system-config material_root
+            config_source="$material_root/riffdbd.toml"
+            render_system_config "$config_source"
+            publish_system_file \
+                "$config_source" "$config_path" 0640 root riffdb
+        fi
     else
         fail "system server configuration path is unsafe: $config_path"
     fi

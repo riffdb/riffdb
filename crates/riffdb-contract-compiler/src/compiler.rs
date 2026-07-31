@@ -801,16 +801,16 @@ contract SameVersion version 1 {
         assert_eq!(
             expected.expect("one permutation"),
             vec![
-                (1, "Zulu".to_owned(), "riffdb.cmd.toolorder.zulu".to_owned()),
+                (1, "Zulu".to_owned(), "riffdb_cmd_toolorder_zulu".to_owned()),
                 (
                     2,
                     "Alpha".to_owned(),
-                    "riffdb.cmd.toolorder.alpha".to_owned(),
+                    "riffdb_cmd_toolorder_alpha".to_owned(),
                 ),
                 (
                     3,
                     "Middle".to_owned(),
-                    "riffdb.cmd.toolorder.middle".to_owned(),
+                    "riffdb_cmd_toolorder_middle".to_owned(),
                 ),
             ]
         );
@@ -895,7 +895,7 @@ contract SameVersion version 1 {
         assert_eq!(new.source_command_name(), "Reallocate");
         assert_eq!(
             new.tool_name().as_str(),
-            "riffdb.cmd.toolevolution.reallocate"
+            "riffdb_cmd_toolevolution_reallocate"
         );
         assert_eq!(
             renamed.compatibility().overall(),

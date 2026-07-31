@@ -437,11 +437,11 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
             vec!["key", "canonical_json", "schema_hash"],
         ),
         (
-            "McpCommandNameRegistryV1",
+            "McpCommandNameRegistryV2",
             vec!["version", "lineage", "source_contract_name", "entries"],
         ),
         (
-            "McpCommandNameEntryV1",
+            "McpCommandNameEntryV2",
             vec!["command_id", "source_command_name", "tool_name"],
         ),
         ("CompatibilityReport", vec!["overall", "entries"]),
@@ -525,8 +525,8 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ("ProjectionGroupSchema", "projection fixture"),
         ("ProjectionGroupComponentSchema", "projection fixture"),
         ("GeneratedSchemaArtifact", "contract bundle fixture"),
-        ("McpCommandNameRegistryV1", "MCP registry fixture"),
-        ("McpCommandNameEntryV1", "MCP registry fixture"),
+        ("McpCommandNameRegistryV2", "MCP registry fixture"),
+        ("McpCommandNameEntryV2", "MCP registry fixture"),
         ("CompatibilityReport", "compatibility fixture"),
         ("CompatibilityEntry", "compatibility fixture"),
     ];
@@ -1452,15 +1452,15 @@ fn ledger_schema_registry_and_compatibility_families_round_trip() {
     assert_reader_finished(reader);
 
     let lineage = ContractLineage::new("LegalSpend").expect("lineage");
-    let registry = McpCommandNameRegistryV1::new(
+    let registry = McpCommandNameRegistryV2::new(
         lineage,
         "LegalSpend",
         vec![
-            McpCommandNameEntryV1::new(
+            McpCommandNameEntryV2::new(
                 CommandId::first(),
                 "LegalSpend",
                 "Apply",
-                "riffdb.cmd.legalspend.apply",
+                "riffdb_cmd_legalspend_apply",
             )
             .expect("entry"),
         ],

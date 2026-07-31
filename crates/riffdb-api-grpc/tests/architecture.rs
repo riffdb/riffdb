@@ -108,7 +108,7 @@ fn staged_route_does_not_require_a_full_service_at_construction() {
         .and_then(|tail| tail.split("impl GrpcApplication").next())
         .expect("GrpcApplication declaration");
     assert!(!application.contains("Arc<dyn ApplicationService>"));
-    assert!(application.contains("Arc<dyn GrpcLifecycleRoute>"));
+    assert!(application.contains("Arc<GrpcDatabaseRoutes>"));
     for deferred in [
         "CredentialAuthenticator",
         "AuthenticationContext",
@@ -193,7 +193,7 @@ fn capability_cancellation_guard_outlives_invocation_construction() {
         2
     );
     assert!(handler.contains("BootstrapLifecycleGuard::new"));
-    assert!(handler.contains("lifecycle.complete(completion)"));
+    assert!(handler.contains("lifecycle_guard.complete(completion)"));
 }
 
 #[test]

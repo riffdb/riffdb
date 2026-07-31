@@ -20,8 +20,10 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - `riffdbd` exposes only the documented POC configuration fields. There is no
   network metrics listener, storage-engine selector, general tuning surface,
   or secret value in TOML.
-- systemd `active` means the process started; use RiffDB Health for database
-  readiness after bootstrap.
+- systemd `active` means the process started. After generic bootstrap,
+  authenticated Health is intentionally `not_ready` with no active contract;
+  require `ready` or `degraded` only after deploying the first application
+  contract.
 - The production server uses redb only. The isolated Fjall adapter fails the
   unchanged storage semantic conformance profile, so Fjall performance samples
   are ineligible and the POC makes no redb-versus-Fjall speed claim.
@@ -41,6 +43,11 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - Capability administration has create and revoke operations but no
   operator-facing inventory command. Retain each issued capability ID in a
   private operational inventory; deleting a bearer file is not revocation.
+- Generic bootstrap deploys no application. Its MCP developer can validate and
+  deploy contracts but has no wildcard application-data authority. After
+  deployment, an administrator must bind a compiled application role or issue
+  an exact lineage-scoped capability before application commands or data are
+  available through that identity.
 - Convenience bootstrap capabilities expire after at most 30 days. There is
   no automatic renewal; a replacement must be created through the public
   service while an administrative capability remains valid.

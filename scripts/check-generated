@@ -28,6 +28,33 @@ for generator in "${generators[@]}"; do
     LC_ALL=C TZ=UTC "./$generator" --check
 done
 
+mapfile -t mcp_tool_catalogs < <(
+    {
+        find examples -path '*/generated/mcp/tools.json' -type f -print
+        find fixtures/query-modules -maxdepth 1 -type f -name '*.mcp.json' -print
+        printf '%s\n' crates/riffdb-api-mcp/fixtures/fixed-tool-registry-v1.json
+    } | LC_ALL=C sort
+)
+for catalog in "${mcp_tool_catalogs[@]}"; do
+    if ! jq -e '
+        [.commands[]?.name, .tools[]?.name] as $names
+        | ($names | length) > 0
+        and all($names[]; type == "string" and test("^[a-z][a-z0-9_]{0,127}$"))
+    ' "$catalog" >/dev/null; then
+        printf 'generated MCP catalog contains a noncanonical tool name: %s\n' "$catalog" >&2
+        exit 1
+    fi
+done
+
+if rg -l -F 'riffdb\\.cmd\\.' \
+    crates/riffdb-service/schema \
+    crates/riffdb-api-mcp/schema \
+    examples/*/generated/mcp \
+    fixtures/query-modules >/dev/null; then
+    printf 'generated public artifact retains a dotted MCP command spelling\n' >&2
+    exit 1
+fi
+
 snapshot "$after"
 if ! diff -r -- "$before" "$after"; then
     echo "generated-artifact check changed the worktree" >&2

@@ -63,9 +63,9 @@ pub enum CompilerDiagnosticCode {
     InvalidUniqueKey,
     /// `RDB-C026`: a unique-key change cannot be derived entirely from command inputs.
     UniqueKeyNotInputComputable,
-    /// `RDB-C201`: an identifier cannot form an ADR-0020 command tool-name segment.
+    /// `RDB-C201`: an identifier cannot form an ADR-0064 command tool-name segment.
     InvalidCommandToolName,
-    /// `RDB-C202`: a complete ADR-0020 command tool name exceeds 128 bytes.
+    /// `RDB-C202`: a complete ADR-0064 command tool name exceeds 128 bytes.
     CommandToolNameTooLong,
     /// `RDB-C203`: two commands normalize to the same ADR-0020 tool name.
     CommandToolNameCollision,

@@ -7,7 +7,8 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 
 use riffdb_client_rust::{
-    BearerCredential, BearerCredentialFileError, load_protected_bearer_credential,
+    BearerCredential, BearerCredentialFileError, DEFAULT_DATABASE_ALIAS, DatabaseAlias,
+    load_protected_bearer_credential,
 };
 use serde::Deserialize;
 
@@ -20,6 +21,7 @@ const CONFIG_ENV: &str = "RIFFDB_MCP_CONFIG";
 const ENDPOINT_ENV: &str = "RIFFDB_MCP_ENDPOINT";
 const TOKEN_ENV: &str = "RIFFDB_MCP_CAPABILITY_TOKEN";
 const CREDENTIAL_FILE_ENV: &str = "RIFFDB_MCP_CREDENTIAL_FILE";
+const DATABASE_ENV: &str = "RIFFDB_MCP_DATABASE";
 
 /// A closed, redaction-safe startup configuration failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,6 +32,7 @@ pub(crate) enum StdioConfigError {
     ConfigTooLarge,
     InvalidConfig,
     InvalidEndpoint,
+    InvalidDatabase,
     ConflictingCredentialSources,
     MissingCredential,
     InvalidCredential,
@@ -46,6 +49,7 @@ impl std::fmt::Display for StdioConfigError {
             Self::ConfigTooLarge => "the MCP configuration file exceeds its size limit",
             Self::InvalidConfig => "the MCP configuration file is invalid",
             Self::InvalidEndpoint => "the RiffDB endpoint is invalid",
+            Self::InvalidDatabase => "the RiffDB database selector is invalid",
             Self::ConflictingCredentialSources => "multiple MCP credential sources were supplied",
             Self::MissingCredential => "an MCP capability credential is required",
             Self::InvalidCredential => "the MCP capability credential is invalid",
@@ -59,12 +63,13 @@ impl std::error::Error for StdioConfigError {}
 
 pub(crate) struct StdioConfig {
     endpoint: String,
+    database: DatabaseAlias,
     credential: BearerCredential,
 }
 
 impl StdioConfig {
-    pub(crate) fn into_parts(self) -> (String, BearerCredential) {
-        (self.endpoint, self.credential)
+    pub(crate) fn into_parts(self) -> (String, DatabaseAlias, BearerCredential) {
+        (self.endpoint, self.database, self.credential)
     }
 }
 
@@ -72,6 +77,7 @@ impl StdioConfig {
 struct Arguments {
     config: Option<OsString>,
     endpoint: Option<OsString>,
+    database: Option<OsString>,
 }
 
 #[derive(Default, Deserialize)]
@@ -84,6 +90,7 @@ struct ConfigDocument {
 #[serde(deny_unknown_fields)]
 struct McpConfig {
     endpoint: Option<String>,
+    database: Option<String>,
     credential_file: Option<String>,
 }
 
@@ -153,6 +160,18 @@ fn load_config(
         },
     };
     validate_endpoint(&endpoint)?;
+    let database = match arguments.database {
+        Some(database) => os_string_to_database(database)?,
+        None => match io.environment(DATABASE_ENV) {
+            Some(database) => os_string_to_database(database)?,
+            None => DatabaseAlias::new(
+                file_config
+                    .database
+                    .unwrap_or_else(|| DEFAULT_DATABASE_ALIAS.to_owned()),
+            )
+            .map_err(|_| StdioConfigError::InvalidDatabase)?,
+        },
+    };
 
     let raw_token = io.environment(TOKEN_ENV);
     let credential_path = io
@@ -175,6 +194,7 @@ fn load_config(
 
     Ok(StdioConfig {
         endpoint,
+        database,
         credential,
     })
 }
@@ -192,10 +212,20 @@ fn parse_arguments(
             Some("--endpoint") if parsed.endpoint.is_none() => {
                 parsed.endpoint = Some(arguments.next().ok_or(StdioConfigError::InvalidArguments)?);
             }
+            Some("--database") if parsed.database.is_none() => {
+                parsed.database = Some(arguments.next().ok_or(StdioConfigError::InvalidArguments)?);
+            }
             _ => return Err(StdioConfigError::InvalidArguments),
         }
     }
     Ok(parsed)
+}
+
+fn os_string_to_database(value: OsString) -> Result<DatabaseAlias, StdioConfigError> {
+    value
+        .into_string()
+        .map_err(|_| StdioConfigError::InvalidDatabase)
+        .and_then(|value| DatabaseAlias::new(value).map_err(|_| StdioConfigError::InvalidDatabase))
 }
 
 fn os_string_to_text(value: OsString) -> Result<String, StdioConfigError> {
@@ -427,6 +457,49 @@ mod tests {
     }
 
     #[test]
+    fn database_selection_uses_argument_environment_document_then_default() {
+        let default = load_config([], &FakeIo::with_token()).expect("default");
+        assert_eq!(default.into_parts().1.as_str(), DEFAULT_DATABASE_ALIAS);
+
+        let mut io = FakeIo::with_token();
+        io.environment.insert(CONFIG_ENV, "/config".into());
+        io.documents.insert(
+            "/config".into(),
+            Ok(b"[mcp]\ndatabase = \"document_db\"\n".to_vec()),
+        );
+        assert_eq!(
+            load_config([], &io)
+                .expect("document")
+                .into_parts()
+                .1
+                .as_str(),
+            "document_db"
+        );
+
+        io.environment.insert(DATABASE_ENV, "environment_db".into());
+        assert_eq!(
+            load_config([], &io)
+                .expect("environment")
+                .into_parts()
+                .1
+                .as_str(),
+            "environment_db"
+        );
+        assert_eq!(
+            load_config(args(&["--database", "argument_db"]), &io)
+                .expect("argument")
+                .into_parts()
+                .1
+                .as_str(),
+            "argument_db"
+        );
+        assert_eq!(
+            load_config(args(&["--database", "Invalid"]), &io).err(),
+            Some(StdioConfigError::InvalidDatabase)
+        );
+    }
+
+    #[test]
     fn present_invalid_higher_precedence_endpoint_never_falls_through() {
         let mut io = FakeIo::with_token();
         io.environment.insert(ENDPOINT_ENV, OsString::new());
@@ -636,7 +709,7 @@ mod tests {
         assert!(!error.to_string().contains("token"));
 
         let config = load_config([], &FakeIo::with_token()).expect("config");
-        let (_, credential) = config.into_parts();
+        let (_, _, credential) = config.into_parts();
         assert_eq!(format!("{credential:?}"), "BearerCredential([REDACTED])");
     }
 }

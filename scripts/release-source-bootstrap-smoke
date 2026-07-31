@@ -55,7 +55,7 @@ while (($#)); do
 done
 
 for tool in \
-    cargo chmod cmp cp git grep id jq mkfifo mkdir mktemp mv rm sed \
+    cargo chmod cmp cp find git grep id jq mkfifo mkdir mktemp mv rm sed \
     sha256sum stat tail timeout
 do
     require_tool "$tool"
@@ -177,6 +177,8 @@ export PATH="$shim_dir:$PATH"
 
 install_output="$work_root/install.log"
 scripts/release-source-install install --user \
+    --database default \
+    --database agent \
     --from-binaries "$binary_dir" \
     --no-start \
     >"$install_output" 2>&1
@@ -196,7 +198,7 @@ mcp_config="$config_root/mcp.toml"
 operator_capability_id="$state_root/operator-capability.id"
 mcp_capability_id="$state_root/mcp-capability.id"
 bootstrap_request="$state_root/bootstrap-local-owner.json"
-mcp_request="$state_root/mcp-budget-agent.json"
+mcp_request="$state_root/mcp-local-developer.json"
 bootstrap_credential="$state_root/bootstrap.credential"
 operator_candidate="$config_root/.operator.credential.new"
 
@@ -298,7 +300,7 @@ do
 done
 cmp release/config/bootstrap-local-owner.json.example "$bootstrap_request" \
     || fail "bootstrap owner request differs from the checked fixture"
-cmp release/config/mcp-budget-agent.json.example "$mcp_request" \
+cmp release/config/mcp-local-developer.json.example "$mcp_request" \
     || fail "MCP capability request differs from the checked fixture"
 
 if [[ "$(stat -c '%s' "$operator_credential")" -ne 43 \
@@ -543,7 +545,7 @@ jq -cn '{
   id: 3,
   method: "tools/call",
   params: {
-    name: "riffdb.server.health",
+    name: "riffdb_server_health",
     arguments: {}
   }
 }' >>"$mcp_input"
@@ -562,20 +564,13 @@ timeout 45s "$bin_root/riffdb-mcp" --config "$mcp_config" \
 if ! jq -s -e '
   def response($id): first(.[] | select(.id == $id));
   response(1).result.protocolVersion == "2025-11-25"
-  and (response(2).result.tools | type == "array" and length > 0)
-  and any(response(2).result.tools[];
-          .name == "riffdb.server.health")
-  and any(response(2).result.tools[];
-          .name == "riffdb.cmd.legalspend.createbudget")
-  and any(response(2).result.tools[];
-          .name == "riffdb.cmd.legalspend.allocatebudget")
-  and all(response(2).result.tools[];
-          .name != "riffdb.contract.deploy")
-  and all(response(2).result.tools[];
-          .name != "riffdb.commit.get"
-          and .name != "riffdb.commit.scan"
-          and .name != "riffdb.provenance.trace"
-          and .name != "riffdb.outbox.list_pending")
+  and ([response(2).result.tools[].name] | sort) == [
+        "riffdb_contract_deploy",
+        "riffdb_contract_describe",
+        "riffdb_contract_get_active",
+        "riffdb_contract_validate",
+        "riffdb_server_health"
+      ]
   and (response(4).result.resources | type == "array")
   and all(response(4).result.resources[];
           (.uri | type) == "string"
@@ -589,8 +584,10 @@ if ! jq -s -e '
           and (.uriTemplate | startswith("riffdb://provenance/") | not)
           and (.uriTemplate | startswith("riffdb://outbox/") | not))
   and (response(3).result.structuredContent.authenticated as $health
-       | $health.status == "ready"
-       and $health.active_contract_version == "1"
+       | $health.status == "not_ready"
+       and $health.active_contract_version == null
+       and $health.last_commit_sequence == null
+       and ($health.components | length) == 5
        and ([$health.components[]
              | select(.component == "authoritative_storage"
                       or .component == "catalog"
@@ -599,9 +596,81 @@ if ! jq -s -e '
               {component: "authoritative_storage", status: "healthy"},
               {component: "catalog", status: "healthy"},
               {component: "commit_coordinator", status: "healthy"}
-            ]))
+            ])
+       and all($health.components[]
+               | select(.component == "projection"
+                        or .component == "outbox");
+               .status == "healthy" or .status == "degraded"))
 ' "$mcp_output" >/dev/null; then
-    fail "installed MCP bridge did not expose the restricted live catalog"
+    jq -c '
+      select(.id != null)
+      | {
+          id,
+          has_result: has("result"),
+          result_keys: (
+            if (.result | type) == "object" then (.result | keys) else [] end
+          ),
+          error
+        }
+    ' "$mcp_output" >&2 || true
+    jq -s -c '
+      def response($id): first(.[] | select(.id == $id));
+      def expected_tools: [
+        "riffdb_contract_deploy",
+        "riffdb_contract_describe",
+        "riffdb_contract_get_active",
+        "riffdb_contract_validate",
+        "riffdb_server_health"
+      ];
+      def health: response(3).result.structuredContent.authenticated;
+      {
+        tools: [response(2).result.tools[]?.name],
+        tools_exact: (([response(2).result.tools[]?.name] | sort) == expected_tools),
+        resources: [response(4).result.resources[]?.uri],
+        resources_safe: all(
+          response(4).result.resources[]?;
+          (.uri | type) == "string"
+          and (.uri | startswith("riffdb://commit/") | not)
+          and (.uri | startswith("riffdb://provenance/") | not)
+          and (.uri | startswith("riffdb://outbox/") | not)
+        ),
+        resource_templates: [
+          response(5).result.resourceTemplates[]?.uriTemplate
+        ],
+        templates_safe: all(
+          response(5).result.resourceTemplates[]?;
+          (.uriTemplate | type) == "string"
+          and (.uriTemplate | startswith("riffdb://commit/") | not)
+          and (.uriTemplate | startswith("riffdb://provenance/") | not)
+          and (.uriTemplate | startswith("riffdb://outbox/") | not)
+        ),
+        health: (health | {
+          status,
+          active_contract_version,
+          last_commit_sequence,
+          components
+        }),
+        health_shape: (
+          health.status == "not_ready"
+          and health.active_contract_version == null
+          and health.last_commit_sequence == null
+          and (health.components | length) == 5
+        ),
+        required_components: [
+          health.components[]
+          | select(.component == "authoritative_storage"
+                   or .component == "catalog"
+                   or .component == "commit_coordinator")
+        ],
+        derived_healthy: all(
+          health.components[]
+          | select(.component == "projection" or .component == "outbox");
+          .status == "healthy" or .status == "degraded"
+        )
+      }
+    ' "$mcp_output" >&2 || true
+    sed 's/^/mcp: /' "$mcp_stderr" >&2
+    fail "installed MCP bridge did not expose the generic developer surface"
 fi
 if grep -F -- "$operator_token" "$mcp_output" "$mcp_stderr" >/dev/null \
    || grep -F -- "$mcp_token" "$mcp_output" "$mcp_stderr" >/dev/null; then
@@ -663,10 +732,172 @@ if grep -F -- "$operator_token" "$replacement_output" "$replacement_stderr" >/de
     fail "token-unavailable recovery output exposed a bearer credential"
 fi
 revoked_health="$work_root/revoked-mcp-health.json"
-if "$bin_root/riffdb" --endpoint "$endpoint" --output json \
+if "$bin_root/riffdb" --endpoint "$endpoint" --database default --output json \
     --credential-file "$lost_mcp_credential" server health \
     >"$revoked_health" 2>/dev/null; then
     fail "token-unavailable recovery left the lost MCP capability authorized"
+fi
+
+agent_bootstrap_output="$work_root/agent-bootstrap.stdout"
+agent_bootstrap_stderr="$work_root/agent-bootstrap.stderr"
+if ! RIFFDB_ENDPOINT="$endpoint" cargo riffdb bootstrap --user --database agent \
+    >"$agent_bootstrap_output" 2>"$agent_bootstrap_stderr"
+then
+    sed 's/^/agent bootstrap: /' "$agent_bootstrap_stderr" >&2
+    fail "named-database bootstrap failed"
+fi
+agent_client_config="$config_root/client-agent.toml"
+agent_mcp_config="$config_root/mcp-agent.toml"
+agent_mcp_credential="$config_root/mcp-agent.credential"
+for private_file in \
+    "$config_root/operator-agent.credential" \
+    "$agent_client_config" \
+    "$agent_mcp_config" \
+    "$agent_mcp_credential" \
+    "$state_root/operator-capability-agent.id" \
+    "$state_root/mcp-capability-agent.id"
+do
+    require_regular_mode "$private_file" 0600
+done
+grep -Fx 'database = "agent"' "$agent_client_config" >/dev/null \
+    || fail "named CLI config omitted its exact database selector"
+grep -Fx 'database = "agent"' "$agent_mcp_config" >/dev/null \
+    || fail "named MCP config omitted its exact database selector"
+if "$bin_root/riffdb" --endpoint "$endpoint" --database agent --output json \
+    --credential-file "$mcp_credential" server health >/dev/null 2>&1
+then
+    fail "a credential from the default database authenticated against agent"
+fi
+"$bin_root/riffdb" --config "$agent_client_config" --output json \
+    server health >/dev/null
+"$bin_root/riffdb-mcp" --config "$agent_mcp_config" \
+    <"$mcp_input" >"$work_root/agent-mcp.out" 2>"$work_root/agent-mcp.err"
+if ! jq -s -e '
+    def response($id): first(.[] | select(.id == $id));
+    response(1).result.protocolVersion == "2025-11-25"
+    and ([response(2).result.tools[].name]
+         | length > 0
+         and all(test("^[a-z][a-z0-9_]{0,127}$")))
+' "$work_root/agent-mcp.out" >/dev/null; then
+    fail "named MCP config did not expose an underscore-only authorized catalog"
+fi
+
+"$bin_root/riffdb" --config "$client_config" --output json \
+    contract deploy "$repo_root/contracts/examples/budget.riff" \
+    >"$work_root/default-contract-deploy.json"
+backup_start="$work_root/default-backup-start.json"
+set +e
+"$bin_root/riffdb" --config "$client_config" --max-attempts 1 --output json \
+    backup create multi-database-proof >"$backup_start" 2>"$work_root/default-backup-start.err"
+backup_start_status=$?
+set -e
+if [[ "$backup_start_status" -ne 0 && "$backup_start_status" -ne 3 ]]; then
+    sed 's/^/backup: /' "$backup_start" >&2 || true
+    sed 's/^/backup stderr: /' "$work_root/default-backup-start.err" >&2 || true
+    sed 's/^/riffdbd: /' "$server_stderr" >&2 || true
+    fail "selected-database backup start was rejected"
+fi
+backup_operation="$(
+    jq -er '
+        select(.schema == "riffdb.cli.output/v1")
+        | if .ok == true and .command == "backup.create" then
+              .result.maintenance_operation_id
+          elif .ok == false
+               and .error.recovery_action == "poll_maintenance_operation" then
+              .error.maintenance_operation_id
+          else
+              empty
+          end
+    ' "$backup_start"
+)"
+if ! "$bin_root/riffdb" --config "$agent_client_config" --output json \
+    server health >"$work_root/agent-health-during-default-maintenance.json"
+then
+    sed 's/^/riffdbd: /' "$server_stderr" >&2 || true
+    fail "unselected database became unavailable during maintenance"
+fi
+backup_terminal=false
+for _attempt in {1..1000}; do
+    if "$bin_root/riffdb" --config "$client_config" --output json \
+        backup operation "$backup_operation" \
+        >"$work_root/default-backup-operation.json" 2>/dev/null \
+       && jq -e '
+            .schema == "riffdb.cli.output/v1"
+            and .command == "backup.operation"
+            and .ok == true
+            and .result.phase == "succeeded"
+        ' "$work_root/default-backup-operation.json" >/dev/null
+    then
+        backup_terminal=true
+        break
+    fi
+done
+backup_manifest="$data_root/backups/default/multi-database-proof/manifest.riffdb"
+if [[ "$backup_terminal" != true || ! -f "$backup_manifest" ]]; then
+    sed 's/^/operation: /' "$work_root/default-backup-operation.json" >&2 || true
+    find "$data_root/backups" -maxdepth 3 -printf 'backup file: %P\n' >&2 || true
+    sed 's/^/riffdbd: /' "$server_stderr" >&2 || true
+    fail "selected-database maintenance did not complete independently"
+fi
+
+kill -KILL "$server_pid"
+wait "$server_pid" 2>/dev/null || true
+server_pid=
+
+restart_fifo="$work_root/riffdbd-restart-ready.fifo"
+restart_stderr="$work_root/riffdbd-restart.stderr"
+mkfifo "$restart_fifo"
+(
+    cd "$state_root"
+    exec "$bin_root/riffdbd" --config "$server_config"
+) </dev/null >"$restart_fifo" 2>"$restart_stderr" &
+server_pid=$!
+
+exec {restart_ready_fd}<"$restart_fifo"
+if ! IFS= read -r -t 30 restart_ready_line <&"$restart_ready_fd"; then
+    sed 's/^/restart: /' "$restart_stderr" >&2 || true
+    fail "installed two-database daemon did not recover after process crash"
+fi
+exec {restart_ready_fd}<&-
+case "$restart_ready_line" in
+    riffdbd-ready-v1$'\t'*) restart_address="${restart_ready_line#*$'\t'}" ;;
+    *) fail "restarted riffdbd published an invalid readiness line" ;;
+esac
+if [[ ! "$restart_address" =~ ^127\.0\.0\.1:([1-9][0-9]{0,4})$ \
+   || "${BASH_REMATCH[1]}" -gt 65535 ]]; then
+    fail "restarted riffdbd published a non-loopback or invalid address"
+fi
+endpoint="http://$restart_address"
+
+"$bin_root/riffdb" --endpoint "$endpoint" --database default --output json \
+    --credential-file "$operator_credential" server health \
+    >"$work_root/default-health-after-restart.json"
+"$bin_root/riffdb" --endpoint "$endpoint" --database agent --output json \
+    --credential-file "$config_root/operator-agent.credential" server health \
+    >"$work_root/agent-health-after-restart.json"
+if ! jq -e '
+    .schema == "riffdb.cli.output/v1"
+    and .command == "server.health"
+    and .ok == true
+    and .result.active_contract_version == "1"
+' "$work_root/default-health-after-restart.json" >/dev/null; then
+    fail "default database lost its active contract across process crash"
+fi
+if ! jq -e '
+    .schema == "riffdb.cli.output/v1"
+    and .command == "server.health"
+    and .ok == true
+    and .result.active_contract_version == null
+' "$work_root/agent-health-after-restart.json" >/dev/null; then
+    fail "agent database gained default-database state across process crash"
+fi
+if "$bin_root/riffdb" --endpoint "$endpoint" --database agent --output json \
+    --credential-file "$operator_credential" server health >/dev/null 2>&1
+then
+    fail "database-bound credential crossed databases after process crash"
+fi
+if [[ ! -f "$backup_manifest" ]]; then
+    fail "default database backup disappeared across process crash"
 fi
 
 kill -TERM "$server_pid"

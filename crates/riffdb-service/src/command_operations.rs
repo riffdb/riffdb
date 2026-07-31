@@ -16,7 +16,7 @@ use riffdb_commit::{
     ReadOnlyExecutionPreparation, ReadOnlyExecutionResult,
 };
 use riffdb_contract_ir::{
-    CommandPlan, ExecutionClass, McpCommandToolNameV1, RecordSchema, RecordTypeRef, SchemaIr,
+    CommandPlan, ExecutionClass, McpCommandToolNameV2, RecordSchema, RecordTypeRef, SchemaIr,
     ValueType, ValueTypeTag,
 };
 use riffdb_errors::{
@@ -111,7 +111,7 @@ struct CheckedOutcomeCatalog {
     plan: OutcomePlanBinding,
     command_id: CommandId,
     bundle: ValidatedContractBundle,
-    tool_name: Option<McpCommandToolNameV1>,
+    tool_name: Option<McpCommandToolNameV2>,
 }
 
 impl CheckedOutcomeCatalog {
@@ -1878,7 +1878,7 @@ fn extract_submitted_idempotency_key(
 fn map_committed_outcome(
     outcome: CommittedOutcome,
     expected_plan: &CatalogExecutablePlanRequest,
-    tool_name: Option<&McpCommandToolNameV1>,
+    tool_name: Option<&McpCommandToolNameV2>,
     internal_failure: impl Fn(InternalDefect) -> ServiceFailure,
     map_declared_outcome: impl FnOnce(OutcomeId, CanonicalRecord) -> ServiceResult<DeclaredOutcomeView>,
 ) -> ServiceResult<(JournaledCommandResult, ServiceAuditLinkV1)> {

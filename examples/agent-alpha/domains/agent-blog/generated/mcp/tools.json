@@ -35,7 +35,7 @@
         ],
         "type": "object"
       },
-      "name": "agent_blog.attach_tag",
+      "name": "agent_blog_attach_tag",
       "plan_hash": "bdb549221c1f718892bb896fca5efd032e1158d0db1c514a1e7b8189960a5413",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -171,7 +171,7 @@
         ],
         "type": "object"
       },
-      "name": "agent_blog.create_author",
+      "name": "agent_blog_create_author",
       "plan_hash": "3deefb9cb4c3ac6a469a36f6e880fc6adf422d26ed6eb5543c9e5b5916f6fc3f",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -298,7 +298,7 @@
         ],
         "type": "object"
       },
-      "name": "agent_blog.create_comment",
+      "name": "agent_blog_create_comment",
       "plan_hash": "9db6e0e3dfe2b8460ad17e0446e483b4df99b1cb2bf2d47bc744fc8a2834a20c",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -458,7 +458,7 @@
         ],
         "type": "object"
       },
-      "name": "agent_blog.create_post",
+      "name": "agent_blog_create_post",
       "plan_hash": "a753353766799c7f36fa6acef34d41b6b40a65197e49beb14baf33963765c493",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -610,7 +610,7 @@
         ],
         "type": "object"
       },
-      "name": "agent_blog.create_post_route",
+      "name": "agent_blog_create_post_route",
       "plan_hash": "d3c5172275458d0e95455656f95848e7e0e321b96f0407b750c24a0d2fd3364b",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -734,7 +734,7 @@
         ],
         "type": "object"
       },
-      "name": "agent_blog.create_site",
+      "name": "agent_blog_create_site",
       "plan_hash": "e3fc9b2292fc7e918151fc2f0d36d64eb10e6de7b6e9e8114f62905391a56685",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -828,7 +828,7 @@
         ],
         "type": "object"
       },
-      "name": "agent_blog.create_tag",
+      "name": "agent_blog_create_tag",
       "plan_hash": "c8d195da1a0ebf7ecde1e491de737ab5816ccc6c7bd468d78212ec9d18d5717a",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -953,7 +953,7 @@
         "type": "object"
       },
       "module_hash": "633ec7748d84bce389480ae5e1b2437880d36d4e00a3bbf24de250472570f019",
-      "name": "agent_blog.moderation_queue",
+      "name": "agent_blog_moderation_queue",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -1037,7 +1037,7 @@
         "type": "object"
       },
       "module_hash": "633ec7748d84bce389480ae5e1b2437880d36d4e00a3bbf24de250472570f019",
-      "name": "agent_blog.post_by_slug",
+      "name": "agent_blog_post_by_slug",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -1161,7 +1161,7 @@
         "type": "object"
       },
       "module_hash": "633ec7748d84bce389480ae5e1b2437880d36d4e00a3bbf24de250472570f019",
-      "name": "agent_blog.post_page",
+      "name": "agent_blog_post_page",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -1357,7 +1357,7 @@
         "type": "object"
       },
       "module_hash": "633ec7748d84bce389480ae5e1b2437880d36d4e00a3bbf24de250472570f019",
-      "name": "agent_blog.public_feed",
+      "name": "agent_blog_public_feed",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use riffdb_contract_ir::{
     BUNDLE_FORMAT_VERSION_V1, CommandPlan, ContractBundle, EXECUTABLE_IR_VERSION_V1,
-    GRAMMAR_VERSION_V1, MCP_COMMAND_NAME_REGISTRY_VERSION_V1, McpCommandToolNameV1,
+    GRAMMAR_VERSION_V1, MCP_COMMAND_NAME_REGISTRY_VERSION_V2, McpCommandToolNameV2,
 };
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, CatalogRepository, ExecutablePlanRef, StoredContractBundleV1,
@@ -340,7 +340,7 @@ fn validate_supported_versions(bundle: &ContractBundle) -> Result<(), CatalogErr
 
 fn validate_command_registry(bundle: &ContractBundle) -> Result<(), CatalogError> {
     let registry = bundle.mcp_command_names();
-    if registry.version() != MCP_COMMAND_NAME_REGISTRY_VERSION_V1
+    if registry.version() != MCP_COMMAND_NAME_REGISTRY_VERSION_V2
         || registry.lineage() != bundle.lineage()
         || registry.source_contract_name() != bundle.lineage().as_str()
         || registry.entries().len() != bundle.commands().len()
@@ -352,7 +352,7 @@ fn validate_command_registry(bundle: &ContractBundle) -> Result<(), CatalogError
     for (entry, command) in registry.entries().iter().zip(bundle.commands()) {
         if entry.command_id() != command.command_id()
             || entry.source_command_name() != command.name()
-            || McpCommandToolNameV1::new_checked(
+            || McpCommandToolNameV2::new_checked(
                 registry.source_contract_name(),
                 command.name(),
                 entry.tool_name().as_str(),

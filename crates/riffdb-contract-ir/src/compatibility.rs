@@ -12,7 +12,7 @@ use crate::format_registry::{
 };
 use crate::{
     BindingPlan, CommandPlan, ContractBundle, EventConstruction, ExpressionArena, ExpressionKind,
-    FieldExpression, Instruction, IrValidationError, LineageEntryState, McpCommandNameRegistryV1,
+    FieldExpression, Instruction, IrValidationError, LineageEntryState, McpCommandNameRegistryV2,
     OutcomeConstruction, ProjectionPlan, RecordSchema, RecordTypeRef, SchemaIr, StableIdNamespace,
     StableIdNamespaceTag, StableIdentity, ValueType, checked_len,
 };
@@ -404,7 +404,7 @@ pub struct ContractCandidateV1<'a> {
     schema: &'a SchemaIr,
     commands: &'a [CommandPlan],
     projections: &'a [ProjectionPlan],
-    mcp_names: &'a McpCommandNameRegistryV1,
+    mcp_names: &'a McpCommandNameRegistryV2,
 }
 
 impl<'a> ContractCandidateV1<'a> {
@@ -413,7 +413,7 @@ impl<'a> ContractCandidateV1<'a> {
         schema: &'a SchemaIr,
         commands: &'a [CommandPlan],
         projections: &'a [ProjectionPlan],
-        mcp_names: &'a McpCommandNameRegistryV1,
+        mcp_names: &'a McpCommandNameRegistryV2,
     ) -> Result<Self, IrValidationError> {
         if commands
             .windows(2)
@@ -498,7 +498,7 @@ impl<'a> ContractCandidateV1<'a> {
 
     /// Candidate compiler-owned MCP command registry.
     #[must_use]
-    pub const fn mcp_names(self) -> &'a McpCommandNameRegistryV1 {
+    pub const fn mcp_names(self) -> &'a McpCommandNameRegistryV2 {
         self.mcp_names
     }
 }
@@ -1793,7 +1793,7 @@ mod tests {
         let removed = crate::LineageLedgerV1::successor_complete(&genesis, vec![], required)
             .expect("removed ledger");
         let registry =
-            McpCommandNameRegistryV1::new(lineage.clone(), "Test", vec![]).expect("registry");
+            McpCommandNameRegistryV2::new(lineage.clone(), "Test", vec![]).expect("registry");
         ContractBundle::new(
             "0.1.0",
             lineage,
@@ -1811,7 +1811,7 @@ mod tests {
         .expect("parent")
     }
 
-    fn one_entity_candidate(name: &str) -> (SchemaIr, McpCommandNameRegistryV1) {
+    fn one_entity_candidate(name: &str) -> (SchemaIr, McpCommandNameRegistryV2) {
         let entity_id = EntityTypeId::first();
         let field_id = FieldId::first();
         let component =
@@ -1836,7 +1836,7 @@ mod tests {
         .expect("entity");
         let schema = SchemaIr::new(vec![entity], vec![], vec![], vec![]).expect("schema");
         let lineage = ContractLineage::new("Test".to_owned()).expect("lineage");
-        let registry = McpCommandNameRegistryV1::new(lineage, "Test", vec![]).expect("registry");
+        let registry = McpCommandNameRegistryV2::new(lineage, "Test", vec![]).expect("registry");
         (schema, registry)
     }
 
