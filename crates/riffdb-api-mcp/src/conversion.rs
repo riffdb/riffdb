@@ -885,6 +885,10 @@ pub enum McpFixedResultBranch {
     DeployExpectedActiveVersionMismatch,
     /// Immutable bundle identity conflicted.
     DeployBundleConflict,
+    /// Candidate source failed contract compilation.
+    DeployInvalidSource,
+    /// Checked candidate is outside the active compatibility policy.
+    DeployIncompatibleCandidate,
     /// No persisted outcome matched.
     GetOutcomeNotFound,
     /// A persisted outcome was replayed.
@@ -948,7 +952,9 @@ impl McpFixedResultBranch {
             Self::DeployActivated
             | Self::DeployAlreadyActive
             | Self::DeployExpectedActiveVersionMismatch
-            | Self::DeployBundleConflict => 4,
+            | Self::DeployBundleConflict
+            | Self::DeployInvalidSource
+            | Self::DeployIncompatibleCandidate => 4,
             Self::GetOutcomeNotFound | Self::GetOutcomeReplayed => 5,
             Self::EntityNotFound | Self::EntityFound => 6,
             Self::ScanIndexPage => 7,
@@ -991,6 +997,8 @@ impl McpFixedResultBranch {
             Self::DeployAlreadyActive => "already_active",
             Self::DeployExpectedActiveVersionMismatch => "expected_active_version_mismatch",
             Self::DeployBundleConflict => "bundle_conflict",
+            Self::DeployInvalidSource => "invalid_source",
+            Self::DeployIncompatibleCandidate => "incompatible_candidate",
             Self::GetOutcomeReplayed => "replayed",
             Self::ScanIndexPage | Self::CommitScanPage | Self::OutboxPage => "page",
             Self::ProjectionReady => "ready",
@@ -1012,7 +1020,6 @@ impl McpFixedResultBranch {
     const fn payload_mode(self) -> PayloadMode {
         match self {
             Self::ValidateValid
-            | Self::GetActiveAbsent
             | Self::ExplainNotFound
             | Self::DeployBundleConflict
             | Self::GetOutcomeNotFound

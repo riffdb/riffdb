@@ -44,10 +44,18 @@ pub enum CompatibilityCode {
     AddedProjection,
     /// Added optional field.
     AddedOptionalField,
+    /// Added enum.
+    AddedEnum,
+    /// Added entity.
+    AddedEntity,
+    /// Added aggregate containing only newly added entities.
+    AddedAggregate,
     /// Added outcome requiring explicit version selection.
     AddedOutcome,
     /// Added optional outcome field requiring explicit version selection.
     AddedOptionalOutcomeField,
+    /// Added variant to an existing enum, requiring explicit version selection.
+    AddedEnumVariant,
     /// Removed stable identity.
     RemovedIdentity,
     /// Attempted tombstone resurrection.
@@ -77,14 +85,18 @@ pub enum CompatibilityCode {
 }
 
 impl CompatibilityCode {
-    pub(crate) const ALL: [Self; 20] = [
+    pub(crate) const ALL: [Self; 24] = [
         Self::NoSemanticChange,
         Self::AddedCommand,
         Self::AddedEvent,
         Self::AddedProjection,
         Self::AddedOptionalField,
+        Self::AddedEnum,
+        Self::AddedEntity,
+        Self::AddedAggregate,
         Self::AddedOutcome,
         Self::AddedOptionalOutcomeField,
+        Self::AddedEnumVariant,
         Self::RemovedIdentity,
         Self::TombstoneResurrection,
         Self::IdReuse,
@@ -534,6 +546,7 @@ pub fn compare_successor(
 
 #[derive(Default)]
 struct CompatibleSchemaChanges {
+    added_entities: BTreeSet<EntityTypeId>,
     optional_entities: BTreeSet<EntityTypeId>,
     optional_events: BTreeSet<riffdb_types::EventTypeId>,
 }
@@ -547,7 +560,8 @@ fn compare_schema(
     for entity in next.entities() {
         let path = format!("entity:{}", entity.id().get());
         let Some(old) = parent.entity(entity.id()) else {
-            add(findings, CompatibilityCode::UnsupportedAddition, path);
+            compatible.added_entities.insert(entity.id());
+            add(findings, CompatibilityCode::AddedEntity, path);
             continue;
         };
         if compare_optional_record_additions(
@@ -606,7 +620,7 @@ fn compare_schema(
     for enumeration in next.enums() {
         let path = format!("enum:{}", enumeration.id().get());
         let Some(old) = parent.enumeration(enumeration.id()) else {
-            add(findings, CompatibilityCode::UnsupportedAddition, path);
+            add(findings, CompatibilityCode::AddedEnum, path);
             continue;
         };
         if old.name() != enumeration.name() {
@@ -618,22 +632,33 @@ fn compare_schema(
             .map(|variant| (variant.id(), variant))
             .collect::<BTreeMap<_, _>>();
         for variant in enumeration.variants() {
-            if old_variants
-                .get(&variant.id())
-                .is_none_or(|old| *old != variant)
-            {
-                add(
-                    findings,
-                    CompatibilityCode::UnsupportedAddition,
-                    format!("{path}/variant:{}", variant.id().get()),
-                );
+            let variant_path = format!("{path}/variant:{}", variant.id().get());
+            match old_variants.get(&variant.id()) {
+                None => add(findings, CompatibilityCode::AddedEnumVariant, variant_path),
+                Some(old) if *old != variant => {
+                    add(findings, CompatibilityCode::IdReuse, variant_path);
+                }
+                Some(_) => {}
             }
         }
     }
     for aggregate in next.aggregates() {
         let path = format!("aggregate:{}", aggregate.id().get());
         let Some(old) = parent.aggregate(aggregate.id()) else {
-            add(findings, CompatibilityCode::UnsupportedAddition, path);
+            let owns_only_added_entities = compatible.added_entities.contains(&aggregate.root())
+                && aggregate
+                    .children()
+                    .iter()
+                    .all(|entity| compatible.added_entities.contains(entity));
+            add(
+                findings,
+                if owns_only_added_entities {
+                    CompatibilityCode::AddedAggregate
+                } else {
+                    CompatibilityCode::UnsupportedAddition
+                },
+                path,
+            );
             continue;
         };
         if old.root() != aggregate.root() || old.children() != aggregate.children() {
@@ -669,15 +694,19 @@ fn compare_schema(
         })
         .collect::<BTreeMap<_, _>>();
     for (key, relationship) in &next_relationships {
-        if parent_relationships
-            .get(key)
-            .is_none_or(|old| *old != *relationship)
-        {
-            add(
+        match parent_relationships.get(key) {
+            None if compatible
+                .added_entities
+                .contains(&relationship.source_entity())
+                && compatible
+                    .added_entities
+                    .contains(&relationship.target_entity()) => {}
+            Some(old) if *old == *relationship => {}
+            None | Some(_) => add(
                 findings,
                 CompatibilityCode::InvariantChange,
                 format!("entity:{}", key.0.get()),
-            );
+            ),
         }
     }
     for key in parent_relationships.keys() {
@@ -700,12 +729,14 @@ fn compare_schema(
         .map(|unique| ((unique.source_entity(), unique.name().to_owned()), unique))
         .collect::<BTreeMap<_, _>>();
     for (key, unique) in &next_unique {
-        if parent_unique.get(key).is_none_or(|old| *old != *unique) {
-            add(
+        match parent_unique.get(key) {
+            None if compatible.added_entities.contains(&unique.source_entity()) => {}
+            Some(old) if *old == *unique => {}
+            None | Some(_) => add(
                 findings,
                 CompatibilityCode::InvariantChange,
                 format!("entity:{}", key.0.get()),
-            );
+            ),
         }
     }
     for key in parent_unique.keys() {

@@ -1,4 +1,4 @@
-# ADR-0068: Database History Incarnation
+# ADR-0072: Database History Incarnation
 
 - **Status:** Accepted
 - **Date:** 2026-07-30

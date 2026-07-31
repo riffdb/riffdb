@@ -1389,68 +1389,77 @@ pub fn contract_validation_result_to_proto(
             v1::validate_contract_response::Result::Valid(v1::Unit {})
         }
         ContractValidationResult::Invalid(error) => {
-            let diagnostics = if let Some(syntax) = error.syntax() {
-                let diagnostics = syntax
-                    .as_slice()
-                    .iter()
-                    .map(|diagnostic| {
-                        let code = diagnostic.code();
-                        let span = diagnostic.span();
-                        v1::SyntaxDiagnostic {
-                            code: code.as_str().to_owned(),
-                            summary: code.summary().to_owned(),
-                            help: code.help().map(str::to_owned),
-                            span: Some(v1::SourceSpan {
-                                start: span.start(),
-                                end: span.end(),
-                            }),
-                            expected: diagnostic
-                                .expected()
-                                .iter()
-                                .map(|value| (*value).to_owned())
-                                .collect(),
-                        }
-                    })
-                    .collect();
-                v1::compilation_diagnostics::Diagnostics::Syntax(v1::SyntaxDiagnosticList {
-                    diagnostics,
-                })
-            } else if let Some(semantic) = error.semantic() {
-                let diagnostics = semantic
-                    .as_slice()
-                    .iter()
-                    .map(|diagnostic| {
-                        let code = diagnostic.code();
-                        let primary = diagnostic.primary_span();
-                        let related_span = diagnostic.related_span().map(|span| v1::SourceSpan {
-                            start: span.start(),
-                            end: span.end(),
-                        });
-                        v1::SemanticDiagnostic {
-                            code: code.as_str().to_owned(),
-                            summary: code.summary().to_owned(),
-                            help: code.help().map(str::to_owned),
-                            primary_span: Some(v1::SourceSpan {
-                                start: primary.start(),
-                                end: primary.end(),
-                            }),
-                            related_span,
-                        }
-                    })
-                    .collect();
-                v1::compilation_diagnostics::Diagnostics::Semantic(v1::SemanticDiagnosticList {
-                    diagnostics,
-                })
-            } else {
-                return Err(invalid_service_response());
-            };
-            v1::validate_contract_response::Result::Invalid(v1::CompilationDiagnostics {
-                diagnostics: Some(diagnostics),
-            })
+            v1::validate_contract_response::Result::Invalid(compilation_diagnostics_to_proto(
+                &ContractValidationResult::Invalid(error.clone()),
+            )?)
         }
     };
     Ok(v1::ValidateContractResponse {
         result: Some(result),
+    })
+}
+
+fn compilation_diagnostics_to_proto(
+    result: &ContractValidationResult,
+) -> Result<v1::CompilationDiagnostics, Status> {
+    let ContractValidationResult::Invalid(error) = result else {
+        return Err(invalid_service_response());
+    };
+    let diagnostics = if let Some(syntax) = error.syntax() {
+        let diagnostics = syntax
+            .as_slice()
+            .iter()
+            .map(|diagnostic| {
+                let code = diagnostic.code();
+                let span = diagnostic.span();
+                v1::SyntaxDiagnostic {
+                    code: code.as_str().to_owned(),
+                    summary: code.summary().to_owned(),
+                    help: code.help().map(str::to_owned),
+                    span: Some(v1::SourceSpan {
+                        start: span.start(),
+                        end: span.end(),
+                    }),
+                    expected: diagnostic
+                        .expected()
+                        .iter()
+                        .map(|value| (*value).to_owned())
+                        .collect(),
+                }
+            })
+            .collect();
+        v1::compilation_diagnostics::Diagnostics::Syntax(v1::SyntaxDiagnosticList { diagnostics })
+    } else if let Some(semantic) = error.semantic() {
+        let diagnostics = semantic
+            .as_slice()
+            .iter()
+            .map(|diagnostic| {
+                let code = diagnostic.code();
+                let primary = diagnostic.primary_span();
+                let related_span = diagnostic.related_span().map(|span| v1::SourceSpan {
+                    start: span.start(),
+                    end: span.end(),
+                });
+                v1::SemanticDiagnostic {
+                    code: code.as_str().to_owned(),
+                    summary: code.summary().to_owned(),
+                    help: code.help().map(str::to_owned),
+                    primary_span: Some(v1::SourceSpan {
+                        start: primary.start(),
+                        end: primary.end(),
+                    }),
+                    related_span,
+                }
+            })
+            .collect();
+        v1::compilation_diagnostics::Diagnostics::Semantic(v1::SemanticDiagnosticList {
+            diagnostics,
+        })
+    } else {
+        return Err(invalid_service_response());
+    };
+    Ok(v1::CompilationDiagnostics {
+        diagnostics: Some(diagnostics),
     })
 }
 
@@ -1553,11 +1562,20 @@ pub fn explain_command_result_to_proto(
 }
 
 /// Converts a checked deployment result without exposing storage transitions.
-#[must_use]
 pub fn deploy_contract_result_to_proto(
     result: &DeployContractResult,
-) -> v1::DeployContractResponse {
+) -> Result<v1::DeployContractResponse, Status> {
     let result = match result {
+        DeployContractResult::InvalidSource(error) => {
+            v1::deploy_contract_response::Result::InvalidSource(compilation_diagnostics_to_proto(
+                &ContractValidationResult::Invalid(error.clone()),
+            )?)
+        }
+        DeployContractResult::IncompatibleCandidate(descriptor) => {
+            v1::deploy_contract_response::Result::IncompatibleCandidate(
+                contract_descriptor_to_proto(descriptor),
+            )
+        }
         DeployContractResult::Activated(descriptor) => {
             v1::deploy_contract_response::Result::Activated(contract_descriptor_to_proto(
                 descriptor,
@@ -1579,9 +1597,9 @@ pub fn deploy_contract_result_to_proto(
             v1::deploy_contract_response::Result::BundleConflict(v1::Unit {})
         }
     };
-    v1::DeployContractResponse {
+    Ok(v1::DeployContractResponse {
         result: Some(result),
-    }
+    })
 }
 
 /// Converts the active-contract lookup result.
@@ -1601,6 +1619,7 @@ pub fn get_active_contract_result_to_proto(
     };
     v1::GetActiveContractResponse {
         result: Some(result),
+        database_alias: String::new(),
     }
 }
 
@@ -2187,6 +2206,8 @@ pub fn health_result_to_proto(result: &HealthResult) -> v1::HealthResponse {
     };
     v1::HealthResponse {
         result: Some(result),
+        database_alias: String::new(),
+        authentication_audience: String::new(),
     }
 }
 

@@ -16,4 +16,4 @@ mod wire;
 
 pub use backend::PublicGrpcMcpBackend;
 pub use observer_backend::PublicGrpcMcpObserverBackend;
-pub use startup::{StdioBootstrap, StdioRunError, StdioStartupError, bootstrap, run};
+pub use startup::{StdioBootstrap, StdioRunError, StdioStartupError, bootstrap, doctor, run};

@@ -24,7 +24,7 @@ use riffdb_service::{
     RestoreRetryOfflineMaintenanceApplication, ServiceFuture, ServiceResult,
 };
 use riffdb_types::{
-    ContractLineage, ContractVersion, DatabaseAlias, MAX_DATABASES_PER_PROCESS,
+    Audience, ContractLineage, ContractVersion, DatabaseAlias, MAX_DATABASES_PER_PROCESS,
     OfflineMaintenanceInputHash, OfflineMaintenanceOperationId, RequestId, ServiceOperationV1,
 };
 use tonic::codegen::tokio_stream::Stream;
@@ -209,7 +209,10 @@ impl GrpcDatabaseRoutes {
         Ok(())
     }
 
-    fn select(&self, metadata: &MetadataMap) -> Option<Arc<dyn GrpcLifecycleRoute>> {
+    fn select(
+        &self,
+        metadata: &MetadataMap,
+    ) -> Option<(DatabaseAlias, Arc<dyn GrpcLifecycleRoute>)> {
         let routes = self.routes.read().ok()?;
         let mut selectors = metadata.get_all(DATABASE_METADATA_KEY).iter();
         let selected = selectors.next();
@@ -222,9 +225,12 @@ impl GrpcDatabaseRoutes {
                     .to_str()
                     .ok()
                     .and_then(|value| DatabaseAlias::new(value).ok())?;
-                routes.get(&alias).cloned()
+                routes.get(&alias).cloned().map(|route| (alias, route))
             }
-            None if routes.len() == 1 => routes.values().next().cloned(),
+            None if routes.len() == 1 => routes
+                .iter()
+                .next()
+                .map(|(alias, route)| (alias.clone(), Arc::clone(route))),
             None => None,
         }
     }
@@ -407,6 +413,7 @@ impl fmt::Debug for CheckedGrpcRestoreRetrySecurityContext {
 pub struct GrpcApplication {
     routes: Arc<GrpcDatabaseRoutes>,
     limits: GrpcRequestLimits,
+    authentication_audience: Option<Audience>,
 }
 
 impl GrpcApplication {
@@ -416,6 +423,7 @@ impl GrpcApplication {
         Self {
             routes: Arc::new(GrpcDatabaseRoutes::single(lifecycle)),
             limits,
+            authentication_audience: None,
         }
     }
 
@@ -425,7 +433,25 @@ impl GrpcApplication {
         routes: Arc<GrpcDatabaseRoutes>,
         limits: GrpcRequestLimits,
     ) -> Self {
-        Self { routes, limits }
+        Self {
+            routes,
+            limits,
+            authentication_audience: None,
+        }
+    }
+
+    /// Wires checked routes and the configured public authentication audience.
+    #[must_use]
+    pub fn with_database_routes_and_audience(
+        routes: Arc<GrpcDatabaseRoutes>,
+        limits: GrpcRequestLimits,
+        authentication_audience: Audience,
+    ) -> Self {
+        Self {
+            routes,
+            limits,
+            authentication_audience: Some(authentication_audience),
+        }
     }
 
     /// Builds the bounded contract service without enabling compression.
@@ -656,6 +682,13 @@ impl GrpcApplication {
         &self,
         metadata: &MetadataMap,
     ) -> Result<Arc<dyn GrpcLifecycleRoute>, Status> {
+        self.select_database(metadata).map(|(_, route)| route)
+    }
+
+    fn select_database(
+        &self,
+        metadata: &MetadataMap,
+    ) -> Result<(DatabaseAlias, Arc<dyn GrpcLifecycleRoute>), Status> {
         self.routes.select(metadata).ok_or_else(service_not_ready)
     }
 }
@@ -759,6 +792,8 @@ pub fn classify_grpc_deployment_completion(
             GrpcDeploymentCompletion::OutcomeUnknown
         }
         Ok(DeployContractResult::ExpectedActiveVersionMismatch { .. })
+        | Ok(DeployContractResult::InvalidSource(_))
+        | Ok(DeployContractResult::IncompatibleCandidate(_))
         | Ok(DeployContractResult::BundleConflict)
         | Err(_) => GrpcDeploymentCompletion::NotActivated,
     }
@@ -897,7 +932,7 @@ impl ContractService for GrpcApplication {
         let completion = classify_grpc_deployment_completion(&result);
         lifecycle_guard.complete(completion);
         let result = map_service(result)?;
-        Ok(Response::new(deploy_contract_result_to_proto(&result)))
+        Ok(Response::new(deploy_contract_result_to_proto(&result)?))
     }
 
     async fn get_active_contract(
@@ -905,11 +940,18 @@ impl ContractService for GrpcApplication {
         request: Request<v1::GetActiveContractRequest>,
     ) -> Result<Response<v1::GetActiveContractResponse>, Status> {
         let (metadata, _peer, message) = split_request(request);
+        let (database_alias, lifecycle) = self.select_database(&metadata)?;
         let (request_id, request) = get_active_contract_request_from_proto(message)?;
-        let (service, context, _cancellation) =
-            self.normal_invocation(ServiceOperationV1::GetActiveContract, &metadata, request_id)?;
+        let (service, context, _cancellation) = self.normal_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::GetActiveContract,
+            &metadata,
+            request_id,
+        )?;
         let result = map_service(service.get_active_contract(context, request).await)?;
-        Ok(Response::new(get_active_contract_result_to_proto(&result)))
+        let mut response = get_active_contract_result_to_proto(&result);
+        response.database_alias = database_alias.to_string();
+        Ok(Response::new(response))
     }
 
     async fn get_contract_version(
@@ -1345,7 +1387,7 @@ impl AdminService for GrpcApplication {
         request: Request<v1::HealthRequest>,
     ) -> Result<Response<v1::HealthResponse>, Status> {
         let (metadata, peer, message) = split_request(request);
-        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (database_alias, lifecycle) = self.select_database(&metadata)?;
         let (request_id, request) = health_request_from_proto(message)?;
         let result = match request_id {
             Some(request_id) => {
@@ -1373,7 +1415,13 @@ impl AdminService for GrpcApplication {
                 map_service(health.await)?
             }
         };
-        Ok(Response::new(health_result_to_proto(&result)))
+        let mut response = health_result_to_proto(&result);
+        response.database_alias = database_alias.to_string();
+        response.authentication_audience = self
+            .authentication_audience
+            .as_ref()
+            .map_or_else(String::new, |audience| audience.as_str().to_owned());
+        Ok(Response::new(response))
     }
 
     async fn stats(
@@ -2025,7 +2073,8 @@ mod tests {
 
         let mut selected = MetadataMap::new();
         selected.insert(DATABASE_METADATA_KEY, "beta".parse().expect("metadata"));
-        let route = routes.select(&selected).expect("selected beta");
+        let (alias, route) = routes.select(&selected).expect("selected beta");
+        assert_eq!(alias.as_str(), "beta");
         assert!(Arc::ptr_eq(&route, &beta));
         let replacement: Arc<dyn GrpcLifecycleRoute> =
             Arc::new(InitializingRoute::without_security());
@@ -2035,7 +2084,8 @@ mod tests {
                 replacement.clone(),
             )
             .expect("replace existing alias");
-        let route = routes.select(&selected).expect("selected replacement");
+        let (alias, route) = routes.select(&selected).expect("selected replacement");
+        assert_eq!(alias.as_str(), "beta");
         assert!(Arc::ptr_eq(&route, &replacement));
 
         selected.append(DATABASE_METADATA_KEY, "alpha".parse().expect("metadata"));

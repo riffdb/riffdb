@@ -155,6 +155,8 @@ message DeployContractResponse {
     ContractDescriptor already_active = 2;
     ExpectedActiveVersionMismatch expected_active_version_mismatch = 3;
     Unit bundle_conflict = 4;
+    CompilationDiagnostics invalid_source = 5;
+    ContractDescriptor incompatible_candidate = 6;
   }
 }
 
@@ -167,6 +169,7 @@ message GetActiveContractResponse {
     Unit absent = 1;
     ContractDescriptor present = 2;
   }
+  string database_alias = 3;
 }
 
 message GetContractVersionRequest {

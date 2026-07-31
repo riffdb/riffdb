@@ -1,0 +1,107 @@
+# Contract and application authoring reference
+
+RiffDB contract and RiffQL source accept `//` line comments. Block comments are
+not part of grammar version 1.
+
+The following lowercase words are reserved by the contract lexer and cannot be
+used as field or declaration identifiers:
+
+```text
+aggregate approval as bool bytes capability child command conflict_key
+contract count create date decimal default else emit entity enum event false
+field frontier i64 idempotency_key import include index input invariant key
+list measure module money mutate null optional partition_by projection query
+read reference require return root set source state state_machine string sum
+timestamp transactionally_ordered transition true u64 unique uuid version where
+```
+
+For example, use `origin`, `origin_label`, or `source_label` instead of the
+reserved field name `source`.
+
+Names are unique in their semantic namespace, not globally across an entire
+contract. Enum variants belong to their enum, command outcomes belong to their
+command, and indexes belong to their owning entity. A duplicate diagnostic
+identifies the current declaration and includes the related span of the first
+declaration.
+
+## CLI application JSON
+
+The application CLI accepts inline JSON, `@path`, a legacy bare path, or `-`
+for stdin:
+
+```bash
+riffdb command run CreateItem --input \
+  '{"item_id":"01900000-0000-7000-8000-000000000001","priority":2,"mode":"Linear"}'
+
+riffdb command run CreateItem --input @fixtures/item.json
+riffdb command run CreateItem --input fixtures/item.json
+riffdb command run CreateItem --input - < fixtures/item.json
+```
+
+Natural schema-directed values are:
+
+| Contract type | JSON |
+|---|---|
+| `bool` | `true` |
+| `i64`, `u64` | `2` |
+| `uuid` | `"01900000-0000-7000-8000-000000000001"` |
+| enum | `"Linear"` |
+| bounded `string` | `"text"` |
+| optional absence | `null` |
+| list | `[...]` |
+
+The explicit `$i64`, `$u64`, `$uuid`, `$enum`, `$decimal`, `$money`, `$bytes`,
+`$date`, and `$timestamp` objects remain compatibility forms for lossless
+transport or fixture work. Public type failures name the operation and symbolic
+path when that context is available. They never release numeric field IDs
+through the application error envelope; numeric IDs remain confined to the
+explicitly low-level kernel interface.
+
+## Successor contract evolution
+
+Every changed deployment must declare a contract version greater than the
+active version and must compare against the exact expected active version.
+Version numbers alone do not establish compatibility; the compiler compares
+the checked successor with the active bundle.
+
+The pre-alpha compatibility classes are:
+
+| Successor change | Classification |
+|---|---|
+| Add an enum with its complete initial variants | Compatible |
+| Add an entity with its complete initial key, fields, indexes, and local invariants | Compatible |
+| Add an aggregate whose root and children are all new in this successor | Compatible |
+| Add a relationship or unique constraint confined to new entities | Compatible |
+| Append a fresh variant to an existing enum | Requires explicit version |
+| Add a field, key part, index, invariant, relationship, or unique constraint to an existing entity | Incompatible |
+| Change or remove an existing declaration, type, key, variant, constraint, aggregate membership, partition rule, or conflict rule | Incompatible |
+
+The complete initial definition of a newly added entity or aggregate is
+treated as one addition. A new aggregate cannot take ownership of an existing
+entity. These restrictions ensure that a compatible successor does not scan,
+rewrite, or reinterpret an existing durable row.
+
+Use the application workflow when deploying a locked source tree:
+
+```bash
+riffdb application check
+riffdb application lock --write
+riffdb application generate --locked
+riffdb application deploy
+```
+
+For a direct contract deployment, validate before deploying and supply the
+active version expected by that CLI version:
+
+```bash
+riffdb --config "$HOME/.config/riffdb/client-ea.toml" \
+  contract validate riffdb/contract.riff
+riffdb --config "$HOME/.config/riffdb/client-ea.toml" \
+  contract deploy --expected-version 3 riffdb/contract.riff
+```
+
+An invalid source returns bounded syntax or semantic diagnostics. A checked
+but incompatible successor returns `incompatible_candidate` with its parent,
+overall compatibility class, and stable compatibility-code counts. Neither
+result activates the candidate. Do not work around incompatibility by
+reusing stable IDs or editing the active database file.

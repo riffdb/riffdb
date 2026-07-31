@@ -253,27 +253,32 @@ impl ServerConfig {
     fn validate_disjoint_paths(&self, current_directory: &Path) -> Result<(), ServerConfigError> {
         let mut paths = Vec::with_capacity(self.databases.len() * 2 + 2);
         for database in &self.databases {
-            paths.push(lexical_absolute(
-                &database.database_path,
-                current_directory,
-            )?);
-            paths.push(lexical_absolute(&database.backup_root, current_directory)?);
+            paths.push((
+                ConfiguredPathRole::Database(database.alias.clone()),
+                lexical_absolute(&database.database_path, current_directory)?,
+            ));
+            paths.push((
+                ConfiguredPathRole::BackupRoot(database.alias.clone()),
+                lexical_absolute(&database.backup_root, current_directory)?,
+            ));
         }
-        paths.push(lexical_absolute(
-            &self.capability_key_path,
-            current_directory,
-        )?);
-        paths.push(lexical_absolute(
-            &self.idempotency_key_path,
-            current_directory,
-        )?);
-        if paths.iter().enumerate().any(|(left_index, left)| {
-            paths
-                .iter()
-                .skip(left_index + 1)
-                .any(|right| paths_overlap(left, right))
-        }) {
-            return Err(ServerConfigError::OverlappingPaths);
+        paths.push((
+            ConfiguredPathRole::CapabilityKeys,
+            lexical_absolute(&self.capability_key_path, current_directory)?,
+        ));
+        paths.push((
+            ConfiguredPathRole::IdempotencyKeys,
+            lexical_absolute(&self.idempotency_key_path, current_directory)?,
+        ));
+        for (left_index, (left_role, left)) in paths.iter().enumerate() {
+            for (right_role, right) in paths.iter().skip(left_index + 1) {
+                if paths_overlap(left, right) {
+                    return Err(ServerConfigError::OverlappingPaths {
+                        left: left_role.clone(),
+                        right: right_role.clone(),
+                    });
+                }
+            }
         }
         Ok(())
     }
@@ -653,7 +658,26 @@ fn parse_redb_commit_profile(value: OsString) -> Result<RedbCommitProfile, Serve
 }
 
 /// Closed process-configuration failures that never echo a supplied value.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ConfiguredPathRole {
+    Database(DatabaseAlias),
+    BackupRoot(DatabaseAlias),
+    CapabilityKeys,
+    IdempotencyKeys,
+}
+
+impl fmt::Display for ConfiguredPathRole {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Database(alias) => write!(formatter, "database path for '{alias}'"),
+            Self::BackupRoot(alias) => write!(formatter, "backup_root for '{alias}'"),
+            Self::CapabilityKeys => formatter.write_str("capability key path"),
+            Self::IdempotencyKeys => formatter.write_str("idempotency key path"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ServerConfigError {
     UnknownOption,
     MissingValue,
@@ -663,7 +687,10 @@ pub(crate) enum ServerConfigError {
     MixedDatabaseConfiguration,
     InvalidDatabaseConfiguration,
     InvalidPath,
-    OverlappingPaths,
+    OverlappingPaths {
+        left: ConfiguredPathRole,
+        right: ConfiguredPathRole,
+    },
     InvalidListenAddress,
     NonLoopbackListenAddress,
     InvalidEnvironment,
@@ -685,7 +712,12 @@ impl fmt::Display for ServerConfigError {
             }
             Self::InvalidDatabaseConfiguration => "configured database registry is invalid",
             Self::InvalidPath => "configured path is invalid",
-            Self::OverlappingPaths => "database, backup, and key paths must be disjoint",
+            Self::OverlappingPaths { left, right } => {
+                return write!(
+                    formatter,
+                    "{left} overlaps {right}; use sibling database and backup paths"
+                );
+            }
             Self::InvalidListenAddress => "configured listen address is invalid",
             Self::NonLoopbackListenAddress => "POC listen address must be loopback",
             Self::InvalidEnvironment => "configured environment is invalid",
@@ -950,14 +982,15 @@ backup_root = "/tmp/riffdb-beta-backups"
 environment = "development"
 "#,
         );
+        let error = ServerConfig::resolve(
+            [OsString::from("--config"), overlap.into_os_string()],
+            &EmptyEnvironment,
+            &root.0,
+        )
+        .unwrap_err();
         assert_eq!(
-            ServerConfig::resolve(
-                [OsString::from("--config"), overlap.into_os_string()],
-                &EmptyEnvironment,
-                &root.0,
-            )
-            .unwrap_err(),
-            ServerConfigError::OverlappingPaths
+            error.to_string(),
+            "database path for 'alpha' overlaps database path for 'beta'; use sibling database and backup paths"
         );
     }
 
@@ -1048,10 +1081,10 @@ grpc_listen = "127.0.0.1:7001"
 
         let mut overlapping = valid_arguments();
         overlapping[13] = OsString::from("database.redb");
-        assert_eq!(
+        assert!(matches!(
             ServerConfig::parse(overlapping).unwrap_err(),
-            ServerConfigError::OverlappingPaths
-        );
+            ServerConfigError::OverlappingPaths { .. }
+        ));
 
         let mut relative_backup_root = valid_arguments();
         relative_backup_root[9] = OsString::from("backups");
