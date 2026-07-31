@@ -38,7 +38,7 @@ use crate::{
     SystemIdSource,
 };
 
-trait RetryRequestIdSource {
+pub(crate) trait RetryRequestIdSource {
     fn next_request_id(&mut self) -> Result<RequestId, crate::IdentifierGenerationError>;
 }
 
@@ -48,7 +48,7 @@ impl RetryRequestIdSource for SystemIdSource {
     }
 }
 
-trait ExecuteRetryAttempt {
+pub(crate) trait ExecuteRetryAttempt {
     async fn submit_execute_attempt(
         &mut self,
         request: v1::ExecuteCommandRequest,
@@ -781,7 +781,7 @@ impl BootstrapCapabilityRetryAttempt for RiffDbClient {
     }
 }
 
-async fn execute_retry_attempts<T: ExecuteRetryAttempt, S: RetryRequestIdSource>(
+pub(crate) async fn execute_retry_attempts<T: ExecuteRetryAttempt, S: RetryRequestIdSource>(
     attempts: &mut T,
     command: &IdempotentCommand,
     attempt_budget: AttemptBudget,
