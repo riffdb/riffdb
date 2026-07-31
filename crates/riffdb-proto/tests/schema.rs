@@ -147,6 +147,7 @@ fn exact_value_execute_error_and_envelope_fields_are_frozen() {
                 ("provenance_uri", 7),
                 ("durability_mode", 8),
                 ("outcome_uri", 9),
+                ("history_incarnation", 10),
             ],
         ),
         (
@@ -236,6 +237,8 @@ fn exact_closed_enum_registries_are_frozen() {
             ("PUBLIC_ERROR_KIND_OUTCOME_UNKNOWN", 7),
             ("PUBLIC_ERROR_KIND_INTERNAL_DEFECT", 8),
             ("PUBLIC_ERROR_KIND_COMMAND_EXECUTION_FAILED", 9),
+            ("PUBLIC_ERROR_KIND_HISTORY_INCARNATION_MISMATCH", 10),
+            ("PUBLIC_ERROR_KIND_OVERLOADED", 11),
         ]
     );
     assert_eq!(

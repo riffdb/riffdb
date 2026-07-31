@@ -461,6 +461,10 @@ mod tests {
             None
         }
 
+        fn history_incarnation(&self) -> Option<u64> {
+            None
+        }
+
         fn restricted_health(
             &self,
             _request: HealthRequest,

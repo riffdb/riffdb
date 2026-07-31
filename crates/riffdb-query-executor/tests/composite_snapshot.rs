@@ -48,6 +48,10 @@ struct FakeView {
 impl QueryReadView for FakeView {
     type Error = ();
 
+    fn fault(&self, _error: &Self::Error) -> riffdb_query_executor::QueryBackendFault {
+        riffdb_query_executor::QueryBackendFault::Unavailable
+    }
+
     fn application_head(&self) -> u64 {
         self.head
     }
@@ -466,6 +470,10 @@ struct ReportedWorkView {
 impl QueryReadView for ReportedWorkView {
     type Error = ();
 
+    fn fault(&self, _error: &Self::Error) -> riffdb_query_executor::QueryBackendFault {
+        riffdb_query_executor::QueryBackendFault::Unavailable
+    }
+
     fn application_head(&self) -> u64 {
         1
     }
@@ -541,9 +549,21 @@ fn backend_work_is_reconciled_with_whole_query_fuel_before_release() {
     };
     assert!(execute_in_snapshot(&program, &parameters, &mut exact).is_ok());
 
-    let mut one_over = ReportedWorkView {
+    // Legitimate continuation peek: scan limit+1 against plan limit of 5.
+    let mut peek = ReportedWorkView {
         row: ticket.clone(),
         scanned_rows: 6,
+        point_reads: 1,
+        continuation: true,
+    };
+    assert!(
+        execute_in_snapshot(&program, &parameters, &mut peek).is_ok(),
+        "limit+1 continuation peek is within runtime scan headroom"
+    );
+
+    let mut one_over = ReportedWorkView {
+        row: ticket.clone(),
+        scanned_rows: 7,
         point_reads: 1,
         continuation: true,
     };

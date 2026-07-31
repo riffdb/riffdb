@@ -20,7 +20,7 @@ const SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 const MAX_SCHEMA_BYTES: usize = 65_536;
 const MAX_DYNAMIC_SCHEMA_BYTES: usize = 1_048_576;
 const MAX_FIXED_SCHEMA_BYTES: usize = 1_048_576;
-const EXPECTED_FIXED_SCHEMA_BYTES: usize = 69_956;
+const EXPECTED_FIXED_SCHEMA_BYTES: usize = 70_194;
 
 static FIXED_TOOL_REGISTRY: OnceLock<Result<FixedToolRegistry, RegistryError>> = OnceLock::new();
 static RESOURCE_REGISTRY: OnceLock<Result<ResourceRegistry, RegistryError>> = OnceLock::new();

@@ -27,7 +27,7 @@ use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Streaming};
 
 use crate::application::contextualize_command_client_error;
-use crate::command::{RetryDecision, RetryState};
+use crate::command::{RetryDecision, RetryState, apply_overloaded_backoff};
 use crate::generated::{GeneratedCommand, GeneratedCommandError};
 use crate::status::{
     ClientError, ProtocolFailure, ProtocolFailureKind, checked_application_status, checked_status,
@@ -147,6 +147,19 @@ macro_rules! unary_application {
     };
 }
 
+/// Explicit per-request observed incarnation wins; otherwise use remembered.
+#[must_use]
+pub(crate) const fn merge_observed_history_incarnation(
+    explicit: Option<u64>,
+    remembered: Option<u64>,
+) -> Option<u64> {
+    if explicit.is_some() {
+        explicit
+    } else {
+        remembered
+    }
+}
+
 /// Typed clients for every service in the public `riffdb.v1` API.
 ///
 /// Clones share one Tonic channel while retaining independent generated client
@@ -159,6 +172,12 @@ pub struct RiffDbClient {
     commit: CommitServiceClient<Channel>,
     admin: AdminServiceClient<Channel>,
     application_query: ApplicationQueryServiceClient<Channel>,
+    /// Optional client-remembered history incarnation for commit read surfaces.
+    ///
+    /// When set, [`Self::apply_observed_history_incarnation`] fills request
+    /// fields that are still unset so callers can fence stale history after
+    /// a destructive restore (ADR-0072).
+    observed_history_incarnation: Option<u64>,
 }
 
 impl RiffDbClient {
@@ -181,6 +200,75 @@ impl RiffDbClient {
             commit: CommitServiceClient::new(channel.clone()),
             admin: AdminServiceClient::new(channel.clone()),
             application_query: ApplicationQueryServiceClient::new(channel),
+            observed_history_incarnation: None,
+        }
+    }
+
+    /// Remembers an observed history incarnation for subsequent commit reads.
+    ///
+    /// Pass `None` to clear. Explicit per-request values always win.
+    pub fn set_observed_history_incarnation(&mut self, observed: Option<u64>) {
+        self.observed_history_incarnation = observed;
+    }
+
+    /// Returns the client-remembered observed history incarnation, if any.
+    #[must_use]
+    pub const fn observed_history_incarnation(&self) -> Option<u64> {
+        self.observed_history_incarnation
+    }
+
+    /// Fills `observed_history_incarnation` on a get-commit request when unset.
+    #[must_use]
+    pub fn apply_observed_history_incarnation_get(
+        &self,
+        mut request: v1::GetCommitRequest,
+    ) -> v1::GetCommitRequest {
+        request.observed_history_incarnation = merge_observed_history_incarnation(
+            request.observed_history_incarnation,
+            self.observed_history_incarnation,
+        );
+        request
+    }
+
+    /// Fills `observed_history_incarnation` on a scan-commits request when unset.
+    #[must_use]
+    pub fn apply_observed_history_incarnation_scan(
+        &self,
+        mut request: v1::ScanCommitsRequest,
+    ) -> v1::ScanCommitsRequest {
+        request.observed_history_incarnation = merge_observed_history_incarnation(
+            request.observed_history_incarnation,
+            self.observed_history_incarnation,
+        );
+        request
+    }
+
+    /// Fills `observed_history_incarnation` on a subscribe request when unset.
+    #[must_use]
+    pub fn apply_observed_history_incarnation_subscribe(
+        &self,
+        mut request: v1::SubscribeCommitsRequest,
+    ) -> v1::SubscribeCommitsRequest {
+        request.observed_history_incarnation = merge_observed_history_incarnation(
+            request.observed_history_incarnation,
+            self.observed_history_incarnation,
+        );
+        request
+    }
+
+    /// Remembers the history incarnation reported by a get-commit response.
+    pub fn remember_history_incarnation_from_get(&mut self, response: &v1::GetCommitResponse) {
+        if response.history_incarnation >= 1 {
+            self.observed_history_incarnation = Some(response.history_incarnation);
+        }
+    }
+
+    /// Remembers the history incarnation reported by a commit page.
+    pub fn remember_history_incarnation_from_scan(&mut self, response: &v1::ScanCommitsResponse) {
+        if let Some(page) = response.page.as_ref()
+            && page.history_incarnation >= 1
+        {
+            self.observed_history_incarnation = Some(page.history_incarnation);
         }
     }
 
@@ -481,7 +569,9 @@ impl RiffDbClient {
     /// Executes one immutable command with an explicit total submission bound.
     ///
     /// Retryable checked failures are resubmitted immediately with a fresh
-    /// outer request ID. This method never sleeps, applies jitter, or mutates
+    /// outer request ID. Overloaded retries apply bounded backoff (command
+    /// module); other retryables resubmit immediately without inventing a
+    /// generic retry policy. This method never mutates
     /// the command name, selected version, or opaque input.
     pub async fn execute_with_retry(
         &mut self,
@@ -546,6 +636,9 @@ impl RiffDbClient {
                 Ok(response) => return Ok(response),
                 Err(error) => match retry.handle_failure(error) {
                     RetryDecision::Retry => {}
+                    RetryDecision::RetryAfter(delay) => {
+                        apply_overloaded_backoff(delay).await;
+                    }
                     RetryDecision::Return(error) => return Err(error),
                 },
             }
@@ -575,6 +668,9 @@ impl RiffDbClient {
                 Ok(response) => return Ok(response),
                 Err(error) => match retry.handle_failure(error) {
                     RetryDecision::Retry => {}
+                    RetryDecision::RetryAfter(delay) => {
+                        apply_overloaded_backoff(delay).await;
+                    }
                     RetryDecision::Return(error) => return Err(error),
                 },
             }
@@ -701,6 +797,9 @@ async fn execute_retry_attempts<T: ExecuteRetryAttempt, S: RetryRequestIdSource>
             Ok(response) => return Ok(response),
             Err(error) => match retry.handle_failure(error) {
                 RetryDecision::Retry => {}
+                RetryDecision::RetryAfter(delay) => {
+                    apply_overloaded_backoff(delay).await;
+                }
                 RetryDecision::Return(error) => return Err(error),
             },
         }
@@ -729,6 +828,9 @@ async fn normal_capability_retry_attempts<
             Ok(response) => return Ok(response),
             Err(error) => match retry.handle_failure(error) {
                 RetryDecision::Retry => {}
+                RetryDecision::RetryAfter(delay) => {
+                    apply_overloaded_backoff(delay).await;
+                }
                 RetryDecision::Return(error) => return Err(error),
             },
         }
@@ -757,6 +859,9 @@ async fn bootstrap_capability_retry_attempts<
             Ok(response) => return Ok(response),
             Err(error) => match retry.handle_failure(error) {
                 RetryDecision::Retry => {}
+                RetryDecision::RetryAfter(delay) => {
+                    apply_overloaded_backoff(delay).await;
+                }
                 RetryDecision::Return(error) => return Err(error),
             },
         }
@@ -1139,6 +1244,7 @@ mod tests {
             provenance_uri: String::new(),
             durability_mode: String::new(),
             outcome_uri: None,
+            history_incarnation: 1,
         }
     }
 
@@ -1997,6 +2103,7 @@ mod tests {
             provenance_uri: "riffdb://provenance/018f22e2-79b7-7cc3-a85f-250f0f80c78e".to_owned(),
             durability_mode: "sync".to_owned(),
             outcome_uri: None,
+            history_incarnation: 1,
         };
         let execution = GeneratedExecution {
             response: response.clone(),
@@ -2068,5 +2175,21 @@ mod tests {
             error,
             ClientError::Protocol(ProtocolFailure { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod history_incarnation_tests {
+    use super::merge_observed_history_incarnation;
+
+    #[test]
+    fn merge_prefers_explicit_over_remembered() {
+        assert_eq!(merge_observed_history_incarnation(None, Some(7)), Some(7));
+        assert_eq!(
+            merge_observed_history_incarnation(Some(3), Some(7)),
+            Some(3)
+        );
+        assert_eq!(merge_observed_history_incarnation(None, None), None);
+        assert_eq!(merge_observed_history_incarnation(Some(3), None), Some(3));
     }
 }

@@ -179,7 +179,10 @@ fn index_migration_rechecks_replacement_charge_before_staging_any_write() {
 }
 
 #[test]
-fn startup_session_never_retains_a_redb_read_transaction() {
+fn startup_session_holds_at_most_one_structural_read_transaction() {
+    // ADR-0073: one read transaction for the structural pass only (savepoint pin).
+    // It must be Option-wrapped and cleared when structural finishes; it must not
+    // outlive the session.
     let startup = read(crate_root().join("src/startup.rs"));
     let session = startup
         .split_once("pub struct RedbStructuralEvidenceSession {")
@@ -188,9 +191,18 @@ fn startup_session_never_retains_a_redb_read_transaction() {
         .split_once("\n}")
         .expect("startup session body")
         .0;
-    assert!(!session.contains("ReadTransaction"));
-    assert!(!session.contains("transaction:"));
+    assert_eq!(
+        session.matches("ReadTransaction").count(),
+        1,
+        "session body must name ReadTransaction exactly once"
+    );
+    assert!(session.contains("structural_read: Option<ReadTransaction>"));
+    assert!(!session.contains("transaction: ReadTransaction"));
     assert!(session.contains("durable_commit_epoch: u64"));
+    // ExactEnd path and final-page release both drop the pin.
+    assert!(startup.contains("self.structural_finished = true"));
+    assert!(startup.contains("self.structural_read = None"));
+    assert!(startup.contains("StructuralEvidencePage::ExactEnd"));
     assert!(startup.contains("fn open_snapshot_read(&self) -> Result<ReadTransaction"));
 }
 

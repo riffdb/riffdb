@@ -90,6 +90,16 @@ const IDEMPOTENCY_KEY_DOCUMENT: &[u8] =
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(1);
 
+/// Optional process overrides for a baseline `riffdbd` session.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ServerStartOptions {
+    /// When set, exported as `RIFFDB_P1_COORDINATOR_WORKLOAD_CAPACITY` for the child.
+    ///
+    /// Used by `--load-saturate` so the live profile can reach typed overload
+    /// under continuous concurrency without shortening the 150 ms admission wait.
+    pub coordinator_workload_capacity: Option<u16>,
+}
+
 /// Owns one live `riffdbd` process and a ready public client backend.
 pub struct RiffDbServerSession {
     _temporary: TemporaryDirectory,
@@ -101,6 +111,14 @@ pub struct RiffDbServerSession {
 impl RiffDbServerSession {
     /// Spawns `riffdbd`, bootstraps, deploys TicketDesk + query module, issues a runner capability.
     pub async fn start(riffdbd_bin: &Path) -> Result<Self, RiffDbError> {
+        Self::start_with_options(riffdbd_bin, ServerStartOptions::default()).await
+    }
+
+    /// Like [`start`](Self::start) with optional process overrides (saturation capacity).
+    pub async fn start_with_options(
+        riffdbd_bin: &Path,
+        options: ServerStartOptions,
+    ) -> Result<Self, RiffDbError> {
         let temporary = TemporaryDirectory::new().map_err(|_| RiffDbError::Io)?;
         let database_path = temporary.path().join("riffdb.redb");
         let backup_root = temporary.path().join("backups");
@@ -126,6 +144,7 @@ impl RiffDbServerSession {
             &backup_root,
             &capability_keys_path,
             &idempotency_keys_path,
+            options.coordinator_workload_capacity,
         )
         .map_err(|_| RiffDbError::Server)?;
         let address = process
@@ -530,6 +549,7 @@ impl ServerProcess {
         backup_root: &Path,
         capability_keys_path: &Path,
         idempotency_keys_path: &Path,
+        coordinator_workload_capacity: Option<u16>,
     ) -> io::Result<Self> {
         let mut command = Command::new(binary);
         command
@@ -550,6 +570,12 @@ impl ServerProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(capacity) = coordinator_workload_capacity {
+            command.env(
+                "RIFFDB_P1_COORDINATOR_WORKLOAD_CAPACITY",
+                capacity.to_string(),
+            );
+        }
         let mut child = command.spawn()?;
         let stdin = child.stdin.take().ok_or_else(|| io::Error::other("stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| io::Error::other("stdout"))?;

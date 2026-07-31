@@ -30,7 +30,7 @@ multi-tenant production deployment.
 | Logging leakage | Closed telemetry vocabularies before subscriber layers | Operator-added subscribers require review |
 | Corrupt storage | Complete startup structural/catalog validation, fail closed | No privileged repair tool |
 | Backup path traversal | Checked name joined only beneath server-owned root | Backups are not encrypted |
-| Destructive restore abuse | Exact confirmation plus current and staged authorization | No history-incarnation fence |
+| Destructive restore abuse | Exact confirmation plus current and staged authorization | History-incarnation fence (ADR-0072); residual risk is non-participating clients |
 
 ## Deployment Rules
 

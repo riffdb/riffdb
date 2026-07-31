@@ -397,6 +397,8 @@ impl AuthoritativeIndexScanPage {
 pub enum CommitScanRequest {
     /// First page; the storage read captures the current authoritative head.
     Initial {
+        /// Optional exclusive lower bound so a worker can resume from its frontier.
+        after: Option<CommitSequence>,
         /// Bounded page limit.
         limit: StorageScanLimit,
     },
@@ -415,7 +417,16 @@ impl CommitScanRequest {
     /// Constructs a first-page request that atomically captures the current head.
     #[must_use]
     pub const fn initial(limit: StorageScanLimit) -> Self {
-        Self::Initial { limit }
+        Self::Initial { after: None, limit }
+    }
+
+    /// Constructs a first-page request that resumes after an exclusive frontier.
+    #[must_use]
+    pub const fn initial_after(after: CommitSequence, limit: StorageScanLimit) -> Self {
+        Self::Initial {
+            after: Some(after),
+            limit,
+        }
     }
 
     /// Constructs a continuation bound to the exact first-page upper sequence.
@@ -434,11 +445,11 @@ impl CommitScanRequest {
         })
     }
 
-    /// Returns the exclusive lower sequence, or `None` for an initial scan.
+    /// Returns the exclusive lower sequence, or `None` when the scan starts at the first commit.
     #[must_use]
     pub const fn after(self) -> Option<CommitSequence> {
         match self {
-            Self::Initial { .. } => None,
+            Self::Initial { after, .. } => after,
             Self::Continue { after, .. } => Some(after),
         }
     }
@@ -458,7 +469,7 @@ impl CommitScanRequest {
     #[must_use]
     pub const fn limit(self) -> StorageScanLimit {
         match self {
-            Self::Initial { limit } | Self::Continue { limit, .. } => limit,
+            Self::Initial { limit, .. } | Self::Continue { limit, .. } => limit,
         }
     }
 }

@@ -315,6 +315,8 @@ pub struct OfflineMaintenanceReceiptV1 {
     source_database_id: Option<DatabaseId>,
     staged_database_id: Option<DatabaseId>,
     manifest_identity: Option<OfflineBackupManifestIdentityV1>,
+    /// History incarnation stamped onto the restored database after publication.
+    published_history_incarnation: Option<u64>,
     transitions: Vec<OfflineMaintenanceReceiptTransitionV1>,
 }
 
@@ -338,6 +340,7 @@ impl OfflineMaintenanceReceiptV1 {
             None,
             None,
             None,
+            None,
             vec![OfflineMaintenanceReceiptTransitionV1::phase(
                 OfflineMaintenanceReceiptPhaseV1::Accepted,
             )],
@@ -356,6 +359,7 @@ impl OfflineMaintenanceReceiptV1 {
         source_database_id: Option<DatabaseId>,
         staged_database_id: Option<DatabaseId>,
         manifest_identity: Option<OfflineBackupManifestIdentityV1>,
+        published_history_incarnation: Option<u64>,
         transitions: Vec<OfflineMaintenanceReceiptTransitionV1>,
     ) -> Result<Self, StorageValueError> {
         if offline_maintenance_input_hash(operation_kind, &backup_name, replacement_confirmation)
@@ -365,6 +369,14 @@ impl OfflineMaintenanceReceiptV1 {
         }
         if operation_kind == OfflineMaintenanceOperationKind::CreateBackup
             && replacement_confirmation != OfflineMaintenanceReplacementConfirmation::NotProvided
+        {
+            return Err(StorageValueError::InvalidShape);
+        }
+        if published_history_incarnation.is_some_and(|value| value < 1) {
+            return Err(StorageValueError::InvalidShape);
+        }
+        if published_history_incarnation.is_some()
+            && operation_kind != OfflineMaintenanceOperationKind::RestoreBackup
         {
             return Err(StorageValueError::InvalidShape);
         }
@@ -390,6 +402,7 @@ impl OfflineMaintenanceReceiptV1 {
             source_database_id,
             staged_database_id,
             manifest_identity,
+            published_history_incarnation,
             transitions,
         })
     }
@@ -446,6 +459,12 @@ impl OfflineMaintenanceReceiptV1 {
     #[must_use]
     pub const fn manifest_identity(&self) -> Option<&OfflineBackupManifestIdentityV1> {
         self.manifest_identity.as_ref()
+    }
+
+    /// Returns the incarnation recorded for the restored published database.
+    #[must_use]
+    pub const fn published_history_incarnation(&self) -> Option<u64> {
+        self.published_history_incarnation
     }
 
     /// Returns the complete bounded append-only history.
@@ -513,6 +532,30 @@ impl OfflineMaintenanceReceiptV1 {
         Ok(())
     }
 
+    /// Records the published history incarnation once (restore offline phase).
+    pub fn record_published_incarnation(
+        &mut self,
+        incarnation: u64,
+    ) -> Result<(), StorageValueError> {
+        if self.operation_kind != OfflineMaintenanceOperationKind::RestoreBackup {
+            return Err(StorageValueError::InvalidShape);
+        }
+        if incarnation < 1 {
+            return Err(StorageValueError::InvalidShape);
+        }
+        let prior = self.published_history_incarnation;
+        match self.published_history_incarnation {
+            None => self.published_history_incarnation = Some(incarnation),
+            Some(existing) if existing == incarnation => {}
+            Some(_) => return Err(StorageValueError::IdentityMismatch),
+        }
+        if let Err(error) = self.validate_current() {
+            self.published_history_incarnation = prior;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Appends one legal forward transition.
     pub fn advance(
         &mut self,
@@ -556,6 +599,10 @@ impl OfflineMaintenanceReceiptV1 {
             && option_ref_extends(
                 prior.manifest_identity.as_ref(),
                 self.manifest_identity.as_ref(),
+            )
+            && option_extends(
+                prior.published_history_incarnation,
+                self.published_history_incarnation,
             )
             && self.transitions.starts_with(&prior.transitions)
     }
@@ -895,6 +942,14 @@ pub struct OfflineBackupManifestV1 {
     catalog_bundles: Vec<BackupCatalogBundleV1>,
     active_catalog: Option<ActiveCatalogPointerV1>,
     last_commit_sequence: Option<CommitSequence>,
+    /// Present on post-fence backups; absent on pre-fence manifests.
+    history_incarnation: Option<u64>,
+    /// Whether the wire form includes the history presence tag.
+    ///
+    /// Post-fence encodings always include the tag (`true`): `None` is one
+    /// presence byte `0`, `Some` is presence `1` + u64. Pre-fence dual-path
+    /// reconstructs omit the field entirely (`false`).
+    history_wire_tagged: bool,
     checksums: Vec<BackupArtifactChecksumV1>,
     build: BackupBuildMetadataV1,
     semantic_bytes: usize,
@@ -910,6 +965,7 @@ impl OfflineBackupManifestV1 {
         mut catalog_bundles: Vec<BackupCatalogBundleV1>,
         active_catalog: Option<ActiveCatalogPointerV1>,
         last_commit_sequence: Option<CommitSequence>,
+        history_incarnation: Option<u64>,
         mut checksums: Vec<BackupArtifactChecksumV1>,
         build: BackupBuildMetadataV1,
     ) -> Result<Self, StorageValueError> {
@@ -924,6 +980,9 @@ impl OfflineBackupManifestV1 {
         if active_catalog.is_none()
             && (!catalog_bundles.is_empty() || last_commit_sequence.is_some())
         {
+            return Err(StorageValueError::InvalidShape);
+        }
+        if history_incarnation.is_some_and(|value| value < 1) {
             return Err(StorageValueError::InvalidShape);
         }
 
@@ -947,10 +1006,14 @@ impl OfflineBackupManifestV1 {
             return Err(StorageValueError::Duplicate);
         }
 
+        // `new` always builds the post-fence wire form (presence-tagged field).
+        let history_wire_tagged = true;
         let semantic_bytes = backup_manifest_semantic_bytes(
             &catalog_bundles,
             active_catalog.as_ref(),
             last_commit_sequence,
+            history_incarnation,
+            history_wire_tagged,
             &checksums,
             &build,
         )?;
@@ -963,10 +1026,57 @@ impl OfflineBackupManifestV1 {
             catalog_bundles,
             active_catalog,
             last_commit_sequence,
+            history_incarnation,
+            history_wire_tagged,
             checksums,
             build,
             semantic_bytes,
         })
+    }
+
+    /// Reconstructs a pre-fence manifest whose wire form omits the history field.
+    ///
+    /// Used only by dual-path decode of historical backup bytes. History must be
+    /// absent; size accounting matches field omission (zero bytes).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_pre_fence(
+        storage_format_version: StorageFormatVersion,
+        database_id: DatabaseId,
+        snapshot_kind: BackupSnapshotKindV1,
+        catalog_bundles: Vec<BackupCatalogBundleV1>,
+        active_catalog: Option<ActiveCatalogPointerV1>,
+        last_commit_sequence: Option<CommitSequence>,
+        checksums: Vec<BackupArtifactChecksumV1>,
+        build: BackupBuildMetadataV1,
+    ) -> Result<Self, StorageValueError> {
+        let mut candidate = Self::new(
+            storage_format_version,
+            database_id,
+            snapshot_kind,
+            catalog_bundles,
+            active_catalog,
+            last_commit_sequence,
+            None,
+            checksums,
+            build,
+        )?;
+        candidate.history_wire_tagged = false;
+        candidate.semantic_bytes = backup_manifest_semantic_bytes(
+            &candidate.catalog_bundles,
+            candidate.active_catalog.as_ref(),
+            candidate.last_commit_sequence,
+            None,
+            false,
+            &candidate.checksums,
+            &candidate.build,
+        )?;
+        Ok(candidate)
+    }
+
+    /// Returns whether the durable wire form includes the history presence tag.
+    #[must_use]
+    pub const fn history_wire_tagged(&self) -> bool {
+        self.history_wire_tagged
     }
 
     /// Returns the semantic backup-manifest version.
@@ -1009,6 +1119,12 @@ impl OfflineBackupManifestV1 {
     #[must_use]
     pub const fn last_commit_sequence(&self) -> Option<CommitSequence> {
         self.last_commit_sequence
+    }
+
+    /// Returns the backup history incarnation when the artifact carries one.
+    #[must_use]
+    pub const fn history_incarnation(&self) -> Option<u64> {
+        self.history_incarnation
     }
 
     /// Returns checksums in canonical artifact-name order.
@@ -1248,6 +1364,8 @@ fn backup_manifest_semantic_bytes(
     catalog_bundles: &[BackupCatalogBundleV1],
     active_catalog: Option<&ActiveCatalogPointerV1>,
     last_commit_sequence: Option<CommitSequence>,
+    history_incarnation: Option<u64>,
+    history_wire_tagged: bool,
     checksums: &[BackupArtifactChecksumV1],
     build: &BackupBuildMetadataV1,
 ) -> Result<usize, StorageValueError> {
@@ -1292,6 +1410,15 @@ fn backup_manifest_semantic_bytes(
         bundles,
         active,
         1 + last_commit_sequence.map_or(0, |_| 8),
+        // Match actual encoding for all three wire cases:
+        // - pre-fence omitted field → 0
+        // - post-fence tagged None (presence 0) → 1
+        // - post-fence tagged Some → 1 + 8
+        if history_wire_tagged {
+            1 + history_incarnation.map_or(0, |_| 8)
+        } else {
+            0
+        },
         checksums,
         framed_backup_bytes(build.semantic_version.len())?,
         framed_backup_bytes(build.git_revision.len())?,
@@ -1407,6 +1534,7 @@ mod tests {
                 Vec::new(),
                 None,
                 Some(CommitSequence::first()),
+                Some(1),
                 vec![checksum],
                 build,
             ),
@@ -1555,6 +1683,7 @@ mod tests {
                 receipt.input_hash(),
                 receipt.replacement_confirmation(),
                 admission(),
+                None,
                 None,
                 None,
                 None,

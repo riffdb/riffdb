@@ -73,9 +73,11 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   servers are unsupported.
 - Backup and restore are offline. There is no online, incremental, encrypted,
   remote-object, or point-in-time backup.
-- Restore preserves `DatabaseId` while rewinding history. There is no
-  incarnation/history epoch, so destroyed application and administration
-  sequence suffixes can be reused.
+- Restore preserves `DatabaseId` while rewinding history. Destroyed application
+  and administration sequence suffixes can still be reused. ADR-0072 adds a
+  durable `history_incarnation` fence so participating clients can detect the
+  rewind via optional `observed_history_incarnation` validation
+  (`RDB-HISTORY-0101`). Non-participating clients remain unvalidated.
 - Locators, cursors, sessions, read-after-sequence expectations, authorization
   observations, and idempotency assumptions from a destroyed suffix are
   invalid after restore.

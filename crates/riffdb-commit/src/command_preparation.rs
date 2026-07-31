@@ -40,7 +40,12 @@ pub trait PostEvaluationCommandAuthorizer: Send {
     fn authorize(&self) -> Result<AuthorizedCommandExecution, PostEvaluationAuthorizationError>;
 }
 
-pub(crate) fn queued_preparation_units(input: &CanonicalRecord) -> u32 {
+/// Queued retained-byte units charged for one normalized command input.
+///
+/// Service admission acquires this budget before authorization; submit asserts
+/// the preparation does not need more units than were pre-admitted.
+#[must_use]
+pub fn queued_preparation_units(input: &CanonicalRecord) -> u32 {
     let retained = QUEUED_PREPARATION_FIXED_BYTES
         .saturating_add(canonical_record_retained_bytes(input))
         .div_ceil(QUEUED_BYTE_UNIT)

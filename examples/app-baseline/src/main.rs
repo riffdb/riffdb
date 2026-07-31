@@ -11,12 +11,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use riffdb_app_baseline_core::{
-    AppBackend, BackendReport, LoadConfig, LoadExecutionShape, RIFFDB_MAX_LOAD_CLIENTS, Scale,
-    SeedDataset, WorkloadProfile, build_report, print_load_summary, run_closed_loop_load,
-    run_scenarios,
+    AppBackend, BackendReport, LoadConfig, LoadExecutionShape, RIFFDB_MAX_LOAD_CLIENTS,
+    RIFFDB_SATURATE_LOAD_CLIENTS, SATURATE_COORDINATOR_WORKLOAD_CAPACITY, Scale, SeedDataset,
+    WorkloadProfile, build_report, print_load_summary, run_closed_loop_load, run_scenarios,
 };
 use riffdb_app_baseline_postgres::PostgresAppBackend;
-use riffdb_app_baseline_riffdb::RiffDbServerSession;
+use riffdb_app_baseline_riffdb::{RiffDbServerSession, ServerStartOptions};
 use serde_json::json;
 
 fn main() -> ExitCode {
@@ -197,11 +197,24 @@ fn run_load(args: Args) -> Result<(), String> {
         base_config.zipf_s = zipf_s;
     }
     base_config.contended = args.load_contended;
+    base_config.saturate = args.load_saturate;
+    // Default 250 ms = 150 ms admission budget + accepted group-turn + bucket
+    // slack; success-only p99 excludes Overloaded waits that burn the full cap.
+    base_config.saturate_p99_ceiling = Duration::from_millis(args.load_saturate_p99_ms.max(1));
+    if args.load_saturate {
+        // Long-lived fan-out multiplies per-client concurrency; do not force
+        // client count (knee sweeps must control --load-clients). PostgreSQL is
+        // skipped: saturate is a RiffDB coordinator-depth probe.
+        base_config.saturate_fanout = riffdb_app_baseline_core::SATURATE_DEFAULT_FANOUT;
+    }
 
     let dataset = SeedDataset::generate(args.scale);
     let mut reports = Vec::new();
 
-    if !args.skip_postgres {
+    // Saturate is riffdb-only; never force 512 PG sessions.
+    let skip_postgres = args.skip_postgres || args.load_saturate;
+
+    if !skip_postgres {
         let url = args
             .postgres_url
             .clone()
@@ -269,8 +282,13 @@ fn run_load(args: Args) -> Result<(), String> {
             .build()
             .map_err(|error| error.to_string())?;
 
+        let start_options = ServerStartOptions {
+            coordinator_workload_capacity: args
+                .load_saturate
+                .then_some(SATURATE_COORDINATOR_WORKLOAD_CAPACITY),
+        };
         let mut session = runtime
-            .block_on(RiffDbServerSession::start(&riffdbd))
+            .block_on(RiffDbServerSession::start_with_options(&riffdbd, start_options))
             .map_err(|error| error.to_string())?;
         session.backend.reset().map_err(|error| error.to_string())?;
         let seed_started = Instant::now();
@@ -280,8 +298,18 @@ fn run_load(args: Args) -> Result<(), String> {
         }
         let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let prototype = session.backend.clone().with_command_attempt_budget(1);
-        let config = base_config.clone().with_client_cap(RIFFDB_MAX_LOAD_CLIENTS);
-        let transport_topology = args.riffdb_transport;
+        let config = base_config.clone().with_client_cap(if args.load_saturate {
+            RIFFDB_SATURATE_LOAD_CLIENTS
+        } else {
+            RIFFDB_MAX_LOAD_CLIENTS
+        });
+        // Long-lived per-session workers under saturate: continuous concurrency
+        // against the reduced coordinator capacity without HTTP/2 stream caps.
+        let transport_topology = if args.load_saturate {
+            RiffDbTransport::PerSession
+        } else {
+            args.riffdb_transport
+        };
         let mut report = run_closed_loop_load(
             "riffdb_public_grpc",
             config,
@@ -323,12 +351,67 @@ fn run_load(args: Args) -> Result<(), String> {
             let error = report["aggregate"]["outcomes"]["error"]
                 .as_u64()
                 .unwrap_or(0);
-            (unavailable > 0 || idempotency_mismatch > 0 || error > 0).then(|| {
-                format!(
-                    "{backend}: unavailable={unavailable}, \
+            let mut parts = Vec::new();
+            if args.load_saturate && backend.starts_with("riffdb") {
+                let overloaded = report["aggregate"]["outcomes"]["overloaded"]
+                    .as_u64()
+                    .unwrap_or(0);
+                let conflict = report["aggregate"]["outcomes"]["conflict"]
+                    .as_u64()
+                    .unwrap_or(0);
+                let history = report["aggregate"]["outcomes"]["history_incarnation_mismatch"]
+                    .as_u64()
+                    .unwrap_or(0);
+                let non_success = conflict
+                    .saturating_add(unavailable)
+                    .saturating_add(error)
+                    .saturating_add(idempotency_mismatch)
+                    .saturating_add(history)
+                    .saturating_add(overloaded);
+                if overloaded == 0 {
+                    parts.push(
+                        "saturate profile observed zero Overloaded outcomes (profile broken)"
+                            .to_owned(),
+                    );
+                }
+                if non_success > 0 && overloaded != non_success {
+                    parts.push(format!(
+                        "saturate profile requires 100% non-success outcomes to be Overloaded \
+                         (overloaded={overloaded}, non_success={non_success})"
+                    ));
+                }
+                // Success-only p99 (ADR: accepted-work latency bounded).
+                if let Some(p99_ns) = report["aggregate"]["success_latency"]["p99_ns"].as_u64() {
+                    let ceiling_ns = u64::try_from(base_config.saturate_p99_ceiling.as_nanos())
+                        .unwrap_or(u64::MAX);
+                    let success = report["aggregate"]["outcomes"]["success"]
+                        .as_u64()
+                        .unwrap_or(0);
+                    if success > 0 && p99_ns > ceiling_ns {
+                        parts.push(format!(
+                            "saturate success-only p99 {p99_ns}ns exceeds ceiling {ceiling_ns}ns"
+                        ));
+                    }
+                }
+            } else if unavailable > 0 || idempotency_mismatch > 0 || error > 0 {
+                parts.push(format!(
+                    "unavailable={unavailable}, \
                      idempotency_mismatch={idempotency_mismatch}, error={error}"
-                )
-            })
+                ));
+            }
+            if args.load_contended {
+                // Contended profile requires every weighted op to land at least
+                // one success against the shared hot ticket.
+                if let Some(by_op) = report["by_op"].as_object() {
+                    for (op, stats) in by_op {
+                        let success = stats["outcomes"]["success"].as_u64().unwrap_or(0);
+                        if success == 0 {
+                            parts.push(format!("op {op} has zero successes"));
+                        }
+                    }
+                }
+            }
+            (!parts.is_empty()).then(|| format!("{backend}: {}", parts.join("; ")))
         })
         .collect::<Vec<_>>();
     let encoded = serde_json::to_string_pretty(&json!({
@@ -342,6 +425,8 @@ fn run_load(args: Args) -> Result<(), String> {
             "riffdb_transport": args.riffdb_transport.as_report_str(),
             "automatic_command_retries": false,
             "contended": args.load_contended,
+            "saturate": args.load_saturate,
+            "saturate_p99_ceiling_ms": args.load_saturate_p99_ms,
         },
         "correctness": {
             "clean": correctness_failures.is_empty(),
@@ -587,6 +672,8 @@ struct Args {
     load_warmup_secs: Option<u64>,
     load_zipf_s: Option<f64>,
     load_contended: bool,
+    load_saturate: bool,
+    load_saturate_p99_ms: u64,
     riffdb_transport: RiffDbTransport,
 }
 
@@ -610,6 +697,8 @@ impl Args {
         let mut load_warmup_secs = None;
         let mut load_zipf_s = None;
         let mut load_contended = false;
+        let mut load_saturate = false;
+        let mut load_saturate_p99_ms = 250;
         let mut riffdb_transport = RiffDbTransport::PerSession;
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
@@ -705,6 +794,14 @@ impl Args {
                     );
                 }
                 "--load-contended" => load_contended = true,
+                "--load-saturate" => load_saturate = true,
+                "--load-saturate-p99-ms" => {
+                    load_saturate_p99_ms = args
+                        .next()
+                        .ok_or("--load-saturate-p99-ms needs a value")?
+                        .parse()
+                        .map_err(|_| "--load-saturate-p99-ms must be u64")?;
+                }
                 "--load-riffdb-transport" => {
                     let value = args.next().ok_or("--load-riffdb-transport needs a value")?;
                     riffdb_transport = RiffDbTransport::parse(&value).ok_or_else(|| {
@@ -719,7 +816,8 @@ impl Args {
                          [--concurrent-clients N] [--concurrent-operations N] \
                          [--load interactive|agent|membership_contention] [--load-clients N] \
                          [--load-duration-secs N] [--load-warmup-secs N] [--load-zipf-s F] \
-                         [--load-contended] [--load-riffdb-transport per-session|shared] \
+                         [--load-contended] [--load-saturate] [--load-saturate-p99-ms N] \
+                         [--load-riffdb-transport per-session|shared] \
                          [--skip-postgres] [--skip-riffdb]"
                             .to_owned(),
                     );
@@ -741,8 +839,14 @@ impl Args {
         }
         // Structural parser bound; run_load also checks live PostgreSQL capacity
         // and RiffDB's fixed session ceiling without silently reducing parity.
-        if load_clients.is_some_and(|clients| !(1..=128).contains(&clients)) {
-            return Err("--load-clients must be 1..=128".to_owned());
+        // Saturate mode may raise clients well above coordinator depth 128.
+        let client_ceiling = if load_saturate {
+            RIFFDB_SATURATE_LOAD_CLIENTS
+        } else {
+            128
+        };
+        if load_clients.is_some_and(|clients| !(1..=client_ceiling).contains(&clients)) {
+            return Err(format!("--load-clients must be 1..={client_ceiling}"));
         }
         if load_profile.is_none()
             && (load_clients.is_some()
@@ -750,6 +854,7 @@ impl Args {
                 || load_warmup_secs.is_some()
                 || load_zipf_s.is_some()
                 || load_contended
+                || load_saturate
                 || riffdb_transport != RiffDbTransport::PerSession)
         {
             return Err("--load-* options require --load".to_owned());
@@ -781,6 +886,8 @@ impl Args {
             load_warmup_secs,
             load_zipf_s,
             load_contended,
+            load_saturate,
+            load_saturate_p99_ms,
             riffdb_transport,
         })
     }
@@ -827,6 +934,7 @@ mod tests {
                 "--load-clients",
                 "32",
                 "--load-contended",
+                "--load-saturate",
                 "--load-riffdb-transport",
                 "shared",
             ]
@@ -837,6 +945,7 @@ mod tests {
         assert_eq!(args.load_profile, Some(WorkloadProfile::Agent));
         assert_eq!(args.load_clients, Some(32));
         assert!(args.load_contended);
+        assert!(args.load_saturate);
         assert_eq!(args.riffdb_transport, RiffDbTransport::Shared);
     }
 

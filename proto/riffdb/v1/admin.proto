@@ -67,6 +67,10 @@ message AuthenticatedHealth {
   repeated HealthComponent components = 4;
   Timestamp started_at = 5;
   BuildInfo build = 6;
+  // Durable history incarnation fence. Zero means the server is still
+  // initializing and has not yet retained serving identity (pre-ready path);
+  // once authenticated serving is ready the value is ≥ 1.
+  uint64 history_incarnation = 7;
 }
 
 message HealthResponse {
@@ -88,6 +92,8 @@ message StatsResponse {
   optional uint64 last_commit_sequence = 3;
   optional uint64 pending_outbox_deliveries = 4;
   optional uint32 known_projections = 5;
+  // Durable history incarnation fence; ≥ 1 once the database is serving.
+  uint64 history_incarnation = 6;
 }
 
 enum CapabilityCreateMode {

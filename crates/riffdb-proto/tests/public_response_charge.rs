@@ -129,27 +129,27 @@ fn every_service_charge_case_covers_its_public_encoding() {
     );
     assert_eq!(
         encoded_lengths["discover_command_tools.compact_item_max"],
-        702
+        704
     );
     assert_eq!(
         encoded_lengths["discover_command_tools.compact_page_max"],
-        181_357
+        181_359
     );
     assert_eq!(
         encoded_lengths["discover_command_tools.full_max_dynamic"],
-        2_105_521
+        2_105_523
     );
     assert_eq!(
         encoded_lengths["discover_resources.compact_item_max"],
-        1_023
+        1_025
     );
     assert_eq!(
         encoded_lengths["discover_resources.compact_page_max"],
-        271_001
+        271_003
     );
     assert_eq!(
         encoded_lengths["discover_resources.full_max_dynamic"],
-        1_049_446
+        1_049_448
     );
     assert_eq!(encoded_lengths["trace_provenance.found_max_claims"], 2_086);
 

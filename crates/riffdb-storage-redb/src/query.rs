@@ -5,8 +5,9 @@ use std::ops::Bound::{Excluded, Included};
 
 use redb::ReadOnlyTable;
 use riffdb_query_executor::{
-    BoundPredicate, QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryOwnedSnapshot,
-    QueryParameters, QueryReadView, QueryRow, QueryScanPage, execute_page_in_snapshot,
+    BoundPredicate, QueryBackendFault, QueryContinuation, QueryExecutionError, QueryExecutionPort,
+    QueryOwnedSnapshot, QueryParameters, QueryReadView, QueryRow, QueryScanPage,
+    execute_page_in_snapshot,
 };
 use riffdb_query_ir::{
     AccessDirection, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryPredicateOperator,
@@ -30,23 +31,21 @@ impl QueryExecutionPort for RedbOperationalPorts {
         parameters: &QueryParameters,
         prior: Option<&QueryContinuation>,
     ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
-        let transaction = self
-            .begin_read()
-            .map_err(|_| QueryExecutionError::BackendUnavailable)?;
+        let transaction = self.begin_read().map_err(map_storage_query_error)?;
         let entities = transaction
             .open_table(ENTITIES)
-            .map_err(|_| QueryExecutionError::BackendUnavailable)?;
+            .map_err(|error| map_storage_query_error(crate::error::table_error(error)))?;
         let indexes = transaction
             .open_table(SECONDARY_INDEXES)
-            .map_err(|_| QueryExecutionError::BackendUnavailable)?;
+            .map_err(|error| map_storage_query_error(crate::error::table_error(error)))?;
         let epochs = transaction
             .open_table(INDEX_EPOCHS)
-            .map_err(|_| QueryExecutionError::BackendUnavailable)?;
+            .map_err(|error| map_storage_query_error(crate::error::table_error(error)))?;
         let commits = transaction
             .open_table(COMMITS)
-            .map_err(|_| QueryExecutionError::BackendUnavailable)?;
+            .map_err(|error| map_storage_query_error(crate::error::table_error(error)))?;
         let head = read_commit_head(&transaction, &commits)
-            .map_err(|_| QueryExecutionError::BackendUnavailable)?
+            .map_err(map_storage_query_error)?
             .map_or(0, riffdb_types::CommitSequence::get);
         let mut view = RedbQueryView {
             entities,
@@ -57,6 +56,27 @@ impl QueryExecutionPort for RedbOperationalPorts {
             parameters,
         };
         execute_page_in_snapshot(program, parameters, prior, &mut view)
+    }
+}
+
+fn map_storage_query_error(error: StorageError) -> QueryExecutionError {
+    match storage_query_fault(&error) {
+        QueryBackendFault::Unavailable => QueryExecutionError::BackendUnavailable,
+        QueryBackendFault::Integrity => QueryExecutionError::BackendIntegrity,
+        QueryBackendFault::LimitExceeded => QueryExecutionError::BackendLimitExceeded,
+    }
+}
+
+const fn storage_query_fault(error: &StorageError) -> QueryBackendFault {
+    match error.kind() {
+        StorageErrorKind::Unavailable | StorageErrorKind::CommitStatusUnknown => {
+            QueryBackendFault::Unavailable
+        }
+        StorageErrorKind::LimitExceeded => QueryBackendFault::LimitExceeded,
+        StorageErrorKind::CorruptData
+        | StorageErrorKind::IncompatibleFormat
+        | StorageErrorKind::InvariantViolation
+        | StorageErrorKind::SequenceExhausted => QueryBackendFault::Integrity,
     }
 }
 
@@ -71,6 +91,10 @@ struct RedbQueryView<'a> {
 
 impl QueryReadView for RedbQueryView<'_> {
     type Error = StorageError;
+
+    fn fault(&self, error: &Self::Error) -> QueryBackendFault {
+        storage_query_fault(error)
+    }
 
     fn application_head(&self) -> u64 {
         self.head
@@ -145,6 +169,9 @@ impl QueryReadView for RedbQueryView<'_> {
         let generation_target =
             PartitionIndexTarget::new(partition, step.internal_index_id().ok_or_else(invariant)?);
         let epoch = read_epoch(&self.epochs, &generation_target)?;
+        let page_limit =
+            usize::try_from(limit).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+        let fetch_limit = page_limit.saturating_add(1);
         let mut entries = Vec::<(IndexEntryKey, riffdb_storage_api::StoredIndexEntryV2)>::new();
         let mut prefixes = index_prefixes(fields, predicates)?
             .into_iter()
@@ -193,7 +220,7 @@ impl QueryReadView for RedbQueryView<'_> {
                             continue;
                         }
                         entries.push(decoded);
-                        if entries.len() == limit as usize {
+                        if entries.len() == fetch_limit {
                             break 'prefixes;
                         }
                     }
@@ -206,16 +233,24 @@ impl QueryReadView for RedbQueryView<'_> {
                             continue;
                         }
                         entries.push(decoded);
-                        if entries.len() == limit as usize {
+                        if entries.len() == fetch_limit {
                             break 'prefixes;
                         }
                     }
                 }
             }
         }
-        let scanned_rows = u64::try_from(entries.len())
-            .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
-        let continuation = (entries.len() == limit as usize)
+        // Continuation only when an extra matching entry was observed. Bound is
+        // the last included key; the peeked row is never returned. Charge the
+        // peeked observation to scanned_rows for accurate fuel accounting.
+        let scanned = entries.len();
+        let has_more = scanned > page_limit;
+        if has_more {
+            entries.truncate(page_limit);
+        }
+        let scanned_rows =
+            u64::try_from(scanned).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+        let continuation = has_more
             .then(|| entries.last().map(|entry| entry.0.as_bytes().to_vec()))
             .flatten();
         let rows = entries
@@ -667,5 +702,150 @@ query ProjectMembers(
             Some(QueryResultValue::Many(rows))
                 if rows.len() == 1 && rows[0].field("user_id").cloned() != first_user
         ));
+    }
+
+    #[test]
+    fn exact_end_page_mints_no_continuation_when_page_fills_the_range() {
+        const EXACT_END_QUERY: &str = r#"
+query list_members_exact(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+) {
+    many memberships from ProjectMember
+        where organization_id == $organization_id && project_id == $project_id
+        order by user_id asc
+        take 2
+    return Found { members: memberships { user_id role } }
+    outcomes Found
+}
+"#;
+        let bundle = compile_contract_source(CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let program = compile_query(&parse_query(EXACT_END_QUERY).expect("parse"), &catalog)
+            .expect("program");
+        let step = &program.steps()[0];
+        let organization = CanonicalValue::Uuid([1; 16]);
+        let project = CanonicalValue::Uuid([2; 16]);
+        let binding = DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+        );
+        let access = program
+            .internal_entity_access("ProjectMember")
+            .expect("access");
+        let mut records = Vec::new();
+        let mut indexes = Vec::new();
+        for (ordinal, partition_ordinal) in [(2_u8, 9_u8), (3_u8, 1_u8), (4_u8, 1_u8)] {
+            let user = CanonicalValue::Uuid([ordinal; 16]);
+            let key = step
+                .internal_entity_key_schema()
+                .encode_entity(&[organization.clone(), project.clone(), user.clone()])
+                .expect("entity key");
+            let target = EntityTarget::new(step.internal_entity_id(), key.clone()).expect("target");
+            let fields = CanonicalRecord::new(vec![
+                (
+                    access
+                        .internal_field_id("organization_id")
+                        .expect("organization"),
+                    organization.clone(),
+                ),
+                (
+                    access.internal_field_id("project_id").expect("project"),
+                    project.clone(),
+                ),
+                (
+                    access.internal_field_id("user_id").expect("user"),
+                    user.clone(),
+                ),
+                (
+                    access.internal_field_id("role").expect("role"),
+                    CanonicalValue::string("member").expect("role"),
+                ),
+            ])
+            .expect("fields");
+            records.push(
+                StoredEntityRecordV1::new(
+                    target,
+                    EntityVersion::first(),
+                    bundle.contract_version(),
+                    binding.clone(),
+                    fields,
+                )
+                .expect("record"),
+            );
+            let index_key = step
+                .internal_index_key_schema()
+                .expect("index schema")
+                .encode_index(&[organization.clone(), project.clone(), user], key)
+                .expect("index key");
+            let mut partition =
+                PartitionKeyBuilder::new(AggregateTypeId::new(4).expect("aggregate"));
+            partition
+                .push_uuid(&[partition_ordinal; 16])
+                .expect("partition component");
+            indexes.push(
+                StoredIndexEntryV2::new(
+                    index_key,
+                    binding.clone(),
+                    CanonicalRecord::new(Vec::new()).expect("cover"),
+                    partition.finish().expect("partition"),
+                )
+                .expect("index row"),
+            );
+        }
+
+        let path = TestPath::new();
+        let mut store = RedbStore::open(&path.0).expect("store");
+        let database_id =
+            DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x22; 10])
+                .expect("database ID");
+        store.initialize_database(database_id).expect("initialize");
+        let ports = RedbOperationalPorts {
+            shared: Arc::clone(&store.shared),
+        };
+        let access_write = ports.begin_write().expect("write");
+        {
+            let mut table = access_write
+                .transaction()
+                .expect("transaction")
+                .open_table(ENTITIES)
+                .expect("entities");
+            for record in &records {
+                let encoded = encode_entity_record_v1(record).expect("encode entity");
+                table
+                    .insert(encode_entity_key(record.target().key()), encoded.as_bytes())
+                    .expect("insert entity");
+            }
+        }
+        {
+            let mut table = access_write
+                .transaction()
+                .expect("transaction")
+                .open_table(SECONDARY_INDEXES)
+                .expect("indexes");
+            for index in &indexes {
+                let encoded = encode_index_entry_v2(index).expect("encode index");
+                table
+                    .insert(index.key().as_bytes(), encoded.as_bytes())
+                    .expect("insert index");
+            }
+        }
+        access_write.commit().expect("commit");
+
+        let parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), organization),
+            ("project_id".to_owned(), project),
+        ]))
+        .expect("parameters");
+        let snapshot = ports.execute_query(&program, &parameters).expect("query");
+        assert!(matches!(
+            snapshot.fields().get("members"),
+            Some(QueryResultValue::Many(rows)) if rows.len() == 2
+        ));
+        assert!(
+            snapshot.continuation().is_none() && snapshot.continuation_binding().is_none(),
+            "exact-end page must not mint a continuation"
+        );
     }
 }

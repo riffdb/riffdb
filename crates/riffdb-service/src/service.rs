@@ -66,6 +66,7 @@ pub struct ServiceIdentity {
     database_id: DatabaseId,
     environment: Environment,
     agent_session_policy: AgentSessionAdmissionPolicy,
+    history_incarnation: u64,
 }
 
 impl ServiceIdentity {
@@ -75,11 +76,13 @@ impl ServiceIdentity {
         database_id: DatabaseId,
         environment: Environment,
         agent_session_policy: AgentSessionAdmissionPolicy,
+        history_incarnation: u64,
     ) -> Self {
         Self {
             database_id,
             environment,
             agent_session_policy,
+            history_incarnation,
         }
     }
 
@@ -99,6 +102,12 @@ impl ServiceIdentity {
     #[must_use]
     pub const fn agent_session_policy(&self) -> AgentSessionAdmissionPolicy {
         self.agent_session_policy
+    }
+
+    /// Returns the durable history incarnation fixed at process activation.
+    #[must_use]
+    pub const fn history_incarnation(&self) -> u64 {
+        self.history_incarnation
     }
 }
 
@@ -239,6 +248,7 @@ pub(crate) struct RiffDbServiceInner {
     pub(crate) providers: ServiceProviders,
     pub(crate) cursors: ServiceCursorRegistries,
     pub(crate) pre_bootstrap_health: Arc<PreBootstrapHealthAdmission>,
+    pub(crate) audit_failures: crate::orchestration::AuditFailureTracker,
     active_commit_subscribers: Arc<AtomicU16>,
 }
 
@@ -375,6 +385,7 @@ impl RiffDbService {
                 providers,
                 cursors,
                 pre_bootstrap_health,
+                audit_failures: crate::orchestration::AuditFailureTracker::new(),
                 active_commit_subscribers: Arc::new(AtomicU16::new(0)),
             }),
         }
@@ -399,6 +410,14 @@ impl RiffDbService {
             let result = match observed {
                 Ok(result) if !lifecycle.normal_completion_requires_containment(result.is_ok()) => {
                     result
+                }
+                // Pre-admission rejections with no durable Started may settle
+                // without an append under saturation (no free coordinator slot).
+                // Gate on lifecycle state, not error kind: a future post-Started
+                // Overloaded producer must not silently orphan the audit pair.
+                Ok(Err(failure)) if !lifecycle.has_durable_started() => {
+                    lifecycle.force_terminal_settled_for_pre_admission();
+                    Err(failure)
                 }
                 Ok(_) => {
                     let failure =
@@ -532,6 +551,10 @@ const fn service_terminal_class<T>(result: &ServiceResult<T>) -> crate::ServiceT
             PublicErrorKind::CommandExecutionFailed => {
                 crate::ServiceTerminalClass::CommandExecutionFailed
             }
+            PublicErrorKind::HistoryIncarnationMismatch => {
+                crate::ServiceTerminalClass::HistoryIncarnationMismatch
+            }
+            PublicErrorKind::Overloaded => crate::ServiceTerminalClass::Overloaded,
         },
         Err(ServiceFailure::Cancelled) => crate::ServiceTerminalClass::Cancelled,
         Err(ServiceFailure::DeadlineExceeded) => crate::ServiceTerminalClass::DeadlineExceeded,
@@ -944,6 +967,35 @@ mod tests {
             Poll::Ready(Err(()))
         ));
         assert!(lifecycle.normal_completion_requires_containment(false));
+    }
+
+    #[test]
+    fn durable_started_lifecycle_does_not_allow_silent_pre_admission_settle() {
+        let lifecycle = Arc::new(OperationAuditLifecycle::new(
+            ServiceOperationV1::ExecuteCommand,
+        ));
+        assert!(!lifecycle.has_durable_started());
+        // Synthetic post-Started Overloaded must not take the no-append settle path.
+        lifecycle.mark_started_for_test();
+        lifecycle.mark_durable_start();
+        assert!(lifecycle.has_durable_started());
+        assert!(
+            lifecycle.normal_completion_requires_containment(false),
+            "durable Started still requires containment / terminal audit"
+        );
+        // Force-settle would orphan the Started pair — spawn_operation must not
+        // call it when has_durable_started() is true.
+        assert!(lifecycle.has_durable_started());
+    }
+
+    #[test]
+    fn pre_admission_lifecycle_may_settle_without_durable_start() {
+        let lifecycle = Arc::new(OperationAuditLifecycle::new(
+            ServiceOperationV1::ExecuteCommand,
+        ));
+        assert!(!lifecycle.has_durable_started());
+        lifecycle.force_terminal_settled_for_pre_admission();
+        assert!(!lifecycle.normal_completion_requires_containment(false));
     }
 
     #[test]

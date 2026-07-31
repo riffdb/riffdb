@@ -20,11 +20,14 @@ mod layout;
 mod maintenance;
 mod query;
 mod reads;
+mod shared_ports;
 mod startup;
 mod store;
 mod transient;
 
-pub use backup::{RedbOfflineBackup, RedbOfflineRestore};
+pub use backup::{
+    RedbOfflineBackup, RedbOfflineRestore, read_history_incarnation, stamp_history_incarnation,
+};
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use fixtures::downgrade_all_index_rows_to_v1_fixture;
@@ -41,8 +44,12 @@ pub use maintenance::{
     RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation, RedbMaintenanceStorage,
     RedbSealedStagedRestore, RedbStagedRestore,
 };
+pub use shared_ports::RedbSharedPorts;
 pub use startup::{
     RedbCompletionAuthority, RedbHistoricalEvidenceEnd, RedbStartupIndexMigrationPort,
     RedbStructuralEvidenceEnd, RedbStructuralEvidenceSession,
 };
-pub use store::{RedbCommitProfile, RedbDormantPorts, RedbOperationalPorts, RedbStore};
+pub use store::{
+    RedbCommitProfile, RedbDormantPorts, RedbOperationalPorts, RedbStore,
+    last_repair_progress_basis_points,
+};

@@ -393,6 +393,7 @@ mod tests {
             state: Some(v1::discovery_catalog_fence::State::NoActiveContract(
                 v1::Unit {},
             )),
+            history_incarnation: 1,
         }
     }
 

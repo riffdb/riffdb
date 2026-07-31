@@ -43,6 +43,7 @@ message Commit {
 message GetCommitRequest {
   bytes request_id = 1;
   uint64 commit_sequence = 2;
+  optional uint64 observed_history_incarnation = 3;
 }
 
 message GetCommitResponse {
@@ -50,17 +51,22 @@ message GetCommitResponse {
     Unit not_found = 1;
     Commit found = 2;
   }
+  // Durable history incarnation fence; ≥ 1 once the database is serving.
+  uint64 history_incarnation = 3;
 }
 
 message CommitPage {
   repeated Commit items = 1;
   optional bytes next_cursor = 2;
   FrontierPosition observed_fence = 3;
+  // Durable history incarnation fence; ≥ 1 once the database is serving.
+  uint64 history_incarnation = 4;
 }
 
 message ScanCommitsRequest {
   bytes request_id = 1;
   PageRequest page = 2;
+  optional uint64 observed_history_incarnation = 3;
 }
 
 message ScanCommitsResponse {
@@ -82,12 +88,15 @@ enum CommitSubscriptionEndReason {
 message CommitSubscriptionTerminal {
   CommitSubscriptionEndReason reason = 1;
   FrontierPosition resume_after = 2;
+  // Durable history incarnation fence; ≥ 1 once the database is serving.
+  uint64 history_incarnation = 3;
 }
 
 message SubscribeCommitsRequest {
   bytes request_id = 1;
   optional uint64 after_sequence = 2;
   uint64 maximum_lifetime_nanos = 3;
+  optional uint64 observed_history_incarnation = 4;
 }
 
 message CommitNotification {
@@ -95,6 +104,8 @@ message CommitNotification {
     Commit commit = 1;
     CommitSubscriptionTerminal terminal = 2;
   }
+  // Durable history incarnation fence; ≥ 1 once the database is serving.
+  uint64 history_incarnation = 3;
 }
 
 message ProvenanceSelection {

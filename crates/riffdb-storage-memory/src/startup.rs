@@ -2197,6 +2197,7 @@ contract MemoryMigration version 1 {
             id,
             ApplicationSequenceAllocator::Exhausted,
             AdministrationSequenceAllocator::Exhausted,
+            riffdb_storage_api::HISTORY_INCARNATION_INITIAL,
             Some(active),
             Some(marker),
         )

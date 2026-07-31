@@ -446,7 +446,9 @@ fn sample_postgres_canonical(
         final_budgets,
     };
 
-    adapter.reset_schema().expect("postgres contention schema reset");
+    adapter
+        .reset_schema()
+        .expect("postgres contention schema reset");
     let contention_started = Instant::now();
     let contention_observation = adapter
         .run_contention(contention)
@@ -465,7 +467,8 @@ fn sample_postgres_canonical(
 }
 
 fn sample_service_amortized(command_count: usize) -> AmortizedSample {
-    let mut harness = BudgetServiceHarness::with_durability(riffdb_commit::CoordinatorDurability::Sync);
+    let mut harness =
+        BudgetServiceHarness::with_durability(riffdb_commit::CoordinatorDurability::Sync);
     // Discard cold first command after harness construction.
     let _ = harness
         .adapter
@@ -497,7 +500,10 @@ fn sample_service_amortized(command_count: usize) -> AmortizedSample {
             .execute(&allocate_operation("diag-allocate", 100 + ordinal as u64))
             .expect("service amortized allocate");
         allocate_latencies.push(started.elapsed());
-        assert!(matches!(observation.outcome, BudgetOutcome::Allocated { .. }));
+        assert!(matches!(
+            observation.outcome,
+            BudgetOutcome::Allocated { .. }
+        ));
     }
     let allocate_batch_wall = allocate_batch.elapsed();
     harness.stop();
@@ -521,7 +527,10 @@ fn sample_postgres_amortized(
     for ordinal in 0..command_count {
         let started = Instant::now();
         let observation = adapter
-            .execute(&create_operation("diag-create", base_ordinal + ordinal as u64))
+            .execute(&create_operation(
+                "diag-create",
+                base_ordinal + ordinal as u64,
+            ))
             .expect("postgres amortized create");
         create_latencies.push(started.elapsed());
         assert!(matches!(
@@ -542,7 +551,10 @@ fn sample_postgres_amortized(
             ))
             .expect("postgres amortized allocate");
         allocate_latencies.push(started.elapsed());
-        assert!(matches!(observation.outcome, BudgetOutcome::Allocated { .. }));
+        assert!(matches!(
+            observation.outcome,
+            BudgetOutcome::Allocated { .. }
+        ));
     }
     let allocate_batch_wall = allocate_batch.elapsed();
 
@@ -618,13 +630,7 @@ fn layer_json(
 fn share_table(operations: &[Value]) -> Vec<Value> {
     let total: u128 = operations
         .iter()
-        .map(|row| {
-            u128::from(
-                row["mean_ns"]
-                    .as_u64()
-                    .expect("operation mean is present"),
-            )
-        })
+        .map(|row| u128::from(row["mean_ns"].as_u64().expect("operation mean is present")))
         .sum();
     if total == 0 {
         return Vec::new();
@@ -641,11 +647,7 @@ fn share_table(operations: &[Value]) -> Vec<Value> {
             })
         })
         .collect();
-    rows.sort_by(|left, right| {
-        right["mean_ns"]
-            .as_u64()
-            .cmp(&left["mean_ns"].as_u64())
-    });
+    rows.sort_by(|left, right| right["mean_ns"].as_u64().cmp(&left["mean_ns"].as_u64()));
     rows
 }
 
@@ -657,7 +659,9 @@ fn rate_from_batch(batch_summary: &Value, total_ops: usize) -> u64 {
     // mean_batch is for amortized_commands; total_ops / measured iterations ≈ commands per batch
     // Use total wall implied by mean across measured iterations:
     // rate ≈ (ops_per_batch * 1e9) / mean_batch_ns where ops_per_batch = total_ops / sample_count
-    let sample_count = batch_summary["sample_count"].as_u64().expect("sample count");
+    let sample_count = batch_summary["sample_count"]
+        .as_u64()
+        .expect("sample count");
     let ops_per_batch = (total_ops as u64) / sample_count.max(1);
     ops_per_batch
         .saturating_mul(1_000_000_000)
@@ -667,8 +671,12 @@ fn rate_from_batch(batch_summary: &Value, total_ops: usize) -> u64 {
 }
 
 fn build_comparisons(layers: &[Value]) -> Value {
-    let service = layers.iter().find(|layer| layer["layer_id"] == "riffdb_service_inprocess");
-    let postgres = layers.iter().find(|layer| layer["layer_id"] == "postgres_sql");
+    let service = layers
+        .iter()
+        .find(|layer| layer["layer_id"] == "riffdb_service_inprocess");
+    let postgres = layers
+        .iter()
+        .find(|layer| layer["layer_id"] == "postgres_sql");
     let (Some(service), Some(postgres)) = (service, postgres) else {
         return json!({
             "available": false,
@@ -712,7 +720,9 @@ fn build_comparisons(layers: &[Value]) -> Value {
     ];
     let mut phases = Vec::new();
     for name in phase_names {
-        let service_p50 = service["phases"][name]["p50_ns"].as_u64().expect("service phase");
+        let service_p50 = service["phases"][name]["p50_ns"]
+            .as_u64()
+            .expect("service phase");
         let postgres_p50 = postgres["phases"][name]["p50_ns"]
             .as_u64()
             .expect("postgres phase");
@@ -825,7 +835,9 @@ fn bottleneck_hints(layers: &[Value], comparisons: &Value) -> Vec<Value> {
             }
         }
 
-        if layers.iter().any(|layer| layer["layer_id"] == "postgres_sql")
+        if layers
+            .iter()
+            .any(|layer| layer["layer_id"] == "postgres_sql")
             && layers
                 .iter()
                 .any(|layer| layer["layer_id"] == "riffdb_service_inprocess")

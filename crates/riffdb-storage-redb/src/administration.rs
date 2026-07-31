@@ -60,7 +60,6 @@ use crate::layout::{
     META_DATABASE_ID, PROVENANCE, QUERY_MODULE_ACTIVE, QUERY_MODULES,
 };
 use crate::store::{RedbOperationalPorts, RedbWriteAccess};
-use crate::transient::TransientIndexDelta;
 
 fn decoded_value<T>(item: EncodedPageItem<T>) -> T {
     item.into_parts().0
@@ -232,6 +231,28 @@ fn write_administration_allocator(
     Ok(())
 }
 
+fn write_service_audit_request_index(
+    transaction: &redb::WriteTransaction,
+    request_id: riffdb_types::RequestId,
+    sequence: AdministrationSequence,
+) -> Result<(), StorageError> {
+    let index_key = crate::keys::encode_audit_by_request_key(request_id, sequence);
+    let index_value = crate::codec::encode_service_audit_request_index_v1(
+        riffdb_storage_api::StoredServiceAuditRequestIndexV1::new(request_id, sequence),
+    )?;
+    let mut index = transaction
+        .open_table(crate::layout::AUDIT_BY_REQUEST)
+        .map_err(table_error)?;
+    if index
+        .insert(index_key.as_slice(), index_value.as_bytes())
+        .map_err(precommit_storage_error)?
+        .is_some()
+    {
+        return Err(corrupt());
+    }
+    Ok(())
+}
+
 fn append_audit_record(
     transaction: &redb::WriteTransaction,
     record: &StoredAdministrationAuditRecordV1,
@@ -245,6 +266,14 @@ fn append_audit_record(
         .is_some()
     {
         return Err(corrupt());
+    }
+    drop(table);
+    if let StoredAdministrationAuditRecordV1::Service(service) = record {
+        write_service_audit_request_index(
+            transaction,
+            service.request_id(),
+            service.administration_sequence(),
+        )?;
     }
     Ok(())
 }
@@ -412,12 +441,21 @@ impl AdministrationAuditReader for RedbOperationalPorts {
         let mut records = Vec::new();
         let mut bytes = 0usize;
         let mut has_more = false;
-        for entry in table.iter().map_err(precommit_storage_error)? {
+        let mut scan = match request.after() {
+            Some(after) => {
+                let after_key = encode_audit_key(after);
+                table
+                    .range::<&[u8]>((
+                        std::ops::Bound::Excluded(after_key.as_slice()),
+                        std::ops::Bound::Unbounded,
+                    ))
+                    .map_err(precommit_storage_error)?
+            }
+            None => table.iter().map_err(precommit_storage_error)?,
+        };
+        for entry in &mut scan {
             let (key, value) = entry.map_err(precommit_storage_error)?;
             let sequence = decode_audit_key(key.value()).map_err(|_| corrupt())?;
-            if request.after().is_some_and(|after| sequence <= after) {
-                continue;
-            }
             let item = decode_administration_audit_record_v1(value.value())?;
             if item.value().administration_sequence() != sequence {
                 return Err(corrupt());
@@ -539,6 +577,45 @@ impl CatalogAdministrationRepository for RedbOperationalPorts {
             administration_sequence: sequence,
         })
     }
+}
+
+/// Loads every active query-module pointer together with its stored module body.
+pub(crate) fn load_active_query_modules(
+    ports: &RedbOperationalPorts,
+) -> Result<Vec<(ActiveQueryModulePointerV1, StoredQueryModuleV1)>, StorageError> {
+    let transaction = ports.begin_read()?;
+    let active_table = transaction
+        .open_table(QUERY_MODULE_ACTIVE)
+        .map_err(table_error)?;
+    let modules_table = transaction.open_table(QUERY_MODULES).map_err(table_error)?;
+    let mut loaded = Vec::new();
+    let mut count = 0usize;
+    for entry in active_table.iter().map_err(precommit_storage_error)? {
+        let (key, value) = entry.map_err(precommit_storage_error)?;
+        count = count.checked_add(1).ok_or_else(corrupt)?;
+        if count > MAX_RETAINED_QUERY_MODULES {
+            return Err(corrupt());
+        }
+        let record = decoded_value(decode_query_module_administration_v1(value.value())?);
+        let pointer = record.activated().clone();
+        // Self-check key identity.
+        let expected = encode_active_query_module_key(
+            pointer.contract_lineage(),
+            pointer.contract_version(),
+            pointer.contract_bundle_hash(),
+        )
+        .map_err(|_| corrupt())?;
+        if key.value() != expected.as_slice() {
+            return Err(corrupt());
+        }
+        let module =
+            query_module_from_table(&modules_table, pointer.module_hash())?.ok_or_else(corrupt)?;
+        if !pointer.matches_module(&module) {
+            return Err(corrupt());
+        }
+        loaded.push((pointer, module));
+    }
+    Ok(loaded)
 }
 
 fn query_module_from_table<T>(
@@ -1215,7 +1292,6 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
         let (assigned, next) = allocate_sequences(allocator, append_count)?;
         let mut assigned = assigned.into_iter();
         let mut results = Vec::with_capacity(intents.len());
-        let mut index_delta = Vec::with_capacity(usize::from(append_count));
         for (intent, allowed) in intents.iter().zip(allowed) {
             if !allowed {
                 results.push(ServiceAuditAppendResult::PhaseConflict);
@@ -1229,17 +1305,13 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
                 transaction,
                 &StoredAdministrationAuditRecordV1::Service(record.clone()),
             )?;
-            index_delta.push((intent.request_id(), sequence));
             results.push(ServiceAuditAppendResult::Appended(record));
         }
         if assigned.next().is_some() {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         write_administration_allocator(transaction, allocator, next)?;
-        access.commit_for_with_delta(
-            RedbTestOperation::ServiceAudit,
-            Some(TransientIndexDelta::ServiceAuditGroupAppended(index_delta)),
-        )?;
+        access.commit_for(RedbTestOperation::ServiceAudit)?;
         Ok(results)
     }
 }
@@ -1284,7 +1356,6 @@ impl AuditedAdmissionRepository for RedbOperationalPorts {
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let (assigned, next) = allocate_sequences(allocator, count)?;
         let mut outputs = Vec::with_capacity(requests.len());
-        let mut audit_delta = Vec::with_capacity(requests.len());
         for (request, sequence) in requests.iter().zip(assigned) {
             let (admission, created) = stage_admission(transaction, request.admission())?;
             if created
@@ -1301,17 +1372,13 @@ impl AuditedAdmissionRepository for RedbOperationalPorts {
                 transaction,
                 &StoredAdministrationAuditRecordV1::Service(started.clone()),
             )?;
-            audit_delta.push((request.started().request_id(), sequence));
             outputs.push(
                 AuditedAdmissionResultV1::new(admission, started)
                     .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?,
             );
         }
         write_administration_allocator(transaction, allocator, next)?;
-        access.commit_for_with_delta(
-            RedbTestOperation::Admission,
-            Some(TransientIndexDelta::ServiceAuditGroupAppended(audit_delta)),
-        )?;
+        access.commit_for(RedbTestOperation::Admission)?;
         Ok(outputs)
     }
 }
@@ -1413,6 +1480,15 @@ pub(crate) fn stage_service_audit_group_in_write(
         records.push(record);
     }
     drop(audit);
+    // Durable AUDIT_BY_REQUEST rows must land in the same write as fused AUDIT
+    // appends; the transient ServiceAudit delta is not an index authority.
+    for record in &records {
+        write_service_audit_request_index(
+            transaction,
+            record.request_id(),
+            record.administration_sequence(),
+        )?;
+    }
     write_administration_allocator(transaction, allocator, next)?;
     Ok(records)
 }
@@ -1979,13 +2055,7 @@ impl CapabilityBootstrapAdministrationRepository for RedbOperationalPorts {
             &StoredAdministrationAuditRecordV1::Capability(capability_audit),
         )?;
         write_administration_allocator(transaction, allocator, next)?;
-        access.commit_for_with_delta(
-            RedbTestOperation::CapabilityBootstrap,
-            Some(TransientIndexDelta::ServiceAuditAppended {
-                request_id: intent.start().request_id(),
-                sequence: started_sequence,
-            }),
-        )?;
+        access.commit_for(RedbTestOperation::CapabilityBootstrap)?;
         Ok(CapabilityBootstrapResult::BootstrapCreated {
             capability_id: intent.capability_id(),
             revision: NonZeroU64::MIN,
@@ -2037,13 +2107,7 @@ fn bootstrap_replay(
         &StoredAdministrationAuditRecordV1::Service(started),
     )?;
     write_administration_allocator(transaction, allocator, next)?;
-    access.commit_for_with_delta(
-        RedbTestOperation::CapabilityBootstrap,
-        Some(TransientIndexDelta::ServiceAuditAppended {
-            request_id: intent.start().request_id(),
-            sequence: started_sequence,
-        }),
-    )?;
+    access.commit_for(RedbTestOperation::CapabilityBootstrap)?;
     Ok(CapabilityBootstrapResult::BootstrapReplayed {
         capability_id: capability.capability_id(),
         revision: capability.revision(),
@@ -2846,5 +2910,70 @@ mod tests {
             )
             .expect_err("uncertain commit must fence later writes");
         assert_eq!(unavailable.kind(), StorageErrorKind::Unavailable);
+    }
+
+    #[test]
+    fn fused_service_audit_writes_request_index_and_rejects_reuse() {
+        let (_path, mut ports) = initialized_ports("fused-audit-index-gate");
+        let request = request_id(0x61);
+        let started = ServiceAuditAppendIntentV1::new(
+            request,
+            Timestamp::new(10, 0).expect("timestamp"),
+            ServiceOperationV1::GetHealth,
+            ServiceAuditPhaseV1::Started,
+            principal(capability_id(1)),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .expect("started");
+        let failed = ServiceAuditAppendIntentV1::new(
+            request,
+            Timestamp::new(11, 0).expect("timestamp"),
+            ServiceOperationV1::GetHealth,
+            ServiceAuditPhaseV1::Failed,
+            principal(capability_id(1)),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .expect("failed");
+        let access = ports.begin_write().expect("begin write");
+        let staged =
+            stage_service_audit_group_in_write(&access, &[started.clone(), failed.clone()])
+                .expect("stage fused");
+        assert_eq!(staged.len(), 2);
+        access
+            .commit_for(RedbTestOperation::ServiceAudit)
+            .expect("commit fused");
+
+        // Index rows exist for both sequences under the durable secondary index.
+        let read = ports.shared.database.begin_read().expect("read");
+        let index = read
+            .open_table(crate::layout::AUDIT_BY_REQUEST)
+            .expect("index table");
+        let prefix = crate::keys::encode_audit_by_request_prefix(request);
+        let count = index
+            .range::<&[u8]>((
+                std::ops::Bound::Included(prefix.as_slice()),
+                std::ops::Bound::Unbounded,
+            ))
+            .expect("range")
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .ok()
+                    .is_some_and(|(key, _)| key.value().starts_with(prefix.as_slice()))
+            })
+            .count();
+        assert_eq!(count, 2);
+
+        // Same RequestId cannot be re-admitted as a new Started lifecycle.
+        let reuse = ports
+            .append_service_audit(&started)
+            .expect("reuse attempt returns phase conflict, not success");
+        assert!(matches!(reuse, ServiceAuditAppendResult::PhaseConflict));
     }
 }

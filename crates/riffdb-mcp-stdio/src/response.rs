@@ -2508,6 +2508,7 @@ mod tests {
             provenance_uri: String::new(),
             durability_mode: String::new(),
             outcome_uri: None,
+            history_incarnation: 1,
         }
     }
 
@@ -2546,6 +2547,7 @@ mod tests {
                         contract_ir_version: 1,
                         mcp_protocol_baseline: "2025-11-25".to_owned(),
                     }),
+                    history_incarnation: 1,
                 },
             )),
             database_alias: "ea".to_owned(),

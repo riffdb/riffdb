@@ -19,9 +19,9 @@ use riffdb_catalog::{
 };
 use riffdb_commit::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
-    ApplicationCommitNotificationError, ApplicationCommitNotificationSink, CoordinatorDurability,
-    CoordinatorWorkloadCapacity, ProvenanceIdSource, ProvenanceIdSourceError,
-    RunningCommandCoordinator,
+    ApplicationCommitNotificationError, ApplicationCommitNotificationSink,
+    CommandExecutionCapacityPermit, CoordinatorDurability, CoordinatorWorkloadCapacity,
+    ProvenanceIdSource, ProvenanceIdSourceError, RunningCommandCoordinator,
 };
 use riffdb_conflict::{ConflictManager, ConflictManagerConfig, ShardedConflictManager};
 use riffdb_contract_compiler::{compile_contract_source, compile_contract_successor};
@@ -176,6 +176,44 @@ impl ServiceHarness {
         )
     }
 
+    /// Command harness with a single coordinator workload slot for saturation tests.
+    pub(crate) fn command_capacity_one() -> Self {
+        Self::command_capacity_n(1)
+    }
+
+    /// Command harness with `n` coordinator workload slots for saturation tests.
+    ///
+    /// Uses a direct empty idempotency lane so inspect does not share the
+    /// writer queue (production uses a direct MVCC reader for the same reason).
+    pub(crate) fn command_capacity_n(workload_capacity: u16) -> Self {
+        Self::compose_with_additional_commands_and_capacity(
+            ReadCommitMode::ImmediateNotFound,
+            false,
+            true,
+            false,
+            false,
+            false,
+            0,
+            workload_capacity.max(1),
+            true,
+        )
+    }
+
+    /// Capacity harness that also activates one read-only ObserveBudget command.
+    pub(crate) fn command_capacity_n_with_observe(workload_capacity: u16) -> Self {
+        Self::compose_with_additional_commands_and_capacity(
+            ReadCommitMode::ImmediateNotFound,
+            false,
+            true,
+            false,
+            false,
+            false,
+            1,
+            workload_capacity.max(1),
+            true,
+        )
+    }
+
     pub(crate) fn command_with_failing_incident_source() -> Self {
         Self::compose(
             ReadCommitMode::ImmediateNotFound,
@@ -261,6 +299,31 @@ impl ServiceHarness {
         pre_bootstrap: bool,
         additional_commands: usize,
     ) -> Self {
+        Self::compose_with_additional_commands_and_capacity(
+            read_mode,
+            allow_read_commit,
+            restrict_command_partition,
+            fail_incident_source,
+            broad_operations,
+            pre_bootstrap,
+            additional_commands,
+            8,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compose_with_additional_commands_and_capacity(
+        read_mode: ReadCommitMode,
+        allow_read_commit: bool,
+        restrict_command_partition: bool,
+        fail_incident_source: bool,
+        broad_operations: bool,
+        pre_bootstrap: bool,
+        additional_commands: usize,
+        workload_capacity: u16,
+        direct_empty_idempotency: bool,
+    ) -> Self {
         let database = if pre_bootstrap {
             AuditDatabase::create_pre_bootstrap(broad_operations)
         } else {
@@ -304,12 +367,18 @@ impl ServiceHarness {
             capability_order,
             discovery_order,
         ));
-        let coordinator = start_coordinator(database.open());
+        let coordinator = start_coordinator_with_capacity(database.open(), workload_capacity);
+        let mut inspector =
+            coordinator.command_idempotency_inspector(Arc::new(FixedDigestProvider));
+        if direct_empty_idempotency {
+            // Saturation tests hold the writer queue; inspect must not share it.
+            inspector = inspector.with_direct_repository(Arc::new(EmptyAdmissionLookup));
+        }
         let executors = ServiceExecutors::new(
             coordinator.administration_audit_executor(),
             coordinator.control_plane_executor(),
             coordinator.command_executor(),
-            coordinator.command_idempotency_inspector(Arc::new(FixedDigestProvider)),
+            inspector,
         );
         let telemetry = Arc::new(HarnessTelemetry::default());
         let health = Arc::new(HarnessHealth::default());
@@ -336,6 +405,7 @@ impl ServiceHarness {
             database_id(),
             environment(),
             AgentSessionAdmissionPolicy::Discard,
+            1,
         );
         let process = ServiceProcessMetadata::new(
             timestamp(BASE_SECONDS),
@@ -367,7 +437,15 @@ impl ServiceHarness {
     }
 
     pub(crate) fn context(&self, request_seed: u8) -> (RequestContext, RequestCancellationHandle) {
-        let (control, cancellation) = RequestControl::new(Instant::now() + Duration::from_secs(30));
+        self.context_with_deadline(request_seed, Instant::now() + Duration::from_secs(30))
+    }
+
+    pub(crate) fn context_with_deadline(
+        &self,
+        request_seed: u8,
+        deadline: Instant,
+    ) -> (RequestContext, RequestCancellationHandle) {
+        let (control, cancellation) = RequestControl::new(deadline);
         (
             RequestContext::new(
                 request_id(request_seed),
@@ -391,6 +469,61 @@ impl ServiceHarness {
 
     pub(crate) fn close_pre_bootstrap_health(&self) {
         self.pre_bootstrap.close();
+    }
+
+    /// Holds one command coordinator workload slot for capacity-saturation tests.
+    pub(crate) fn hold_command_capacity(&self) -> CommandExecutionCapacityPermit {
+        self.coordinator
+            .as_ref()
+            .expect("coordinator is running")
+            .command_executor()
+            .try_reserve_capacity()
+            .expect("hold one free command workload slot")
+    }
+
+    /// Holds `count` command workload slots (for capacity-N saturation tests).
+    pub(crate) fn hold_command_capacity_n(
+        &self,
+        count: usize,
+    ) -> Vec<CommandExecutionCapacityPermit> {
+        let executor = self
+            .coordinator
+            .as_ref()
+            .expect("coordinator is running")
+            .command_executor();
+        let mut held = Vec::with_capacity(count);
+        for _ in 0..count {
+            held.push(
+                executor
+                    .try_reserve_capacity()
+                    .expect("hold free command workload slot"),
+            );
+        }
+        held
+    }
+
+    /// Returns whether the next non-blocking command reservation is overload.
+    pub(crate) fn try_command_capacity_is_full(&self) -> bool {
+        matches!(
+            self.coordinator
+                .as_ref()
+                .expect("coordinator is running")
+                .command_executor()
+                .try_reserve_capacity(),
+            Err(riffdb_commit::CommandExecutionAdmissionError::Overloaded)
+        )
+    }
+
+    /// Exhausts the independent retained-byte budget (for RetainedBytes stage tests).
+    pub(crate) fn hold_all_retained_bytes(&self) -> tokio::sync::OwnedSemaphorePermit {
+        // Acquire the full 32 MiB / 1 KiB unit budget used by the coordinator.
+        const TOTAL_UNITS: u32 = (32 * 1_024 * 1_024) / 1_024;
+        self.coordinator
+            .as_ref()
+            .expect("coordinator is running")
+            .command_executor()
+            .try_acquire_retained_bytes(TOTAL_UNITS)
+            .expect("full retained-byte budget at start")
     }
 
     pub(crate) fn deploy_request(&self) -> DeployContractRequest {
@@ -1102,6 +1235,26 @@ impl ServiceHarness {
         .expect("bounded command request")
     }
 
+    /// Read-only ObserveBudget0000 request (requires `command_capacity_n_with_observe`).
+    pub(crate) fn observe_budget_request(&self) -> ExecuteCommandRequest {
+        let plan = self
+            .database
+            .active_catalog
+            .bundle()
+            .bundle()
+            .commands()
+            .iter()
+            .find(|plan| plan.name() == "ObserveBudget0000")
+            .expect("ObserveBudget0000 must be activated");
+        let input = build_command_input(plan, ORGANIZATION_ID);
+        ExecuteCommandRequest::new(
+            SourceName::new("ObserveBudget0000").expect("checked observe command name"),
+            Some(self.database.executable_plan.reference().contract_version()),
+            SubmittedRecord::try_from(input).expect("bounded observe input"),
+        )
+        .expect("bounded observe request")
+    }
+
     pub(crate) fn resolve_command_outcome_request(&self) -> ResolveCommandOutcomeRequest {
         ResolveCommandOutcomeRequest::new(
             self.database
@@ -1753,13 +1906,46 @@ fn startup_inputs() -> StartupValidationInputs {
     )
 }
 
+/// Read-only idempotency lane that always reports no durable admission state.
+///
+/// Production uses a shared storage reader; the harness only needs Absent so
+/// inspect does not compete with the command writer queue under capacity tests.
+struct EmptyAdmissionLookup;
+
+impl riffdb_storage_api::AdmissionLookupRepository for EmptyAdmissionLookup {
+    fn lookup_admission(
+        &self,
+        _candidates: riffdb_storage_api::IdempotencyLookupCandidatesV1,
+    ) -> Result<riffdb_storage_api::AdmissionLookupResultV1, riffdb_storage_api::StorageError> {
+        Ok(riffdb_storage_api::AdmissionLookupResultV1::NotFound)
+    }
+
+    fn lookup_admission_group(
+        &self,
+        candidates: Vec<riffdb_storage_api::IdempotencyLookupCandidatesV1>,
+    ) -> Result<Vec<riffdb_storage_api::AdmissionLookupResultV1>, riffdb_storage_api::StorageError>
+    {
+        Ok(candidates
+            .into_iter()
+            .map(|_| riffdb_storage_api::AdmissionLookupResultV1::NotFound)
+            .collect())
+    }
+}
+
 fn start_coordinator(ports: RedbOperationalPorts) -> RunningCommandCoordinator {
+    start_coordinator_with_capacity(ports, 8)
+}
+
+fn start_coordinator_with_capacity(
+    ports: RedbOperationalPorts,
+    workload_capacity: u16,
+) -> RunningCommandCoordinator {
     let conflicts: Arc<dyn ConflictManager> = Arc::new(
         ShardedConflictManager::new(ConflictManagerConfig::default())
             .expect("start conflict manager"),
     );
     RunningCommandCoordinator::start(
-        CoordinatorWorkloadCapacity::new(8).expect("nonzero coordinator capacity"),
+        CoordinatorWorkloadCapacity::new(workload_capacity).expect("nonzero coordinator capacity"),
         CoordinatorDurability::Sync,
         ports,
         conflicts,
@@ -3424,12 +3610,12 @@ impl CatalogReadPort for HarnessPorts {
         })
     }
 
-    fn prepare_contract_version(
-        &self,
-        _control: &RequestControl,
+    fn prepare_contract_version<'a>(
+        &'a self,
+        _control: &'a RequestControl,
         lineage: ContractLineage,
         version: ContractVersion,
-    ) -> PortFuture<'_, Option<ValidatedContractBundle>, CatalogError> {
+    ) -> PortFuture<'a, Option<ValidatedContractBundle>, CatalogError> {
         self.shared
             .prepare_contract_version_calls
             .fetch_add(1, Ordering::AcqRel);
@@ -3443,11 +3629,11 @@ impl CatalogReadPort for HarnessPorts {
         Box::pin(async move { Ok(bundle) })
     }
 
-    fn reserve_active_catalog(
-        &self,
-        _control: &RequestControl,
+    fn reserve_active_catalog<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<(), Option<ActiveCatalogSnapshot>, CatalogError>,
         PortAdmissionError,
     > {
@@ -3472,11 +3658,11 @@ impl CatalogReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(ActiveCatalogPermit { shared }) as _) })
     }
 
-    fn reserve_contract_version(
-        &self,
-        _control: &RequestControl,
+    fn reserve_contract_version<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             (ContractLineage, ContractVersion),
             Option<ValidatedContractBundle>,
@@ -3488,11 +3674,11 @@ impl CatalogReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(ContractVersionPermit { shared }) as _) })
     }
 
-    fn executable_plan(
-        &self,
-        _control: &RequestControl,
+    fn executable_plan<'a>(
+        &'a self,
+        _control: &'a RequestControl,
         request: CatalogExecutablePlanRequest,
-    ) -> PortFuture<'_, ResolvedExecutablePlan, CatalogError> {
+    ) -> PortFuture<'a, ResolvedExecutablePlan, CatalogError> {
         let panic = self
             .shared
             .panic_executable_plan
@@ -3514,12 +3700,12 @@ impl CatalogReadPort for HarnessPorts {
         })
     }
 
-    fn prepare_deployment(
-        &self,
-        _control: &RequestControl,
+    fn prepare_deployment<'a>(
+        &'a self,
+        _control: &'a RequestControl,
         candidate: ContractBundle,
         expected_active_version: Option<ContractVersion>,
-    ) -> PortFuture<'_, CatalogPreparationResult, CatalogError> {
+    ) -> PortFuture<'a, CatalogPreparationResult, CatalogError> {
         let shared = Arc::clone(&self.shared);
         Box::pin(async move {
             shared.prepare_deployment_started.notify_one();
@@ -3538,11 +3724,11 @@ impl CatalogReadPort for HarnessPorts {
 }
 
 impl AuthoritativeReadPort for HarnessPorts {
-    fn reserve_read_entity(
-        &self,
-        _control: &RequestControl,
+    fn reserve_read_entity<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             AuthoritativeEntityRequest,
             Option<AuthoritativeEntitySnapshot>,
@@ -3554,11 +3740,11 @@ impl AuthoritativeReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(ReadEntityPermit { shared }) as _) })
     }
 
-    fn reserve_scan_index(
-        &self,
-        _control: &RequestControl,
+    fn reserve_scan_index<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             AuthoritativeIndexRequest,
             AuthoritativeIndexPage,
@@ -3570,11 +3756,11 @@ impl AuthoritativeReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(ScanIndexPermit { shared }) as _) })
     }
 
-    fn reserve_read_outcome(
-        &self,
-        _control: &RequestControl,
+    fn reserve_read_outcome<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             AuthoritativeOutcomeRequest,
             Option<AuthoritativeOutcomeSnapshot>,
@@ -3589,11 +3775,11 @@ impl AuthoritativeReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(ReadOutcomePermit { shared }) as _) })
     }
 
-    fn reserve_read_commit(
-        &self,
-        _control: &RequestControl,
+    fn reserve_read_commit<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             CommitSequence,
             Option<AuthoritativeCommitSnapshot>,
@@ -3615,11 +3801,11 @@ impl AuthoritativeReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(ReadCommitPermit { shared }) as _) })
     }
 
-    fn reserve_scan_commits(
-        &self,
-        _control: &RequestControl,
+    fn reserve_scan_commits<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             AuthoritativeCommitScanRequest,
             AuthoritativeCommitPage,
@@ -3631,11 +3817,11 @@ impl AuthoritativeReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(ScanCommitsPermit { shared }) as _) })
     }
 
-    fn reserve_subscribe_to_commits(
-        &self,
-        _control: &RequestControl,
+    fn reserve_subscribe_to_commits<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             AuthoritativeCommitSubscriptionRequest,
             Box<dyn CommitNotificationSource>,
@@ -3647,11 +3833,11 @@ impl AuthoritativeReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(SubscribeCommitPermit { shared }) as _) })
     }
 
-    fn reserve_trace_provenance(
-        &self,
-        _control: &RequestControl,
+    fn reserve_trace_provenance<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             riffdb_policy::ProvenanceSelector,
             Option<AuthoritativeProvenanceSnapshot>,
@@ -3663,11 +3849,11 @@ impl AuthoritativeReadPort for HarnessPorts {
         Box::pin(async move { Ok(Box::new(TraceProvenancePermit { shared }) as _) })
     }
 
-    fn read_capability_revoke_target(
-        &self,
-        _control: &RequestControl,
+    fn read_capability_revoke_target<'a>(
+        &'a self,
+        _control: &'a RequestControl,
         capability_id: riffdb_types::CapabilityId,
-    ) -> PortFuture<'_, CapabilityRevokeTargetSnapshot, AuthoritativeReadError> {
+    ) -> PortFuture<'a, CapabilityRevokeTargetSnapshot, AuthoritativeReadError> {
         let panic = self
             .shared
             .panic_revoke_target_read
