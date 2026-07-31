@@ -877,7 +877,7 @@ fn batch_item_from_service_result(
     }
 }
 
-/// Assembles the batch response under the ADR-0077 field-1 rule.
+/// Assembles the batch response under the ADR-0084 field-1 rule.
 ///
 /// Legacy `responses` are cloned only after every item is known to have
 /// succeeded, so mixed batches never pay a wasted success-row clone.
@@ -1157,7 +1157,7 @@ impl CommandService for GrpcApplication {
                 &metadata,
                 request_id,
             )?;
-            // Per-item carriage names the batch operation (ADR-0077).
+            // Per-item carriage names the batch operation (ADR-0084).
             let item_error_context =
                 ApplicationErrorContextBuilder::new(ApplicationOperation::BatchCommand, request_id);
             invocations.push(tokio::spawn(async move {

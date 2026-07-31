@@ -56,7 +56,7 @@ message ExecuteCommandBatchResponse {
   // item carries an error (never partially populated).
   repeated ExecuteCommandResponse responses = 1;
   // Always populated, length equals the request command count. Prefer this
-  // field; see ADR-0077.
+  // field; see ADR-0084.
   repeated ExecuteCommandBatchItem items = 2;
 }
 

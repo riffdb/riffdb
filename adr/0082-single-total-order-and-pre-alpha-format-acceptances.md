@@ -1,4 +1,4 @@
-# ADR-0075: Single Total Order and Pre-Alpha Format Acceptances
+# ADR-0082: Single Total Order and Pre-Alpha Format Acceptances
 
 - **Status:** Proposed
 - **Date:** 2026-07-31
