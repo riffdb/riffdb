@@ -326,6 +326,43 @@ impl riffdb_service::CommandApplication for ProjectionService {
                         ValidationPath::root(),
                     )),
                 ))),
+                // Distinct plan hashes so mirroring/order assertions discriminate.
+                "OkCommandA" => {
+                    let result = riffdb_service::ReadOnlyCommandResult::integration_fixture(
+                        ContractLineage::new(LINEAGE).expect("lineage"),
+                        ContractVersion::new(1).expect("version"),
+                        PlanHash::from_bytes([0xA1; 32]),
+                        "CompletedA",
+                    )
+                    .expect("fixture read-only result");
+                    Ok(riffdb_service::ExecuteCommandResult::ReadOnlyExecuted(
+                        result,
+                    ))
+                }
+                "OkCommandB" => {
+                    let result = riffdb_service::ReadOnlyCommandResult::integration_fixture(
+                        ContractLineage::new(LINEAGE).expect("lineage"),
+                        ContractVersion::new(1).expect("version"),
+                        PlanHash::from_bytes([0xB2; 32]),
+                        "CompletedB",
+                    )
+                    .expect("fixture read-only result");
+                    Ok(riffdb_service::ExecuteCommandResult::ReadOnlyExecuted(
+                        result,
+                    ))
+                }
+                "OkCommandC" => {
+                    let result = riffdb_service::ReadOnlyCommandResult::integration_fixture(
+                        ContractLineage::new(LINEAGE).expect("lineage"),
+                        ContractVersion::new(1).expect("version"),
+                        PlanHash::from_bytes([0xC3; 32]),
+                        "CompletedC",
+                    )
+                    .expect("fixture read-only result");
+                    Ok(riffdb_service::ExecuteCommandResult::ReadOnlyExecuted(
+                        result,
+                    ))
+                }
                 _ => {
                     let result = riffdb_service::ReadOnlyCommandResult::integration_fixture(
                         ContractLineage::new(LINEAGE).expect("lineage"),
@@ -2213,15 +2250,15 @@ async fn execute_batch_carries_per_item_results_over_authenticated_loopback() {
         BearerCredential::new(CAPABILITY_TOKEN).expect("valid credential presentation"),
     );
 
-    // Mixed batch: success, capacity rejection, success — input order preserved,
-    // legacy field 1 empty, typed error names batch operation.
+    // Mixed batch: distinct successes + capacity rejection — input order preserved
+    // by plan-hash discrimination, legacy field 1 empty, typed error names batch op.
     let mixed = client
         .execute_batch(
             v1::ExecuteCommandBatchRequest {
                 commands: vec![
-                    batch_command(10, "OkCommand"),
+                    batch_command(10, "OkCommandA"),
                     batch_command(11, "Overloaded"),
-                    batch_command(12, "OkCommand"),
+                    batch_command(12, "OkCommandC"),
                 ],
             },
             &metadata,
@@ -2233,10 +2270,13 @@ async fn execute_batch_carries_per_item_results_over_authenticated_loopback() {
         "field 1 must be empty when any item fails"
     );
     assert_eq!(mixed.items.len(), 3);
-    assert!(matches!(
-        mixed.items[0].result,
-        Some(v1::execute_command_batch_item::Result::Response(_))
-    ));
+    match mixed.items[0].result.as_ref().expect("item 0 set") {
+        v1::execute_command_batch_item::Result::Response(response) => {
+            assert_eq!(response.plan_hash, vec![0xA1; 32]);
+            assert_eq!(response.outcome_type, "CompletedA");
+        }
+        v1::execute_command_batch_item::Result::Error(_) => panic!("expected success arm"),
+    }
     match mixed.items[1].result.as_ref().expect("item 1 set") {
         v1::execute_command_batch_item::Result::Error(error) => {
             assert_eq!(
@@ -2252,18 +2292,48 @@ async fn execute_batch_carries_per_item_results_over_authenticated_loopback() {
             panic!("expected capacity error arm")
         }
     }
-    assert!(matches!(
-        mixed.items[2].result,
-        Some(v1::execute_command_batch_item::Result::Response(_))
-    ));
+    match mixed.items[2].result.as_ref().expect("item 2 set") {
+        v1::execute_command_batch_item::Result::Response(response) => {
+            assert_eq!(response.plan_hash, vec![0xC3; 32]);
+            assert_eq!(response.outcome_type, "CompletedC");
+        }
+        v1::execute_command_batch_item::Result::Error(_) => panic!("expected success arm"),
+    }
 
-    // All-success: both fields populated and positionally mirrored.
+    // Validation rejection is carried per-item (exercises InputInvalid arm).
+    let invalid = client
+        .execute_batch(
+            v1::ExecuteCommandBatchRequest {
+                commands: vec![
+                    batch_command(13, "OkCommandA"),
+                    batch_command(14, "InputInvalid"),
+                ],
+            },
+            &metadata,
+        )
+        .await
+        .expect("validation mixed batch");
+    assert!(invalid.responses.is_empty());
+    assert_eq!(invalid.items.len(), 2);
+    match invalid.items[1].result.as_ref().expect("invalid item") {
+        v1::execute_command_batch_item::Result::Error(error) => {
+            assert_eq!(
+                error.code,
+                riffdb_proto::app::v1::ApplicationErrorCode::InputInvalid as i32
+            );
+        }
+        v1::execute_command_batch_item::Result::Response(_) => {
+            panic!("expected validation error arm")
+        }
+    }
+
+    // All-success: both fields populated and positionally mirrored with distinct rows.
     let all_success = client
         .execute_batch(
             v1::ExecuteCommandBatchRequest {
                 commands: vec![
-                    batch_command(20, "OkCommand"),
-                    batch_command(21, "OkCommand"),
+                    batch_command(20, "OkCommandA"),
+                    batch_command(21, "OkCommandB"),
                 ],
             },
             &metadata,
@@ -2272,6 +2342,10 @@ async fn execute_batch_carries_per_item_results_over_authenticated_loopback() {
         .expect("all-success batch");
     assert_eq!(all_success.items.len(), 2);
     assert_eq!(all_success.responses.len(), 2);
+    assert_ne!(
+        all_success.responses[0].plan_hash, all_success.responses[1].plan_hash,
+        "fixture responses must be distinct so reverse-mirror would fail"
+    );
     for (index, item) in all_success.items.iter().enumerate() {
         let v1::execute_command_batch_item::Result::Response(response) =
             item.result.as_ref().expect("success arm")
@@ -2280,6 +2354,8 @@ async fn execute_batch_carries_per_item_results_over_authenticated_loopback() {
         };
         assert_eq!(&all_success.responses[index], response);
     }
+    assert_eq!(all_success.responses[0].plan_hash, vec![0xA1; 32]);
+    assert_eq!(all_success.responses[1].plan_hash, vec![0xB2; 32]);
 
     let observed = service.observed();
     assert!(
@@ -2287,7 +2363,7 @@ async fn execute_batch_carries_per_item_results_over_authenticated_loopback() {
             .iter()
             .filter(|item| item.operation == ServiceOperationV1::ExecuteCommand)
             .count()
-            >= 5
+            >= 7
     );
 
     shutdown_sender.send(()).expect("server still running");
