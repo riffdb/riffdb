@@ -218,25 +218,6 @@ async fn get_entity(
         .begin_invocation(&context, policy_request, targets, AuditScope::StandardRead)
         .await?;
 
-    let permit = match wait_with_control(
-        context.control(),
-        service.providers.deadline_scheduler.as_ref(),
-        service
-            .providers
-            .authoritative
-            .reserve_read_entity(context.control()),
-    )
-    .await
-    {
-        Ok(Ok(permit)) => permit,
-        Ok(Err(error)) => {
-            return Err(finish_admission_failure(&service, &context, &begun, error).await);
-        }
-        Err(error) => {
-            return Err(finish_controlled_wait(&service, &context, &begun, error).await);
-        }
-    };
-
     let authorization = begun.reauthorize(&service, &context).await?;
     let _initial_visible_fields = match entity_authorization(
         &service,
@@ -255,31 +236,69 @@ async fn get_entity(
 
     let lower_request =
         AuthoritativeEntityRequest::new(lineage.clone(), version, request.key().clone());
-    let receipt = match permit.submit(lower_request) {
-        Ok(receipt) => receipt,
-        Err(error) => {
-            return Err(finish_admission_failure(&service, &context, &begun, error).await);
-        }
-    };
-    let snapshot = match wait_with_control(
+    // Port admission + lower read retry together; audit begin/finish stay outside.
+    let snapshot = match crate::read_retry::with_read_retry(
         context.control(),
         service.providers.deadline_scheduler.as_ref(),
-        receipt,
+        service.providers.telemetry.as_ref(),
+        OPERATION,
+        |_attempt| {
+            let service = &service;
+            let context = &context;
+            let lower_request = lower_request.clone();
+            async move {
+                let permit = match wait_with_control(
+                    context.control(),
+                    service.providers.deadline_scheduler.as_ref(),
+                    service
+                        .providers
+                        .authoritative
+                        .reserve_read_entity(context.control()),
+                )
+                .await
+                {
+                    Ok(Ok(permit)) => permit,
+                    Ok(Err(PortAdmissionError::Unavailable)) => {
+                        return Err(Ok(crate::read_retry::RetryableReadFault::PortUnavailable));
+                    }
+                    Ok(Err(error)) => {
+                        return Err(Err(admission_error_failure(error)));
+                    }
+                    Err(error) => return Err(Err(controlled_wait_failure(error))),
+                };
+                let receipt = match permit.submit(lower_request) {
+                    Ok(receipt) => receipt,
+                    Err(PortAdmissionError::Unavailable) => {
+                        return Err(Ok(crate::read_retry::RetryableReadFault::PortUnavailable));
+                    }
+                    Err(error) => return Err(Err(admission_error_failure(error))),
+                };
+                match wait_with_control(
+                    context.control(),
+                    service.providers.deadline_scheduler.as_ref(),
+                    receipt,
+                )
+                .await
+                {
+                    Ok(Ok(Ok(snapshot))) => Ok(snapshot),
+                    Ok(Ok(Err(AuthoritativeReadError::Unavailable))) => Err(Ok(
+                        crate::read_retry::RetryableReadFault::BackendUnavailable,
+                    )),
+                    Ok(Ok(Err(error))) => {
+                        Err(Err(authoritative_read_failure(service, OPERATION, error)))
+                    }
+                    Ok(Err(PortDriverStopped)) => {
+                        Err(Err(lower_integrity_failure(service, OPERATION)))
+                    }
+                    Err(error) => Err(Err(controlled_wait_failure(error))),
+                }
+            }
+        },
     )
     .await
     {
-        Ok(Ok(Ok(snapshot))) => snapshot,
-        Ok(Ok(Err(error))) => {
-            let failure = authoritative_read_failure(&service, OPERATION, error);
-            return Err(finish_failure(&service, &context, &begun, failure).await);
-        }
-        Ok(Err(PortDriverStopped)) => {
-            let failure = lower_integrity_failure(&service, OPERATION);
-            return Err(finish_failure(&service, &context, &begun, failure).await);
-        }
-        Err(error) => {
-            return Err(finish_controlled_wait(&service, &context, &begun, error).await);
-        }
+        Ok(snapshot) => snapshot,
+        Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
     };
 
     let return_authorization = begun.reauthorize(&service, &context).await?;
@@ -418,25 +437,6 @@ async fn scan_index(
         return Err(begun.finish_authorization_denial(&service, &context).await);
     }
 
-    let permit = match wait_with_control(
-        context.control(),
-        service.providers.deadline_scheduler.as_ref(),
-        service
-            .providers
-            .authoritative
-            .reserve_scan_index(context.control()),
-    )
-    .await
-    {
-        Ok(Ok(permit)) => permit,
-        Ok(Err(error)) => {
-            return Err(finish_admission_failure(&service, &context, &begun, error).await);
-        }
-        Err(error) => {
-            return Err(finish_controlled_wait(&service, &context, &begun, error).await);
-        }
-    };
-
     let authorization = begun.reauthorize(&service, &context).await?;
     let Some(current_policy) = current_scan_policy(
         &service,
@@ -475,36 +475,72 @@ async fn scan_index(
             return Err(finish_failure(&service, &context, &begun, failure).await);
         }
     };
-    let receipt = match permit.submit(lower_request) {
-        Ok(receipt) => receipt,
-        Err(error) => {
-            return Err(finish_admission_failure(&service, &context, &begun, error).await);
-        }
-    };
-    let lower_page = match wait_with_control(
+    // Port admission + lower page retry together; audit begin/finish stay outside.
+    // Stale/invalid continuations are not retried.
+    let lower_page = match crate::read_retry::with_read_retry(
         context.control(),
         service.providers.deadline_scheduler.as_ref(),
-        receipt,
+        service.providers.telemetry.as_ref(),
+        OPERATION,
+        |_attempt| {
+            let service = &service;
+            let context = &context;
+            let lower_request = lower_request.clone();
+            let has_cursor = cursor_state.is_some();
+            async move {
+                let permit = match wait_with_control(
+                    context.control(),
+                    service.providers.deadline_scheduler.as_ref(),
+                    service
+                        .providers
+                        .authoritative
+                        .reserve_scan_index(context.control()),
+                )
+                .await
+                {
+                    Ok(Ok(permit)) => permit,
+                    Ok(Err(PortAdmissionError::Unavailable)) => {
+                        return Err(Ok(crate::read_retry::RetryableReadFault::PortUnavailable));
+                    }
+                    Ok(Err(error)) => return Err(Err(admission_error_failure(error))),
+                    Err(error) => return Err(Err(controlled_wait_failure(error))),
+                };
+                let receipt = match permit.submit(lower_request) {
+                    Ok(receipt) => receipt,
+                    Err(PortAdmissionError::Unavailable) => {
+                        return Err(Ok(crate::read_retry::RetryableReadFault::PortUnavailable));
+                    }
+                    Err(error) => return Err(Err(admission_error_failure(error))),
+                };
+                match wait_with_control(
+                    context.control(),
+                    service.providers.deadline_scheduler.as_ref(),
+                    receipt,
+                )
+                .await
+                {
+                    Ok(Ok(Ok(page))) => Ok(page),
+                    Ok(Ok(Err(AuthoritativeReadError::Unavailable))) => Err(Ok(
+                        crate::read_retry::RetryableReadFault::BackendUnavailable,
+                    )),
+                    Ok(Ok(Err(AuthoritativeReadError::InvalidContinuation))) if has_cursor => {
+                        Err(Err(invalid_cursor_failure()))
+                    }
+                    Ok(Ok(Err(error))) => {
+                        Err(Err(authoritative_read_failure(service, OPERATION, error)))
+                    }
+                    Ok(Err(PortDriverStopped)) => {
+                        Err(Err(lower_integrity_failure(service, OPERATION)))
+                    }
+                    Err(error) => Err(Err(controlled_wait_failure(error))),
+                }
+            }
+        },
     )
     .await
     {
-        Ok(Ok(Ok(page))) => page,
-        Ok(Ok(Err(error))) => {
-            let failure = match error {
-                AuthoritativeReadError::InvalidContinuation if cursor_state.is_some() => {
-                    invalid_cursor_failure()
-                }
-                error => authoritative_read_failure(&service, OPERATION, error),
-            };
-            return Err(finish_failure(&service, &context, &begun, failure).await);
-        }
-        Ok(Err(PortDriverStopped)) => {
-            let failure = lower_integrity_failure(&service, OPERATION);
-            return Err(finish_failure(&service, &context, &begun, failure).await);
-        }
-        Err(error) => {
-            return Err(finish_controlled_wait(&service, &context, &begun, error).await);
-        }
+        Ok(page) => page,
+        Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
     };
 
     if cursor_state
@@ -2973,6 +3009,20 @@ fn controlled_wait_failure(error: ControlledWaitError) -> ServiceFailure {
     }
 }
 
+/// Maps admission failures to typed service failures without finishing audit.
+///
+/// Used inside the internal read-retry loop so terminal classifications can be
+/// finished exactly once by the outer orchestration path.
+fn admission_error_failure(error: PortAdmissionError) -> ServiceFailure {
+    match error {
+        PortAdmissionError::Cancelled => ServiceFailure::Cancelled,
+        PortAdmissionError::DeadlineExceeded => ServiceFailure::DeadlineExceeded,
+        PortAdmissionError::Unavailable | PortAdmissionError::Stopped => {
+            PublicError::storage_unavailable().into()
+        }
+    }
+}
+
 fn catalog_failure(
     service: &RiffDbServiceInner,
     operation: ServiceOperationV1,
@@ -2991,6 +3041,8 @@ fn authoritative_read_failure(
 ) -> ServiceFailure {
     match error {
         AuthoritativeReadError::Unavailable => PublicError::storage_unavailable().into(),
+        AuthoritativeReadError::Cancelled => ServiceFailure::Cancelled,
+        AuthoritativeReadError::DeadlineExceeded => ServiceFailure::DeadlineExceeded,
         AuthoritativeReadError::Integrity | AuthoritativeReadError::InvalidContinuation => {
             lower_integrity_failure(service, operation)
         }

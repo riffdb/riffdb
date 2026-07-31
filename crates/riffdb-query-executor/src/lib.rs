@@ -276,10 +276,24 @@ fn burn(remaining: &mut u64, amount: u64) -> Result<(), QueryExecutionError> {
     Ok(())
 }
 
+/// Closed backend fault classification retained below the safe public boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueryBackendFault {
+    /// Transient unavailability that may clear without client restart.
+    Unavailable,
+    /// Corrupt or invariant-violating durable state.
+    Integrity,
+    /// A backend resource or semantic ceiling was exceeded.
+    LimitExceeded,
+}
+
 /// The only operations available while a concrete adapter owns one read transaction.
 pub trait QueryReadView {
     /// Adapter-internal error retained below the safe public boundary.
     type Error;
+
+    /// Classifies an adapter error without exposing diagnostics.
+    fn fault(&self, error: &Self::Error) -> QueryBackendFault;
 
     /// Application commit head observed by this exact snapshot.
     fn application_head(&self) -> u64;
@@ -310,6 +324,14 @@ pub trait QueryReadView {
         limit: u64,
         after: Option<&[u8]>,
     ) -> Result<QueryScanPage, Self::Error>;
+}
+
+fn map_view_error<V: QueryReadView>(view: &V, error: &V::Error) -> QueryExecutionError {
+    match view.fault(error) {
+        QueryBackendFault::Unavailable => QueryExecutionError::BackendUnavailable,
+        QueryBackendFault::Integrity => QueryExecutionError::BackendIntegrity,
+        QueryBackendFault::LimitExceeded => QueryExecutionError::BackendLimitExceeded,
+    }
 }
 
 /// Checked lower continuation and epoch fence resolved from one opaque cursor.
@@ -447,6 +469,10 @@ pub enum QueryExecutionError {
     InvalidProgram,
     /// Engine adapter failed; its source is retained by the adapter, not here.
     BackendUnavailable,
+    /// Engine adapter reported corrupt or invariant-violating durable state.
+    BackendIntegrity,
+    /// Engine adapter reported a resource or semantic ceiling was exceeded.
+    BackendLimitExceeded,
     /// A row, byte, scan, or result ceiling was exceeded.
     BoundExceeded,
     /// Backend work or result shaping exhausted the admitted whole-query fuel.
@@ -516,7 +542,7 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
                 fuel.points(1)?;
                 (
                     view.point(step, &predicates)
-                        .map_err(|_| QueryExecutionError::BackendUnavailable)?
+                        .map_err(|error| map_view_error(view, &error))?
                         .into_iter()
                         .collect::<Vec<_>>(),
                     Some(predicates),
@@ -543,7 +569,7 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
                 fuel.dependent_keys(key_count)?;
                 let observations = view
                     .dependent_point_batch(step, &predicates)
-                    .map_err(|_| QueryExecutionError::BackendUnavailable)?;
+                    .map_err(|error| map_view_error(view, &error))?;
                 if observations.len() != predicates.len() {
                     return Err(QueryExecutionError::InvalidProgram);
                 }
@@ -585,7 +611,7 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
                 let predicates = bind_predicates(step, parameters, &bindings)?;
                 let page = view
                     .scan(step, &predicates, limit, after)
-                    .map_err(|_| QueryExecutionError::BackendUnavailable)?;
+                    .map_err(|error| map_view_error(view, &error))?;
                 if page.scanned_rows > MAX_QUERY_SCANNED_ROWS
                     || page.rows.len() as u64 > limit
                     || page.point_reads != page.rows.len() as u64

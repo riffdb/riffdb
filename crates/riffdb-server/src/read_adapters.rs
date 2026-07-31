@@ -357,71 +357,74 @@ impl CatalogReadPort for ServerCatalogReadPort {
         Box::pin(async move { result })
     }
 
-    fn prepare_contract_version(
-        &self,
-        control: &RequestControl,
+    fn prepare_contract_version<'a>(
+        &'a self,
+        control: &'a RequestControl,
         lineage: ContractLineage,
         version: ContractVersion,
-    ) -> PortFuture<'_, Option<ValidatedContractBundle>, CatalogError> {
-        submit_catalog(self.contract_version.reserve(control), (lineage, version))
+    ) -> PortFuture<'a, Option<ValidatedContractBundle>, CatalogError> {
+        submit_catalog(
+            self.contract_version.reserve_async(control),
+            (lineage, version),
+        )
     }
 
-    fn reserve_active_catalog(
-        &self,
-        control: &RequestControl,
+    fn reserve_active_catalog<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<(), Option<ActiveCatalogSnapshot>, CatalogError>,
         PortAdmissionError,
     > {
-        ready_port_reservation(self.active.reserve(control))
+        ready_port_reservation(self.active.reserve_async(control))
     }
 
-    fn reserve_contract_version(
-        &self,
-        control: &RequestControl,
-    ) -> PortFuture<'_, ContractVersionReadPermit, PortAdmissionError> {
-        ready_port_reservation(self.contract_version.reserve(control))
+    fn reserve_contract_version<'a>(
+        &'a self,
+        control: &'a RequestControl,
+    ) -> PortFuture<'a, ContractVersionReadPermit, PortAdmissionError> {
+        ready_port_reservation(self.contract_version.reserve_async(control))
     }
 
-    fn executable_plan(
-        &self,
-        control: &RequestControl,
+    fn executable_plan<'a>(
+        &'a self,
+        control: &'a RequestControl,
         request: CatalogExecutablePlanRequest,
-    ) -> PortFuture<'_, ResolvedExecutablePlan, CatalogError> {
-        submit_catalog(self.executable_plan.reserve(control), request)
+    ) -> PortFuture<'a, ResolvedExecutablePlan, CatalogError> {
+        submit_catalog(self.executable_plan.reserve_async(control), request)
     }
 
-    fn prepare_deployment(
-        &self,
-        control: &RequestControl,
+    fn prepare_deployment<'a>(
+        &'a self,
+        control: &'a RequestControl,
         candidate: ContractBundle,
         expected_active_version: Option<ContractVersion>,
-    ) -> PortFuture<'_, CatalogPreparationResult, CatalogError> {
+    ) -> PortFuture<'a, CatalogPreparationResult, CatalogError> {
         submit_catalog(
-            self.deployment.reserve(control),
+            self.deployment.reserve_async(control),
             (candidate, expected_active_version),
         )
     }
 }
 
 impl QueryModuleReadPort for ServerCatalogReadPort {
-    fn prepare_active_query_module(
-        &self,
-        control: &RequestControl,
+    fn prepare_active_query_module<'a>(
+        &'a self,
+        control: &'a RequestControl,
         contract: ValidatedContractBundle,
-    ) -> PortFuture<'_, Option<ValidatedQueryModule>, QueryModuleReadError> {
-        submit_query_module(self.query_module.reserve(control), (contract, None))
+    ) -> PortFuture<'a, Option<ValidatedQueryModule>, QueryModuleReadError> {
+        submit_query_module(self.query_module.reserve_async(control), (contract, None))
     }
 
-    fn prepare_query_module(
-        &self,
-        control: &RequestControl,
+    fn prepare_query_module<'a>(
+        &'a self,
+        control: &'a RequestControl,
         contract: ValidatedContractBundle,
         module_hash: QueryModuleHash,
-    ) -> PortFuture<'_, Option<ValidatedQueryModule>, QueryModuleReadError> {
+    ) -> PortFuture<'a, Option<ValidatedQueryModule>, QueryModuleReadError> {
         submit_query_module(
-            self.query_module.reserve(control),
+            self.query_module.reserve_async(control),
             (contract, Some(module_hash)),
         )
     }
@@ -544,11 +547,11 @@ impl ServerAuthoritativeReadPort {
 }
 
 impl AuthoritativeReadPort for ServerAuthoritativeReadPort {
-    fn reserve_read_entity(
-        &self,
-        control: &RequestControl,
+    fn reserve_read_entity<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             AuthoritativeEntityRequest,
             Option<AuthoritativeEntitySnapshot>,
@@ -556,14 +559,14 @@ impl AuthoritativeReadPort for ServerAuthoritativeReadPort {
         >,
         PortAdmissionError,
     > {
-        ready_port_reservation(self.entity.reserve(control))
+        ready_port_reservation(self.entity.reserve_async(control))
     }
 
-    fn reserve_scan_index(
-        &self,
-        control: &RequestControl,
+    fn reserve_scan_index<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             AuthoritativeIndexRequest,
             AuthoritativeIndexPage,
@@ -571,14 +574,14 @@ impl AuthoritativeReadPort for ServerAuthoritativeReadPort {
         >,
         PortAdmissionError,
     > {
-        ready_port_reservation(self.index.reserve(control))
+        ready_port_reservation(self.index.reserve_async(control))
     }
 
-    fn reserve_read_outcome(
-        &self,
-        control: &RequestControl,
+    fn reserve_read_outcome<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             AuthoritativeOutcomeRequest,
             Option<AuthoritativeOutcomeSnapshot>,
@@ -586,14 +589,14 @@ impl AuthoritativeReadPort for ServerAuthoritativeReadPort {
         >,
         PortAdmissionError,
     > {
-        ready_port_reservation(self.outcome.reserve(control))
+        ready_port_reservation(self.outcome.reserve_async(control))
     }
 
-    fn reserve_read_commit(
-        &self,
-        control: &RequestControl,
+    fn reserve_read_commit<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             CommitSequence,
             Option<AuthoritativeCommitSnapshot>,
@@ -601,14 +604,14 @@ impl AuthoritativeReadPort for ServerAuthoritativeReadPort {
         >,
         PortAdmissionError,
     > {
-        ready_port_reservation(self.commit.reserve(control))
+        ready_port_reservation(self.commit.reserve_async(control))
     }
 
-    fn reserve_scan_commits(
-        &self,
-        control: &RequestControl,
+    fn reserve_scan_commits<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             AuthoritativeCommitScanRequest,
             AuthoritativeCommitPage,
@@ -616,14 +619,14 @@ impl AuthoritativeReadPort for ServerAuthoritativeReadPort {
         >,
         PortAdmissionError,
     > {
-        ready_port_reservation(self.commit_scan.reserve(control))
+        ready_port_reservation(self.commit_scan.reserve_async(control))
     }
 
-    fn reserve_subscribe_to_commits(
-        &self,
-        control: &RequestControl,
+    fn reserve_subscribe_to_commits<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             AuthoritativeCommitSubscriptionRequest,
             Box<dyn CommitNotificationSource>,
@@ -631,14 +634,14 @@ impl AuthoritativeReadPort for ServerAuthoritativeReadPort {
         >,
         PortAdmissionError,
     > {
-        ready_port_reservation(self.subscription.reserve(control))
+        ready_port_reservation(self.subscription.reserve_async(control))
     }
 
-    fn reserve_trace_provenance(
-        &self,
-        control: &RequestControl,
+    fn reserve_trace_provenance<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             ProvenanceSelector,
             Option<AuthoritativeProvenanceSnapshot>,
@@ -646,15 +649,15 @@ impl AuthoritativeReadPort for ServerAuthoritativeReadPort {
         >,
         PortAdmissionError,
     > {
-        ready_port_reservation(self.provenance.reserve(control))
+        ready_port_reservation(self.provenance.reserve_async(control))
     }
 
-    fn read_capability_revoke_target(
-        &self,
-        control: &RequestControl,
+    fn read_capability_revoke_target<'a>(
+        &'a self,
+        control: &'a RequestControl,
         capability_id: CapabilityId,
-    ) -> PortFuture<'_, CapabilityRevokeTargetSnapshot, AuthoritativeReadError> {
-        submit_authoritative(self.revoke_target.reserve(control), capability_id)
+    ) -> PortFuture<'a, CapabilityRevokeTargetSnapshot, AuthoritativeReadError> {
+        submit_authoritative(self.revoke_target.reserve_async(control), capability_id)
     }
 }
 
@@ -664,25 +667,35 @@ impl fmt::Debug for ServerAuthoritativeReadPort {
     }
 }
 
-fn ready_port_reservation<'a, Permit>(
-    reservation: Result<Permit, PortAdmissionError>,
+fn ready_port_reservation<'a, Permit, F>(
+    reservation: F,
 ) -> PortFuture<'a, Permit, PortAdmissionError>
 where
     Permit: Send + 'a,
+    F: std::future::Future<Output = Result<Permit, PortAdmissionError>> + Send + 'a,
 {
-    Box::pin(async move { reservation })
+    Box::pin(reservation)
 }
 
-fn submit_catalog<'a, Request, Response>(
-    reservation: Result<BoxPortCapacityPermit<Request, Response, CatalogError>, PortAdmissionError>,
+fn submit_catalog<'a, Request, Response, F>(
+    reservation: F,
     request: Request,
 ) -> PortFuture<'a, Response, CatalogError>
 where
     Request: Send + 'a,
     Response: Send + 'a,
+    F: std::future::Future<
+            Output = Result<
+                BoxPortCapacityPermit<Request, Response, CatalogError>,
+                PortAdmissionError,
+            >,
+        > + Send
+        + 'a,
 {
     Box::pin(async move {
-        let permit = reservation.map_err(|_| catalog_driver_unavailable())?;
+        let permit = reservation
+            .await
+            .map_err(|_| catalog_driver_unavailable())?;
         let receipt = permit
             .submit(request)
             .map_err(|_| catalog_driver_unavailable())?;
@@ -693,19 +706,25 @@ where
     })
 }
 
-fn submit_query_module<'a, Request, Response>(
-    reservation: Result<
-        BoxPortCapacityPermit<Request, Response, QueryModuleReadError>,
-        PortAdmissionError,
-    >,
+fn submit_query_module<'a, Request, Response, F>(
+    reservation: F,
     request: Request,
 ) -> PortFuture<'a, Response, QueryModuleReadError>
 where
     Request: Send + 'a,
     Response: Send + 'a,
+    F: std::future::Future<
+            Output = Result<
+                BoxPortCapacityPermit<Request, Response, QueryModuleReadError>,
+                PortAdmissionError,
+            >,
+        > + Send
+        + 'a,
 {
     Box::pin(async move {
-        let permit = reservation.map_err(|_| QueryModuleReadError::Unavailable)?;
+        let permit = reservation
+            .await
+            .map_err(|_| QueryModuleReadError::Unavailable)?;
         let receipt = permit
             .submit(request)
             .map_err(|_| QueryModuleReadError::Unavailable)?;
@@ -724,19 +743,23 @@ fn map_query_module_catalog(_: QueryModuleCatalogError) -> QueryModuleReadError 
     QueryModuleReadError::Integrity
 }
 
-fn submit_authoritative<'a, Request, Response>(
-    reservation: Result<
-        BoxPortCapacityPermit<Request, Response, AuthoritativeReadError>,
-        PortAdmissionError,
-    >,
+fn submit_authoritative<'a, Request, Response, F>(
+    reservation: F,
     request: Request,
 ) -> PortFuture<'a, Response, AuthoritativeReadError>
 where
     Request: Send + 'a,
     Response: Send + 'a,
+    F: std::future::Future<
+            Output = Result<
+                BoxPortCapacityPermit<Request, Response, AuthoritativeReadError>,
+                PortAdmissionError,
+            >,
+        > + Send
+        + 'a,
 {
     Box::pin(async move {
-        let permit = reservation.map_err(map_authoritative_admission)?;
+        let permit = reservation.await.map_err(map_authoritative_admission)?;
         let receipt = permit
             .submit(request)
             .map_err(map_authoritative_admission)?;
@@ -753,9 +776,9 @@ fn catalog_driver_unavailable() -> CatalogError {
 
 fn map_authoritative_admission(error: PortAdmissionError) -> AuthoritativeReadError {
     match error {
-        PortAdmissionError::Cancelled
-        | PortAdmissionError::DeadlineExceeded
-        | PortAdmissionError::Unavailable => AuthoritativeReadError::Unavailable,
+        PortAdmissionError::Cancelled => AuthoritativeReadError::Cancelled,
+        PortAdmissionError::DeadlineExceeded => AuthoritativeReadError::DeadlineExceeded,
+        PortAdmissionError::Unavailable => AuthoritativeReadError::Unavailable,
         PortAdmissionError::Stopped => AuthoritativeReadError::Integrity,
     }
 }
@@ -1920,6 +1943,26 @@ mod tests {
         assert_eq!(snapshot.capability_id(), capability_id);
         assert_eq!(snapshot.database_id(), database_id);
         assert_eq!(snapshot.environment(), &environment);
+    }
+
+    #[test]
+    fn four_admission_outcomes_map_to_four_distinct_errors() {
+        assert_eq!(
+            map_authoritative_admission(PortAdmissionError::Cancelled),
+            AuthoritativeReadError::Cancelled
+        );
+        assert_eq!(
+            map_authoritative_admission(PortAdmissionError::DeadlineExceeded),
+            AuthoritativeReadError::DeadlineExceeded
+        );
+        assert_eq!(
+            map_authoritative_admission(PortAdmissionError::Unavailable),
+            AuthoritativeReadError::Unavailable
+        );
+        assert_eq!(
+            map_authoritative_admission(PortAdmissionError::Stopped),
+            AuthoritativeReadError::Integrity
+        );
     }
 
     #[test]

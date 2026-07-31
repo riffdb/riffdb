@@ -20,6 +20,7 @@ mod layout;
 mod maintenance;
 mod query;
 mod reads;
+mod shared_ports;
 mod startup;
 mod store;
 mod transient;
@@ -41,6 +42,7 @@ pub use maintenance::{
     RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation, RedbMaintenanceStorage,
     RedbSealedStagedRestore, RedbStagedRestore,
 };
+pub use shared_ports::RedbSharedPorts;
 pub use startup::{
     RedbCompletionAuthority, RedbHistoricalEvidenceEnd, RedbStartupIndexMigrationPort,
     RedbStructuralEvidenceEnd, RedbStructuralEvidenceSession,
