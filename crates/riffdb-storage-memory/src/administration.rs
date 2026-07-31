@@ -735,6 +735,31 @@ impl ServiceAuditAppendRepository for MemoryOperationalPorts {
     ) -> Result<ServiceAuditAppendResult, StorageError> {
         self.apply_prepared(|state| prepare_service_audit_append(state, intent))
     }
+
+    fn append_service_audit_fused_pair(
+        &mut self,
+        started: &ServiceAuditAppendIntentV1,
+        terminal: &ServiceAuditAppendIntentV1,
+    ) -> Result<(), StorageError> {
+        // Memory backend applies both intents sequentially under one state
+        // mutation boundary (same fail-closed lifecycle rules as redb staging).
+        match self.append_service_audit(started)? {
+            ServiceAuditAppendResult::Appended(_) => {}
+            ServiceAuditAppendResult::PhaseConflict => {
+                return Err(StorageError::new(
+                    riffdb_storage_api::StorageErrorKind::InvariantViolation,
+                    None,
+                ));
+            }
+        }
+        match self.append_service_audit(terminal)? {
+            ServiceAuditAppendResult::Appended(_) => Ok(()),
+            ServiceAuditAppendResult::PhaseConflict => Err(StorageError::new(
+                riffdb_storage_api::StorageErrorKind::InvariantViolation,
+                None,
+            )),
+        }
+    }
 }
 
 fn prepare_service_audit_append(

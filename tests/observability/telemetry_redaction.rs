@@ -476,7 +476,6 @@ fn owner_adapters_map_closed_events_to_required_metrics_and_traces() {
             terminal: CommitCallTerminal::Committed,
             elapsed: Duration::from_micros(17),
             batch_size: 1,
-            synchronous: true,
         },
     );
     CommitTelemetry::record(
@@ -635,7 +634,6 @@ fn completion_group_evidence_accepts_exactly_the_internal_group_ceiling() {
             terminal: CommitCallTerminal::Committed,
             elapsed: Duration::from_micros(1),
             batch_size: u16::try_from(MAX_WRITE_GROUP_SIZE).expect("group ceiling fits u16"),
-            synchronous: true,
         },
     );
     let groups = observability.write_completion_group_snapshot();

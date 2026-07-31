@@ -144,6 +144,8 @@ pub(crate) struct RetryState {
     unresolved_uncertainty: bool,
     /// Zero-based index of the next retry delay (after the first failure).
     overloaded_retry_index: u32,
+    /// Per-request decorrelation seed from the request id's first 8 LE bytes.
+    jitter_seed: u64,
 }
 
 impl RetryState {
@@ -152,7 +154,16 @@ impl RetryState {
             remaining_submissions: budget.maximum_submissions(),
             unresolved_uncertainty: false,
             overloaded_retry_index: 0,
+            jitter_seed: 0,
         }
+    }
+
+    /// Seeds decorrelated jitter from the current attempt's request identity.
+    pub(crate) fn note_request_id(&mut self, request_id: &RequestId) {
+        let bytes = request_id.as_bytes();
+        self.jitter_seed = u64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]);
     }
 
     pub(crate) fn begin_submission(&mut self) -> bool {
@@ -185,7 +196,7 @@ impl RetryState {
         }
         if self.remaining_submissions > 0 {
             if is_overloaded(&error) {
-                let delay = overloaded_backoff(self.overloaded_retry_index);
+                let delay = overloaded_backoff(self.jitter_seed, self.overloaded_retry_index);
                 self.overloaded_retry_index = self.overloaded_retry_index.saturating_add(1);
                 return RetryDecision::RetryAfter(delay);
             }
@@ -207,30 +218,40 @@ pub(crate) async fn apply_overloaded_backoff(delay: Duration) {
     tokio::time::sleep(delay).await;
 }
 
-/// Bounded exponential backoff with jitter for Overloaded retries.
+/// Bounded exponential backoff with decorrelated jitter for Overloaded retries.
 ///
-/// Delay is `min(cap, base * 2^index)` with ±25% deterministic jitter derived
-/// from the index so tests remain stable without a process-global RNG.
+/// Ladder is `min(cap, base * 2^index)` with cap 400 ms. Delay is drawn uniform
+/// in `[capped/4, capped]` via splitmix64 over `(seed, index)` so concurrent
+/// clients at the same retry index do not sleep identically. No process-global
+/// RNG is used; the seed is the request id's first eight little-endian bytes.
 #[must_use]
-pub(crate) fn overloaded_backoff(retry_index: u32) -> Duration {
+pub(crate) fn overloaded_backoff(jitter_seed: u64, retry_index: u32) -> Duration {
     let shift = retry_index.min(4);
     let base_ms = OVERLOADED_BACKOFF_BASE
         .as_millis()
         .saturating_mul(1u128 << shift);
     let capped_ms = base_ms.min(OVERLOADED_BACKOFF_CAP.as_millis());
-    // Jitter in [0, capped/4]: add a deterministic fraction of the base.
-    let jitter_ms = if capped_ms == 0 {
-        0
-    } else {
-        let span = (capped_ms / 4).max(1);
-        u128::from(retry_index.wrapping_mul(0x9E37_79B9) % (u32::try_from(span).unwrap_or(1) + 1))
-    };
-    let ms = capped_ms.saturating_add(jitter_ms).min(
-        OVERLOADED_BACKOFF_CAP
-            .as_millis()
-            .saturating_add(OVERLOADED_BACKOFF_CAP.as_millis() / 4),
+    if capped_ms == 0 {
+        return Duration::from_millis(0);
+    }
+    let floor_ms = (capped_ms / 4).max(1);
+    let span = capped_ms.saturating_sub(floor_ms).saturating_add(1);
+    let mixed = splitmix64(
+        jitter_seed
+            ^ 0x9E37_79B9_7F4A_7C15u64.wrapping_mul(u64::from(retry_index.saturating_add(1))),
     );
+    let offset = u128::from(mixed) % span;
+    let ms = floor_ms.saturating_add(offset).min(capped_ms);
     Duration::from_millis(u64::try_from(ms).unwrap_or(u64::MAX))
+}
+
+/// Deterministic 64-bit mix used only for client Overloaded jitter.
+const fn splitmix64(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = value;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 const fn is_overloaded(error: &ClientError) -> bool {
@@ -369,7 +390,7 @@ mod tests {
         match (first, second) {
             (RetryDecision::RetryAfter(a), RetryDecision::RetryAfter(b)) => {
                 assert!(b.as_millis() >= a.as_millis() / 2, "backoff stays bounded");
-                assert!(b <= OVERLOADED_BACKOFF_CAP + OVERLOADED_BACKOFF_CAP / 4);
+                assert!(b <= OVERLOADED_BACKOFF_CAP);
             }
             other => panic!("expected RetryAfter pair, got {other:?}"),
         }
@@ -382,10 +403,34 @@ mod tests {
     }
 
     #[test]
-    fn overloaded_backoff_is_capped_and_deterministic() {
-        let a = overloaded_backoff(0);
-        let b = overloaded_backoff(0);
+    fn overloaded_backoff_is_capped_and_deterministic_for_seed_and_index() {
+        let a = overloaded_backoff(0xA1B2_C3D4_E5F6_7788, 0);
+        let b = overloaded_backoff(0xA1B2_C3D4_E5F6_7788, 0);
         assert_eq!(a, b);
-        assert!(overloaded_backoff(10) <= OVERLOADED_BACKOFF_CAP + OVERLOADED_BACKOFF_CAP / 4);
+        let capped = overloaded_backoff(0x1111_2222_3333_4444, 10);
+        assert!(capped <= OVERLOADED_BACKOFF_CAP);
+        assert!(capped.as_millis() * 4 >= OVERLOADED_BACKOFF_CAP.as_millis());
+    }
+
+    #[test]
+    fn overloaded_backoff_floor_is_at_least_one_quarter_of_cap() {
+        for index in 0..8 {
+            let delay = overloaded_backoff(0xDEAD_BEEF_CAFE_F00D, index);
+            let shift = index.min(4);
+            let base_ms = OVERLOADED_BACKOFF_BASE
+                .as_millis()
+                .saturating_mul(1u128 << shift);
+            let capped_ms = base_ms.min(OVERLOADED_BACKOFF_CAP.as_millis());
+            let floor_ms = (capped_ms / 4).max(1);
+            assert!(delay.as_millis() >= floor_ms);
+            assert!(delay.as_millis() <= capped_ms);
+        }
+    }
+
+    #[test]
+    fn overloaded_backoff_diverges_across_seeds_at_same_index() {
+        let left = overloaded_backoff(1, 2);
+        let right = overloaded_backoff(2, 2);
+        assert_ne!(left, right);
     }
 }

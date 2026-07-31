@@ -291,12 +291,9 @@ impl TraceRecord {
                 (68 + commit_idempotency_observation_tag(observation), 1)
             }
             CommitTelemetryEvent::CommitCallCompleted {
-                terminal,
-                elapsed,
-                synchronous,
-                ..
+                terminal, elapsed, ..
             } => (
-                45 + commit_call_terminal_tag(terminal) + if synchronous { 4 } else { 0 },
+                45 + commit_call_terminal_tag(terminal),
                 saturating_duration_microseconds(elapsed),
             ),
             CommitTelemetryEvent::UncertaintyResolved { stage, resolution } => (
@@ -304,6 +301,9 @@ impl TraceRecord {
                     + commit_uncertainty_resolution_tag(resolution),
                 1,
             ),
+            CommitTelemetryEvent::WriterUnitCompleted { busy, .. } => {
+                (80, saturating_duration_microseconds(busy))
+            }
         };
         Self::closed(TraceKind::Commit, None, detail_tag, value, None)
     }
