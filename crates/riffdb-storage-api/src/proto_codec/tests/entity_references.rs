@@ -91,6 +91,9 @@ fn expected_from_version_matches_mutation_constructor_inverse() {
 fn entity_reference_lens_dominates_encoded_reference_length() {
     use prost::Message as _;
     use riffdb_proto::storage::v1 as wire;
+    use riffdb_types::{EntityKeyBuilder, EntityTypeId};
+
+    use crate::conservative_entity_reference_payload_len;
 
     let atomic = sample::atomic_record_set();
     let encoded = encode_commit_record_v1(atomic.commit()).expect("encode");
@@ -100,9 +103,42 @@ fn entity_reference_lens_dominates_encoded_reference_length() {
         .payload()
         .to_vec();
     let message = wire::StoredCommitRecordV3::decode(payload.as_slice()).expect("prost");
-    for reference in &message.entity_references {
+    for (reference, mutation) in message.entity_references.iter().zip(atomic.entities()) {
         let actual = reference.encoded_len();
-        // Conservative varint + target + 32-byte hash charge used by bounds.
-        assert!(actual <= 512, "actual={actual}");
+        let charge = conservative_entity_reference_payload_len(mutation.post_image().target())
+            .expect("charge");
+        assert!(
+            charge >= actual,
+            "charge={charge} actual={actual} for sample entity reference"
+        );
+    }
+
+    // Varied target sizes: empty-ish key (minimal u64 component) and max-ish key.
+    let entity_type = EntityTypeId::new(9).expect("type");
+    let mut short = EntityKeyBuilder::new(entity_type);
+    short.push_u64(1).expect("key");
+    let short_target =
+        crate::EntityTarget::new(entity_type, short.finish().expect("finish")).expect("target");
+    let mut long = EntityKeyBuilder::new(entity_type);
+    for i in 0..8 {
+        long.push_u64(i).expect("key component");
+    }
+    let long_target =
+        crate::EntityTarget::new(entity_type, long.finish().expect("finish")).expect("target");
+    for target in [&short_target, &long_target] {
+        let proto = wire::CommittedEntityReferenceV2 {
+            target: Some(wire::EntityTargetV1 {
+                entity_type_id: target.entity_type_id().get(),
+                entity_key: target.key().as_bytes().to_vec(),
+            }),
+            entity_version: 1,
+            post_image_hash: vec![0xab; 32],
+        };
+        let actual = proto.encoded_len();
+        let charge = conservative_entity_reference_payload_len(target).expect("charge");
+        assert!(
+            charge >= actual,
+            "charge={charge} actual={actual} for varied key"
+        );
     }
 }
