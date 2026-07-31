@@ -283,7 +283,7 @@ impl StableApplicationClient {
             return completed;
         };
 
-        // Prefer per-item carriage when present (ADR-0077). Older servers leave
+        // Prefer per-item carriage when present (ADR-0084). Older servers leave
         // items empty and only populate legacy success rows.
         if !response.items.is_empty() {
             let recovered =

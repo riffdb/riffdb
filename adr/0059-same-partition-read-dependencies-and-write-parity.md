@@ -131,7 +131,7 @@ not a bulk mutation primitive:
 - the API-neutral application service and commit coordinator remain the only
   execution and authoritative-mutation path.
 
-Per-item result carriage (ADR-0077) extends the batch response with an
+Per-item result carriage (ADR-0084) extends the batch response with an
 always-populated, input-ordered `items` list whose length equals the request.
 Each item is exactly one of: the ordinary command response, or the typed
 application error for that item (captured from the service result, never

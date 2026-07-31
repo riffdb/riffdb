@@ -1,4 +1,4 @@
-# ADR-0077: Batch Item Results
+# ADR-0084: Batch Item Results
 
 - **Status:** Proposed
 - **Date:** 2026-07-31

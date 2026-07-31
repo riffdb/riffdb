@@ -1,4 +1,4 @@
-# ADR-0076: Authoritative Entity References
+# ADR-0083: Authoritative Entity References
 
 - **Status:** Proposed
 - **Date:** 2026-07-31

@@ -83,7 +83,7 @@ independent per-item results.
 ## Per-item results and recovery
 
 Current servers return an always-populated, input-ordered item list on the
-batch response (ADR-0077). Each item is either the ordinary command response
+batch response (ADR-0084). Each item is either the ordinary command response
 or a typed application error that names the batch operation. Sibling
 successes stay intact when one item fails. The Rust SDK classifies each item
 error by its registry-derived recovery action: `Retry` and
