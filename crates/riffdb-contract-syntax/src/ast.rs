@@ -124,6 +124,8 @@ pub struct ReferenceDeclaration {
 pub struct EventDeclaration {
     /// The event identifier.
     pub name: Spanned<String>,
+    /// Ordered payload fields forming the application-stream partition, when declared.
+    pub partition_by: Option<Spanned<Vec<Spanned<String>>>>,
     /// Event payload fields in source order.
     pub fields: Vec<Spanned<TypedField>>,
 }

@@ -177,6 +177,42 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 | `0x01` | compatible |
 | `0x02` | explicit version |
 | `0x03` | incompatible |
+| `0x04` | migration required |
+
+### Migration step
+
+| Tag | Variant |
+|---:|---|
+| `0x01` | rename identity |
+| `0x02` | retire identity |
+| `0x03` | set field |
+| `0x04` | replace field |
+| `0x05` | require entity |
+| `0x06` | rekey entity |
+| `0x07` | map enum |
+| `0x08` | rebuild index |
+| `0x09` | validate relationship |
+| `0x0a` | validate unique |
+| `0x0b` | validate invariant |
+| `0x0c` | rebuild projection |
+| `0x0d` | acknowledge repartition |
+| `0x0e` | acknowledge aggregate |
+| `0x0f` | acknowledge conflict |
+
+### Migration conversion
+
+| Tag | Variant |
+|---:|---|
+| `0x01` | identity |
+| `0x02` | wrap optional |
+| `0x03` | assert unwrap optional |
+| `0x04` | checked i64 to u64 |
+| `0x05` | checked u64 to i64 |
+| `0x06` | exact decimal |
+| `0x07` | assert bounded narrow |
+| `0x08` | list elements |
+| `0x09` | UUID to string |
+| `0x0a` | string to UUID |
 
 ### Schema artifact
 
@@ -353,6 +389,12 @@ Each compatibility entry encodes its exact eight-byte ASCII code through normal 
 | `RDB-K020` | `0x02` | added outcome |
 | `RDB-K021` | `0x02` | added optional outcome field |
 | `RDB-K022` | `0x02` | added enum variant |
+| `RDB-K030` | `0x04` | added required field |
+| `RDB-K031` | `0x04` | added index over existing state |
+| `RDB-K032` | `0x04` | added relationship over existing state |
+| `RDB-K033` | `0x04` | added uniqueness rule over existing state |
+| `RDB-K034` | `0x04` | added invariant over existing state |
+| `RDB-K035` | `0x04` | added projection requiring historical backfill |
 | `RDB-K100` | `0x03` | removed identity |
 | `RDB-K101` | `0x03` | tombstone resurrection |
 | `RDB-K102` | `0x03` | stable ID reuse |
@@ -482,6 +524,14 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 1 | `id` | u32 |
 | 2 | `name` | string |
 | 3 | `payload` | RecordSchema |
+| 4 | `partition` | optional u64 magic 0xfffffffcffffffff + EventPartitionSchema; omitted when absent |
+
+### EventPartitionSchema
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `fields` | u32 count + FieldId[] |
+| 2 | `key_schema` | aggregate-namespaced partition KeySchema |
 
 ### EnumSchema
 

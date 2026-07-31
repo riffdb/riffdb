@@ -613,7 +613,12 @@ pub fn validate_contract_request_from_proto(
 ) -> Result<(RequestId, ValidateContractRequest), Status> {
     let request_id = request_id_from_bytes(&request.request_id)?;
     let source = ContractSource::new(request.source).map_err(|_| invalid_request())?;
-    let request = ValidateContractRequest::new(source).map_err(|_| invalid_request())?;
+    let request = if request.preview_active_successor {
+        ValidateContractRequest::preview_active_successor(source)
+    } else {
+        ValidateContractRequest::new(source)
+    }
+    .map_err(|_| invalid_request())?;
     Ok((request_id, request))
 }
 
@@ -637,7 +642,29 @@ pub fn deploy_contract_request_from_proto(
         .expected_active_version
         .map(|version| ContractVersion::new(version).ok_or_else(invalid_request))
         .transpose()?;
-    let request = DeployContractRequest::new(source, expected).map_err(|_| invalid_request())?;
+    let expected_active_hash = if request.expected_active_bundle_hash.is_empty() {
+        None
+    } else {
+        Some(ContractBundleHash::from_bytes(exact_hash(
+            &request.expected_active_bundle_hash,
+        )?))
+    };
+    let expected_candidate_hash = if request.expected_candidate_bundle_hash.is_empty() {
+        None
+    } else {
+        Some(ContractBundleHash::from_bytes(exact_hash(
+            &request.expected_candidate_bundle_hash,
+        )?))
+    };
+    let request = if let Some(candidate_hash) = expected_candidate_hash {
+        DeployContractRequest::new_exact(source, expected, expected_active_hash, candidate_hash)
+    } else {
+        if expected_active_hash.is_some() {
+            return Err(invalid_request());
+        }
+        DeployContractRequest::new(source, expected)
+    }
+    .map_err(|_| invalid_request())?;
     Ok((request_id, request))
 }
 
@@ -1417,6 +1444,16 @@ pub fn contract_validation_result_to_proto(
                 &ContractValidationResult::Invalid(error.clone()),
             )?)
         }
+        ContractValidationResult::Candidate(candidate) => {
+            v1::validate_contract_response::Result::Candidate(v1::CompiledContractCandidate {
+                parent_version: candidate.parent_version().map(ContractVersion::get),
+                parent_bundle_hash: candidate
+                    .parent_bundle_hash()
+                    .map_or_else(Vec::new, |hash| hash.as_bytes().to_vec()),
+                candidate: Some(contract_descriptor_to_proto(candidate.candidate())),
+                canonical_bundle: candidate.canonical_bundle().to_vec(),
+            })
+        }
     };
     Ok(v1::ValidateContractResponse {
         result: Some(result),
@@ -1600,6 +1637,11 @@ pub fn deploy_contract_result_to_proto(
                 contract_descriptor_to_proto(descriptor),
             )
         }
+        DeployContractResult::MigrationRequired(descriptor) => {
+            v1::deploy_contract_response::Result::MigrationRequired(contract_descriptor_to_proto(
+                descriptor,
+            ))
+        }
         DeployContractResult::Activated(descriptor) => {
             v1::deploy_contract_response::Result::Activated(contract_descriptor_to_proto(
                 descriptor,
@@ -1617,6 +1659,15 @@ pub fn deploy_contract_result_to_proto(
                 },
             )
         }
+        DeployContractResult::ExpectedApplicationIdentityMismatch {
+            actual_active,
+            compiled_candidate,
+        } => v1::deploy_contract_response::Result::ExpectedApplicationIdentityMismatch(
+            v1::ExpectedApplicationIdentityMismatch {
+                actual_active: actual_active.as_ref().map(contract_descriptor_to_proto),
+                compiled_candidate: Some(contract_descriptor_to_proto(compiled_candidate)),
+            },
+        ),
         DeployContractResult::BundleConflict => {
             v1::deploy_contract_response::Result::BundleConflict(v1::Unit {})
         }
@@ -2661,6 +2712,9 @@ pub fn contract_descriptor_to_proto(descriptor: &ContractDescriptor) -> v1::Cont
         ContractCompatibilityClass::RequiresExplicitVersion => {
             v1::ContractCompatibilityClass::RequiresExplicitVersion
         }
+        ContractCompatibilityClass::RequiresMigration => {
+            v1::ContractCompatibilityClass::RequiresMigration
+        }
         ContractCompatibilityClass::Incompatible => v1::ContractCompatibilityClass::Incompatible,
     };
     v1::ContractDescriptor {
@@ -3412,6 +3466,52 @@ fn submitted_decimal(value: &v1::Decimal) -> Result<SubmittedDecimal, Status> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contract_authoring_conversion_preserves_preview_and_exact_identity_as_one_shape() {
+        let (_, preview) = validate_contract_request_from_proto(v1::ValidateContractRequest {
+            request_id: request_id().as_bytes().to_vec(),
+            source: "contract Example version 2 {}".to_owned(),
+            preview_active_successor: true,
+        })
+        .expect("preview request");
+        assert!(preview.previews_active_successor());
+
+        let candidate = [0x31; 32];
+        let parent = [0x22; 32];
+        let (_, exact) = deploy_contract_request_from_proto(v1::DeployContractRequest {
+            request_id: request_id().as_bytes().to_vec(),
+            source: "contract Example version 2 {}".to_owned(),
+            expected_active_version: Some(1),
+            expected_active_bundle_hash: parent.to_vec(),
+            expected_candidate_bundle_hash: candidate.to_vec(),
+        })
+        .expect("exact deployment request");
+        assert_eq!(
+            exact.expected_active_version().map(ContractVersion::get),
+            Some(1)
+        );
+        assert_eq!(
+            exact.expected_active_bundle_hash(),
+            Some(ContractBundleHash::from_bytes(parent))
+        );
+        assert_eq!(
+            exact.expected_candidate_bundle_hash(),
+            Some(ContractBundleHash::from_bytes(candidate))
+        );
+
+        assert!(
+            deploy_contract_request_from_proto(v1::DeployContractRequest {
+                request_id: request_id().as_bytes().to_vec(),
+                source: "contract Example version 2 {}".to_owned(),
+                expected_active_version: Some(1),
+                expected_active_bundle_hash: Vec::new(),
+                expected_candidate_bundle_hash: candidate.to_vec(),
+            })
+            .is_err(),
+            "partial parent identities fail closed"
+        );
+    }
 
     fn request_id() -> RequestId {
         RequestId::from_unix_milliseconds_and_random(1, [7; 10]).expect("valid request ID")

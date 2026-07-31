@@ -24,8 +24,10 @@ const OUTPUT_RENDER_FAILED: &[u8] =
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CommandIdentity {
+    ApplicationLock,
     ApplicationDeploy,
     ApplicationBindDevRole,
+    MigrationPlan,
     ContractValidate,
     ContractDeploy,
     CommandExecute,
@@ -60,8 +62,10 @@ pub(crate) enum CommandIdentity {
 impl CommandIdentity {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
+            Self::ApplicationLock => "application.lock",
             Self::ApplicationDeploy => "application.deploy",
             Self::ApplicationBindDevRole => "application.bind_dev_role",
+            Self::MigrationPlan => "migration.plan",
             Self::ContractValidate => "contract.validate",
             Self::ContractDeploy => "contract.deploy",
             Self::CommandExecute => "command.execute",
@@ -273,11 +277,18 @@ pub(crate) fn render_contract_validation(response: &v1::ValidateContractResponse
         Some(Result::Invalid(diagnostics)) => {
             render_compilation_diagnostics(CommandIdentity::ContractValidate, diagnostics)
         }
+        Some(Result::Candidate(_)) => success(
+            CommandIdentity::ContractValidate,
+            "candidate",
+            &StatusResult {
+                status: "candidate",
+            },
+        ),
         None => rendering_failure(CommandIdentity::ContractValidate),
     }
 }
 
-fn render_compilation_diagnostics(
+pub(crate) fn render_compilation_diagnostics(
     command: CommandIdentity,
     diagnostics: &v1::CompilationDiagnostics,
 ) -> Terminal {
@@ -333,6 +344,14 @@ pub(crate) fn render_contract_deploy(response: &v1::DeployContractResponse) -> T
                 contract: ContractDescriptorWithCompatibilityDto(contract),
             },
         ),
+        Some(Result::MigrationRequired(contract)) => success(
+            CommandIdentity::ContractDeploy,
+            "migration_required",
+            &IncompatibleContractResult {
+                status: "migration_required",
+                contract: ContractDescriptorWithCompatibilityDto(contract),
+            },
+        ),
         Some(Result::ExpectedActiveVersionMismatch(mismatch)) => success(
             CommandIdentity::ContractDeploy,
             "expected_version_mismatch",
@@ -348,6 +367,13 @@ pub(crate) fn render_contract_deploy(response: &v1::DeployContractResponse) -> T
             "bundle_conflict",
             &StatusResult {
                 status: "bundle_conflict",
+            },
+        ),
+        Some(Result::ExpectedApplicationIdentityMismatch(_)) => success(
+            CommandIdentity::ContractDeploy,
+            "expected_application_identity_mismatch",
+            &StatusResult {
+                status: "expected_application_identity_mismatch",
             },
         ),
         None => rendering_failure(CommandIdentity::ContractDeploy),
@@ -1592,6 +1618,7 @@ impl Serialize for CompatibilitySummaryDto<'_> {
             Ok(v1::ContractCompatibilityClass::RequiresExplicitVersion) => {
                 "requires_explicit_version"
             }
+            Ok(v1::ContractCompatibilityClass::RequiresMigration) => "requires_migration",
             Ok(v1::ContractCompatibilityClass::Incompatible) => "incompatible",
             _ => return Err(S::Error::custom("invalid compatibility class")),
         };

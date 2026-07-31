@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "pathname"
+require "set"
+
+root = Pathname(`git rev-parse --show-toplevel`.strip)
+abort "not inside a Git worktree" if root.to_s.empty?
+docs = root.join("docs")
+summary = docs.join("SUMMARY.md")
+abort "missing docs/SUMMARY.md" unless summary.file?
+
+listed = summary.read.scan(/\[[^\]]+\]\(([^)#]+\.md)(?:#[^)]+)?\)/).flatten.map do |link|
+  docs.join(link).cleanpath.relative_path_from(docs).to_s
+end.to_set
+
+exclusion_file = docs.join("handbook-exclusions.txt")
+patterns = exclusion_file.file? ? exclusion_file.readlines(chomp: true).reject { |line| line.empty? || line.start_with?("#") } : []
+always_excluded = Set.new(%w[SUMMARY.md CONTRIBUTING.md 404.md])
+
+public_pages = docs.glob("**/*.md").filter_map do |path|
+  relative = path.relative_path_from(docs).to_s
+  next if always_excluded.include?(relative)
+  next if patterns.any? { |pattern| File.fnmatch?(pattern, relative, File::FNM_EXTGLOB) }
+
+  relative
+end.to_set
+
+missing = public_pages - listed
+abort "public handbook pages missing from SUMMARY.md:\n  #{missing.to_a.sort.join("\n  ")}" unless missing.empty?
+
+absent = listed.reject { |path| docs.join(path).file? }
+abort "SUMMARY.md links missing pages:\n  #{absent.to_a.sort.join("\n  ")}" unless absent.empty?
+
+(public_pages + Set["README.md"]).each do |relative|
+  content = docs.join(relative).read
+  if content.match?(/!\[\]\(/)
+    abort "image without alternative text in docs/#{relative}"
+  end
+end
+
+puts "Handbook source inventory is current (#{public_pages.length} public pages)."

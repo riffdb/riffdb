@@ -2532,6 +2532,9 @@ fn render_validation_result(
                 Some(payload_from(&payload)?),
             )
         }
+        riffdb_service::ContractValidationResult::Candidate(_) => {
+            Err(McpBackendError::InvalidResponse)
+        }
     }
 }
 
@@ -2720,6 +2723,11 @@ fn render_deploy_result(result: DeployContractResult) -> Result<McpToolResult, M
             McpFixedResultBranch::DeployIncompatibleCandidate,
             Some(payload_from(&contract_descriptor(&contract)?)?),
         ),
+        DeployContractResult::MigrationRequired(contract) => compose(
+            4,
+            McpFixedResultBranch::DeployMigrationRequired,
+            Some(payload_from(&contract_descriptor(&contract)?)?),
+        ),
         DeployContractResult::Activated(contract) => compose(
             4,
             McpFixedResultBranch::DeployActivated,
@@ -2739,6 +2747,9 @@ fn render_deploy_result(result: DeployContractResult) -> Result<McpToolResult, M
         ),
         DeployContractResult::BundleConflict => {
             compose(4, McpFixedResultBranch::DeployBundleConflict, None)
+        }
+        DeployContractResult::ExpectedApplicationIdentityMismatch { .. } => {
+            Err(McpBackendError::InvalidResponse)
         }
     }
 }
@@ -4018,6 +4029,9 @@ fn contract_descriptor(
         }
         riffdb_service::ContractCompatibilityClass::RequiresExplicitVersion => {
             McpContractCompatibilityClass::RequiresExplicitVersion
+        }
+        riffdb_service::ContractCompatibilityClass::RequiresMigration => {
+            McpContractCompatibilityClass::RequiresMigration
         }
         riffdb_service::ContractCompatibilityClass::Incompatible => {
             McpContractCompatibilityClass::Incompatible

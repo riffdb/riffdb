@@ -5,6 +5,7 @@ contract ProjectionEventEvolution version 3 {
   }
 
   event Changed {
+    partition_by (id)
     id: uuid
     note: optional<string<8>>
     tag: optional<i64>

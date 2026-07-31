@@ -288,6 +288,13 @@ borrowed_codec!(
     encode_durable_event_v1,
     decode_durable_event_v1
 );
+copied_codec!(
+    encode_event_route_v1,
+    decode_event_route_v1,
+    storage::StoredEventRouteV1,
+    encode_event_route_v1,
+    decode_event_route_v1
+);
 borrowed_codec!(
     encode_provenance_record_v1,
     decode_provenance_record_v1,

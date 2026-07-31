@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.51
-**Status:** Application-platform implementation handoff
-**Date:** 30 July 2026
+**Version:** 0.57
+**Status:** Contract-migration and reactive-application implementation
+**Date:** 31 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -87,6 +87,12 @@
 | 0.49 | 2026-07-30 | Applied accepted ADR-0065 and planned WP-386 through WP-392: installer-owned configurations gain resumable offline database addition, application values become schema-directed and symbolic, installed deployment consumes exact locks with explicit least-authority provisioning, public responses identify the selected database, and MCP exposes authorized named operations with an explicit doctor path. |
 | 0.50 | 2026-07-30 | Applied accepted ADR-0066 and planned WP-393: bounded additive enum, entity, and aggregate evolution; explicit-version enum extension; structured deployment diagnostics; and an explicit offline pre-alpha reset boundary. |
 | 0.51 | 2026-07-31 | Applied accepted ADR-0074 and planned WP-394 through WP-398: a Python 3.13+ generated application client backed by the existing Rust stable client, exact sync/async and value/error/retry parity, explicit application source/lock V2 migration, reproducible manylinux wheels and source distribution, and a new Python parity gate. Database semantics and transport trust decisions remain first-party Rust; target-language generated application bindings are the narrow accepted `SYS-002` exception. |
+| 0.52 | 2026-07-31 | Applied accepted ADR-0075 and planned WP-399: successor application locks compile against the exact active parent through a read-only authorized preview, lock V3 pins canonical bundle bytes as a checked artifact, deployment proves exact parent and candidate identities before mutation, exact already-active retries remain idempotent, and application check can no longer report a stale lock as exact. |
+| 0.53 | 2026-07-31 | Corrected the post-WP-399 role-reconciliation boundary and planned WP-400: locked role compilation consumes the pinned parent-aware bundle instead of recompiling successor source as genesis, every local role/query preflight completes before the first remote mutation, widened authority still requires explicit credential replacement, and CLI operation labels no longer describe successor locking as deployment. |
+| 0.54 | 2026-07-31 | Defined the public documentation handbook, its reproducible static build and generated-reference boundaries, progressive application and operator learning paths, and the same-change documentation maintenance requirement through WP-401 to WP-404. |
+| 0.55 | 2026-07-31 | Planned P7 robust offline contract migration through WP-405 to WP-413: exact parent-specific `.riffm` artifacts, a migration-required compatibility class, database-scoped staged copy and automatic rollback, immutable committed history, predecessor-write retirement, a dedicated migration capability, and gRPC/Rust SDK/CLI administration with no MCP or application-driver path. ADR-0076 through ADR-0079 remain Proposed and block production, grammar, IR, durable, permission, and protocol implementation until exact human acceptance. |
+| 0.56 | 2026-07-31 | Applied accepted ADR-0076 through ADR-0079 and completed the WP-405 architecture gate. P7 implementation may proceed in dependency order through WP-406 to WP-413 under the frozen migration compatibility, source/IR/lock, staged recovery, coordinator, permission, public API, immutable-history, predecessor-write, and automatic-rollback boundaries. |
+| 0.57 | 2026-07-31 | Applied accepted ADR-0080 and planned P8 through WP-414 to WP-421: partition-proved domain-event streams, bounded durable consumers, race-free live named RiffQL, generated reactive clients, and freshly authorized contextual agent work extend the existing atomic event/commit model without raw CDC, global ordering, exactly-once claims, persisted hydrated context, direct browser authority, or in-transaction agents. |
 
 ### Normative language
 
@@ -373,7 +379,50 @@ codes for an incompatible successor. These results MUST be owned by the shared
 application service and preserved across gRPC, CLI, SDK, hosted MCP, and stdio
 MCP after authorization and redaction.
 
-## 4.5 Python application driver
+## 4.5 Exact successor application identity
+
+`SAI-001` Local genesis compilation and parent-aware successor compilation MUST
+remain distinct. A successor application lock MUST be derived from the exact
+active parent bundle and MUST NOT silently fall back to genesis compilation.
+
+`SAI-002` The authorized read-only contract-authoring surface MUST return the
+exact parent identity, candidate descriptor, and bounded canonical candidate
+bundle without mutating catalog, deployment journal, query modules, roles, or
+application data.
+
+`SAI-003` Application lock V3 MUST pin one canonical contract-bundle artifact
+and every offline check, generation, deployment, query, role, and generated
+binding identity MUST derive from that same strictly decoded bundle. V1/V2
+genesis lock bytes MUST retain their accepted meanings.
+
+In particular, application and standalone role check, describe, bind, and
+provision operations over a V3 lock MUST compile against the pinned bundle and
+its exact query modules. They MUST NOT reinterpret successor source through the
+genesis compiler merely because the source bytes remain available locally.
+
+`SAI-004` Application deployment MUST compare the exact expected parent version
+and bundle hash plus exact candidate bundle hash before catalog admission. Any
+mismatch MUST leave authoritative and deployment state unchanged. An exact
+already-active candidate MUST be an idempotent success.
+
+`SAI-005` `application check` MUST validate an existing default lock and every
+generated artifact, returning `RDB-AL008` for drift. When no lock exists it MUST
+describe source-only compilation and MUST NOT claim that a lock or generated
+artifact was checked.
+
+`SAI-006` Interrupted or partial deployment state MUST resume through remote
+identity revalidation without manual deletion. A changed retained role identity
+MUST still require explicit credential replacement and MUST never widen
+authority implicitly.
+
+Application deployment MUST finish all fallible local source, lock, generated
+artifact, query-module, and requested-role compilation before its first remote
+mutation. A local authoring diagnostic that reports `no_files_changed` MUST
+therefore never be emitted after that invocation has activated a contract or
+query module. Remote partial progress remains explicitly journaled and
+resumable.
+
+## 4.6 Python application driver
 
 `PYD-001` The public Python distribution MUST be named `riffdb-application`,
 imported as `riffdb_application`, require CPython 3.13 or newer, and expose only
@@ -444,6 +493,339 @@ transport/protocol/kernel imports and prove equivalent Rust, TypeScript, and
 Python identities, values, queries, commands, batches, errors, uncertainty,
 authorization, and two-database routing. Prior sealed evaluation evidence MUST
 remain immutable.
+
+## 4.7 Public documentation handbook
+
+`HBK-001` The repository MUST publish one searchable, navigable static handbook
+from the checked-in `docs/` sources. The same sources MUST build locally and in
+CI without a hosted documentation service.
+
+`HBK-002` Public documentation MUST describe implemented behavior, clearly mark
+the project as a proof of concept, and link compatibility, security, and known
+limitations from the primary learning paths. Proposed and deferred behavior
+MUST NOT be presented as available.
+
+`HBK-003` The application-builder path MUST progress from a minimal entity and
+command through TicketDesk and the PostgreSQL comparison. It MUST explain how
+contract-first commands prevent the demonstrated unsafe mutation patterns
+without broadening the POC language or query scope.
+
+`HBK-004` Rust, TypeScript, Python, CLI, gRPC, and MCP documentation MUST retain
+one shared application-service boundary. MCP MUST be described and tested as a
+policy-filtered transport, never as a privileged storage path.
+
+`HBK-005` Operator documentation MUST cover user and system installation,
+configuration, multi-database hosting, credentials, health, backup, restore,
+upgrade, pre-alpha reset, troubleshooting, security, and removal using current
+public commands and configuration.
+
+`HBK-006` Concept and reference documentation MUST explain contracts, command
+execution, idempotency, conflict domains, provenance, durable effects,
+projection frontiers, RiffQL, public values, errors, and compatibility at the
+level needed to build and operate a POC application.
+
+`HBK-007` Generated CLI reference, architecture diagrams, compatibility
+fixtures, and public API documentation MUST be derived from their authoritative
+sources or checked for freshness. Published Rust API documentation MUST include
+only the stable public client crate, not internal authority-bearing crates.
+
+`HBK-008` Handbook tools and versions MUST be pinned. The published site MUST
+have no analytics, externally hosted runtime dependency, user credential, or
+environment-specific generated content.
+
+`HBK-009` The default theme MUST be responsive, keyboard navigable, readable in
+light and dark modes, and preserve meaningful image alternative text and code
+overflow behavior.
+
+`HBK-010` CI MUST reject a handbook that does not build, contains stale generated
+references, broken internal links or fragments, failing tested snippets, an
+unlisted public page, or an external runtime asset. A successful main-branch
+build MUST produce the exact static artifact used for GitHub Pages publication.
+
+`HBK-011` A change to public behavior, contract language, protocol, CLI,
+configuration, installation, operations, compatibility, or SDK behavior MUST
+update the affected handbook page in the same change. Pull requests MUST state
+their documentation impact, and generated handbook artifacts MUST remain
+reproducible.
+
+## 4.8 Robust contract migration
+
+This section defines the accepted P7 gate. Migration remains unavailable in the
+current product until its owning work packages pass, but ADR-0076 through
+ADR-0079 now authorize implementation in dependency order.
+
+`MIG-001` A migration MUST compile from a bounded separate `.riffm` source into
+one versioned canonical `MigrationBundleV1` bound to an exact lineage, parent
+bundle hash, successor bundle hash, compiler/grammar/IR versions, source hash,
+typed plan, resource bounds, and domain-separated bundle hash. Operational
+time, actor, request, database, backup, and filesystem facts MUST NOT enter the
+artifact.
+
+`MIG-002` Contract compatibility MUST add a stable `RequiresMigration` class.
+Ordinary deployment of such a successor MUST return a structured migration-
+required result without mutation. Migration proof MUST cover every required
+change exactly; an incomplete, excessive, ambiguous, wrong-parent, or unsupported
+proof MUST remain incompatible.
+
+`MIG-003` Application source manifest V3 and lock V4 MUST preserve prior format
+meanings and pin the exact successor bundle plus at most 32 parent-specific
+canonical parent and migration bundle artifacts. A server MUST select only the
+entry matching its exact active parent and MUST NOT infer or automatically
+chain intermediate migrations.
+
+The exact supported migration parent MAY be older than the successor bundle's
+immediate compilation parent. It MUST have the same lineage and a lower version,
+and its direct compatibility and proof obligations MUST be recomputed against
+the one canonical successor bundle as specified by ADR-0081.
+
+`MIG-004` Migration expressions MUST be deterministic, typed, bounded, and
+row-local. They MAY inspect canonical literals, the complete old row, and old
+key components and MAY use only the closed reviewed expression/conversion
+registry. They MUST NOT inspect another row or external input or perform a
+lookup, scan, aggregation, clock/random read, I/O, callback, SQL operation, or
+host-language escape.
+
+`MIG-005` Conversion MUST be lossless or guarded by an explicit checked
+assertion. Optional unwrapping, integer conversion, decimal rescaling, bound
+narrowing, UUID/string conversion, list conversion, and enum remapping MUST
+fail the complete preflight on any invalid row. Rounding, truncation, clamping,
+fallback-on-error, money-currency changes, and non-exact timestamp/date changes
+MUST be rejected.
+
+`MIG-006` Migration check, apply, and observation MUST use the shared API-neutral
+service, authentication, policy, redaction, and response-budget boundaries and
+one dedicated database/environment/lineage-scoped `MigrateContract` capability.
+Deploy, application, query, MCP, capability-administration, and backup/restore
+authority MUST NOT imply migration authority.
+
+`MIG-007` Migration MUST drain exactly one selected database while sibling
+databases continue serving. The selected database MUST admit no application,
+worker, subscription, or ordinary administration operation during the offline
+interval, and at most one migration operation may run process-wide.
+
+`MIG-008` Check and apply MUST use caller-stable UUIDv7 migration operation
+identity and a canonical semantic input hash. Same ID/same input MUST recover
+the same operation; same ID/different input MUST fail before drain. Acceptance
+is durable, cancellation after acceptance MUST NOT cancel the operation, and
+status polling may resume only after the selected database reopens.
+
+`MIG-009` Apply MUST repeat a complete read-only preflight after drain and before
+backup or staging. It MUST validate exact artifacts, every transform and
+successor constraint, bounded output and scratch requirements, entity-version
+capacity, and absence of unresolved Pending admissions for versions that the
+cutover retires. A preflight failure MUST leave authoritative data unchanged.
+
+`MIG-010` Apply MUST create and verify an immutable normal backup named
+`pre-migration-<operation-id>`, retain it after success, create a protected
+same-filesystem staged database from that backup, and publish only a fully
+validated stage through an atomic parent-synced replacement boundary. Caller
+paths, symlinks, `/tmp`, and cross-filesystem publication MUST NOT be accepted.
+
+`MIG-011` A commit-owned `MigrationCoordinator` MUST be the sole component that
+constructs or applies authoritative migration batches or final catalog cutover.
+Migration MUST assign no `CommitSequence`, emit no command outcome/event/outbox
+intent/command provenance, and rewrite no commit, event, outcome, provenance,
+idempotency, historical bundle, hash, or application-sequence byte. A changed
+entity MUST advance `EntityVersion` exactly once and bind the successor schema.
+Only successful final cutover MAY assign exactly one `AdministrationSequence`;
+it MUST atomically persist successor activation, write retirement, one terminal
+`ApplyContractMigration` service audit, and the permanent migration record.
+Pre-cutover failure MUST consume no administration sequence.
+
+`MIG-012` Each staged batch MUST be bounded to at most 256 input rows, at most
+64 row mutations, and the existing encoded transaction ceiling. Row/version/hash
+recheck, entity/index mutation, and in-database journal advancement MUST be one
+atomic transaction. External checksummed receipts and internal journals MUST
+reconcile restart without guessing, duplicating a transform, or exposing a
+partial stage.
+
+`MIG-013` Before publication, validation MUST completely prove catalog history,
+entity/key/schema consistency, indexes and generations, relationships,
+uniqueness, entity and aggregate invariants, commit/event/outcome/provenance/
+idempotency immutability, outbox integrity, projection state, frozen frontiers,
+and terminal migration metadata. Unknown or inconsistent evidence fails closed.
+
+`MIG-014` A new or replacement projection required by the successor MUST build
+in a fresh generation from immutable committed history through the frozen
+application frontier and MUST be ready in the stage before publication. A
+migration MUST NOT reinterpret or rewrite source event bytes.
+
+`MIG-015` Cutover MUST install a durable predecessor-write fence. New writes
+under a retired predecessor MUST be rejected. Terminal outcome resolution and
+historical inspection MUST remain available, while predecessor read-only plans
+may run only under an exact identity/type/meaning compatibility proof.
+
+`MIG-016` Fresh validation failure after publication and before readiness MUST
+automatically restore and freshly validate the operation backup, advance the
+history incarnation required by restore-rewind semantics, and durably report
+`FailedRolledBack`. No selected-database request may run between failed
+publication and completed rollback. Terminal success has no automatic rollback.
+
+`MIG-017` The public kernel API MUST add exactly three unary administration
+operations for check, apply, and operation observation, with matching Rust SDK
+and CLI methods. Apply MUST require exact migration-hash confirmation. MCP,
+TypeScript, Python, and generated application clients MUST expose no migration
+operation or authority.
+
+`MIG-018` Public migration observations and diagnostics MUST be bounded,
+structured, authorization-filtered, and redacted. They MAY expose exact
+artifact hashes, static step categories, checked counts, phase, backup name/hash,
+and closed repair codes; they MUST NOT expose row values, credentials, absolute
+paths, dependency prose, or internal sources.
+
+`MIG-019` Migration support MUST ship through separately reviewed additive,
+structural, and key/ownership gates. Stable IR tags for later gates MUST be
+frozen before parallel implementation, and an unimplemented tag MUST fail
+closed rather than silently degrade to a weaker transform.
+
+`MIG-020` Invalid predecessor data MUST be repaired only through ordinary
+compiled, authorized, idempotent, provenance-bearing predecessor commands before
+retry. Migration MUST NOT add skip-row, generic administrative edit, cross-row
+split/merge, physical purge, online dual-write, or cross-database semantics.
+
+## 4.9 Reactive applications and event-based queries
+
+`EVT-001` A domain event MUST remain the immutable authoritative event already
+committed atomically with its originating command state, outcome, idempotency,
+provenance, and commit record. Application delivery MUST NOT create a second
+event identity or rewrite its canonical payload or hash.
+
+`EVT-002` An application-streamable event MUST declare an ordered partition
+field tuple. The compiler MUST prove every emit supplies the exact command
+partition expressions under the same canonical key schema. Missing proof,
+schema disagreement, or cross-partition construction MUST fail compilation.
+
+`EVT-003` Event evolution MUST use the stable event type and originating
+contract version. Compatible optional-field normalization MUST remain catalog
+owned; changed meaning MUST use a new event type. An independent event-version
+clock MUST NOT be introduced.
+
+`EVT-004` A bounded integrity-checked event routing index MUST preserve
+increasing `EventId` order inside one partition, be resumably rebuilt from
+authoritative commits, and be maintained atomically for new commits. Missing,
+orphaned, mismatched, or malformed routing evidence MUST fail closed.
+
+`EVT-005` A symbolic stream MUST select explicit event types and payload fields,
+cover exactly one typed partition, and use only bounded checked predicates.
+Cross-partition and global streams MUST be rejected in P8.
+
+`EVT-006` A normal event envelope MUST expose only symbolic event and command
+metadata, safe actor kind, authorized selected payload, provenance locator,
+causation/correlation, history incarnation, and opaque cursor. It MUST NOT
+expose raw principal/session identities, partition/conflict keys, unselected
+payload, credentials, or process-local trace identifiers.
+
+`EVT-007` Event catalog, replay, tail, and stream execution MUST use the shared
+application service, catalog materialization, authorization, response budget,
+redaction, and database-selection boundaries on gRPC, CLI, SDK, and MCP.
+
+`EVT-008` P8 MUST NOT promise physical time-based event retention, raw CDC,
+global order, cross-partition consumption, exactly-once delivery, or event-
+sourced reconstruction. Existing projection and outbox semantics remain valid
+for events without an application partition declaration.
+
+`CON-001` Durable consumer identity MUST cover database, reactive-module hash,
+operation name, canonical parameters, and bounded consumer name. A definition
+change MUST NOT silently inherit another identity's checkpoint.
+
+`CON-002` Delivery MUST be at least once in increasing `EventId` order within
+one partition. Stable event identity plus an idempotent command reaction, not a
+claim of exactly-once external effect, MUST be the duplicate-safety mechanism.
+
+`CON-003` Checkpoint advancement MUST require a contiguous acknowledged prefix.
+Out-of-order acknowledgement MAY use only a bounded sparse set, and one event
+MUST NOT be leased concurrently to two attempts in the same consumer group.
+
+`CON-004` Lease, ack, nack, retry-delay, dead-letter, and seek transitions MUST
+be durable, atomic operational metadata owned by one coordinator. They MUST
+assign no application commit sequence or mutate application entity state.
+
+`CON-005` Pull and wait operations MUST enforce the ADR-0080 item, byte, wait,
+lease, in-flight, retry, and delay ceilings. No API or worker may retain an
+unbounded delivery queue or unbounded sparse acknowledgement set.
+
+`CON-006` Startup and restore MUST validate checkpoint/lease/dead-letter
+reciprocity, release expired leases, and apply history-incarnation fences.
+Unknown durable evidence MUST fail closed without skipping an event.
+
+`CON-007` Consume, acknowledge, negative-acknowledge, seek, and status operations
+MUST reauthorize exact database, partition, reactive definition, and principal
+facts. Cursor or lease possession alone MUST grant no authority.
+
+`CON-008` Pull batches and gRPC streams, generated SDKs, CLI, and MCP tools MUST
+adapt the same API-neutral consumer service. MCP notifications MUST be
+payload-free wakeup hints; work is retrieved only through an authorized call.
+
+`LIVE-001` A live named query MUST first execute in one consistent snapshot at
+application head `S` and then consume authoritative commits strictly after `S`.
+A commit racing snapshot completion MUST be observed through durable catch-up.
+
+`LIVE-002` Live-query invalidation MUST be compiler-derived and partition-local.
+P8 MAY conservatively re-execute on a same-partition mutation of a referenced
+entity type, but MUST NOT miss a relevant mutation or execute an unbounded plan.
+
+`LIVE-003` Public updates MUST be the closed Snapshot, Patch, Reset, Checkpoint,
+or Terminal variants. Keyed patches require the complete authorized primary key
+to be explicitly selected; otherwise a complete bounded reset MUST be used.
+
+`LIVE-004` A live cursor MUST bind history incarnation, exact contract/module/
+query-plan identity, canonical parameters, partition, and frontier. Restore,
+definition drift, expiry, or identity mismatch MUST produce a typed reset or
+terminal result rather than ambiguous continuation.
+
+`LIVE-005` Authorization MUST be revalidated before delivery. Revocation or
+authority drift MUST close the watch, and generated clients MUST clear retained
+protected state rather than preserve a stale authorized snapshot.
+
+`LIVE-006` Watches MUST enforce the ADR-0080 per-database count, per-watch
+buffer, response, and lifetime ceilings. Burst coalescing MAY skip transient
+intermediate views but MUST converge to the same value as a fresh named query.
+
+`LIVE-007` Query outcome changes, excessive diffs, buffer pressure, and module
+or plan changes MUST use typed reset/terminal behavior. Internal keys, raw
+change records, and silently partial patches MUST NOT escape.
+
+`LIVE-008` Rust, TypeScript, Python, CLI, and MCP generated/application
+surfaces MUST share the exact watch identity and update semantics. A browser
+MUST connect through application-owned authenticated relay code and MUST NOT
+receive a RiffDB capability.
+
+`CTX-001` A contextual subscription MUST bind one exact event stream, bounded
+named hydration queries, explicit declared commands, exact reactive identity,
+and delivery limits. Every referenced event field MUST exist with one type on
+every selected event variant.
+
+`CTX-002` All hydration queries for one work item MUST execute in one shared
+read snapshot whose application head is at least the triggering event sequence.
+Context MUST be freshly authorized and recomputed on redelivery, not persisted.
+
+`CTX-003` A delivered work item MUST bind stable work/event identity, selected
+event, bounded context, currently authorized declared commands, lease token,
+and a server-issued causation token. "Available" commands MUST mean authorized,
+not guaranteed to satisfy business preconditions.
+
+`CTX-004` A reaction helper MUST derive retry-stable command idempotency from
+subscription identity, event ID, target command, and declared reaction name.
+P8 support is limited to one direct UUID or bounded-string idempotency input.
+
+`CTX-005` Before a new reaction commit, the service MUST validate causation
+token, live lease, history incarnation, database, partition, principal, and
+target command. An expired token MAY resolve an exact prior outcome but MUST
+NOT admit a new command.
+
+`CTX-006` Reaction provenance MUST persist the causing event and inherited root
+request correlation atomically with the command. Normal event delivery MUST
+not expose raw agent-session or principal identity to reconstruct causality.
+
+`CTX-007` Crash after reaction commit and before acknowledgement MUST redeliver
+the event; rerunning the generated reaction MUST resolve the original persisted
+outcome and MUST NOT duplicate business state.
+
+`CTX-008` Agent inference, arbitrary callbacks, connectors, webhooks, and
+external broker delivery MUST NOT run in the originating transaction or enter
+the P8 critical path. MCP notification streams remain non-durable wakeups over
+RiffDB-owned durable consumer truth.
+
 | gRPC API | Programmatic application and administration protocol | Alternative semantics |
 | MCP API | Dynamic tools, resources, prompts, progress, cancellation, and agent-safe result shaping | Direct storage access |
 | CLI | Local operator and demo workflows over public APIs | Hidden privileged mutation path |
@@ -5409,13 +5791,57 @@ source distribution reproduce and install under their documented toolchain.
 depend on completed WP-393 so production work does not overlap the current
 contract-evolution package.
 
+## 20.4.4 Stage P6 — public documentation handbook
+
+**Objective:** Publish and continuously verify the implemented application,
+operator, architecture, protocol, and client documentation.
+
+**Gate P6:** `HBK-001` through `HBK-011` pass. The same checked-in sources build
+the local handbook and GitHub Pages artifact, and future public changes are
+required to update affected documentation in the same change.
+
+**P6 work-package members:** WP-401 through WP-404.
+
+## 20.4.5 Stage P7 — robust offline contract migration
+
+**Objective:** Evolve authoritative application schemas without database reset,
+generic writes, history rewriting, or partially visible state.
+
+**Gate P7:** `MIG-001` through `MIG-020` pass. An exact parent-specific
+migration checks, backs up, transforms, validates, rebuilds derived state, and
+atomically publishes one selected database; every injected failure leaves the
+exact predecessor ready or the exact validated successor ready, and sibling
+databases remain isolated.
+
+**P7 work-package members:** WP-405 through WP-413. WP-405 and exact acceptance
+of ADR-0076 through ADR-0079 block all migration production implementation.
+
+## 20.4.6 Stage P8 — reactive applications
+
+**Objective:** Let applications and agents consume named domain events, watch
+named RiffQL state, and receive bounded contextual work through the same typed,
+authorized, partition-local application model.
+
+**Gate P8:** `EVT-001` through `EVT-008`, `CON-001` through `CON-008`,
+`LIVE-001` through `LIVE-008`, and `CTX-001` through `CTX-008` pass. TicketDesk
+proves restart-safe at-least-once reaction, race-free browser live state,
+revocation, evolution reset, and generated Rust/TypeScript/Python/MCP parity
+without raw commit or storage access.
+
+**P8 work-package members:** WP-414 through WP-421. WP-414 and exact acceptance
+of ADR-0080 block reactive grammar, IR, durable, permission, protocol, and
+generated-client implementation. WP-416 additionally depends on migration-owned
+WP-406 so Application Source V4 and Lock V5 cannot precede Source V3 and Lock
+V4.
+
 ## 20.5 Stage A — single-node alpha hardening
 
 **Objective:** Turn the prototype into a stable, supportable single-node alpha for trusted design partners.
 
 **Additions:**
 
-- Stable storage-format migration framework.
+- The completed P7 contract-data migration framework plus stable storage-format
+  upgrade policy.
 - Online consistent backup and verified restore.
 - Contract language versioning and bundle signing.
 - More entity indexes and bounded indexed reads.
@@ -5589,6 +6015,7 @@ earlier deadline governs unless a reviewed reconciliation changes both sources.
 | `ADR-0057` | Accepted | Compiler-owned exact application lock, bounded authoring diagnostics, empty-directory scaffold, complete public authoring kit, TypeScript/builder-MCP parity, durability-preserving performance investigation, rehearsals, canaries, and campaign 02 | WP-345 through WP-370 |
 | `ADR-0058` | Accepted | Bounded typed FIFO writer scheduling, production group durability over redb `Immediate`, two-transition audited commands, complete-outcome release proof, and independent grouped uncertainty | WP-364 |
 | `ADR-0059` | Accepted | Same-partition cross-aggregate read dependencies, exactly one mutation aggregate, mutation-only conflict keys, exact commit-time read revalidation, effective group evidence, and same-run PostgreSQL write parity | WP-366 |
+| `ADR-0075` | Accepted | Parent-aware successor lock V3, read-only candidate preview, exact pre-mutation deployment identity, idempotent already-active retry, truthful application check, and resumable partial deployment state | WP-399 |
 
 ## 22.2 Decisions to resolve before implementation reaches the named gate
 
@@ -6430,7 +6857,14 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `ENT-*` | Authoritative entity records |
 | `CMP-*` | Contract compiler and language |
 | `EVL-*` | Additive contract evolution and deployment diagnostics |
+| `SAI-*` | Exact successor application identity before mutation |
 | `PYD-*` | Python generated application driver, packaging, and language parity |
+| `HBK-*` | Public handbook, generated references, publication, and documentation maintenance |
+| `MIG-*` | Deterministic offline contract-data migration, cutover, recovery, and administration |
+| `EVT-*` | Partitioned typed domain-event catalog, routing, replay, and presentation |
+| `CON-*` | Durable bounded event-consumer delivery and recovery |
+| `LIVE-*` | Race-free live named RiffQL snapshots, updates, and resumption |
+| `CTX-*` | Contextual agent work, causation, and reaction-safe idempotency |
 | `DSL-*` | Contract language restrictions |
 | `OUT-*` | Typed outcome and idempotency behavior |
 | `TXN-*` | Command execution, conflict ownership, and validation |

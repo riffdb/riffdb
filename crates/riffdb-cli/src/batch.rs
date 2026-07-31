@@ -29,6 +29,11 @@ const CHECKPOINT_SCHEMA: &str = "riffdb.command-batch-checkpoint/v1";
 pub(crate) enum BatchError {
     Input(InputError),
     CheckpointInvalid,
+    CheckpointContractVersionMismatch {
+        checkpoint_file: String,
+        checkpoint_contract_version: Option<u64>,
+        requested_contract_version: Option<u64>,
+    },
     CheckpointWriteFailed,
     IdentifierUnavailable,
 }
@@ -461,6 +466,17 @@ fn load_or_create_checkpoint(
             }
             let checkpoint: Checkpoint =
                 serde_json::from_slice(&bytes).map_err(|_| BatchError::CheckpointInvalid)?;
+            if checkpoint.expected_contract_version != options.expected_contract_version {
+                return Err(BatchError::CheckpointContractVersionMismatch {
+                    checkpoint_file: path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("checkpoint.json")
+                        .to_owned(),
+                    checkpoint_contract_version: checkpoint.expected_contract_version,
+                    requested_contract_version: options.expected_contract_version,
+                });
+            }
             validate_checkpoint(&checkpoint, source, options)?;
             Ok((checkpoint, true))
         }
@@ -716,6 +732,17 @@ mod tests {
             load_or_create_checkpoint(&source, &options).expect("resume receipt");
         assert!(resumed);
         assert_eq!(loaded.entries.len(), 1);
+
+        let mut successor_options = options.clone();
+        successor_options.expected_contract_version = Some(8);
+        assert!(matches!(
+            load_or_create_checkpoint(&source, &successor_options),
+            Err(BatchError::CheckpointContractVersionMismatch {
+                checkpoint_contract_version: Some(7),
+                requested_contract_version: Some(8),
+                ..
+            })
+        ));
 
         let changed = parse_source(
             br#"{"idempotency_key":"seed:1","title":"changed"}

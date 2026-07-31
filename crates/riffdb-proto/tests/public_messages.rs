@@ -272,6 +272,7 @@ fn diagnostics_use_the_closed_registry_and_submitted_source() {
     let request = v1::ValidateContractRequest {
         request_id: uuid_v7(),
         source: "x".to_owned(),
+        preview_active_successor: false,
     };
     let mut response = v1::ValidateContractResponse {
         result: Some(v1::validate_contract_response::Result::Invalid(

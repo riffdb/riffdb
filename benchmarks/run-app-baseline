@@ -12,6 +12,7 @@ usage() {
         '         [--load-warmup-secs N] [--load-zipf-s F] [--load-contended]' \
         '         [--load-saturate] [--load-saturate-p99-ms N] [--load-concurrency-sweep]' \
         '         [--load-riffdb-transport per-session|shared]' \
+        '         [--database-root PATH]' \
         '         [--output PATH] [--assert-write-parity|--assert-all-parity]' \
         '         [--skip-postgres] [--skip-riffdb]' >&2
     exit 2
@@ -39,6 +40,7 @@ load_saturate=0
 load_saturate_p99_ms=
 load_concurrency_sweep=0
 load_riffdb_transport=
+database_root=
 output=
 while (($#)); do
     case "$1" in
@@ -111,6 +113,11 @@ while (($#)); do
             load_riffdb_transport="$2"
             shift 2
             ;;
+        --database-root)
+            (($# >= 2)) || usage
+            database_root="$2"
+            shift 2
+            ;;
         --output)
             (($# >= 2)) || usage
             output="$2"
@@ -165,6 +172,7 @@ fi
 [[ -n "$load_saturate_p99_ms" ]] && extra_args+=(--load-saturate-p99-ms "$load_saturate_p99_ms")
 ((load_concurrency_sweep)) && extra_args+=(--load-concurrency-sweep)
 [[ -n "$load_riffdb_transport" ]] && extra_args+=(--load-riffdb-transport "$load_riffdb_transport")
+[[ -n "$database_root" ]] && extra_args+=(--database-root "$database_root")
 ((skip_postgres)) && extra_args+=(--skip-postgres)
 ((skip_riffdb)) && extra_args+=(--skip-riffdb)
 ((assert_write_parity)) && extra_args+=(--assert-write-parity)

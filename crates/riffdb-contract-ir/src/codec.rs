@@ -110,6 +110,20 @@ impl<'a> Reader<'a> {
         ))
     }
 
+    pub(crate) fn peek_u64(&self) -> Result<u64, IrValidationError> {
+        let end = self
+            .position
+            .checked_add(8)
+            .ok_or(IrValidationError::UnexpectedEnd)?;
+        Ok(u64::from_be_bytes(
+            self.bytes
+                .get(self.position..end)
+                .ok_or(IrValidationError::UnexpectedEnd)?
+                .try_into()
+                .map_err(|_| IrValidationError::UnexpectedEnd)?,
+        ))
+    }
+
     pub(crate) fn u64(&mut self) -> Result<u64, IrValidationError> {
         Ok(u64::from_be_bytes(self.array()?))
     }

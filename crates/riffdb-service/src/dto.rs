@@ -435,6 +435,8 @@ pub enum ContractCompatibilityClass {
     Compatible,
     /// Requires callers to select the new version explicitly.
     RequiresExplicitVersion,
+    /// Requires an exact checked migration before activation.
+    RequiresMigration,
     /// Not activatable under the POC policy.
     Incompatible,
 }
@@ -444,6 +446,7 @@ impl From<CompatibilityClass> for ContractCompatibilityClass {
         match value {
             CompatibilityClass::Compatible => Self::Compatible,
             CompatibilityClass::RequiresExplicitVersion => Self::RequiresExplicitVersion,
+            CompatibilityClass::RequiresMigration => Self::RequiresMigration,
             CompatibilityClass::Incompatible => Self::Incompatible,
         }
     }
@@ -617,12 +620,26 @@ impl ContractDescriptor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidateContractRequest {
     source: ContractSource,
+    preview_active_successor: bool,
 }
 
 impl ValidateContractRequest {
     /// Creates one validation request within the complete structural request bound.
     pub fn new(source: ContractSource) -> Result<Self, ServiceDtoError> {
-        let request = Self { source };
+        let request = Self {
+            source,
+            preview_active_successor: false,
+        };
+        ensure_service_request_bound(&request)?;
+        Ok(request)
+    }
+
+    /// Creates a read-only parent-aware compilation request.
+    pub fn preview_active_successor(source: ContractSource) -> Result<Self, ServiceDtoError> {
+        let request = Self {
+            source,
+            preview_active_successor: true,
+        };
         ensure_service_request_bound(&request)?;
         Ok(request)
     }
@@ -631,6 +648,59 @@ impl ValidateContractRequest {
     #[must_use]
     pub const fn source(&self) -> &ContractSource {
         &self.source
+    }
+
+    /// Whether the caller requested the exact active-parent candidate bundle.
+    #[must_use]
+    pub const fn previews_active_successor(&self) -> bool {
+        self.preview_active_successor
+    }
+}
+
+/// Exact bounded candidate produced without catalog mutation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompiledContractCandidate {
+    parent_version: Option<ContractVersion>,
+    parent_bundle_hash: Option<ContractBundleHash>,
+    candidate: ContractDescriptor,
+    canonical_bundle: Vec<u8>,
+}
+
+impl CompiledContractCandidate {
+    /// Captures the compiler-owned canonical bundle and its predecessor identity.
+    #[must_use]
+    pub fn from_bundle(bundle: &ContractBundle) -> Self {
+        let parent = bundle.parent();
+        Self {
+            parent_version: parent.map(|parent| parent.contract_version()),
+            parent_bundle_hash: parent.map(|parent| parent.bundle_hash()),
+            candidate: ContractDescriptor::from_bundle(bundle),
+            canonical_bundle: bundle.canonical_bytes().to_vec(),
+        }
+    }
+
+    /// Exact predecessor version, absent for genesis.
+    #[must_use]
+    pub const fn parent_version(&self) -> Option<ContractVersion> {
+        self.parent_version
+    }
+
+    /// Exact predecessor bundle hash, absent for genesis.
+    #[must_use]
+    pub const fn parent_bundle_hash(&self) -> Option<ContractBundleHash> {
+        self.parent_bundle_hash
+    }
+
+    /// Checked candidate descriptor.
+    #[must_use]
+    pub const fn candidate(&self) -> &ContractDescriptor {
+        &self.candidate
+    }
+
+    /// Compiler-owned canonical bundle bytes.
+    #[must_use]
+    pub fn canonical_bundle(&self) -> &[u8] {
+        &self.canonical_bundle
     }
 }
 
@@ -641,6 +711,8 @@ pub enum ContractValidationResult {
     Valid,
     /// The source failed with bounded compiler-owned diagnostics.
     Invalid(CompilationError),
+    /// Exact active-parent candidate compiled without deployment.
+    Candidate(Box<CompiledContractCandidate>),
 }
 
 /// Request to explain one command from an active or exact contract.
@@ -768,6 +840,8 @@ pub enum ExplainCommandResult {
 pub struct DeployContractRequest {
     source: ContractSource,
     expected_active_version: Option<ContractVersion>,
+    expected_active_bundle_hash: Option<ContractBundleHash>,
+    expected_candidate_bundle_hash: Option<ContractBundleHash>,
 }
 
 impl DeployContractRequest {
@@ -779,6 +853,28 @@ impl DeployContractRequest {
         let request = Self {
             source,
             expected_active_version,
+            expected_active_bundle_hash: None,
+            expected_candidate_bundle_hash: None,
+        };
+        ensure_service_request_bound(&request)?;
+        Ok(request)
+    }
+
+    /// Creates one exact application deployment request.
+    pub fn new_exact(
+        source: ContractSource,
+        expected_active_version: Option<ContractVersion>,
+        expected_active_bundle_hash: Option<ContractBundleHash>,
+        expected_candidate_bundle_hash: ContractBundleHash,
+    ) -> Result<Self, ServiceDtoError> {
+        if expected_active_version.is_some() != expected_active_bundle_hash.is_some() {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        let request = Self {
+            source,
+            expected_active_version,
+            expected_active_bundle_hash,
+            expected_candidate_bundle_hash: Some(expected_candidate_bundle_hash),
         };
         ensure_service_request_bound(&request)?;
         Ok(request)
@@ -795,6 +891,18 @@ impl DeployContractRequest {
     pub const fn expected_active_version(&self) -> Option<ContractVersion> {
         self.expected_active_version
     }
+
+    /// Exact expected active bundle hash for application deployment.
+    #[must_use]
+    pub const fn expected_active_bundle_hash(&self) -> Option<ContractBundleHash> {
+        self.expected_active_bundle_hash
+    }
+
+    /// Exact expected candidate bundle hash for application deployment.
+    #[must_use]
+    pub const fn expected_candidate_bundle_hash(&self) -> Option<ContractBundleHash> {
+        self.expected_candidate_bundle_hash
+    }
 }
 
 /// Closed semantic deployment result with no storage transition value.
@@ -804,6 +912,8 @@ pub enum DeployContractResult {
     InvalidSource(CompilationError),
     /// The checked successor is outside the active additive compatibility policy.
     IncompatibleCandidate(ContractDescriptor),
+    /// The checked successor is migratable but cannot use ordinary deployment.
+    MigrationRequired(ContractDescriptor),
     /// A new active pointer was committed.
     Activated(ContractDescriptor),
     /// The exact immutable pointer was already active.
@@ -812,6 +922,13 @@ pub enum DeployContractResult {
     ExpectedActiveVersionMismatch {
         /// Actual active version, or absence.
         actual: Option<ContractVersion>,
+    },
+    /// Exact active-parent or compiled-candidate identity disagreed before mutation.
+    ExpectedApplicationIdentityMismatch {
+        /// Transaction-observed active contract, if any.
+        actual_active: Option<ContractDescriptor>,
+        /// Candidate compiled against that observed active contract.
+        compiled_candidate: ContractDescriptor,
     },
     /// Immutable bytes conflicted at the same lineage/version identity.
     BundleConflict,
@@ -8676,6 +8793,9 @@ impl ServiceRequestCharge for ValidateContractRequest {
     fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
         let mut charge = RequestCharge::default();
         charge.add_framed_bytes(self.source.as_str().len())?;
+        if self.preview_active_successor {
+            charge.add(1)?;
+        }
         Ok(charge.finish())
     }
 }
@@ -8696,6 +8816,14 @@ impl ServiceRequestCharge for DeployContractRequest {
         charge.add(STRUCTURAL_OPTION_BYTES)?;
         if self.expected_active_version.is_some() {
             charge.add(8)?;
+        }
+        if self.expected_active_bundle_hash.is_some() {
+            charge.add(STRUCTURAL_OPTION_BYTES)?;
+            charge.add(32)?;
+        }
+        if self.expected_candidate_bundle_hash.is_some() {
+            charge.add(STRUCTURAL_OPTION_BYTES)?;
+            charge.add(32)?;
         }
         Ok(charge.finish())
     }

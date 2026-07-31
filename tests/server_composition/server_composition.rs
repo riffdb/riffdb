@@ -160,6 +160,8 @@ async fn real_process_hosts_policy_filtered_mcp_and_stops_on_sigterm() -> TestRe
                 request_id: fresh_request_id_bytes()?,
                 source: BUDGET_CONTRACT.to_owned(),
                 expected_active_version: None,
+                expected_active_bundle_hash: Vec::new(),
+                expected_candidate_bundle_hash: Vec::new(),
             },
             &authenticated,
         ),

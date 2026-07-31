@@ -43,6 +43,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/catalog.proto",
     "riffdb/storage/v1/common.proto",
     "riffdb/storage/v1/envelope.proto",
+    "riffdb/storage/v1/event_route_v1.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
     "riffdb/storage/v1/event_references_v2.proto",
     "riffdb/storage/v1/history_incarnation_v1.proto",
@@ -62,6 +63,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/catalog.proto",
     "riffdb/storage/v1/common.proto",
     "riffdb/storage/v1/envelope.proto",
+    "riffdb/storage/v1/event_route_v1.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
     "riffdb/storage/v1/event_references_v2.proto",
     "riffdb/storage/v1/history_incarnation_v1.proto",
@@ -286,6 +288,11 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         PayloadBound::Tiny,
     ),
     durable(
+        "event_route_v1.proto",
+        "StoredEventRouteV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
         "entity_references_v3.proto",
         "StoredCommitRecordV3",
         PayloadBound::EnvelopeMaximum,
@@ -356,7 +363,12 @@ const DISCOVERY_PAGE_BOUNDARIES: [(&str, usize, bool, &str); 4] = [
     ("limit-500-exact-end", 500, false, "exact_end"),
 ];
 
-const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 17] = [
+const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 18] = [
+    (
+        "riffdb.v1.CompiledContractCandidate.parent_version",
+        "ContractService.ValidateContract:response:valid",
+        "ContractService.ValidateContract:response:candidate-preview",
+    ),
     (
         "riffdb.v1.CommandToolDiscoveryPage.next_cursor",
         "ContractService.DiscoverCommandTools:response:full-boundary-empty-exact-end",
@@ -596,8 +608,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| {
             io::Error::other("durable service-audit-request-index registry is incomplete")
         })?;
-    let entity_reference_v3_record = durable_registry
+    let event_route_record = durable_registry
         .get(current_v1_record_count + 7)
+        .ok_or_else(|| io::Error::other("durable event-route registry is incomplete"))?;
+    let entity_reference_v3_record = durable_registry
+        .get(current_v1_record_count + 8)
         .ok_or_else(|| io::Error::other("durable entity-reference registry is incomplete"))?;
     write_artifact(
         &output_root,
@@ -683,6 +698,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/durable-service-audit-request-index-v1-record-bound.bin",
         &durable_record_bounds(std::slice::from_ref(service_audit_request_index_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-event-route-v1-schema-hash.bin",
+        &event_route_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-event-route-v1-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(event_route_record)),
     )?;
     write_artifact(
         &output_root,
@@ -961,9 +986,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 37 {
+    if DURABLE_RECORDS.len() != 38 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 37 records").into(),
+            io::Error::other("readable durable registry must contain exactly 38 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -987,9 +1012,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 88 || enum_count != 12 {
+    if message_count != 89 || enum_count != 12 {
         return Err(io::Error::other(format!(
-            "storage schema must contain 87 semantic messages plus StoredEnvelope and 12 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain 88 semantic messages plus StoredEnvelope and 12 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1184,8 +1209,11 @@ fn durable_writable_registry_fixture(
         records.get(current_v1_record_count + 6).ok_or_else(|| {
             io::Error::other("durable registry is missing StoredServiceAuditRequestIndexV1")
         })?;
-    let commit_v3 = records
+    let event_route = records
         .get(current_v1_record_count + 7)
+        .ok_or_else(|| io::Error::other("durable registry is missing StoredEventRouteV1"))?;
+    let commit_v3 = records
+        .get(current_v1_record_count + 8)
         .ok_or_else(|| io::Error::other("durable registry is missing StoredCommitRecordV3"))?;
     let writable = legacy[..8]
         .iter()
@@ -1199,10 +1227,11 @@ fn durable_writable_registry_fixture(
         .chain(query_modules.iter())
         .chain(std::iter::once(history_incarnation))
         .chain(std::iter::once(service_audit_request_index))
+        .chain(std::iter::once(event_route))
         .chain(std::iter::once(registry_v2));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 3);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 4);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {
@@ -2041,6 +2070,36 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
         &v1::ValidateContractRequest {
             request_id: request_id.clone(),
             source: "entity Budget { id: uuid }".to_owned(),
+            preview_active_successor: false,
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "ContractService.ValidateContract",
+        "request",
+        "preview-active-successor",
+        "riffdb.v1.ValidateContractRequest",
+        &v1::ValidateContractRequest {
+            request_id: request_id.clone(),
+            source: "contract Budget version 2 {}".to_owned(),
+            preview_active_successor: true,
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "ContractService.ValidateContract",
+        "response",
+        "candidate-preview",
+        "riffdb.v1.ValidateContractResponse",
+        &v1::ValidateContractResponse {
+            result: Some(v1::validate_contract_response::Result::Candidate(
+                v1::CompiledContractCandidate {
+                    parent_version: Some(1),
+                    parent_bundle_hash: vec![0x11; 32],
+                    candidate: Some(public_contract_descriptor()),
+                    canonical_bundle: vec![0x52, 0x44, 0x42],
+                },
+            )),
         },
     );
     append_client_vector(
@@ -2153,6 +2212,22 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
             request_id: request_id.clone(),
             source: "entity Budget { id: uuid }".to_owned(),
             expected_active_version: None,
+            expected_active_bundle_hash: Vec::new(),
+            expected_candidate_bundle_hash: Vec::new(),
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "ContractService.DeployContract",
+        "request",
+        "exact-application-identity",
+        "riffdb.v1.DeployContractRequest",
+        &v1::DeployContractRequest {
+            request_id: request_id.clone(),
+            source: "contract Budget version 2 {}".to_owned(),
+            expected_active_version: Some(1),
+            expected_active_bundle_hash: vec![0x41; 32],
+            expected_candidate_bundle_hash: vec![0x42; 32],
         },
     );
     for (branch, result) in [
@@ -2183,6 +2258,24 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
         (
             "bundle-conflict",
             v1::deploy_contract_response::Result::BundleConflict(v1::Unit {}),
+        ),
+        (
+            "expected-application-identity-mismatch-absent",
+            v1::deploy_contract_response::Result::ExpectedApplicationIdentityMismatch(
+                v1::ExpectedApplicationIdentityMismatch {
+                    actual_active: None,
+                    compiled_candidate: Some(public_contract_descriptor()),
+                },
+            ),
+        ),
+        (
+            "expected-application-identity-mismatch-present",
+            v1::deploy_contract_response::Result::ExpectedApplicationIdentityMismatch(
+                v1::ExpectedApplicationIdentityMismatch {
+                    actual_active: Some(public_contract_descriptor()),
+                    compiled_candidate: Some(public_successor_contract_descriptor()),
+                },
+            ),
         ),
     ] {
         append_client_vector(

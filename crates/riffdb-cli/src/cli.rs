@@ -42,6 +42,11 @@ pub(crate) enum TopLevel {
         #[command(subcommand)]
         command: ApplicationCommand,
     },
+    /// Inspects exact local contract migration artifacts.
+    Migration {
+        #[command(subcommand)]
+        command: MigrationCommand,
+    },
     /// Starts the bounded local symbolic development workflow.
     Dev {
         #[arg(long, default_value = "application", value_name = "ROLE_PRESET")]
@@ -104,6 +109,25 @@ pub(crate) enum TopLevel {
     Demo {
         #[command(subcommand)]
         command: DemoCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum MigrationCommand {
+    /// Prints the exact read-only migration plan for a locked application.
+    Plan {
+        #[arg(
+            long,
+            default_value = "riffdb.application.json",
+            value_name = "APPLICATION_SOURCE"
+        )]
+        application: OsString,
+        #[arg(
+            long,
+            default_value = "riffdb.application.lock.json",
+            value_name = "APPLICATION_LOCK"
+        )]
+        lock: OsString,
     },
 }
 
@@ -194,7 +218,11 @@ pub(crate) enum ApplicationCommand {
         seed: bool,
         #[arg(long, default_value = "8", value_name = "1..32")]
         seed_concurrency: String,
-        #[arg(long, requires = "provision_role")]
+        #[arg(
+            long = "replace-role-credential",
+            alias = "replace-expired-credential",
+            requires = "provision_role"
+        )]
         replace_expired_credential: bool,
     },
     /// Idempotently deploys and binds one explicit short-lived application role.
@@ -216,7 +244,7 @@ pub(crate) enum ApplicationCommand {
         tenant: Option<String>,
         #[arg(long, default_value = "28800", value_name = "SECONDS")]
         lifetime_seconds: String,
-        #[arg(long)]
+        #[arg(long = "replace-role-credential", alias = "replace-expired-credential")]
         replace_expired_credential: bool,
     },
 }
@@ -655,6 +683,20 @@ mod tests {
     #[test]
     fn application_source_and_lock_operations_are_explicit_and_closed() {
         assert!(matches!(
+            Cli::try_parse_from([
+                "riffdb",
+                "migration",
+                "plan",
+                "--application",
+                "custom.application.json"
+            ])
+            .expect("migration plan")
+            .command,
+            TopLevel::Migration {
+                command: MigrationCommand::Plan { application, .. }
+            } if application == "custom.application.json"
+        ));
+        assert!(matches!(
             Cli::try_parse_from(["riffdb", "application", "migrate", "--to", "v2"])
                 .expect("migration preview")
                 .command,
@@ -707,6 +749,7 @@ mod tests {
                 "--seed",
                 "--seed-concurrency",
                 "16",
+                "--replace-role-credential",
             ])
             .expect("locked installed deployment")
             .command,
@@ -716,11 +759,30 @@ mod tests {
                     tenant: Some(tenant),
                     seed: true,
                     seed_concurrency,
+                    replace_expired_credential: true,
                     ..
                 }
             } if role == "TicketDeskAgent"
                 && tenant == "organization_acme"
                 && seed_concurrency == "16"
+        ));
+        assert!(matches!(
+            Cli::try_parse_from([
+                "riffdb",
+                "application",
+                "bind-dev-role",
+                "--role",
+                "TicketDeskAgent",
+                "--replace-expired-credential",
+            ])
+            .expect("legacy replacement alias")
+            .command,
+            TopLevel::Application {
+                command: ApplicationCommand::BindDevRole {
+                    replace_expired_credential: true,
+                    ..
+                }
+            }
         ));
         assert!(matches!(
             Cli::try_parse_from([

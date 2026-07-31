@@ -92,7 +92,14 @@ direction, merged draft, or implementation choice.
 | [0071](0071-typed-saturation-and-admission.md) | Typed Saturation and Admission | Accepted |
 | [0072](0072-database-history-incarnation.md) | Database History Incarnation | Accepted |
 | [0073](0073-linear-startup-validation-and-bounded-history-access.md) | Linear Startup Validation and Bounded History Access | Accepted |
-| [0074](0074-python-application-driver.md) | Python Application Driver | Accepted |
+| [0074](0074-python-application-driver.md) | Rust-Backed Python Application Driver | Accepted |
+| [0075](0075-successor-application-identity.md) | Exact Successor Application Identity Before Mutation | Accepted |
+| [0076](0076-offline-contract-migration-semantics.md) | Offline Contract Migration Semantics and Cutover | Accepted |
+| [0077](0077-migration-language-ir-and-application-lock.md) | Migration Language, IR, and Application Lock | Accepted |
+| [0078](0078-staged-migration-storage-and-recovery.md) | Staged Migration Storage, Publication, and Recovery | Accepted |
+| [0079](0079-public-contract-migration-administration.md) | Public Contract Migration Administration | Accepted |
+| [0080](0080-partitioned-events-consumers-and-live-queries.md) | Partitioned Events, Durable Consumers, and Live Queries | Accepted |
+| [0081](0081-supported-migration-parent-and-canonical-successor.md) | Supported Migration Parent and Canonical Successor | Accepted |
 | [0082](0082-single-total-order-and-pre-alpha-format-acceptances.md) | Single Total Order and Pre-Alpha Format Acceptances | Proposed |
 | [0083](0083-authoritative-entity-references.md) | Authoritative Entity References | Proposed |
 | [0084](0084-batch-item-results.md) | Batch Item Results | Proposed |

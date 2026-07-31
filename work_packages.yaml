@@ -1,7 +1,7 @@
-spec_version: '0.51'
+spec_version: '0.57'
 product: RiffDB
 repository: riffdb
-status: application-platform-implementation
+status: contract-migration-and-reactive-application-implementation
 source_spec: SPEC.md
 normative_terms:
 - MUST
@@ -108,6 +108,36 @@ gates:
   - WP-396
   - WP-397
   - WP-398
+- id: P6
+  name: Public documentation handbook
+  requires:
+  - WP-401
+  - WP-402
+  - WP-403
+  - WP-404
+- id: P7
+  name: Robust offline contract migration
+  requires:
+  - WP-405
+  - WP-406
+  - WP-407
+  - WP-408
+  - WP-409
+  - WP-410
+  - WP-411
+  - WP-412
+  - WP-413
+- id: P8
+  name: Reactive applications
+  requires:
+  - WP-414
+  - WP-415
+  - WP-416
+  - WP-417
+  - WP-418
+  - WP-419
+  - WP-420
+  - WP-421
 work_packages:
 - id: WP-000
   name: Repository foundation
@@ -6184,4 +6214,628 @@ work_packages:
   - cargo deny check
   exit_gate: The installed Python driver proves full generated application parity without a raw protocol path or
     semantic exception.
+  human_review_triggers: *id001
+- id: WP-399
+  name: Exact successor application identity before mutation
+  depends_on: [WP-393, WP-395]
+  objective: Make successor locking and deployment share one exact parent-aware candidate identity and reject every
+    disagreement before authoritative mutation.
+  requirements: [SAI-001, SAI-002, SAI-003, SAI-004, SAI-005, SAI-006]
+  required_adrs: [ADR-0052, ADR-0057, ADR-0065, ADR-0066, ADR-0075]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**, crates/riffdb-proto/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-service/**, crates/riffdb-policy/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-api-mcp/**,
+    crates/riffdb-client-rust/**, crates/riffdb-cli/**, crates/riffdb-mcp-stdio/**,
+    examples/**, fixtures/**, tests/**, scripts/**, docs/**, templates/**]
+  deliverables:
+  - Read-only authorized parent-aware candidate preview with bounded canonical bundle bytes
+  - Application lock V3 canonical contract-bundle artifact with offline exact check and generation
+  - Exact parent and candidate deployment compare-before-mutation with already-active recovery
+  - Truthful source-only versus exact-lock application check and resumable partial deployment state
+  acceptance_commands:
+  - cargo test -p riffdb-query-module -p riffdb-service -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-cli --all-features
+  - cargo test --test grpc_end_to_end --all-features
+  - ./scripts/release-source-bootstrap-smoke
+  - ./scripts/check-generated
+  - ./scripts/check-application-bindings
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A byte-identical additive successor locks and deploys under one bundle hash, stale or raced identities
+    perform no mutation, exact retries resume, and application check never reports stale artifacts as exact.
+  human_review_triggers: *id001
+- id: WP-400
+  name: Successor role reconciliation and pre-mutation application preflight
+  depends_on: [WP-399]
+  objective: Make every locked role path consume the exact parent-aware bundle and move every fallible local
+    application preflight before the first remote mutation.
+  requirements: [SAI-003, SAI-006, DX-007, AAA-013]
+  required_adrs: [ADR-0052, ADR-0057, ADR-0065, ADR-0075]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0075-successor-application-identity.md,
+    crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, crates/riffdb-cli/**,
+    fixtures/application-diagnostics/**, tests/**, docs/**, templates/**]
+  deliverables:
+  - Pinned-bundle role compilation for application and standalone check, describe, bind, and provisioning paths
+  - Complete local query and requested-role preflight before contract or query-module deployment
+  - Widened-role regression proving a successor lock binds the new exact least-authority definition
+  - Exact application-lock CLI identity and unambiguous replacement/progress diagnostics
+  acceptance_commands:
+  - cargo test -p riffdb-query-module -p riffdb-diagnostics -p riffdb-cli --all-features
+  - ./scripts/check-application-bindings
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A successor that widens one symbolic role preflights, deploys, and explicitly replaces its retained
+    credential without RDB-AR003, no local authoring failure follows remote mutation, and every CLI operation names
+    the action actually performed.
+  human_review_triggers: *id001
+- id: WP-401
+  name: Handbook foundation and documentation governance
+  depends_on: [WP-400]
+  objective: Establish the reproducible public handbook, curated navigation, maintenance rules, generated diagrams,
+    and a local verification entry point without changing product semantics.
+  requirements: [HBK-001, HBK-002, HBK-007, HBK-008, HBK-009, HBK-011]
+  required_adrs: []
+  allowed_paths: [AGENTS.md, SPEC.md, work_packages.yaml, README.md, book.toml, .github/**, docs/**, diagrams/**,
+    scripts/**]
+  deliverables:
+  - Pinned mdBook configuration with local theme, search, POC status treatment, and curated public navigation
+  - Repository documentation-maintenance protocol and pull-request documentation-impact field
+  - Reproducible handbook diagram generation and contributor source-of-truth map
+  - One local handbook build and verification command
+  acceptance_commands:
+  - ./scripts/handbook build
+  - ./scripts/generate-handbook-diagrams --check
+  - ./scripts/check-requirement-coverage
+  exit_gate: A fresh checkout builds a navigable local handbook with no external runtime asset and future public
+    changes have an explicit same-change documentation rule.
+  human_review_triggers: *id001
+- id: WP-402
+  name: Application-builder handbook
+  depends_on: [WP-401]
+  objective: Teach the implemented contract-first application workflow progressively across the supported public
+    language and MCP surfaces using reproducible examples.
+  requirements: [HBK-002, HBK-003, HBK-004, HBK-006, HBK-011]
+  required_adrs: [ADR-0054, ADR-0057, ADR-0063, ADR-0064, ADR-0065, ADR-0074, ADR-0075]
+  allowed_paths: [README.md, docs/**, examples/**, scripts/**]
+  deliverables:
+  - First-application tutorial followed by TicketDesk and PostgreSQL safety-comparison learning paths
+  - Rust, TypeScript, Python, CLI, and MCP guides over the same application-service semantics
+  - Current contract, RiffQL, values, errors, idempotency, and authorization cross-links
+  acceptance_commands:
+  - ./scripts/handbook check
+  - ./scripts/check-application-bindings
+  - ./scripts/check-requirement-coverage
+  exit_gate: A new application author can install RiffDB, build and deploy a contract, execute a typed command,
+    query the result, and understand the demonstrated PostgreSQL safety contrast using only the handbook.
+  human_review_triggers: *id001
+- id: WP-403
+  name: Operator and reference handbook
+  depends_on: [WP-401]
+  objective: Publish current operational, architecture, protocol, value, compatibility, and public-client references
+    while keeping internal implementation crates outside the public API surface.
+  requirements: [HBK-002, HBK-004, HBK-005, HBK-006, HBK-007, HBK-011]
+  required_adrs: [ADR-0001, ADR-0004, ADR-0007, ADR-0008, ADR-0012, ADR-0063, ADR-0064, ADR-0065, ADR-0066]
+  allowed_paths: [README.md, docs/**, diagrams/**, scripts/**]
+  deliverables:
+  - Installation, configuration, multi-database, credential, backup, restore, upgrade, reset, and troubleshooting path
+  - Architecture and command-path reference tied to generated diagrams
+  - Generated CLI reference and stable riffdb-client-rust API publication boundary
+  acceptance_commands:
+  - ./scripts/handbook check
+  - ./scripts/generate-cli-reference --check
+  - ./scripts/check-requirement-coverage
+  exit_gate: Operators and application authors can resolve routine setup and runtime tasks without relying on the
+    specification, source code, or historical work-package reports.
+  human_review_triggers: *id001
+- id: WP-404
+  name: Handbook acceptance and GitHub Pages publication
+  depends_on: [WP-402, WP-403]
+  objective: Enforce handbook freshness and publish the verified static artifact from the main branch.
+  requirements: [HBK-001, HBK-003, HBK-004, HBK-005, HBK-007, HBK-008, HBK-009, HBK-010, HBK-011]
+  required_adrs: []
+  allowed_paths: [README.md, book.toml, .github/**, docs/**, scripts/**]
+  deliverables:
+  - Link, fragment, snippet, navigation, generated-reference, runtime-asset, and Rustdoc verification
+  - GitHub Pages workflow publishing the same artifact produced by the local handbook build
+  - Responsive desktop and mobile visual acceptance evidence
+  acceptance_commands:
+  - ./scripts/handbook check
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  exit_gate: Pull requests reject stale or broken public documentation and a main-branch build publishes the exact
+    locally reproducible handbook artifact.
+  human_review_triggers: *id001
+- id: WP-405
+  name: Contract migration architecture and format freeze
+  depends_on: [WP-404]
+  objective: Freeze robust offline contract-migration semantics, artifacts, storage recovery, authority, public
+    operations, staged delivery, and verification before production implementation begins.
+  requirements: [MIG-001, MIG-002, MIG-003, MIG-004, MIG-005, MIG-006, MIG-007, MIG-008, MIG-009, MIG-010,
+    MIG-011, MIG-012, MIG-013, MIG-014, MIG-015, MIG-016, MIG-017, MIG-018, MIG-019, MIG-020]
+  required_adrs: [ADR-0003, ADR-0004, ADR-0006, ADR-0007, ADR-0010, ADR-0013, ADR-0050, ADR-0057, ADR-0063,
+    ADR-0066, ADR-0072, ADR-0073, ADR-0075, ADR-0076, ADR-0077, ADR-0078, ADR-0079]
+  allowed_paths: [AGENTS.md, SPEC.md, PLAN.md, work_packages.yaml, adr/**, diagrams/**, fixtures/migrations/**,
+    docs/architecture/**, docs/contributing/**]
+  deliverables:
+  - Exact accepted ADRs for migration compatibility/cutover, language/IR/lock, staged storage/recovery, and public
+    administration
+  - MIG requirement set, P7 dependency graph, stable change-class gate inventory, and explicit current-unavailable
+    documentation
+  - Reviewed public/durable/IR owner map and golden fixture manifest with no production placeholder interface
+  acceptance_commands:
+  - ./scripts/check-requirement-coverage
+  - ./scripts/generate-handbook-diagrams --check
+  - ./scripts/handbook check
+  exit_gate: ADR-0076 through ADR-0079 are accepted exactly, every MIG requirement has one owner and final evidence,
+    and no production migration symbol or durable/public format exists before the freeze.
+  human_review_triggers: *id001
+- id: WP-406
+  name: Migration source, IR, compatibility, and application lock
+  depends_on: [WP-405]
+  objective: Compile exact parent-specific bounded migration source into canonical typed artifacts and make locked
+    applications describe every supported upgrade without mutation.
+  requirements: [MIG-001, MIG-002, MIG-003, MIG-004, MIG-005, MIG-017, MIG-018, MIG-019, MIG-020]
+  required_adrs: [ADR-0002, ADR-0011, ADR-0013, ADR-0057, ADR-0066, ADR-0075, ADR-0076, ADR-0077,
+    ADR-0081]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/**, crates/riffdb-types/**, crates/riffdb-contract-syntax/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-diagnostics/**, crates/riffdb-catalog/**, crates/riffdb-service/**, crates/riffdb-proto/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**, crates/riffdb-cli/**,
+    proto/riffdb/v1/**, fixtures/proto/**, fixtures/compiler/**, fixtures/migrations/**, fixtures/application-manifests/**,
+    fixtures/application-locks/**, fuzz/**, scripts/**, docs/**, templates/**]
+  deliverables:
+  - Separate bounded riffm grammar, formatter, source spans, typed MigrationBundleV1, canonical codec/hash, and all
+    frozen V1 step tags
+  - RequiresMigration compatibility codes plus exact proof coverage and structured migration-required deployment result
+  - Application source V3, lock V4, at most 32 exact direct-parent artifacts, and read-only migration plan CLI
+  - Parser/decoder fuzzing, canonical goldens, strict prior-format compatibility, and generated-artifact checks
+  acceptance_commands:
+  - cargo test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-query-module -p riffdb-diagnostics -p riffdb-cli --all-features
+  - cargo +nightly-2026-07-12 fuzz run contract_source -- -max_len=1048576 -max_total_time=30
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Exact parent, candidate, and riffm source deterministically reproduce one strict migration bundle and V4
+    lock; every unsupported, ambiguous, stale, excessive, or unimplemented transform fails with a bounded span diagnostic.
+  human_review_triggers: *id001
+- id: WP-407
+  name: Migration semantic coordinator and reference model
+  depends_on: [WP-406]
+  objective: Implement pure bounded transform/preflight semantics and the sole commit-owned migration mutation
+    authority against the deterministic memory backend before concrete staging.
+  requirements: [MIG-004, MIG-005, MIG-009, MIG-011, MIG-012, MIG-013, MIG-014, MIG-015, MIG-019, MIG-020]
+  required_adrs: [ADR-0003, ADR-0004, ADR-0010, ADR-0023, ADR-0049, ADR-0076, ADR-0077, ADR-0078]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-types/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-catalog/**, crates/riffdb-invariant/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-commit/**, crates/riffdb-projection/**,
+    fixtures/migrations/**, tests/migrations/**, scripts/**, docs/**]
+  deliverables:
+  - Catalog-sealed validated migration plans, pure deterministic row transforms, complete preflight, and stable
+    value-free findings
+  - Commit-owned MigrationCoordinator with sealed 256-row/64-mutation bounded batch and final-cutover ports
+  - Memory migration journal, retained-data archive, predecessor-write fence, migration record, and projection candidate
+    semantics
+  - Generated-history/reference-model and property evidence proving immutable history and exact entity-version changes
+  acceptance_commands:
+  - cargo test -p riffdb-catalog -p riffdb-invariant -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-commit -p riffdb-projection --all-features
+  - cargo test -p riffdb-testkit --test contract_migration_model --all-features
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every Gate-A plan matches the reference model under generated histories, no non-commit owner can construct
+    a mutation, and commits/events/outcomes/provenance/idempotency/sequences remain byte-identical.
+  human_review_triggers: *id001
+- id: WP-408
+  name: Redb staged migration and crash recovery
+  depends_on: [WP-407]
+  objective: Add protected staged-copy, receipt/journal recovery, complete validation, atomic publication, and automatic
+    rollback without exposing concrete storage or partially migrated state.
+  requirements: [MIG-007, MIG-008, MIG-009, MIG-010, MIG-011, MIG-012, MIG-013, MIG-014, MIG-015, MIG-016, MIG-020]
+  required_adrs: [ADR-0004, ADR-0006, ADR-0019, ADR-0022, ADR-0032, ADR-0042, ADR-0050, ADR-0061, ADR-0063,
+    ADR-0072, ADR-0073, ADR-0078]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/riffdb/storage/**, crates/riffdb-types/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**, crates/riffdb-server/src/maintenance_*/**,
+    crates/riffdb-server/src/maintenance_*.rs, crates/riffdb-server/src/startup/**, crates/riffdb-server/src/startup.rs,
+    crates/riffdb-server/tests/**, fixtures/storage/**, fixtures/migrations/**, fuzz/**, tests/maintenance/**,
+    tests/migrations/**, tests/recovery/**, scripts/**, docs/**]
+  deliverables:
+  - Versioned receipt, journal, permanent migration, retired-row, table-key, envelope, and integrity formats with goldens
+  - Protected same-filesystem stage from automatic immutable backup, conservative disk preflight, bounded journaled
+    batches, projection rebuild, complete stage validation, and atomic publication
+  - Exact startup reconciliation and pre-publication resume/recreate plus post-publication automatic rollback
+  - Redb conformance, parser fuzzing, disk/version exhaustion, corrupt evidence, and process failpoint matrix
+  acceptance_commands:
+  - cargo test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-server --all-features
+  - cargo test -p riffdb-server --test contract_migration_recovery -- --ignored
+  - cargo +nightly-2026-07-12 fuzz run migration_receipt -- -max_len=1048576 -max_total_time=30
+  - cargo +nightly-2026-07-12 fuzz run migration_journal -- -max_len=4194304 -max_total_time=30
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every failpoint recovers to the exact validated predecessor or successor, failed publication restores the
+    exact backup before readiness, and sibling databases remain isolated throughout live and restarted maintenance.
+  human_review_triggers: *id001
+- id: WP-409
+  name: Migration authorization and public administration
+  depends_on: [WP-407, WP-408]
+  objective: Expose check, apply, and observation only through dedicated least-authority gRPC, Rust SDK, and CLI
+    administration over the shared service and database lifecycle.
+  requirements: [MIG-006, MIG-007, MIG-008, MIG-009, MIG-010, MIG-016, MIG-017, MIG-018]
+  required_adrs: [ADR-0007, ADR-0009, ADR-0026, ADR-0027, ADR-0028, ADR-0034, ADR-0037, ADR-0040, ADR-0041,
+    ADR-0050, ADR-0055, ADR-0062, ADR-0063, ADR-0064, ADR-0079]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/riffdb/v1/**, crates/riffdb-types/**,
+    crates/riffdb-auth/**, crates/riffdb-policy/**, crates/riffdb-service/**, crates/riffdb-proto/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**, crates/riffdb-server/**, crates/riffdb-cli/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**, fixtures/proto/**, fixtures/migrations/**,
+    tests/grpc/**, tests/mcp/**, tests/migrations/**, scripts/**, docs/**]
+  deliverables:
+  - Dedicated scoped MigrateContract permission and exact check/apply/poll policy proofs
+  - Three additive AdminService RPCs, API-neutral DTOs/service methods, Rust SDK retries, top-level CLI, exact hash
+    confirmation, and 28-RPC descriptor inventory
+  - Accepted-then-reconnect cancellation/uncertainty behavior and resumable application-deploy handoff
+  - Complete authorization/redaction/response-budget matrix and negative MCP/application-driver inventory
+  acceptance_commands:
+  - cargo test -p riffdb-types -p riffdb-auth -p riffdb-policy -p riffdb-service -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server -p riffdb-cli --all-features
+  - cargo test --test grpc_end_to_end --all-features
+  - cargo test --test mcp_conformance --all-features
+  - ./scripts/generate-proto --check
+  - ./scripts/generate-cli-reference --check
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Only an exact current migration capability can start or observe work; retries resolve by operation identity,
+    CLI uses no direct storage path, and every MCP/application catalog remains migration-free.
+  human_review_triggers: *id001
+- id: WP-410
+  name: Additive data migration gate
+  depends_on: [WP-409]
+  objective: Prove the complete public workflow for required fields, indexes, relationships, uniqueness, invariants,
+    and new projections on existing authoritative data.
+  requirements: [MIG-001, MIG-002, MIG-003, MIG-004, MIG-005, MIG-006, MIG-007, MIG-008, MIG-009, MIG-010,
+    MIG-011, MIG-012, MIG-013, MIG-014, MIG-015, MIG-016, MIG-017, MIG-018, MIG-019, MIG-020]
+  required_adrs: [ADR-0076, ADR-0077, ADR-0078, ADR-0079]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/**, proto/**, fixtures/**, fuzz/**, tests/**, examples/**,
+    scripts/**, docs/**, templates/**]
+  deliverables:
+  - End-to-end exact-lock migration for every additive Gate-A change and combined successor
+  - Constraint-violation, pending-admission, stale-parent, wrong-hash, cancellation, rollback, restart, and sibling tests
+  - EA/TicketDesk retained-data fixture plus current CLI/SDK/operator handbook workflow
+  - Migration check/apply throughput, downtime, and peak-disk baseline
+  acceptance_commands:
+  - cargo test --workspace --all-features
+  - cargo test -p riffdb-testkit --test contract_migration_gate_a --all-features
+  - cargo test -p riffdb-server --test contract_migration_recovery -- --ignored
+  - ./scripts/handbook check
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo deny check
+  exit_gate: A populated installed application reaches its exact successor with every new value/constraint/projection
+    correct, no partial state or history rewrite, and every injected failure returns a validated predecessor or successor.
+  human_review_triggers: *id001
+- id: WP-411
+  name: Structural entity migration gate
+  depends_on: [WP-410]
+  objective: Enable semantic renames, logical retirement, replacement fields/types, exhaustive enum mappings, and
+    replacement projections without stable-ID reuse or historical reinterpretation.
+  requirements: [MIG-001, MIG-002, MIG-003, MIG-004, MIG-005, MIG-009, MIG-011, MIG-013, MIG-014, MIG-015,
+    MIG-018, MIG-019, MIG-020]
+  required_adrs: [ADR-0013, ADR-0066, ADR-0076, ADR-0077, ADR-0078]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-contract-compiler/**, crates/riffdb-catalog/**, crates/riffdb-invariant/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-commit/**, crates/riffdb-projection/**, crates/riffdb-service/**, crates/riffdb-cli/**,
+    fixtures/migrations/**, tests/migrations/**, fuzz/**, scripts/**, docs/**, examples/**]
+  deliverables:
+  - Stable-ID-preserving rename proof, fresh-ID replacement, tombstone/archive, closed conversion, and enum-map execution
+  - Logical command/event/outcome/projection retirement with exact historical resolution and no physical purge
+  - Exhaustive conversion/assertion/collision/property/recovery fixtures and public diagnostics
+  acceptance_commands:
+  - cargo test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-catalog -p riffdb-invariant -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-commit -p riffdb-projection -p riffdb-service -p riffdb-cli --all-features
+  - cargo test -p riffdb-testkit --test contract_migration_gate_b --all-features
+  - ./scripts/handbook check
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every structural class either migrates deterministically with retained old identity/data or fails before
+    backup, and no old ID, value, event, outcome, or projection history is reinterpreted.
+  human_review_triggers: *id001
+- id: WP-412
+  name: Key ownership and conflict migration gate
+  depends_on: [WP-411]
+  objective: Enable primary-key, partition, aggregate-membership, relationship-target, and conflict-domain evolution
+    with complete collision/reference validation and predecessor-write retirement.
+  requirements: [MIG-001, MIG-002, MIG-003, MIG-004, MIG-005, MIG-009, MIG-011, MIG-012, MIG-013, MIG-015,
+    MIG-018, MIG-019, MIG-020]
+  required_adrs: [ADR-0003, ADR-0013, ADR-0016, ADR-0059, ADR-0066, ADR-0076, ADR-0077, ADR-0078]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-contract-compiler/**, crates/riffdb-catalog/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**, crates/riffdb-commit/**,
+    crates/riffdb-service/**, crates/riffdb-cli/**, fixtures/migrations/**, tests/migrations/**, fuzz/**,
+    scripts/**, docs/**, examples/**]
+  deliverables:
+  - Deterministic rekey/repartition plans, dependency DAG, new authoritative index/key materialization, and old-key archive
+  - Complete target collision, relationship, aggregate, partition, conflict, and old-plan compatibility validation
+  - Generated histories and crash matrix covering combined key/ownership changes without old-writer admission
+  acceptance_commands:
+  - cargo test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-catalog -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-commit -p riffdb-service -p riffdb-cli --all-features
+  - cargo test -p riffdb-testkit --test contract_migration_gate_c --all-features
+  - ./scripts/handbook check
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Rekeyed and repartitioned datasets publish only after complete collision/reference proof, old writers cannot
+    enter, and the crash matrix exposes neither old/new duplicates nor a partial conflict domain.
+  human_review_triggers: *id001
+- id: WP-413
+  name: Migration installed acceptance and operational proof
+  depends_on: [WP-410, WP-411, WP-412]
+  objective: Publish installed, documented, benchmarked, cross-version, authorization, and recovery evidence for the
+    complete robust migration surface and close P7.
+  requirements: [MIG-001, MIG-002, MIG-003, MIG-004, MIG-005, MIG-006, MIG-007, MIG-008, MIG-009, MIG-010,
+    MIG-011, MIG-012, MIG-013, MIG-014, MIG-015, MIG-016, MIG-017, MIG-018, MIG-019, MIG-020]
+  required_adrs: [ADR-0076, ADR-0077, ADR-0078, ADR-0079]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/**, proto/**, fixtures/**, fuzz/**, tests/**, examples/**,
+    scripts/**, docs/**, templates/**, release/**, .github/**]
+  deliverables:
+  - Direct-parent upgrade matrix across all supported migration gates and prior application source/lock formats
+  - Installed user/system multi-database migration, retry, crash, rollback, authorization, and backup-retention proof
+  - EA/TicketDesk dogfood plus PostgreSQL/RiffDB evolution comparison with bounded benchmark and failure evidence
+  - Complete handbook, generated CLI/protocol/reference updates, release notes, known limitations, and P7 review report
+  acceptance_commands:
+  - cargo test --workspace --all-features
+  - cargo test -p riffdb-server --test contract_migration_recovery -- --ignored
+  - cargo test -p riffdb-testkit --test contract_migration_acceptance --all-features
+  - ./scripts/release-source-bootstrap-smoke
+  - ./scripts/handbook check
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo deny check
+  exit_gate: Installed RiffDB proves every MIG guarantee over populated data and injected failure, preserves exact
+    immutable history, retains a verified rollback backup, isolates sibling databases, and publishes reproducible docs
+    and PostgreSQL comparison evidence.
+  human_review_triggers: *id001
+- id: WP-414
+  name: Reactive application architecture and format freeze
+  depends_on: [WP-405]
+  objective: Freeze partitioned event, durable consumer, live named-query, contextual subscription, causation,
+    authorization, public protocol, generated-client, and recovery semantics before production implementation.
+  requirements: [EVT-001, EVT-002, EVT-003, EVT-004, EVT-005, EVT-006, EVT-007, EVT-008, CON-001, CON-002,
+    CON-003, CON-004, CON-005, CON-006, CON-007, CON-008, LIVE-001, LIVE-002, LIVE-003, LIVE-004, LIVE-005,
+    LIVE-006, LIVE-007, LIVE-008, CTX-001, CTX-002, CTX-003, CTX-004, CTX-005, CTX-006, CTX-007, CTX-008]
+  required_adrs: [ADR-0013, ADR-0017, ADR-0049, ADR-0055, ADR-0056, ADR-0057, ADR-0063, ADR-0064, ADR-0072,
+    ADR-0075, ADR-0080]
+  allowed_paths: [AGENTS.md, SPEC.md, PLAN.md, work_packages.yaml, adr/**, diagrams/**, fixtures/reactive/**,
+    docs/architecture/**, docs/contributing/**]
+  deliverables:
+  - Exact accepted ADR-0080 covering authoritative event reuse, partition proof, routing, consumer state, live queries,
+    contextual work, causation, bounds, authorization, redaction, and explicit deferrals
+  - EVT/CON/LIVE/CTX requirements, P8 dependency graph, format-owner map, and exact compatibility boundary
+  - Frozen public/durable/IR fixture manifest and no production placeholder implementation before acceptance
+  acceptance_commands:
+  - ./scripts/check-requirement-coverage
+  - ./scripts/generate-handbook-diagrams --check
+  - ./scripts/handbook check
+  exit_gate: ADR-0080 is accepted exactly, every P8 requirement has one implementation owner and final evidence,
+    and existing event, projection, outbox, query, cursor, and application-format meanings remain explicit.
+  human_review_triggers: *id001
+- id: WP-415
+  name: Partitioned domain event catalog and replay
+  depends_on: [WP-414]
+  objective: Make existing authoritative domain events symbolically streamable through compiler-proved partitions,
+    a resumable routing index, catalog materialization, bounded replay, and public inspection.
+  requirements: [EVT-001, EVT-002, EVT-003, EVT-004, EVT-005, EVT-006, EVT-007, EVT-008]
+  required_adrs: [ADR-0013, ADR-0049, ADR-0063, ADR-0072, ADR-0073, ADR-0080]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/riffdb/storage/**,
+    crates/riffdb-types/**, crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-contract-compiler/**, crates/riffdb-catalog/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**, crates/riffdb-commit/**,
+    crates/riffdb-service/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
+    crates/riffdb-cli/**, fixtures/reactive/**, fixtures/storage/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Optional event partition grammar, IR/codec/hash successors, compiler emit-equivalence proof, compatibility, and spans
+  - Versioned event-route record/key, atomic maintenance, resumable historical backfill, startup validation, and recovery
+  - Catalog-owned historical event materialization and safe symbolic event envelope with bounded replay/tail/describe
+  - Storage-memory/redb conformance, durable goldens, corruption, restore-incarnation, and multi-database isolation tests
+  acceptance_commands:
+  - cargo test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-catalog --all-features
+  - cargo test -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-commit --all-features
+  - cargo test -p riffdb-service -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-cli --all-features
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A partition-proved event can be described and replayed symbolically in exact partition order, historical
+    routing is complete and recoverable, and no raw event/storage identity is required by application code.
+  human_review_triggers: *id001
+- id: WP-416
+  name: Reactive modules, exact locks, and symbolic roles
+  depends_on: [WP-406, WP-414, WP-415]
+  objective: Compile named streams and contextual subscriptions into exact reactive modules and derive least-authority
+    application roles without colliding with migration-owned manifest and lock formats.
+  requirements: [EVT-005, EVT-006, EVT-007, CON-001, CON-005, CON-007, LIVE-002, LIVE-003, LIVE-004,
+    LIVE-005, LIVE-007, CTX-001, CTX-003, CTX-004, CTX-008]
+  required_adrs: [ADR-0055, ADR-0057, ADR-0064, ADR-0065, ADR-0075, ADR-0077, ADR-0080]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, crates/riffdb-query-syntax/**,
+    crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-diagnostics/**, crates/riffdb-types/**, crates/riffdb-policy/**, crates/riffdb-service/**,
+    crates/riffdb-cli/**, fixtures/reactive/**, fixtures/application-manifests/**, fixtures/application-locks/**,
+    scripts/**, docs/**, templates/**]
+  deliverables:
+  - Bounded stream/subscription syntax, formatter, source spans, typed reactive IR, canonical module hash, and diagnostics
+  - Application Source V4 and Lock V5 preserving V1-V3/V1-V4, explicit migration, and exact generated artifact closure
+  - Role event_streams, watch_queries, and agent_subscriptions with compiler-derived fields, bounds, and exact permissions
+  - Cross-partition, hidden-field, unkeyed-patch, mismatched-event-field, excessive-cost, and definition-drift negatives
+  acceptance_commands:
+  - cargo test -p riffdb-query-syntax -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-module --all-features
+  - cargo test -p riffdb-types -p riffdb-policy -p riffdb-service -p riffdb-cli --all-features
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: One exact lock deterministically binds contract, query, reactive, role, and generated identities; authors
+    name only domain operations, and every unsafe or unbounded shape fails before deployment.
+  human_review_triggers: *id001
+- id: WP-417
+  name: Durable event consumers and delivery recovery
+  depends_on: [WP-415, WP-416]
+  objective: Implement bounded partition-ordered at-least-once consumers with durable checkpoints, leases, ack/nack,
+    retry, dead-letter, seek, restart recovery, and shared public adapters.
+  requirements: [CON-001, CON-002, CON-003, CON-004, CON-005, CON-006, CON-007, CON-008]
+  required_adrs: [ADR-0004, ADR-0007, ADR-0019, ADR-0049, ADR-0063, ADR-0072, ADR-0073, ADR-0080]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**, crates/riffdb-types/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-policy/**, crates/riffdb-service/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-client-rust/**, crates/riffdb-server/**, crates/riffdb-cli/**, fixtures/reactive/**,
+    fixtures/proto/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Versioned consumer/checkpoint/lease/sparse-ack/dead-letter formats and one atomic ConsumerCoordinator
+  - Bounded next/ack/nack/seek/status service operations, pull and gRPC streaming, long poll, and exact authorization
+  - Startup lease recovery, incarnation mismatch, module change, corruption, backup/restore, and sibling isolation behavior
+  - Deterministic schedule and process-crash matrix covering every delivery/checkpoint transition without sleeps
+  acceptance_commands:
+  - cargo test -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-service --all-features
+  - cargo test -p riffdb-policy -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server -p riffdb-cli --all-features
+  - cargo test -p riffdb-testkit --test durable_event_consumers --all-features
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Kill/restart and duplicate delivery lose no eligible event, skip no checkpoint, duplicate no leased attempt,
+    and every public transition remains bounded, authorized, and recoverable.
+  human_review_triggers: *id001
+- id: WP-418
+  name: Live named RiffQL execution
+  depends_on: [WP-415, WP-416]
+  objective: Add race-free live execution for exact named queries using snapshot frontiers, durable commit catch-up,
+    conservative invalidation, bounded diff/reset, resumption, and authorization revalidation.
+  requirements: [LIVE-001, LIVE-002, LIVE-003, LIVE-004, LIVE-005, LIVE-006, LIVE-007]
+  required_adrs: [ADR-0038, ADR-0053, ADR-0054, ADR-0055, ADR-0070, ADR-0072, ADR-0080]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/riffdb/v1/**, crates/riffdb-types/**,
+    crates/riffdb-query-ir/**, crates/riffdb-query-executor/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**, crates/riffdb-policy/**,
+    crates/riffdb-service/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
+    crates/riffdb-server/**, fixtures/reactive/**, fixtures/proto/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Watchability analysis, relevant entity/key dependencies, public-key patch proof, and exact live-plan identity
+  - Snapshot/patch/reset/checkpoint/terminal service model, self-contained fenced cursor, and gRPC server stream
+  - Snapshot-to-catch-up race closure, bounded coalescing/diff, buffer terminal, definition reset, and revocation clearing
+  - Barrier-controlled concurrency, patch equivalence, reconnect, restore, multi-database, and saturation evidence
+  acceptance_commands:
+  - cargo test -p riffdb-query-ir -p riffdb-query-executor -p riffdb-storage-memory -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-policy -p riffdb-service -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server --all-features
+  - cargo test -p riffdb-testkit --test live_named_queries --all-features
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A commit at every snapshot/catch-up interleaving is reflected, reconnect converges without polling, and
+    drift, revocation, restore, or pressure yields a typed reset/terminal without protected-data retention.
+  human_review_triggers: *id001
+- id: WP-419
+  name: Generated reactive clients, CLI, MCP, and browser relay
+  depends_on: [WP-417, WP-418]
+  objective: Expose identical typed consumer and live-query behavior through generated Rust, TypeScript, Python, CLI,
+    MCP, and an application-owned authenticated SSE relay without handwritten transport glue.
+  requirements: [EVT-006, EVT-007, CON-005, CON-007, CON-008, LIVE-004, LIVE-005, LIVE-006, LIVE-007, LIVE-008]
+  required_adrs: [ADR-0037, ADR-0040, ADR-0041, ADR-0055, ADR-0057, ADR-0064, ADR-0074, ADR-0080]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**, crates/riffdb-query-module/**,
+    crates/riffdb-client-rust/**, crates/riffdb-client-python-native/**, crates/riffdb-cli/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**, clients/**, templates/**, fixtures/reactive/**,
+    fixtures/application-parity/**, examples/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Generated Rust streams, TypeScript/Python async iterators, typed update unions, cursors, reconnect, and clear-on-close
+  - CLI event operations and generated MCP next/ack/nack/seek/status with payload-free resource wakeups
+  - Framework-neutral TypeScript live store and generated application-server SSE relay retaining credentials server-side
+  - Cross-language golden requests, observations, errors, cursor persistence, boundary linting, and offline scaffold tests
+  acceptance_commands:
+  - cargo test -p riffdb-client-rust -p riffdb-query-module -p riffdb-client-python-native -p riffdb-cli -p riffdb-api-mcp -p riffdb-mcp-stdio --all-features
+  - ./scripts/check-application-bindings
+  - ./scripts/agent-application-typescript-acceptance
+  - ./scripts/agent-application-python-acceptance
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every supported audience consumes the same exact reactive operations without raw protocol code, browser
+    JavaScript receives no RiffDB credential, and MCP wakeups disclose no event or context payload.
+  human_review_triggers: *id001
+- id: WP-420
+  name: Contextual agent subscriptions and causal reactions
+  depends_on: [WP-417, WP-418, WP-419]
+  objective: Deliver durable event work with one-snapshot named-query context, capability-filtered commands,
+    server-validated causation, and reaction-safe generated idempotency.
+  requirements: [CTX-001, CTX-002, CTX-003, CTX-004, CTX-005, CTX-006, CTX-007, CTX-008]
+  required_adrs: [ADR-0013, ADR-0038, ADR-0054, ADR-0055, ADR-0056, ADR-0072, ADR-0080]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**, crates/riffdb-types/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-query-ir/**, crates/riffdb-query-module/**,
+    crates/riffdb-query-executor/**, crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-catalog/**, crates/riffdb-commit/**, crates/riffdb-policy/**,
+    crates/riffdb-service/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**, clients/**, fixtures/reactive/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Exact contextual plan combining stream, shared-snapshot hydration, commands, bounds, and immutable definition hash
+  - One-snapshot multi-query execution at/after event, bounded work items, authorized-command filtering, and fresh context
+  - Versioned provenance causation/correlation successor plus sealed lease-bound causation tokens and replay resolution
+  - Generated reaction helpers and crash schedules proving commit-before-ack redelivery duplicates no application state
+  acceptance_commands:
+  - cargo test -p riffdb-query-ir -p riffdb-query-module -p riffdb-query-executor -p riffdb-catalog --all-features
+  - cargo test -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-commit --all-features
+  - cargo test -p riffdb-policy -p riffdb-service -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-api-mcp -p riffdb-mcp-stdio --all-features
+  - cargo test -p riffdb-testkit --test contextual_agent_subscriptions --all-features
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: One bounded call gives an authorized agent the event and causally fenced domain context, and every crash
+    before or after command/ack produces neither lost work nor duplicated business state.
+  human_review_triggers: *id001
+- id: WP-421
+  name: TicketDesk reactive acceptance and safety proof
+  depends_on: [WP-420]
+  objective: Close P8 with installed TicketDesk browser, worker, agent, evolution, authorization, recovery, performance,
+    documentation, and fresh-agent evidence over only public symbolic surfaces.
+  requirements: [EVT-001, EVT-002, EVT-003, EVT-004, EVT-005, EVT-006, EVT-007, EVT-008, CON-001, CON-002,
+    CON-003, CON-004, CON-005, CON-006, CON-007, CON-008, LIVE-001, LIVE-002, LIVE-003, LIVE-004, LIVE-005,
+    LIVE-006, LIVE-007, LIVE-008, CTX-001, CTX-002, CTX-003, CTX-004, CTX-005, CTX-006, CTX-007, CTX-008]
+  required_adrs: [ADR-0055, ADR-0056, ADR-0057, ADR-0063, ADR-0064, ADR-0072, ADR-0075, ADR-0080]
+  allowed_paths: [SPEC.md, PLAN.md, work_packages.yaml, crates/**, proto/**, clients/**, fixtures/**, tests/**,
+    examples/**, benchmarks/**, scripts/**, docs/**, templates/**, release/**, .github/**]
+  deliverables:
+  - Two-browser queue/detail live update and reconnect/reset proof through generated application SSE relay
+  - TicketCreated contextual triage with one-snapshot TicketPage, generated reaction, MCP wakeup, and kill-point matrix
+  - Revocation clearing, definition evolution, restore incarnation, saturation, multi-database, and redaction evidence
+  - Fresh-agent implementation evaluation, complete handbook/reference/release updates, and explicit deferred roadmap
+  acceptance_commands:
+  - cargo test --workspace --all-features
+  - cargo test -p riffdb-testkit --test reactive_ticketdesk_acceptance --all-features
+  - cargo test -p riffdb-testkit --test contextual_agent_subscriptions --all-features
+  - ./scripts/release-source-bootstrap-smoke
+  - ./scripts/handbook check
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo deny check
+  exit_gate: Installed TicketDesk provides polling-free live state and crash-safe contextual agent reaction through
+    symbolic generated surfaces, revocation leaks no retained data, and a fresh agent completes the feature without
+    internal source or kernel access.
   human_review_triggers: *id001

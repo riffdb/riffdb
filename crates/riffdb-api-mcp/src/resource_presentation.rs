@@ -17,12 +17,13 @@ use crate::{
     format_projection_status_locator_from_public, validate_command_tool_name,
 };
 
-const MAX_COMPATIBILITY_CODES: usize = 24;
+const MAX_COMPATIBILITY_CODES: usize = 30;
 const MAX_COMPATIBILITY_FINDINGS: u32 = 4_096;
 const COMPATIBILITY_CODES: [&str; MAX_COMPATIBILITY_CODES] = [
     "RDB-K001", "RDB-K010", "RDB-K011", "RDB-K012", "RDB-K013", "RDB-K014", "RDB-K015", "RDB-K016",
-    "RDB-K020", "RDB-K021", "RDB-K022", "RDB-K100", "RDB-K101", "RDB-K102", "RDB-K103", "RDB-K104",
-    "RDB-K105", "RDB-K106", "RDB-K107", "RDB-K108", "RDB-K109", "RDB-K110", "RDB-K111", "RDB-K112",
+    "RDB-K020", "RDB-K021", "RDB-K022", "RDB-K030", "RDB-K031", "RDB-K032", "RDB-K033", "RDB-K034",
+    "RDB-K035", "RDB-K100", "RDB-K101", "RDB-K102", "RDB-K103", "RDB-K104", "RDB-K105", "RDB-K106",
+    "RDB-K107", "RDB-K108", "RDB-K109", "RDB-K110", "RDB-K111", "RDB-K112",
 ];
 const MAX_EXPLANATION_ITEMS: usize = 4_096;
 const MAX_EXPLANATION_TEXT_BYTES: usize = 1_048_576;
@@ -39,6 +40,8 @@ pub enum McpContractCompatibilityClass {
     Compatible,
     /// Callers must select the new version explicitly.
     RequiresExplicitVersion,
+    /// Activation requires an exact checked migration.
+    RequiresMigration,
     /// The version is not activatable under the POC policy.
     Incompatible,
 }
@@ -917,6 +920,7 @@ const fn compatibility_class(position: usize) -> McpContractCompatibilityClass {
     match position {
         0..=7 => McpContractCompatibilityClass::Compatible,
         8..=10 => McpContractCompatibilityClass::RequiresExplicitVersion,
+        11..=16 => McpContractCompatibilityClass::RequiresMigration,
         _ => McpContractCompatibilityClass::Incompatible,
     }
 }
@@ -1248,6 +1252,7 @@ impl fmt::Display for McpContractCompatibilityClass {
         formatter.write_str(match self {
             Self::Compatible => "compatible",
             Self::RequiresExplicitVersion => "requires_explicit_version",
+            Self::RequiresMigration => "requires_migration",
             Self::Incompatible => "incompatible",
         })
     }

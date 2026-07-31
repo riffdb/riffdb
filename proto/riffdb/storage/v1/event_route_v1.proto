@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/common.proto";
+
+// Payload-free partition routing row. The physical table key supplies the
+// partition hash and repeats event_id so storage can reject mismatched rows.
+message StoredEventRouteV1 {
+  EventIdV1 event_id = 1;
+  uint32 event_type_id = 2;
+  bytes event_hash = 3;
+}

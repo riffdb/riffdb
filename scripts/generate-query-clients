@@ -17,6 +17,10 @@ if [[ "${1:-}" == "--check" ]]; then
         "$generated/fixtures/application-manifests/ticketdesk-agent-role-v1.identity"
     diff -u fixtures/application-manifests/ticketdesk-agent-role-v1.json \
         "$generated/fixtures/application-manifests/ticketdesk-agent-role-v1.json"
+    diff -u fixtures/application-manifests/ticketdesk-migration-v3.json \
+        "$generated/fixtures/application-manifests/ticketdesk-migration-v3.json"
+    diff -u fixtures/application-locks/ticketdesk-migration-v4.json \
+        "$generated/fixtures/application-locks/ticketdesk-migration-v4.json"
     diff -u clients/typescript/ticketdesk/client.ts "$generated/clients/typescript/ticketdesk/client.ts"
     diff -u clients/python/ticketdesk/generated.py "$generated/clients/python/ticketdesk/generated.py"
     python3 -c 'compile(open("clients/python/ticketdesk/generated.py", encoding="utf-8").read(), "clients/python/ticketdesk/generated.py", "exec")'

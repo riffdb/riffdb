@@ -1499,6 +1499,15 @@ pub struct StoredOutboxIntentV2 {
     #[prost(message, optional, tag = "1")]
     pub event_reference: ::core::option::Option<EventReferenceV2>,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredEventRouteV1 {
+    #[prost(message, optional, tag = "1")]
+    pub event_id: ::core::option::Option<EventIdV1>,
+    #[prost(uint32, tag = "2")]
+    pub event_type_id: u32,
+    #[prost(bytes = "vec", tag = "3")]
+    pub event_hash: ::prost::alloc::vec::Vec<u8>,
+}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredHistoryIncarnationV1 {
     #[prost(uint64, tag = "1")]

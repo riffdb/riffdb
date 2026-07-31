@@ -1086,7 +1086,9 @@ fn validate_contract_compatibility(
         }
         let class =
             public_compatibility_code_class(&entry.code).ok_or(PublicWireError::InvalidIdentity)?;
-        derived = derived.max(class);
+        if compatibility_severity(class) > compatibility_severity(derived) {
+            derived = class;
+        }
         total = total
             .checked_add(entry.count)
             .ok_or(PublicWireError::TooManyItems)?;
@@ -1108,10 +1110,23 @@ fn public_compatibility_code_class(code: &str) -> Option<v1::ContractCompatibili
         "RDB-K020" | "RDB-K021" | "RDB-K022" => {
             Some(v1::ContractCompatibilityClass::RequiresExplicitVersion)
         }
+        "RDB-K030" | "RDB-K031" | "RDB-K032" | "RDB-K033" | "RDB-K034" | "RDB-K035" => {
+            Some(v1::ContractCompatibilityClass::RequiresMigration)
+        }
         "RDB-K100" | "RDB-K101" | "RDB-K102" | "RDB-K103" | "RDB-K104" | "RDB-K105"
         | "RDB-K106" | "RDB-K107" | "RDB-K108" | "RDB-K109" | "RDB-K110" | "RDB-K111"
         | "RDB-K112" => Some(v1::ContractCompatibilityClass::Incompatible),
         _ => None,
+    }
+}
+
+const fn compatibility_severity(class: v1::ContractCompatibilityClass) -> u8 {
+    match class {
+        v1::ContractCompatibilityClass::Unspecified => 0,
+        v1::ContractCompatibilityClass::Compatible => 1,
+        v1::ContractCompatibilityClass::RequiresExplicitVersion => 2,
+        v1::ContractCompatibilityClass::RequiresMigration => 3,
+        v1::ContractCompatibilityClass::Incompatible => 4,
     }
 }
 
@@ -1234,6 +1249,10 @@ fn semantic_diagnostic_registry(code: &str) -> Option<DiagnosticRegistryEntry> {
             "all command bindings must be statically colocated in one partition",
             Some("make all bindings use the same structural partition derivation"),
         ),
+        "RDB-C018" => (
+            "a required relationship must map stored fields to one complete same-partition target key",
+            Some("map required non-optional fields to the complete target key in canonical order"),
+        ),
         "RDB-C019" => (
             "the projection uses an unsupported or invalid operation",
             Some("use equality/conjunction filters and bounded count or sum aggregation"),
@@ -1253,6 +1272,50 @@ fn semantic_diagnostic_registry(code: &str) -> Option<DiagnosticRegistryEntry> {
         "RDB-C023" => (
             "checked executable IR construction rejected the compiled plan",
             None,
+        ),
+        "RDB-C024" => (
+            "a relationship change lacks a dominating exact target binding and missing-target outcome",
+            Some(
+                "bind the complete referenced key before the mutable binding and declare its failure outcome",
+            ),
+        ),
+        "RDB-C025" => (
+            "a unique key must use required fields and begin with the complete partition route",
+            Some(
+                "declare required key-compatible fields beginning with the canonical partition prefix",
+            ),
+        ),
+        "RDB-C026" => (
+            "a changed unique value must be computable from validated command inputs",
+            Some(
+                "assign every changed unique component from command inputs or input-only expressions",
+            ),
+        ),
+        "RDB-C027" => (
+            "migration source does not bind the exact parent and candidate",
+            Some("use the exact lineage, parent version, and candidate version"),
+        ),
+        "RDB-C028" => (
+            "a required migration proof is missing",
+            Some("add the source clause required by the reported compatibility change"),
+        ),
+        "RDB-C029" => (
+            "a migration change is proved more than once",
+            Some("retain exactly one proof for the change"),
+        ),
+        "RDB-C030" => (
+            "a migration clause does not correspond to the exact contract change",
+            Some("remove the clause or compile it against the intended exact parent"),
+        ),
+        "RDB-C031" => (
+            "the migration step is not executable in the current implementation gate",
+            Some("wait for the documented migration implementation gate"),
+        ),
+        "RDB-C032" => (
+            "the migration expression or conversion is not exact and deterministic",
+            Some(
+                "use only the old row, canonical literals, checked operators, and closed conversions",
+            ),
         ),
         "RDB-C201" => (
             "an identifier cannot form a valid MCP command tool-name segment",
@@ -1503,6 +1566,19 @@ fn validate_validate_contract_response(
         v1::validate_contract_response::Result::Invalid(diagnostics) => {
             validate_diagnostics(diagnostics)
         }
+        v1::validate_contract_response::Result::Candidate(candidate) => {
+            if candidate.parent_version.is_some() != !candidate.parent_bundle_hash.is_empty()
+                || candidate.parent_version == Some(0)
+                || candidate.canonical_bundle.is_empty()
+                || candidate.canonical_bundle.len() > MAX_PUBLIC_RESPONSE_BYTES
+            {
+                return Err(PublicWireError::InvalidIdentity);
+            }
+            if !candidate.parent_bundle_hash.is_empty() {
+                hash(&candidate.parent_bundle_hash)?;
+            }
+            validate_contract_descriptor(candidate.candidate.as_ref())
+        }
     }
 }
 
@@ -1538,6 +1614,21 @@ fn validate_deploy_contract_request(
     if message.expected_active_version == Some(0) {
         return Err(PublicWireError::InvalidIdentity);
     }
+    let exact = !message.expected_candidate_bundle_hash.is_empty();
+    if !exact && !message.expected_active_bundle_hash.is_empty() {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    if exact {
+        hash(&message.expected_candidate_bundle_hash)?;
+        if message.expected_active_version.is_some()
+            != !message.expected_active_bundle_hash.is_empty()
+        {
+            return Err(PublicWireError::InvalidIdentity);
+        }
+        if !message.expected_active_bundle_hash.is_empty() {
+            hash(&message.expected_active_bundle_hash)?;
+        }
+    }
     Ok(())
 }
 
@@ -1551,7 +1642,8 @@ fn validate_deploy_contract_response(
     {
         v1::deploy_contract_response::Result::Activated(descriptor)
         | v1::deploy_contract_response::Result::AlreadyActive(descriptor)
-        | v1::deploy_contract_response::Result::IncompatibleCandidate(descriptor) => {
+        | v1::deploy_contract_response::Result::IncompatibleCandidate(descriptor)
+        | v1::deploy_contract_response::Result::MigrationRequired(descriptor) => {
             validate_contract_descriptor(Some(descriptor))
         }
         v1::deploy_contract_response::Result::ExpectedActiveVersionMismatch(mismatch) => {
@@ -1564,6 +1656,12 @@ fn validate_deploy_contract_response(
         v1::deploy_contract_response::Result::BundleConflict(_) => Ok(()),
         v1::deploy_contract_response::Result::InvalidSource(diagnostics) => {
             validate_diagnostics(diagnostics)
+        }
+        v1::deploy_contract_response::Result::ExpectedApplicationIdentityMismatch(mismatch) => {
+            if let Some(active) = mismatch.actual_active.as_ref() {
+                validate_contract_descriptor(Some(active))?;
+            }
+            validate_contract_descriptor(mismatch.compiled_candidate.as_ref())
         }
     }
 }

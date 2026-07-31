@@ -11,15 +11,16 @@ use riffdb_errors::PublicErrorKind;
 use riffdb_service::{
     AdministrationApplication, AuthoritativeCommitNotification, AuthoritativeReadinessFailure,
     BootstrapCapabilityResult, CommandApplication, CommitApplication, CommitSubscriptionEndReason,
-    CommitSubscriptionEvent, ContractApplication, CreateCapabilityInvocation,
-    CreateCapabilityResult, DeployContractResult, DiscoverCommandToolsRequest,
-    DiscoverCommandToolsResultRef, DiscoverResourcesRequest, DiscoverResourcesResultRef,
-    DiscoveryApplication, DiscoveryRepresentation, ExecuteCommandResult, GetCommitRequest,
-    JournaledCommandResult, JournaledCompletion, MAX_COMMIT_SUBSCRIPTION_BUFFER_ITEMS,
-    MAX_LIVE_COMMIT_SUBSCRIBERS, NormalCreateCapabilityRequest, OutcomeResourceLocator, PageLimit,
-    PageRequest, ProjectionPageFence, QueryApplication, QueryProjectionResult,
-    ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, ResourceDiscoveryKind,
-    ServiceFailure, ServiceTelemetryEvent, StatisticsRequest, SubscribeToCommitsRequest,
+    CommitSubscriptionEvent, ContractApplication, ContractValidationResult,
+    CreateCapabilityInvocation, CreateCapabilityResult, DeployContractResult,
+    DiscoverCommandToolsRequest, DiscoverCommandToolsResultRef, DiscoverResourcesRequest,
+    DiscoverResourcesResultRef, DiscoveryApplication, DiscoveryRepresentation,
+    ExecuteCommandResult, GetCommitRequest, JournaledCommandResult, JournaledCompletion,
+    MAX_COMMIT_SUBSCRIPTION_BUFFER_ITEMS, MAX_LIVE_COMMIT_SUBSCRIBERS,
+    NormalCreateCapabilityRequest, OutcomeResourceLocator, PageLimit, PageRequest,
+    ProjectionPageFence, QueryApplication, QueryProjectionResult, ResolveCommandOutcomeRequest,
+    ResolveCommandOutcomeResult, ResourceDiscoveryKind, ServiceFailure, ServiceTelemetryEvent,
+    StatisticsRequest, SubscribeToCommitsRequest,
 };
 use riffdb_types::{
     FrontierPosition, ProjectionGeneration, ProjectionIdentity, ProjectionPlanHash,
@@ -567,6 +568,83 @@ fn known_command_and_control_plane_replays_keep_the_exact_succeeded_link() {
             second[1].link(),
             first[1].link(),
             "an already-active replay retains the original control-plane sequence"
+        );
+    });
+}
+
+#[test]
+fn exact_application_identity_mismatch_never_reaches_catalog_preparation() {
+    run_async(async move {
+        let mut harness = ServiceHarness::operations();
+        let (context, _cancellation) = harness.context(0xd4);
+        let result = harness
+            .service
+            .deploy_contract(context, harness.mismatched_exact_deploy_request())
+            .await
+            .expect("identity disagreement is ordinary result data");
+
+        assert!(
+            matches!(
+                result,
+                DeployContractResult::ExpectedApplicationIdentityMismatch { .. }
+            ),
+            "unexpected exact-identity result: {result:?}"
+        );
+        assert_eq!(harness.deployment_preparation_calls(), 0);
+        harness.stop_coordinator();
+        assert_eq!(
+            harness.audit_phases(0xd4),
+            [ServiceAuditPhaseV1::Started, ServiceAuditPhaseV1::Failed]
+        );
+    });
+}
+
+#[test]
+fn candidate_preview_is_authorized_read_only_and_never_prepares_deployment() {
+    run_async(async move {
+        let mut harness = ServiceHarness::operations();
+        let (context, _cancellation) = harness.context(0xd5);
+        let result = harness
+            .service
+            .validate_contract(context, harness.preview_candidate_request())
+            .await;
+        let result = result.unwrap_or_else(|failure| {
+            panic!(
+                "authorized preview failed as {:?}",
+                failure.public_error().map(|error| error.kind())
+            )
+        });
+        assert!(matches!(result, ContractValidationResult::Candidate(_)));
+        assert_eq!(harness.deployment_preparation_calls(), 0);
+        harness.stop_coordinator();
+    });
+}
+
+#[test]
+fn exact_already_active_retry_recovers_success_without_second_activation() {
+    run_async(async move {
+        let mut harness = ServiceHarness::new(ReadCommitMode::ImmediateNotFound, true);
+        let (context, _cancellation) = harness.context(0xd6);
+        let result = harness
+            .service
+            .deploy_contract(context, harness.exact_active_deploy_request())
+            .await;
+        let result = result.unwrap_or_else(|failure| {
+            panic!(
+                "exact already-active retry failed as {:?}",
+                failure.public_error().map(|error| error.kind())
+            )
+        });
+        assert!(matches!(result, DeployContractResult::AlreadyActive(_)));
+        assert_eq!(
+            harness.deployment_preparation_calls(),
+            1,
+            "read-only preparation recovers the original audited AlreadyActive outcome"
+        );
+        harness.stop_coordinator();
+        assert_eq!(
+            harness.audit_phases(0xd6),
+            [ServiceAuditPhaseV1::Started, ServiceAuditPhaseV1::Succeeded]
         );
     });
 }

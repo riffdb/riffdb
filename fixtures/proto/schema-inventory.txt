@@ -20,6 +20,8 @@ files
   riffdb/storage/v1/event_references_v2.proto
     import riffdb/storage/v1/application.proto
     import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/event_route_v1.proto
+    import riffdb/storage/v1/common.proto
   riffdb/storage/v1/history_incarnation_v1.proto
   riffdb/storage/v1/index_generation_v2.proto
     import riffdb/storage/v1/application.proto
@@ -508,6 +510,10 @@ messages
     3 payload optional bytes
     4 payload_crc32c optional fixed32
     5 schema_hash optional bytes
+  riffdb.storage.v1.StoredEventRouteV1 fields=3
+    1 event_id optional .riffdb.storage.v1.EventIdV1
+    2 event_type_id optional uint32
+    3 event_hash optional bytes
   riffdb.storage.v1.StoredExecutionFailedV1 fields=2
     1 pending optional .riffdb.storage.v1.StoredPendingAdmissionV1
     2 code optional .riffdb.storage.v1.ExecutionFailureCodeV1
@@ -830,6 +836,11 @@ messages
   riffdb.v1.CompilationDiagnostics fields=2
     1 syntax optional .riffdb.v1.SyntaxDiagnosticList oneof=diagnostics
     2 semantic optional .riffdb.v1.SemanticDiagnosticList oneof=diagnostics
+  riffdb.v1.CompiledContractCandidate fields=4
+    1 parent_version optional uint64 proto3-optional oneof=_parent_version
+    2 parent_bundle_hash optional bytes
+    3 candidate optional .riffdb.v1.ContractDescriptor
+    4 canonical_bundle optional bytes
   riffdb.v1.ContractCompatibilityCodeCount fields=2
     1 code optional string
     2 count optional uint32
@@ -882,17 +893,21 @@ messages
     1 outcome_id optional uint32
     2 outcome_name optional string
     3 value optional .riffdb.v1.ValueRecord
-  riffdb.v1.DeployContractRequest fields=3
+  riffdb.v1.DeployContractRequest fields=5
     1 request_id optional bytes
     2 source optional string
     3 expected_active_version optional uint64 proto3-optional oneof=_expected_active_version
-  riffdb.v1.DeployContractResponse fields=6
+    4 expected_active_bundle_hash optional bytes
+    5 expected_candidate_bundle_hash optional bytes
+  riffdb.v1.DeployContractResponse fields=8
     1 activated optional .riffdb.v1.ContractDescriptor oneof=result
     2 already_active optional .riffdb.v1.ContractDescriptor oneof=result
     3 expected_active_version_mismatch optional .riffdb.v1.ExpectedActiveVersionMismatch oneof=result
     4 bundle_conflict optional .riffdb.v1.Unit oneof=result
     5 invalid_source optional .riffdb.v1.CompilationDiagnostics oneof=result
     6 incompatible_candidate optional .riffdb.v1.ContractDescriptor oneof=result
+    7 expected_application_identity_mismatch optional .riffdb.v1.ExpectedApplicationIdentityMismatch oneof=result
+    8 migration_required optional .riffdb.v1.ContractDescriptor oneof=result
   riffdb.v1.DiscoverCommandToolsRequest fields=4
     1 request_id optional bytes
     2 page optional .riffdb.v1.PageRequest
@@ -971,6 +986,9 @@ messages
     10 history_incarnation optional uint64
   riffdb.v1.ExpectedActiveVersionMismatch fields=1
     1 actual_active_version optional uint64 proto3-optional oneof=_actual_active_version
+  riffdb.v1.ExpectedApplicationIdentityMismatch fields=2
+    1 actual_active optional .riffdb.v1.ContractDescriptor
+    2 compiled_candidate optional .riffdb.v1.ContractDescriptor
   riffdb.v1.ExplainCommandRequest fields=3
     1 request_id optional bytes
     2 contract optional .riffdb.v1.ContractSelection
@@ -1343,12 +1361,14 @@ messages
     1 not_found optional .riffdb.v1.Unit oneof=result
     2 found optional .riffdb.v1.Provenance oneof=result
   riffdb.v1.Unit fields=0
-  riffdb.v1.ValidateContractRequest fields=2
+  riffdb.v1.ValidateContractRequest fields=3
     1 request_id optional bytes
     2 source optional string
-  riffdb.v1.ValidateContractResponse fields=2
+    3 preview_active_successor optional bool
+  riffdb.v1.ValidateContractResponse fields=3
     1 valid optional .riffdb.v1.Unit oneof=result
     2 invalid optional .riffdb.v1.CompilationDiagnostics oneof=result
+    3 candidate optional .riffdb.v1.CompiledContractCandidate oneof=result
   riffdb.v1.ValidationIssue fields=2
     1 code optional .riffdb.v1.ValidationCode
     2 path repeated .riffdb.v1.ValidationPathSegment
@@ -1629,11 +1649,12 @@ enums
     6 COMMIT_SUBSCRIPTION_END_REASON_DEADLINE_EXCEEDED
     7 COMMIT_SUBSCRIPTION_END_REASON_SERVICE_SHUTDOWN
     8 COMMIT_SUBSCRIPTION_END_REASON_UNAVAILABLE
-  riffdb.v1.ContractCompatibilityClass values=4
+  riffdb.v1.ContractCompatibilityClass values=5
     0 CONTRACT_COMPATIBILITY_CLASS_UNSPECIFIED
     1 CONTRACT_COMPATIBILITY_CLASS_COMPATIBLE
     2 CONTRACT_COMPATIBILITY_CLASS_REQUIRES_EXPLICIT_VERSION
     3 CONTRACT_COMPATIBILITY_CLASS_INCOMPATIBLE
+    4 CONTRACT_COMPATIBILITY_CLASS_REQUIRES_MIGRATION
   riffdb.v1.DiscoveryRepresentation values=3
     0 DISCOVERY_REPRESENTATION_UNSPECIFIED
     1 DISCOVERY_REPRESENTATION_FULL

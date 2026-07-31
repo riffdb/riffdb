@@ -28,20 +28,22 @@ use riffdb_storage_api::{
     CurrentIndexGenerationObservation, DatabaseIdentityProbe, DatabaseIdentityProbePort,
     DatabaseInitializationPort, DeclaredOutcome, DurabilityMode, DurableKeySchemaBindingV1,
     EmptyCommandBatch, EncodedWriteSetUpperBoundResultV1, EntityMutation, EntityObservation,
-    EntityPostImage, EntityTarget, EvaluationBudget, EventIntent, EvidencePageLimit,
+    EntityPostImage, EntityTarget, EvaluationBudget, EventIntent, EventRoutePageLimit,
+    EventRouteScanRequestV1, EventRouteScanV1, EventRouteUpperFenceV1, EvidencePageLimit,
     ExecutablePlanRef, ExpectedEntityState, IdempotencyIdentity, IdempotencyKeyDigest,
     IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceV1, IndexEpochPosition,
     IndexRangeTarget, MAX_INDEX_MIGRATION_PAGE_BYTES, MAX_INDEX_MIGRATION_PAGE_ENTRIES,
     NonEmptyCommandBatch, OpenSessionId, OutboxPageLimit, OutboxRepository,
-    OutboxStatusObservationV1, OutboxStatusReadResultV1, PartitionIndexTarget, PendingOutboxScanV1,
-    PreEvaluationCommitContext, ReadSnapshot, ReadableCapabilityDigestInventory, ReadableDigestKey,
-    ReadableIdempotencyDigestInventory, ServiceAuditAppendIntentV1, SnapshotReader,
-    SnapshotRequest, StartupValidationInputs, StorageScanLimit, StoredAdministrationAuditRecordV1,
-    StoredAdmittedProvenanceClaimsV1, StoredContractBundleV1, StoredDurableEventV1,
-    StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredOutboxIntentV1,
-    StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
-    StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
-    StructuralEvidenceSession, StructuralOpenOutcome, StructurallyOpened,
+    OutboxStatusObservationV1, OutboxStatusReadResultV1, PartitionEventRouteReader,
+    PartitionIndexTarget, PendingOutboxScanV1, PreEvaluationCommitContext, ReadSnapshot,
+    ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+    ServiceAuditAppendIntentV1, SnapshotReader, SnapshotRequest, StartupValidationInputs,
+    StorageScanLimit, StoredAdministrationAuditRecordV1, StoredAdmittedProvenanceClaimsV1,
+    StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1,
+    StoredIndexEntryV2, StoredOutboxIntentV1, StoredOutcomeV1, StoredPendingAdmissionV1,
+    StoredProvenanceRecordV1, StoredReadDependenciesV1, StructuralEvidenceCursor,
+    StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding,
+    StructuralFindingCode, StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
     command_write_set_upper_bound_v1, decode_index_entry_v1, decode_index_entry_v2,
     decode_index_migration_row, derive_event_hash_v1, encode_index_entry_v1_fixture,
     encode_index_entry_v2,
@@ -64,6 +66,7 @@ const CHILD_PATH: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_PATH";
 const CHILD_COMMIT_PROFILE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_COMMIT_PROFILE";
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 const SECONDARY_INDEXES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("secondary_indexes");
+const EVENT_ROUTES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("event_routes");
 static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
 
 const STORAGE_RECOVERY_CONTRACT: &str = r#"
@@ -215,6 +218,42 @@ fn complete_structural_open(store: RedbStore) -> StructurallyOpened<RedbDormantP
     };
     assert_eq!(opened.database_id(), database_id());
     opened
+}
+
+fn collect_structural_findings(store: RedbStore) -> Vec<StructuralFinding> {
+    let digest_key = DigestKeyId::new(1).expect("digest key ID");
+    let inputs = StartupValidationInputs::new(
+        Timestamp::new(1_700_000_000, 0).expect("startup timestamp"),
+        ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+            .expect("capability digest inventory"),
+        ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+            .expect("idempotency digest inventory"),
+    );
+    let mut session = store
+        .begin_structural_evidence(inputs)
+        .expect("begin structural evidence");
+    let mut cursor =
+        StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
+    let mut findings = Vec::new();
+    loop {
+        match session
+            .read_structural_evidence(
+                cursor,
+                EvidencePageLimit::new(64).expect("structural page limit"),
+            )
+            .expect("read structural evidence")
+        {
+            StructuralEvidencePage::Page {
+                findings: page,
+                next,
+                ..
+            } => {
+                findings.extend(page);
+                cursor = next;
+            }
+            StructuralEvidencePage::ExactEnd(_) => return findings,
+        }
+    }
 }
 
 fn open_operational(store: RedbStore) -> RedbOperationalPorts {
@@ -854,6 +893,20 @@ fn assert_precommit_command_state(ports: &RedbOperationalPorts, fixture: &Comman
             .expect("read durable event"),
         None
     );
+    let route_scan = ports
+        .scan_partition_event_routes(EventRouteScanRequestV1::initial(
+            hash_partition_key(fixture.pending.partition_key().as_bytes()),
+            None,
+            EventRoutePageLimit::new(NonZeroU16::MIN).expect("event-route limit"),
+        ))
+        .expect("scan precommit event routes");
+    assert!(matches!(
+        route_scan,
+        EventRouteScanV1::ExactEnd {
+            items,
+            inclusive_upper: EventRouteUpperFenceV1::BeforeFirst,
+        } if items.is_empty()
+    ));
     assert_eq!(
         ports
             .read_outbox_status(event_id)
@@ -960,6 +1013,25 @@ fn assert_postcommit_command_state(ports: &RedbOperationalPorts, fixture: &Comma
             .expect("read durable event"),
         Some(event.clone())
     );
+    let route_scan = ports
+        .scan_partition_event_routes(EventRouteScanRequestV1::initial(
+            hash_partition_key(fixture.pending.partition_key().as_bytes()),
+            None,
+            EventRoutePageLimit::new(NonZeroU16::MIN).expect("event-route limit"),
+        ))
+        .expect("scan committed event routes");
+    let EventRouteScanV1::ExactEnd {
+        items,
+        inclusive_upper: EventRouteUpperFenceV1::Inclusive(upper),
+    } = route_scan
+    else {
+        panic!("one committed event route must reach exact end");
+    };
+    assert_eq!(upper, event.event_id());
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].value().event_id(), event.event_id());
+    assert_eq!(items[0].value().event_type_id(), event.event_type_id());
+    assert_eq!(items[0].value().event_hash(), event.event_hash());
     assert_eq!(
         ports
             .read_outbox_status(event.event_id())
@@ -1601,4 +1673,40 @@ fn crash_after_command_commit_preserves_the_complete_reciprocal_graph() {
         let ports = open_operational(RedbStore::open(&path.0).expect("repeat postcommit recovery"));
         assert_postcommit_command_state(&ports, &command_fixture());
     }
+}
+
+#[test]
+fn missing_event_route_is_authoritative_startup_corruption() {
+    let path = TestDatabasePath::new("missing-event-route");
+    let (fixture, _) = prepare_committed_command_database(&path.0);
+    let event_id = fixture.records.events()[0].event_id();
+    let partition_hash = hash_partition_key(fixture.pending.partition_key().as_bytes());
+    let mut route_key = [0_u8; 44];
+    route_key[..32].copy_from_slice(partition_hash.as_bytes());
+    route_key[32..].copy_from_slice(&event_id.to_be_bytes());
+
+    let database = Database::create(&path.0).expect("open corruption fixture");
+    let transaction = database.begin_write().expect("begin corruption write");
+    assert!(
+        transaction
+            .open_table(EVENT_ROUTES)
+            .expect("open event-route table")
+            .remove(route_key.as_slice())
+            .expect("remove event route")
+            .is_some(),
+        "the committed command must have installed its route"
+    );
+    transaction.commit().expect("commit route corruption");
+    drop(database);
+
+    let findings = collect_structural_findings(
+        RedbStore::open(&path.0).expect("open database with missing route"),
+    );
+    assert!(
+        findings.iter().any(|finding| {
+            finding.scope() == StructuralFindingScope::Authoritative
+                && finding.code() == StructuralFindingCode::CrossLinkMismatch
+        }),
+        "missing route must fail closed as authoritative cross-link corruption: {findings:?}"
+    );
 }

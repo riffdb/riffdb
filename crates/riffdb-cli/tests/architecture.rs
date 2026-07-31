@@ -7,12 +7,13 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-const DIRECT_DEPENDENCIES: [&str; 14] = [
+const DIRECT_DEPENDENCIES: [&str; 15] = [
     "base64",
     "clap",
     "riffdb-auth",
     "riffdb-client-rust",
     "riffdb-contract-compiler",
+    "riffdb-contract-ir",
     "riffdb-diagnostics",
     "riffdb-query-module",
     "riffdb-types",
@@ -29,6 +30,7 @@ const EXACT_DEPENDENCY_ROWS: &str = concat!(
     "riffdb-auth = { version = \"0.1.0\", path = \"../riffdb-auth\", default-features = false }\n",
     "riffdb-client-rust = { version = \"0.1.0\", path = \"../riffdb-client-rust\", default-features = false }\n",
     "riffdb-contract-compiler = { version = \"0.1.0\", path = \"../riffdb-contract-compiler\", default-features = false }\n",
+    "riffdb-contract-ir = { version = \"0.1.0\", path = \"../riffdb-contract-ir\", default-features = false }\n",
     "riffdb-diagnostics = { version = \"0.1.0\", path = \"../riffdb-diagnostics\", default-features = false }\n",
     "riffdb-query-module = { version = \"0.1.0\", path = \"../riffdb-query-module\", default-features = false }\n",
     "riffdb-types = { version = \"0.1.0\", path = \"../riffdb-types\", default-features = false }\n",

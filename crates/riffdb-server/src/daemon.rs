@@ -403,8 +403,14 @@ pub fn riffdbd_main() -> ExitCode {
             eprintln!("RDB-CONFIG-0001: {error}");
             ExitCode::FAILURE
         }
-        Err(_) => {
-            eprintln!("riffdbd terminated without reaching a clean process boundary");
+        Err(error) => {
+            // Stable, non-secret lifecycle kind only — never dump raw sources.
+            // App-baseline and operators need the discriminant to diagnose mid-run
+            // process death (e.g. transport_ended vs runtime_stopped).
+            eprintln!(
+                "riffdbd terminated without reaching a clean process boundary kind={}",
+                error.kind()
+            );
             ExitCode::FAILURE
         }
     }
@@ -2880,7 +2886,12 @@ async fn supervise_ready_process(
         }
         ReadyProcessTrigger::Signal(Ok(())) => Ok(ReadyProcessCompletion::Stopped),
         ReadyProcessTrigger::Signal(Err(source)) => Err(DaemonError::ShutdownSignal(source)),
-        ReadyProcessTrigger::Runtime(_reason) => Err(DaemonError::RuntimeStopped),
+        ReadyProcessTrigger::Runtime(reason) => {
+            // Non-secret enum discriminant only; kind=runtime_stopped alone is
+            // not enough to distinguish Integrity vs SupervisionStateCorrupted.
+            eprintln!("[riffdbd-diag] trigger=runtime reason={reason:?}");
+            Err(DaemonError::RuntimeStopped)
+        }
         ReadyProcessTrigger::Transport(Ok(Ok(()))) => Err(DaemonError::TransportEnded),
         ReadyProcessTrigger::Transport(Ok(Err(_))) => Err(DaemonError::Transport),
         ReadyProcessTrigger::Transport(Err(_)) => Err(DaemonError::TransportTask),
@@ -3147,15 +3158,61 @@ enum DaemonError {
     GraphShutdown(ProductionGraphShutdownError),
 }
 
+impl DaemonError {
+    /// Stable, non-secret lifecycle failure kind for process-boundary diagnostics.
+    #[must_use]
+    const fn kind(&self) -> &'static str {
+        match self {
+            Self::Config(_) => "config",
+            Self::Runtime(_) => "runtime",
+            Self::ProcessClock(_) => "process_clock",
+            Self::DigestKeys => "digest_keys",
+            Self::StartupClock(_) => "startup_clock",
+            Self::StartupInventory(_) => "startup_inventory",
+            Self::GrpcConfiguration => "grpc_configuration",
+            Self::Listener(_) => "listener",
+            Self::McpDependencies => "mcp_dependencies",
+            Self::McpStart(_) => "mcp_start",
+            Self::McpStop(_) => "mcp_stop",
+            Self::Startup(_) => "startup",
+            Self::MaintenanceStorage(_) => "maintenance_storage",
+            Self::MaintenanceDriver => "maintenance_driver",
+            Self::RecoveryHostStart(_) => "recovery_host_start",
+            Self::RecoveryHostShutdown(_) => "recovery_host_shutdown",
+            Self::RestoreRetryHostStart(_) => "restore_retry_host_start",
+            Self::RestoreRetryHostShutdown(_) => "restore_retry_host_shutdown",
+            Self::BuildInfo => "build_info",
+            Self::GraphBuild(_) => "graph_build",
+            Self::Readiness(_) => "readiness",
+            Self::ShutdownReader(_) => "shutdown_reader",
+            Self::ShutdownSignal(_) => "shutdown_signal",
+            Self::ShutdownReaderPanicked => "shutdown_reader_panicked",
+            Self::ShutdownInput => "shutdown_input",
+            Self::NotificationShutdown => "notification_shutdown",
+            Self::RuntimeStopped => "runtime_stopped",
+            Self::TransportEnded => "transport_ended",
+            Self::McpTransportEnded => "mcp_transport_ended",
+            Self::Transport => "transport",
+            Self::TransportTask => "transport_task",
+            Self::TransportDrainTimeout => "transport_drain_timeout",
+            Self::GraphShutdown(_) => "graph_shutdown",
+        }
+    }
+}
+
 impl fmt::Debug for DaemonError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("DaemonError([REDACTED])")
+        write!(formatter, "DaemonError(kind={})", self.kind())
     }
 }
 
 impl fmt::Display for DaemonError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("riffdbd process lifecycle failed")
+        write!(
+            formatter,
+            "riffdbd process lifecycle failed kind={}",
+            self.kind()
+        )
     }
 }
 
