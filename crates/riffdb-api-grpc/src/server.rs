@@ -14,7 +14,7 @@ use futures_util::future::join_all;
 use riffdb_auth::{AuthenticationContext, CapabilityDigestKeyProvider, CredentialAuthenticator};
 use riffdb_errors::{ApplicationOperation, PublicErrorKind};
 use riffdb_proto::{
-    MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES, app::v1 as app_v1,
+    MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES, PublicWireError, app::v1 as app_v1,
     application_error_to_proto, v1, validate_public_message,
 };
 use riffdb_service::{
@@ -42,7 +42,8 @@ use crate::authentication::{
 };
 use crate::conversion::*;
 use crate::error::{
-    status_from_application_boundary, status_from_application_failure, status_from_service_failure,
+    RESPONSE_TOO_LARGE_MESSAGE, status_from_application_boundary, status_from_application_failure,
+    status_from_service_failure,
 };
 use crate::generated::admin_service_server::{AdminService, AdminServiceServer};
 use crate::generated::command_service_server::{CommandService, CommandServiceServer};
@@ -909,13 +910,12 @@ fn assemble_execute_batch_response(
         Vec::new()
     };
     let response = v1::ExecuteCommandBatchResponse { responses, items };
-    // validate_structure does not distinguish size overflow from other
-    // structural defects (encoded length is checked earlier by PublicMessage
-    // encode bounds elsewhere). Keep emergency-internal for assembled-response
-    // validation failures; ResponseTooLarge remains the control-class path for
-    // service-result size failures, not for this post-assembly check.
-    validate_public_message(&response)
-        .map_err(|_| Status::internal(crate::EMERGENCY_INTERNAL_MESSAGE))?;
+    // validate_public_message reports MessageTooLarge when encoded_len exceeds
+    // MAX_PUBLIC_RESPONSE_BYTES (including all-success legacy-mirror doubling).
+    validate_public_message(&response).map_err(|error| match error {
+        PublicWireError::MessageTooLarge => Status::resource_exhausted(RESPONSE_TOO_LARGE_MESSAGE),
+        _ => Status::internal(crate::EMERGENCY_INTERNAL_MESSAGE),
+    })?;
     Ok(response)
 }
 
@@ -2681,5 +2681,49 @@ mod tests {
             mixed.items[2].result,
             Some(v1::execute_command_batch_item::Result::Response(_))
         ));
+    }
+
+    #[test]
+    fn assemble_batch_size_overflow_maps_to_resource_exhausted() {
+        // Value documents are capped at MAX_CANONICAL_DOCUMENT_BYTES (~1 MiB
+        // encoded). Leave headroom for protobuf framing so each item validates,
+        // then rely on field-1 mirroring to push the assembled batch past 4 MiB.
+        let payload_len = riffdb_types::MAX_CANONICAL_DOCUMENT_BYTES - 32;
+        let mk = |fill: u8| v1::ExecuteCommandBatchItem {
+            result: Some(v1::execute_command_batch_item::Result::Response(
+                v1::ExecuteCommandResponse {
+                    status: v1::execute_command_response::CompletionStatus::ExecutedReadOnly as i32,
+                    commit_sequence: 0,
+                    contract_version: 1,
+                    plan_hash: vec![fill; 32],
+                    outcome_type: "Ok".to_owned(),
+                    outcome: Some(v1::Value {
+                        kind: Some(v1::value::Kind::BytesValue(vec![fill; payload_len])),
+                    }),
+                    provenance_uri: String::new(),
+                    durability_mode: String::new(),
+                    outcome_uri: None,
+                    history_incarnation: 1,
+                },
+            )),
+        };
+        let items = vec![mk(1), mk(2), mk(3)];
+        if let Some(v1::execute_command_batch_item::Result::Response(r)) = &items[0].result {
+            riffdb_proto::validate_execute_response(r).expect("per-item valid");
+        }
+        let status = assemble_execute_batch_response(items)
+            .expect_err("legacy mirror doubling must exceed public response ceiling");
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted, "{status:?}");
+        assert_eq!(status.message(), RESPONSE_TOO_LARGE_MESSAGE);
+        assert!(status.details().is_empty());
+    }
+
+    #[test]
+    fn assemble_batch_structural_defect_maps_to_emergency_internal() {
+        let status =
+            assemble_execute_batch_response(vec![v1::ExecuteCommandBatchItem { result: None }])
+                .expect_err("unset oneof is structural");
+        assert_eq!(status.code(), tonic::Code::Internal);
+        assert_eq!(status.message(), crate::EMERGENCY_INTERNAL_MESSAGE);
     }
 }
