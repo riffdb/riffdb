@@ -17,3 +17,5 @@ RDB-COMMAND-0101	command	correct_request	correct_input	idempotency key was reuse
 RDB-COMMAND-0102	command	contact_operator		command execution failed
 RDB-AUTH-0215	authorization	obtain_permission	bind_application_role	application capability is revoked
 RDB-PROTOCOL-0101	protocol	contact_operator		the RiffDB peer returned an invalid application response
+RDB-HISTORY-0101	history	correct_request	correct_input	observed history predates a database restore
+RDB-CAPACITY-0101	capacity	retry	retry_later	service is over capacity
