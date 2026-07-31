@@ -1,5 +1,10 @@
 # RiffDB
 
+**Documentation:** Start with the [RiffDB Handbook](docs/README.md) for the
+application tutorial, language guides, MCP cookbook, operations, architecture,
+and reference material. The repository builds the same handbook locally with
+`./scripts/handbook build` and publishes it through GitHub Pages from `main`.
+
 ## Build an application
 
 The application-first path starts from symbolic contract and RiffQL sources:

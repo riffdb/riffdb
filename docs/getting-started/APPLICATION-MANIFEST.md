@@ -113,7 +113,7 @@ compatibility artifact for deployments and stable V1 tooling. It includes
 bundle and module hashes, but is now emitted under
 `generated/riffdb.application.exact.json`; application authors do not edit it.
 The checked-in TicketDesk compatibility fixture is
-[`fixtures/application-manifests/ticketdesk-v1.json`](../../fixtures/application-manifests/ticketdesk-v1.json).
+`fixtures/application-manifests/ticketdesk-v1.json` in the repository root.
 
 Run source, lock, generation, and drift checks with:
 

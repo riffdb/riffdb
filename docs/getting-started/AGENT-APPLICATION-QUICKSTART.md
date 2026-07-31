@@ -84,7 +84,7 @@ code never infers an identity from its request or lock.
 
 Complete public references:
 
-- [contract language and bounds](../contracts/README.md)
+- [contract language and bounds](../contracts/)
 - [command and invariant cookbook](../contracts/COMMAND-INVARIANT-COOKBOOK.md)
 - [application source schema](application-source-v1.schema.json)
 - [symbolic inspection](INSPECTION.md)

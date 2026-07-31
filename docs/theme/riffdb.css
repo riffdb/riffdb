@@ -1,0 +1,104 @@
+:root {
+    --riff-red: #c33542;
+    --riff-teal: #087c78;
+    --riff-gold: #a46600;
+    --riff-ink: #20252b;
+    --riff-muted: #626a73;
+    --riff-rule: #d8dde2;
+    --riff-surface: #f5f7f8;
+}
+
+html {
+    letter-spacing: 0;
+}
+
+.light,
+.rust {
+    --links: var(--riff-teal);
+    --sidebar-active: var(--riff-red);
+    --sidebar-active-background: #f7ecee;
+    --inline-code-color: #9c2632;
+    --quote-border: var(--riff-teal);
+}
+
+.navy,
+.ayu,
+.coal {
+    --links: #62cbc5;
+    --sidebar-active: #ff8590;
+    --inline-code-color: #ff9ca5;
+    --quote-border: #62cbc5;
+}
+
+.content main {
+    max-width: 920px;
+}
+
+.content h1,
+.content h2,
+.content h3 {
+    letter-spacing: 0;
+    text-wrap: balance;
+}
+
+.content h1 {
+    border-bottom: 3px solid var(--riff-red);
+    padding-bottom: 0.35rem;
+}
+
+.riffdb-status {
+    background: var(--riff-surface);
+    border-left: 4px solid var(--riff-gold);
+    color: var(--riff-ink);
+    margin: 0 0 1.5rem;
+    padding: 0.75rem 1rem;
+}
+
+.navy .riffdb-status,
+.ayu .riffdb-status,
+.coal .riffdb-status {
+    background: #232a31;
+    color: #eef1f3;
+}
+
+.content table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+}
+
+.content pre {
+    border-left: 3px solid var(--riff-teal);
+    max-width: 100%;
+    overflow-x: auto;
+}
+
+.content img {
+    background: #fff;
+    border: 1px solid var(--riff-rule);
+    box-sizing: border-box;
+    height: auto;
+    max-width: 100%;
+    padding: 0.5rem;
+}
+
+.menu-title {
+    color: var(--riff-red);
+    font-weight: 700;
+}
+
+@media (max-width: 700px) {
+    .content main {
+        padding-inline: 1rem;
+    }
+
+    .riffdb-status {
+        margin-top: 0.5rem;
+    }
+}
+
+@media print {
+    .riffdb-status {
+        border: 1px solid #777;
+    }
+}

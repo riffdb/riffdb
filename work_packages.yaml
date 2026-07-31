@@ -1,4 +1,4 @@
-spec_version: '0.53'
+spec_version: '0.54'
 product: RiffDB
 repository: riffdb
 status: application-platform-implementation
@@ -108,6 +108,13 @@ gates:
   - WP-396
   - WP-397
   - WP-398
+- id: P6
+  name: Public documentation handbook
+  requires:
+  - WP-401
+  - WP-402
+  - WP-403
+  - WP-404
 work_packages:
 - id: WP-000
   name: Repository foundation
@@ -6239,4 +6246,81 @@ work_packages:
   exit_gate: A successor that widens one symbolic role preflights, deploys, and explicitly replaces its retained
     credential without RDB-AR003, no local authoring failure follows remote mutation, and every CLI operation names
     the action actually performed.
+  human_review_triggers: *id001
+- id: WP-401
+  name: Handbook foundation and documentation governance
+  depends_on: [WP-400]
+  objective: Establish the reproducible public handbook, curated navigation, maintenance rules, generated diagrams,
+    and a local verification entry point without changing product semantics.
+  requirements: [HBK-001, HBK-002, HBK-007, HBK-008, HBK-009, HBK-011]
+  required_adrs: []
+  allowed_paths: [AGENTS.md, SPEC.md, work_packages.yaml, README.md, book.toml, .github/**, docs/**, diagrams/**,
+    scripts/**]
+  deliverables:
+  - Pinned mdBook configuration with local theme, search, POC status treatment, and curated public navigation
+  - Repository documentation-maintenance protocol and pull-request documentation-impact field
+  - Reproducible handbook diagram generation and contributor source-of-truth map
+  - One local handbook build and verification command
+  acceptance_commands:
+  - ./scripts/handbook build
+  - ./scripts/generate-handbook-diagrams --check
+  - ./scripts/check-requirement-coverage
+  exit_gate: A fresh checkout builds a navigable local handbook with no external runtime asset and future public
+    changes have an explicit same-change documentation rule.
+  human_review_triggers: *id001
+- id: WP-402
+  name: Application-builder handbook
+  depends_on: [WP-401]
+  objective: Teach the implemented contract-first application workflow progressively across the supported public
+    language and MCP surfaces using reproducible examples.
+  requirements: [HBK-002, HBK-003, HBK-004, HBK-006, HBK-011]
+  required_adrs: [ADR-0054, ADR-0057, ADR-0063, ADR-0064, ADR-0065, ADR-0074, ADR-0075]
+  allowed_paths: [README.md, docs/**, examples/**, scripts/**]
+  deliverables:
+  - First-application tutorial followed by TicketDesk and PostgreSQL safety-comparison learning paths
+  - Rust, TypeScript, Python, CLI, and MCP guides over the same application-service semantics
+  - Current contract, RiffQL, values, errors, idempotency, and authorization cross-links
+  acceptance_commands:
+  - ./scripts/handbook check
+  - ./scripts/check-application-bindings
+  - ./scripts/check-requirement-coverage
+  exit_gate: A new application author can install RiffDB, build and deploy a contract, execute a typed command,
+    query the result, and understand the demonstrated PostgreSQL safety contrast using only the handbook.
+  human_review_triggers: *id001
+- id: WP-403
+  name: Operator and reference handbook
+  depends_on: [WP-401]
+  objective: Publish current operational, architecture, protocol, value, compatibility, and public-client references
+    while keeping internal implementation crates outside the public API surface.
+  requirements: [HBK-002, HBK-004, HBK-005, HBK-006, HBK-007, HBK-011]
+  required_adrs: [ADR-0001, ADR-0004, ADR-0007, ADR-0008, ADR-0012, ADR-0063, ADR-0064, ADR-0065, ADR-0066]
+  allowed_paths: [README.md, docs/**, diagrams/**, scripts/**]
+  deliverables:
+  - Installation, configuration, multi-database, credential, backup, restore, upgrade, reset, and troubleshooting path
+  - Architecture and command-path reference tied to generated diagrams
+  - Generated CLI reference and stable riffdb-client-rust API publication boundary
+  acceptance_commands:
+  - ./scripts/handbook check
+  - ./scripts/generate-cli-reference --check
+  - ./scripts/check-requirement-coverage
+  exit_gate: Operators and application authors can resolve routine setup and runtime tasks without relying on the
+    specification, source code, or historical work-package reports.
+  human_review_triggers: *id001
+- id: WP-404
+  name: Handbook acceptance and GitHub Pages publication
+  depends_on: [WP-402, WP-403]
+  objective: Enforce handbook freshness and publish the verified static artifact from the main branch.
+  requirements: [HBK-001, HBK-003, HBK-004, HBK-005, HBK-007, HBK-008, HBK-009, HBK-010, HBK-011]
+  required_adrs: []
+  allowed_paths: [README.md, book.toml, .github/**, docs/**, scripts/**]
+  deliverables:
+  - Link, fragment, snippet, navigation, generated-reference, runtime-asset, and Rustdoc verification
+  - GitHub Pages workflow publishing the same artifact produced by the local handbook build
+  - Responsive desktop and mobile visual acceptance evidence
+  acceptance_commands:
+  - ./scripts/handbook check
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  exit_gate: Pull requests reject stale or broken public documentation and a main-branch build publishes the exact
+    locally reproducible handbook artifact.
   human_review_triggers: *id001

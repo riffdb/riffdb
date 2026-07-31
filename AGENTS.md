@@ -60,6 +60,26 @@ Before completion:
 5. List requirement IDs satisfied by automated tests.
 6. Report known limitations and follow-up issues.
 
+## Documentation maintenance protocol
+
+- `docs/SUMMARY.md` defines the public handbook. Any user-visible behavior,
+  contract language, public protocol, CLI, configuration, installation,
+  operational, compatibility, or SDK change MUST update the affected handbook
+  page in the same pull request.
+- New public behavior MUST be discoverable from `docs/SUMMARY.md`; do not leave
+  public guidance only in an ADR, work-package report, test, example, or source
+  comment.
+- Generated handbook references and diagrams MUST be regenerated and checked in
+  when their authoritative source changes. Do not hand-edit generated pages.
+- Examples MUST use current public interfaces and identify POC limitations. Do
+  not document proposed or deferred behavior as available.
+- Run `./scripts/handbook check` for changes that affect public behavior or
+  handbook sources. The check includes the book build, generated-reference
+  freshness, links, snippets, and the published Rust API surface.
+- Pull requests MUST state their documentation impact. `Not applicable` is
+  acceptable only with a concrete reason for changes that cannot affect users,
+  operators, application authors, public interfaces, or compatibility.
+
 ## Required PR description
 
 ```text
@@ -73,6 +93,7 @@ Compatibility classification:
 Security implications:
 Tests executed:
 Generated artifacts checked:
+Documentation impact:
 Known limitations:
 Follow-up issues:
 ```
