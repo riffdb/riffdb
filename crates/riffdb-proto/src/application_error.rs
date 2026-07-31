@@ -67,10 +67,15 @@ pub fn decode_application_error(
     if input.len() > MAX_APPLICATION_ERROR_BYTES {
         return Err(ApplicationErrorWireError::MessageTooLarge);
     }
-    preflight(input)?;
+    preflight_application_error(input)?;
     let wire = app_v1::ApplicationError::decode(input)
         .map_err(|_| ApplicationErrorWireError::MalformedEncoding)?;
     application_error_from_proto(&wire)
+}
+
+/// Allocation-free structural preflight for one application-error wire payload.
+pub fn preflight_application_error(input: &[u8]) -> Result<(), ApplicationErrorWireError> {
+    preflight(input)
 }
 
 /// Validates redundant registry fields and reconstructs one domain error.
