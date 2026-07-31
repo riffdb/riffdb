@@ -637,7 +637,7 @@ impl RiffDbClient {
                 Err(error) => match retry.handle_failure(error) {
                     RetryDecision::Retry => {}
                     RetryDecision::RetryAfter(delay) => {
-                        apply_overloaded_backoff(delay);
+                        apply_overloaded_backoff(delay).await;
                     }
                     RetryDecision::Return(error) => return Err(error),
                 },
@@ -669,7 +669,7 @@ impl RiffDbClient {
                 Err(error) => match retry.handle_failure(error) {
                     RetryDecision::Retry => {}
                     RetryDecision::RetryAfter(delay) => {
-                        apply_overloaded_backoff(delay);
+                        apply_overloaded_backoff(delay).await;
                     }
                     RetryDecision::Return(error) => return Err(error),
                 },
@@ -798,7 +798,7 @@ async fn execute_retry_attempts<T: ExecuteRetryAttempt, S: RetryRequestIdSource>
             Err(error) => match retry.handle_failure(error) {
                 RetryDecision::Retry => {}
                 RetryDecision::RetryAfter(delay) => {
-                    apply_overloaded_backoff(delay);
+                    apply_overloaded_backoff(delay).await;
                 }
                 RetryDecision::Return(error) => return Err(error),
             },
@@ -829,7 +829,7 @@ async fn normal_capability_retry_attempts<
             Err(error) => match retry.handle_failure(error) {
                 RetryDecision::Retry => {}
                 RetryDecision::RetryAfter(delay) => {
-                    apply_overloaded_backoff(delay);
+                    apply_overloaded_backoff(delay).await;
                 }
                 RetryDecision::Return(error) => return Err(error),
             },
@@ -860,7 +860,7 @@ async fn bootstrap_capability_retry_attempts<
             Err(error) => match retry.handle_failure(error) {
                 RetryDecision::Retry => {}
                 RetryDecision::RetryAfter(delay) => {
-                    apply_overloaded_backoff(delay);
+                    apply_overloaded_backoff(delay).await;
                 }
                 RetryDecision::Return(error) => return Err(error),
             },

@@ -1063,6 +1063,7 @@ dependencies = [
  "riffdb-errors",
  "riffdb-proto",
  "riffdb-types",
+ "tokio",
  "tonic",
  "tonic-prost",
  "zeroize",

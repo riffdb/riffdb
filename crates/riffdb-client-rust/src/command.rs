@@ -199,10 +199,12 @@ impl RetryState {
     }
 }
 
-/// Applies the Overloaded backoff delay (kept out of `client.rs` so architecture
-/// boundaries continue to forbid generic retry `sleep` authority there).
-pub(crate) fn apply_overloaded_backoff(delay: Duration) {
-    std::thread::sleep(delay);
+/// Applies the Overloaded backoff delay without blocking the runtime thread.
+///
+/// Kept out of `client.rs` so architecture boundaries continue to forbid generic
+/// retry sleep authority there. Uses `tokio::time` (already transitive via tonic).
+pub(crate) async fn apply_overloaded_backoff(delay: Duration) {
+    tokio::time::sleep(delay).await;
 }
 
 /// Bounded exponential backoff with jitter for Overloaded retries.
