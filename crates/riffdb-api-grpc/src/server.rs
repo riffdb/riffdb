@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 use futures_util::future::join_all;
 use riffdb_auth::{AuthenticationContext, CapabilityDigestKeyProvider, CredentialAuthenticator};
 use riffdb_errors::{ApplicationOperation, PublicErrorKind};
-use riffdb_proto::{MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES, app::v1 as app_v1, v1};
+use riffdb_proto::{
+    MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES, app::v1 as app_v1,
+    application_error_to_proto, v1, validate_public_message,
+};
 use riffdb_service::{
     ApplicationErrorContextBuilder, ApplicationService, BootstrapCapabilityResult,
     BootstrapRequestContext, CommitSubscription, CommitSubscriptionEvent,
@@ -21,7 +24,7 @@ use riffdb_service::{
     HealthRequest, HealthResult, MAX_COMMIT_SUBSCRIPTION_LIFETIME,
     RecoveryOfflineMaintenanceApplication, RecoveryRestoreOfflineBackupInvocation,
     RequestCancellationHandle, RequestContext, RequestControl, RestoreOfflineBackupInvocation,
-    RestoreRetryOfflineMaintenanceApplication, ServiceFuture, ServiceResult,
+    RestoreRetryOfflineMaintenanceApplication, ServiceFailure, ServiceFuture, ServiceResult,
 };
 use riffdb_types::{
     Audience, ContractLineage, ContractVersion, DatabaseAlias, MAX_DATABASES_PER_PROCESS,
@@ -837,6 +840,63 @@ fn map_service<T>(result: ServiceResult<T>) -> Result<T, Status> {
     result.map_err(|failure| status_from_service_failure(&failure))
 }
 
+/// Captures one batch item from the service result without Status round-trips.
+///
+/// Application-classified [`ServiceFailure::Public`] failures become the item
+/// error arm. Service-control failures collapse the whole RPC.
+fn batch_item_from_service_result(
+    result: ServiceResult<riffdb_service::ExecuteCommandResult>,
+    item_error_context: &ApplicationErrorContextBuilder,
+    history_incarnation: u64,
+) -> Result<v1::ExecuteCommandBatchItem, Status> {
+    match result {
+        Ok(result) => {
+            let response = execute_command_result_to_proto(&result, history_incarnation)?;
+            Ok(v1::ExecuteCommandBatchItem {
+                result: Some(v1::execute_command_batch_item::Result::Response(response)),
+            })
+        }
+        Err(failure) => match item_error_context.build(&failure) {
+            Some(error) if matches!(failure, ServiceFailure::Public(_)) => {
+                Ok(v1::ExecuteCommandBatchItem {
+                    result: Some(v1::execute_command_batch_item::Result::Error(
+                        application_error_to_proto(&error),
+                    )),
+                })
+            }
+            _ => Err(status_from_service_failure(&failure)),
+        },
+    }
+}
+
+/// Assembles the batch response under the ADR-0077 field-1 rule.
+fn assemble_execute_batch_response(
+    items: Vec<v1::ExecuteCommandBatchItem>,
+) -> Result<v1::ExecuteCommandBatchResponse, Status> {
+    let mut responses = Vec::with_capacity(items.len());
+    let mut all_success = true;
+    for item in &items {
+        match item.result.as_ref() {
+            Some(v1::execute_command_batch_item::Result::Response(response)) => {
+                responses.push(response.clone());
+            }
+            Some(v1::execute_command_batch_item::Result::Error(_)) => {
+                all_success = false;
+            }
+            None => {
+                return Err(Status::internal(crate::EMERGENCY_INTERNAL_MESSAGE));
+            }
+        }
+    }
+    if !all_success {
+        responses.clear();
+    }
+    let response = v1::ExecuteCommandBatchResponse { responses, items };
+    validate_public_message(&response)
+        .map_err(|_| Status::internal(crate::EMERGENCY_INTERNAL_MESSAGE))?;
+    Ok(response)
+}
+
 fn map_application_service<T>(
     result: ServiceResult<T>,
     context: &ApplicationErrorContextBuilder,
@@ -1075,10 +1135,16 @@ impl CommandService for GrpcApplication {
                 &metadata,
                 request_id,
             )?;
+            // Per-item carriage names the batch operation (ADR-0077).
+            let item_error_context =
+                ApplicationErrorContextBuilder::new(ApplicationOperation::BatchCommand, request_id);
             invocations.push(tokio::spawn(async move {
                 let _cancellation = cancellation;
-                let result = map_service(service.execute_command(context, request).await)?;
-                execute_command_result_to_proto(&result, history_incarnation)
+                batch_item_from_service_result(
+                    service.execute_command(context, request).await,
+                    &item_error_context,
+                    history_incarnation,
+                )
             }));
         }
         let mut abort_on_drop = BatchTaskAbortGuard::new(&invocations);
@@ -1087,18 +1153,11 @@ impl CommandService for GrpcApplication {
         // to provide fail-fast batch behavior.
         let results = join_all(invocations).await;
         abort_on_drop.disarm();
-        // ExecuteCommandBatchResponse carries only success ExecuteCommandResponse
-        // rows — no per-item error carriage exists in the proto. A typed capacity
-        // rejection on any item therefore collapses the aggregate RPC; the SDK
-        // re-enters each item through the ordinary same-key recovery path.
-        // Certain-not-executed is single-command-scoped for raw batch callers
-        // until a proto amendment adds per-item error slots.
-        let mut responses = Vec::with_capacity(results.len());
+        let mut items = Vec::with_capacity(results.len());
         for result in results {
-            responses
-                .push(result.map_err(|_| Status::internal("application batch worker stopped"))??);
+            items.push(result.map_err(|_| Status::internal("application batch worker stopped"))??);
         }
-        Ok(Response::new(v1::ExecuteCommandBatchResponse { responses }))
+        Ok(Response::new(assemble_execute_batch_response(items)?))
     }
 
     async fn get_outcome(
@@ -2506,5 +2565,99 @@ mod tests {
             ),
             AdministrationSequence::first(),
         )
+    }
+
+    fn batch_read_only_item() -> v1::ExecuteCommandBatchItem {
+        v1::ExecuteCommandBatchItem {
+            result: Some(v1::execute_command_batch_item::Result::Response(
+                v1::ExecuteCommandResponse {
+                    status: v1::execute_command_response::CompletionStatus::ExecutedReadOnly as i32,
+                    commit_sequence: 0,
+                    contract_version: 1,
+                    plan_hash: vec![0x11; 32],
+                    outcome_type: "Ok".to_owned(),
+                    outcome: Some(v1::Value {
+                        kind: Some(v1::value::Kind::NullValue(v1::NullValue::NullValue as i32)),
+                    }),
+                    provenance_uri: String::new(),
+                    durability_mode: String::new(),
+                    outcome_uri: None,
+                    history_incarnation: 1,
+                },
+            )),
+        }
+    }
+
+    #[test]
+    fn batch_item_from_public_failure_carries_batch_operation_error() {
+        let context =
+            ApplicationErrorContextBuilder::new(ApplicationOperation::BatchCommand, request_id());
+        let item =
+            batch_item_from_service_result(Err(PublicError::overloaded().into()), &context, 1)
+                .expect("capacity is application-classified");
+        match item.result.expect("set") {
+            v1::execute_command_batch_item::Result::Error(error) => {
+                assert_eq!(
+                    error.operation,
+                    app_v1::ApplicationOperation::BatchCommand as i32
+                );
+                assert_eq!(error.code, app_v1::ApplicationErrorCode::Overloaded as i32);
+            }
+            v1::execute_command_batch_item::Result::Response(_) => {
+                panic!("expected error arm")
+            }
+        }
+    }
+
+    #[test]
+    fn batch_item_from_cancelled_collapses_whole_rpc() {
+        let context =
+            ApplicationErrorContextBuilder::new(ApplicationOperation::BatchCommand, request_id());
+        let status = batch_item_from_service_result(Err(ServiceFailure::Cancelled), &context, 1)
+            .expect_err("control failures collapse the batch RPC");
+        assert_eq!(status.code(), tonic::Code::Cancelled);
+    }
+
+    #[test]
+    fn assemble_batch_response_field_one_rule_and_ordering() {
+        let success_a = batch_read_only_item();
+        let mut success_b = batch_read_only_item();
+        if let Some(v1::execute_command_batch_item::Result::Response(response)) =
+            success_b.result.as_mut()
+        {
+            response.plan_hash = vec![0x22; 32];
+        }
+        let all_success =
+            assemble_execute_batch_response(vec![success_a.clone(), success_b.clone()])
+                .expect("all success");
+        assert_eq!(all_success.items.len(), 2);
+        assert_eq!(all_success.responses.len(), 2);
+        assert_eq!(all_success.responses[0].plan_hash, vec![0x11; 32]);
+        assert_eq!(all_success.responses[1].plan_hash, vec![0x22; 32]);
+
+        let context =
+            ApplicationErrorContextBuilder::new(ApplicationOperation::BatchCommand, request_id());
+        let error_item = batch_item_from_service_result(
+            Err(PublicError::authorization_denied().into()),
+            &context,
+            1,
+        )
+        .expect("typed application error");
+        let mixed = assemble_execute_batch_response(vec![success_a, error_item, success_b])
+            .expect("mixed items");
+        assert_eq!(mixed.items.len(), 3);
+        assert!(mixed.responses.is_empty(), "field 1 empty on any error");
+        assert!(matches!(
+            mixed.items[0].result,
+            Some(v1::execute_command_batch_item::Result::Response(_))
+        ));
+        assert!(matches!(
+            mixed.items[1].result,
+            Some(v1::execute_command_batch_item::Result::Error(_))
+        ));
+        assert!(matches!(
+            mixed.items[2].result,
+            Some(v1::execute_command_batch_item::Result::Response(_))
+        ));
     }
 }

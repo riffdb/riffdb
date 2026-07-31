@@ -1,9 +1,13 @@
 //! Structural conformance for the completed phase-zero public messages.
 
 use prost::Message;
+use riffdb_errors::{
+    ApplicationError, ApplicationErrorCode, ApplicationErrorContext, ApplicationOperation,
+};
 use riffdb_proto::{
-    PublicWireError, decode_public_message, v1, validate_contract_validation_exchange,
-    validate_create_capability_exchange, validate_create_offline_backup_exchange,
+    PublicWireError, app::v1 as app_v1, application_error_to_proto, decode_public_message, v1,
+    validate_contract_validation_exchange, validate_create_capability_exchange,
+    validate_create_offline_backup_exchange, validate_execute_command_batch_exchange,
     validate_explain_command_exchange, validate_get_offline_maintenance_operation_exchange,
     validate_public_message, validate_query_projection_exchange,
     validate_restore_offline_backup_exchange, validate_scan_commits_exchange,
@@ -1261,6 +1265,220 @@ fn offline_maintenance_identity_phase_and_exchange_are_closed() {
                 ),
             },
         ),
+        Err(PublicWireError::InconsistentFields)
+    );
+}
+
+fn batch_read_only_response() -> v1::ExecuteCommandResponse {
+    v1::ExecuteCommandResponse {
+        status: v1::execute_command_response::CompletionStatus::ExecutedReadOnly as i32,
+        commit_sequence: 0,
+        contract_version: 1,
+        plan_hash: vec![0x44; 32],
+        outcome_type: "Balance".to_owned(),
+        outcome: Some(null_value()),
+        provenance_uri: String::new(),
+        durability_mode: String::new(),
+        outcome_uri: None,
+        history_incarnation: 1,
+    }
+}
+
+fn batch_application_error(code: ApplicationErrorCode) -> app_v1::ApplicationError {
+    application_error_to_proto(&ApplicationError::new(
+        code,
+        ApplicationOperation::BatchCommand,
+        ApplicationErrorContext::empty(),
+        None,
+    ))
+}
+
+fn batch_item_response(response: v1::ExecuteCommandResponse) -> v1::ExecuteCommandBatchItem {
+    v1::ExecuteCommandBatchItem {
+        result: Some(v1::execute_command_batch_item::Result::Response(response)),
+    }
+}
+
+fn batch_item_error(code: ApplicationErrorCode) -> v1::ExecuteCommandBatchItem {
+    v1::ExecuteCommandBatchItem {
+        result: Some(v1::execute_command_batch_item::Result::Error(
+            batch_application_error(code),
+        )),
+    }
+}
+
+fn batch_execute_request(count: usize) -> v1::ExecuteCommandBatchRequest {
+    let mut commands = Vec::with_capacity(count);
+    for index in 0..count {
+        let mut request_id = uuid_v7();
+        request_id[15] = u8::try_from(index).expect("batch fixture fits u8");
+        commands.push(v1::ExecuteCommandRequest {
+            request_id,
+            command_name: "CreateTicket".to_owned(),
+            expected_contract_version: None,
+            input: Some(null_value()),
+        });
+    }
+    v1::ExecuteCommandBatchRequest { commands }
+}
+
+#[test]
+fn batch_all_success_response_has_consistent_legacy_and_item_fields() {
+    let response_a = batch_read_only_response();
+    let mut response_b = batch_read_only_response();
+    response_b.plan_hash = vec![0x55; 32];
+    let message = v1::ExecuteCommandBatchResponse {
+        responses: vec![response_a.clone(), response_b.clone()],
+        items: vec![
+            batch_item_response(response_a.clone()),
+            batch_item_response(response_b.clone()),
+        ],
+    };
+    validate_public_message(&message).expect("all-success batch");
+    assert_eq!(
+        message.responses[0],
+        match message.items[0].result.as_ref().expect("set") {
+            v1::execute_command_batch_item::Result::Response(response) => response.clone(),
+            _ => panic!("response arm"),
+        }
+    );
+    assert_eq!(
+        message.responses[1],
+        match message.items[1].result.as_ref().expect("set") {
+            v1::execute_command_batch_item::Result::Response(response) => response.clone(),
+            _ => panic!("response arm"),
+        }
+    );
+    validate_execute_command_batch_exchange(&batch_execute_request(2), &message)
+        .expect("items primary exchange");
+}
+
+#[test]
+fn batch_mixed_response_keeps_legacy_field_empty() {
+    let success = batch_read_only_response();
+    let message = v1::ExecuteCommandBatchResponse {
+        responses: Vec::new(),
+        items: vec![
+            batch_item_response(success),
+            batch_item_error(ApplicationErrorCode::Overloaded),
+        ],
+    };
+    validate_public_message(&message).expect("mixed batch with empty field 1");
+    validate_execute_command_batch_exchange(&batch_execute_request(2), &message)
+        .expect("items-length exchange");
+}
+
+#[test]
+fn batch_validate_structure_rejects_partial_legacy_field_and_length_mismatch() {
+    let success = batch_read_only_response();
+    let partial = v1::ExecuteCommandBatchResponse {
+        responses: vec![success.clone()],
+        items: vec![
+            batch_item_response(success.clone()),
+            batch_item_error(ApplicationErrorCode::InputInvalid),
+        ],
+    };
+    assert_eq!(
+        validate_public_message(&partial),
+        Err(PublicWireError::InconsistentFields)
+    );
+
+    let length_mismatch = v1::ExecuteCommandBatchResponse {
+        responses: vec![success.clone()],
+        items: vec![
+            batch_item_response(success.clone()),
+            batch_item_response(success),
+        ],
+    };
+    assert_eq!(
+        validate_public_message(&length_mismatch),
+        Err(PublicWireError::InconsistentFields)
+    );
+}
+
+#[test]
+fn batch_preflight_rejects_unset_oneof_double_arm_and_overflow() {
+    // Unset oneof: empty item message.
+    let unset = v1::ExecuteCommandBatchResponse {
+        responses: Vec::new(),
+        items: vec![v1::ExecuteCommandBatchItem { result: None }],
+    };
+    // Structure rejects unset; preflight of an empty nested item is only the
+    // root repeated envelope — decode then structure covers unset oneof.
+    assert_eq!(
+        validate_public_message(&unset),
+        Err(PublicWireError::MissingRequiredField)
+    );
+
+    // Double-set oneof on the wire (both field 1 and field 2 present).
+    let response_bytes = batch_read_only_response().encode_to_vec();
+    let error_bytes = batch_application_error(ApplicationErrorCode::Overloaded).encode_to_vec();
+    let mut item_bytes = Vec::new();
+    // field 1 (response), length-delimited
+    item_bytes.push(0x0a);
+    prost::encoding::encode_varint(response_bytes.len() as u64, &mut item_bytes);
+    item_bytes.extend_from_slice(&response_bytes);
+    // field 2 (error), length-delimited
+    item_bytes.push(0x12);
+    prost::encoding::encode_varint(error_bytes.len() as u64, &mut item_bytes);
+    item_bytes.extend_from_slice(&error_bytes);
+    let mut batch_bytes = Vec::new();
+    // field 2 (items)
+    batch_bytes.push(0x12);
+    prost::encoding::encode_varint(item_bytes.len() as u64, &mut batch_bytes);
+    batch_bytes.extend_from_slice(&item_bytes);
+    assert_eq!(
+        decode_public_message::<v1::ExecuteCommandBatchResponse>(&batch_bytes),
+        Err(PublicWireError::MalformedEncoding)
+    );
+
+    // More than 16 items.
+    let too_many = v1::ExecuteCommandBatchResponse {
+        responses: (0..17).map(|_| batch_read_only_response()).collect(),
+        items: (0..17)
+            .map(|_| batch_item_response(batch_read_only_response()))
+            .collect(),
+    };
+    assert_eq!(
+        validate_public_message(&too_many),
+        Err(PublicWireError::TooManyItems)
+    );
+    let encoded_overflow = too_many.encode_to_vec();
+    assert_eq!(
+        decode_public_message::<v1::ExecuteCommandBatchResponse>(&encoded_overflow),
+        Err(PublicWireError::PreflightLimitExceeded)
+    );
+}
+
+#[test]
+fn batch_exchange_validator_items_primary_and_legacy_fallback() {
+    let success = batch_read_only_response();
+    let with_items = v1::ExecuteCommandBatchResponse {
+        responses: vec![success.clone(), success.clone()],
+        items: vec![
+            batch_item_response(success.clone()),
+            batch_item_response(success.clone()),
+        ],
+    };
+    validate_execute_command_batch_exchange(&batch_execute_request(2), &with_items)
+        .expect("items primary");
+
+    // When items is present, mismatched command count fails even if responses match.
+    assert_eq!(
+        validate_execute_command_batch_exchange(&batch_execute_request(1), &with_items),
+        Err(PublicWireError::InconsistentFields)
+    );
+
+    // Legacy items-absent path uses responses length.
+    let legacy = v1::ExecuteCommandBatchResponse {
+        responses: vec![success.clone(), success],
+        items: Vec::new(),
+    };
+    validate_public_message(&legacy).expect("legacy success rows");
+    validate_execute_command_batch_exchange(&batch_execute_request(2), &legacy)
+        .expect("legacy fallback");
+    assert_eq!(
+        validate_execute_command_batch_exchange(&batch_execute_request(1), &legacy),
         Err(PublicWireError::InconsistentFields)
     );
 }
