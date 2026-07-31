@@ -707,6 +707,16 @@ impl ServiceAuditAppendRepository for SharedRedbOperationalPorts {
             ServiceAuditAppendRepository::append_service_audit_group(ports, intents)
         })
     }
+
+    fn append_service_audit_fused_pair(
+        &mut self,
+        started: &ServiceAuditAppendIntentV1,
+        terminal: &ServiceAuditAppendIntentV1,
+    ) -> Result<(), StorageError> {
+        self.cell.with_mut(|ports| {
+            ServiceAuditAppendRepository::append_service_audit_fused_pair(ports, started, terminal)
+        })
+    }
 }
 
 impl CatalogAdministrationRepository for SharedRedbOperationalPorts {

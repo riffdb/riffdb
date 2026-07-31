@@ -871,9 +871,43 @@ impl BegunInvocation {
         phase: ServiceAuditPhaseV1,
         link: ServiceAuditLinkV1,
     ) -> Result<(), AuditAppendFailure> {
-        self.ensure_deferred_start(service, context).await?;
         if !self.started {
             return Ok(());
+        }
+        // When a deferred Started is still pending, fuse Started+terminal into
+        // one coordinator message and one durable transition (PERF-006 replay).
+        if self.deferred_start.load(Ordering::Acquire) {
+            let started_input = ServiceAuditInput::new(
+                context,
+                self.operation,
+                ServiceAuditPhaseV1::Started,
+                self.targets.clone(),
+                self.approval_id.clone(),
+                ServiceAuditLinkV1::None,
+            )
+            .map_err(|_| AuditAppendFailure::subsystem())?;
+            let terminal_input = ServiceAuditInput::new(
+                context,
+                self.operation,
+                phase,
+                self.targets.clone(),
+                self.approval_id.clone(),
+                link,
+            )
+            .map_err(|_| AuditAppendFailure::subsystem())?;
+            self.lifecycle
+                .begin_terminal(phase, link)
+                .map_err(|_| AuditAppendFailure::subsystem())?;
+            let control = terminal_audit_control(context.control());
+            let result = service
+                .append_prepared_audit_pair(&control, started_input, terminal_input)
+                .await;
+            if result.is_ok() {
+                self.lifecycle.mark_durable_start();
+                self.deferred_start.store(false, Ordering::Release);
+            }
+            self.lifecycle.finish_terminal(result.is_ok());
+            return result;
         }
         let input = ServiceAuditInput::new(
             context,
@@ -893,6 +927,8 @@ impl BegunInvocation {
         result
     }
 
+    /// Durable-start path for callers that still need a standalone Started row.
+    #[allow(dead_code)] // retained for non-fused paths that require a durable start alone
     async fn ensure_deferred_start(
         &self,
         service: &RiffDbServiceInner,
@@ -1394,6 +1430,37 @@ impl RiffDbServiceInner {
         let receipt = permit
             .submit(Box::new(input))
             .map_err(|_| AuditAppendFailure::subsystem())?;
+        self.await_audit_receipt(receipt).await
+    }
+
+    async fn append_prepared_audit_pair(
+        &self,
+        control: &RequestControl,
+        started: ServiceAuditInput,
+        terminal: ServiceAuditInput,
+    ) -> Result<(), AuditAppendFailure> {
+        let permit = wait_with_control(
+            control,
+            self.providers.deadline_scheduler.as_ref(),
+            self.executors.audit.reserve_capacity(),
+        )
+        .await
+        .map_err(|error: ControlledWaitError| match error {
+            ControlledWaitError::Cancelled | ControlledWaitError::DeadlineExceeded => {
+                AuditAppendFailure::request_scoped()
+            }
+        })?
+        .map_err(|_| AuditAppendFailure::subsystem())?;
+        let receipt = permit
+            .submit_fused_pair(Box::new(started), Box::new(terminal))
+            .map_err(|_| AuditAppendFailure::subsystem())?;
+        self.await_audit_receipt(receipt).await
+    }
+
+    async fn await_audit_receipt(
+        &self,
+        receipt: riffdb_commit::AdministrationAuditReceipt,
+    ) -> Result<(), AuditAppendFailure> {
         match receipt.completion().await {
             Ok(()) => {
                 self.audit_failures.reset();
@@ -1402,9 +1469,6 @@ impl RiffDbServiceInner {
             Err(error) => {
                 let fenced = matches!(error, AdministrationAuditExecutionError::CoordinatorFenced)
                     || self.executors.audit.lifecycle_state() == CoordinatorLifecycleState::Fenced;
-                // All coordinator-fenced / stopped / draining / durable-transition
-                // failures are subsystem-level; request-scoped causes never reach
-                // this arm (they map earlier via ControlledWaitError).
                 if fenced {
                     self.providers.health.fail_authoritative_readiness(
                         crate::AuthoritativeReadinessFailure::CoordinatorFenced,

@@ -524,6 +524,7 @@ fn production_group_collection_never_parks_on_a_submillisecond_tokio_timer() {
         "IDEMPOTENCY_INSPECTION_GROUP_WINDOW",
         "tokio::time::timeout_at",
         ".enable_time()",
+        "MAX_GROUP_WAIT_MICROSECONDS",
     ] {
         assert!(
             !production.contains(forbidden),
@@ -678,9 +679,9 @@ fn manifest_has_only_the_reviewed_dependencies_needed_by_commit_orchestration() 
     assert_eq!(
         production.lines().find(|line| line.starts_with("tokio =")),
         Some(
-            "tokio = { version = \"=1.52.0\", default-features = false, features = [\"rt\", \"sync\", \"time\"] }"
+            "tokio = { version = \"=1.52.0\", default-features = false, features = [\"rt\", \"sync\", \"time\", \"macros\"] }"
         ),
-        "Tokio must retain the exact reviewed current-thread channel and bounded-window feature graph"
+        "Tokio must retain the exact reviewed current-thread channel and select! feature graph"
     );
 }
 
@@ -1589,7 +1590,8 @@ fn coordinator_actor_uses_only_the_reviewed_current_thread_channel_surface() {
         "getrandom",
         "rand::",
         "redb::",
-        "select!",
+        // select! over the intake receiver + writer feedback is required by the
+        // pipelined writer (event-driven formation window; no timer driver).
         "join!",
         "spawn!",
         "std::sync::Mutex",
@@ -1601,6 +1603,10 @@ fn coordinator_actor_uses_only_the_reviewed_current_thread_channel_surface() {
             "coordinator actor crosses reviewed boundary through {forbidden}"
         );
     }
+    assert!(
+        production_source.contains("tokio::select!"),
+        "pipelined intake must select over writer feedback and the admission receiver"
+    );
     assert_eq!(
         production_source.matches(".append_service_audit(").count(),
         1,

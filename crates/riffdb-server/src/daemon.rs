@@ -2828,6 +2828,7 @@ async fn supervise_ready_process(
         hosted_mcp.begin_shutdown();
     }
     let write_completion_groups = graph.write_completion_group_snapshot();
+    let dispatch_reasons = graph.command_group_dispatch_snapshot();
     let notification_stop_failed = graph.begin_transport_shutdown().is_err();
     let transport_result = match &trigger {
         ReadyProcessTrigger::Transport(completion) => classify_transport_completion(completion),
@@ -2863,9 +2864,17 @@ async fn supervise_ready_process(
             .map(u64::to_string)
             .collect::<Vec<_>>()
             .join(",");
+        let reasons = dispatch_reasons
+            .0
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
         let stdout = io::stdout();
         let mut stdout = stdout.lock();
+        // BYTE-IDENTICAL with prior releases: Tier 2 harness depends on this line.
         let _ = writeln!(stdout, "riffdb-write-completion-groups-v1\t{counts}");
+        let _ = writeln!(stdout, "riffdb-dispatch-reasons-v1\t{reasons}");
         let _ = stdout.flush();
     }
     if maintenance_shutdown {
