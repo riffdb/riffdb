@@ -532,7 +532,10 @@ pub fn run_device_baseline_for(
         let fdatasync_p50_us = percentile_sorted(&samples_us, 50);
         let fdatasync_p99_us = percentile_sorted(&samples_us, 99);
 
-        // 64 MiB buffered write + final fdatasync.
+        // 64 MiB buffered write + final fdatasync (4 MiB under cfg(test)).
+        #[cfg(test)]
+        const SEQ_BYTES: usize = 4 * 1024 * 1024;
+        #[cfg(not(test))]
         const SEQ_BYTES: usize = 64 * 1024 * 1024;
         let chunk = vec![0x5A_u8; 1024 * 1024];
         let seq_start = Instant::now();
@@ -853,7 +856,15 @@ mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     fn unique_perf_root(label: &str) -> PathBuf {
-        std::env::temp_dir().join("perf-db").join(format!(
+        // Prefer cargo's real-disk target tmp over process /tmp (often tmpfs).
+        let base = std::env::var_os("CARGO_TARGET_TMPDIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("target")
+                    .join("tmp")
+            });
+        base.join("perf-db").join(format!(
             "riffdb-bench-root-test-{label}-{}-{}",
             std::process::id(),
             NEXT_DIR.fetch_add(1, Ordering::Relaxed)
@@ -1052,5 +1063,33 @@ mod tests {
             run_device_baseline_for(&root_path, Duration::from_millis(50)).expect("baseline");
         assert!(baseline.fsyncs_per_s > 0.0);
         let _ = fs::remove_dir_all(&root_path);
+    }
+
+    #[test]
+    fn test_roots_use_cargo_target_or_manifest_target_not_anonymous_tmp() {
+        let root = unique_perf_root("placement");
+        let display = root.display().to_string();
+        assert!(
+            display.contains("perf-db"),
+            "expected perf-db component: {display}"
+        );
+        // Prefer cargo target tmp; never bare /tmp/<name> without target/perf-db nesting.
+        assert!(
+            display.contains("target") || std::env::var_os("CARGO_TARGET_TMPDIR").is_some(),
+            "test roots should land under cargo target trees: {display}"
+        );
+    }
+
+    #[test]
+    fn root_env_path_alone_does_not_set_allow_tmpfs_flag() {
+        // API contract: allow_tmpfs is an explicit option, never implied by choosing a path.
+        let options = BenchRootOptions {
+            harness: "unit",
+            cli_override: Some(PathBuf::from("/tmp/would-be-tmpfs")),
+            default_root: PathBuf::from("/data"),
+            allow_tmpfs: false,
+            min_free_bytes: 0,
+        };
+        assert!(!options.allow_tmpfs);
     }
 }

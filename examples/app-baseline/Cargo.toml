@@ -40,5 +40,9 @@ tokio = { version = "=1.52.0", default-features = false, features = ["macros", "
 name = "riffdb-app-baseline"
 path = "src/main.rs"
 
+[[test]]
+name = "dead_peer_abort"
+path = "tests/dead_peer_abort.rs"
+
 [lints]
 workspace = true
