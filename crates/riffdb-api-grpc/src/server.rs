@@ -1087,6 +1087,12 @@ impl CommandService for GrpcApplication {
         // to provide fail-fast batch behavior.
         let results = join_all(invocations).await;
         abort_on_drop.disarm();
+        // ExecuteCommandBatchResponse carries only success ExecuteCommandResponse
+        // rows — no per-item error carriage exists in the proto. A typed capacity
+        // rejection on any item therefore collapses the aggregate RPC; the SDK
+        // re-enters each item through the ordinary same-key recovery path.
+        // Certain-not-executed is single-command-scoped for raw batch callers
+        // until a proto amendment adds per-item error slots.
         let mut responses = Vec::with_capacity(results.len());
         for result in results {
             responses
