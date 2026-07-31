@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/application.proto";
+import "riffdb/storage/v1/common.proto";
+import "riffdb/storage/v1/event_references_v2.proto";
+
+// Exact payload-free link to one authoritative entity post-image.
+message CommittedEntityReferenceV2 {
+  EntityTargetV1 target = 1;
+  uint64 entity_version = 2;
+  bytes post_image_hash = 3;
+}
+
+// Commit record revision that stores entity post-state references only.
+// Fields 1-9 and 11-15 are byte-identical to StoredCommitRecordV2.
+message StoredCommitRecordV3 {
+  uint64 commit_sequence = 1;
+  bytes admission_request_id = 2;
+  ExecutablePlanRefV1 plan = 3;
+  bytes canonical_input_hash = 4;
+  AdmittedActorContextV1 actor = 5;
+  TimestampV1 logical_time = 6;
+  bytes partition_hash = 7;
+  repeated bytes conflict_hashes = 8;
+  StoredReadDependenciesV1 read_dependencies = 9;
+  repeated CommittedEntityReferenceV2 entity_references = 10;
+  repeated EventReferenceV2 event_references = 11;
+  DeclaredOutcomeV1 declared_outcome = 12;
+  bytes provenance_id = 13;
+  repeated EventIdV1 outbox_event_ids = 14;
+  DurabilityModeV1 durability_mode = 15;
+}

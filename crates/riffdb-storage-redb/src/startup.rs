@@ -48,8 +48,9 @@ use crate::layout::{
     QUERY_MODULES, SECONDARY_INDEXES, TABLE_NAMES,
 };
 use crate::store::{
-    PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST, PRE_HISTORY_INCARNATION_REGISTRY_DIGEST,
-    PRE_INDEX_GENERATION_REGISTRY_DIGEST, RedbDormantPorts, RedbStore, SharedRedb,
+    PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST, PRE_ENTITY_REFERENCE_REGISTRY_DIGEST,
+    PRE_HISTORY_INCARNATION_REGISTRY_DIGEST, PRE_INDEX_GENERATION_REGISTRY_DIGEST,
+    RedbDormantPorts, RedbStore, SharedRedb,
 };
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
@@ -57,6 +58,7 @@ const STRUCTURAL_TABLE_COUNT: usize = 22;
 
 fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
     digest == riffdb_storage_api::proto_codec::current_record_registry_digest()
+        || digest == riffdb_types::SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST)
@@ -106,6 +108,13 @@ struct StructuralCursors {
     consumed_in_phase: u64,
     meta: Option<Range<'static, &'static str, &'static [u8]>>,
     bytes: Option<Range<'static, &'static [u8], &'static [u8]>>,
+}
+
+/// One entity's continuity state built from a single forward COMMITS pass.
+struct EntityChain {
+    version: riffdb_types::EntityVersion,
+    hash: riffdb_types::EntityRecordHash,
+    intact: bool,
 }
 
 /// Compact locator for one historical evidence item; page serve re-materializes
@@ -169,7 +178,15 @@ pub struct RedbStructuralEvidenceSession {
     /// Held for the structural evidence pass only; must not outlive the session.
     structural_read: Option<ReadTransaction>,
     structural_cursors: Option<StructuralCursors>,
+    /// Built on the first ENTITIES row; dropped when the cursor leaves that phase.
+    entity_chains: Option<EntityChainState>,
     historical_plan: Option<HistoricalEvidencePlan>,
+}
+
+/// Cached single-pass entity history state for the ENTITIES structural phase.
+struct EntityChainState {
+    chains: std::collections::BTreeMap<riffdb_storage_api::EntityTarget, EntityChain>,
+    overflow: bool,
 }
 
 impl fmt::Debug for RedbStructuralEvidenceSession {
@@ -491,6 +508,7 @@ impl StructuralEvidenceOpen for RedbStore {
             // Hold one read transaction for the structural pass (savepoint pin).
             structural_read: Some(transaction),
             structural_cursors: None,
+            entity_chains: None,
             historical_plan: None,
         })
     }
@@ -525,6 +543,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         if cursor.position() == self.structural_total {
             self.structural_finished = true;
             self.structural_cursors = None;
+            self.entity_chains = None;
             self.structural_read = None;
             return Ok(StructuralEvidencePage::ExactEnd(
                 RedbStructuralEvidenceEnd { cursor },
@@ -853,11 +872,14 @@ impl RedbStructuralEvidenceSession {
         if phase != expected_phase || index != relative {
             return Err(invariant());
         }
-        let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
         if phase == 0 {
             let key = std::str::from_utf8(&key).map_err(|_| corrupt())?;
             return Ok(inspect_meta_row(key, &value, self.database_id));
         }
+        if phase == 5 {
+            return self.inspect_entity_row_with_chains(&key, &value);
+        }
+        let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
         inspect_table_row_from_bytes(
             transaction,
             &self.inputs,
@@ -867,6 +889,42 @@ impl RedbStructuralEvidenceSession {
             &key,
             &value,
         )
+    }
+
+    fn inspect_entity_row_with_chains(
+        &mut self,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<Option<StructuralFinding>, StorageError> {
+        let Ok(decoded_key) = keys::decode_entity_key(key) else {
+            return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
+        };
+        let record = match decoded(codec::decode_entity_record_v1(value)) {
+            Ok(value) => value,
+            Err(code) => return Ok(Some(authoritative(code))),
+        };
+        if record.target().key() != &decoded_key {
+            return Ok(Some(authoritative(
+                StructuralFindingCode::CrossLinkMismatch,
+            )));
+        }
+        let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+        if !binding_bundle_exists(transaction, record.schema_binding())? {
+            return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+        }
+        if self.entity_chains.is_none() {
+            let entity_count = self.structural_counts.get(5).copied().unwrap_or(0);
+            let built = build_entity_chains(transaction, entity_count)?;
+            self.entity_chains = Some(built);
+        }
+        let state = self.entity_chains.as_ref().ok_or_else(invariant)?;
+        if state.overflow {
+            return Ok(Some(authoritative(
+                StructuralFindingCode::CrossLinkMismatch,
+            )));
+        }
+        Ok((!entity_history_matches_chain(&state.chains, &record))
+            .then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
     }
 
     fn next_structural_row_raw(&mut self) -> Result<(usize, u64, Vec<u8>, Vec<u8>), StorageError> {
@@ -1002,8 +1060,13 @@ impl RedbStructuralEvidenceSession {
             }
             let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
             cursors.bytes = None;
+            let leaving = cursors.phase;
             cursors.phase = cursors.phase.checked_add(1).ok_or_else(invariant)?;
             cursors.consumed_in_phase = 0;
+            // Phase 5 is ENTITIES; drop the chain map when leaving that phase.
+            if leaving == 5 {
+                self.entity_chains = None;
+            }
         }
     }
 }
@@ -1449,23 +1512,10 @@ fn inspect_entity_row(
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
-    let Ok(key) = keys::decode_entity_key(key) else {
-        return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
-    };
-    let record = match decoded(codec::decode_entity_record_v1(value)) {
-        Ok(value) => value,
-        Err(code) => return Ok(Some(authoritative(code))),
-    };
-    if record.target().key() != &key {
-        return Ok(Some(authoritative(
-            StructuralFindingCode::CrossLinkMismatch,
-        )));
-    }
-    Ok(
-        (!binding_bundle_exists(transaction, record.schema_binding())?
-            || !entity_history_matches(transaction, &record)?)
-        .then(|| authoritative(StructuralFindingCode::MissingCrossLink)),
-    )
+    // Entity rows are inspected via `inspect_entity_row_with_chains` so the
+    // single-pass chain map can be cached on the structural session.
+    let _ = (transaction, key, value);
+    Err(invariant())
 }
 
 fn inspect_index_row(
@@ -3115,78 +3165,106 @@ fn commit_graph_is_reciprocal(
             return Ok(false);
         }
     }
-    for mutation in commit.mutations() {
-        if !current_entity_covers_mutation(transaction, mutation)? {
+    for reference in commit.entity_references() {
+        if !current_entity_covers_reference(transaction, reference)? {
             return Ok(false);
         }
     }
     Ok(true)
 }
 
-fn current_entity_covers_mutation(
+fn current_entity_covers_reference(
     transaction: &ReadTransaction,
-    mutation: &riffdb_storage_api::CommittedEntityMutationV1,
+    reference: &riffdb_storage_api::CommittedEntityReferenceV2,
 ) -> Result<bool, StorageError> {
-    let post_image = mutation.post_image();
     let current = get_decoded(
         transaction,
         ENTITIES,
-        keys::encode_entity_key(post_image.target().key()),
+        keys::encode_entity_key(reference.target().key()),
         codec::decode_entity_record_v1,
     )?;
     Ok(matches!(current, Ok(Some(record))
-        if record.target() == post_image.target()
-            && record.entity_version() >= post_image.entity_version()))
+        if record.target() == reference.target()
+            && record.entity_version() >= reference.entity_version()))
 }
 
-fn entity_history_matches(
+fn build_entity_chains(
     transaction: &ReadTransaction,
-    current: &riffdb_storage_api::StoredEntityRecordV1,
-) -> Result<bool, StorageError> {
+    entity_count: u64,
+) -> Result<EntityChainState, StorageError> {
     let table = transaction.open_table(COMMITS).map_err(table_error)?;
-    let events = transaction.open_table(EVENTS).map_err(table_error)?;
-    let mut prior: Option<riffdb_storage_api::StoredEntityRecordV1> = None;
-    let mut saw_mutation = false;
+    let mut chains: std::collections::BTreeMap<riffdb_storage_api::EntityTarget, EntityChain> =
+        std::collections::BTreeMap::new();
+    let mut overflow = false;
     for entry in table.iter().map_err(precommit_storage_error)? {
-        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
-        let Ok(sequence) = keys::decode_application_sequence_key(physical_key.value()) else {
-            return Ok(false);
-        };
-        let Ok(commit) = decoded(codec::decode_commit_with_event_table(
-            value.value(),
-            &events,
-        )) else {
-            return Ok(false);
-        };
-        if commit.commit_sequence() != sequence {
-            return Ok(false);
-        }
-
-        let mut matching = commit
-            .mutations()
-            .iter()
-            .filter(|mutation| mutation.post_image().target() == current.target());
-        let Some(mutation) = matching.next() else {
+        let (_physical_key, value) = entry.map_err(precommit_storage_error)?;
+        let Ok(references) = decoded(codec::decode_commit_entity_references(value.value())) else {
+            // Decode failures are continuity violations for every referenced target
+            // we cannot reconstruct; keep scanning so sibling entities still run.
             continue;
         };
-        if matching.next().is_some() {
-            return Ok(false);
-        }
-        let expected_matches = match (prior.as_ref(), mutation.expected()) {
-            (None, riffdb_storage_api::ExpectedEntityState::Absent) => true,
-            (Some(prior), riffdb_storage_api::ExpectedEntityState::Present(version)) => {
-                prior.entity_version() == version
+        let mut seen_in_commit = std::collections::BTreeSet::new();
+        for reference in references {
+            let target_key = reference.target().clone();
+            if !seen_in_commit.insert(target_key.clone()) {
+                // Duplicate target in one commit: mark chain broken if present.
+                if let Some(chain) = chains.get_mut(&target_key) {
+                    chain.intact = false;
+                } else {
+                    chains.insert(
+                        target_key,
+                        EntityChain {
+                            version: reference.entity_version(),
+                            hash: reference.post_image_hash(),
+                            intact: false,
+                        },
+                    );
+                }
+                continue;
             }
-            (None, riffdb_storage_api::ExpectedEntityState::Present(_))
-            | (Some(_), riffdb_storage_api::ExpectedEntityState::Absent) => false,
-        };
-        if !expected_matches {
-            return Ok(false);
+            match chains.get_mut(&target_key) {
+                None => {
+                    let intact = reference.entity_version() == riffdb_types::EntityVersion::first();
+                    chains.insert(
+                        target_key,
+                        EntityChain {
+                            version: reference.entity_version(),
+                            hash: reference.post_image_hash(),
+                            intact,
+                        },
+                    );
+                }
+                Some(chain) => {
+                    let expected_next = chain.version.checked_next();
+                    if expected_next != Some(reference.entity_version()) {
+                        chain.intact = false;
+                    }
+                    chain.version = reference.entity_version();
+                    chain.hash = reference.post_image_hash();
+                }
+            }
+            if u64::try_from(chains.len()).unwrap_or(u64::MAX) > entity_count {
+                overflow = true;
+            }
         }
-        prior = Some(mutation.post_image().clone());
-        saw_mutation = true;
     }
-    Ok(saw_mutation && prior.as_ref() == Some(current))
+    if u64::try_from(chains.len()).unwrap_or(u64::MAX) > entity_count {
+        overflow = true;
+    }
+    Ok(EntityChainState { chains, overflow })
+}
+
+fn entity_history_matches_chain(
+    chains: &std::collections::BTreeMap<riffdb_storage_api::EntityTarget, EntityChain>,
+    current: &riffdb_storage_api::StoredEntityRecordV1,
+) -> bool {
+    let Some(chain) = chains.get(current.target()) else {
+        return false;
+    };
+    if !chain.intact || chain.version != current.entity_version() {
+        return false;
+    }
+    riffdb_storage_api::derive_entity_record_hash_v1(current).is_ok_and(|hash| hash == chain.hash)
 }
 
 fn provenance_graph_is_reciprocal(
@@ -3258,14 +3336,14 @@ fn provenance_matches(
         && provenance.outcome_id() == commit.declared_outcome().outcome_id()
         && provenance.admitted_claims() == outcome.admitted_claims()
         && provenance.event_ids() == commit.outbox_event_ids()
-        && provenance.affected_entities().len() == commit.mutations().len()
+        && provenance.affected_entities().len() == commit.entity_references().len()
         && provenance
             .affected_entities()
             .iter()
-            .zip(commit.mutations())
-            .all(|(affected, mutation)| {
-                affected
-                    == &riffdb_storage_api::AffectedEntityV1::from_record(mutation.post_image())
+            .zip(commit.entity_references())
+            .all(|(affected, reference)| {
+                affected.target() == reference.target()
+                    && affected.entity_version() == reference.entity_version()
             })
 }
 
@@ -5009,7 +5087,8 @@ contract RedbMigration version 1 {
             .database
             .begin_read()
             .expect("read transaction");
-        assert!(!entity_history_matches(&transaction, &current).expect("history check"));
+        let chains = build_entity_chains(&transaction, 1).expect("chain build");
+        assert!(!entity_history_matches_chain(&chains.chains, &current));
     }
 
     #[test]

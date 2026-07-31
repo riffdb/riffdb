@@ -59,7 +59,6 @@ fn allocator_variants_include_maximum_and_exhausted_states() {
 #[test]
 fn unit_variants_are_encoded_as_present_oneofs() {
     use wire::capability_lifecycle_v1::State as CapabilityState;
-    use wire::expected_entity_state_v1::State as ExpectedState;
     use wire::frontier_position_v1::Position as FrontierPosition;
     use wire::index_epoch_position_v1::Position as IndexEpochPosition;
     use wire::partition_scope_v1::Scope as PartitionScope;
@@ -78,14 +77,12 @@ fn unit_variants_are_encoded_as_present_oneofs() {
 
     let records = sample::atomic_record_set();
     let commit = encode_commit_record_v1(records.commit()).expect("commit encodes");
-    let commit: wire::StoredCommitRecordV2 = payload(&commit);
-    assert!(matches!(
-        commit.mutations[0]
-            .expected
-            .as_ref()
-            .and_then(|expected| expected.state.as_ref()),
-        Some(ExpectedState::Absent(_))
-    ));
+    let commit: wire::StoredCommitRecordV3 = payload(&commit);
+    assert_eq!(commit.entity_references.len(), 1);
+    assert_eq!(
+        commit.entity_references[0].entity_version,
+        riffdb_types::EntityVersion::first().get()
+    );
     assert!(matches!(
         super::super::epoch_to_proto(crate::IndexEpochPosition::BeforeFirst).position,
         Some(IndexEpochPosition::BeforeFirst(_))
@@ -227,10 +224,10 @@ fn every_durability_mode_survives_outcome_and_commit_round_trips() {
         );
         let expected_events = commit.events().to_vec();
         let commit = assert_round_trip(commit, encode_commit_record_v1, |bytes| {
-            decode_commit_record_v2(bytes, expected_events.clone())
+            decode_commit_record_v3(bytes, expected_events.clone())
         });
         assert_eq!(
-            decode_commit_record_v2(commit.as_bytes(), expected_events)
+            decode_commit_record_v3(commit.as_bytes(), expected_events)
                 .expect("commit")
                 .value()
                 .durability_mode(),
@@ -270,7 +267,7 @@ fn commit_with_mode(value: &StoredCommitRecordV1, mode: DurabilityMode) -> Store
         value.partition_hash(),
         value.conflict_hashes().to_vec(),
         value.read_dependencies().clone(),
-        value.mutations().to_vec(),
+        value.entity_references().to_vec(),
         value.events().to_vec(),
         value.declared_outcome().clone(),
         value.provenance_id(),

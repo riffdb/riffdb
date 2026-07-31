@@ -290,7 +290,8 @@ fn outcome_provenance_and_commit_canonical_lists_fail_closed() {
     )));
 
     const COMMIT: &str = "riffdb.storage.v1.StoredCommitRecordV1";
-    let commit = encode_commit_record_legacy_v1(records.commit()).expect("legacy commit encodes");
+    let commit = encode_commit_record_legacy_v1(records.commit(), records.entities())
+        .expect("legacy commit encodes");
     let commit = payload_message::<wire::StoredCommitRecordV1>(commit.as_bytes());
 
     let mut duplicate_dependency = commit.clone();

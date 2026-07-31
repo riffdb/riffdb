@@ -389,6 +389,10 @@ hash_id!(
     EventHash
 );
 hash_id!(
+    /// The hash of a complete canonical entity-record preimage.
+    EntityRecordHash
+);
+hash_id!(
     /// The hash of a canonical entity key.
     EntityKeyHash
 );
