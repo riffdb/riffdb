@@ -195,6 +195,7 @@ enum RegistryMigration {
     Generations,
     HistoryIncarnation,
     AuditRequestIndex,
+    EntityReference,
 }
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
@@ -216,6 +217,11 @@ pub(crate) const PRE_HISTORY_INCARNATION_REGISTRY_DIGEST: [u8; 32] = [
 pub(crate) const PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST: [u8; 32] = [
     0xfe, 0xfb, 0x86, 0xac, 0xe8, 0x2e, 0x36, 0xc6, 0x74, 0x9f, 0x22, 0xc7, 0xb7, 0xec, 0x4c, 0x05,
     0x15, 0xa5, 0x1a, 0x14, 0xaa, 0x7d, 0xe2, 0xc2, 0x1a, 0x84, 0xee, 0x4f, 0xe0, 0x8a, 0xc2, 0xa2,
+];
+/// Registry digest at the entity-reference branch base (post-audit-index current).
+pub(crate) const PRE_ENTITY_REFERENCE_REGISTRY_DIGEST: [u8; 32] = [
+    0xe9, 0x53, 0xd2, 0xc4, 0x9f, 0x74, 0xe0, 0x28, 0xc1, 0xae, 0xc7, 0x1e, 0xed, 0xf6, 0x23, 0x14,
+    0x62, 0x3a, 0xb9, 0x5c, 0xf5, 0x33, 0xa2, 0xd6, 0x36, 0xcc, 0x6d, 0x70, 0x08, 0x42, 0x32, 0x4f,
 ];
 
 /// Last observed redb repair progress in basis points (0..=10_000), for recovery telemetry.
@@ -346,6 +352,10 @@ impl RedbStore {
                     == &SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST)
                 {
                     RegistryMigration::AuditRequestIndex
+                } else if observed.value()
+                    == &SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST)
+                {
+                    RegistryMigration::EntityReference
                 } else {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
@@ -401,6 +411,21 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST),
+            )?;
+        }
+        if matches!(
+            registry_migration,
+            RegistryMigration::EventReferencesThenGenerations
+                | RegistryMigration::Generations
+                | RegistryMigration::HistoryIncarnation
+                | RegistryMigration::AuditRequestIndex
+                | RegistryMigration::EntityReference
+        ) {
+            migrate_commit_entity_references(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -492,6 +517,12 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST),
+            )?;
+            migrate_commit_entity_references(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -554,7 +585,9 @@ impl RedbStore {
             // PRE_HISTORY_INCARNATION digest still needs row repair if a prior
             // cutover left legacy epoch rows behind a later digest bump.
             migrate_partition_index_generations(&self.shared)?;
-        } else if observed != SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST) {
+        } else if observed != SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST)
+            && observed != SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST)
+        {
             return Err(storage_error(StorageErrorKind::IncompatibleFormat));
         }
         if observed == SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST)
@@ -567,10 +600,21 @@ impl RedbStore {
                 SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST),
             )?;
         }
-        migrate_audit_request_index(&self.shared)?;
+        if observed == SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST)
+            || observed == SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST)
+            || observed == SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST)
+        {
+            migrate_audit_request_index(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST),
+            )?;
+        }
+        migrate_commit_entity_references(&self.shared)?;
         publish_record_registry(
             &self.shared,
-            SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST),
+            SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST),
             current,
         )
     }
@@ -590,6 +634,77 @@ impl RedbStore {
 fn migrate_event_reference_records(shared: &SharedRedb) -> Result<(), StorageError> {
     migrate_commit_event_references(shared)?;
     migrate_outbox_event_references(shared)
+}
+
+fn migrate_commit_entity_references(shared: &SharedRedb) -> Result<(), StorageError> {
+    let mut after: Option<Vec<u8>> = None;
+    loop {
+        let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+        transaction.set_two_phase_commit(true);
+        transaction
+            .set_durability(Durability::Immediate)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let events = transaction.open_table(EVENTS).map_err(table_error)?;
+        let mut commits = transaction.open_table(COMMITS).map_err(table_error)?;
+        let mut replacements = Vec::new();
+        let mut last = None;
+        let mut scanned_rows = 0usize;
+        let mut scanned_bytes = 0usize;
+        let mut reached_end = true;
+        {
+            let mut rows = match after.as_deref() {
+                Some(after) => commits
+                    .range::<&[u8]>((Excluded(after), Unbounded))
+                    .map_err(precommit_storage_error)?,
+                None => commits.iter().map_err(precommit_storage_error)?,
+            };
+            for row in &mut rows {
+                let (key, value) = row.map_err(precommit_storage_error)?;
+                let key = key.value().to_vec();
+                let original = value.value();
+                // Self-contained: hashes come from embedded post-images being
+                // removed during decode; no ENTITIES join.
+                let commit = decode_commit_with_event_table(original, &events)?
+                    .into_parts()
+                    .0;
+                let current = encode_commit_record_v1(&commit)?;
+                scanned_rows = scanned_rows.saturating_add(1);
+                scanned_bytes = scanned_bytes
+                    .checked_add(original.len())
+                    .and_then(|total| total.checked_add(current.as_bytes().len()))
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                if current.as_bytes() != original {
+                    replacements.push((key.clone(), current.into_bytes()));
+                }
+                last = Some(key);
+                if scanned_rows >= FORMAT_MIGRATION_MAX_ROWS
+                    || scanned_bytes >= FORMAT_MIGRATION_MAX_BYTES
+                {
+                    reached_end = false;
+                    break;
+                }
+            }
+        }
+        let changed = !replacements.is_empty();
+        for (key, value) in replacements {
+            commits
+                .insert(key.as_slice(), value.as_slice())
+                .map_err(precommit_storage_error)?;
+        }
+        drop(commits);
+        drop(events);
+        if changed {
+            shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+            shared.commit_durable(transaction)?;
+            shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+        } else {
+            transaction.abort().map_err(precommit_storage_error)?;
+        }
+        if reached_end {
+            return Ok(());
+        }
+        after = last;
+    }
 }
 
 fn migrate_commit_event_references(shared: &SharedRedb) -> Result<(), StorageError> {
@@ -1934,11 +2049,11 @@ mod tests {
             .expect("valid deterministic UUIDv7")
     }
 
-    fn wp373_fixture_envelope(record_type: &str) -> Vec<u8> {
-        let line = include_str!("../../../fixtures/proto/durable-wire-vectors-v2.txt")
+    fn fixture_envelope_from(file: &str, record_type: &str) -> Vec<u8> {
+        let line = file
             .lines()
             .find(|line| line.starts_with(record_type))
-            .expect("WP-373 fixture record exists");
+            .expect("fixture record exists");
         let encoded = line
             .split('\t')
             .nth(2)
@@ -1952,6 +2067,20 @@ mod tests {
                 u8::from_str_radix(text, 16).expect("fixture hex is valid")
             })
             .collect()
+    }
+
+    fn wp373_fixture_envelope(record_type: &str) -> Vec<u8> {
+        fixture_envelope_from(
+            include_str!("../../../fixtures/proto/durable-wire-vectors-v2.txt"),
+            record_type,
+        )
+    }
+
+    fn legacy_v1_fixture_envelope(record_type: &str) -> Vec<u8> {
+        fixture_envelope_from(
+            include_str!("../../../fixtures/proto/durable-wire-vectors.txt"),
+            record_type,
+        )
     }
 
     fn install_pre_generation_fixture(path: &Path) {
@@ -2288,7 +2417,9 @@ mod tests {
             .get(commit_key.as_slice())
             .expect("read commit")
             .expect("commit remains");
-        assert_eq!(&commit.value()[..8], b"RDB2\x02\x11\0\x02");
+        // After the full migration chain, commits are current V3 entity references
+        // (compact tag 17, revision 3); outbox remains V2 (tag 15, revision 2).
+        assert_eq!(&commit.value()[..8], b"RDB2\x02\x11\0\x03");
         decode_commit_with_event_table(commit.value(), &events)
             .expect("migrated commit proves authoritative event");
         let outbox_table = read.open_table(OUTBOX).expect("open outbox");
@@ -2307,6 +2438,173 @@ mod tests {
         assert_eq!(
             *decode_record_registry_v2(registry.value())
                 .expect("decode registry")
+                .value(),
+            riffdb_storage_api::proto_codec::current_record_registry_digest()
+        );
+    }
+
+    fn v2_commit_fixture_from_legacy_v1() -> (Vec<u8>, Vec<u8>, EventId, CommitSequence) {
+        let legacy_commit = legacy_v1_fixture_envelope("riffdb.storage.v1.StoredCommitRecordV1");
+        let (v2, event) = riffdb_storage_api::rewrap_legacy_commit_v1_as_v2_fixture(&legacy_commit)
+            .expect("rewrap legacy commit as v2");
+        let decoded = riffdb_storage_api::decode_commit_record_v2(
+            v2.as_bytes(),
+            // Event is rehydrated after table load; for identity extract decode event alone.
+            vec![
+                riffdb_storage_api::decode_durable_event_v1(event.as_bytes())
+                    .expect("decode event")
+                    .into_parts()
+                    .0,
+            ],
+        )
+        .expect("v2 decodes with its event");
+        let commit = decoded.into_parts().0;
+        let event_id = commit.events()[0].event_id();
+        (
+            v2.into_bytes(),
+            event.into_bytes(),
+            event_id,
+            commit.commit_sequence(),
+        )
+    }
+
+    #[test]
+    fn entity_reference_migration_transcodes_v2_commits_and_is_idempotent() {
+        let path = TestDatabasePath::new("entity-reference-migration");
+        let mut store = RedbStore::open(&path.0).expect("open empty store");
+        store
+            .initialize_database(database_id(0x2e))
+            .expect("initialize current database");
+
+        let (v2, event, event_id, sequence) = v2_commit_fixture_from_legacy_v1();
+        let commit_key = encode_application_sequence_key(sequence);
+        let event_key = encode_event_key(event_id);
+
+        let transaction = store
+            .shared
+            .database
+            .begin_write()
+            .expect("begin entity-reference fixture");
+        transaction
+            .open_table(EVENTS)
+            .expect("open events")
+            .insert(event_key.as_slice(), event.as_slice())
+            .expect("insert event");
+        transaction
+            .open_table(COMMITS)
+            .expect("open commits")
+            .insert(commit_key.as_slice(), v2.as_slice())
+            .expect("insert v2 commit");
+        let predecessor =
+            encode_record_registry_v2(SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST))
+                .expect("encode predecessor registry");
+        transaction
+            .open_table(META)
+            .expect("open metadata")
+            .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
+            .expect("install predecessor registry");
+        transaction
+            .commit()
+            .expect("commit entity-reference fixture");
+        drop(store);
+
+        // Crash-restart at page boundary: first open is interrupted after a batch.
+        let interrupted = RedbTestController::return_unknown_after_commit(
+            RedbTestOperation::StorageFormatMigrationBatch,
+        );
+        assert_eq!(
+            RedbStore::open_with_test_controller(&path.0, interrupted)
+                .expect_err("injected postcommit uncertainty interrupts migration")
+                .kind(),
+            StorageErrorKind::CommitStatusUnknown
+        );
+
+        let migrated = RedbStore::open(&path.0).expect("migrate predecessor database");
+        let read = migrated
+            .shared
+            .database
+            .begin_read()
+            .expect("read migrated database");
+        let events = read.open_table(EVENTS).expect("open events");
+        let commits = read.open_table(COMMITS).expect("open commits");
+        let commit = commits
+            .get(commit_key.as_slice())
+            .expect("read commit")
+            .expect("commit remains");
+        // Compact V3: magic RDB2, format 2, compact tag 17, revision 3.
+        assert_eq!(&commit.value()[..8], b"RDB2\x02\x11\0\x03");
+        decode_commit_with_event_table(commit.value(), &events)
+            .expect("migrated commit proves entity references");
+        let metadata = read.open_table(META).expect("open metadata");
+        let registry = metadata
+            .get(META_RECORD_REGISTRY)
+            .expect("read registry")
+            .expect("registry remains");
+        assert_eq!(
+            *decode_record_registry_v2(registry.value())
+                .expect("decode registry")
+                .value(),
+            riffdb_storage_api::proto_codec::current_record_registry_digest()
+        );
+        drop(metadata);
+        drop(commits);
+        drop(events);
+        drop(read);
+        drop(migrated);
+
+        // Second open is a no-op: all pages abort without rewrite.
+        let again = RedbStore::open(&path.0).expect("second open is no-op");
+        let read = again
+            .shared
+            .database
+            .begin_read()
+            .expect("read after no-op");
+        let registry = read
+            .open_table(META)
+            .expect("meta")
+            .get(META_RECORD_REGISTRY)
+            .expect("read")
+            .expect("registry");
+        assert_eq!(
+            *decode_record_registry_v2(registry.value())
+                .expect("decode")
+                .value(),
+            riffdb_storage_api::proto_codec::current_record_registry_digest()
+        );
+    }
+
+    #[test]
+    fn entity_reference_migration_empty_database_path_converges() {
+        let path = TestDatabasePath::new("entity-reference-empty");
+        let mut store = RedbStore::open(&path.0).expect("open empty store");
+        store
+            .initialize_database(database_id(0x2f))
+            .expect("initialize");
+        let predecessor =
+            encode_record_registry_v2(SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST))
+                .expect("encode predecessor");
+        let transaction = store.shared.database.begin_write().expect("write");
+        transaction
+            .open_table(META)
+            .expect("meta")
+            .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
+            .expect("install predecessor");
+        transaction.commit().expect("commit predecessor");
+        drop(store);
+        let migrated = RedbStore::open(&path.0).expect("empty path migrates");
+        let registry = migrated
+            .shared
+            .database
+            .begin_read()
+            .expect("read")
+            .open_table(META)
+            .expect("meta")
+            .get(META_RECORD_REGISTRY)
+            .expect("get")
+            .expect("registry");
+        assert_eq!(
+            *decode_record_registry_v2(registry.value())
+                .expect("decode")
                 .value(),
             riffdb_storage_api::proto_codec::current_record_registry_digest()
         );

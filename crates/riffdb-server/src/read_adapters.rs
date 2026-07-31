@@ -1138,13 +1138,10 @@ fn map_commit_record(
     )
     .map_err(|_| AuthoritativeReadError::Integrity)?;
     let affected_entities = record
-        .mutations()
+        .entity_references()
         .iter()
-        .map(|mutation| {
-            AffectedEntityView::new(
-                mutation.post_image().target().key().clone(),
-                mutation.post_image().entity_version(),
-            )
+        .map(|reference| {
+            AffectedEntityView::new(reference.target().key().clone(), reference.entity_version())
         })
         .collect();
     let events = record
