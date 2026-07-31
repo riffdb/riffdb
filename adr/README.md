@@ -87,6 +87,10 @@ direction, merged draft, or implementation choice.
 | [0063](0063-bounded-multiple-databases-per-process.md) | Bounded Multiple Databases Per Server Process | Accepted |
 | [0064](0064-underscore-mcp-tool-names-and-agent-presentation.md) | Underscore MCP Tool Names and Agent Presentation | Accepted |
 | [0065](0065-first-real-application-experience.md) | First Real Application Experience | Accepted |
+| [0066](0066-read-stability-and-internal-retry.md) | Read Stability and Internal Retry | Proposed |
+| [0067](0067-typed-saturation-and-admission.md) | Typed Saturation and Admission | Proposed |
+| [0068](0068-database-history-incarnation.md) | Database History Incarnation | Proposed |
+| [0069](0069-linear-startup-validation-and-bounded-history-access.md) | Linear Startup Validation and Bounded History Access | Proposed |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
