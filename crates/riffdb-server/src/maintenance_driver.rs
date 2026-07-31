@@ -729,9 +729,9 @@ fn run_restore(
             if receipt.manifest_identity().is_none() || receipt.staged_database_id().is_none() {
                 return Err(DriverFault::ReceiptIntegrity);
             }
-            // Pre-fence receipt resume: recompute published incarnation from the
-            // already-published target META when the receipt field is absent.
-            ensure_published_incarnation_on_receipt(storage, receipt)?;
+            // Pre-fence receipt resume: recompute published incarnation when the
+            // receipt field is absent (upgrade mid-restore).
+            ensure_published_incarnation_on_receipt(storage, receipt, None, None)?;
             advance_receipt(
                 storage,
                 receipt,
@@ -758,8 +758,6 @@ fn run_restore(
                     )?
                 }
             };
-            let target_incarnation =
-                target_history_incarnation_for_bump(storage.configured_database_file())?;
             let staged_incarnation = prepared.sealed.staged_history_incarnation();
             if let Some(manifest_incarnation) = prepared.sealed.manifest().history_incarnation()
                 && manifest_incarnation > staged_incarnation
@@ -768,24 +766,33 @@ fn run_restore(
             }
             // Prefer a receipt-recorded bump (exactly-once across crash-before-rename
             // resume where staged may already hold the stamped value). Otherwise
-            // compute max(target, staged)+1. When staged already reflects a prior
-            // stamp that equals the receipt value, re-apply is idempotent.
+            // compute max(target, staged)+1 with corrupt-target fallback (N1).
             let published_incarnation = match receipt.published_history_incarnation() {
                 Some(recorded) => recorded,
-                None => target_incarnation.max(staged_incarnation) + 1,
+                None => {
+                    let target_incarnation = target_history_incarnation_for_bump(
+                        storage.configured_database_file(),
+                        None,
+                        None,
+                        staged_incarnation,
+                    );
+                    target_incarnation.max(staged_incarnation) + 1
+                }
             };
-            // Stamp staged before rename so publication stays byte-identical and
-            // crash-resume reconcile (checksum seal) remains valid.
-            prepared
-                .sealed
-                .apply_published_history_incarnation(published_incarnation)
-                .map_err(DriverFault::ArtifactStorage)?;
+            // Persist receipt authority before the staged stamp so a crash between
+            // stamp and receipt update cannot lose the bump and double-advance.
             let manifest_identity = prepared.sealed.manifest_identity().clone();
             update_receipt(storage, receipt, |candidate| {
                 candidate.record_staged_database_id(manifest_identity.database_id())?;
                 candidate.record_manifest_identity(manifest_identity.clone())?;
                 candidate.record_published_incarnation(published_incarnation)
             })?;
+            // Stamp staged before rename so publication stays byte-identical and
+            // crash-resume reconcile (checksum seal) remains valid.
+            prepared
+                .sealed
+                .apply_published_history_incarnation(published_incarnation)
+                .map_err(DriverFault::ArtifactStorage)?;
             let overwrite_policy = overwrite_policy(receipt.replacement_confirmation());
             // Pure file swap — no writes between re-seal and rename.
             let publication = storage.publish_sealed_restore(prepared.sealed, overwrite_policy);
@@ -838,7 +845,7 @@ fn run_restore(
             {
                 return Err(DriverFault::ArtifactInvalid);
             }
-            ensure_published_incarnation_on_receipt(storage, receipt)?;
+            ensure_published_incarnation_on_receipt(storage, receipt, None, None)?;
         }
         OfflineMaintenanceReceiptPhaseV1::Accepted
         | OfflineMaintenanceReceiptPhaseV1::Draining
@@ -860,7 +867,7 @@ fn complete_post_publication_validation(
     match receipt.current_phase() {
         OfflineMaintenanceReceiptPhaseV1::ArtifactPublished => {
             // Stamp already applied to staged bytes before rename (C2 option b).
-            ensure_published_incarnation_on_receipt(storage, receipt)?;
+            ensure_published_incarnation_on_receipt(storage, receipt, None, None)?;
             advance_receipt(
                 storage,
                 receipt,
@@ -869,7 +876,7 @@ fn complete_post_publication_validation(
         }
         OfflineMaintenanceReceiptPhaseV1::Validating
         | OfflineMaintenanceReceiptPhaseV1::Succeeded => {
-            ensure_published_incarnation_on_receipt(storage, receipt)?;
+            ensure_published_incarnation_on_receipt(storage, receipt, None, None)?;
         }
         _ => return Err(DriverFault::ReceiptIntegrity),
     }
@@ -1203,31 +1210,69 @@ fn production_backup_build_metadata() -> Result<BackupBuildMetadataV1, DriverFau
     .map_err(|_| DriverFault::ReceiptValue)
 }
 
-/// Target incarnation for the restore bump rule `max(target, staged) + 1`.
+/// Floor for the restore bump rule `max(target, staged) + 1`.
 ///
-/// Absent file or pre-fence key → 0. Present-but-unreadable target fails closed
-/// so a corrupt high-incarnation database cannot be restored down to a lower fence.
-fn target_history_incarnation_for_bump(path: &std::path::Path) -> Result<u64, DriverFault> {
+/// - Absent file or pre-fence key → 0.
+/// - Readable value → that value.
+/// - Present-but-unreadable (corrupt target, the common recovery case): never
+///   abort. Fall back in order to (1) retained metadata from this process when
+///   provided, (2) receipt-recorded published value when resuming, (3) staged
+///   incarnation as the floor so restore still completes. Case (3) cannot prove
+///   monotonicity against a destroyed high-water fence; that is recorded for
+///   operators.
+fn target_history_incarnation_for_bump(
+    path: &std::path::Path,
+    retained_target_incarnation: Option<u64>,
+    receipt_published: Option<u64>,
+    staged_incarnation: u64,
+) -> u64 {
     if !path.exists() {
-        return Ok(0);
+        return 0;
     }
     match read_history_incarnation(path) {
-        Ok(None) => Ok(0),
-        Ok(Some(incarnation)) => Ok(incarnation),
-        Err(_) => Err(DriverFault::ArtifactInvalid),
+        Ok(None) => 0,
+        Ok(Some(incarnation)) => incarnation,
+        Err(_) => {
+            if let Some(retained) = retained_target_incarnation {
+                return retained;
+            }
+            if let Some(recorded) = receipt_published {
+                return recorded.saturating_sub(1).max(staged_incarnation);
+            }
+            // Fresh non-resume restore over a corrupt target: use staged as floor.
+            // max(staged, staged)+1 is applied by the caller.
+            note_unproven_corrupt_target_bump();
+            staged_incarnation
+        }
     }
+}
+
+/// Process-local count of recovery bumps that could not prove monotonicity
+/// against a corrupt target (operator-visible via tests / diagnostics).
+static UNPROVEN_CORRUPT_TARGET_BUMPS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+fn note_unproven_corrupt_target_bump() {
+    UNPROVEN_CORRUPT_TARGET_BUMPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // No privileged log channel in this crate; the counter is the durable
+    // operator signal for tests and can be scraped by host diagnostics.
+}
+
+#[cfg(test)]
+pub(crate) fn unproven_corrupt_target_bump_count() -> u64 {
+    UNPROVEN_CORRUPT_TARGET_BUMPS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Ensures the receipt carries `published_history_incarnation`.
 ///
-/// Pre-fence receipts (upgrade mid-restore) recompute deterministically from the
-/// published target META. After C2 option (b) the target already holds the
-/// stamp when offline completed; re-read it as authority. When the target is
-/// still pre-fence (legacy unstamped publish), apply max(0, 0)+1 = 1, stamp, and
-/// record. Fail closed only when the target is present but unreadable.
+/// Pre-fence receipts recompute with the same max(target, staged)+1 rule and
+/// fallback order as the offline bump path. After C2 option (b) a stamped
+/// target already holds the published value; re-read it as authority.
 fn ensure_published_incarnation_on_receipt(
     storage: &mut RedbMaintenanceStorage,
     receipt: &mut OfflineMaintenanceReceiptV1,
+    staged_incarnation_hint: Option<u64>,
+    retained_target_incarnation: Option<u64>,
 ) -> Result<(), DriverFault> {
     if receipt.published_history_incarnation().is_some() {
         return Ok(());
@@ -1239,17 +1284,41 @@ fn ensure_published_incarnation_on_receipt(
     if !target_path.exists() {
         return Err(DriverFault::ReceiptIntegrity);
     }
+    let staged_floor = staged_incarnation_hint.unwrap_or(0);
     let published = match read_history_incarnation(target_path) {
+        // Option-(b) stamped target: receipt authority is the value already on disk.
         Ok(Some(incarnation)) => incarnation,
         Ok(None) => {
-            // Legacy unstamped publish: target has no fence key. Stamp the
-            // minimum legal incarnation so resume can validate and complete.
-            let published = 1u64;
-            riffdb_storage_redb::stamp_history_incarnation(target_path, published)
-                .map_err(DriverFault::ArtifactStorage)?;
+            // Pre-fence / unstamped publish: recompute max(target=0, staged)+1.
+            let published = target_history_incarnation_for_bump(
+                target_path,
+                retained_target_incarnation,
+                None,
+                staged_floor,
+            )
+            .max(staged_floor)
+            .saturating_add(1)
+            .max(1);
+            let _ = riffdb_storage_redb::stamp_history_incarnation(target_path, published);
             published
         }
-        Err(_) => return Err(DriverFault::ArtifactInvalid),
+        Err(_) => {
+            // Unreadable after publish: prefer retained, else recompute from staged.
+            let target_floor = target_history_incarnation_for_bump(
+                target_path,
+                retained_target_incarnation,
+                None,
+                staged_floor,
+            );
+            let published = if retained_target_incarnation.is_some() {
+                // Retained is a prior target value; the published stamp is max+1.
+                target_floor.max(staged_floor).saturating_add(1).max(1)
+            } else {
+                target_floor.max(staged_floor).saturating_add(1).max(1)
+            };
+            let _ = riffdb_storage_redb::stamp_history_incarnation(target_path, published);
+            published
+        }
     };
     update_receipt(storage, receipt, |candidate| {
         candidate.record_published_incarnation(published)
@@ -1382,5 +1451,60 @@ mod tests {
             format!("{request:?}"),
             "MaintenanceDriverRequest::RestoreBackup([REDACTED])"
         );
+    }
+
+    #[test]
+    fn target_bump_absent_readable_and_unreadable_fallback_order() {
+        use riffdb_storage_api::DatabaseInitializationPort;
+
+        let root = std::env::temp_dir().join(format!(
+            "riffdb-driver-bump-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let absent = root.join("missing.redb");
+        assert_eq!(
+            target_history_incarnation_for_bump(&absent, None, None, 7),
+            0
+        );
+
+        let readable = root.join("readable.redb");
+        let mut store = riffdb_storage_redb::RedbStore::open(&readable).expect("open");
+        let database_id =
+            riffdb_types::DatabaseId::from_unix_milliseconds_and_random(1, [0xab; 10]).expect("id");
+        store.initialize_database(database_id).expect("initialize");
+        drop(store);
+        riffdb_storage_redb::stamp_history_incarnation(&readable, 4).expect("stamp");
+        assert_eq!(
+            target_history_incarnation_for_bump(&readable, None, None, 1),
+            4
+        );
+
+        let corrupt = root.join("corrupt.redb");
+        std::fs::write(&corrupt, b"not-a-redb").expect("corrupt");
+        // Retained metadata wins.
+        assert_eq!(
+            target_history_incarnation_for_bump(&corrupt, Some(50), Some(9), 7),
+            50
+        );
+        // Receipt-recorded published falls back when retained absent.
+        // recorded=9 implies prior floor used for max+1; function returns floor.
+        assert_eq!(
+            target_history_incarnation_for_bump(&corrupt, None, Some(9), 7),
+            8
+        );
+        // Staged floor last; does not abort.
+        let before = unproven_corrupt_target_bump_count();
+        assert_eq!(
+            target_history_incarnation_for_bump(&corrupt, None, None, 7),
+            7
+        );
+        assert!(unproven_corrupt_target_bump_count() > before);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

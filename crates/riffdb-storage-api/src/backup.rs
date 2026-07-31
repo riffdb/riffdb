@@ -944,6 +944,12 @@ pub struct OfflineBackupManifestV1 {
     last_commit_sequence: Option<CommitSequence>,
     /// Present on post-fence backups; absent on pre-fence manifests.
     history_incarnation: Option<u64>,
+    /// Whether the wire form includes the history presence tag.
+    ///
+    /// Post-fence encodings always include the tag (`true`): `None` is one
+    /// presence byte `0`, `Some` is presence `1` + u64. Pre-fence dual-path
+    /// reconstructs omit the field entirely (`false`).
+    history_wire_tagged: bool,
     checksums: Vec<BackupArtifactChecksumV1>,
     build: BackupBuildMetadataV1,
     semantic_bytes: usize,
@@ -1000,11 +1006,14 @@ impl OfflineBackupManifestV1 {
             return Err(StorageValueError::Duplicate);
         }
 
+        // `new` always builds the post-fence wire form (presence-tagged field).
+        let history_wire_tagged = true;
         let semantic_bytes = backup_manifest_semantic_bytes(
             &catalog_bundles,
             active_catalog.as_ref(),
             last_commit_sequence,
             history_incarnation,
+            history_wire_tagged,
             &checksums,
             &build,
         )?;
@@ -1018,10 +1027,56 @@ impl OfflineBackupManifestV1 {
             active_catalog,
             last_commit_sequence,
             history_incarnation,
+            history_wire_tagged,
             checksums,
             build,
             semantic_bytes,
         })
+    }
+
+    /// Reconstructs a pre-fence manifest whose wire form omits the history field.
+    ///
+    /// Used only by dual-path decode of historical backup bytes. History must be
+    /// absent; size accounting matches field omission (zero bytes).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_pre_fence(
+        storage_format_version: StorageFormatVersion,
+        database_id: DatabaseId,
+        snapshot_kind: BackupSnapshotKindV1,
+        catalog_bundles: Vec<BackupCatalogBundleV1>,
+        active_catalog: Option<ActiveCatalogPointerV1>,
+        last_commit_sequence: Option<CommitSequence>,
+        checksums: Vec<BackupArtifactChecksumV1>,
+        build: BackupBuildMetadataV1,
+    ) -> Result<Self, StorageValueError> {
+        let mut candidate = Self::new(
+            storage_format_version,
+            database_id,
+            snapshot_kind,
+            catalog_bundles,
+            active_catalog,
+            last_commit_sequence,
+            None,
+            checksums,
+            build,
+        )?;
+        candidate.history_wire_tagged = false;
+        candidate.semantic_bytes = backup_manifest_semantic_bytes(
+            &candidate.catalog_bundles,
+            candidate.active_catalog.as_ref(),
+            candidate.last_commit_sequence,
+            None,
+            false,
+            &candidate.checksums,
+            &candidate.build,
+        )?;
+        Ok(candidate)
+    }
+
+    /// Returns whether the durable wire form includes the history presence tag.
+    #[must_use]
+    pub const fn history_wire_tagged(&self) -> bool {
+        self.history_wire_tagged
     }
 
     /// Returns the semantic backup-manifest version.
@@ -1310,6 +1365,7 @@ fn backup_manifest_semantic_bytes(
     active_catalog: Option<&ActiveCatalogPointerV1>,
     last_commit_sequence: Option<CommitSequence>,
     history_incarnation: Option<u64>,
+    history_wire_tagged: bool,
     checksums: &[BackupArtifactChecksumV1],
     build: &BackupBuildMetadataV1,
 ) -> Result<usize, StorageValueError> {
@@ -1354,9 +1410,15 @@ fn backup_manifest_semantic_bytes(
         bundles,
         active,
         1 + last_commit_sequence.map_or(0, |_| 8),
-        // Match actual encoding: pre-fence omits the field entirely (None → 0);
-        // post-fence presence-tags a value (Some → 1 + 8).
-        history_incarnation.map_or(0, |_| 1 + 8),
+        // Match actual encoding for all three wire cases:
+        // - pre-fence omitted field → 0
+        // - post-fence tagged None (presence 0) → 1
+        // - post-fence tagged Some → 1 + 8
+        if history_wire_tagged {
+            1 + history_incarnation.map_or(0, |_| 8)
+        } else {
+            0
+        },
         checksums,
         framed_backup_bytes(build.semantic_version.len())?,
         framed_backup_bytes(build.git_revision.len())?,

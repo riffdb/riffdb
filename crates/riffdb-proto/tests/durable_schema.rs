@@ -905,17 +905,15 @@ fn exact_fifteen_mibibyte_bundle_content_fits_the_structural_ceiling() {
     assert_eq!(decoded.payload(), payload);
 }
 
-/// Frozen V1 metadata schema hashes. These must never rotate when additive
-/// durable records are introduced — each additive record lives in its own
-/// proto file so the metadata.proto descriptor hash stays stable.
-///
-/// Values are source literals independent of regenerated fixtures so a silent
-/// fixture regen cannot paper over a rotation (C1).
+/// Frozen schema hashes for every durable readable record that existed at
+/// branch base `a23f42a` (pre-Package-F). Source literals — never read from
+/// regenerable fixtures at test time — so an additive own-file record cannot
+/// silently rotate any prior descriptor hash (C1 / R1).
 #[test]
-fn legacy_metadata_v1_schema_hashes_are_frozen_source_literals() {
-    // Frozen at branch base a23f42a (pre-Package-F). Own-file
-    // history_incarnation_v1.proto must keep these identical.
-    const FROZEN: &[(&str, &str)] = &[
+fn legacy_durable_schema_hashes_are_frozen_source_literals() {
+    // Pasted once from `git show a23f42a:fixtures/proto/durable-readable-registry.txt`.
+    // Includes both CapabilityRecordV1 dual-hash entries present at that revision.
+    const FROZEN_AT_A23F42A: &[(&str, &str)] = &[
         (
             "riffdb.storage.v1.StoredStorageFormatVersionV1",
             "07371c0b9eba9bfcad3118b345064b3d33a20a13641c6bde017e5c99dc6020ab",
@@ -932,38 +930,151 @@ fn legacy_metadata_v1_schema_hashes_are_frozen_source_literals() {
             "riffdb.storage.v1.StoredAdministrationSequenceAllocatorV1",
             "63cf6435a08786b0fae6e5eef2fde7c1e13395309e1e746a66e2c8b61c49e078",
         ),
+        (
+            "riffdb.storage.v1.StoredContractBundleV1",
+            "1a7b3fc9926f3142189cd79e87b952fccbaf66be89778954e5549b1c4f5dfcf3",
+        ),
+        (
+            "riffdb.storage.v1.ActiveCatalogPointerV1",
+            "811264c2f4ab3c208bd958eab9cd5369d699da3c189ad3c2fa558c298ba381a0",
+        ),
+        (
+            "riffdb.storage.v1.StoredCatalogAdministrationV1",
+            "c3e8dd62161f441e6318bcd141c3541b21a7b83c2c50f9d19b0b190893ca7b13",
+        ),
+        (
+            "riffdb.storage.v1.StoredEntityRecordV1",
+            "67eb5bbd2b789438f7d74861cb97a36700a69926a9e2d848508d019a18d4a213",
+        ),
+        (
+            "riffdb.storage.v1.StoredIndexEntryV1",
+            "756e10e48e1ba1d8c604d4937db0a9f2e1e8ba9ee2e4d3b0ac7d495e8e626fc8",
+        ),
+        (
+            "riffdb.storage.v1.StoredIndexEpochV1",
+            "48237ae4cd23465b4405eab943b7d61cb45651f68c315b18080871f17cab70ae",
+        ),
+        (
+            "riffdb.storage.v1.StoredPendingAdmissionV1",
+            "21b56b7c63eac315cee9ac38a3797a732c645f93e0067ee8e846ea112af029b1",
+        ),
+        (
+            "riffdb.storage.v1.StoredExecutionFailedV1",
+            "886673ce516e8b3c16d48b0b831ba59f6fca91e4601ba4f2b64eca3021fa5207",
+        ),
+        (
+            "riffdb.storage.v1.StoredOutcomeV1",
+            "08c0d3dbeb5194a5be3ea044cde426880c919ae4b1adc2b7a887b597a8933c61",
+        ),
+        (
+            "riffdb.storage.v1.StoredDurableEventV1",
+            "49fd5c15b3489ed21d312a2f16446f18039f0b4b643e817998cc32911c1745bf",
+        ),
+        (
+            "riffdb.storage.v1.StoredOutboxIntentV1",
+            "8416e1497f7a47184a80b43c3949f9d02ecc416c3e269425d1fe5c4323eb09c5",
+        ),
+        (
+            "riffdb.storage.v1.StoredProvenanceRecordV1",
+            "92e47c16db12bec0c1de5f081608f9a0d510ab32eb2cd098284d2e1b92bbbaef",
+        ),
+        (
+            "riffdb.storage.v1.StoredCommitRecordV1",
+            "7c99c855bf3f0e6c66d3e47d390a6e1a6aa61474a414a666df3ffa0339bb6302",
+        ),
+        (
+            "riffdb.storage.v1.CapabilityRecordV1",
+            "dee2398ebbc71824471fe5a5f96fcbebdde09e511fe6c11531c2b30210f9e6bf",
+        ),
+        (
+            "riffdb.storage.v1.CapabilityTokenLookupV1",
+            "e00696f3d2c110c5b2b99685e7987f7204d2f9576f8b41c5fcd5a894c746bc86",
+        ),
+        (
+            "riffdb.storage.v1.CapabilityBootstrapMarkerV1",
+            "1204e270169688244bc489071db70c7d2481111a970d5a9da420ad7b9334e4ea",
+        ),
+        (
+            "riffdb.storage.v1.CapabilityAdministrationAuditV1",
+            "28d4a9d5f63eb9f5bacb2042af50d47ea39532bc2ef60c3dc52a450cc7b49a46",
+        ),
+        (
+            "riffdb.storage.v1.ServiceAuditRecordV1",
+            "9dde7509a82b5a74dd99505a8499134dca982aecc0c4fc96d1c156c98109c6bf",
+        ),
+        (
+            "riffdb.storage.v1.StoredOutboxStatusV1",
+            "264d9f5ec757041a342ccd93e48927cd0fab8e8e886ad7d73b9e20e731ecc900",
+        ),
+        (
+            "riffdb.storage.v1.StoredProjectionStateV1",
+            "3897440250ec0b068d332c5f3f7604ec02c0ddc3060995a5b0ad6156cc9a46b5",
+        ),
+        (
+            "riffdb.storage.v1.StoredProjectionApplyV1",
+            "484a6446b348ccb25ccd14a59a722d7649f7570180cdde7aee41d40b1d6259f6",
+        ),
+        (
+            "riffdb.storage.v1.StoredProjectionControlV1",
+            "3f5eadce258bb61d1148434f61958fc0df6429a4456a44e9db8b64d9cbf8779d",
+        ),
+        (
+            "riffdb.storage.v1.StoredQueryModuleV1",
+            "f16ce44c3c7d1380992f89b7ac87fba29abd7164f177ffd304bbb57ecb7cabc8",
+        ),
+        (
+            "riffdb.storage.v1.ActiveQueryModulePointerV1",
+            "18391395db2fb6d83127c78129a4f152c8a94a7f84c0673926827db3b2e6a934",
+        ),
+        (
+            "riffdb.storage.v1.StoredQueryModuleAdministrationV1",
+            "29138b6c43f55b4904bca27c2abdfab1bedc6491eeaae63bcc7c451ee8c711e4",
+        ),
+        (
+            "riffdb.storage.v1.StoredIndexEntryV2",
+            "1be795682748d69f9da74f2d9697dd9a041b7c5e642f757fe4daf902e78368f8",
+        ),
+        (
+            "riffdb.storage.v1.StoredRecordRegistryV2",
+            "0e1a29c18da0131e8231eb5426a120345397de4a93afb4079601f51f82a70d7e",
+        ),
+        (
+            "riffdb.storage.v1.StoredCommitRecordV2",
+            "a518232c65098a9fcd0b2a6e62fb1dcfec5962d431e2ec07a8d2a680ebb924b3",
+        ),
+        (
+            "riffdb.storage.v1.StoredOutboxIntentV2",
+            "4c66e68d3c86f0cb6efdf88625852e86aeff9db6c864569669bc34ccbda6a80c",
+        ),
+        (
+            "riffdb.storage.v1.StoredIndexGenerationV2",
+            "b0bed2d75281f5f1c1882df7d503b6e1c045e1cc69615c00690ce01841037e14",
+        ),
+        (
+            "riffdb.storage.v1.CapabilityRecordV1",
+            "cb42c4ebbce8280123f8b34d4dcde74ca9483406847531f34d5fb3f18d40b342",
+        ),
     ];
 
-    for (record_type, expected_hex) in FROZEN {
-        let schema = readable_record_schema(record_type)
-            .unwrap_or_else(|| panic!("missing readable schema for {record_type}"));
-        assert_eq!(
-            schema_hash_hex(schema),
-            *expected_hex,
-            "{record_type} schema hash rotated — additive durable records must use own-file protos"
-        );
-        // Also pin against the checked-in registry fixture line.
-        let fixture_line = LEGACY_REGISTRY_FIXTURE
-            .lines()
-            .find(|line| line.starts_with(record_type))
-            .unwrap_or_else(|| panic!("missing fixture line for {record_type}"));
+    let live: BTreeSet<(String, String)> = READABLE_RECORD_SCHEMAS
+        .iter()
+        .map(|schema| (schema.record_type().to_owned(), schema_hash_hex(schema)))
+        .collect();
+
+    for (record_type, expected_hex) in FROZEN_AT_A23F42A {
         assert!(
-            fixture_line.contains(&format!("schema-hash={expected_hex}")),
-            "fixture registry disagrees with frozen literal for {record_type}"
+            live.contains(&((*record_type).to_owned(), (*expected_hex).to_owned())),
+            "{record_type} schema-hash={expected_hex} rotated or dropped — additive durable records must use own-file protos"
         );
     }
 
-    // StoredHistoryIncarnationV1 must live in its own source file, not metadata.proto.
-    let history = readable_record_schema("riffdb.storage.v1.StoredHistoryIncarnationV1")
-        .expect("history incarnation schema");
-    let fixture_line = LEGACY_REGISTRY_FIXTURE
+    // New history incarnation must not live in metadata.proto.
+    let fixture_line = READABLE_REGISTRY_FIXTURE
         .lines()
-        .chain(READABLE_REGISTRY_FIXTURE.lines())
         .find(|line| line.contains("StoredHistoryIncarnationV1"))
         .expect("history incarnation fixture line");
     assert!(
         fixture_line.contains("source=history_incarnation_v1.proto"),
         "history incarnation must use own-file source, got: {fixture_line}"
     );
-    let _ = history;
 }
