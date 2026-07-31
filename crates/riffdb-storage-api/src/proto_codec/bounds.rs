@@ -6,8 +6,8 @@ use riffdb_types::{CanonicalRecord, CanonicalValue};
 
 use crate::{
     AtomicCommandRecordSet, CommandWriteClassBreakdownV1, CommitIntent, DurabilityMode,
-    DurableKeySchemaBindingV1, EncodedWriteSetUpperBound, EntityMutation, ExpectedEntityState,
-    IndexEntryMutationV1, IndexEpochAdvanceV1, MAX_STAGED_WRITE_BYTES, StoredReadDependenciesV1,
+    DurableKeySchemaBindingV1, EncodedWriteSetUpperBound, EntityMutation, IndexEntryMutationV1,
+    IndexEpochAdvanceV1, MAX_STAGED_WRITE_BYTES, StoredReadDependenciesV1,
 };
 
 use super::{
@@ -17,7 +17,7 @@ use super::{
     encode_commit_record_v1, encode_durable_event_v1, encode_entity_record_v1,
     encode_index_entry_v2, encode_index_epoch_v1, encode_outbox_intent_v1,
     encode_provenance_record_v1, encode_stored_outcome_v1, entity_target_to_proto,
-    expected_to_proto, identity_to_proto, plan_to_proto, storage_result, timestamp_to_proto,
+    identity_to_proto, plan_to_proto, storage_result, timestamp_to_proto,
 };
 
 const OUTBOX_INTENT: &str = "riffdb.storage.v1.StoredOutboxIntentV2";
@@ -288,15 +288,17 @@ pub fn command_write_set_upper_bound_v1(
             ])
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let mutation_lens = evaluated
+    let entity_reference_lens = evaluated
         .mutations()
         .iter()
-        .zip(&entity_payload_lens)
-        .map(|(mutation, entity_len)| {
-            let expected_len = expected_to_proto(expected_state(mutation)).encoded_len();
+        .map(|mutation| {
             sum_proto_fields([
-                message_field_len(1, expected_len),
-                message_field_len(2, *entity_len),
+                message_field_len(
+                    1,
+                    entity_target_to_proto(mutation.post_image().target()).encoded_len(),
+                ),
+                varint_field_len(2, MAXIMUM_WIDTH_U64),
+                bytes_field_len(3, SIZING_EVENT_HASH.len()),
             ])
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -311,7 +313,7 @@ pub fn command_write_set_upper_bound_v1(
         partition_hash_len,
         provenance_id_len,
         &conflict_hash_lens,
-        &mutation_lens,
+        &entity_reference_lens,
         &event_reference_lens,
         &event_id_lens,
     )?;
@@ -481,13 +483,6 @@ fn sizing_entity_len(
     ])
 }
 
-const fn expected_state(mutation: &EntityMutation) -> ExpectedEntityState {
-    match mutation.expected_version() {
-        Some(version) => ExpectedEntityState::Present(version),
-        None => ExpectedEntityState::Absent,
-    }
-}
-
 fn sizing_event_id_len(ordinal: u32) -> usize {
     // Both fields are deliberately charged even when ordinal zero would be
     // omitted by proto3. The reservation must dominate every final encoding.
@@ -602,7 +597,7 @@ fn sizing_commit_len(
     partition_hash_len: usize,
     provenance_id_len: usize,
     conflict_hash_lens: &[usize],
-    mutation_lens: &[usize],
+    entity_reference_lens: &[usize],
     event_reference_lens: &[usize],
     event_id_lens: &[usize],
 ) -> Result<usize, DurableCodecError> {
@@ -620,7 +615,7 @@ fn sizing_commit_len(
         varint_field_len(15, durability_to_proto(DurabilityMode::Memory) as u64),
     ])?;
     total = add_repeated_bytes(total, 8, conflict_hash_lens)?;
-    total = add_repeated_messages(total, 10, mutation_lens)?;
+    total = add_repeated_messages(total, 10, entity_reference_lens)?;
     total = add_repeated_messages(total, 11, event_reference_lens)?;
     add_repeated_messages(total, 14, event_id_lens)
 }

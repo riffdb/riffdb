@@ -5,12 +5,12 @@ use std::{error::Error, fmt};
 use riffdb_storage_api::{
     AdmissionLookupResultV1, AdmissionRepository, AffectedEntityV1, AssignedCommandSequence,
     AtomicCommandRecordSet, CommandCandidateSequenceAssigned, CommandWriteSetPlanV1,
-    CommittedBatchV1, CommittedEntityMutationV1, DurabilityMode, DurableKeySchemaBindingV1,
-    EmptyCommandBatch, EntityMutation, ExpectedEntityState, IdempotencyLookupCandidatesV1,
-    NonEmptyCommandBatch, StorageError, StorageErrorKind, StorageValueError,
-    StoredAdmissionStateV1, StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1,
-    StoredExecutionFailedV1, StoredOutboxIntentV1, StoredOutcomeV1, StoredProvenanceRecordV1,
-    StoredReadDependenciesV1, derive_event_hash_v1,
+    CommittedBatchV1, CommittedEntityMutationV1, CommittedEntityReferenceV2, DurabilityMode,
+    DurableKeySchemaBindingV1, EmptyCommandBatch, EntityMutation, ExpectedEntityState,
+    IdempotencyLookupCandidatesV1, NonEmptyCommandBatch, StorageError, StorageErrorKind,
+    StorageValueError, StoredAdmissionStateV1, StoredCommitRecordV1, StoredDurableEventV1,
+    StoredEntityRecordV1, StoredExecutionFailedV1, StoredOutboxIntentV1, StoredOutcomeV1,
+    StoredProvenanceRecordV1, StoredReadDependenciesV1, derive_event_hash_v1,
 };
 use riffdb_types::{EntityVersion, EventId};
 
@@ -710,6 +710,10 @@ fn build_atomic_command_record_set(
         event_ids.clone(),
         pending.provenance_claims().clone(),
     )?;
+    let entity_references = entities
+        .iter()
+        .map(CommittedEntityReferenceV2::from_mutation)
+        .collect::<Result<Vec<_>, _>>()?;
     let commit = StoredCommitRecordV1::new(
         sequence,
         pending.admission_request_id(),
@@ -720,7 +724,7 @@ fn build_atomic_command_record_set(
         intent.partition_hash(),
         intent.conflict_hashes().to_vec(),
         StoredReadDependenciesV1::from_live(evaluated.read_dependencies())?,
-        entities.clone(),
+        entity_references,
         events.clone(),
         evaluated.outcome().clone(),
         intent.provenance_id(),
@@ -1102,7 +1106,16 @@ mod tests {
         let commit = records.commit();
         assert_eq!(commit.commit_sequence(), assignment.assigned());
         assert_eq!(commit.durability_mode(), DurabilityMode::Sync);
-        assert!(commit.mutations() == records.entities());
+        assert_eq!(
+            commit.entity_references(),
+            records
+                .entities()
+                .iter()
+                .map(CommittedEntityReferenceV2::from_mutation)
+                .collect::<Result<Vec<_>, _>>()
+                .expect("entity references")
+                .as_slice()
+        );
         assert!(commit.events() == records.events());
         assert!(commit.declared_outcome() == outcome.declared_outcome());
         assert_eq!(commit.provenance_id(), provenance.provenance_id());

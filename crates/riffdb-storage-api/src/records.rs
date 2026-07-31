@@ -6,10 +6,10 @@ use std::sync::Arc;
 
 use riffdb_types::{
     AdmittedActorContext, CanonicalInputHash, CanonicalRecord, CommitSequence, ConflictKeyHash,
-    ContractVersion, EntityVersion, EventHash, EventId, EventTypeId, IndexEntryKey, IndexEpoch,
-    LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES, MAX_COMMIT_INTENT_SEMANTIC_BYTES, OutcomeId,
-    PartitionKey, PartitionKeyHash, ProvenanceId, RequestId, encode_canonical_record, hash_event,
-    hash_partition_key,
+    ContractVersion, EntityRecordHash, EntityVersion, EventHash, EventId, EventTypeId,
+    IndexEntryKey, IndexEpoch, LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES,
+    MAX_COMMIT_INTENT_SEMANTIC_BYTES, OutcomeId, PartitionKey, PartitionKeyHash, ProvenanceId,
+    RequestId, encode_canonical_record, hash_entity_record, hash_event, hash_partition_key,
 };
 
 use crate::{
@@ -725,6 +725,147 @@ impl EventReferenceV2 {
     }
 }
 
+/// Exact post-image-free link to one authoritative entity mutation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommittedEntityReferenceV2 {
+    target: EntityTarget,
+    entity_version: EntityVersion,
+    post_image_hash: EntityRecordHash,
+}
+
+impl CommittedEntityReferenceV2 {
+    /// Constructs the exact entity target, version, and integrity link.
+    #[must_use]
+    pub const fn new(
+        target: EntityTarget,
+        entity_version: EntityVersion,
+        post_image_hash: EntityRecordHash,
+    ) -> Self {
+        Self {
+            target,
+            entity_version,
+            post_image_hash,
+        }
+    }
+
+    /// Derives a reference from its authoritative post-image.
+    pub fn from_post_image(post_image: &StoredEntityRecordV1) -> Result<Self, StorageValueError> {
+        Ok(Self::new(
+            post_image.target().clone(),
+            post_image.entity_version(),
+            derive_entity_record_hash_v1(post_image)?,
+        ))
+    }
+
+    /// Derives a reference from one staged committed mutation.
+    pub fn from_mutation(mutation: &CommittedEntityMutationV1) -> Result<Self, StorageValueError> {
+        Self::from_post_image(mutation.post_image())
+    }
+
+    /// Returns the exact prior state implied by this committed version.
+    ///
+    /// Preserves the inverse of [`CommittedEntityMutationV1::new`]: first version
+    /// requires absence; every later version requires the prior version present.
+    #[must_use]
+    pub const fn expected_from_version(version: EntityVersion) -> ExpectedEntityState {
+        if version.get() == EntityVersion::first().get() {
+            ExpectedEntityState::Absent
+        } else {
+            match EntityVersion::new(version.get() - 1) {
+                Some(prior) => ExpectedEntityState::Present(prior),
+                // Unreachable: version is nonzero and greater than first.
+                None => ExpectedEntityState::Absent,
+            }
+        }
+    }
+
+    /// Borrows the referenced entity target.
+    #[must_use]
+    pub const fn target(&self) -> &EntityTarget {
+        &self.target
+    }
+
+    /// Returns the committed entity version.
+    #[must_use]
+    pub const fn entity_version(&self) -> EntityVersion {
+        self.entity_version
+    }
+
+    /// Returns the exact authoritative post-image hash.
+    #[must_use]
+    pub const fn post_image_hash(&self) -> EntityRecordHash {
+        self.post_image_hash
+    }
+
+    /// Proves an authoritative entity row is the exact referenced post-image.
+    #[must_use]
+    pub fn matches(&self, post_image: &StoredEntityRecordV1) -> bool {
+        self.target == *post_image.target()
+            && self.entity_version == post_image.entity_version()
+            && derive_entity_record_hash_v1(post_image)
+                .is_ok_and(|hash| hash == self.post_image_hash)
+    }
+}
+
+/// Derives the accepted v1 hash of one complete entity post-image.
+///
+/// The payload supplied to the `riffdb.entity-record/v1` hash domain is exactly:
+/// `u32 entity_type_id ‖ u32 key_len ‖ key ‖ u64 entity_version ‖
+/// u64 written_by_contract ‖ u32 lineage_len ‖ lineage ‖
+/// u64 binding_contract_version ‖ 32B bundle_hash ‖ u32 fields_len ‖
+/// canonical_fields`.
+pub fn derive_entity_record_hash_v1(
+    post_image: &StoredEntityRecordV1,
+) -> Result<EntityRecordHash, StorageValueError> {
+    Ok(hash_entity_record(&canonical_entity_record_preimage_v1(
+        post_image,
+    )?))
+}
+
+fn canonical_entity_record_preimage_v1(
+    post_image: &StoredEntityRecordV1,
+) -> Result<Vec<u8>, StorageValueError> {
+    let key_bytes = post_image.target().key().as_bytes();
+    let key_len = u32::try_from(key_bytes.len()).map_err(|_| StorageValueError::LimitExceeded)?;
+    let lineage_bytes = post_image.schema_binding().lineage().as_bytes();
+    let lineage_len =
+        u32::try_from(lineage_bytes.len()).map_err(|_| StorageValueError::LimitExceeded)?;
+    let fields_bytes = post_image.fields_encoded();
+    let fields_len =
+        u32::try_from(fields_bytes.len()).map_err(|_| StorageValueError::LimitExceeded)?;
+    let preimage_capacity = 4usize
+        .checked_add(4)
+        .and_then(|value| value.checked_add(key_bytes.len()))
+        .and_then(|value| value.checked_add(8))
+        .and_then(|value| value.checked_add(8))
+        .and_then(|value| value.checked_add(4))
+        .and_then(|value| value.checked_add(lineage_bytes.len()))
+        .and_then(|value| value.checked_add(8))
+        .and_then(|value| value.checked_add(32))
+        .and_then(|value| value.checked_add(4))
+        .and_then(|value| value.checked_add(fields_bytes.len()))
+        .ok_or(StorageValueError::SizeOverflow)?;
+    let mut preimage = Vec::with_capacity(preimage_capacity);
+    preimage.extend_from_slice(&post_image.target().entity_type_id().to_be_bytes());
+    preimage.extend_from_slice(&key_len.to_be_bytes());
+    preimage.extend_from_slice(key_bytes);
+    preimage.extend_from_slice(&post_image.entity_version().get().to_be_bytes());
+    preimage.extend_from_slice(&post_image.written_by_contract().get().to_be_bytes());
+    preimage.extend_from_slice(&lineage_len.to_be_bytes());
+    preimage.extend_from_slice(lineage_bytes);
+    preimage.extend_from_slice(
+        &post_image
+            .schema_binding()
+            .contract_version()
+            .get()
+            .to_be_bytes(),
+    );
+    preimage.extend_from_slice(post_image.schema_binding().bundle_hash().as_bytes());
+    preimage.extend_from_slice(&fields_len.to_be_bytes());
+    preimage.extend_from_slice(fields_bytes);
+    Ok(preimage)
+}
+
 impl StoredDurableEventV1 {
     /// Constructs a bounded durable event from coordinator-checked values.
     pub fn new(
@@ -1090,7 +1231,7 @@ pub struct StoredCommitRecordV1 {
     partition_hash: PartitionKeyHash,
     conflict_hashes: Vec<ConflictKeyHash>,
     read_dependencies: StoredReadDependenciesV1,
-    mutations: Vec<CommittedEntityMutationV1>,
+    entity_references: Vec<CommittedEntityReferenceV2>,
     events: Vec<StoredDurableEventV1>,
     declared_outcome: DeclaredOutcome,
     provenance_id: ProvenanceId,
@@ -1111,7 +1252,7 @@ impl StoredCommitRecordV1 {
         partition_hash: PartitionKeyHash,
         conflict_hashes: Vec<ConflictKeyHash>,
         read_dependencies: StoredReadDependenciesV1,
-        mutations: Vec<CommittedEntityMutationV1>,
+        entity_references: Vec<CommittedEntityReferenceV2>,
         events: Vec<StoredDurableEventV1>,
         declared_outcome: DeclaredOutcome,
         provenance_id: ProvenanceId,
@@ -1119,12 +1260,12 @@ impl StoredCommitRecordV1 {
         durability_mode: DurabilityMode,
     ) -> Result<Self, StorageValueError> {
         validate_conflict_hashes(&conflict_hashes)?;
-        validate_committed_mutations(&mutations)?;
-        if mutations.iter().any(|mutation| {
-            mutation.post_image().written_by_contract() != plan.contract_version()
-                || !mutation.post_image().schema_binding().matches_plan(&plan)
-                || read_dependencies.expected_entity_state(mutation.post_image().target())
-                    != Some(mutation.expected())
+        validate_entity_references(&entity_references)?;
+        if entity_references.iter().any(|reference| {
+            read_dependencies.expected_entity_state(reference.target())
+                != Some(CommittedEntityReferenceV2::expected_from_version(
+                    reference.entity_version(),
+                ))
         }) {
             return Err(StorageValueError::IdentityMismatch);
         }
@@ -1144,7 +1285,7 @@ impl StoredCommitRecordV1 {
             partition_hash,
             conflict_hashes,
             read_dependencies,
-            mutations,
+            entity_references,
             events,
             declared_outcome,
             provenance_id,
@@ -1211,10 +1352,10 @@ impl StoredCommitRecordV1 {
         &self.read_dependencies
     }
 
-    /// Borrows complete committed mutation post-images.
+    /// Borrows exact entity post-image references in ordinal order.
     #[must_use]
-    pub fn mutations(&self) -> &[CommittedEntityMutationV1] {
-        &self.mutations
+    pub fn entity_references(&self) -> &[CommittedEntityReferenceV2] {
+        &self.entity_references
     }
 
     /// Borrows complete durable events in ordinal order.
@@ -1271,14 +1412,9 @@ impl StoredCommitRecordV1 {
             &self.actor,
             &self.conflict_hashes,
             &self.read_dependencies,
-            self.mutations.iter().map(|mutation| {
-                (
-                    mutation.expected(),
-                    mutation.post_image().target(),
-                    mutation.post_image().schema_binding(),
-                    mutation.post_image().fields_encoded_len(),
-                )
-            }),
+            self.entity_references
+                .iter()
+                .map(CommittedEntityReferenceV2::target),
             self.events
                 .iter()
                 .map(|event| (event.event_type_id(), event.payload_encoded_len())),
@@ -1746,9 +1882,14 @@ impl AtomicCommandRecordSet {
             || expected_pending.partition_key() != stored_outcome.partition_key()
             || hash_partition_key(expected_pending.partition_key().as_bytes())
                 != stored_outcome.partition_hash()
-            || entities != commit.mutations()
-            || entities.iter().any(|mutation| {
-                mutation.post_image().written_by_contract() != commit.plan().contract_version()
+            || entities.len() != commit.entity_references().len()
+            || entities.iter().enumerate().any(|(index, mutation)| {
+                let Ok(reference) = CommittedEntityReferenceV2::from_mutation(mutation) else {
+                    return true;
+                };
+                reference != commit.entity_references()[index]
+                    || mutation.post_image().written_by_contract()
+                        != commit.plan().contract_version()
                     || !mutation
                         .post_image()
                         .schema_binding()
@@ -1996,6 +2137,20 @@ fn validate_committed_mutations(
     Ok(())
 }
 
+fn validate_entity_references(
+    references: &[CommittedEntityReferenceV2],
+) -> Result<(), StorageValueError> {
+    if references.len() > MAX_ENTITY_MUTATIONS {
+        return Err(StorageValueError::LimitExceeded);
+    }
+    if references.windows(2).any(|pair| {
+        pair[0].target().canonical_target_key() >= pair[1].target().canonical_target_key()
+    }) {
+        return Err(StorageValueError::NonCanonicalOrder);
+    }
+    Ok(())
+}
+
 fn validate_intent_entity_derivation(
     evaluated: &crate::EvaluatedCommand,
     committed: &[CommittedEntityMutationV1],
@@ -2226,25 +2381,18 @@ fn stored_provenance_semantic_bytes<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn stored_commit_semantic_bytes<'a, M, E>(
+fn stored_commit_semantic_bytes<'a, R, E>(
     plan: &ExecutablePlanRef,
     actor: &AdmittedActorContext,
     conflict_hashes: &[ConflictKeyHash],
     read_dependencies: &StoredReadDependenciesV1,
-    mutations: M,
+    entity_references: R,
     events: E,
     outcome: &DeclaredOutcome,
     event_count: usize,
 ) -> Result<usize, StorageValueError>
 where
-    M: IntoIterator<
-        Item = (
-            ExpectedEntityState,
-            &'a EntityTarget,
-            &'a DurableKeySchemaBindingV1,
-            usize,
-        ),
-    >,
+    R: IntoIterator<Item = &'a EntityTarget>,
     E: IntoIterator<Item = (EventTypeId, usize)>,
 {
     let conflict_bytes = conflict_hashes
@@ -2261,14 +2409,11 @@ where
         .and_then(|value| value.checked_add(read_dependencies.semantic_bytes().ok()?))
         .and_then(|value| value.checked_add(4 + 4))
         .ok_or(StorageValueError::SizeOverflow)?;
-    for (expected, target, binding, fields_encoded_len) in mutations {
+    for target in entity_references {
+        // Reference charge: target + entity_version (8) + post_image_hash (32).
         total = total
-            .checked_add(committed_entity_semantic_bytes_from_len(
-                expected,
-                target,
-                binding,
-                fields_encoded_len,
-            )?)
+            .checked_add(target.semantic_bytes()?)
+            .and_then(|value| value.checked_add(8 + 32))
             .ok_or(StorageValueError::SizeOverflow)?;
     }
     for (event_type_id, payload_encoded_len) in events {
@@ -2406,14 +2551,7 @@ fn projected_atomic_semantic_breakdown(
         pending.actor(),
         intent.conflict_hashes(),
         &stored_dependencies,
-        evaluated.mutations().iter().map(|mutation| {
-            (
-                expected_for(mutation),
-                mutation.target(),
-                &binding,
-                mutation.post_image().fields_encoded_len(),
-            )
-        }),
+        evaluated.mutations().iter().map(EntityMutation::target),
         evaluated
             .event_intents()
             .iter()
@@ -2737,6 +2875,10 @@ mod tests {
             event_ids.clone(),
             StoredAdmittedProvenanceClaimsV1::default(),
         )?;
+        let entity_references = mutations
+            .iter()
+            .map(CommittedEntityReferenceV2::from_mutation)
+            .collect::<Result<Vec<_>, _>>()?;
         let commit = StoredCommitRecordV1::new(
             sequence,
             request_id,
@@ -2747,7 +2889,7 @@ mod tests {
             partition_hash,
             Vec::new(),
             stored_read_dependencies,
-            mutations.clone(),
+            entity_references,
             events.clone(),
             declared_outcome,
             provenance_id,
@@ -3056,7 +3198,7 @@ mod tests {
             template.partition_hash,
             conflict_hashes,
             template.read_dependencies.clone(),
-            template.mutations.clone(),
+            template.entity_references.clone(),
             template.events.clone(),
             template.declared_outcome.clone(),
             template.provenance_id,
@@ -3124,10 +3266,14 @@ mod tests {
         let baseline = atomic_record_set(10, &[10]).expect("baseline");
         let larger_entity = atomic_record_set(11, &[10]).expect("larger entity");
         let larger_event = atomic_record_set(10, &[11]).expect("larger event");
+        // Entity field growth is charged once on the ENTITIES row; the commit
+        // stores only a fixed-size post-image hash reference.
         assert_eq!(
             larger_entity.semantic_bytes() - baseline.semantic_bytes(),
-            2
+            1
         );
+        // Event payload growth is charged on the event row, outbox intent, and
+        // commit event materialization path (three copies).
         assert_eq!(larger_event.semantic_bytes() - baseline.semantic_bytes(), 3);
     }
 
@@ -3151,19 +3297,18 @@ mod tests {
             .expect("five bulk events leave tuning room");
         drop(base);
 
+        // Events still amplify three ways; entity fields amplify once (commit
+        // references no longer embed post-image field bytes).
         let (event_bytes, entity_bytes) = (0..=BULK)
             .rev()
             .find_map(|event_bytes| {
                 let event_charge = 3 * event_bytes;
                 let entity_charge = remaining.checked_sub(event_charge)?;
-                if entity_charge % 2 != 0 {
-                    return None;
-                }
-                let entity_bytes = entity_charge / 2;
+                let entity_bytes = entity_charge;
                 (entity_bytes <= BULK && entity_bytes > 0 && event_bytes < BULK)
                     .then_some((event_bytes, entity_bytes))
             })
-            .expect("two- and three-copy payloads can tune the exact boundary");
+            .expect("one- and three-copy payloads can tune the exact boundary");
 
         let mut exact_events = vec![BULK; 5];
         exact_events.push(event_bytes);
@@ -3174,7 +3319,7 @@ mod tests {
         let mut over_events = vec![BULK; 5];
         over_events.push(event_bytes + 1);
         assert_eq!(
-            atomic_record_set(entity_bytes - 1, &over_events),
+            atomic_record_set(entity_bytes.saturating_sub(1), &over_events),
             Err(StorageValueError::LimitExceeded)
         );
     }
