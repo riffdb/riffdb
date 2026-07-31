@@ -31,8 +31,17 @@ the **same physical device**:
 - PostgreSQL data dir bind-mounted to
   `$repo/target/perf-db/app-baseline/postgres` (see `benchmarks/run-app-baseline`)
 
-Reports record both data-dir paths and medium classification. Operators should
-treat mixed-device comparisons as non-evidentiary.
+Reports record:
+
+| Field | Meaning |
+|-------|---------|
+| `riffdb_database_root` / `riffdb_storage_medium` | RiffDB session root + classified medium |
+| `postgres_data_host_path` / `postgres_storage_medium` | Host path bind-mounted into the container + classified medium |
+| `same_device` | `true` when mount/device model match; otherwise `false` plus a stderr warning and `integrity_notes` entry |
+
+Parity gates **refuse** when the PostgreSQL host data medium is RamBacked (mirror
+of the RiffDB tmpfs gate). Mixed-device runs (`same_device: false`) are recorded
+explicitly so operators do not treat them as evidentiary by accident.
 
 ## Durability settings (PostgreSQL)
 

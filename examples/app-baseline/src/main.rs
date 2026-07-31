@@ -18,8 +18,10 @@ use riffdb_app_baseline_core::{
     run_closed_loop_load_with_abort, run_scenarios,
 };
 use riffdb_app_baseline_postgres::{PostgresAppBackend, PostgresDurabilitySettings};
-use riffdb_app_baseline_riffdb::{RiffDbServerSession, ServerStartOptions};
-use riffdb_bench_root::{DeviceBaseline, run_device_baseline_for};
+use riffdb_app_baseline_riffdb::{
+    RiffDbServerSession, ServerStartOptions, min_free_bytes_for_full,
+};
+use riffdb_bench_root::{DeviceBaseline, StorageMedium, classify_medium, run_device_baseline_for};
 use serde_json::json;
 
 fn main() -> ExitCode {
@@ -45,7 +47,9 @@ fn run() -> Result<(), String> {
     let mut riffdb_medium: Option<String> = None;
     let mut device_baseline_json: Option<serde_json::Value> = None;
     let mut environment_json: Option<serde_json::Value> = None;
-    let notes: Vec<String> = Vec::new();
+    let mut integrity_notes: Vec<String> = Vec::new();
+    let full_mode = args.scale.name() == "full";
+    let min_free = min_free_bytes_for_full(full_mode);
 
     // Device baseline once per invocation (short for smoke; full for --full).
     if let Some(root) = args.database_root.clone().or_else(|| {
@@ -54,13 +58,40 @@ fn run() -> Result<(), String> {
         ))
     }) {
         let _ = fs::create_dir_all(&root);
-        let probe_for = if args.scale.name() == "full" {
+        let probe_for = if full_mode {
             std::time::Duration::from_secs(10)
         } else {
             std::time::Duration::from_millis(200)
         };
         if let Ok(baseline) = run_device_baseline_for(&root, probe_for) {
             device_baseline_json = Some(device_baseline_value(&baseline));
+        }
+    }
+
+    let postgres_host_path = args.postgres_data_host_path.clone().or_else(|| {
+        env::var_os("RIFFDB_APP_BASELINE_POSTGRES_DATA_HOST")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    });
+    let mut postgres_host_medium: Option<StorageMedium> = None;
+    if let Some(path) = &postgres_host_path {
+        let _ = fs::create_dir_all(path);
+        match classify_medium(path) {
+            Ok(medium) => {
+                if medium.is_ram_backed() {
+                    return Err(format!(
+                        "PostgreSQL host data path is RAM-backed ({}); refuse parity on tmpfs",
+                        path.display()
+                    ));
+                }
+                postgres_host_medium = Some(medium);
+            }
+            Err(error) => {
+                integrity_notes.push(format!(
+                    "could not classify postgres host data path {}: {error}",
+                    path.display()
+                ));
+            }
         }
     }
 
@@ -138,6 +169,7 @@ fn run() -> Result<(), String> {
                     ServerStartOptions {
                         database_root: args.database_root.clone(),
                         allow_tmpfs: args.allow_tmpfs,
+                        min_free_bytes: min_free,
                         ..ServerStartOptions::default()
                     },
                 ))
@@ -249,17 +281,15 @@ fn run() -> Result<(), String> {
     if !concurrent_reads.is_empty() {
         report["concurrent_point_reads"] = serde_json::Value::Array(concurrent_reads);
     }
-    // Gated comparison scalars become rep summaries; plain numbers stay as medians
-    // for older readers. Stability is attached under comparisons.rep_summaries.
-    if args.reps > 1 {
-        attach_rep_summaries(
-            &mut report,
-            &pg_rep_seed_ns,
-            &pg_rep_scenarios,
-            &rd_rep_seed_ns,
-            &rd_rep_scenarios,
-        );
-    }
+    // Gated comparison scalars become rep summaries. When reps==1 the summaries
+    // are still attached so stability machinery is uniform.
+    attach_rep_summaries(
+        &mut report,
+        &pg_rep_seed_ns,
+        &pg_rep_scenarios,
+        &rd_rep_seed_ns,
+        &rd_rep_scenarios,
+    );
     if let Some(baseline) = device_baseline_json {
         report["device_baseline"] = baseline;
     }
@@ -276,14 +306,58 @@ fn run() -> Result<(), String> {
             "data_directory": settings.data_directory,
         });
     }
+    if let Some(path) = &postgres_host_path {
+        report["postgres_data_host_path"] = json!(path.display().to_string());
+    }
+    if let Some(medium) = &postgres_host_medium {
+        report["postgres_storage_medium"] =
+            serde_json::from_str(&medium.to_report_json()).unwrap_or(json!(medium.to_report_json()));
+    }
     if let Some(path) = &riffdb_database_root {
         report["riffdb_database_root"] = json!(path.display().to_string());
     }
     if let Some(medium) = &riffdb_medium {
         report["riffdb_storage_medium"] = serde_json::from_str(medium).unwrap_or(json!(medium));
     }
-    if !notes.is_empty() {
-        report["integrity_notes"] = json!(notes);
+    // Same-device check: compare mount device models / mount paths when both known.
+    let same_device = match (
+        postgres_host_medium.as_ref(),
+        riffdb_medium
+            .as_ref()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()),
+    ) {
+        (Some(pg), Some(rd_json)) => {
+            let pg_json: serde_json::Value =
+                serde_json::from_str(&pg.to_report_json()).unwrap_or(json!({}));
+            let pg_mount = pg_json["mount"].as_str().unwrap_or("");
+            let rd_mount = rd_json["mount"].as_str().unwrap_or("");
+            let pg_model = pg_json["device_model"].as_str();
+            let rd_model = rd_json["device_model"].as_str();
+            let same = match (pg_model, rd_model) {
+                (Some(a), Some(b)) if a != "null" && b != "null" => a == b,
+                _ => !pg_mount.is_empty() && pg_mount == rd_mount,
+            };
+            if !same {
+                let msg = format!(
+                    "same-device warning: postgres mount/device ({pg_mount}/{pg_model:?}) \
+                     differs from riffdb ({rd_mount}/{rd_model:?})"
+                );
+                eprintln!("{msg}");
+                integrity_notes.push(msg);
+            }
+            same
+        }
+        _ => {
+            integrity_notes.push(
+                "same-device check incomplete: missing postgres host path or riffdb medium"
+                    .to_owned(),
+            );
+            false
+        }
+    };
+    report["same_device"] = json!(same_device);
+    if !integrity_notes.is_empty() {
+        report["integrity_notes"] = json!(integrity_notes);
     }
     report["reps"] = json!(args.reps);
     let encoded = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
@@ -456,6 +530,7 @@ fn run_load(args: Args) -> Result<(), String> {
                     .then_some(SATURATE_COORDINATOR_WORKLOAD_CAPACITY),
                 database_root: args.database_root.clone(),
                 allow_tmpfs: args.allow_tmpfs,
+                min_free_bytes: min_free_bytes_for_full(args.scale.name() == "full"),
             };
             let transport_topology = if args.load_saturate {
                 RiffDbTransport::PerSession
@@ -946,6 +1021,17 @@ fn gated_ratio(value: &serde_json::Value) -> Result<f64, String> {
         .ok_or_else(|| "gated ratio is not a number".to_owned())
 }
 
+fn refuse_if_postgres_ram_backed(report: &serde_json::Value) -> Result<(), String> {
+    if let Some(medium) = report.get("postgres_storage_medium") {
+        if medium["kind"].as_str() == Some("ram_backed") {
+            return Err(format!(
+                "parity refused: PostgreSQL data medium is RAM-backed ({medium})"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn assert_write_parity(report: &serde_json::Value) -> Result<(), String> {
     const MAX_RATIO: f64 = 2.0;
     const WRITE_SCENARIOS: [&str; 4] = [
@@ -958,6 +1044,7 @@ fn assert_write_parity(report: &serde_json::Value) -> Result<(), String> {
     if report["comparisons"]["available"] != true {
         return Err("write-parity assertion requires both backends".to_owned());
     }
+    refuse_if_postgres_ram_backed(report)?;
     if let Some(settings) = report.get("postgres_durability") {
         for key in ["synchronous_commit", "fsync", "full_page_writes"] {
             let value = settings[key].as_str().unwrap_or("");
@@ -1000,6 +1087,7 @@ fn assert_all_parity(report: &serde_json::Value) -> Result<(), String> {
     if report["comparisons"]["available"] != true {
         return Err("all-parity assertion requires both backends".to_owned());
     }
+    refuse_if_postgres_ram_backed(report)?;
     if let Some(settings) = report.get("postgres_durability") {
         for key in ["synchronous_commit", "fsync", "full_page_writes"] {
             let value = settings[key].as_str().unwrap_or("");
@@ -1047,6 +1135,26 @@ fn require_stable(report: &serde_json::Value) -> Result<(), String> {
             }
         }
     }
+    // Also walk scenario ratio fields directly (gated field is the summary object).
+    if let Some(scenarios) = report["comparisons"]["scenarios"].as_array() {
+        for row in scenarios {
+            let name = row["scenario"].as_str().unwrap_or("?");
+            if row["ratio_riffdb_over_postgres"]["stability"].as_str() == Some("unstable") {
+                let key = format!("scenario:{name}");
+                if !unstable.contains(&key) {
+                    unstable.push(key);
+                }
+            }
+        }
+    }
+    if report["comparisons"]["seed"]["ratio_riffdb_over_postgres"]["stability"].as_str()
+        == Some("unstable")
+    {
+        let key = "seed_ratio".to_owned();
+        if !unstable.contains(&key) {
+            unstable.push(key);
+        }
+    }
     if unstable.is_empty() {
         Ok(())
     } else {
@@ -1063,15 +1171,6 @@ fn median_u64(values: &[u64]) -> u64 {
     }
     let mut sorted = values.to_vec();
     sorted.sort_unstable();
-    sorted[sorted.len() / 2]
-}
-
-fn median_f64(values: &[f64]) -> f64 {
-    if values.is_empty() {
-        return 0.0;
-    }
-    let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     sorted[sorted.len() / 2]
 }
 
@@ -1107,47 +1206,104 @@ fn scalar_summary(values: &[f64]) -> serde_json::Value {
     })
 }
 
+/// Per-scenario median of p50 across reps (independent ranking, not execution-order pick).
 fn median_scenarios(
     reps: &[Vec<riffdb_app_baseline_core::ScenarioResult>],
 ) -> Vec<riffdb_app_baseline_core::ScenarioResult> {
     if reps.is_empty() {
         return Vec::new();
     }
-    // Median-of-reps uses the first rep's scenario set as structure; p50 samples
-    // are replaced by the median sample list from the median-ranking rep's summary.
-    // For gate simplicity we take the middle rep's ScenarioResult vector wholesale
-    // when reps is odd, else average by selecting the higher-middle rep.
-    let index = reps.len() / 2;
-    reps[index].clone()
+    let template = &reps[0];
+    template
+        .iter()
+        .map(|proto| {
+            let mut p50s = Vec::with_capacity(reps.len());
+            let mut last_row = proto.last_row_count;
+            for rep in reps {
+                if let Some(row) = rep.iter().find(|r| r.scenario == proto.scenario) {
+                    p50s.push(row.samples.summary().p50_ns.max(1));
+                    last_row = row.last_row_count;
+                }
+            }
+            let median_p50 = median_u64(&p50s).max(1);
+            riffdb_app_baseline_core::ScenarioResult {
+                scenario: proto.scenario,
+                samples: riffdb_app_baseline_core::SampleSet::from_nanos(vec![median_p50]),
+                last_row_count: last_row,
+            }
+        })
+        .collect()
 }
 
 fn attach_rep_summaries(
     report: &mut serde_json::Value,
     pg_seed: &[u64],
-    _pg_scenarios: &[Vec<riffdb_app_baseline_core::ScenarioResult>],
+    pg_scenarios: &[Vec<riffdb_app_baseline_core::ScenarioResult>],
     rd_seed: &[u64],
-    _rd_scenarios: &[Vec<riffdb_app_baseline_core::ScenarioResult>],
+    rd_scenarios: &[Vec<riffdb_app_baseline_core::ScenarioResult>],
 ) {
     if pg_seed.is_empty() || rd_seed.is_empty() {
         return;
     }
-    let mut ratios = Vec::new();
+    let mut rep_summaries = serde_json::Map::new();
+
+    let mut seed_ratios = Vec::new();
     for (pg, rd) in pg_seed.iter().zip(rd_seed.iter()) {
         let ratio = if *pg == 0 {
             f64::INFINITY
         } else {
             *rd as f64 / *pg as f64
         };
-        ratios.push(ratio);
+        seed_ratios.push(ratio);
     }
-    let summary = scalar_summary(&ratios);
-    // Keep plain median for legacy readers; attach full summary beside it.
-    report["comparisons"]["seed"]["ratio_riffdb_over_postgres"] = summary["median"].clone();
-    report["comparisons"]["seed"]["ratio_riffdb_over_postgres_summary"] = summary.clone();
-    report["comparisons"]["rep_summaries"] = json!({
-        "seed_ratio": summary,
-    });
-    let _ = median_f64(&ratios);
+    let seed_summary = scalar_summary(&seed_ratios);
+    // Gated field is the full summary object so stability is visible to gates.
+    report["comparisons"]["seed"]["ratio_riffdb_over_postgres"] = seed_summary.clone();
+    report["comparisons"]["seed"]["ratio_riffdb_over_postgres_median"] =
+        seed_summary["median"].clone();
+    rep_summaries.insert("seed_ratio".to_owned(), seed_summary);
+
+    // Per-scenario ratio summaries across matching reps.
+    if !pg_scenarios.is_empty() && !rd_scenarios.is_empty() {
+        let scenario_ids: Vec<_> = pg_scenarios[0]
+            .iter()
+            .map(|s| s.scenario.as_str().to_owned())
+            .collect();
+        if let Some(scenarios_json) = report["comparisons"]["scenarios"].as_array_mut() {
+            for name in scenario_ids {
+                let mut ratios = Vec::new();
+                let n = pg_scenarios.len().min(rd_scenarios.len());
+                for i in 0..n {
+                    let pg_p50 = pg_scenarios[i]
+                        .iter()
+                        .find(|s| s.scenario.as_str() == name)
+                        .map(|s| s.samples.summary().p50_ns)
+                        .unwrap_or(0);
+                    let rd_p50 = rd_scenarios[i]
+                        .iter()
+                        .find(|s| s.scenario.as_str() == name)
+                        .map(|s| s.samples.summary().p50_ns)
+                        .unwrap_or(0);
+                    let ratio = if pg_p50 == 0 {
+                        f64::INFINITY
+                    } else {
+                        rd_p50 as f64 / pg_p50 as f64
+                    };
+                    ratios.push(ratio);
+                }
+                let summary = scalar_summary(&ratios);
+                if let Some(row) = scenarios_json
+                    .iter_mut()
+                    .find(|row| row["scenario"].as_str() == Some(name.as_str()))
+                {
+                    row["ratio_riffdb_over_postgres"] = summary.clone();
+                    row["ratio_riffdb_over_postgres_median"] = summary["median"].clone();
+                }
+                rep_summaries.insert(format!("scenario:{name}"), summary);
+            }
+        }
+    }
+    report["comparisons"]["rep_summaries"] = serde_json::Value::Object(rep_summaries);
 }
 
 fn device_baseline_value(baseline: &DeviceBaseline) -> serde_json::Value {
@@ -1181,7 +1337,7 @@ fn print_summary(report: &serde_json::Value) {
         if let Some(rows) = report["comparisons"]["scenarios"].as_array() {
             for row in rows {
                 let name = row["scenario"].as_str().unwrap_or("?");
-                let ratio = row["ratio_riffdb_over_postgres"].as_f64().unwrap_or(0.0);
+                let ratio = gated_ratio(&row["ratio_riffdb_over_postgres"]).unwrap_or(0.0);
                 println!("  {name}: {ratio:.2}x");
             }
         }
@@ -1239,6 +1395,8 @@ struct Args {
     riffdb_transport: RiffDbTransport,
     /// On-disk root for riffdbd session DBs (default `target/perf-db/app-baseline`).
     database_root: Option<PathBuf>,
+    /// Host path bind-mounted as PostgreSQL's data directory (same-device check).
+    postgres_data_host_path: Option<PathBuf>,
     /// Permit tmpfs/ramfs roots (tests only).
     allow_tmpfs: bool,
     /// Independent measurement repetitions (default 3 for --full, 1 for smoke).
@@ -1273,6 +1431,7 @@ impl Args {
         let mut load_sweep_per_level_daemon = false;
         let mut riffdb_transport = RiffDbTransport::PerSession;
         let mut database_root = None;
+        let mut postgres_data_host_path = None;
         let mut allow_tmpfs = false;
         let mut reps: Option<usize> = None;
         let mut require_stable = false;
@@ -1393,6 +1552,12 @@ impl Args {
                         args.next().ok_or("--database-root needs a value")?,
                     ));
                 }
+                "--postgres-data-host-path" => {
+                    postgres_data_host_path = Some(PathBuf::from(
+                        args.next()
+                            .ok_or("--postgres-data-host-path needs a value")?,
+                    ));
+                }
                 "--allow-tmpfs" => allow_tmpfs = true,
                 "--reps" => {
                     reps = Some(
@@ -1414,7 +1579,8 @@ impl Args {
                          [--load-contended] [--load-saturate] [--load-saturate-p99-ms N] \
                          [--load-concurrency-sweep] [--load-sweep-per-level-daemon] \
                          [--load-riffdb-transport per-session|shared] \
-                         [--database-root PATH] [--allow-tmpfs] [--reps N] [--require-stable] \
+                         [--database-root PATH] [--postgres-data-host-path PATH] \
+                         [--allow-tmpfs] [--reps N] [--require-stable] \
                          [--skip-postgres] [--skip-riffdb]"
                             .to_owned(),
                     );
@@ -1506,6 +1672,7 @@ impl Args {
             load_sweep_per_level_daemon,
             riffdb_transport,
             database_root,
+            postgres_data_host_path,
             allow_tmpfs,
             reps,
             require_stable,
@@ -1518,7 +1685,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        Args, RiffDbTransport, WorkloadProfile, assert_all_parity, assert_write_parity, gated_ratio,
+        Args, RiffDbTransport, WorkloadProfile, assert_all_parity, assert_write_parity,
+        gated_ratio, median_scenarios, require_stable, scalar_summary,
     };
 
     fn parity_report(seed_ratio: f64, write_ratio: f64) -> Value {
@@ -1704,5 +1872,62 @@ mod tests {
         });
         assert!((gated_ratio(&stable).expect("stable") - 1.2).abs() < 1e-9);
         assert!((gated_ratio(&json!(1.5)).expect("plain") - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn unstable_scenario_ratio_refuses_parity_and_require_stable() {
+        let unstable = scalar_summary(&[1.0, 1.0, 4.0]);
+        assert_eq!(unstable["stability"], "unstable");
+        let scenarios = [
+            "create_comment",
+            "close_ticket_with_comment",
+            "swap_member_roles",
+            "open_ticket_with_labels",
+        ]
+        .into_iter()
+        .map(|scenario| {
+            json!({
+                "scenario": scenario,
+                "ratio_riffdb_over_postgres": if scenario == "create_comment" {
+                    unstable.clone()
+                } else {
+                    json!(1.0)
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+        let report = json!({
+            "comparisons": {
+                "available": true,
+                "seed": {"ratio_riffdb_over_postgres": 1.0},
+                "scenarios": scenarios,
+                "rep_summaries": {
+                    "seed_ratio": {"stability": "stable", "spread_ratio": 1.0},
+                    "scenario:create_comment": unstable,
+                },
+            }
+        });
+        let err = assert_write_parity(&report).expect_err("must refuse unstable scenario");
+        assert!(
+            err.contains("unstable") || err.contains("create_comment"),
+            "unexpected: {err}"
+        );
+        let req = require_stable(&report).expect_err("require-stable must fail");
+        assert!(req.contains("create_comment") || req.contains("unstable"));
+    }
+
+    #[test]
+    fn median_scenarios_ranks_p50_independently_of_execution_order() {
+        use riffdb_app_baseline_core::{SampleSet, ScenarioId, ScenarioResult};
+        // Unsorted reps: p50 values 300, 100, 200 → median 200 (not middle-in-order 100).
+        let mk = |p50: u64| ScenarioResult {
+            scenario: ScenarioId::CreateComment,
+            samples: SampleSet::from_nanos(vec![p50]),
+            last_row_count: 1,
+        };
+        let reps = vec![vec![mk(300)], vec![mk(100)], vec![mk(200)]];
+        let median = median_scenarios(&reps);
+        assert_eq!(median.len(), 1);
+        assert_eq!(median[0].samples.summary().p50_ns, 200);
     }
 }

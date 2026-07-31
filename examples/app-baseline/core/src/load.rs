@@ -812,11 +812,20 @@ where
     ready.wait();
     go.wait();
     // Shared warmup: all workers already issuing discarded traffic.
+    // On abort: store the reason, always signal stop, join every worker, then
+    // return the error — never drop JoinHandles while workers still loop.
+    let mut abort_reason: Option<String> = None;
     if !config.warmup.is_zero() {
-        sleep_with_abort(config.warmup, abort.as_ref())?;
+        if let Err(reason) = sleep_with_abort(config.warmup, abort.as_ref()) {
+            abort_reason = Some(reason);
+        }
     }
-    measuring.store(true, Ordering::Release);
-    sleep_with_abort(config.duration, abort.as_ref())?;
+    if abort_reason.is_none() {
+        measuring.store(true, Ordering::Release);
+        if let Err(reason) = sleep_with_abort(config.duration, abort.as_ref()) {
+            abort_reason = Some(reason);
+        }
+    }
     stop.store(true, Ordering::Release);
 
     let mut merged: Vec<(LoadOp, OpStats)> = LoadOp::all()
@@ -826,30 +835,50 @@ where
     let mut worker_measure_intervals = Vec::with_capacity(worker_count);
     let mut global_start: Option<Instant> = None;
     let mut global_end: Option<Instant> = None;
+    let mut join_error: Option<String> = None;
     for worker in workers {
-        let worker_result = worker
-            .join()
-            .map_err(|_| "load worker panicked".to_owned())??;
-        let interval = match (worker_result.measure_start, worker_result.measure_end) {
-            (Some(start), Some(end)) => {
-                global_start = Some(match global_start {
-                    Some(existing) => existing.min(start),
-                    None => start,
-                });
-                global_end = Some(match global_end {
-                    Some(existing) => existing.max(end),
-                    None => end,
-                });
-                end.saturating_duration_since(start)
+        match worker.join() {
+            Ok(Ok(worker_result)) => {
+                let interval = match (worker_result.measure_start, worker_result.measure_end) {
+                    (Some(start), Some(end)) => {
+                        global_start = Some(match global_start {
+                            Some(existing) => existing.min(start),
+                            None => start,
+                        });
+                        global_end = Some(match global_end {
+                            Some(existing) => existing.max(end),
+                            None => end,
+                        });
+                        end.saturating_duration_since(start)
+                    }
+                    _ => Duration::ZERO,
+                };
+                worker_measure_intervals.push(interval);
+                for (op, stats) in worker_result.by_op {
+                    if let Some((_, dst)) =
+                        merged.iter_mut().find(|(candidate, _)| *candidate == op)
+                    {
+                        dst.merge(&stats);
+                    }
+                }
             }
-            _ => Duration::ZERO,
-        };
-        worker_measure_intervals.push(interval);
-        for (op, stats) in worker_result.by_op {
-            if let Some((_, dst)) = merged.iter_mut().find(|(candidate, _)| *candidate == op) {
-                dst.merge(&stats);
+            Ok(Err(error)) => {
+                if join_error.is_none() {
+                    join_error = Some(error);
+                }
+            }
+            Err(_) => {
+                if join_error.is_none() {
+                    join_error = Some("load worker panicked".to_owned());
+                }
             }
         }
+    }
+    if let Some(reason) = abort_reason {
+        return Err(reason);
+    }
+    if let Some(error) = join_error {
+        return Err(error);
     }
     // Exact shared window covering every measured sample across all workers.
     let measured_elapsed = match (global_start, global_end) {
@@ -1515,6 +1544,172 @@ mod tests {
             "abort took too long: {:?}",
             started.elapsed()
         );
+    }
+
+    /// Stub backend that succeeds instantly so workers spin until `stop`.
+    struct CountingBackend {
+        ops: Arc<AtomicU64>,
+    }
+
+    impl AppBackend for CountingBackend {
+        type Error = String;
+
+        fn reset(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn seed(&mut self, _: &SeedDataset) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn load_error_class(_: &Self::Error) -> LoadErrorClass {
+            LoadErrorClass::Other
+        }
+        fn load_error_code(_: &Self::Error) -> Option<&str> {
+            None
+        }
+        fn point_get_ticket(
+            &mut self,
+            _: crate::UuidBytes,
+            _: crate::UuidBytes,
+        ) -> Result<Option<crate::TicketRow>, Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(None)
+        }
+        fn point_get_user(
+            &mut self,
+            _: crate::UuidBytes,
+            _: crate::UuidBytes,
+        ) -> Result<Option<crate::UserRow>, Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(None)
+        }
+        fn list_tickets_by_project_status(
+            &mut self,
+            _: crate::UuidBytes,
+            _: crate::UuidBytes,
+            _: crate::TicketStatus,
+            _: u32,
+        ) -> Result<Vec<crate::TicketRow>, Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(Vec::new())
+        }
+        fn list_open_tickets_for_assignee(
+            &mut self,
+            _: crate::UuidBytes,
+            _: crate::UuidBytes,
+            _: u32,
+        ) -> Result<Vec<crate::TicketRow>, Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(Vec::new())
+        }
+        fn list_comments_for_ticket(
+            &mut self,
+            _: crate::UuidBytes,
+            _: crate::UuidBytes,
+            _: u32,
+        ) -> Result<Vec<crate::CommentRow>, Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(Vec::new())
+        }
+        fn list_project_members(
+            &mut self,
+            _: crate::UuidBytes,
+            _: crate::UuidBytes,
+            _: u32,
+        ) -> Result<Vec<crate::ProjectMemberRow>, Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(Vec::new())
+        }
+        fn ticket_detail_page(
+            &mut self,
+            _: crate::UuidBytes,
+            _: crate::UuidBytes,
+            _: u32,
+        ) -> Result<Option<crate::TicketDetailPage>, Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(None)
+        }
+        fn create_comment(&mut self, _: &crate::CommentSeed) -> Result<(), Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn replay_comment(&mut self, _: &crate::CommentSeed) -> Result<(), Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn close_ticket_with_comment(
+            &mut self,
+            _: &crate::CloseTicketWithCommentSeed,
+        ) -> Result<(), Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn swap_member_roles(
+            &mut self,
+            _: &crate::SwapMemberRolesSeed,
+        ) -> Result<(), Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn open_ticket_with_labels(
+            &mut self,
+            _: &crate::OpenTicketWithLabelsSeed,
+        ) -> Result<(), Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn abort_joins_workers_before_returning() {
+        let ops = Arc::new(AtomicU64::new(0));
+        let started = Instant::now();
+        let abort: std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync> =
+            std::sync::Arc::new({
+                let start = Instant::now();
+                move || {
+                    if start.elapsed() >= Duration::from_millis(150) {
+                        Some("unit-test-abort".to_owned())
+                    } else {
+                        None
+                    }
+                }
+            });
+        let dataset = SeedDataset::generate(crate::Scale::smoke());
+        let mut config = LoadConfig::smoke(WorkloadProfile::Interactive);
+        config.clients = 4;
+        config.duration = Duration::from_secs(30);
+        config.warmup = Duration::ZERO;
+        let ops_factory = Arc::clone(&ops);
+        let result = run_closed_loop_load_with_abort(
+            "stub",
+            config,
+            LoadExecutionShape {
+                transport_topology: "test",
+                command_attempt_budget: 1,
+            },
+            &dataset,
+            0,
+            move || {
+                Ok(CountingBackend {
+                    ops: Arc::clone(&ops_factory),
+                })
+            },
+            Some(abort),
+        );
+        assert!(result.is_err(), "expected abort, got {result:?}");
+        assert!(
+            started.elapsed() <= Duration::from_secs(2),
+            "abort+join took {:?}",
+            started.elapsed()
+        );
+        let after_return = ops.load(Ordering::Relaxed);
+        thread::sleep(Duration::from_millis(80));
+        let later = ops.load(Ordering::Relaxed);
+        assert_eq!(
+            after_return, later,
+            "workers kept issuing ops after abort returned (detach bug)"
+        );
+        assert!(after_return > 0, "workers should have done some work");
     }
 
     #[test]
