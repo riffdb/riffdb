@@ -5,8 +5,10 @@ use std::fmt;
 use std::time::Duration;
 
 use futures_util::{StreamExt, stream};
-use riffdb_errors::{ApplicationError, ApplicationErrorContext, ApplicationOperation};
-use riffdb_proto::{app::v1 as app_v1, v1};
+use riffdb_errors::{
+    ApplicationError, ApplicationErrorContext, ApplicationOperation, ApplicationRecoveryAction,
+};
+use riffdb_proto::{app::v1 as app_v1, application_error_from_proto, v1};
 use tonic::transport::{Channel, Endpoint};
 
 use crate::{
@@ -195,26 +197,24 @@ impl StableApplicationClient {
         }))
         .buffer_unordered(transport_concurrency);
         let mut items = Vec::with_capacity(total - options.checkpoint);
-        let mut completed = options.checkpoint;
-        let mut checkpoint = options.checkpoint;
-        let mut completed_after_checkpoint = BTreeSet::new();
+        let mut progress_state = BatchCheckpointState::new(options.checkpoint);
         while let Some(completed_chunk) = pending.next().await {
             for (index, result) in completed_chunk {
-                completed += 1;
-                completed_after_checkpoint.insert(index);
-                while completed_after_checkpoint.remove(&checkpoint) {
-                    checkpoint += 1;
-                }
-                items.push(GeneratedBatchItem { index, result });
-                report_progress(GeneratedBatchProgress {
-                    completed,
+                record_generated_batch_item_completion(
+                    index,
+                    result,
                     total,
-                    checkpoint,
-                });
+                    &mut progress_state,
+                    &mut items,
+                    &mut report_progress,
+                );
             }
         }
         items.sort_by_key(|item| item.index);
-        Ok(GeneratedBatchResult { items, checkpoint })
+        Ok(GeneratedBatchResult {
+            items,
+            checkpoint: progress_state.checkpoint,
+        })
     }
 
     async fn execute_generated_transport_batch<C: GeneratedCommand + Clone>(
@@ -264,10 +264,8 @@ impl StableApplicationClient {
             )
             .await;
         let Ok(response) = response else {
-            // Some siblings may already be durable when a transport or one
-            // item fails the aggregate RPC. Re-enter every item through the
-            // normal same-idempotency-key recovery path; committed items
-            // replay and uncertain items are resolved independently.
+            // Transport-level or whole-RPC failure: re-enter every item through
+            // the normal same-idempotency-key recovery path.
             let recovered: Vec<_> = stream::iter(prepared.into_iter().map(|(index, command)| {
                 let mut client = self.clone();
                 let metadata = metadata.clone();
@@ -285,6 +283,26 @@ impl StableApplicationClient {
             return completed;
         };
 
+        // Prefer per-item carriage when present (ADR-0084). Older servers leave
+        // items empty and only populate legacy success rows.
+        if !response.items.is_empty() {
+            let recovered =
+                complete_batch_items_with_reentry(prepared, response.items, |index, command| {
+                    let mut client = self.clone();
+                    let metadata = metadata.clone();
+                    async move {
+                        let result = client
+                            .execute_generated_command(&command, attempts, &metadata)
+                            .await;
+                        (index, result)
+                    }
+                })
+                .await;
+            completed.extend(recovered);
+            return completed;
+        }
+
+        // Legacy items-absent path: positional zip on success rows.
         completed.extend(prepared.into_iter().zip(response.responses).map(
             |((index, command), response)| {
                 let outcome = command
@@ -298,6 +316,192 @@ impl StableApplicationClient {
         ));
         completed
     }
+}
+
+type ResolvedBatchItem<T> = (
+    usize,
+    Result<TypedCommandResult<T>, GeneratedExecutionError>,
+);
+
+/// One batch item scheduled for same-key re-entry.
+struct ReenterCandidate<C> {
+    index: usize,
+    command: C,
+    /// Defense-in-depth original protocol failure. Production wire validation
+    /// rejects unset/undecodable item arms before this path runs; when re-entry
+    /// is exhausted, this is surfaced instead of the generic re-entry error.
+    protocol_failure: Option<crate::ProtocolFailure>,
+}
+
+type BatchItemResolution<C> = (
+    Vec<ResolvedBatchItem<<C as GeneratedCommand>::Outcome>>,
+    Vec<ReenterCandidate<C>>,
+);
+
+/// Contiguous-progress counters for a generated command batch.
+struct BatchCheckpointState {
+    completed: usize,
+    checkpoint: usize,
+    completed_after_checkpoint: BTreeSet<usize>,
+}
+
+impl BatchCheckpointState {
+    /// Seeds completed/checkpoint from a retained resume checkpoint.
+    fn new(checkpoint: usize) -> Self {
+        Self {
+            completed: checkpoint,
+            checkpoint,
+            completed_after_checkpoint: BTreeSet::new(),
+        }
+    }
+}
+
+/// Records one independent batch item result and advances the contiguous checkpoint.
+///
+/// Checkpoint advances over every terminal result (Ok or Err). Callers must only
+/// invoke this after any same-key re-entry for the item has finished.
+fn record_generated_batch_item_completion<T, F>(
+    index: usize,
+    result: Result<TypedCommandResult<T>, GeneratedExecutionError>,
+    total: usize,
+    state: &mut BatchCheckpointState,
+    items: &mut Vec<GeneratedBatchItem<T>>,
+    report_progress: &mut F,
+) where
+    F: FnMut(GeneratedBatchProgress),
+{
+    state.completed += 1;
+    state.completed_after_checkpoint.insert(index);
+    while state.completed_after_checkpoint.remove(&state.checkpoint) {
+        state.checkpoint += 1;
+    }
+    items.push(GeneratedBatchItem { index, result });
+    report_progress(GeneratedBatchProgress {
+        completed: state.completed,
+        total,
+        checkpoint: state.checkpoint,
+    });
+}
+
+/// Classifies per-item batch carriage into terminal results and re-entry candidates.
+///
+/// Re-entry uses the registry-derived recovery action, not a hand-listed code set:
+/// [`ApplicationRecoveryAction::Retry`] and
+/// [`ApplicationRecoveryAction::ResolveWithSameIdempotencyKey`] re-enter
+/// `execute_generated_command` (same idempotency key; its AttemptBudget and
+/// Overloaded backoff then apply). Every other recovery action is terminal and
+/// surfaces directly with zero re-entry.
+///
+/// Undecodable error details and unset oneof arms are **defense-in-depth**:
+/// production clients reject both shapes at `validate_inbound` before an `Ok`
+/// batch response exists, so those wire defects arrive as transport-level
+/// protocol failures and take the blanket re-entry path. If a decoded response
+/// still reaches these arms, same-key re-entry is scheduled; when that re-entry
+/// is exhausted, the original protocol failure is surfaced as the item error.
+fn resolve_generated_batch_items<C: GeneratedCommand>(
+    prepared: Vec<(usize, C)>,
+    items: Vec<v1::ExecuteCommandBatchItem>,
+) -> BatchItemResolution<C> {
+    let mut resolved = Vec::with_capacity(prepared.len());
+    let mut reenter = Vec::new();
+    for ((index, command), item) in prepared.into_iter().zip(items) {
+        match item.result {
+            Some(v1::execute_command_batch_item::Result::Response(item_response)) => {
+                let outcome = command
+                    .decode_outcome(&item_response)
+                    .map_err(GeneratedExecutionError::CommandShape);
+                resolved.push((
+                    index,
+                    outcome.and_then(|outcome| typed_command_result(outcome, item_response)),
+                ));
+            }
+            Some(v1::execute_command_batch_item::Result::Error(error_wire)) => {
+                match application_error_from_proto(&error_wire) {
+                    Ok(error) if application_error_requires_reentry(&error) => {
+                        reenter.push(ReenterCandidate {
+                            index,
+                            command,
+                            protocol_failure: None,
+                        });
+                    }
+                    Ok(error) => {
+                        resolved.push((
+                            index,
+                            Err(GeneratedExecutionError::Client(ClientError::Application(
+                                Box::new(error),
+                            ))),
+                        ));
+                    }
+                    Err(_) => {
+                        reenter.push(ReenterCandidate {
+                            index,
+                            command,
+                            protocol_failure: Some(crate::ProtocolFailure::new(
+                                crate::ProtocolFailureKind::InvalidApplicationErrorDetails,
+                            )),
+                        });
+                    }
+                }
+            }
+            None => {
+                reenter.push(ReenterCandidate {
+                    index,
+                    command,
+                    protocol_failure: Some(crate::ProtocolFailure::new(
+                        crate::ProtocolFailureKind::InvalidInboundMessage,
+                    )),
+                });
+            }
+        }
+    }
+    (resolved, reenter)
+}
+
+/// Finishes one transport-batch response: keep terminal arms, re-enter the rest.
+async fn complete_batch_items_with_reentry<C, F, Fut>(
+    prepared: Vec<(usize, C)>,
+    items: Vec<v1::ExecuteCommandBatchItem>,
+    reenter_one: F,
+) -> Vec<ResolvedBatchItem<C::Outcome>>
+where
+    C: GeneratedCommand + Clone,
+    F: Fn(usize, C) -> Fut,
+    Fut: std::future::Future<
+            Output = (
+                usize,
+                Result<TypedCommandResult<C::Outcome>, GeneratedExecutionError>,
+            ),
+        >,
+{
+    let (mut resolved, reenter) = resolve_generated_batch_items(prepared, items);
+    if !reenter.is_empty() {
+        let recovered: Vec<_> = stream::iter(reenter.into_iter().map(|candidate| {
+            let protocol_failure = candidate.protocol_failure;
+            let reenter_one = &reenter_one;
+            async move {
+                let (index, result) = reenter_one(candidate.index, candidate.command).await;
+                let result = match (result, protocol_failure) {
+                    (Err(_), Some(failure)) => Err(GeneratedExecutionError::Client(
+                        ClientError::Protocol(failure),
+                    )),
+                    (other, _) => other,
+                };
+                (index, result)
+            }
+        }))
+        .buffer_unordered(MAX_GENERATED_TRANSPORT_BATCH_ITEMS)
+        .collect()
+        .await;
+        resolved.extend(recovered);
+    }
+    resolved
+}
+
+const fn application_error_requires_reentry(error: &ApplicationError) -> bool {
+    matches!(
+        error.recovery_action(),
+        ApplicationRecoveryAction::Retry | ApplicationRecoveryAction::ResolveWithSameIdempotencyKey
+    )
 }
 
 fn generated_transport_batch_policy(item_concurrency: usize) -> (usize, usize) {
@@ -1218,6 +1422,7 @@ const fn hex_nibble(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use riffdb_errors::ApplicationErrorCode;
 
     #[test]
     fn named_query_builder_is_name_addressed_and_module_pinned() {
@@ -1436,5 +1641,608 @@ mod tests {
         assert_eq!(generated_transport_batch_policy(64), (16, 4));
         assert_eq!(generated_transport_batch_policy(128), (16, 8));
         assert_eq!(generated_transport_batch_policy(17), (8, 2));
+    }
+
+    #[derive(Clone)]
+    struct StubBatchCommand {
+        outcome: &'static str,
+        key: &'static str,
+    }
+
+    impl GeneratedCommand for StubBatchCommand {
+        type Outcome = String;
+
+        fn idempotent_command(
+            &self,
+        ) -> Result<crate::IdempotentCommand, crate::generated::GeneratedCommandError> {
+            crate::IdempotentCommand::new(
+                "OkCommand",
+                Some(1),
+                v1::Value {
+                    kind: Some(v1::value::Kind::RecordValue(v1::ValueRecord {
+                        fields: vec![v1::ValueField {
+                            field_id: Some(1),
+                            name: String::new(),
+                            value: Some(v1::Value {
+                                kind: Some(v1::value::Kind::StringValue(self.key.to_owned())),
+                            }),
+                        }],
+                    })),
+                },
+            )
+            .map_err(|_| crate::generated::GeneratedCommandError::InvalidInputShape)
+        }
+
+        fn outcome_request(
+            &self,
+            request_id: riffdb_types::RequestId,
+        ) -> Result<v1::GetOutcomeRequest, crate::generated::GeneratedCommandError> {
+            Ok(v1::GetOutcomeRequest {
+                request_id: request_id.into_bytes().to_vec(),
+                contract_lineage: "lineage".to_owned(),
+                command_name: "OkCommand".to_owned(),
+                idempotency_key: self.key.to_owned(),
+                outcome_uri: None,
+            })
+        }
+
+        fn decode_outcome(
+            &self,
+            response: &v1::ExecuteCommandResponse,
+        ) -> Result<Self::Outcome, crate::generated::GeneratedCommandError> {
+            if response.outcome_type == self.outcome {
+                Ok(self.outcome.to_owned())
+            } else {
+                Err(crate::generated::GeneratedCommandError::InvalidOutcomeShape)
+            }
+        }
+    }
+
+    fn stub_command(outcome: &'static str, key: &'static str) -> StubBatchCommand {
+        StubBatchCommand { outcome, key }
+    }
+
+    fn stub_response(outcome: &str) -> v1::ExecuteCommandResponse {
+        v1::ExecuteCommandResponse {
+            status: v1::execute_command_response::CompletionStatus::ExecutedReadOnly as i32,
+            commit_sequence: 0,
+            contract_version: 1,
+            plan_hash: vec![0x44; 32],
+            outcome_type: outcome.to_owned(),
+            outcome: Some(v1::Value {
+                kind: Some(v1::value::Kind::NullValue(v1::NullValue::NullValue as i32)),
+            }),
+            provenance_uri: String::new(),
+            durability_mode: String::new(),
+            outcome_uri: None,
+            history_incarnation: 1,
+        }
+    }
+
+    fn stub_error_item(code: ApplicationErrorCode) -> v1::ExecuteCommandBatchItem {
+        v1::ExecuteCommandBatchItem {
+            result: Some(v1::execute_command_batch_item::Result::Error(
+                riffdb_proto::application_error_to_proto(&ApplicationError::new(
+                    code,
+                    ApplicationOperation::BatchCommand,
+                    ApplicationErrorContext::empty(),
+                    None,
+                )),
+            )),
+        }
+    }
+
+    fn application_overloaded() -> ClientError {
+        ClientError::Application(Box::new(ApplicationError::new(
+            ApplicationErrorCode::Overloaded,
+            ApplicationOperation::BatchCommand,
+            ApplicationErrorContext::empty(),
+            None,
+        )))
+    }
+
+    fn block_on_with_time<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime")
+            .block_on(future)
+    }
+
+    /// Scripted ExecuteRetryAttempt mirror of client.rs tests::ExecuteAttempts.
+    struct ScriptedExecuteAttempts {
+        results: std::collections::VecDeque<Result<v1::ExecuteCommandResponse, ClientError>>,
+        requests: Vec<v1::ExecuteCommandRequest>,
+    }
+
+    impl ScriptedExecuteAttempts {
+        fn new(
+            results: impl IntoIterator<Item = Result<v1::ExecuteCommandResponse, ClientError>>,
+        ) -> Self {
+            Self {
+                results: results.into_iter().collect(),
+                requests: Vec::new(),
+            }
+        }
+    }
+
+    impl crate::client::ExecuteRetryAttempt for ScriptedExecuteAttempts {
+        async fn submit_execute_attempt(
+            &mut self,
+            request: v1::ExecuteCommandRequest,
+            _metadata: &CallMetadata,
+        ) -> Result<v1::ExecuteCommandResponse, ClientError> {
+            self.requests.push(request);
+            self.results.pop_front().expect("scripted execute result")
+        }
+    }
+
+    struct FixedRequestIds {
+        values: std::collections::VecDeque<riffdb_types::RequestId>,
+    }
+
+    impl crate::client::RetryRequestIdSource for FixedRequestIds {
+        fn next_request_id(
+            &mut self,
+        ) -> Result<riffdb_types::RequestId, crate::IdentifierGenerationError> {
+            self.values
+                .pop_front()
+                .ok_or(crate::IdentifierGenerationError::EntropyUnavailable)
+        }
+    }
+
+    fn request_id(ordinal: u8) -> riffdb_types::RequestId {
+        riffdb_types::RequestId::from_unix_milliseconds_and_random(
+            u64::from(ordinal),
+            [ordinal; 10],
+        )
+        .expect("request id")
+    }
+
+    #[test]
+    fn batch_items_non_retryable_errors_surface_without_reentry_candidates() {
+        let prepared = vec![
+            (0, stub_command("Ok", "k0")),
+            (1, stub_command("Ok", "k1")),
+            (2, stub_command("Ok", "k2")),
+        ];
+        let items = vec![
+            v1::ExecuteCommandBatchItem {
+                result: Some(v1::execute_command_batch_item::Result::Response(
+                    stub_response("Ok"),
+                )),
+            },
+            stub_error_item(ApplicationErrorCode::InputInvalid),
+            stub_error_item(ApplicationErrorCode::AuthorizationDenied),
+        ];
+        let (resolved, reenter) = resolve_generated_batch_items(prepared, items);
+        assert!(reenter.is_empty(), "non-retryable errors must not re-enter");
+        assert_eq!(resolved.len(), 3);
+        assert!(resolved[0].1.is_ok());
+        assert!(matches!(
+            &resolved[1].1,
+            Err(GeneratedExecutionError::Client(ClientError::Application(error)))
+                if error.code() == ApplicationErrorCode::InputInvalid
+        ));
+        assert!(matches!(
+            &resolved[2].1,
+            Err(GeneratedExecutionError::Client(ClientError::Application(error)))
+                if error.code() == ApplicationErrorCode::AuthorizationDenied
+        ));
+        assert_eq!(
+            resolved.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn batch_items_registry_retryable_errors_are_reentry_candidates() {
+        let prepared = vec![
+            (0, stub_command("A", "k0")),
+            (1, stub_command("B", "k1")),
+            (2, stub_command("C", "k2")),
+            (3, stub_command("D", "k3")),
+        ];
+        let items = vec![
+            v1::ExecuteCommandBatchItem {
+                result: Some(v1::execute_command_batch_item::Result::Response(
+                    stub_response("A"),
+                )),
+            },
+            stub_error_item(ApplicationErrorCode::OutcomeUnknown),
+            stub_error_item(ApplicationErrorCode::Overloaded),
+            stub_error_item(ApplicationErrorCode::StorageUnavailable),
+        ];
+        let (resolved, reenter) = resolve_generated_batch_items(prepared, items);
+        assert_eq!(resolved.len(), 1);
+        assert!(resolved[0].1.is_ok());
+        assert_eq!(
+            reenter
+                .iter()
+                .map(|candidate| candidate.index)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3],
+            "Retry and ResolveWithSameIdempotencyKey must re-enter"
+        );
+        assert!(reenter.iter().all(|c| c.protocol_failure.is_none()));
+        assert_eq!(
+            ApplicationErrorCode::Overloaded.recovery_action(),
+            ApplicationRecoveryAction::Retry
+        );
+        assert_eq!(
+            ApplicationErrorCode::OutcomeUnknown.recovery_action(),
+            ApplicationRecoveryAction::ResolveWithSameIdempotencyKey
+        );
+    }
+
+    #[test]
+    fn batch_items_corrupt_or_unset_error_arms_reenter() {
+        let prepared = vec![
+            (0, stub_command("A", "k0")),
+            (1, stub_command("B", "k1")),
+            (2, stub_command("C", "k2")),
+        ];
+        let corrupt = v1::ExecuteCommandBatchItem {
+            result: Some(v1::execute_command_batch_item::Result::Error(
+                app_v1::ApplicationError {
+                    envelope_version: 0,
+                    code: 0,
+                    category: 0,
+                    recovery_action: 0,
+                    operation: 0,
+                    ..Default::default()
+                },
+            )),
+        };
+        let items = vec![
+            v1::ExecuteCommandBatchItem {
+                result: Some(v1::execute_command_batch_item::Result::Response(
+                    stub_response("A"),
+                )),
+            },
+            corrupt,
+            v1::ExecuteCommandBatchItem { result: None },
+        ];
+        let (resolved, reenter) = resolve_generated_batch_items(prepared, items);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(
+            reenter
+                .iter()
+                .map(|candidate| candidate.index)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(
+            reenter[0].protocol_failure.map(|f| f.kind()),
+            Some(crate::ProtocolFailureKind::InvalidApplicationErrorDetails)
+        );
+        assert_eq!(
+            reenter[1].protocol_failure.map(|f| f.kind()),
+            Some(crate::ProtocolFailureKind::InvalidInboundMessage)
+        );
+    }
+
+    #[test]
+    fn complete_batch_items_retries_all_overloaded_through_real_budget_and_succeeds() {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        let prepared = vec![
+            (0, stub_command("Ok", "k0")),
+            (1, stub_command("Ok", "k1")),
+            (2, stub_command("Ok", "k2")),
+        ];
+        let items = vec![
+            stub_error_item(ApplicationErrorCode::Overloaded),
+            stub_error_item(ApplicationErrorCode::Overloaded),
+            stub_error_item(ApplicationErrorCode::Overloaded),
+        ];
+        let attempt_counts: Arc<Mutex<HashMap<usize, usize>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let recovered = block_on_with_time(complete_batch_items_with_reentry(
+            prepared,
+            items,
+            |index, command| {
+                let attempt_counts = Arc::clone(&attempt_counts);
+                async move {
+                    let generic = command.idempotent_command().expect("stub command shape");
+                    let success = stub_response(command.outcome);
+                    let mut attempts = ScriptedExecuteAttempts::new([
+                        Err(application_overloaded()),
+                        Ok(success.clone()),
+                    ]);
+                    let mut ids = FixedRequestIds {
+                        values: [request_id(10 + index as u8), request_id(40 + index as u8)]
+                            .into_iter()
+                            .collect(),
+                    };
+                    let response = crate::client::execute_retry_attempts(
+                        &mut attempts,
+                        &generic,
+                        AttemptBudget::new(3).expect("budget"),
+                        &CallMetadata::default(),
+                        &mut ids,
+                    )
+                    .await
+                    .expect("capacity frees on second attempt");
+                    attempt_counts
+                        .lock()
+                        .expect("counts")
+                        .insert(index, attempts.requests.len());
+                    let outcome = command
+                        .decode_outcome(&response)
+                        .map_err(GeneratedExecutionError::CommandShape)
+                        .and_then(|outcome| typed_command_result(outcome, response));
+                    (index, outcome)
+                }
+            },
+        ));
+        assert_eq!(recovered.len(), 3);
+        assert!(recovered.iter().all(|(_, result)| result.is_ok()));
+        let counts = attempt_counts.lock().expect("counts");
+        assert_eq!(counts.len(), 3);
+        assert!(
+            counts.values().all(|count| *count > 1),
+            "mock must record multi-attempt real RetryState path: {counts:?}"
+        );
+    }
+
+    #[test]
+    fn complete_batch_items_real_budget_exhaustion_surfaces_err_while_siblings_succeed() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let prepared = vec![
+            (0, stub_command("Ok", "k0")),
+            (1, stub_command("Fail", "k1")),
+            (2, stub_command("Ok", "k2")),
+        ];
+        let items = vec![
+            v1::ExecuteCommandBatchItem {
+                result: Some(v1::execute_command_batch_item::Result::Response(
+                    stub_response("Ok"),
+                )),
+            },
+            stub_error_item(ApplicationErrorCode::Overloaded),
+            v1::ExecuteCommandBatchItem {
+                result: Some(v1::execute_command_batch_item::Result::Response(
+                    stub_response("Ok"),
+                )),
+            },
+        ];
+        let reenter_attempts = Arc::new(AtomicUsize::new(0));
+        let mut recovered = block_on_with_time(complete_batch_items_with_reentry(
+            prepared,
+            items,
+            |index, command| {
+                let reenter_attempts = Arc::clone(&reenter_attempts);
+                async move {
+                    let generic = command.idempotent_command().expect("stub command shape");
+                    // Budget of 2: both submissions fail Overloaded → Return after
+                    // exactly two real execute_retry_attempts submissions.
+                    let mut attempts = ScriptedExecuteAttempts::new([
+                        Err(application_overloaded()),
+                        Err(application_overloaded()),
+                    ]);
+                    let mut ids = FixedRequestIds {
+                        values: [request_id(20), request_id(21)].into_iter().collect(),
+                    };
+                    let budget = AttemptBudget::new(2).expect("budget");
+                    let error = crate::client::execute_retry_attempts(
+                        &mut attempts,
+                        &generic,
+                        budget,
+                        &CallMetadata::default(),
+                        &mut ids,
+                    )
+                    .await
+                    .expect_err("budget exhausted");
+                    reenter_attempts.store(attempts.requests.len(), Ordering::SeqCst);
+                    assert_eq!(
+                        attempts.requests.len(),
+                        budget.maximum_submissions() as usize
+                    );
+                    (index, Err(GeneratedExecutionError::Client(error)))
+                }
+            },
+        ));
+        recovered.sort_by_key(|(index, _)| *index);
+        assert_eq!(reenter_attempts.load(Ordering::SeqCst), 2);
+        assert!(recovered[0].1.is_ok());
+        assert!(matches!(
+            &recovered[1].1,
+            Err(GeneratedExecutionError::Client(ClientError::Application(error)))
+                if error.code() == ApplicationErrorCode::Overloaded
+        ));
+        assert!(recovered[2].1.is_ok());
+    }
+
+    #[test]
+    fn complete_batch_items_corrupt_error_arm_reenters_and_can_succeed() {
+        let prepared = vec![
+            (0, stub_command("Ok", "k0")),
+            (1, stub_command("Replay", "k1")),
+        ];
+        let items = vec![
+            v1::ExecuteCommandBatchItem {
+                result: Some(v1::execute_command_batch_item::Result::Response(
+                    stub_response("Ok"),
+                )),
+            },
+            v1::ExecuteCommandBatchItem {
+                result: Some(v1::execute_command_batch_item::Result::Error(
+                    app_v1::ApplicationError {
+                        envelope_version: 0,
+                        code: 0,
+                        category: 0,
+                        recovery_action: 0,
+                        operation: 0,
+                        ..Default::default()
+                    },
+                )),
+            },
+        ];
+        let mut recovered = block_on_with_time(complete_batch_items_with_reentry(
+            prepared,
+            items,
+            |index, command| async move {
+                (
+                    index,
+                    Ok(TypedCommandResult {
+                        outcome: command.outcome.to_owned(),
+                        commit_sequence: None,
+                        contract_version: 1,
+                        plan_hash: [0x55; 32],
+                        replayed: true,
+                        outcome_uri: None,
+                    }),
+                )
+            },
+        ));
+        recovered.sort_by_key(|(index, _)| *index);
+        assert_eq!(recovered.len(), 2);
+        assert!(recovered[0].1.is_ok());
+        assert_eq!(recovered[1].1.as_ref().expect("replayed").outcome, "Replay");
+    }
+
+    #[test]
+    fn complete_batch_items_corrupt_error_arm_surfaces_protocol_failure_on_reentry_exhaustion() {
+        let prepared = vec![(0, stub_command("Replay", "k0"))];
+        let items = vec![v1::ExecuteCommandBatchItem {
+            result: Some(v1::execute_command_batch_item::Result::Error(
+                app_v1::ApplicationError {
+                    envelope_version: 0,
+                    code: 0,
+                    category: 0,
+                    recovery_action: 0,
+                    operation: 0,
+                    ..Default::default()
+                },
+            )),
+        }];
+        let recovered = block_on_with_time(complete_batch_items_with_reentry(
+            prepared,
+            items,
+            |index, _command| async move {
+                // Re-entry itself fails (budget exhausted / still unknown).
+                (
+                    index,
+                    Err(GeneratedExecutionError::Client(ClientError::Application(
+                        Box::new(ApplicationError::new(
+                            ApplicationErrorCode::Overloaded,
+                            ApplicationOperation::BatchCommand,
+                            ApplicationErrorContext::empty(),
+                            None,
+                        )),
+                    ))),
+                )
+            },
+        ));
+        assert_eq!(recovered.len(), 1);
+        assert!(matches!(
+            &recovered[0].1,
+            Err(GeneratedExecutionError::Client(ClientError::Protocol(failure)))
+                if failure.kind() == crate::ProtocolFailureKind::InvalidApplicationErrorDetails
+        ));
+    }
+
+    #[test]
+    fn record_generated_batch_item_completion_advances_checkpoint_in_production_order() {
+        // Drive the production completion recorder (used by
+        // execute_generated_command_batch_with_progress) with mixed Ok/Err and
+        // out-of-order arrivals.
+        let mut items = Vec::new();
+        let mut state = BatchCheckpointState::new(0);
+        let mut progress = Vec::new();
+        let total = 3usize;
+
+        let ok = |label: &str| {
+            Ok(TypedCommandResult {
+                outcome: label.to_owned(),
+                commit_sequence: None,
+                contract_version: 1,
+                plan_hash: [0x11; 32],
+                replayed: false,
+                outcome_uri: None,
+            })
+        };
+        let err = Err(GeneratedExecutionError::Client(ClientError::Application(
+            Box::new(ApplicationError::new(
+                ApplicationErrorCode::InputInvalid,
+                ApplicationOperation::BatchCommand,
+                ApplicationErrorContext::empty(),
+                None,
+            )),
+        )));
+
+        // Out of order: 2, then 0, then 1(Err). Checkpoint stays 0 until 0 lands,
+        // then 1, then 3 once the Err at 1 closes the prefix.
+        record_generated_batch_item_completion(
+            2,
+            ok("two"),
+            total,
+            &mut state,
+            &mut items,
+            &mut |p| progress.push(p.checkpoint),
+        );
+        assert_eq!(state.checkpoint, 0);
+        record_generated_batch_item_completion(
+            0,
+            ok("zero"),
+            total,
+            &mut state,
+            &mut items,
+            &mut |p| progress.push(p.checkpoint),
+        );
+        assert_eq!(state.checkpoint, 1);
+        record_generated_batch_item_completion(1, err, total, &mut state, &mut items, &mut |p| {
+            progress.push(p.checkpoint)
+        });
+        assert_eq!(state.checkpoint, 3);
+        assert_eq!(progress, vec![0, 1, 3]);
+        assert_eq!(items.len(), 3);
+        assert!(
+            items
+                .iter()
+                .any(|item| item.index == 1 && item.result.is_err())
+        );
+    }
+
+    #[test]
+    fn record_generated_batch_item_completion_respects_resumed_checkpoint_seed() {
+        let mut items = Vec::new();
+        // Production seeds both completed and checkpoint from options.checkpoint.
+        let mut state = BatchCheckpointState::new(2);
+        let mut progress = Vec::new();
+        let total = 4usize;
+        let ok = |label: &str| {
+            Ok(TypedCommandResult {
+                outcome: label.to_owned(),
+                commit_sequence: None,
+                contract_version: 1,
+                plan_hash: [0x22; 32],
+                replayed: false,
+                outcome_uri: None,
+            })
+        };
+        record_generated_batch_item_completion(
+            2,
+            ok("two"),
+            total,
+            &mut state,
+            &mut items,
+            &mut |p| progress.push((p.completed, p.checkpoint)),
+        );
+        record_generated_batch_item_completion(
+            3,
+            ok("three"),
+            total,
+            &mut state,
+            &mut items,
+            &mut |p| progress.push((p.completed, p.checkpoint)),
+        );
+        assert_eq!(state.checkpoint, 4);
+        assert_eq!(state.completed, 4);
+        assert_eq!(progress, vec![(3, 3), (4, 4)]);
     }
 }

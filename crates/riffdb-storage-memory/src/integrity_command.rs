@@ -1,9 +1,8 @@
 //! Bounded reciprocal validation for the authoritative command graph.
 
 use riffdb_storage_api::{
-    AffectedEntityV1, IdempotencyIdentityKey, StoredAdmissionStateV1, StoredCommitRecordV1,
-    StoredOutcomeV1, StoredProvenanceRecordV1, StructuralFinding, StructuralFindingCode,
-    StructuralFindingScope,
+    IdempotencyIdentityKey, StoredAdmissionStateV1, StoredCommitRecordV1, StoredOutcomeV1,
+    StoredProvenanceRecordV1, StructuralFinding, StructuralFindingCode, StructuralFindingScope,
 };
 use riffdb_types::{CommitSequence, EventId, ProvenanceId};
 
@@ -83,17 +82,20 @@ pub(crate) fn inspect_commit_graph(state: &MemoryState, index: usize) -> Option<
         return mismatch();
     }
 
-    for mutation in commit.mutations() {
-        let Some(latest) = entity_commit(state, mutation.post_image().target()) else {
+    for reference in commit.entity_references() {
+        let Some(latest) = entity_commit(state, reference.target()) else {
             return missing();
         };
         if latest.commit_sequence < commit.commit_sequence() {
             return mismatch();
         }
-        if latest.commit_sequence == commit.commit_sequence()
-            && entity(state, mutation.post_image().target()) != Some(mutation.post_image())
-        {
-            return mismatch();
+        if latest.commit_sequence == commit.commit_sequence() {
+            let Some(current) = entity(state, reference.target()) else {
+                return missing();
+            };
+            if !reference.matches(current) {
+                return mismatch();
+            }
         }
     }
 
@@ -128,14 +130,14 @@ pub(crate) fn inspect_entity_graph(state: &MemoryState, index: usize) -> Option<
     let Some(commit) = commit(state, latest.commit_sequence) else {
         return missing();
     };
-    let Some(mutation) = commit
-        .mutations()
+    let Some(reference) = commit
+        .entity_references()
         .iter()
-        .find(|mutation| mutation.post_image().target() == entity.target())
+        .find(|reference| reference.target() == entity.target())
     else {
         return missing();
     };
-    if mutation.post_image() != entity {
+    if !reference.matches(entity) {
         return mismatch();
     }
     None
@@ -155,14 +157,14 @@ pub(crate) fn inspect_entity_commit_index(
     let Some(commit) = commit(state, row.commit_sequence) else {
         return missing();
     };
-    let Some(mutation) = commit
-        .mutations()
+    let Some(reference) = commit
+        .entity_references()
         .iter()
-        .find(|mutation| mutation.post_image().target() == &row.target)
+        .find(|reference| reference.target() == &row.target)
     else {
         return missing();
     };
-    if mutation.post_image() != entity {
+    if !reference.matches(entity) {
         return mismatch();
     }
     None
@@ -371,13 +373,14 @@ fn provenance_matches(
         && provenance.outcome_id() == commit.declared_outcome().outcome_id()
         && provenance.admitted_claims() == outcome.admitted_claims()
         && provenance.event_ids() == commit.outbox_event_ids()
-        && provenance.affected_entities().len() == commit.mutations().len()
+        && provenance.affected_entities().len() == commit.entity_references().len()
         && provenance
             .affected_entities()
             .iter()
-            .zip(commit.mutations())
-            .all(|(affected, mutation)| {
-                affected == &AffectedEntityV1::from_record(mutation.post_image())
+            .zip(commit.entity_references())
+            .all(|(affected, reference)| {
+                affected.target() == reference.target()
+                    && affected.entity_version() == reference.entity_version()
             })
 }
 

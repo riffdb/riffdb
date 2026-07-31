@@ -131,6 +131,24 @@ not a bulk mutation primitive:
 - the API-neutral application service and commit coordinator remain the only
   execution and authoritative-mutation path.
 
+Per-item result carriage (ADR-0084) extends the batch response with an
+always-populated, input-ordered `items` list whose length equals the request.
+Each item is exactly one of: the ordinary command response, or the typed
+application error for that item (captured from the service result, never
+reconstructed from transport status). Application-classified failures —
+including typed capacity rejection — are carried per item. Service-control
+failures without an application identity (cancellation, deadline,
+response-size, emergency containment) still fail the whole RPC.
+
+The legacy success-row field (`responses`) is populated if and only if every
+item succeeded, in which case it mirrors `items` positionally. On any item
+error it is empty — never partially populated — so old readers observe
+exactly the historical failed-batch behavior and positional misalignment is
+unrepresentable. SDKs consume `items` when present and re-enter same-key
+recovery only for outcome-uncertainty; certain errors surface directly.
+Absent `items` (older server), existing whole-RPC recovery behavior is
+unchanged.
+
 The adapter may authenticate the shared transport envelope once, but current
 policy authorization remains mandatory for every contained command. The
 batch surface MUST NOT accept field IDs, write sets, transaction callbacks, or

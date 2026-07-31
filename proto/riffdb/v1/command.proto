@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package riffdb.v1;
 
+import "riffdb/app/v1/application.proto";
 import "riffdb/v1/common.proto";
 import "riffdb/v1/value.proto";
 
@@ -40,8 +41,23 @@ message ExecuteCommandBatchRequest {
   repeated ExecuteCommandRequest commands = 1;
 }
 
+// One input-ordered batch item result. Exactly one arm is set: the ordinary
+// command response, or the typed application error for that item.
+message ExecuteCommandBatchItem {
+  oneof result {
+    ExecuteCommandResponse response = 1;
+    riffdb.app.v1.ApplicationError error = 2;
+  }
+}
+
 message ExecuteCommandBatchResponse {
+  // Legacy success rows. Populated if and only if every item succeeded, in
+  // which case responses[i] mirrors items[i]'s response arm. Empty when any
+  // item carries an error (never partially populated).
   repeated ExecuteCommandResponse responses = 1;
+  // Always populated, length equals the request command count. Prefer this
+  // field; see ADR-0084.
+  repeated ExecuteCommandBatchItem items = 2;
 }
 
 message GetOutcomeRequest {

@@ -12,7 +12,7 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 38;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 39;
 /// Number of durable semantic roles accepted for current writes.
 pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 33;
 /// Number of durable semantic roles accepted for current writes.
@@ -82,6 +82,14 @@ const EVENT_ROUTE_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
 const EVENT_ROUTE_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-event-route-v1-record-bound.bin"
+));
+const ENTITY_REFERENCE_V3_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-entity-reference-v3-schema-hash.bin"
+));
+const ENTITY_REFERENCE_V3_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-entity-reference-v3-record-bound.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
@@ -203,6 +211,19 @@ const fn event_route_v1_record_bound(offset: usize) -> usize {
         EVENT_ROUTE_V1_RECORD_BOUND_BYTES[offset + 1],
         EVENT_ROUTE_V1_RECORD_BOUND_BYTES[offset + 2],
         EVENT_ROUTE_V1_RECORD_BOUND_BYTES[offset + 3],
+    ]) as usize
+}
+
+const fn entity_reference_v3_schema_hash() -> SchemaHash {
+    SchemaHash::from_bytes(*ENTITY_REFERENCE_V3_SCHEMA_HASH_BYTES)
+}
+
+const fn entity_reference_v3_record_bound(offset: usize) -> usize {
+    u32::from_be_bytes([
+        ENTITY_REFERENCE_V3_RECORD_BOUND_BYTES[offset],
+        ENTITY_REFERENCE_V3_RECORD_BOUND_BYTES[offset + 1],
+        ENTITY_REFERENCE_V3_RECORD_BOUND_BYTES[offset + 2],
+        ENTITY_REFERENCE_V3_RECORD_BOUND_BYTES[offset + 3],
     ]) as usize
 }
 
@@ -415,6 +436,15 @@ const EVENT_ROUTE_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_cu
     validate_payload::<36, v1::StoredEventRouteV1>,
 )
 .with_compact_identity(33, 1);
+const COMMIT_V3_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredCommitRecordV3",
+    entity_reference_v3_schema_hash(),
+    entity_reference_v3_record_bound(0),
+    entity_reference_v3_record_bound(4),
+    preflight_payload::<37>,
+    validate_payload::<37, v1::StoredCommitRecordV3>,
+)
+.with_compact_identity(17, 3);
 
 mod sealed {
     pub trait ReadableRecordMessage {}
@@ -521,6 +551,7 @@ readable_message!(
     SERVICE_AUDIT_REQUEST_INDEX_V1_RECORD_SCHEMA
 );
 readable_message!(v1::StoredEventRouteV1, EVENT_ROUTE_V1_RECORD_SCHEMA);
+readable_message!(v1::StoredCommitRecordV3, COMMIT_V3_RECORD_SCHEMA);
 
 writable_message!(v1::StoredStorageFormatVersionV1);
 writable_message!(v1::StoredDatabaseIdentityV1);
@@ -549,7 +580,7 @@ writable_message!(v1::ActiveQueryModulePointerV1);
 writable_message!(v1::StoredQueryModuleAdministrationV1);
 writable_message!(v1::StoredIndexEntryV2);
 writable_message!(v1::StoredRecordRegistryV2);
-writable_message!(v1::StoredCommitRecordV2);
+writable_message!(v1::StoredCommitRecordV3);
 writable_message!(v1::StoredOutboxIntentV2);
 writable_message!(v1::StoredIndexGenerationV2);
 writable_message!(v1::StoredHistoryIncarnationV1);
@@ -612,6 +643,7 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     HISTORY_INCARNATION_V1_RECORD_SCHEMA,
     SERVICE_AUDIT_REQUEST_INDEX_V1_RECORD_SCHEMA,
     EVENT_ROUTE_V1_RECORD_SCHEMA,
+    COMMIT_V3_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
 ];
 
@@ -633,7 +665,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     CURRENT_V1_RECORD_SCHEMAS[13],
     OUTBOX_INTENT_V2_RECORD_SCHEMA,
     CURRENT_V1_RECORD_SCHEMAS[15],
-    COMMIT_V2_RECORD_SCHEMA,
+    COMMIT_V3_RECORD_SCHEMA,
     CURRENT_V1_RECORD_SCHEMAS[17],
     CURRENT_V1_RECORD_SCHEMAS[18],
     CURRENT_V1_RECORD_SCHEMAS[19],

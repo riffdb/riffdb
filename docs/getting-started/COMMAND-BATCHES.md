@@ -52,7 +52,8 @@ recorded item failure for import policy purposes. Authorization, contract,
 validation, and idempotency-reuse failures are also terminal and resumable.
 Transport uncertainty, cancellation, deadlines, and storage unavailability
 remain pending; a later invocation resubmits the identical command input and
-key through normal idempotency recovery.
+key through normal idempotency recovery. Response-size rejection is a terminal
+recorded item failure under the CLI path (one ordinary `Execute` per line).
 
 The checkpoint is also the stable receipt. It is replaced atomically after each
 completed item. A killed client may lose only knowledge of a completion, never
@@ -80,19 +81,37 @@ Persist that checkpoint and pass it back when resuming; skipped inputs are never
 resubmitted, while any uncertain later item still retains its original
 idempotency key.
 
-Generated batch methods do not introduce a second protocol. They call the
-ordinary generated command method for every item, preserve the idempotency key
-already declared in each typed input, and never claim collection atomicity.
-Consequently the server may physically group compatible durable transitions
-while every caller still receives an independent outcome and uncertainty
-classification.
+Generated batch methods do not introduce a second write semantic. The Rust SDK
+may coalesce independent items into the public bounded transport batch
+(`ExecuteBatch`, at most 16 items) while preserving each item's idempotency
+key, typed outcome, and uncertainty classification. The server may also
+physically group compatible durable transitions; callers still receive
+independent per-item results.
 
-## Why this is not a server batch RPC
+## Per-item results and recovery
 
-The existing unary application-command protocol already multiplexes requests
-over one reusable HTTP/2 connection. Bounded client concurrency removes the
-sequential round-trip cost that made seed data slow without creating a second
-write semantic. Keeping every item on the ordinary path means capability
-revocation, deadlines, contract selection, provenance, command validation,
-commit sequencing, crash recovery, and typed outcomes retain exactly their
-single-command definitions.
+Current servers return an always-populated, input-ordered item list on the
+batch response (ADR-0084). Each item is either the ordinary command response
+or a typed application error that names the batch operation. Sibling
+successes stay intact when one item fails. The Rust SDK classifies each item
+error by its registry-derived recovery action: `Retry` and
+`ResolveWithSameIdempotencyKey` re-enter that item through ordinary
+same-idempotency-key recovery (with the same attempt budget and Overloaded
+backoff as a single command); other recovery actions surface immediately as
+certain failures with zero re-entry. Service-control failures (cancellation,
+deadline, response size, emergency containment) still fail the whole
+transport RPC. Older servers that omit the item list keep the historical
+whole-RPC recovery path.
+
+A batch checkpoint is the largest contiguous input prefix that already has
+an independent terminal result (success or non-reentered failure after the
+item's attempt budget). Resume skips that prefix and never resubmits those
+indices; retryable items are re-entered inside the original batch call before
+the checkpoint advances past them.
+
+## Why batching is not a bulk-write API
+
+Bounded transport and client concurrency amortize admission without creating
+a second write semantic. Every item still has its own authorization,
+idempotency, provenance, commit sequencing, crash recovery, and typed
+outcome — exactly the single-command definitions.

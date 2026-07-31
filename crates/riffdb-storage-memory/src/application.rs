@@ -2456,7 +2456,11 @@ mod tests {
             Vec::new(),
             StoredReadDependenciesV1::from_live(snapshot.read_dependencies())
                 .expect("stored dependencies"),
-            mutations.clone(),
+            mutations
+                .iter()
+                .map(riffdb_storage_api::CommittedEntityReferenceV2::from_mutation)
+                .collect::<Result<Vec<_>, _>>()
+                .expect("entity references"),
             vec![event.clone()],
             outcome,
             provenance_id,

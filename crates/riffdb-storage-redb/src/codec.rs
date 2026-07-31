@@ -114,6 +114,13 @@ borrowed_codec!(
     decode_contract_bundle_v1
 );
 
+pub(crate) fn decode_commit_entity_references(
+    encoded: &[u8],
+) -> Result<storage::EncodedPageItem<Vec<storage::CommittedEntityReferenceV2>>, storage::StorageError>
+{
+    storage::decode_commit_entity_references(encoded).map_err(codec_error)
+}
+
 pub(crate) fn decode_commit_event_references(
     encoded: &[u8],
 ) -> Result<storage::EncodedPageItem<Vec<storage::EventReferenceV2>>, storage::StorageError> {

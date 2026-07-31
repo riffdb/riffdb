@@ -19,12 +19,12 @@ use crate::{
     CapabilityAdministrationOperationV1, CapabilityBootstrapMarkerV1, CapabilityGrantV1,
     CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
     CapabilityRequestedRecordV1, CapabilityTokenLookupV1, CheckedProjectionSchema,
-    CommandWriteSetPlanV1, CommitIntent, CommittedEntityMutationV1, DeclaredOutcome,
-    DurabilityMode, DurableKeySchemaBindingV1, EntityFieldVisibilityV1, EntityMutation,
-    EntityObservation, EntityPostImage, EntityTarget, EvaluatedCommand, EvaluationBudget,
-    ExecutablePlanRef, ExpectedEntityState, IdempotencyKeyDigest, OutboxDestinationIdV1,
-    OutboxRetryMetadataV1, OutboxSafeErrorV1, PartitionIndexTarget, PartitionScopeV1,
-    PreEvaluationCommitContext, ReadSnapshot, ScopedPartitionV1, SnapshotRequest,
+    CommandWriteSetPlanV1, CommitIntent, CommittedEntityMutationV1, CommittedEntityReferenceV2,
+    DeclaredOutcome, DurabilityMode, DurableKeySchemaBindingV1, EntityFieldVisibilityV1,
+    EntityMutation, EntityObservation, EntityPostImage, EntityTarget, EvaluatedCommand,
+    EvaluationBudget, ExecutablePlanRef, ExpectedEntityState, IdempotencyKeyDigest,
+    OutboxDestinationIdV1, OutboxRetryMetadataV1, OutboxSafeErrorV1, PartitionIndexTarget,
+    PartitionScopeV1, PreEvaluationCommitContext, ReadSnapshot, ScopedPartitionV1, SnapshotRequest,
     StoredAdmittedProvenanceClaimsV1, StoredCapabilityAdministrationV1, StoredCapabilityRecordV1,
     StoredCatalogAdministrationV1, StoredCommitRecordV1, StoredContractBundleV1,
     StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
@@ -34,7 +34,7 @@ use crate::{
     StoredServiceAuditRecordV1,
 };
 
-use super::super::command_write_set_upper_bound_v1;
+use crate::command_write_set_upper_bound_v1;
 
 pub(super) fn uuid_v7(fill: u8) -> [u8; 16] {
     let mut bytes = [fill; 16];
@@ -281,7 +281,11 @@ pub(super) fn atomic_record_set() -> AtomicCommandRecordSet {
         partition_hash,
         Vec::new(),
         read_dependencies,
-        mutations.clone(),
+        mutations
+            .iter()
+            .map(CommittedEntityReferenceV2::from_mutation)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("entity references"),
         events.clone(),
         outcome,
         provenance_id(),
@@ -299,8 +303,8 @@ pub(super) fn atomic_record_set() -> AtomicCommandRecordSet {
         AffectedEpochCurrentState::new(&affected_targets, Vec::new()).expect("affected state");
     let encoded_upper_bound =
         match command_write_set_upper_bound_v1(&intent, &[], &[]).expect("encoded upper bound") {
-            super::super::EncodedWriteSetUpperBoundResultV1::Fits(bound) => bound,
-            super::super::EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_) => {
+            crate::EncodedWriteSetUpperBoundResultV1::Fits(bound) => bound,
+            crate::EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_) => {
                 panic!("small sample must fit the aggregate cap")
             }
         };
