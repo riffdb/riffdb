@@ -1025,7 +1025,11 @@ pub fn get_commit_request_from_proto(
 ) -> Result<(RequestId, GetCommitRequest), Status> {
     let request_id = request_id_from_bytes(&request.request_id)?;
     let sequence = CommitSequence::new(request.commit_sequence).ok_or_else(invalid_request)?;
-    Ok((request_id, GetCommitRequest::new(sequence)))
+    Ok((
+        request_id,
+        GetCommitRequest::new(sequence)
+            .with_observed_history_incarnation(request.observed_history_incarnation),
+    ))
 }
 
 /// Converts one bounded commit scan request.
@@ -1034,7 +1038,11 @@ pub fn scan_commits_request_from_proto(
 ) -> Result<(RequestId, ScanCommitsRequest), Status> {
     let request_id = request_id_from_bytes(&request.request_id)?;
     let page = page_request_from_proto(request.page.ok_or_else(invalid_request)?)?;
-    Ok((request_id, ScanCommitsRequest::new(page)))
+    Ok((
+        request_id,
+        ScanCommitsRequest::new(page)
+            .with_observed_history_incarnation(request.observed_history_incarnation),
+    ))
 }
 
 /// Converts one bounded commit-subscription establishment request.
@@ -1045,7 +1053,8 @@ pub fn subscribe_commits_request_from_proto(
     let after = optional_sequence(request.after_sequence)?;
     let request =
         SubscribeToCommitsRequest::new(after, Duration::from_nanos(request.maximum_lifetime_nanos))
-            .map_err(|_| invalid_request())?;
+            .map_err(|_| invalid_request())?
+            .with_observed_history_incarnation(request.observed_history_incarnation);
     Ok((request_id, request))
 }
 
@@ -1076,6 +1085,7 @@ pub fn trace_provenance_request_from_proto(
 /// Converts one filtered commit lookup result.
 pub fn get_commit_result_to_proto(
     result: &GetCommitResult,
+    history_incarnation: u64,
 ) -> Result<v1::GetCommitResponse, Status> {
     let result = match result {
         GetCommitResult::NotFound => v1::get_commit_response::Result::NotFound(v1::Unit {}),
@@ -1085,12 +1095,14 @@ pub fn get_commit_result_to_proto(
     };
     Ok(v1::GetCommitResponse {
         result: Some(result),
+        history_incarnation,
     })
 }
 
 /// Converts one upper-fenced, already policy-filtered commit page.
 pub fn scan_commits_result_to_proto(
     result: &ScanCommitsResult,
+    history_incarnation: u64,
 ) -> Result<v1::ScanCommitsResponse, Status> {
     let page = result.page();
     let items = page
@@ -1103,6 +1115,7 @@ pub fn scan_commits_result_to_proto(
             items,
             next_cursor: page.next_cursor().map(|cursor| cursor.as_bytes().to_vec()),
             observed_fence: Some(frontier_to_proto(page.observed_fence().position())),
+            history_incarnation,
         }),
     })
 }
@@ -1110,6 +1123,7 @@ pub fn scan_commits_result_to_proto(
 /// Converts one post-establishment commit stream item or typed terminal item.
 pub fn commit_subscription_event_to_proto(
     event: &CommitSubscriptionEvent,
+    history_incarnation: u64,
 ) -> Result<v1::CommitNotification, Status> {
     let notification = match event {
         CommitSubscriptionEvent::Commit(commit) => {
@@ -1141,11 +1155,13 @@ pub fn commit_subscription_event_to_proto(
             v1::commit_notification::Notification::Terminal(v1::CommitSubscriptionTerminal {
                 reason: reason as i32,
                 resume_after: Some(frontier_to_proto(terminal.resume_after())),
+                history_incarnation,
             })
         }
     };
     Ok(v1::CommitNotification {
         notification: Some(notification),
+        history_incarnation,
     })
 }
 
@@ -1317,9 +1333,12 @@ pub const fn projection_failure_code(code: ProjectionFailureCode) -> v1::Project
 /// Converts a checked command result, including exact read-only sentinels.
 pub fn execute_command_result_to_proto(
     result: &ExecuteCommandResult,
+    history_incarnation: u64,
 ) -> Result<v1::ExecuteCommandResponse, Status> {
     match result {
-        ExecuteCommandResult::Journaled(result) => journaled_command_result_to_proto(result),
+        ExecuteCommandResult::Journaled(result) => {
+            journaled_command_result_to_proto(result, history_incarnation)
+        }
         ExecuteCommandResult::ReadOnlyExecuted(result) => {
             let outcome = result.outcome();
             Ok(v1::ExecuteCommandResponse {
@@ -1332,6 +1351,7 @@ pub fn execute_command_result_to_proto(
                 provenance_uri: String::new(),
                 durability_mode: String::new(),
                 outcome_uri: None,
+                history_incarnation,
             })
         }
     }
@@ -1340,6 +1360,7 @@ pub fn execute_command_result_to_proto(
 /// Converts a durable command result with only production durability values.
 pub fn journaled_command_result_to_proto(
     result: &JournaledCommandResult,
+    history_incarnation: u64,
 ) -> Result<v1::ExecuteCommandResponse, Status> {
     let status = match result.completion() {
         JournaledCompletion::Committed => v1::execute_command_response::CompletionStatus::Committed,
@@ -1360,19 +1381,21 @@ pub fn journaled_command_result_to_proto(
         provenance_uri: format!("riffdb://provenance/{}", result.provenance_id()),
         durability_mode: durability_mode.to_owned(),
         outcome_uri: Some(result.outcome_locator().canonical_uri().to_owned()),
+        history_incarnation,
     })
 }
 
 /// Converts a checked outcome lookup without fabricating a first-execution result.
 pub fn resolve_outcome_result_to_proto(
     result: &ResolveCommandOutcomeResult,
+    history_incarnation: u64,
 ) -> Result<v1::GetOutcomeResponse, Status> {
     let result = match result {
         ResolveCommandOutcomeResult::NotFound => {
             v1::get_outcome_response::Result::NotFound(v1::Unit {})
         }
         ResolveCommandOutcomeResult::Found(result) => v1::get_outcome_response::Result::Found(
-            journaled_command_result_to_proto(result.journaled())?,
+            journaled_command_result_to_proto(result.journaled(), history_incarnation)?,
         ),
     };
     Ok(v1::GetOutcomeResponse {
@@ -1647,51 +1670,54 @@ pub fn get_contract_version_result_to_proto(
 pub fn discover_command_tools_result_to_proto(
     result: &DiscoverCommandToolsResult,
     current_generation: [u8; 16],
+    history_incarnation: u64,
 ) -> Result<v1::DiscoverCommandToolsResponse, Status> {
-    let result = match result.result() {
-        DiscoverCommandToolsResultRef::CatalogUnchanged(fence) => {
-            v1::discover_command_tools_response::Result::CatalogUnchanged(discovery_fence_to_proto(
-                fence,
-                current_generation,
-            )?)
-        }
-        DiscoverCommandToolsResultRef::Page {
-            page,
-            operation_schemas,
-        } => {
-            let items = page
-                .items()
-                .iter()
-                .map(command_tool_discovery_item_to_proto)
-                .collect::<Result<Vec<_>, _>>()?;
-            v1::discover_command_tools_response::Result::Page(v1::CommandToolDiscoveryPage {
-                items,
-                next_cursor: page.next_cursor().map(|cursor| cursor.as_bytes().to_vec()),
-                observed_fence: Some(discovery_fence_to_proto(
-                    page.observed_fence(),
-                    current_generation,
-                )?),
-                operation_schemas: Some(operation_schema_catalog_to_proto(operation_schemas)),
-            })
-        }
-        DiscoverCommandToolsResultRef::CompactPage(page) => {
-            let items = page
-                .items()
-                .iter()
-                .map(compact_command_tool_discovery_item_to_proto)
-                .collect::<Result<Vec<_>, _>>()?;
-            v1::discover_command_tools_response::Result::CompactPage(
-                v1::CompactCommandToolDiscoveryPage {
+    let result =
+        match result.result() {
+            DiscoverCommandToolsResultRef::CatalogUnchanged(fence) => {
+                v1::discover_command_tools_response::Result::CatalogUnchanged(
+                    discovery_fence_to_proto(fence, current_generation, history_incarnation)?,
+                )
+            }
+            DiscoverCommandToolsResultRef::Page {
+                page,
+                operation_schemas,
+            } => {
+                let items = page
+                    .items()
+                    .iter()
+                    .map(command_tool_discovery_item_to_proto)
+                    .collect::<Result<Vec<_>, _>>()?;
+                v1::discover_command_tools_response::Result::Page(v1::CommandToolDiscoveryPage {
                     items,
                     next_cursor: page.next_cursor().map(|cursor| cursor.as_bytes().to_vec()),
                     observed_fence: Some(discovery_fence_to_proto(
                         page.observed_fence(),
                         current_generation,
+                        history_incarnation,
                     )?),
-                },
-            )
-        }
-    };
+                    operation_schemas: Some(operation_schema_catalog_to_proto(operation_schemas)),
+                })
+            }
+            DiscoverCommandToolsResultRef::CompactPage(page) => {
+                let items = page
+                    .items()
+                    .iter()
+                    .map(compact_command_tool_discovery_item_to_proto)
+                    .collect::<Result<Vec<_>, _>>()?;
+                v1::discover_command_tools_response::Result::CompactPage(
+                    v1::CompactCommandToolDiscoveryPage {
+                        items,
+                        next_cursor: page.next_cursor().map(|cursor| cursor.as_bytes().to_vec()),
+                        observed_fence: Some(discovery_fence_to_proto(
+                            page.observed_fence(),
+                            current_generation,
+                            history_incarnation,
+                        )?),
+                    },
+                )
+            }
+        };
     Ok(v1::DiscoverCommandToolsResponse {
         result: Some(result),
     })
@@ -1701,12 +1727,14 @@ pub fn discover_command_tools_result_to_proto(
 pub fn discover_resources_result_to_proto(
     result: &DiscoverResourcesResult,
     current_generation: [u8; 16],
+    history_incarnation: u64,
 ) -> Result<v1::DiscoverResourcesResponse, Status> {
     let result = match result.result() {
         DiscoverResourcesResultRef::CatalogUnchanged(fence) => {
             v1::discover_resources_response::Result::CatalogUnchanged(discovery_fence_to_proto(
                 fence,
                 current_generation,
+                history_incarnation,
             )?)
         }
         DiscoverResourcesResultRef::Page(page) => {
@@ -1721,6 +1749,7 @@ pub fn discover_resources_result_to_proto(
                 observed_fence: Some(discovery_fence_to_proto(
                     page.observed_fence(),
                     current_generation,
+                    history_incarnation,
                 )?),
             })
         }
@@ -1736,6 +1765,7 @@ pub fn discover_resources_result_to_proto(
                 observed_fence: Some(discovery_fence_to_proto(
                     page.observed_fence(),
                     current_generation,
+                    history_incarnation,
                 )?),
             })
         }
@@ -2130,7 +2160,10 @@ fn offline_maintenance_operation_id_from_bytes(
 
 /// Converts the restricted or authenticated Health result without widening it.
 #[must_use]
-pub fn health_result_to_proto(result: &HealthResult) -> v1::HealthResponse {
+pub fn health_result_to_proto(
+    result: &HealthResult,
+    history_incarnation: u64,
+) -> v1::HealthResponse {
     let result = match result {
         HealthResult::PreBootstrap(report) => {
             let lifecycle = match report.lifecycle() {
@@ -2201,6 +2234,7 @@ pub fn health_result_to_proto(result: &HealthResult) -> v1::HealthResponse {
                     contract_ir_version: build.contract_ir_version(),
                     mcp_protocol_baseline: build.mcp_protocol_baseline().to_owned(),
                 }),
+                history_incarnation,
             })
         }
     };
@@ -2213,13 +2247,17 @@ pub fn health_result_to_proto(result: &HealthResult) -> v1::HealthResponse {
 
 /// Converts fixed authenticated statistics without adding extensible counters.
 #[must_use]
-pub fn statistics_result_to_proto(result: StatisticsResult) -> v1::StatsResponse {
+pub fn statistics_result_to_proto(
+    result: StatisticsResult,
+    history_incarnation: u64,
+) -> v1::StatsResponse {
     v1::StatsResponse {
         active_cursors: result.active_cursors(),
         active_commit_subscribers: u32::from(result.active_commit_subscribers()),
         last_commit_sequence: result.last_commit_sequence().map(CommitSequence::get),
         pending_outbox_deliveries: result.pending_outbox_deliveries(),
         known_projections: result.known_projections(),
+        history_incarnation,
     }
 }
 
@@ -2855,6 +2893,7 @@ fn exact_hash(bytes: &[u8]) -> Result<[u8; 32], Status> {
 fn discovery_fence_to_proto(
     fence: &DiscoveryCatalogFence,
     current_generation: [u8; 16],
+    history_incarnation: u64,
 ) -> Result<v1::DiscoveryCatalogFence, Status> {
     let accepted = OperationSchemaCatalog::accepted()
         .map_err(|_| invalid_service_response())?
@@ -2882,6 +2921,7 @@ fn discovery_fence_to_proto(
         operation_schemas: Some(operation_schema_catalog_identity_to_proto(
             fence.operation_schemas(),
         )),
+        history_incarnation,
     })
 }
 
@@ -3332,6 +3372,7 @@ mod tests {
             )),
             server_generation: generation.to_vec(),
             operation_schemas: Some(operation_schema_catalog_identity_to_proto(&identity)),
+            history_incarnation: 1,
         }
     }
 
@@ -3651,7 +3692,7 @@ mod tests {
         let semantic = request.prior_fence().expect("semantic prior").clone();
         let result = DiscoverCommandToolsResult::catalog_unchanged(&request, semantic)
             .expect("equal semantic catalog");
-        let response = discover_command_tools_result_to_proto(&result, generation)
+        let response = discover_command_tools_result_to_proto(&result, generation, 1)
             .expect("join presentation generation");
         let Some(v1::discover_command_tools_response::Result::CatalogUnchanged(fence)) =
             response.result

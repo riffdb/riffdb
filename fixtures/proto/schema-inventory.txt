@@ -484,6 +484,8 @@ messages
   riffdb.storage.v1.StoredExecutionFailedV1 fields=2
     1 pending optional .riffdb.storage.v1.StoredPendingAdmissionV1
     2 code optional .riffdb.storage.v1.ExecutionFailureCodeV1
+  riffdb.storage.v1.StoredHistoryIncarnationV1 fields=1
+    1 incarnation optional uint64
   riffdb.storage.v1.StoredIndexEntryV1 fields=3
     1 index_entry_key optional bytes
     2 schema_binding optional .riffdb.storage.v1.DurableKeySchemaBindingV1
@@ -614,13 +616,14 @@ messages
   riffdb.v1.AffectedEntity fields=2
     1 entity_key optional bytes
     2 entity_version optional uint64
-  riffdb.v1.AuthenticatedHealth fields=6
+  riffdb.v1.AuthenticatedHealth fields=7
     1 status optional .riffdb.v1.HealthStatus
     2 active_contract_version optional uint64 proto3-optional oneof=_active_contract_version
     3 last_commit_sequence optional uint64 proto3-optional oneof=_last_commit_sequence
     4 components repeated .riffdb.v1.HealthComponent
     5 started_at optional .riffdb.v1.Timestamp
     6 build optional .riffdb.v1.BuildInfo
+    7 history_incarnation optional uint64
   riffdb.v1.BindingFieldRef fields=2
     1 binding_id optional uint32
     2 field_id optional uint32
@@ -731,19 +734,22 @@ messages
     14 outcome optional .riffdb.v1.DeclaredOutcome
     15 provenance_uri optional string
     16 durability optional .riffdb.v1.CommandDurability
-  riffdb.v1.CommitNotification fields=2
+  riffdb.v1.CommitNotification fields=3
     1 commit optional .riffdb.v1.Commit oneof=notification
     2 terminal optional .riffdb.v1.CommitSubscriptionTerminal oneof=notification
-  riffdb.v1.CommitPage fields=3
+    3 history_incarnation optional uint64
+  riffdb.v1.CommitPage fields=4
     1 items repeated .riffdb.v1.Commit
     2 next_cursor optional bytes proto3-optional oneof=_next_cursor
     3 observed_fence optional .riffdb.v1.FrontierPosition
+    4 history_incarnation optional uint64
   riffdb.v1.CommitResource fields=2
     1 class_template optional .riffdb.v1.Unit oneof=target
     2 commit_sequence optional uint64 oneof=target
-  riffdb.v1.CommitSubscriptionTerminal fields=2
+  riffdb.v1.CommitSubscriptionTerminal fields=3
     1 reason optional .riffdb.v1.CommitSubscriptionEndReason
     2 resume_after optional .riffdb.v1.FrontierPosition
+    3 history_incarnation optional uint64
   riffdb.v1.CompactCommandToolDescriptor fields=7
     1 tool_name optional string
     2 source_command optional string
@@ -863,11 +869,12 @@ messages
     1 catalog_unchanged optional .riffdb.v1.DiscoveryCatalogFence oneof=result
     2 page optional .riffdb.v1.ResourceDiscoveryPage oneof=result
     3 compact_page optional .riffdb.v1.CompactResourceDiscoveryPage oneof=result
-  riffdb.v1.DiscoveryCatalogFence fields=4
+  riffdb.v1.DiscoveryCatalogFence fields=5
     1 no_active_contract optional .riffdb.v1.Unit oneof=state
     2 active_contract optional .riffdb.v1.ActiveDiscoveryCatalogFence oneof=state
     3 server_generation optional bytes
     4 operation_schemas optional .riffdb.v1.OperationSchemaCatalogIdentity
+    5 history_incarnation optional uint64
   riffdb.v1.DurableEvent fields=3
     1 event_id optional .riffdb.v1.EventId
     2 event_type_id optional uint32
@@ -904,7 +911,7 @@ messages
     2 command_name optional string
     3 expected_contract_version optional uint64 proto3-optional oneof=_expected_contract_version
     4 input optional .riffdb.v1.Value
-  riffdb.v1.ExecuteCommandResponse fields=9
+  riffdb.v1.ExecuteCommandResponse fields=10
     1 status optional .riffdb.v1.ExecuteCommandResponse.CompletionStatus
     2 commit_sequence optional uint64
     3 contract_version optional uint64
@@ -914,6 +921,7 @@ messages
     7 provenance_uri optional string
     8 durability_mode optional string
     9 outcome_uri optional string proto3-optional oneof=_outcome_uri
+    10 history_incarnation optional uint64
   riffdb.v1.ExpectedActiveVersionMismatch fields=1
     1 actual_active_version optional uint64 proto3-optional oneof=_actual_active_version
   riffdb.v1.ExplainCommandRequest fields=3
@@ -952,12 +960,14 @@ messages
     1 absent optional .riffdb.v1.Unit oneof=result
     2 present optional .riffdb.v1.ContractDescriptor oneof=result
     3 database_alias optional string
-  riffdb.v1.GetCommitRequest fields=2
+  riffdb.v1.GetCommitRequest fields=3
     1 request_id optional bytes
     2 commit_sequence optional uint64
-  riffdb.v1.GetCommitResponse fields=2
+    3 observed_history_incarnation optional uint64 proto3-optional oneof=_observed_history_incarnation
+  riffdb.v1.GetCommitResponse fields=3
     1 not_found optional .riffdb.v1.Unit oneof=result
     2 found optional .riffdb.v1.Commit oneof=result
+    3 history_incarnation optional uint64
   riffdb.v1.GetContractVersionRequest fields=3
     1 request_id optional bytes
     2 contract_lineage optional string
@@ -1203,9 +1213,10 @@ messages
     1 revoked optional .riffdb.v1.CapabilityTransition oneof=result
     2 already_revoked optional .riffdb.v1.CapabilityTransition oneof=result
     3 capability_not_found optional .riffdb.v1.Unit oneof=result
-  riffdb.v1.ScanCommitsRequest fields=2
+  riffdb.v1.ScanCommitsRequest fields=3
     1 request_id optional bytes
     2 page optional .riffdb.v1.PageRequest
+    3 observed_history_incarnation optional uint64 proto3-optional oneof=_observed_history_incarnation
   riffdb.v1.ScanCommitsResponse fields=1
     1 page optional .riffdb.v1.CommitPage
   riffdb.v1.ScanIndexRequest fields=6
@@ -1239,16 +1250,18 @@ messages
     2 end optional uint32
   riffdb.v1.StatsRequest fields=1
     1 request_id optional bytes
-  riffdb.v1.StatsResponse fields=5
+  riffdb.v1.StatsResponse fields=6
     1 active_cursors optional uint32
     2 active_commit_subscribers optional uint32
     3 last_commit_sequence optional uint64 proto3-optional oneof=_last_commit_sequence
     4 pending_outbox_deliveries optional uint64 proto3-optional oneof=_pending_outbox_deliveries
     5 known_projections optional uint32 proto3-optional oneof=_known_projections
-  riffdb.v1.SubscribeCommitsRequest fields=3
+    6 history_incarnation optional uint64
+  riffdb.v1.SubscribeCommitsRequest fields=4
     1 request_id optional bytes
     2 after_sequence optional uint64 proto3-optional oneof=_after_sequence
     3 maximum_lifetime_nanos optional uint64
+    4 observed_history_incarnation optional uint64 proto3-optional oneof=_observed_history_incarnation
   riffdb.v1.SyntaxDiagnostic fields=5
     1 code optional string
     2 summary optional string

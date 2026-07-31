@@ -743,8 +743,8 @@ mod tests {
         BootstrapServiceAuditStartV1, CapabilityBootstrapMarkerV1, CapabilityGrantV1,
         CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
         CapabilityRequestedRecordV1, CapabilityTokenLookupV1, CatalogActivationIntentV1,
-        PartitionScopeV1, RetainedMetadataV1, RevocationReasonCodeV1, ServiceAuditAppendIntentV1,
-        StorageFormatVersion, StoredContractBundleV1,
+        HISTORY_INCARNATION_INITIAL, PartitionScopeV1, RetainedMetadataV1, RevocationReasonCodeV1,
+        ServiceAuditAppendIntentV1, StorageFormatVersion, StoredContractBundleV1,
     };
     use riffdb_types::{
         ActorId, ActorKind, Audience, CapabilityTokenDigest, ContractBundleHash, ContractLineage,
@@ -1049,6 +1049,7 @@ mod tests {
             AdministrationSequenceAllocator::next(
                 AdministrationSequence::new(4).expect("next administration sequence"),
             ),
+            HISTORY_INCARNATION_INITIAL,
             None,
             Some(marker),
         )

@@ -469,7 +469,7 @@ shape!(PROJECTION_CONTROL [
     message(7, &PROJECTION_FAILURE),
 ]);
 
-const ROOTS: [&Shape; 34] = [
+const ROOTS: [&Shape; 35] = [
     &Shape { rules: &[] },
     &Shape {
         rules: &[fixed_bytes(1, 16)],
@@ -510,6 +510,8 @@ const ROOTS: [&Shape; 34] = [
     &COMMIT_V2,
     &OUTBOX_INTENT_V2,
     &INDEX_GENERATION_V2,
+    // StoredHistoryIncarnationV1 is a single scalar varint; preflight ignores wire-type 0.
+    &Shape { rules: &[] },
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

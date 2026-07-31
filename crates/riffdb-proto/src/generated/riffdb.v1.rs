@@ -51,6 +51,8 @@ pub struct AuthenticatedHealth {
     pub started_at: ::core::option::Option<Timestamp>,
     #[prost(message, optional, tag = "6")]
     pub build: ::core::option::Option<BuildInfo>,
+    #[prost(uint64, tag = "7")]
+    pub history_incarnation: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HealthResponse {
@@ -88,6 +90,8 @@ pub struct StatsResponse {
     pub pending_outbox_deliveries: ::core::option::Option<u64>,
     #[prost(uint32, optional, tag = "5")]
     pub known_projections: ::core::option::Option<u32>,
+    #[prost(uint64, tag = "6")]
+    pub history_incarnation: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LineageScopedStableId {
@@ -1063,6 +1067,8 @@ pub struct ExecuteCommandResponse {
     pub durability_mode: ::prost::alloc::string::String,
     #[prost(string, optional, tag = "9")]
     pub outcome_uri: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint64, tag = "10")]
+    pub history_incarnation: u64,
 }
 /// Nested message and enum types in `ExecuteCommandResponse`.
 pub mod execute_command_response {
@@ -1211,9 +1217,13 @@ pub struct GetCommitRequest {
     pub request_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(uint64, tag = "2")]
     pub commit_sequence: u64,
+    #[prost(uint64, optional, tag = "3")]
+    pub observed_history_incarnation: ::core::option::Option<u64>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetCommitResponse {
+    #[prost(uint64, tag = "3")]
+    pub history_incarnation: u64,
     #[prost(oneof = "get_commit_response::Result", tags = "1, 2")]
     pub result: ::core::option::Option<get_commit_response::Result>,
 }
@@ -1235,6 +1245,8 @@ pub struct CommitPage {
     pub next_cursor: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
     #[prost(message, optional, tag = "3")]
     pub observed_fence: ::core::option::Option<FrontierPosition>,
+    #[prost(uint64, tag = "4")]
+    pub history_incarnation: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ScanCommitsRequest {
@@ -1242,6 +1254,8 @@ pub struct ScanCommitsRequest {
     pub request_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(message, optional, tag = "2")]
     pub page: ::core::option::Option<PageRequest>,
+    #[prost(uint64, optional, tag = "3")]
+    pub observed_history_incarnation: ::core::option::Option<u64>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ScanCommitsResponse {
@@ -1254,6 +1268,8 @@ pub struct CommitSubscriptionTerminal {
     pub reason: i32,
     #[prost(message, optional, tag = "2")]
     pub resume_after: ::core::option::Option<FrontierPosition>,
+    #[prost(uint64, tag = "3")]
+    pub history_incarnation: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SubscribeCommitsRequest {
@@ -1263,9 +1279,13 @@ pub struct SubscribeCommitsRequest {
     pub after_sequence: ::core::option::Option<u64>,
     #[prost(uint64, tag = "3")]
     pub maximum_lifetime_nanos: u64,
+    #[prost(uint64, optional, tag = "4")]
+    pub observed_history_incarnation: ::core::option::Option<u64>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CommitNotification {
+    #[prost(uint64, tag = "3")]
+    pub history_incarnation: u64,
     #[prost(oneof = "commit_notification::Notification", tags = "1, 2")]
     pub notification: ::core::option::Option<commit_notification::Notification>,
 }
@@ -2040,6 +2060,8 @@ pub struct DiscoveryCatalogFence {
     pub server_generation: ::prost::alloc::vec::Vec<u8>,
     #[prost(message, optional, tag = "4")]
     pub operation_schemas: ::core::option::Option<OperationSchemaCatalogIdentity>,
+    #[prost(uint64, tag = "5")]
+    pub history_incarnation: u64,
     #[prost(oneof = "discovery_catalog_fence::State", tags = "1, 2")]
     pub state: ::core::option::Option<discovery_catalog_fence::State>,
 }

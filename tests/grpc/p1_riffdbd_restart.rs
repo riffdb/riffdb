@@ -311,6 +311,8 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
                 request_id: fresh_request_id_bytes()?,
                 after_sequence: Some(2),
                 maximum_lifetime_nanos: 300_000_000_000,
+
+                observed_history_incarnation: None,
             },
             &authenticated,
         ),

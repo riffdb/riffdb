@@ -29,6 +29,7 @@ pub(crate) struct ProductionLifecycleRoute {
     activated: OnceLock<Arc<dyn ApplicationService>>,
     security: OnceLock<CheckedGrpcSecurityContext>,
     server_generation: OnceLock<ServerGenerationV1>,
+    history_incarnation: OnceLock<u64>,
     recovery: OnceLock<Arc<dyn RecoveryOfflineMaintenanceApplication>>,
     restore_retry: OnceLock<Arc<dyn RestoreRetryOfflineMaintenanceApplication>>,
     restore_retry_security: OnceLock<CheckedGrpcRestoreRetrySecurityContext>,
@@ -64,6 +65,7 @@ impl ProductionLifecycleRoute {
             activated: OnceLock::new(),
             security: OnceLock::new(),
             server_generation: OnceLock::new(),
+            history_incarnation: OnceLock::new(),
             recovery: OnceLock::new(),
             restore_retry: OnceLock::new(),
             restore_retry_security: OnceLock::new(),
@@ -82,6 +84,7 @@ impl ProductionLifecycleRoute {
         service: Arc<dyn ApplicationService>,
         security: CheckedGrpcSecurityContext,
         server_generation: ServerGenerationV1,
+        history_incarnation: u64,
         lifecycle: ValidatedStartupLifecycle,
         capacity: ValidatedAllocatorCapacity,
     ) -> Result<(), LifecycleInstallError> {
@@ -93,6 +96,7 @@ impl ProductionLifecycleRoute {
         if self.activated.get().is_some()
             || self.security.get().is_some()
             || self.server_generation.get().is_some()
+            || self.history_incarnation.get().is_some()
         {
             return Err(LifecycleInstallError::AlreadyInstalled);
         }
@@ -104,6 +108,9 @@ impl ProductionLifecycleRoute {
             .map_err(|_| LifecycleInstallError::AlreadyInstalled)?;
         self.server_generation
             .set(server_generation)
+            .map_err(|_| LifecycleInstallError::AlreadyInstalled)?;
+        self.history_incarnation
+            .set(history_incarnation)
             .map_err(|_| LifecycleInstallError::AlreadyInstalled)?;
 
         if lifecycle != ValidatedStartupLifecycle::BootstrapRequired {
@@ -278,6 +285,20 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
             return None;
         }
         self.server_generation.get().map(ServerGenerationV1::bytes)
+    }
+
+    fn history_incarnation(&self) -> Option<u64> {
+        if !self.maintenance.ordinary_admission_available() {
+            return None;
+        }
+        let state = self.lock_state();
+        if matches!(
+            state.model.stage,
+            LifecycleStage::InitializingValidation | LifecycleStage::Stopped
+        ) {
+            return None;
+        }
+        self.history_incarnation.get().copied()
     }
 
     fn restricted_health(&self, request: HealthRequest) -> Option<ServiceFuture<'_, HealthResult>> {
@@ -919,6 +940,7 @@ mod tests {
                 Arc::clone(&service),
                 test_security_context(),
                 test_server_generation(),
+                1,
                 lifecycle,
                 ValidatedAllocatorCapacity::Available,
             )
@@ -1146,6 +1168,7 @@ mod tests {
                 Arc::clone(&activated),
                 test_security_context(),
                 test_server_generation(),
+                1,
                 ValidatedStartupLifecycle::ActiveContract,
                 ValidatedAllocatorCapacity::Available,
             )
@@ -1166,6 +1189,7 @@ mod tests {
                 Arc::new(ClosedApplicationService),
                 test_security_context(),
                 test_server_generation(),
+                1,
                 ValidatedStartupLifecycle::ActiveContract,
                 ValidatedAllocatorCapacity::Available,
             ),
@@ -1412,6 +1436,7 @@ mod tests {
                 Arc::clone(&activated),
                 test_security_context(),
                 test_server_generation(),
+                1,
                 ValidatedStartupLifecycle::ActiveContract,
                 ValidatedAllocatorCapacity::Available,
             )

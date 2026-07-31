@@ -86,6 +86,8 @@ fn entity_result_positions(bytes: &[u8]) -> [bool; 4] {
     let commit = commit_with_entity_key(bytes.to_vec());
     let get_commit = v1::GetCommitResponse {
         result: Some(v1::get_commit_response::Result::Found(commit.clone())),
+
+        history_incarnation: 1,
     };
     let scan_commits = v1::ScanCommitsResponse {
         page: Some(v1::CommitPage {
@@ -94,10 +96,14 @@ fn entity_result_positions(bytes: &[u8]) -> [bool; 4] {
             observed_fence: Some(v1::FrontierPosition {
                 position: Some(v1::frontier_position::Position::AppliedThrough(1)),
             }),
+
+            history_incarnation: 1,
         }),
     };
     let notification = v1::CommitNotification {
         notification: Some(v1::commit_notification::Notification::Commit(commit)),
+
+        history_incarnation: 1,
     };
     [
         validate_public_message(&entity).is_ok(),
