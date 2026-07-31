@@ -643,6 +643,10 @@ impl NodeCounter {
             Declaration::Event(event) => {
                 self.add(1, declaration.span)?;
                 self.name(&event.name)?;
+                if let Some(partition_by) = &event.partition_by {
+                    self.add(1, partition_by.span)?;
+                    self.names(&partition_by.value, partition_by.span)?;
+                }
                 self.collection(event.fields.len(), MAX_DECLARATION_ITEMS, declaration.span)?;
                 for field in &event.fields {
                     self.add(1, field.span)?;
