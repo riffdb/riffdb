@@ -35,7 +35,8 @@ The application boundary deliberately has these semantics:
 - a checksummed checkpoint containing only source/item digests and safe public
   results, never command inputs, capability tokens, or idempotency keys;
 - automatic resume only when the exact source bytes, command identity,
-  checkpoint checksum, and every completed item digest still agree.
+  expected contract version, checkpoint checksum, and every completed item
+  digest still agree.
 
 The client parses and validates the entire bounded source before submitting the
 first item. Malformed input, duplicate idempotency keys, an invalid checkpoint,
@@ -56,6 +57,13 @@ key through normal idempotency recovery.
 The checkpoint is also the stable receipt. It is replaced atomically after each
 completed item. A killed client may lose only knowledge of a completion, never
 the server's idempotency identity; replay recovers the already durable result.
+An application deploy scopes its generated seed-checkpoint filename to the
+locked contract version. A successor therefore starts a distinct checkpoint
+without deleting the predecessor receipt. A manually selected checkpoint from
+another version fails with
+`batch_checkpoint_contract_version_mismatch`, naming the checkpoint file and
+both versions; resume it against its original version or archive it after
+reviewing the prior outcomes.
 
 Generated Rust and TypeScript clients expose the same bounded policy for every
 symbolic command. Rust emits `create_ticket_batch(inputs, options)` and returns

@@ -96,6 +96,16 @@ struct ApplicationDeploymentRoleState {
 }
 
 #[derive(Serialize)]
+struct BatchCheckpointContractVersionError<'a> {
+    code: &'static str,
+    message: &'static str,
+    checkpoint_file: &'a str,
+    checkpoint_contract_version: Option<u64>,
+    requested_contract_version: Option<u64>,
+    recovery_action: &'static str,
+}
+
+#[derive(Serialize)]
 struct ApplicationModuleIdentityError<'a> {
     code: &'static str,
     message: &'static str,
@@ -667,11 +677,16 @@ async fn application_command(
     };
     let locked = match load_locked_application(Path::new(&source), Some(Path::new(&lock))) {
         Ok(locked) => locked,
-        Err(_) => {
-            return local_error(
-                identity,
-                "application_lock_inexact",
-                "application source, lock, and generated artifacts are not exact",
+        Err(error) => {
+            return error.diagnostics().map_or_else(
+                || {
+                    local_error(
+                        identity,
+                        "application_lock_inexact",
+                        "application source, lock, and generated artifacts are not exact; run application check for the exact failing artifact, then review and write the lock",
+                    )
+                },
+                |diagnostics| authoring_error(identity, diagnostics),
             );
         }
     };
@@ -1286,7 +1301,11 @@ async fn application_command(
             else {
                 return invalid_input(identity);
             };
-            let checkpoint = deployment_root.join(format!("seed-{index:03}.checkpoint.json"));
+            let checkpoint = seed_checkpoint_path(
+                &deployment_root,
+                index,
+                locked.manifest().contract().version(),
+            );
             let terminal = command_command(
                 CommandCommand::Batch {
                     command_name: command_name.to_owned(),
@@ -1467,6 +1486,12 @@ fn prepare_deployment_root(root: &Path, database: &str) -> Result<PathBuf, ()> {
         fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).map_err(|_| ())?;
     }
     Ok(selected)
+}
+
+fn seed_checkpoint_path(root: &Path, index: usize, contract_version: u64) -> PathBuf {
+    root.join(format!(
+        "seed-{index:03}-contract-v{contract_version}.checkpoint.json"
+    ))
 }
 
 fn load_deployment_state(
@@ -4150,8 +4175,30 @@ fn batch_error_terminal(error: BatchError) -> Terminal {
         BatchError::CheckpointInvalid => local_error(
             CommandIdentity::CommandBatch,
             "batch_checkpoint_invalid",
-            "the batch checkpoint does not match its checksum, command, or source",
+            "the batch checkpoint does not match its checksum, command, or source; archive the checkpoint only after reviewing whether the prior batch must be resumed",
         ),
+        BatchError::CheckpointContractVersionMismatch {
+            checkpoint_file,
+            checkpoint_contract_version,
+            requested_contract_version,
+        } => {
+            const CODE: &str = "batch_checkpoint_contract_version_mismatch";
+            const MESSAGE: &str = "the batch checkpoint belongs to another contract version and cannot be resumed for this invocation";
+            local_error_with(
+                CommandIdentity::CommandBatch,
+                &BatchCheckpointContractVersionError {
+                    code: CODE,
+                    message: MESSAGE,
+                    checkpoint_file: &checkpoint_file,
+                    checkpoint_contract_version,
+                    requested_contract_version,
+                    recovery_action: "resume with the checkpoint's original contract version, or archive it and start a new batch checkpoint after reviewing prior outcomes",
+                },
+                CODE,
+                MESSAGE,
+                2,
+            )
+        }
         BatchError::CheckpointWriteFailed => local_error(
             CommandIdentity::CommandBatch,
             "batch_checkpoint_write_failed",
@@ -4774,6 +4821,20 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn seed_checkpoints_are_contract_version_scoped() {
+        let root = Path::new(".riffdb/deployments/ea");
+
+        assert_eq!(
+            seed_checkpoint_path(root, 0, 4),
+            root.join("seed-000-contract-v4.checkpoint.json")
+        );
+        assert_ne!(
+            seed_checkpoint_path(root, 0, 2),
+            seed_checkpoint_path(root, 0, 4)
+        );
+    }
 
     #[derive(Default)]
     struct TestEnvironment(BTreeMap<String, OsString>);

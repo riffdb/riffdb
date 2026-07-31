@@ -2309,6 +2309,9 @@ fn wire_record_fields(value: v1::Value) -> Result<BTreeMap<u32, v1::Value>, Gene
     Ok(fields)
 }
 fn take_wire_field(fields: &mut BTreeMap<u32, v1::Value>, id: u32) -> Result<v1::Value, GeneratedCommandError> { fields.remove(&id).ok_or(GeneratedCommandError::InvalidOutcomeShape) }
+fn decode_wire_optional<T>(value: v1::Value, decode: impl FnOnce(v1::Value) -> Result<T, GeneratedCommandError>) -> Result<Option<T>, GeneratedCommandError> {
+    if matches!(value.kind.as_ref(), Some(WireKind::NullValue(_))) { Ok(None) } else { decode(value).map(Some) }
+}
 fn decode_wire_bool(value: v1::Value) -> Result<bool, GeneratedCommandError> { if let Some(WireKind::BoolValue(value)) = value.kind { Ok(value) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
 fn decode_wire_i64(value: v1::Value) -> Result<i64, GeneratedCommandError> { if let Some(WireKind::I64Value(value)) = value.kind { Ok(value) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
 fn decode_wire_u64(value: v1::Value) -> Result<u64, GeneratedCommandError> { if let Some(WireKind::U64Value(value)) = value.kind { Ok(value) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }

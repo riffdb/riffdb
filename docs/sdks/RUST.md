@@ -35,6 +35,12 @@ The exact generated names come from your contract and lock. Treat a changed
 generated diff like an API change: review the source change and new lock before
 accepting it.
 
+Generated entity and outcome decoders consume every wire field exactly once.
+An `optional<T>` field maps a wire null to `None` and a present value to
+`Some(T)` through the same typed decoder used for required fields. This applies
+to command outcomes as well as query results; application code never probes or
+removes a field by its compiler ID.
+
 ## Retry rule
 
 Use one caller-owned idempotency key for one logical command and retain it until
