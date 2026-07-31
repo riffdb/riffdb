@@ -933,6 +933,8 @@ const fn service_terminal_tag(terminal: ServiceTerminalClass) -> u8 {
         ServiceTerminalClass::DeadlineExceeded => 12,
         ServiceTerminalClass::ResponseTooLarge => 13,
         ServiceTerminalClass::EmergencyInternal => 14,
+        ServiceTerminalClass::HistoryIncarnationMismatch => 15,
+        ServiceTerminalClass::Overloaded => 16,
     }
 }
 

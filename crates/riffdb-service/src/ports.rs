@@ -1054,11 +1054,15 @@ pub enum ServiceTerminalClass {
     ResponseTooLarge,
     /// Internal containment could not obtain an incident identity.
     EmergencyInternal,
+    /// Observed history predates a database restore.
+    HistoryIncarnationMismatch,
+    /// Admission rejected the request because the service is over capacity.
+    Overloaded,
 }
 
 impl ServiceTerminalClass {
     /// Every terminal class in stable metric order.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 16] = [
         Self::Succeeded,
         Self::Validation,
         Self::IdempotencyMismatch,
@@ -1073,6 +1077,8 @@ impl ServiceTerminalClass {
         Self::DeadlineExceeded,
         Self::ResponseTooLarge,
         Self::EmergencyInternal,
+        Self::HistoryIncarnationMismatch,
+        Self::Overloaded,
     ];
 }
 
