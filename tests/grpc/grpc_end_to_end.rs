@@ -55,7 +55,7 @@ use riffdb_types::{
     CommitSequence, ContractBundleHash, ContractLineage, ContractPlanRootHash, ContractVersion,
     DatabaseId, Environment, FrontierPosition, OfflineMaintenanceInputHash,
     OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
-    OfflineMaintenanceReplacementConfirmation, PartitionScopeV1, ProjectionGeneration,
+    OfflineMaintenanceReplacementConfirmation, PartitionScopeV1, PlanHash, ProjectionGeneration,
     ProjectionId, ProjectionIdentity, ProjectionPlanHash, RequestId, ServiceIngressKindV1,
     ServiceOperationV1, SourceHash, TenantScope, Timestamp, offline_maintenance_input_hash,
 };
@@ -310,12 +310,37 @@ impl ContractApplication for ProjectionService {
 }
 
 impl riffdb_service::CommandApplication for ProjectionService {
-    denied_operation!(
-        execute_command,
-        RequestContext,
-        riffdb_service::ExecuteCommandRequest,
-        riffdb_service::ExecuteCommandResult
-    );
+    fn execute_command(
+        &self,
+        context: RequestContext,
+        request: riffdb_service::ExecuteCommandRequest,
+    ) -> ServiceFuture<'_, riffdb_service::ExecuteCommandResult> {
+        self.observe(&context, ServiceOperationV1::ExecuteCommand);
+        let name = request.command().as_str().to_owned();
+        Box::pin(async move {
+            match name.as_str() {
+                "Overloaded" => Err(ServiceFailure::from(PublicError::overloaded())),
+                "InputInvalid" => Err(ServiceFailure::from(PublicError::validation(
+                    ValidationIssues::one(ValidationIssue::new(
+                        ValidationCode::InvalidValue,
+                        ValidationPath::root(),
+                    )),
+                ))),
+                _ => {
+                    let result = riffdb_service::ReadOnlyCommandResult::integration_fixture(
+                        ContractLineage::new(LINEAGE).expect("lineage"),
+                        ContractVersion::new(1).expect("version"),
+                        PlanHash::from_bytes([0x44; 32]),
+                        "Completed",
+                    )
+                    .expect("fixture read-only result");
+                    Ok(riffdb_service::ExecuteCommandResult::ReadOnlyExecuted(
+                        result,
+                    ))
+                }
+            }
+        })
+    }
     fn resolve_command_outcome(
         &self,
         context: RequestContext,
@@ -892,6 +917,7 @@ impl GrpcLifecycleRoute for ActiveRoute {
             operation,
             ServiceOperationV1::QueryProjection
                 | ServiceOperationV1::GetContractVersion
+                | ServiceOperationV1::ExecuteCommand
                 | ServiceOperationV1::ResolveCommandOutcome
                 | ServiceOperationV1::GetProjectionStatus
                 | ServiceOperationV1::TraceProvenance
@@ -2119,4 +2145,154 @@ fn assert_applied_through(frontier: Option<v1::FrontierPosition>, expected: u64)
         frontier.and_then(|frontier| frontier.position),
         Some(v1::frontier_position::Position::AppliedThrough(sequence)) if sequence == expected
     ));
+}
+
+fn empty_command_input() -> v1::Value {
+    v1::Value {
+        kind: Some(v1::value::Kind::RecordValue(v1::ValueRecord {
+            fields: Vec::new(),
+        })),
+    }
+}
+
+fn batch_command(ordinal: u8, name: &str) -> v1::ExecuteCommandRequest {
+    v1::ExecuteCommandRequest {
+        request_id: request_id(ordinal).into_bytes().to_vec(),
+        command_name: name.to_owned(),
+        expected_contract_version: None,
+        input: Some(empty_command_input()),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn execute_batch_carries_per_item_results_over_authenticated_loopback() {
+    let database_id =
+        DatabaseId::from_unix_milliseconds_and_random(77, [0x77; 10]).expect("valid database ID");
+    let environment = Environment::new("grpc-batch").expect("valid environment");
+    let audience = Audience::new("grpc-loopback").expect("valid audience");
+    let principal = authenticated_principal(database_id, environment.clone(), audience.clone());
+    let service = Arc::new(ProjectionService::new());
+    let application_service: Arc<dyn ApplicationService> = service.clone();
+    let authenticator: Arc<dyn CredentialAuthenticator> =
+        Arc::new(AcceptingAuthenticator { principal });
+    let capability_keys = Arc::new(
+        CapabilityDigestKeyProvider::parse_document(CAPABILITY_KEYS)
+            .expect("valid capability key fixture"),
+    );
+    let security = CheckedGrpcSecurityContext::new(
+        authenticator,
+        AuthenticationContext::new(database_id, environment, audience),
+        capability_keys,
+    );
+    let route: Arc<dyn GrpcLifecycleRoute> = Arc::new(ActiveRoute {
+        service: application_service,
+        security,
+    });
+    let application = GrpcApplication::new(
+        route,
+        GrpcRequestLimits::new(Duration::from_secs(30)).expect("bounded request duration"),
+    );
+
+    let incoming = TcpIncoming::bind("127.0.0.1:0".parse().expect("loopback address"))
+        .expect("bind loopback listener");
+    let address = incoming.local_addr().expect("bound loopback address");
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(application.command_server())
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_receiver.await;
+            }),
+    );
+
+    let endpoint =
+        Endpoint::from_shared(format!("http://{address}")).expect("valid loopback endpoint");
+    let channel = endpoint.connect().await.expect("connect loopback client");
+    let mut client = RiffDbClient::from_channel(channel);
+    let metadata = CallMetadata::authenticated(
+        BearerCredential::new(CAPABILITY_TOKEN).expect("valid credential presentation"),
+    );
+
+    // Mixed batch: success, capacity rejection, success — input order preserved,
+    // legacy field 1 empty, typed error names batch operation.
+    let mixed = client
+        .execute_batch(
+            v1::ExecuteCommandBatchRequest {
+                commands: vec![
+                    batch_command(10, "OkCommand"),
+                    batch_command(11, "Overloaded"),
+                    batch_command(12, "OkCommand"),
+                ],
+            },
+            &metadata,
+        )
+        .await
+        .expect("mixed batch is a normal response");
+    assert!(
+        mixed.responses.is_empty(),
+        "field 1 must be empty when any item fails"
+    );
+    assert_eq!(mixed.items.len(), 3);
+    assert!(matches!(
+        mixed.items[0].result,
+        Some(v1::execute_command_batch_item::Result::Response(_))
+    ));
+    match mixed.items[1].result.as_ref().expect("item 1 set") {
+        v1::execute_command_batch_item::Result::Error(error) => {
+            assert_eq!(
+                error.code,
+                riffdb_proto::app::v1::ApplicationErrorCode::Overloaded as i32
+            );
+            assert_eq!(
+                error.operation,
+                riffdb_proto::app::v1::ApplicationOperation::BatchCommand as i32
+            );
+        }
+        v1::execute_command_batch_item::Result::Response(_) => {
+            panic!("expected capacity error arm")
+        }
+    }
+    assert!(matches!(
+        mixed.items[2].result,
+        Some(v1::execute_command_batch_item::Result::Response(_))
+    ));
+
+    // All-success: both fields populated and positionally mirrored.
+    let all_success = client
+        .execute_batch(
+            v1::ExecuteCommandBatchRequest {
+                commands: vec![
+                    batch_command(20, "OkCommand"),
+                    batch_command(21, "OkCommand"),
+                ],
+            },
+            &metadata,
+        )
+        .await
+        .expect("all-success batch");
+    assert_eq!(all_success.items.len(), 2);
+    assert_eq!(all_success.responses.len(), 2);
+    for (index, item) in all_success.items.iter().enumerate() {
+        let v1::execute_command_batch_item::Result::Response(response) =
+            item.result.as_ref().expect("success arm")
+        else {
+            panic!("expected response arm at {index}");
+        };
+        assert_eq!(&all_success.responses[index], response);
+    }
+
+    let observed = service.observed();
+    assert!(
+        observed
+            .iter()
+            .filter(|item| item.operation == ServiceOperationV1::ExecuteCommand)
+            .count()
+            >= 5
+    );
+
+    shutdown_sender.send(()).expect("server still running");
+    server
+        .await
+        .expect("server task did not panic")
+        .expect("server shut down cleanly");
 }

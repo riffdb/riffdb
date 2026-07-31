@@ -843,7 +843,8 @@ fn map_service<T>(result: ServiceResult<T>) -> Result<T, Status> {
 /// Captures one batch item from the service result without Status round-trips.
 ///
 /// Application-classified [`ServiceFailure::Public`] failures become the item
-/// error arm. Service-control failures collapse the whole RPC.
+/// error arm. Service-control failures collapse the whole RPC without building
+/// application identities that would be discarded.
 fn batch_item_from_service_result(
     result: ServiceResult<riffdb_service::ExecuteCommandResult>,
     item_error_context: &ApplicationErrorContextBuilder,
@@ -856,30 +857,36 @@ fn batch_item_from_service_result(
                 result: Some(v1::execute_command_batch_item::Result::Response(response)),
             })
         }
-        Err(failure) => match item_error_context.build(&failure) {
-            Some(error) if matches!(failure, ServiceFailure::Public(_)) => {
+        Err(failure) => match &failure {
+            ServiceFailure::Public(_) => {
+                let error = item_error_context
+                    .build(&failure)
+                    .expect("public failures always map to an application error");
                 Ok(v1::ExecuteCommandBatchItem {
                     result: Some(v1::execute_command_batch_item::Result::Error(
                         application_error_to_proto(&error),
                     )),
                 })
             }
-            _ => Err(status_from_service_failure(&failure)),
+            ServiceFailure::Cancelled
+            | ServiceFailure::DeadlineExceeded
+            | ServiceFailure::ResponseTooLarge
+            | ServiceFailure::EmergencyInternal(_) => Err(status_from_service_failure(&failure)),
         },
     }
 }
 
 /// Assembles the batch response under the ADR-0077 field-1 rule.
+///
+/// Legacy `responses` are cloned only after every item is known to have
+/// succeeded, so mixed batches never pay a wasted success-row clone.
 fn assemble_execute_batch_response(
     items: Vec<v1::ExecuteCommandBatchItem>,
 ) -> Result<v1::ExecuteCommandBatchResponse, Status> {
-    let mut responses = Vec::with_capacity(items.len());
     let mut all_success = true;
     for item in &items {
         match item.result.as_ref() {
-            Some(v1::execute_command_batch_item::Result::Response(response)) => {
-                responses.push(response.clone());
-            }
+            Some(v1::execute_command_batch_item::Result::Response(_)) => {}
             Some(v1::execute_command_batch_item::Result::Error(_)) => {
                 all_success = false;
             }
@@ -888,10 +895,25 @@ fn assemble_execute_batch_response(
             }
         }
     }
-    if !all_success {
-        responses.clear();
-    }
+    let responses = if all_success {
+        items
+            .iter()
+            .map(|item| match item.result.as_ref() {
+                Some(v1::execute_command_batch_item::Result::Response(response)) => {
+                    response.clone()
+                }
+                _ => unreachable!("all_success implies every item is a response arm"),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let response = v1::ExecuteCommandBatchResponse { responses, items };
+    // validate_structure does not distinguish size overflow from other
+    // structural defects (encoded length is checked earlier by PublicMessage
+    // encode bounds elsewhere). Keep emergency-internal for assembled-response
+    // validation failures; ResponseTooLarge remains the control-class path for
+    // service-result size failures, not for this post-assembly check.
     validate_public_message(&response)
         .map_err(|_| Status::internal(crate::EMERGENCY_INTERNAL_MESSAGE))?;
     Ok(response)
