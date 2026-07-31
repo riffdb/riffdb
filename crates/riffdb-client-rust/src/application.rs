@@ -5,8 +5,10 @@ use std::fmt;
 use std::time::Duration;
 
 use futures_util::{StreamExt, stream};
-use riffdb_errors::{ApplicationError, ApplicationErrorContext, ApplicationOperation};
-use riffdb_proto::{app::v1 as app_v1, v1};
+use riffdb_errors::{
+    ApplicationError, ApplicationErrorCode, ApplicationErrorContext, ApplicationOperation,
+};
+use riffdb_proto::{app::v1 as app_v1, application_error_from_proto, v1};
 use tonic::transport::{Channel, Endpoint};
 
 use crate::{
@@ -264,10 +266,8 @@ impl StableApplicationClient {
             )
             .await;
         let Ok(response) = response else {
-            // Some siblings may already be durable when a transport or one
-            // item fails the aggregate RPC. Re-enter every item through the
-            // normal same-idempotency-key recovery path; committed items
-            // replay and uncertain items are resolved independently.
+            // Transport-level or whole-RPC failure: re-enter every item through
+            // the normal same-idempotency-key recovery path.
             let recovered: Vec<_> = stream::iter(prepared.into_iter().map(|(index, command)| {
                 let mut client = self.clone();
                 let metadata = metadata.clone();
@@ -285,6 +285,32 @@ impl StableApplicationClient {
             return completed;
         };
 
+        // Prefer per-item carriage when present (ADR-0077). Older servers leave
+        // items empty and only populate legacy success rows.
+        if !response.items.is_empty() {
+            let (resolved, uncertain) = resolve_generated_batch_items(prepared, response.items);
+            completed.extend(resolved);
+            if !uncertain.is_empty() {
+                let recovered: Vec<_> =
+                    stream::iter(uncertain.into_iter().map(|(index, command)| {
+                        let mut client = self.clone();
+                        let metadata = metadata.clone();
+                        async move {
+                            let result = client
+                                .execute_generated_command(&command, attempts, &metadata)
+                                .await;
+                            (index, result)
+                        }
+                    }))
+                    .buffer_unordered(MAX_GENERATED_TRANSPORT_BATCH_ITEMS)
+                    .collect()
+                    .await;
+                completed.extend(recovered);
+            }
+            return completed;
+        }
+
+        // Legacy items-absent path: positional zip on success rows.
         completed.extend(prepared.into_iter().zip(response.responses).map(
             |((index, command), response)| {
                 let outcome = command
@@ -298,6 +324,76 @@ impl StableApplicationClient {
         ));
         completed
     }
+}
+
+type ResolvedBatchItem<T> = (
+    usize,
+    Result<TypedCommandResult<T>, GeneratedExecutionError>,
+);
+type BatchItemResolution<C> = (
+    Vec<ResolvedBatchItem<<C as GeneratedCommand>::Outcome>>,
+    Vec<(usize, C)>,
+);
+
+/// Classifies per-item batch carriage into terminal results and uncertain re-entry candidates.
+///
+/// Only [`ApplicationErrorCode::OutcomeUnknown`] is scheduled for re-entry; every other
+/// application error is certain-not-executed and surfaces directly.
+fn resolve_generated_batch_items<C: GeneratedCommand>(
+    prepared: Vec<(usize, C)>,
+    items: Vec<v1::ExecuteCommandBatchItem>,
+) -> BatchItemResolution<C> {
+    let mut resolved = Vec::with_capacity(prepared.len());
+    let mut uncertain = Vec::new();
+    for ((index, command), item) in prepared.into_iter().zip(items) {
+        match item.result {
+            Some(v1::execute_command_batch_item::Result::Response(item_response)) => {
+                let outcome = command
+                    .decode_outcome(&item_response)
+                    .map_err(GeneratedExecutionError::CommandShape);
+                resolved.push((
+                    index,
+                    outcome.and_then(|outcome| typed_command_result(outcome, item_response)),
+                ));
+            }
+            Some(v1::execute_command_batch_item::Result::Error(error_wire)) => {
+                match application_error_from_proto(&error_wire) {
+                    Ok(error) if matches!(error.code(), ApplicationErrorCode::OutcomeUnknown) => {
+                        uncertain.push((index, command));
+                    }
+                    Ok(error) => {
+                        resolved.push((
+                            index,
+                            Err(GeneratedExecutionError::Client(ClientError::Application(
+                                Box::new(error),
+                            ))),
+                        ));
+                    }
+                    Err(_) => {
+                        resolved.push((
+                            index,
+                            Err(GeneratedExecutionError::Client(ClientError::Protocol(
+                                crate::ProtocolFailure::new(
+                                    crate::ProtocolFailureKind::InvalidApplicationErrorDetails,
+                                ),
+                            ))),
+                        ));
+                    }
+                }
+            }
+            None => {
+                resolved.push((
+                    index,
+                    Err(GeneratedExecutionError::Client(ClientError::Protocol(
+                        crate::ProtocolFailure::new(
+                            crate::ProtocolFailureKind::InvalidInboundMessage,
+                        ),
+                    ))),
+                ));
+            }
+        }
+    }
+    (resolved, uncertain)
 }
 
 fn generated_transport_batch_policy(item_concurrency: usize) -> (usize, usize) {
@@ -1436,5 +1532,134 @@ mod tests {
         assert_eq!(generated_transport_batch_policy(64), (16, 4));
         assert_eq!(generated_transport_batch_policy(128), (16, 8));
         assert_eq!(generated_transport_batch_policy(17), (8, 2));
+    }
+
+    #[derive(Clone)]
+    struct StubBatchCommand {
+        outcome: &'static str,
+    }
+
+    impl GeneratedCommand for StubBatchCommand {
+        type Outcome = String;
+
+        fn idempotent_command(
+            &self,
+        ) -> Result<crate::IdempotentCommand, crate::generated::GeneratedCommandError> {
+            Err(crate::generated::GeneratedCommandError::InvalidInputShape)
+        }
+
+        fn outcome_request(
+            &self,
+            _request_id: riffdb_types::RequestId,
+        ) -> Result<v1::GetOutcomeRequest, crate::generated::GeneratedCommandError> {
+            Err(crate::generated::GeneratedCommandError::InvalidInputShape)
+        }
+
+        fn decode_outcome(
+            &self,
+            response: &v1::ExecuteCommandResponse,
+        ) -> Result<Self::Outcome, crate::generated::GeneratedCommandError> {
+            if response.outcome_type == self.outcome {
+                Ok(self.outcome.to_owned())
+            } else {
+                Err(crate::generated::GeneratedCommandError::InvalidOutcomeShape)
+            }
+        }
+    }
+
+    fn stub_response(outcome: &str) -> v1::ExecuteCommandResponse {
+        v1::ExecuteCommandResponse {
+            status: v1::execute_command_response::CompletionStatus::ExecutedReadOnly as i32,
+            commit_sequence: 0,
+            contract_version: 1,
+            plan_hash: vec![0x44; 32],
+            outcome_type: outcome.to_owned(),
+            outcome: Some(v1::Value {
+                kind: Some(v1::value::Kind::NullValue(v1::NullValue::NullValue as i32)),
+            }),
+            provenance_uri: String::new(),
+            durability_mode: String::new(),
+            outcome_uri: None,
+            history_incarnation: 1,
+        }
+    }
+
+    fn stub_error_item(code: ApplicationErrorCode) -> v1::ExecuteCommandBatchItem {
+        v1::ExecuteCommandBatchItem {
+            result: Some(v1::execute_command_batch_item::Result::Error(
+                riffdb_proto::application_error_to_proto(&ApplicationError::new(
+                    code,
+                    ApplicationOperation::BatchCommand,
+                    ApplicationErrorContext::empty(),
+                    None,
+                )),
+            )),
+        }
+    }
+
+    #[test]
+    fn batch_items_certain_errors_surface_without_reentry_candidates() {
+        let prepared = vec![
+            (0, StubBatchCommand { outcome: "Ok" }),
+            (1, StubBatchCommand { outcome: "Ok" }),
+            (2, StubBatchCommand { outcome: "Ok" }),
+        ];
+        let items = vec![
+            v1::ExecuteCommandBatchItem {
+                result: Some(v1::execute_command_batch_item::Result::Response(
+                    stub_response("Ok"),
+                )),
+            },
+            stub_error_item(ApplicationErrorCode::InputInvalid),
+            stub_error_item(ApplicationErrorCode::Overloaded),
+        ];
+        let (resolved, uncertain) = resolve_generated_batch_items(prepared, items);
+        assert!(uncertain.is_empty(), "certain errors must not re-enter");
+        assert_eq!(resolved.len(), 3);
+        assert!(resolved[0].1.is_ok());
+        assert!(matches!(
+            &resolved[1].1,
+            Err(GeneratedExecutionError::Client(ClientError::Application(error)))
+                if error.code() == ApplicationErrorCode::InputInvalid
+        ));
+        assert!(matches!(
+            &resolved[2].1,
+            Err(GeneratedExecutionError::Client(ClientError::Application(error)))
+                if error.code() == ApplicationErrorCode::Overloaded
+        ));
+        assert_eq!(
+            resolved.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn batch_items_outcome_unknown_is_the_only_reentry_candidate() {
+        let prepared = vec![
+            (0, StubBatchCommand { outcome: "A" }),
+            (1, StubBatchCommand { outcome: "B" }),
+            (2, StubBatchCommand { outcome: "C" }),
+        ];
+        let items = vec![
+            v1::ExecuteCommandBatchItem {
+                result: Some(v1::execute_command_batch_item::Result::Response(
+                    stub_response("A"),
+                )),
+            },
+            stub_error_item(ApplicationErrorCode::OutcomeUnknown),
+            v1::ExecuteCommandBatchItem {
+                result: Some(v1::execute_command_batch_item::Result::Response(
+                    stub_response("C"),
+                )),
+            },
+        ];
+        let (resolved, uncertain) = resolve_generated_batch_items(prepared, items);
+        assert_eq!(uncertain.len(), 1);
+        assert_eq!(uncertain[0].0, 1);
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[0].0, 0);
+        assert_eq!(resolved[1].0, 2);
+        assert!(resolved[0].1.is_ok());
+        assert!(resolved[1].1.is_ok());
     }
 }

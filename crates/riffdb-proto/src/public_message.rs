@@ -540,12 +540,25 @@ pub fn validate_get_outcome_exchange(
 }
 
 /// Validates input-order preservation for one bounded command batch.
+///
+/// Prefer `items` length when present (current servers). When `items` is empty,
+/// fall back to the legacy `responses` length rule for older servers. Never
+/// apply the legacy fallback when `items` is present.
 pub fn validate_execute_command_batch_exchange(
     request: &v1::ExecuteCommandBatchRequest,
     response: &v1::ExecuteCommandBatchResponse,
 ) -> Result<(), PublicWireError> {
     validate_public_message(request)?;
     validate_public_message(response)?;
+    if !response.items.is_empty() {
+        if request.commands.len() != response.items.len() {
+            return Err(PublicWireError::InconsistentFields);
+        }
+        if !response.responses.is_empty() && response.responses.len() != response.items.len() {
+            return Err(PublicWireError::InconsistentFields);
+        }
+        return Ok(());
+    }
     if request.commands.len() != response.responses.len() {
         return Err(PublicWireError::InconsistentFields);
     }
@@ -4535,21 +4548,70 @@ fn preflight_execute_batch_request(input: &[u8]) -> Result<(), PublicWireError> 
     )
 }
 
+fn preflight_application_error_public(input: &[u8]) -> Result<(), PublicWireError> {
+    match crate::preflight_application_error(input) {
+        Ok(()) => Ok(()),
+        Err(crate::ApplicationErrorWireError::MalformedEncoding)
+        | Err(crate::ApplicationErrorWireError::UnknownField)
+        | Err(crate::ApplicationErrorWireError::DuplicateField) => {
+            Err(PublicWireError::MalformedEncoding)
+        }
+        Err(crate::ApplicationErrorWireError::PreflightLimitExceeded)
+        | Err(crate::ApplicationErrorWireError::MessageTooLarge) => {
+            Err(PublicWireError::PreflightLimitExceeded)
+        }
+        Err(_) => Err(PublicWireError::InconsistentFields),
+    }
+}
+
+fn preflight_execute_batch_item(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[&[1, 2]],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_execute_response,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_application_error_public,
+            },
+        ],
+        &[],
+    )
+}
+
 fn preflight_execute_batch_response(input: &[u8]) -> Result<(), PublicWireError> {
     preflight_nested_message(
         input,
-        1,
-        &[1],
+        2,
+        &[1, 2],
         &[],
-        &[NestedRule {
-            field: 1,
-            preflight: preflight_execute_response,
-        }],
-        &[RepeatedRule {
-            field: 1,
-            maximum: MAX_COMMAND_BATCH_ITEMS,
-            wire: RepeatedWire::LengthDelimited,
-        }],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_execute_response,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_execute_batch_item,
+            },
+        ],
+        &[
+            RepeatedRule {
+                field: 1,
+                maximum: MAX_COMMAND_BATCH_ITEMS,
+                wire: RepeatedWire::LengthDelimited,
+            },
+            RepeatedRule {
+                field: 2,
+                maximum: MAX_COMMAND_BATCH_ITEMS,
+                wire: RepeatedWire::LengthDelimited,
+            },
+        ],
     )
 }
 
@@ -6961,17 +7023,61 @@ impl PublicMessage for v1::ExecuteCommandBatchResponse {
     const MAX_ENCODED_BYTES: usize = MAX_PUBLIC_RESPONSE_BYTES;
 
     fn preflight(input: &[u8]) -> Result<(), PublicWireError> {
-        preflight_root(input, Self::MAX_ENCODED_BYTES, 1, &[1], &[])?;
+        preflight_root(input, Self::MAX_ENCODED_BYTES, 2, &[1, 2], &[])?;
         preflight_execute_batch_response(input)
     }
 
     fn validate_structure(&self) -> Result<(), PublicWireError> {
-        if self.responses.is_empty() || self.responses.len() > MAX_COMMAND_BATCH_ITEMS {
+        if self.responses.len() > MAX_COMMAND_BATCH_ITEMS
+            || self.items.len() > MAX_COMMAND_BATCH_ITEMS
+        {
             return Err(PublicWireError::TooManyItems);
         }
-        for response in &self.responses {
-            crate::validate_execute_response(response)
-                .map_err(|_| PublicWireError::InconsistentFields)?;
+        // Current servers always populate `items`. Older servers may omit it and
+        // only fill legacy success rows; accept that empty-items shape here.
+        if self.items.is_empty() {
+            if self.responses.is_empty() {
+                return Err(PublicWireError::TooManyItems);
+            }
+            for response in &self.responses {
+                crate::validate_execute_response(response)
+                    .map_err(|_| PublicWireError::InconsistentFields)?;
+            }
+            return Ok(());
+        }
+        let mut all_success = true;
+        for item in &self.items {
+            match item.result.as_ref() {
+                Some(v1::execute_command_batch_item::Result::Response(response)) => {
+                    crate::validate_execute_response(response)
+                        .map_err(|_| PublicWireError::InconsistentFields)?;
+                }
+                Some(v1::execute_command_batch_item::Result::Error(error)) => {
+                    all_success = false;
+                    crate::application_error_from_proto(error)
+                        .map_err(|_| PublicWireError::InconsistentFields)?;
+                }
+                None => return Err(PublicWireError::MissingRequiredField),
+            }
+        }
+        // Field-1 rule: responses is populated iff every item succeeded, and
+        // then mirrors items positionally. Never partially populate field 1.
+        if all_success {
+            if self.responses.len() != self.items.len() {
+                return Err(PublicWireError::InconsistentFields);
+            }
+            for (response, item) in self.responses.iter().zip(&self.items) {
+                let Some(v1::execute_command_batch_item::Result::Response(item_response)) =
+                    item.result.as_ref()
+                else {
+                    return Err(PublicWireError::InconsistentFields);
+                };
+                if response != item_response {
+                    return Err(PublicWireError::InconsistentFields);
+                }
+            }
+        } else if !self.responses.is_empty() {
+            return Err(PublicWireError::InconsistentFields);
         }
         Ok(())
     }
