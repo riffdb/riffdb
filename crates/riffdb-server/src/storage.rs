@@ -77,8 +77,8 @@ impl SharedRedbOperationalPorts {
         health: Option<Arc<dyn ServiceHealthHooks>>,
     ) -> Result<Self, StorageError> {
         let shared = ports.shared_ports();
-        let catalog = CurrentCatalogView::rebuild(&shared.operational())?;
-        let capabilities = CurrentCapabilityView::rebuild(&shared.operational())?;
+        let catalog = CurrentCatalogView::rebuild(&shared)?;
+        let capabilities = CurrentCapabilityView::rebuild(&shared)?;
         Ok(Self {
             cell: SharedStorageCell::new(ports),
             shared,
@@ -235,7 +235,7 @@ struct CurrentCatalogView {
 }
 
 impl CurrentCatalogView {
-    fn rebuild(ports: &RedbOperationalPorts) -> Result<Self, StorageError> {
+    fn rebuild(ports: &RedbSharedPorts) -> Result<Self, StorageError> {
         let active = CatalogRepository::read_active_catalog(ports)?;
         let mut state = CurrentCatalogViewState::default();
         if let Some(active) = active {
@@ -377,7 +377,7 @@ struct CurrentCapabilityView {
 }
 
 impl CurrentCapabilityView {
-    fn rebuild(ports: &RedbOperationalPorts) -> Result<Self, StorageError> {
+    fn rebuild(ports: &RedbSharedPorts) -> Result<Self, StorageError> {
         let mut state = CurrentCapabilityViewState::default();
         let limit = StorageScanLimit::new(500).expect("fixed inventory page limit is valid");
         let mut after = None;
@@ -885,14 +885,14 @@ impl FilteredAuthoritativeScanReader for SharedRedbOperationalPorts {
 
 impl OutboxRepository for SharedRedbOperationalPorts {
     fn has_undelivered_outbox(&self) -> Result<bool, StorageError> {
-        OutboxRepository::has_undelivered_outbox(&self.shared.operational())
+        OutboxRepository::has_undelivered_outbox(&self.shared)
     }
 
     fn read_outbox_status(
         &self,
         event_id: EventId,
     ) -> Result<OutboxStatusReadResultV1, StorageError> {
-        OutboxRepository::read_outbox_status(&self.shared.operational(), event_id)
+        OutboxRepository::read_outbox_status(&self.shared, event_id)
     }
 
     fn scan_pending_outbox(
@@ -900,14 +900,14 @@ impl OutboxRepository for SharedRedbOperationalPorts {
         after: Option<EventId>,
         limit: OutboxPageLimit,
     ) -> Result<PendingOutboxScanV1, StorageError> {
-        OutboxRepository::scan_pending_outbox(&self.shared.operational(), after, limit)
+        OutboxRepository::scan_pending_outbox(&self.shared, after, limit)
     }
 
     fn scan_undelivered_outbox_statuses(
         &self,
         request: UndeliveredOutboxStatusScanRequestV1,
     ) -> Result<UndeliveredOutboxStatusScanV1, StorageError> {
-        OutboxRepository::scan_undelivered_outbox_statuses(&self.shared.operational(), request)
+        OutboxRepository::scan_undelivered_outbox_statuses(&self.shared, request)
     }
 
     fn claim_outbox(

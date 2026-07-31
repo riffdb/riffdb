@@ -221,7 +221,7 @@ where
 /// identity. Policy decisions, consistency fences, and lower continuations live
 /// only in the stored state and are returned atomically after this binding
 /// matches. A raw credential or capability token is never a binding component.
-#[derive(Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) struct CursorBinding<Principal, Lookup> {
     principal: Principal,
     lookup: Lookup,
@@ -344,7 +344,11 @@ where
         &self,
         binding: CursorBinding<Principal, Lookup>,
         state: State,
-    ) -> Result<CursorRegistration, CursorUnavailable> {
+    ) -> Result<CursorRegistration<Principal, Lookup, State>, CursorUnavailable>
+    where
+        Principal: Clone,
+        Lookup: Clone,
+    {
         self.register_inner(binding, state, false)
     }
 
@@ -357,7 +361,11 @@ where
         &self,
         binding: CursorBinding<Principal, Lookup>,
         state: State,
-    ) -> Result<CursorRegistration, CursorUnavailable> {
+    ) -> Result<CursorRegistration<Principal, Lookup, State>, CursorUnavailable>
+    where
+        Principal: Clone,
+        Lookup: Clone,
+    {
         self.register_inner(binding, state, true)
     }
 
@@ -366,7 +374,11 @@ where
         binding: CursorBinding<Principal, Lookup>,
         state: State,
         replace: bool,
-    ) -> Result<CursorRegistration, CursorUnavailable> {
+    ) -> Result<CursorRegistration<Principal, Lookup, State>, CursorUnavailable>
+    where
+        Principal: Clone,
+        Lookup: Clone,
+    {
         for _ in 0..MAX_CURSOR_TOKEN_GENERATION_ATTEMPTS {
             let mut bytes = [0_u8; CURSOR_TOKEN_BYTES];
             self.generator
@@ -378,22 +390,26 @@ where
             if inner.entries.contains_key(&token) {
                 continue;
             }
+            // Prefer the newest same-binding entry so concurrent replacements
+            // chain off the latest live token rather than token-byte order.
             let supersedes = if replace {
                 inner
                     .entries
                     .iter()
-                    .find(|(_, entry)| entry.binding == binding)
+                    .filter(|(_, entry)| entry.binding == binding)
+                    .max_by_key(|(_, entry)| entry.created_at)
                     .map(|(existing, _)| *existing)
             } else {
                 None
             };
             let evicted = self.make_room(&mut inner, &binding.principal, supersedes)?;
             let expires_at = now.checked_add(CURSOR_LIFETIME).ok_or(CursorUnavailable)?;
+            let state = Arc::new(state);
             inner.entries.insert(
                 token,
                 CursorEntry {
-                    binding,
-                    state: Arc::new(state),
+                    binding: binding.clone(),
+                    state: Arc::clone(&state),
                     created_at: now,
                     expires_at,
                 },
@@ -402,6 +418,8 @@ where
                 token,
                 supersedes,
                 evicted,
+                binding,
+                state,
             });
         }
 
@@ -445,6 +463,43 @@ where
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entries
             .remove(&token);
+    }
+
+    /// Makes `token` the sole live entry for its binding (last-publish wins).
+    ///
+    /// Inserts or refreshes `token` and removes every other same-binding entry,
+    /// so concurrent publication interleavings cannot leave two live
+    /// continuations for one principal/query identity.
+    fn publish_exclusive(
+        &self,
+        token: CursorToken,
+        binding: CursorBinding<Principal, Lookup>,
+        state: Arc<State>,
+    ) where
+        Principal: Clone + Eq,
+        Lookup: Clone + Eq,
+    {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = self.clock.now().unwrap_or(CursorTick(0));
+        let _ = inner.observe_and_purge(now);
+        inner
+            .entries
+            .retain(|existing, entry| *existing == token || entry.binding != binding);
+        let expires_at = now
+            .checked_add(CURSOR_LIFETIME)
+            .unwrap_or(CursorTick(u64::MAX));
+        inner.entries.insert(
+            token,
+            CursorEntry {
+                binding,
+                state,
+                created_at: now,
+                expires_at,
+            },
+        );
     }
 
     fn lock_at_current_tick(
@@ -518,26 +573,27 @@ where
 }
 
 /// Result of one successful cursor registration before publication.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CursorRegistration {
+pub(crate) struct CursorRegistration<Principal, Lookup, State> {
     token: CursorToken,
     supersedes: Option<CursorToken>,
     evicted: bool,
+    binding: CursorBinding<Principal, Lookup>,
+    state: Arc<State>,
 }
 
-impl CursorRegistration {
+impl<Principal, Lookup, State> CursorRegistration<Principal, Lookup, State> {
     #[must_use]
-    pub(crate) const fn token(self) -> CursorToken {
+    pub(crate) const fn token(&self) -> CursorToken {
         self.token
     }
 
     #[must_use]
-    pub(crate) const fn supersedes(self) -> Option<CursorToken> {
+    pub(crate) const fn supersedes(&self) -> Option<CursorToken> {
         self.supersedes
     }
 
     #[must_use]
-    pub(crate) const fn evicted(self) -> bool {
+    pub(crate) const fn evicted(&self) -> bool {
         self.evicted
     }
 }
@@ -1261,8 +1317,8 @@ impl QueryCursorState {
     }
 }
 
-#[derive(Eq, PartialEq)]
-enum ServiceCursorLookup {
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) enum ServiceCursorLookup {
     CommitScan(CommitScanCursorLookup),
     IndexScan(IndexScanCursorLookup),
     Projection(ProjectionCursorLookup),
@@ -1272,7 +1328,8 @@ enum ServiceCursorLookup {
     Query(QueryCursorLookup),
 }
 
-enum ServiceCursorState {
+#[derive(Clone)]
+pub(crate) enum ServiceCursorState {
     CommitScan(Arc<CommitScanCursorState>),
     IndexScan(Arc<IndexScanCursorState>),
     Projection(Arc<ProjectionCursorState>),
@@ -1290,6 +1347,9 @@ type SharedServiceCursorRegistry = CursorRegistry<
     Arc<dyn CursorMonotonicClock>,
 >;
 
+type ServiceCursorRegistration =
+    CursorRegistration<ActorId, ServiceCursorLookup, ServiceCursorState>;
+
 /// One globally bounded process-local namespace with typed operation-specific accessors.
 pub(crate) struct ServiceCursorRegistries {
     registry: SharedServiceCursorRegistry,
@@ -1300,13 +1360,20 @@ pub(crate) struct ServiceCursorRegistries {
 ///
 /// When a query continuation replaces a prior live token for the same principal
 /// and exact query identity, the prior token is retained until [`Self::publish`]
-/// so a failed invocation cannot destroy a client's valid cursor.
+/// so a failed invocation cannot destroy a client's valid cursor. Publication
+/// enforces single-live for the binding regardless of concurrent interleaving.
 pub(crate) struct CursorPublicationGuard<'a> {
     registries: &'a ServiceCursorRegistries,
     token: CursorToken,
     supersedes: Option<CursorToken>,
     capacity_evicted: bool,
     published: bool,
+    /// When set, [`Self::publish`] makes this token the sole live entry for the
+    /// exact binding (last-publish-wins under concurrency).
+    exclusive: Option<(
+        CursorBinding<ActorId, ServiceCursorLookup>,
+        Arc<ServiceCursorState>,
+    )>,
 }
 
 impl CursorPublicationGuard<'_> {
@@ -1321,10 +1388,14 @@ impl CursorPublicationGuard<'_> {
         self.capacity_evicted
     }
 
-    /// Publishes the new token and removes any superseded prior token.
+    /// Publishes the new token as the sole live continuation for its binding.
     pub(crate) fn publish(mut self) -> CursorToken {
         self.published = true;
-        if let Some(superseded) = self.supersedes.take() {
+        if let Some((binding, state)) = self.exclusive.take() {
+            self.registries
+                .registry
+                .publish_exclusive(self.token, binding, state);
+        } else if let Some(superseded) = self.supersedes.take() {
             self.registries.registry.remove(superseded);
         }
         self.token
@@ -1356,7 +1427,7 @@ impl ServiceCursorRegistries {
         principal: &ActorId,
         lookup: CommitScanCursorLookup,
         state: CommitScanCursorState,
-    ) -> Result<CursorRegistration, CursorUnavailable> {
+    ) -> Result<ServiceCursorRegistration, CursorUnavailable> {
         if state.policy().effective_limit() > lookup.requested_limit() {
             return Err(CursorUnavailable);
         }
@@ -1397,7 +1468,7 @@ impl ServiceCursorRegistries {
         principal: &ActorId,
         lookup: IndexScanCursorLookup,
         state: IndexScanCursorState,
-    ) -> Result<CursorRegistration, CursorUnavailable> {
+    ) -> Result<ServiceCursorRegistration, CursorUnavailable> {
         if state.after().index_id() != lookup.index_id()
             || !state
                 .after()
@@ -1451,7 +1522,7 @@ impl ServiceCursorRegistries {
         principal: &ActorId,
         lookup: ProjectionCursorLookup,
         state: ProjectionCursorState,
-    ) -> Result<CursorRegistration, CursorUnavailable> {
+    ) -> Result<ServiceCursorRegistration, CursorUnavailable> {
         let continuation = state.continuation();
         if continuation.identity() != lookup.identity()
             || continuation.prefix().components() != lookup.leading_components()
@@ -1499,7 +1570,7 @@ impl ServiceCursorRegistries {
         principal: &ActorId,
         lookup: OutboxCursorLookup,
         state: OutboxCursorState,
-    ) -> Result<CursorRegistration, CursorUnavailable> {
+    ) -> Result<ServiceCursorRegistration, CursorUnavailable> {
         if state.policy().effective_limit() > lookup.requested_limit() {
             return Err(CursorUnavailable);
         }
@@ -1623,7 +1694,7 @@ impl ServiceCursorRegistries {
             CursorBinding::new(principal.clone(), ServiceCursorLookup::Query(lookup)),
             ServiceCursorState::Query(Arc::new(state)),
         )?;
-        Ok(self.publication_guard(registration))
+        Ok(self.publication_guard_exclusive(registration))
     }
 
     pub(crate) fn resolve_query(
@@ -1649,13 +1720,31 @@ impl ServiceCursorRegistries {
         self.registry.active_count()
     }
 
-    fn publication_guard(&self, registration: CursorRegistration) -> CursorPublicationGuard<'_> {
+    fn publication_guard(
+        &self,
+        registration: ServiceCursorRegistration,
+    ) -> CursorPublicationGuard<'_> {
         CursorPublicationGuard {
             registries: self,
             token: registration.token(),
             supersedes: registration.supersedes(),
             capacity_evicted: registration.evicted(),
             published: false,
+            exclusive: None,
+        }
+    }
+
+    fn publication_guard_exclusive(
+        &self,
+        registration: ServiceCursorRegistration,
+    ) -> CursorPublicationGuard<'_> {
+        CursorPublicationGuard {
+            registries: self,
+            token: registration.token(),
+            supersedes: registration.supersedes(),
+            capacity_evicted: registration.evicted(),
+            published: false,
+            exclusive: Some((registration.binding, registration.state)),
         }
     }
 }
@@ -1924,9 +2013,9 @@ mod tests {
 
         let overflowing = CursorRegistry::new(SequentialGenerator::new(), FixedClock::at(0));
         overflowing.clock.set_tick(CursorTick(u64::MAX));
-        assert_eq!(
-            overflowing.register(binding(2, 2), state(2)),
-            Err(CursorUnavailable)
+        assert!(
+            overflowing.register(binding(2, 2), state(2)).is_err(),
+            "overflowing lifetime fails closed"
         );
     }
 
@@ -1944,9 +2033,9 @@ mod tests {
                 .register(binding(principal, 1), state(principal))
                 .expect("seed token registers");
         }
-        assert_eq!(
-            registry.register(binding(4, 1), state(4)),
-            Err(CursorUnavailable)
+        assert!(
+            registry.register(binding(4, 1), state(4)).is_err(),
+            "three collisions yield CursorUnavailable"
         );
     }
 
@@ -1998,8 +2087,11 @@ mod tests {
             registry.resolve(first.token(), &binding(1, 1)).is_ok(),
             "prior remains resolvable until publish"
         );
-        // Simulate publish: remove superseded.
-        registry.remove(first.token());
+        registry.publish_exclusive(
+            second.token(),
+            second.binding.clone(),
+            Arc::clone(&second.state),
+        );
         assert!(matches!(
             registry.resolve(first.token(), &binding(1, 1)),
             Err(CursorAccessError::InvalidCursor)
@@ -2009,11 +2101,56 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_publish_interleavings_leave_exactly_one_live_last_published() {
+        // reg A, reg B, then both publish orders.
+        for publish_a_first in [true, false] {
+            let registry = CursorRegistry::new(SequentialGenerator::new(), FixedClock::at(0));
+            let a = registry
+                .register_replacing(binding(1, 1), state(10))
+                .expect("A");
+            let b = registry
+                .register_replacing(binding(1, 1), state(20))
+                .expect("B");
+            assert_eq!(registry.active_count().expect("count"), 2);
+            if publish_a_first {
+                registry.publish_exclusive(a.token(), a.binding.clone(), Arc::clone(&a.state));
+                registry.publish_exclusive(b.token(), b.binding.clone(), Arc::clone(&b.state));
+                // Last published is B.
+                assert!(registry.resolve(b.token(), &binding(1, 1)).is_ok());
+                assert!(matches!(
+                    registry.resolve(a.token(), &binding(1, 1)),
+                    Err(CursorAccessError::InvalidCursor)
+                ));
+                assert_eq!(
+                    registry
+                        .resolve(b.token(), &binding(1, 1))
+                        .expect("B")
+                        .continuation,
+                    20
+                );
+            } else {
+                registry.publish_exclusive(b.token(), b.binding.clone(), Arc::clone(&b.state));
+                registry.publish_exclusive(a.token(), a.binding.clone(), Arc::clone(&a.state));
+                // Last published is A.
+                assert!(registry.resolve(a.token(), &binding(1, 1)).is_ok());
+                assert!(matches!(
+                    registry.resolve(b.token(), &binding(1, 1)),
+                    Err(CursorAccessError::InvalidCursor)
+                ));
+                assert_eq!(
+                    registry
+                        .resolve(a.token(), &binding(1, 1))
+                        .expect("A")
+                        .continuation,
+                    10
+                );
+            }
+            assert_eq!(registry.active_count().expect("count"), 1);
+        }
+    }
+
+    #[test]
     fn unpublished_replacement_drop_leaves_prior_resolvable() {
-        let generator: Arc<dyn CursorTokenGenerator> = Arc::new(SequentialGenerator::new());
-        let clock: Arc<dyn CursorMonotonicClock> = Arc::new(FixedClock::at(0));
-        let registries = ServiceCursorRegistries::new(generator, clock);
-        // Use generic registry path through register_replacing via direct unit test above.
         let registry = CursorRegistry::new(SequentialGenerator::new(), FixedClock::at(0));
         let first = registry
             .register_replacing(binding(1, 1), state(1))
@@ -2024,7 +2161,6 @@ mod tests {
         // Drop new without publish: only remove new token.
         registry.remove(second.token());
         assert!(registry.resolve(first.token(), &binding(1, 1)).is_ok());
-        let _ = registries;
     }
 
     #[test]
@@ -2035,9 +2171,11 @@ mod tests {
             let registration = registry
                 .register_replacing(binding(1, 1), state(page))
                 .expect("page registers");
-            if let Some(prior) = registration.supersedes() {
-                registry.remove(prior);
-            }
+            registry.publish_exclusive(
+                registration.token(),
+                registration.binding.clone(),
+                Arc::clone(&registration.state),
+            );
             live = Some(registration.token());
         }
         assert_eq!(registry.active_count().expect("count"), 1);

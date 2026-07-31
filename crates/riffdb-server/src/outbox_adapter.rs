@@ -136,16 +136,15 @@ impl ServerOutboxStatusPort {
 }
 
 impl OutboxStatusPort for ServerOutboxStatusPort {
-    fn reserve_pending_status(
-        &self,
-        control: &RequestControl,
+    fn reserve_pending_status<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<OutboxStatusRequest, OutboxStatusSnapshot, OutboxStatusPortError>,
         PortAdmissionError,
     > {
-        let reservation = self.status.reserve(control);
-        Box::pin(async move { reservation })
+        Box::pin(self.status.reserve_async(control))
     }
 }
 

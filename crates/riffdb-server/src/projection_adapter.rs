@@ -53,23 +53,22 @@ impl ServerProjectionQueryPort {
 }
 
 impl ProjectionQueryPort for ServerProjectionQueryPort {
-    fn reserve_query_projection(
-        &self,
-        control: &RequestControl,
+    fn reserve_query_projection<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<ProjectionPortRequest, ProjectionPortResult, ProjectionPortError>,
         PortAdmissionError,
     > {
-        let reservation = self.query.reserve(control);
-        Box::pin(async move { reservation })
+        Box::pin(self.query.reserve_async(control))
     }
 
-    fn reserve_projection_status(
-        &self,
-        control: &RequestControl,
+    fn reserve_projection_status<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             ProjectionIdentity,
             Option<ProjectionStatusSnapshot>,
@@ -77,8 +76,7 @@ impl ProjectionQueryPort for ServerProjectionQueryPort {
         >,
         PortAdmissionError,
     > {
-        let reservation = self.status.reserve(control);
-        Box::pin(async move { reservation })
+        Box::pin(self.status.reserve_async(control))
     }
 }
 
