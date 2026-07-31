@@ -406,7 +406,8 @@ impl BudgetServiceHarness {
             .filter_map(|record| match record.into_parts().0 {
                 StoredAdministrationAuditRecordV1::Service(record) => Some(record),
                 StoredAdministrationAuditRecordV1::Catalog(_)
-                | StoredAdministrationAuditRecordV1::Capability(_) => None,
+                | StoredAdministrationAuditRecordV1::Capability(_)
+                | StoredAdministrationAuditRecordV1::QueryModule(_) => None,
             })
             .collect()
     }
