@@ -27,7 +27,11 @@ const SIZING_EVENT_HASH: [u8; 32] = [0xff; 32];
 const SIZING_ENTITY_RECORD_HASH: [u8; 32] = [0xff; 32];
 
 const _: () = assert!(SIZING_EVENT_HASH.len() == 32);
-const _: () = assert!(SIZING_ENTITY_RECORD_HASH.len() == 32);
+// Couple to the real EntityRecordHash width (not a free-floating literal).
+const _: () = assert!(
+    SIZING_ENTITY_RECORD_HASH.len() == core::mem::size_of::<riffdb_types::EntityRecordHash>()
+);
+const _: () = assert!(SIZING_EVENT_HASH.len() == SIZING_ENTITY_RECORD_HASH.len());
 
 /// Codec-minted proof that complete sequence-free sizing exceeded only the
 /// accepted aggregate cap.
