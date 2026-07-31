@@ -6,7 +6,13 @@ export TZ=UTC
 
 usage() {
     printf '%s\n' \
-        'usage: benchmarks/run-app-baseline [--smoke|--full] [--samples N] [--warmup N] [--concurrent-clients N] [--concurrent-operations N] [--output PATH] [--assert-write-parity|--assert-all-parity] [--skip-postgres] [--skip-riffdb]' >&2
+        'usage: benchmarks/run-app-baseline [--smoke|--full] [--samples N] [--warmup N]' \
+        '         [--concurrent-clients N] [--concurrent-operations N]' \
+        '         [--load interactive|agent|membership_contention] [--load-clients N] [--load-duration-secs N]' \
+        '         [--load-warmup-secs N] [--load-zipf-s F] [--load-contended]' \
+        '         [--load-riffdb-transport per-session|shared]' \
+        '         [--output PATH] [--assert-write-parity|--assert-all-parity]' \
+        '         [--skip-postgres] [--skip-riffdb]' >&2
     exit 2
 }
 
@@ -22,6 +28,13 @@ assert_write_parity=0
 assert_all_parity=0
 concurrent_clients=
 concurrent_operations=
+load_profile=
+load_clients=
+load_duration_secs=
+load_warmup_secs=
+load_zipf_s=
+load_contended=0
+load_riffdb_transport=
 output=
 while (($#)); do
     case "$1" in
@@ -47,6 +60,40 @@ while (($#)); do
             concurrent_operations="$2"
             shift 2
             ;;
+        --load)
+            (($# >= 2)) || usage
+            load_profile="$2"
+            shift 2
+            ;;
+        --load-clients)
+            (($# >= 2)) || usage
+            load_clients="$2"
+            shift 2
+            ;;
+        --load-duration-secs)
+            (($# >= 2)) || usage
+            load_duration_secs="$2"
+            shift 2
+            ;;
+        --load-warmup-secs)
+            (($# >= 2)) || usage
+            load_warmup_secs="$2"
+            shift 2
+            ;;
+        --load-zipf-s)
+            (($# >= 2)) || usage
+            load_zipf_s="$2"
+            shift 2
+            ;;
+        --load-contended)
+            load_contended=1
+            shift
+            ;;
+        --load-riffdb-transport)
+            (($# >= 2)) || usage
+            load_riffdb_transport="$2"
+            shift 2
+            ;;
         --output)
             (($# >= 2)) || usage
             output="$2"
@@ -62,7 +109,11 @@ done
 
 out_dir=target/app-baseline
 mkdir -p "$out_dir"
-report="${output:-$repo_root/$out_dir/report-v1.json}"
+if [[ -n "$load_profile" ]]; then
+    report="${output:-$repo_root/$out_dir/load-report-v1.json}"
+else
+    report="${output:-$repo_root/$out_dir/report-v1.json}"
+fi
 
 postgres_container="riffdb-app-baseline-$$"
 postgres_started=0
@@ -83,6 +134,13 @@ fi
 [[ -n "$warmup" ]] && extra_args+=(--warmup "$warmup")
 [[ -n "$concurrent_clients" ]] && extra_args+=(--concurrent-clients "$concurrent_clients")
 [[ -n "$concurrent_operations" ]] && extra_args+=(--concurrent-operations "$concurrent_operations")
+[[ -n "$load_profile" ]] && extra_args+=(--load "$load_profile")
+[[ -n "$load_clients" ]] && extra_args+=(--load-clients "$load_clients")
+[[ -n "$load_duration_secs" ]] && extra_args+=(--load-duration-secs "$load_duration_secs")
+[[ -n "$load_warmup_secs" ]] && extra_args+=(--load-warmup-secs "$load_warmup_secs")
+[[ -n "$load_zipf_s" ]] && extra_args+=(--load-zipf-s "$load_zipf_s")
+((load_contended)) && extra_args+=(--load-contended)
+[[ -n "$load_riffdb_transport" ]] && extra_args+=(--load-riffdb-transport "$load_riffdb_transport")
 ((skip_postgres)) && extra_args+=(--skip-postgres)
 ((skip_riffdb)) && extra_args+=(--skip-riffdb)
 ((assert_write_parity)) && extra_args+=(--assert-write-parity)
