@@ -206,7 +206,7 @@ pub(crate) fn checked_status(status: Status) -> ClientError {
         Ok(error) => error,
         Err(error) => return protocol(map_wire_error(error)),
     };
-    if status.code() != code_for_class(error.class()) {
+    if status.code() != code_for_public_error(&error) {
         return protocol(ProtocolFailureKind::StatusCodeMismatch);
     }
     if status.message() != error.safe_message() {
@@ -272,6 +272,13 @@ fn checked_details_free_status(code: Code, message: &str, has_local_source: bool
     ClientError::DetailsFree(status)
 }
 
+const fn code_for_public_error(error: &PublicError) -> Code {
+    match error.kind() {
+        PublicErrorKind::Overloaded => Code::ResourceExhausted,
+        _ => code_for_class(error.class()),
+    }
+}
+
 const fn code_for_class(class: ErrorClass) -> Code {
     match class {
         ErrorClass::InvalidArgument => Code::InvalidArgument,
@@ -297,8 +304,11 @@ const fn code_for_application(code: ApplicationErrorCode) -> Code {
         ApplicationErrorCode::ContractMismatch
         | ApplicationErrorCode::QueryUnavailable
         | ApplicationErrorCode::ModuleUnavailable
-        | ApplicationErrorCode::CommandExecutionFailed => Code::FailedPrecondition,
-        ApplicationErrorCode::ResponseTooLarge => Code::ResourceExhausted,
+        | ApplicationErrorCode::CommandExecutionFailed
+        | ApplicationErrorCode::HistoryIncarnationMismatch => Code::FailedPrecondition,
+        ApplicationErrorCode::ResponseTooLarge | ApplicationErrorCode::Overloaded => {
+            Code::ResourceExhausted
+        }
         ApplicationErrorCode::StorageUnavailable => Code::Unavailable,
         ApplicationErrorCode::OutcomeUnknown => Code::Unknown,
         ApplicationErrorCode::OperationCancelled => Code::Cancelled,
@@ -605,6 +615,67 @@ mod tests {
             )),
             ProtocolFailureKind::UnknownPublicErrorKind,
         );
+    }
+
+    #[test]
+    fn staged_public_errors_preserve_retryability_and_certainty() {
+        let overloaded = ClientError::Public(PublicError::overloaded());
+        assert!(is_retryable(&overloaded));
+        assert!(!carries_uncertainty(&overloaded));
+
+        let mismatch = ClientError::Public(PublicError::history_incarnation_mismatch());
+        assert!(!is_retryable(&mismatch));
+        assert!(!carries_uncertainty(&mismatch));
+
+        let overloaded_app = ClientError::Application(Box::new(ApplicationError::new(
+            ApplicationErrorCode::Overloaded,
+            riffdb_errors::ApplicationOperation::ExecuteQuery,
+            riffdb_errors::ApplicationErrorContext::empty(),
+            None,
+        )));
+        assert!(is_retryable(&overloaded_app));
+        assert!(!carries_uncertainty(&overloaded_app));
+
+        let mismatch_app = ClientError::Application(Box::new(ApplicationError::new(
+            ApplicationErrorCode::HistoryIncarnationMismatch,
+            riffdb_errors::ApplicationOperation::ExecuteQuery,
+            riffdb_errors::ApplicationErrorContext::empty(),
+            None,
+        )));
+        assert!(!is_retryable(&mismatch_app));
+        assert!(!carries_uncertainty(&mismatch_app));
+    }
+
+    #[test]
+    fn staged_public_status_codes_accept_kind_level_overrides() {
+        let overloaded_details =
+            contextless_error_bytes(11, "overloaded", "service is over capacity", 2);
+        let checked = checked_status(Status::with_details(
+            Code::ResourceExhausted,
+            "service is over capacity",
+            overloaded_details.into(),
+        ));
+        assert!(matches!(
+            checked,
+            ClientError::Public(ref error) if error.kind() == PublicErrorKind::Overloaded
+        ));
+
+        let mismatch_details = contextless_error_bytes(
+            10,
+            "history_incarnation_mismatch",
+            "observed history predates a database restore",
+            1,
+        );
+        let checked = checked_status(Status::with_details(
+            Code::FailedPrecondition,
+            "observed history predates a database restore",
+            mismatch_details.into(),
+        ));
+        assert!(matches!(
+            checked,
+            ClientError::Public(ref error)
+                if error.kind() == PublicErrorKind::HistoryIncarnationMismatch
+        ));
     }
 
     fn authorization_denied_bytes() -> Vec<u8> {

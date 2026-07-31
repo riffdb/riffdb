@@ -532,6 +532,11 @@ const fn service_terminal_class<T>(result: &ServiceResult<T>) -> crate::ServiceT
             PublicErrorKind::CommandExecutionFailed => {
                 crate::ServiceTerminalClass::CommandExecutionFailed
             }
+            // Staged registry kinds are classification-only until producers land.
+            PublicErrorKind::HistoryIncarnationMismatch => {
+                crate::ServiceTerminalClass::ContractMismatch
+            }
+            PublicErrorKind::Overloaded => crate::ServiceTerminalClass::StorageUnavailable,
         },
         Err(ServiceFailure::Cancelled) => crate::ServiceTerminalClass::Cancelled,
         Err(ServiceFailure::DeadlineExceeded) => crate::ServiceTerminalClass::DeadlineExceeded,
