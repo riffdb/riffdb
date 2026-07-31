@@ -349,7 +349,12 @@ const DISCOVERY_PAGE_BOUNDARIES: [(&str, usize, bool, &str); 4] = [
     ("limit-500-exact-end", 500, false, "exact_end"),
 ];
 
-const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 17] = [
+const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 18] = [
+    (
+        "riffdb.v1.CompiledContractCandidate.parent_version",
+        "ContractService.ValidateContract:response:valid",
+        "ContractService.ValidateContract:response:candidate-preview",
+    ),
     (
         "riffdb.v1.CommandToolDiscoveryPage.next_cursor",
         "ContractService.DiscoverCommandTools:response:full-boundary-empty-exact-end",
@@ -2018,6 +2023,36 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
         &v1::ValidateContractRequest {
             request_id: request_id.clone(),
             source: "entity Budget { id: uuid }".to_owned(),
+            preview_active_successor: false,
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "ContractService.ValidateContract",
+        "request",
+        "preview-active-successor",
+        "riffdb.v1.ValidateContractRequest",
+        &v1::ValidateContractRequest {
+            request_id: request_id.clone(),
+            source: "contract Budget version 2 {}".to_owned(),
+            preview_active_successor: true,
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "ContractService.ValidateContract",
+        "response",
+        "candidate-preview",
+        "riffdb.v1.ValidateContractResponse",
+        &v1::ValidateContractResponse {
+            result: Some(v1::validate_contract_response::Result::Candidate(
+                v1::CompiledContractCandidate {
+                    parent_version: Some(1),
+                    parent_bundle_hash: vec![0x11; 32],
+                    candidate: Some(public_contract_descriptor()),
+                    canonical_bundle: vec![0x52, 0x44, 0x42],
+                },
+            )),
         },
     );
     append_client_vector(
@@ -2130,6 +2165,22 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
             request_id: request_id.clone(),
             source: "entity Budget { id: uuid }".to_owned(),
             expected_active_version: None,
+            expected_active_bundle_hash: Vec::new(),
+            expected_candidate_bundle_hash: Vec::new(),
+        },
+    );
+    append_client_vector(
+        &mut output,
+        "ContractService.DeployContract",
+        "request",
+        "exact-application-identity",
+        "riffdb.v1.DeployContractRequest",
+        &v1::DeployContractRequest {
+            request_id: request_id.clone(),
+            source: "contract Budget version 2 {}".to_owned(),
+            expected_active_version: Some(1),
+            expected_active_bundle_hash: vec![0x41; 32],
+            expected_candidate_bundle_hash: vec![0x42; 32],
         },
     );
     for (branch, result) in [
@@ -2160,6 +2211,24 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
         (
             "bundle-conflict",
             v1::deploy_contract_response::Result::BundleConflict(v1::Unit {}),
+        ),
+        (
+            "expected-application-identity-mismatch-absent",
+            v1::deploy_contract_response::Result::ExpectedApplicationIdentityMismatch(
+                v1::ExpectedApplicationIdentityMismatch {
+                    actual_active: None,
+                    compiled_candidate: Some(public_contract_descriptor()),
+                },
+            ),
+        ),
+        (
+            "expected-application-identity-mismatch-present",
+            v1::deploy_contract_response::Result::ExpectedApplicationIdentityMismatch(
+                v1::ExpectedApplicationIdentityMismatch {
+                    actual_active: Some(public_contract_descriptor()),
+                    compiled_candidate: Some(public_successor_contract_descriptor()),
+                },
+            ),
         ),
     ] {
         append_client_vector(

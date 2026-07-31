@@ -85,14 +85,14 @@ use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, Audience, CanonicalInputHash,
     CanonicalRecord, CanonicalString, CanonicalValue, CapabilityGrantV1, CapabilityId,
     CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1, CommitSequence,
-    ContractLineage, ContractVersion, DatabaseId, Decimal, DecimalSpec, DigestKeyId, EntityKey,
-    EntityKeyBuilder, EntityVersion, Environment, EventId, FrontierPosition, IdempotencyKey,
-    IncidentId, IndexEntryKey, IndexEntryKeyBuilder, IndexEpoch, IndexEpochPosition, LogicalTime,
-    MAX_STRING_BYTES, OutcomeId, PartitionKey, PartitionKeyBuilder, PartitionKeyHash,
-    PartitionScopeV1, ProjectionGeneration, ProjectionId, ProjectionIdentity, ProvenanceId,
-    RequestId, RevocationReasonCodeV1, ScopedPartitionV1, ServiceAuditPhaseV1,
-    ServiceAuditTargetV1, ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1,
-    TenantId, TenantScope, Timestamp,
+    ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, Decimal, DecimalSpec,
+    DigestKeyId, EntityKey, EntityKeyBuilder, EntityVersion, Environment, EventId,
+    FrontierPosition, IdempotencyKey, IncidentId, IndexEntryKey, IndexEntryKeyBuilder, IndexEpoch,
+    IndexEpochPosition, LogicalTime, MAX_STRING_BYTES, OutcomeId, PartitionKey,
+    PartitionKeyBuilder, PartitionKeyHash, PartitionScopeV1, ProjectionGeneration, ProjectionId,
+    ProjectionIdentity, ProvenanceId, RequestId, RevocationReasonCodeV1, ScopedPartitionV1,
+    ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceAuditTargetsV1, ServiceIngressKindV1,
+    ServiceOperationV1, TenantId, TenantScope, Timestamp,
 };
 use tokio::sync::Notify;
 
@@ -534,11 +534,40 @@ impl ServiceHarness {
         .expect("bounded deployment request")
     }
 
+    pub(crate) fn mismatched_exact_deploy_request(&self) -> DeployContractRequest {
+        let active = self.database.active_catalog.bundle().bundle();
+        DeployContractRequest::new_exact(
+            ContractSource::new(self.database.source.clone()).expect("bounded active contract"),
+            Some(active.contract_version()),
+            Some(active.bundle_hash()),
+            ContractBundleHash::from_bytes([0xa5; 32]),
+        )
+        .expect("bounded exact deployment request")
+    }
+
+    pub(crate) fn exact_active_deploy_request(&self) -> DeployContractRequest {
+        let active = self.database.active_catalog.bundle().bundle();
+        DeployContractRequest::new_exact(
+            ContractSource::new(self.database.source.clone()).expect("bounded active contract"),
+            None,
+            None,
+            active.bundle_hash(),
+        )
+        .expect("bounded exact active request")
+    }
+
     pub(crate) fn validate_request(&self) -> ValidateContractRequest {
         ValidateContractRequest::new(
             ContractSource::new(BUDGET_SOURCE).expect("bounded example contract"),
         )
         .expect("bounded validation request")
+    }
+
+    pub(crate) fn preview_candidate_request(&self) -> ValidateContractRequest {
+        ValidateContractRequest::preview_active_successor(
+            ContractSource::new(self.database.source.clone()).expect("bounded example contract"),
+        )
+        .expect("bounded preview request")
     }
 
     pub(crate) fn explain_request(&self) -> riffdb_service::ExplainCommandRequest {
@@ -950,6 +979,10 @@ impl ServiceHarness {
 
     pub(crate) async fn wait_for_deployment_preparation(&self) {
         self.ports.wait_for_prepare_deployment().await;
+    }
+
+    pub(crate) fn deployment_preparation_calls(&self) -> usize {
+        self.ports.prepare_deployment_calls()
     }
 
     pub(crate) fn panic_next_policy_check(&self) {
@@ -2390,6 +2423,7 @@ struct HarnessPortState {
     compatible_activation: Mutex<Option<ActiveCatalogSnapshot>>,
     compatible_activation_release: Notify,
     prepare_deployment_mode: AtomicU8,
+    prepare_deployment_calls: AtomicUsize,
     prepare_deployment_started: Notify,
     panic_executable_plan: AtomicBool,
     panic_revoke_target_read: AtomicBool,
@@ -2467,6 +2501,7 @@ impl HarnessPorts {
                 compatible_activation: Mutex::new(None),
                 compatible_activation_release: Notify::new(),
                 prepare_deployment_mode: AtomicU8::new(CATALOG_READY),
+                prepare_deployment_calls: AtomicUsize::new(0),
                 prepare_deployment_started: Notify::new(),
                 panic_executable_plan: AtomicBool::new(false),
                 panic_revoke_target_read: AtomicBool::new(false),
@@ -2677,6 +2712,10 @@ impl HarnessPorts {
 
     async fn wait_for_prepare_deployment(&self) {
         self.shared.prepare_deployment_started.notified().await;
+    }
+
+    fn prepare_deployment_calls(&self) -> usize {
+        self.shared.prepare_deployment_calls.load(Ordering::Acquire)
     }
 
     fn panic_executable_plan(&self) {
@@ -3708,6 +3747,9 @@ impl CatalogReadPort for HarnessPorts {
     ) -> PortFuture<'a, CatalogPreparationResult, CatalogError> {
         let shared = Arc::clone(&self.shared);
         Box::pin(async move {
+            shared
+                .prepare_deployment_calls
+                .fetch_add(1, Ordering::AcqRel);
             shared.prepare_deployment_started.notify_one();
             match shared.prepare_deployment_mode.load(Ordering::Acquire) {
                 CATALOG_READY => {

@@ -347,6 +347,8 @@ async fn bootstrap_deploy_and_issue(
                 request_id: fresh_request_id_bytes()?,
                 source: BUDGET_CONTRACT.to_owned(),
                 expected_active_version: None,
+                expected_active_bundle_hash: Vec::new(),
+                expected_candidate_bundle_hash: Vec::new(),
             },
             &authenticated,
         ),

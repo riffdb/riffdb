@@ -47,10 +47,11 @@ use crate::input::{
 use crate::output::{
     CommandIdentity, NormalCreateDisposition, Terminal, authoring_error, client_error, local_error,
     local_error_with, maintenance_uncertain, render_bootstrap, render_commit,
-    render_contract_deploy, render_contract_validation, render_create_maintenance_start,
-    render_entity, render_execution, render_health, render_maintenance_operation,
-    render_normal_create, render_outcome, render_projection, render_restore_maintenance_start,
-    render_revoke, success, take_normal_create_disposition, uncertain,
+    render_compilation_diagnostics, render_contract_deploy, render_contract_validation,
+    render_create_maintenance_start, render_entity, render_execution, render_health,
+    render_maintenance_operation, render_normal_create, render_outcome, render_projection,
+    render_restore_maintenance_start, render_revoke, success, take_normal_create_disposition,
+    uncertain,
 };
 use crate::runner::{RunnerError, RunnerStream, run_budget};
 use crate::value::format_uuid;
@@ -107,6 +108,26 @@ struct ApplicationModuleIdentityError<'a> {
     recovery_action: &'static str,
 }
 
+#[derive(Serialize)]
+struct ApplicationContractIdentityError<'a> {
+    code: &'static str,
+    message: &'static str,
+    database: &'a str,
+    lock_hash: String,
+    expected_parent_version: Option<u64>,
+    expected_parent_bundle_hash: Option<String>,
+    locked_candidate_bundle_hash: String,
+    actual_active_version: Option<u64>,
+    actual_active_bundle_hash: Option<String>,
+    compiled_candidate_bundle_hash: Option<String>,
+    recovery_action: &'static str,
+}
+
+#[derive(Serialize)]
+struct ApplicationLockResult {
+    status: &'static str,
+}
+
 fn interrupt_application_deployment_after(environment: &dyn Environment, stage: &str) {
     if environment
         .value(APPLICATION_DEPLOYMENT_TEST_INTERRUPT_AFTER)
@@ -116,9 +137,10 @@ fn interrupt_application_deployment_after(environment: &dyn Environment, stage: 
     }
 }
 use crate::scaffold::{
-    ScaffoldLanguage, check_application, check_application_lock, create_application,
+    ApplicationCheckStatus, ScaffoldLanguage, application_contract_source,
+    application_contract_version, check_application, check_application_lock, create_application,
     generate_application, load_locked_application, migrate_application_source_v2,
-    preview_application_lock, write_application_lock,
+    preview_application_lock, write_application_lock, write_application_lock_with_bundle,
 };
 use crate::value::{InputValue, RecordInput, ValueError, parse_uuid};
 
@@ -239,11 +261,18 @@ pub async fn run() -> ExitCode {
             }
         };
     }
+    let networked_successor_lock = matches!(
+        &cli.command,
+        TopLevel::Application {
+            command: ApplicationCommand::Lock { source, write: true, .. }
+        } if application_contract_version(Path::new(source)).is_ok_and(|version| version > 1)
+    );
     if let TopLevel::Application { command } = &cli.command
         && !matches!(
             command,
             ApplicationCommand::Deploy { .. } | ApplicationCommand::BindDevRole { .. }
         )
+        && !networked_successor_lock
     {
         if let ApplicationCommand::Preview { source } = command {
             return match preview_application_lock(Path::new(source)) {
@@ -289,9 +318,27 @@ pub async fn run() -> ExitCode {
                 }
             };
         }
+        if let ApplicationCommand::Check { source } = command {
+            return match check_application(Path::new(source)) {
+                Ok(ApplicationCheckStatus::ExactLock) => {
+                    println!("application sources, exact lock, and generated bindings are exact");
+                    ExitCode::SUCCESS
+                }
+                Ok(ApplicationCheckStatus::SourceOnly) => {
+                    println!(
+                        "application sources compile; no lock or generated artifacts were checked"
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    emit_scaffold_failure("riffdb application failed", &error, cli.output);
+                    ExitCode::FAILURE
+                }
+            };
+        }
         let result = match command {
             ApplicationCommand::Migrate { .. } => unreachable!("migration returned above"),
-            ApplicationCommand::Check { source } => check_application(Path::new(source)),
+            ApplicationCommand::Check { .. } => unreachable!("check returned above"),
             ApplicationCommand::Preview { .. } => unreachable!("preview returned above"),
             ApplicationCommand::Lock {
                 source,
@@ -518,6 +565,15 @@ async fn application_command(
     environment: &dyn Environment,
     stdin: &mut dyn Read,
 ) -> Terminal {
+    if let ApplicationCommand::Lock {
+        source,
+        lock,
+        write: true,
+        check: false,
+    } = &command
+    {
+        return write_successor_application_lock(source, lock, config, environment).await;
+    }
     let (
         identity,
         source,
@@ -653,12 +709,17 @@ async fn application_command(
         Ok(request_id) => request_id,
         Err(error) => return client_error(identity, &error),
     };
+    let locked_parent = locked.contract().parent();
     let contract_deployment = match client
         .deploy_contract(
             v1::DeployContractRequest {
                 request_id: deploy_request_id,
                 source: contract_source,
-                expected_active_version: None,
+                expected_active_version: locked_parent
+                    .map(|parent| parent.contract_version().get()),
+                expected_active_bundle_hash: locked_parent
+                    .map_or_else(Vec::new, |parent| parent.bundle_hash().as_bytes().to_vec()),
+                expected_candidate_bundle_hash: locked.contract().bundle_hash().as_bytes().to_vec(),
             },
             &metadata,
         )
@@ -709,6 +770,35 @@ async fn application_command(
                 "active_contract_mismatch",
                 "the selected database has a different active contract",
             );
+        }
+        Some(v1::deploy_contract_response::Result::ExpectedApplicationIdentityMismatch(
+            mismatch,
+        )) => {
+            let detail = ApplicationContractIdentityError {
+                code: "application_contract_identity_mismatch",
+                message: "the active parent, server-compiled candidate, and application lock identities disagree",
+                database: config.database.as_str(),
+                lock_hash: hex(locked.lock_identity().as_bytes()),
+                expected_parent_version: locked_parent
+                    .map(|parent| parent.contract_version().get()),
+                expected_parent_bundle_hash: locked_parent
+                    .map(|parent| hex(parent.bundle_hash().as_bytes())),
+                locked_candidate_bundle_hash: hex(locked.contract().bundle_hash().as_bytes()),
+                actual_active_version: mismatch
+                    .actual_active
+                    .as_ref()
+                    .map(|descriptor| descriptor.contract_version),
+                actual_active_bundle_hash: mismatch
+                    .actual_active
+                    .as_ref()
+                    .map(|descriptor| hex(&descriptor.bundle_hash)),
+                compiled_candidate_bundle_hash: mismatch
+                    .compiled_candidate
+                    .as_ref()
+                    .map(|descriptor| hex(&descriptor.bundle_hash)),
+                recovery_action: "riffdb_application_lock_write_against_active",
+            };
+            return local_error_with(identity, &detail, detail.code, detail.message, 2);
         }
         Some(v1::deploy_contract_response::Result::BundleConflict(_)) => {
             return local_error(
@@ -1180,6 +1270,120 @@ async fn application_command(
             "seeded": seed,
         }),
     )
+}
+
+async fn write_successor_application_lock(
+    source_path: &OsStr,
+    lock_path: &OsStr,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+) -> Terminal {
+    let identity = CommandIdentity::ApplicationDeploy;
+    let source = match application_contract_source(Path::new(source_path)) {
+        Ok(source) => source,
+        Err(_) => {
+            return local_error(
+                identity,
+                "application_source_invalid",
+                "the symbolic application or contract source is invalid",
+            );
+        }
+    };
+    let metadata = match required_metadata(identity, config, environment) {
+        Ok(metadata) => metadata,
+        Err(terminal) => return terminal,
+    };
+    let mut client = match connect(config).await {
+        Ok(client) => client,
+        Err(error) => return client_error(identity, &error),
+    };
+    let request_id = match request_id() {
+        Ok(request_id) => request_id,
+        Err(error) => return client_error(identity, &error),
+    };
+    let response = match client
+        .validate_contract(
+            v1::ValidateContractRequest {
+                request_id,
+                source,
+                preview_active_successor: true,
+            },
+            &metadata,
+        )
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return client_error(identity, &error),
+    };
+    let candidate = match response.result.as_ref() {
+        Some(v1::validate_contract_response::Result::Candidate(candidate)) => candidate,
+        Some(v1::validate_contract_response::Result::Invalid(diagnostics)) => {
+            return render_compilation_diagnostics(identity, diagnostics);
+        }
+        Some(v1::validate_contract_response::Result::Valid(_)) | None => {
+            return local_error(
+                identity,
+                "candidate_preview_invalid",
+                "the server did not return the requested parent-aware candidate",
+            );
+        }
+    };
+    let contract = match riffdb_contract_ir::ContractBundle::decode(&candidate.canonical_bundle) {
+        Ok(contract) => contract,
+        Err(_) => {
+            return local_error(
+                identity,
+                "candidate_bundle_invalid",
+                "the server returned an invalid canonical candidate bundle",
+            );
+        }
+    };
+    if contract.parent().is_none() {
+        return local_error(
+            identity,
+            "active_parent_absent",
+            "a successor lock requires an active parent in the selected database; deploy the genesis contract first or select the intended database",
+        );
+    }
+    let descriptor_matches = candidate.candidate.as_ref().is_some_and(|descriptor| {
+        descriptor.contract_lineage == contract.lineage().as_str()
+            && descriptor.contract_version == contract.contract_version().get()
+            && descriptor.bundle_hash.as_slice() == contract.bundle_hash().as_bytes()
+    });
+    let parent_matches = contract
+        .parent()
+        .map(|parent| (parent.contract_version().get(), parent.bundle_hash()))
+        == candidate.parent_version.zip(
+            candidate
+                .parent_bundle_hash
+                .as_slice()
+                .try_into()
+                .ok()
+                .map(riffdb_types::ContractBundleHash::from_bytes),
+        );
+    if !descriptor_matches || !parent_matches {
+        return local_error(
+            identity,
+            "candidate_identity_mismatch",
+            "the server candidate descriptor, parent identity, and canonical bundle disagree",
+        );
+    }
+    match write_application_lock_with_bundle(
+        Path::new(source_path),
+        Some(Path::new(lock_path)),
+        contract,
+    ) {
+        Ok(()) => success(
+            identity,
+            "locked",
+            &ApplicationLockResult { status: "locked" },
+        ),
+        Err(_) => local_error(
+            identity,
+            "application_lock_inexact",
+            "the candidate does not exactly match the symbolic application sources",
+        ),
+    }
 }
 
 fn prepare_deployment_root(root: &Path, database: &str) -> Result<PathBuf, ()> {
@@ -2080,7 +2284,11 @@ async fn contract_command(
             };
             match client
                 .validate_contract(
-                    v1::ValidateContractRequest { request_id, source },
+                    v1::ValidateContractRequest {
+                        request_id,
+                        source,
+                        preview_active_successor: false,
+                    },
                     &metadata,
                 )
                 .await
@@ -2119,6 +2327,8 @@ async fn contract_command(
                 request_id,
                 source,
                 expected_active_version,
+                expected_active_bundle_hash: Vec::new(),
+                expected_candidate_bundle_hash: Vec::new(),
             };
             match client.deploy_contract(request, &metadata).await {
                 Ok(response) => render_contract_deploy(&response),

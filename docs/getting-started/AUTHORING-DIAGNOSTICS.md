@@ -53,6 +53,12 @@ reports whether staging was discarded, the previous generation remains
 accepted, or generated files may be partial while the exact lock was not
 published. No diagnostic turns partial output into an accepted application.
 
+When the default lock exists, `application check` verifies the source, pinned
+contract bundle, exact lock, and every generated artifact. It cannot report a
+source-only success over a stale lock. With no lock present, success explicitly
+says that only symbolic sources compiled and that no lock or generated artifact
+was checked.
+
 Source, lock, or generated-artifact drift is always the structured
 `RDB-AL008` diagnostic with `identity_drift` and `write_lock`. This includes an
 interrupted or substituted generated file; the CLI, JSON output, and builder

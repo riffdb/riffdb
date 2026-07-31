@@ -6,17 +6,19 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 use riffdb_contract_compiler::compile_contract_source;
+use riffdb_contract_ir::ContractBundle;
 use riffdb_diagnostics::{
     AuthoringDiagnostics, AuthoringSourcePath, FileChangeDisposition, FilesystemDiagnosticClass,
 };
 use riffdb_query_module::{
     ApplicationLock, ApplicationManifest, ApplicationSourceManifest, ApplicationSourceTenantScope,
-    GeneratedApplicationArtifact, GeneratedApplicationArtifactKind, GeneratedMcpCommand,
-    GeneratedMcpTool, NamedQuerySource, PythonGenerationError, QueryModule, QueryModuleCandidate,
-    QueryModuleName, QueryModuleVersion, compile_application_role, generate_mcp_commands,
-    generate_mcp_tools, generate_python_client, generate_rust_client, generate_typescript_client,
+    CONTRACT_BUNDLE_ARTIFACT_PATH, GeneratedApplicationArtifact, GeneratedApplicationArtifactKind,
+    GeneratedMcpCommand, GeneratedMcpTool, NamedQuerySource, PythonGenerationError, QueryModule,
+    QueryModuleCandidate, QueryModuleName, QueryModuleVersion, compile_application_role,
+    generate_mcp_commands, generate_mcp_tools, generate_python_client, generate_rust_client,
+    generate_typescript_client,
 };
-use riffdb_types::TenantId;
+use riffdb_types::{TenantId, hash_source};
 use serde_json::json;
 
 const CONTRACT_TEMPLATE: &str = include_str!("../../../templates/application/contract.riff");
@@ -207,6 +209,7 @@ pub(crate) struct LockedApplication {
     manifest_path: PathBuf,
     manifest: ApplicationManifest,
     lock_identity: riffdb_types::ApplicationLockHash,
+    contract: ContractBundle,
 }
 
 impl LockedApplication {
@@ -225,6 +228,10 @@ impl LockedApplication {
     pub(crate) const fn lock_identity(&self) -> riffdb_types::ApplicationLockHash {
         self.lock_identity
     }
+
+    pub(crate) const fn contract(&self) -> &ContractBundle {
+        &self.contract
+    }
 }
 
 fn source_parent(path: &Path) -> &Path {
@@ -233,12 +240,29 @@ fn source_parent(path: &Path) -> &Path {
         .unwrap_or_else(|| Path::new("."))
 }
 
-pub(crate) fn check_application(source_path: &Path) -> Result<(), ScaffoldError> {
-    let _ = compile_symbolic_application(source_path)?;
-    Ok(())
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ApplicationCheckStatus {
+    SourceOnly,
+    ExactLock,
+}
+
+pub(crate) fn check_application(
+    source_path: &Path,
+) -> Result<ApplicationCheckStatus, ScaffoldError> {
+    let root = source_parent(source_path);
+    if root.join(DEFAULT_LOCK_PATH).exists() {
+        check_application_lock(source_path, None)?;
+        Ok(ApplicationCheckStatus::ExactLock)
+    } else {
+        let _ = compile_symbolic_application(source_path)?;
+        Ok(ApplicationCheckStatus::SourceOnly)
+    }
 }
 
 pub(crate) fn preview_application_lock(source_path: &Path) -> Result<Vec<u8>, ScaffoldError> {
+    if application_contract_version(source_path)? != 1 {
+        return Err(ScaffoldError::IdentityMismatch);
+    }
     Ok(compile_symbolic_application(source_path)?
         .lock
         .canonical_bytes()
@@ -285,7 +309,27 @@ pub(crate) fn write_application_lock(
     source_path: &Path,
     lock_path: Option<&Path>,
 ) -> Result<(), ScaffoldError> {
+    if application_contract_version(source_path)? != 1 {
+        return Err(ScaffoldError::IdentityMismatch);
+    }
     let compiled = compile_symbolic_application(source_path)?;
+    publish_compiled_application_lock(source_path, lock_path, &compiled)
+}
+
+pub(crate) fn write_application_lock_with_bundle(
+    source_path: &Path,
+    lock_path: Option<&Path>,
+    contract: ContractBundle,
+) -> Result<(), ScaffoldError> {
+    let compiled = compile_symbolic_application_with_bundle(source_path, contract)?;
+    publish_compiled_application_lock(source_path, lock_path, &compiled)
+}
+
+fn publish_compiled_application_lock(
+    source_path: &Path,
+    lock_path: Option<&Path>,
+    compiled: &CompiledSymbolicApplication,
+) -> Result<(), ScaffoldError> {
     let root = source_parent(source_path);
     for (path, bytes) in &compiled.outputs {
         atomic_write_workspace(root, path, bytes)?;
@@ -299,12 +343,12 @@ pub(crate) fn check_application_lock(
     source_path: &Path,
     lock_path: Option<&Path>,
 ) -> Result<(), ScaffoldError> {
-    let compiled = compile_symbolic_application(source_path)?;
     let root = source_parent(source_path);
     let lock_path = workspace_lock_path(root, lock_path)?;
     let existing = read_bounded(&lock_path, 4 * 1_024 * 1_024)?;
     let decoded = ApplicationLock::decode_canonical(&existing)
         .map_err(|error| lock_diagnostic(&lock_path, error.kind()))?;
+    let compiled = compile_for_existing_lock(source_path, root, &lock_path, &decoded)?;
     if decoded.canonical_bytes() != compiled.lock.canonical_bytes() {
         return Err(lock_diagnostic(
             &lock_path,
@@ -332,25 +376,34 @@ pub(crate) fn load_locked_application(
     let lock_path = workspace_lock_path(root, lock_path)?;
     let lock = ApplicationLock::decode_canonical(&read_bounded(&lock_path, 4 * 1_024 * 1_024)?)
         .map_err(|error| lock_diagnostic(&lock_path, error.kind()))?;
+    let compiled = compile_for_existing_lock(source_path, root, &lock_path, &lock)?;
     let manifest_path = root.join(EXACT_MANIFEST_PATH);
     let manifest =
         ApplicationManifest::decode_canonical(&read_bounded(&manifest_path, 4 * 1_024 * 1_024)?)
             .map_err(|_| ScaffoldError::Manifest)?;
+    let contract = compiled_contract_bundle(&compiled).or_else(|_| {
+        if application_contract_version(source_path)? != 1 {
+            return Err(ScaffoldError::IdentityMismatch);
+        }
+        let source = read_workspace_text(root, manifest.contract().source(), 1_048_576)?;
+        compile_contract_source(&source).map_err(|_| ScaffoldError::CompileContract)
+    })?;
     Ok(LockedApplication {
         root: root.to_path_buf(),
         manifest_path,
         manifest,
         lock_identity: lock.identity(),
+        contract,
     })
 }
 
 fn generate_application_locked(source_path: &Path, lock_path: &Path) -> Result<(), ScaffoldError> {
-    let compiled = compile_symbolic_application(source_path)?;
     let root = source_parent(source_path);
     let lock_path = workspace_lock_path(root, Some(lock_path))?;
     let existing = read_bounded(&lock_path, 4 * 1_024 * 1_024)?;
     let decoded = ApplicationLock::decode_canonical(&existing)
         .map_err(|error| lock_diagnostic(&lock_path, error.kind()))?;
+    let compiled = compile_for_existing_lock(source_path, root, &lock_path, &decoded)?;
     if decoded.canonical_bytes() != compiled.lock.canonical_bytes() {
         return Err(lock_diagnostic(
             &lock_path,
@@ -363,8 +416,96 @@ fn generate_application_locked(source_path: &Path, lock_path: &Path) -> Result<(
     Ok(())
 }
 
+fn compile_for_existing_lock(
+    source_path: &Path,
+    root: &Path,
+    lock_path: &Path,
+    lock: &ApplicationLock,
+) -> Result<CompiledSymbolicApplication, ScaffoldError> {
+    if lock.schema() == riffdb_query_module::APPLICATION_LOCK_SCHEMA_V3 {
+        let artifact = lock.contract_bundle_artifact().ok_or_else(|| {
+            lock_diagnostic(
+                lock_path,
+                riffdb_query_module::ApplicationLockErrorKind::InvalidShape,
+            )
+        })?;
+        let bytes =
+            read_workspace_file(root, artifact.path(), riffdb_contract_ir::MAX_BUNDLE_BYTES)?;
+        let contract = ContractBundle::decode(&bytes).map_err(|_| {
+            lock_diagnostic(
+                lock_path,
+                riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+            )
+        })?;
+        compile_symbolic_application_with_bundle(source_path, contract)
+    } else {
+        if application_contract_version(source_path)? != 1 {
+            return Err(lock_diagnostic(
+                lock_path,
+                riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+            ));
+        }
+        compile_symbolic_application_legacy(source_path)
+    }
+}
+
+fn compiled_contract_bundle(
+    compiled: &CompiledSymbolicApplication,
+) -> Result<ContractBundle, ScaffoldError> {
+    let bytes = compiled
+        .outputs
+        .iter()
+        .find(|(path, _)| path == CONTRACT_BUNDLE_ARTIFACT_PATH)
+        .map(|(_, bytes)| bytes.as_slice())
+        .ok_or(ScaffoldError::ApplicationLock)?;
+    ContractBundle::decode(bytes).map_err(|_| ScaffoldError::ApplicationLock)
+}
+
+pub(crate) fn application_contract_version(source_path: &Path) -> Result<u64, ScaffoldError> {
+    let source_bytes = read_bounded(source_path, 1_048_576)?;
+    let source_text =
+        std::str::from_utf8(&source_bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
+    let source = ApplicationSourceManifest::parse(source_text)
+        .map_err(|error| application_source_diagnostic(source_path, error.kind()))?;
+    Ok(source.contract().version())
+}
+
+pub(crate) fn application_contract_source(source_path: &Path) -> Result<String, ScaffoldError> {
+    let source_bytes = read_bounded(source_path, 1_048_576)?;
+    let source_text =
+        std::str::from_utf8(&source_bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
+    let source = ApplicationSourceManifest::parse(source_text)
+        .map_err(|error| application_source_diagnostic(source_path, error.kind()))?;
+    read_workspace_text(
+        source_parent(source_path),
+        source.contract().source(),
+        1_048_576,
+    )
+}
+
 fn compile_symbolic_application(
     source_path: &Path,
+) -> Result<CompiledSymbolicApplication, ScaffoldError> {
+    compile_symbolic_application_mode(source_path, None, true)
+}
+
+fn compile_symbolic_application_legacy(
+    source_path: &Path,
+) -> Result<CompiledSymbolicApplication, ScaffoldError> {
+    compile_symbolic_application_mode(source_path, None, false)
+}
+
+fn compile_symbolic_application_with_bundle(
+    source_path: &Path,
+    contract: ContractBundle,
+) -> Result<CompiledSymbolicApplication, ScaffoldError> {
+    compile_symbolic_application_mode(source_path, Some(contract), true)
+}
+
+fn compile_symbolic_application_mode(
+    source_path: &Path,
+    contract_override: Option<ContractBundle>,
+    lock_v3: bool,
 ) -> Result<CompiledSymbolicApplication, ScaffoldError> {
     let source_bytes = read_bounded(source_path, 1_048_576)?;
     let source_text =
@@ -373,8 +514,21 @@ fn compile_symbolic_application(
         .map_err(|error| application_source_diagnostic(source_path, error.kind()))?;
     let root = source_parent(source_path);
     let contract_source = read_workspace_text(root, source.contract().source(), 1_048_576)?;
-    let contract = compile_contract_source(&contract_source)
-        .map_err(|error| contract_diagnostic(source.contract().source(), &error))?;
+    let contract = if let Some(contract) = contract_override {
+        if contract.source_hash() != hash_source(contract_source.as_bytes())
+            || contract.lineage().as_str() != source.contract().lineage()
+            || contract.contract_version().get() != source.contract().version()
+        {
+            return Err(lock_diagnostic(
+                Path::new(DEFAULT_LOCK_PATH),
+                riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+            ));
+        }
+        contract
+    } else {
+        compile_contract_source(&contract_source)
+            .map_err(|error| contract_diagnostic(source.contract().source(), &error))?
+    };
     let mut modules = Vec::with_capacity(source.query_modules().len());
     let mut python_query_sources = Vec::new();
     for declared in source.query_modules() {
@@ -476,6 +630,12 @@ fn compile_symbolic_application(
                 .into_bytes(),
         ));
     }
+    if lock_v3 {
+        outputs.push((
+            CONTRACT_BUNDLE_ARTIFACT_PATH.to_owned(),
+            contract.canonical_bytes().to_vec(),
+        ));
+    }
     let artifacts = outputs
         .iter()
         .map(|(path, bytes)| {
@@ -487,6 +647,8 @@ fn compile_symbolic_application(
                 GeneratedApplicationArtifactKind::TypeScript
             } else if source.generation().python() == Some(path.as_str()) {
                 GeneratedApplicationArtifactKind::Python
+            } else if path == CONTRACT_BUNDLE_ARTIFACT_PATH {
+                GeneratedApplicationArtifactKind::ContractBundle
             } else {
                 GeneratedApplicationArtifactKind::Mcp
             };
@@ -494,8 +656,12 @@ fn compile_symbolic_application(
                 .map_err(|error| lock_diagnostic(Path::new(DEFAULT_LOCK_PATH), error.kind()))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let lock = ApplicationLock::compile(&source, &exact, &contract, &modules, &artifacts)
-        .map_err(|error| lock_diagnostic(Path::new(DEFAULT_LOCK_PATH), error.kind()))?;
+    let lock = if lock_v3 {
+        ApplicationLock::compile_v3(&source, &exact, &contract, &modules, &artifacts)
+    } else {
+        ApplicationLock::compile(&source, &exact, &contract, &modules, &artifacts)
+    }
+    .map_err(|error| lock_diagnostic(Path::new(DEFAULT_LOCK_PATH), error.kind()))?;
     Ok(CompiledSymbolicApplication { lock, outputs })
 }
 
@@ -774,7 +940,15 @@ pub(crate) fn create_application(
             .map_err(|_| ScaffoldError::ApplicationLock)?,
         );
     }
-    let lock = ApplicationLock::compile(
+    artifacts.push(
+        GeneratedApplicationArtifact::new(
+            GeneratedApplicationArtifactKind::ContractBundle,
+            CONTRACT_BUNDLE_ARTIFACT_PATH,
+            contract.canonical_bytes(),
+        )
+        .map_err(|_| ScaffoldError::ApplicationLock)?,
+    );
+    let lock = ApplicationLock::compile_v3(
         &source,
         &manifest,
         &contract,
@@ -808,6 +982,7 @@ pub(crate) fn create_application(
         &generated_typescript,
         generated_python.as_deref(),
         &generated_mcp,
+        contract.canonical_bytes(),
     )
     .and_then(|()| {
         publish_scaffold(
@@ -994,6 +1169,7 @@ fn write_repository(
     generated_typescript: &str,
     generated_python: Option<&str>,
     generated_mcp: &str,
+    contract_bundle: &[u8],
 ) -> Result<(), ScaffoldError> {
     write_file(root, "riffdb/contract.riff", contract_source.as_bytes())?;
     write_file(
@@ -1023,6 +1199,7 @@ fn write_repository(
         generated_typescript.as_bytes(),
     )?;
     write_file(root, "generated/mcp/tools.json", generated_mcp.as_bytes())?;
+    write_file(root, CONTRACT_BUNDLE_ARTIFACT_PATH, contract_bundle)?;
     if let Some(generated_python) = generated_python {
         let path = format!("src/{}/generated.py", application.replace('-', "_"));
         write_file(root, &path, generated_python.as_bytes())?;
@@ -1846,6 +2023,7 @@ mod tests {
             "riffdb/contract.riff",
             "riffdb/queries/item_page.riffq",
             "generated/riffdb.application.exact.json",
+            "generated/riffdb.contract.bundle",
             "generated/rust/client.rs",
             "generated/typescript/client.ts",
             "generated/mcp/tools.json",
@@ -1987,7 +2165,10 @@ mod tests {
         fs::remove_file(&generated).expect("remove generated");
         fs::remove_file(&lock).expect("remove lock");
 
-        check_application(&source).expect("read-only compile");
+        assert_eq!(
+            check_application(&source).expect("read-only compile"),
+            ApplicationCheckStatus::SourceOnly
+        );
         let preview = preview_application_lock(&source).expect("read-only lock preview");
         assert!(!generated.exists());
         assert!(!lock.exists());
@@ -1995,6 +2176,16 @@ mod tests {
         write_application_lock(&source, None).expect("write lock");
         assert_eq!(preview, fs::read(&lock).expect("written lock"));
         fs::write(&generated, b"substituted\n").expect("substitute output");
+        let check_error = check_application(&source).expect_err("application check rejects drift");
+        assert_eq!(
+            check_error
+                .diagnostics()
+                .expect("structured drift")
+                .as_slice()[0]
+                .code()
+                .as_str(),
+            "RDB-AL008"
+        );
         let error = check_application_lock(&source, None).expect_err("artifact drift rejected");
         let diagnostics = error
             .diagnostics()
@@ -2004,6 +2195,74 @@ mod tests {
         };
         assert_eq!(diagnostic.code().as_str(), "RDB-AL008");
         assert_eq!(diagnostic.path().as_str(), DEFAULT_LOCK_PATH);
+        fs::remove_dir_all(base).expect("cleanup");
+    }
+
+    #[test]
+    fn successor_lock_uses_the_parent_aware_bundle_for_check_and_deploy_identity() {
+        let base = std::env::temp_dir().join(format!(
+            "riffdb-lock-test-{}-{}",
+            std::process::id(),
+            "successor-identity"
+        ));
+        if base.exists() {
+            fs::remove_dir_all(&base).expect("remove prior test directory");
+        }
+        create_application("safe-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
+        let source_path = base.join("riffdb.application.json");
+        let contract_path = base.join("riffdb/contract.riff");
+        let genesis_source = fs::read_to_string(&contract_path).expect("genesis source");
+        let genesis = compile_contract_source(&genesis_source).expect("genesis bundle");
+        let successor_source = genesis_source.replacen("version 1", "version 2", 1);
+        let successor =
+            riffdb_contract_compiler::compile_contract_successor(&successor_source, &genesis)
+                .expect("successor bundle");
+        let genesis_shaped_successor = compile_contract_source(&successor_source)
+            .expect("the historical broken path still compiles as genesis");
+        assert_ne!(
+            successor.bundle_hash(),
+            genesis_shaped_successor.bundle_hash(),
+            "parent allocation history is part of successor identity"
+        );
+        fs::write(&contract_path, successor_source).expect("successor source");
+        let mut source: serde_json::Value =
+            serde_json::from_slice(&fs::read(&source_path).expect("application source"))
+                .expect("source JSON");
+        source["contract"]["version"] = serde_json::json!(2);
+        fs::write(
+            &source_path,
+            serde_json::to_vec(&source).expect("updated source JSON"),
+        )
+        .expect("updated source");
+
+        assert!(matches!(
+            write_application_lock(&source_path, None),
+            Err(ScaffoldError::IdentityMismatch)
+        ));
+        write_application_lock_with_bundle(&source_path, None, successor.clone())
+            .expect("parent-aware lock");
+        check_application_lock(&source_path, None).expect("offline exact check");
+        let locked = load_locked_application(&source_path, None).expect("locked successor");
+        assert_eq!(locked.contract().bundle_hash(), successor.bundle_hash());
+        assert_eq!(
+            locked
+                .contract()
+                .parent()
+                .map(|parent| parent.bundle_hash()),
+            Some(genesis.bundle_hash())
+        );
+        fs::write(base.join(CONTRACT_BUNDLE_ARTIFACT_PATH), b"truncated")
+            .expect("substitute pinned bundle");
+        let error = check_application(&source_path).expect_err("bundle substitution rejected");
+        assert_eq!(
+            error
+                .diagnostics()
+                .expect("structured lock drift")
+                .as_slice()[0]
+                .code()
+                .as_str(),
+            "RDB-AL008"
+        );
         fs::remove_dir_all(base).expect("cleanup");
     }
 
@@ -2018,6 +2277,7 @@ mod tests {
             fs::remove_dir_all(&base).expect("remove prior test directory");
         }
         create_application("safe-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
+        fs::remove_file(base.join(DEFAULT_LOCK_PATH)).expect("source-only diagnostic check");
         fs::write(
             base.join("riffdb/contract.riff"),
             b"contract SafeApp version 1 { SECRET_VALUE }\n",
@@ -2060,6 +2320,7 @@ mod tests {
             fs::remove_dir_all(&base).expect("remove prior test directory");
         }
         create_application("safe-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
+        fs::remove_file(base.join(DEFAULT_LOCK_PATH)).expect("source-only role check");
         fs::write(
             base.join("riffdb/contract.riff"),
             br#"contract SafeApp version 1 {

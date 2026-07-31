@@ -273,11 +273,18 @@ pub(crate) fn render_contract_validation(response: &v1::ValidateContractResponse
         Some(Result::Invalid(diagnostics)) => {
             render_compilation_diagnostics(CommandIdentity::ContractValidate, diagnostics)
         }
+        Some(Result::Candidate(_)) => success(
+            CommandIdentity::ContractValidate,
+            "candidate",
+            &StatusResult {
+                status: "candidate",
+            },
+        ),
         None => rendering_failure(CommandIdentity::ContractValidate),
     }
 }
 
-fn render_compilation_diagnostics(
+pub(crate) fn render_compilation_diagnostics(
     command: CommandIdentity,
     diagnostics: &v1::CompilationDiagnostics,
 ) -> Terminal {
@@ -348,6 +355,13 @@ pub(crate) fn render_contract_deploy(response: &v1::DeployContractResponse) -> T
             "bundle_conflict",
             &StatusResult {
                 status: "bundle_conflict",
+            },
+        ),
+        Some(Result::ExpectedApplicationIdentityMismatch(_)) => success(
+            CommandIdentity::ContractDeploy,
+            "expected_application_identity_mismatch",
+            &StatusResult {
+                status: "expected_application_identity_mismatch",
             },
         ),
         None => rendering_failure(CommandIdentity::ContractDeploy),

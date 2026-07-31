@@ -173,6 +173,59 @@ fn lock_rejects_stale_manifest_duplicate_outputs_and_noncanonical_bytes() {
 }
 
 #[test]
+fn v3_lock_pins_the_exact_canonical_contract_bundle_artifact() {
+    let (source, manifest, contract, module) = compiled_application();
+    let bundle = GeneratedApplicationArtifact::new(
+        GeneratedApplicationArtifactKind::ContractBundle,
+        riffdb_query_module::CONTRACT_BUNDLE_ARTIFACT_PATH,
+        contract.canonical_bytes(),
+    )
+    .expect("bundle artifact");
+    let lock = ApplicationLock::compile_v3(
+        &source,
+        &manifest,
+        &contract,
+        std::slice::from_ref(&module),
+        std::slice::from_ref(&bundle),
+    )
+    .expect("v3 lock");
+
+    assert_eq!(
+        lock.schema(),
+        riffdb_query_module::APPLICATION_LOCK_SCHEMA_V3
+    );
+    assert_eq!(
+        lock.contract_bundle_artifact().expect("pinned bundle"),
+        &bundle
+    );
+    assert_eq!(
+        ApplicationLock::decode_canonical(lock.canonical_bytes())
+            .expect("strict v3 round trip")
+            .contract_bundle_artifact(),
+        Some(&bundle)
+    );
+
+    let substituted = GeneratedApplicationArtifact::new(
+        GeneratedApplicationArtifactKind::ContractBundle,
+        riffdb_query_module::CONTRACT_BUNDLE_ARTIFACT_PATH,
+        b"substituted bundle",
+    )
+    .expect("substituted artifact");
+    assert_eq!(
+        ApplicationLock::compile_v3(
+            &source,
+            &manifest,
+            &contract,
+            std::slice::from_ref(&module),
+            std::slice::from_ref(&substituted),
+        )
+        .expect_err("substitution rejected")
+        .kind(),
+        ApplicationLockErrorKind::IdentityMismatch
+    );
+}
+
+#[test]
 fn v2_lock_requires_exact_python_artifact_and_v1_rejects_it() {
     let v2_source_text = SOURCE
         .replace("application-source/v1", "application-source/v2")

@@ -798,6 +798,7 @@ pub fn classify_grpc_deployment_completion(
             GrpcDeploymentCompletion::OutcomeUnknown
         }
         Ok(DeployContractResult::ExpectedActiveVersionMismatch { .. })
+        | Ok(DeployContractResult::ExpectedApplicationIdentityMismatch { .. })
         | Ok(DeployContractResult::InvalidSource(_))
         | Ok(DeployContractResult::IncompatibleCandidate(_))
         | Ok(DeployContractResult::BundleConflict)

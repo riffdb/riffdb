@@ -261,6 +261,20 @@ with the database alias plus the lock, locked-module, expected-active, and
 actual-active hashes. Never copy a hash from an error into source or bypass the
 lock; rerun deployment after reconciling the competing deployment.
 
+For a successor, run `riffdb application lock --write` while the intended
+database alias is selected. Unlike deployment, this is an authorized read-only
+preview: the server compiles against the active parent and the CLI pins the
+canonical result in `generated/riffdb.contract.bundle`. Deployment later sends
+the exact parent version/hash and candidate hash from that artifact. Parent or
+candidate drift is rejected before catalog admission and the error reports the
+lock, expected parent, actual active, and compiled candidate hashes.
+
+Do not use `contract deploy` as a probe. A successful direct deployment changes
+the active pointer and the POC has no rollback RPC. Use `contract validate` or
+the successor lock preview to inspect a candidate. Recovery from an unwanted
+activation is an offline backup restore (or a destructive disposable-alpha
+reset), performed only while the service is stopped.
+
 Bootstrap defaults to `http://127.0.0.1:7443`. To select a deliberately
 reconfigured loopback listener, set an exact endpoint for that invocation:
 

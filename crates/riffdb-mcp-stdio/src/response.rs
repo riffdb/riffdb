@@ -44,6 +44,7 @@ pub(crate) fn validate_contract(
                 Some(payload_from(&payload)?),
             )
         }
+        ProtoResult::Candidate(_) => Err(ResponseConversionError),
     }
 }
 
@@ -164,6 +165,7 @@ pub(crate) fn deploy_contract(
             })?),
         ),
         Result::BundleConflict(_) => compose(4, McpFixedResultBranch::DeployBundleConflict, None),
+        Result::ExpectedApplicationIdentityMismatch(_) => Err(ResponseConversionError),
     }
 }
 

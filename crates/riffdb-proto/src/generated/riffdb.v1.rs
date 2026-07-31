@@ -1766,10 +1766,23 @@ pub struct ValidateContractRequest {
     pub request_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(string, tag = "2")]
     pub source: ::prost::alloc::string::String,
+    #[prost(bool, tag = "3")]
+    pub preview_active_successor: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CompiledContractCandidate {
+    #[prost(uint64, optional, tag = "1")]
+    pub parent_version: ::core::option::Option<u64>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub parent_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub candidate: ::core::option::Option<ContractDescriptor>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub canonical_bundle: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ValidateContractResponse {
-    #[prost(oneof = "validate_contract_response::Result", tags = "1, 2")]
+    #[prost(oneof = "validate_contract_response::Result", tags = "1, 2, 3")]
     pub result: ::core::option::Option<validate_contract_response::Result>,
 }
 /// Nested message and enum types in `ValidateContractResponse`.
@@ -1780,6 +1793,8 @@ pub mod validate_contract_response {
         Valid(super::Unit),
         #[prost(message, tag = "2")]
         Invalid(super::CompilationDiagnostics),
+        #[prost(message, tag = "3")]
+        Candidate(super::CompiledContractCandidate),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1831,6 +1846,10 @@ pub struct DeployContractRequest {
     pub source: ::prost::alloc::string::String,
     #[prost(uint64, optional, tag = "3")]
     pub expected_active_version: ::core::option::Option<u64>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub expected_active_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub expected_candidate_bundle_hash: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExpectedActiveVersionMismatch {
@@ -1838,8 +1857,15 @@ pub struct ExpectedActiveVersionMismatch {
     pub actual_active_version: ::core::option::Option<u64>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExpectedApplicationIdentityMismatch {
+    #[prost(message, optional, tag = "1")]
+    pub actual_active: ::core::option::Option<ContractDescriptor>,
+    #[prost(message, optional, tag = "2")]
+    pub compiled_candidate: ::core::option::Option<ContractDescriptor>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DeployContractResponse {
-    #[prost(oneof = "deploy_contract_response::Result", tags = "1, 2, 3, 4, 5, 6")]
+    #[prost(oneof = "deploy_contract_response::Result", tags = "1, 2, 3, 4, 5, 6, 7")]
     pub result: ::core::option::Option<deploy_contract_response::Result>,
 }
 /// Nested message and enum types in `DeployContractResponse`.
@@ -1858,6 +1884,8 @@ pub mod deploy_contract_response {
         InvalidSource(super::CompilationDiagnostics),
         #[prost(message, tag = "6")]
         IncompatibleCandidate(super::ContractDescriptor),
+        #[prost(message, tag = "7")]
+        ExpectedApplicationIdentityMismatch(super::ExpectedApplicationIdentityMismatch),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

@@ -735,7 +735,8 @@ impl<'a> Reader<'a> {
     }
 }
 pub use application_lock::{
-    APPLICATION_LOCK_SCHEMA_V1, APPLICATION_LOCK_SCHEMA_V2, APPLICATION_ROLE_DEFINITION_FORMAT_V1,
-    ApplicationLock, ApplicationLockError, ApplicationLockErrorKind, GeneratedApplicationArtifact,
+    APPLICATION_LOCK_SCHEMA_V1, APPLICATION_LOCK_SCHEMA_V2, APPLICATION_LOCK_SCHEMA_V3,
+    APPLICATION_ROLE_DEFINITION_FORMAT_V1, ApplicationLock, ApplicationLockError,
+    ApplicationLockErrorKind, CONTRACT_BUNDLE_ARTIFACT_PATH, GeneratedApplicationArtifact,
     GeneratedApplicationArtifactKind, MAX_APPLICATION_LOCK_BYTES,
 };

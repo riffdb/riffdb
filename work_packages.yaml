@@ -1,4 +1,4 @@
-spec_version: '0.51'
+spec_version: '0.52'
 product: RiffDB
 repository: riffdb
 status: application-platform-implementation
@@ -6184,4 +6184,34 @@ work_packages:
   - cargo deny check
   exit_gate: The installed Python driver proves full generated application parity without a raw protocol path or
     semantic exception.
+  human_review_triggers: *id001
+- id: WP-399
+  name: Exact successor application identity before mutation
+  depends_on: [WP-393, WP-395]
+  objective: Make successor locking and deployment share one exact parent-aware candidate identity and reject every
+    disagreement before authoritative mutation.
+  requirements: [SAI-001, SAI-002, SAI-003, SAI-004, SAI-005, SAI-006]
+  required_adrs: [ADR-0052, ADR-0057, ADR-0065, ADR-0066, ADR-0075]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**, crates/riffdb-proto/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-service/**, crates/riffdb-policy/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-api-mcp/**,
+    crates/riffdb-client-rust/**, crates/riffdb-cli/**, crates/riffdb-mcp-stdio/**,
+    examples/**, fixtures/**, tests/**, scripts/**, docs/**, templates/**]
+  deliverables:
+  - Read-only authorized parent-aware candidate preview with bounded canonical bundle bytes
+  - Application lock V3 canonical contract-bundle artifact with offline exact check and generation
+  - Exact parent and candidate deployment compare-before-mutation with already-active recovery
+  - Truthful source-only versus exact-lock application check and resumable partial deployment state
+  acceptance_commands:
+  - cargo test -p riffdb-query-module -p riffdb-service -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-cli --all-features
+  - cargo test --test grpc_end_to_end --all-features
+  - ./scripts/release-source-bootstrap-smoke
+  - ./scripts/check-generated
+  - ./scripts/check-application-bindings
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A byte-identical additive successor locks and deploys under one bundle hash, stale or raced identities
+    perform no mutation, exact retries resume, and application check never reports stale artifacts as exact.
   human_review_triggers: *id001

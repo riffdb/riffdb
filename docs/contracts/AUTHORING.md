@@ -64,6 +64,12 @@ active version and must compare against the exact expected active version.
 Version numbers alone do not establish compatibility; the compiler compares
 the checked successor with the active bundle.
 
+For application source trees, `application lock --write` obtains that exact
+parent through the authorized read-only candidate preview. The resulting lock
+pins both the parent identity and `generated/riffdb.contract.bundle`. Never
+manufacture a successor lock with an offline genesis compile or copy a hash
+from an error.
+
 The pre-alpha compatibility classes are:
 
 | Successor change | Classification |
@@ -105,3 +111,11 @@ but incompatible successor returns `incompatible_candidate` with its parent,
 overall compatibility class, and stable compatibility-code counts. Neither
 result activates the candidate. Do not work around incompatibility by
 reusing stable IDs or editing the active database file.
+
+`contract deploy` is a mutating operator command, not a compatibility probe.
+There is no contract rollback RPC. Use `contract validate` for source-only
+validation or `application lock --write` for an exact read-only successor
+preview, then review the lock before `application deploy`. If a direct deploy
+activates an unwanted successor, stop the service and follow the documented
+offline backup/restore or disposable pre-alpha reset procedure; do not deploy
+another probe hoping to undo it.
