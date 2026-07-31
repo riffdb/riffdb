@@ -34,8 +34,9 @@ directly, never reconstructed from transport status.
 
 The legacy success-row field is populated if and only if every item
 succeeded, in which case it mirrors the item list positionally. On any item
-error it is empty — an old reader observes exactly today's failed-batch
-behavior, and positional misalignment is unrepresentable.
+error it is empty — a validating old reader rejects the empty list and falls
+back to per-item recovery, and a non-validating positional consumer reads
+zero rows; positional misalignment is unrepresentable in either case.
 
 ### Failure-class boundary
 
@@ -59,6 +60,10 @@ unchanged.
 - One slow or rejected item no longer discards committed siblings' results.
 - Public response schema grows additively; frozen surface hashes rotate once,
   now, while no external clients exist.
+- Legacy mirroring doubles the encoded payload of an all-success batch,
+  halving the effective aggregate response capacity under the public response
+  bound — an accepted cost of old-reader safety, removable with the legacy
+  field after alpha clients migrate.
 - ADR-0059's batching section gains the item-carriage and legacy-field rules.
 
 ## Rejected alternatives
