@@ -6038,6 +6038,7 @@ work_packages:
   - cargo test --workspace --all-features
   - ./scripts/release-source-install-smoke
   - ./scripts/release-source-bootstrap-smoke
+  - ./scripts/installed-first-application-agent-acceptance wp392-installed-01
   - ./scripts/check-generated
   - ./scripts/check-requirement-coverage
   - cargo fmt --all -- --check

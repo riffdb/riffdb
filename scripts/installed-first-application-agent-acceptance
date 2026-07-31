@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+campaign="${1:-wp392-installed-01}"
+[[ "$campaign" =~ ^[a-z0-9-]{1,64}$ ]] || {
+    echo 'installed-agent campaign identifier is invalid' >&2
+    exit 2
+}
+for tool in jq mktemp sha256sum; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "required installed-agent gate tool is missing: $tool" >&2
+        exit 1
+    }
+done
+
+manifest="$repo_root/evaluations/installed-first-application/campaigns/$campaign.json"
+[[ -f "$manifest" && ! -L "$manifest" ]] || {
+    echo "installed-agent campaign is unpublished: $campaign" >&2
+    exit 1
+}
+jq -e --arg campaign "$campaign" '
+  (keys | sort) == ([
+    "bundle_checksums", "bundle_hash", "bundle_manifest", "campaign_id",
+    "immutable", "run", "schema", "status"
+  ] | sort)
+  and .schema == "riffdb-installed-first-application-campaign/v1"
+  and .campaign_id == $campaign
+  and .immutable == true
+  and .status == "passed"
+  and (.bundle_hash | test("^[0-9a-f]{64}$"))
+  and all(.bundle_manifest, .bundle_checksums;
+      (keys | sort) == ["path", "sha256"]
+      and (.path | type) == "string"
+      and (.sha256 | test("^[0-9a-f]{64}$")))
+  and (.run | keys | sort) == ([
+    "agent_identity", "application_lock", "deployment_state", "events",
+    "report", "run_id"
+  ] | sort)
+  and all(.run.report, .run.events, .run.application_lock, .run.deployment_state;
+      (keys | sort) == ["path", "sha256"]
+      and (.path | type) == "string"
+      and (.sha256 | test("^[0-9a-f]{64}$")))
+' "$manifest" >/dev/null || {
+    echo 'installed-agent campaign manifest is invalid' >&2
+    exit 1
+}
+
+validate_evidence() {
+    local path="$1"
+    local expected="$2"
+    [[ "$path" != /* && "$path" != *..* && -f "$repo_root/$path" \
+       && ! -L "$repo_root/$path" ]] || {
+        echo "installed-agent evidence path is unsafe or absent: $path" >&2
+        exit 1
+    }
+    [[ "$(sha256sum "$repo_root/$path" | cut -d' ' -f1)" == "$expected" ]] || {
+        echo "installed-agent evidence hash mismatch: $path" >&2
+        exit 1
+    }
+}
+
+while IFS=$'\t' read -r path digest; do
+    validate_evidence "$path" "$digest"
+done < <(jq -r '[.bundle_manifest, .bundle_checksums,
+    .run.report, .run.events, .run.application_lock, .run.deployment_state][]
+  | [.path, .sha256] | @tsv' "$manifest")
+
+bundle_manifest_path="$(jq -er '.bundle_manifest.path' "$manifest")"
+bundle_checksums_path="$(jq -er '.bundle_checksums.path' "$manifest")"
+bundle_manifest="$repo_root/$bundle_manifest_path"
+bundle_checksums="$repo_root/$bundle_checksums_path"
+bundle_hash="$(sha256sum "$bundle_checksums" | cut -d' ' -f1)"
+[[ "$bundle_hash" == "$(jq -er '.bundle_hash' "$manifest")" \
+   && "$bundle_hash" == "$(jq -er '.bundle_hash' "$bundle_manifest")" ]] || {
+    echo 'installed-agent campaign bundle receipt is inconsistent' >&2
+    exit 1
+}
+jq -e '
+  .schema == "riffdb-agent-application-alpha-bundle/v1"
+  and .sealed == true
+  and .contains_ticketdesk == false
+  and .contains_riffdb_implementation == false
+' "$bundle_manifest" >/dev/null || {
+    echo 'installed-agent campaign did not use a sealed public-only bundle' >&2
+    exit 1
+}
+
+run_id="$(jq -er '.run.run_id' "$manifest")"
+agent_identity="$(jq -er '.run.agent_identity' "$manifest")"
+report_path="$(jq -er '.run.report.path' "$manifest")"
+events_path="$(jq -er '.run.events.path' "$manifest")"
+lock_path="$(jq -er '.run.application_lock.path' "$manifest")"
+state_path="$(jq -er '.run.deployment_state.path' "$manifest")"
+report="$repo_root/$report_path"
+events="$repo_root/$events_path"
+lock="$repo_root/$lock_path"
+state="$repo_root/$state_path"
+transcript_hash="$(sha256sum "$events" | cut -d' ' -f1)"
+
+jq -e \
+    --arg run_id "$run_id" \
+    --arg agent "$agent_identity" \
+    --arg bundle "$bundle_hash" \
+    --arg transcript "$transcript_hash" '
+  (keys | sort) == ([
+    "agent_identity", "application_deployed", "boundary_passed", "bundle_hash",
+    "cli_named_query_passed", "contract_bundle_hash", "database_isolation_passed",
+    "explanation", "fresh_context", "human_interventions", "independent",
+    "kernel_attempts", "least_authority_passed", "lock_hash",
+    "manual_configuration_edits", "mcp_named_query_passed", "module_hash",
+    "other_database", "public_surface_only", "rating", "role_identity", "run_id",
+    "schema", "seed_completed", "selected_database", "source_access",
+    "time_to_complete_seconds", "transcript_sha256"
+  ] | sort)
+  and .schema == "riffdb-installed-first-application-run/v1"
+  and .run_id == $run_id
+  and .agent_identity == $agent
+  and .bundle_hash == $bundle
+  and .transcript_sha256 == $transcript
+  and .independent == true
+  and .fresh_context == true
+  and .selected_database == "ea"
+  and .other_database == "default"
+  and .human_interventions == 0
+  and .manual_configuration_edits == 0
+  and .kernel_attempts == 0
+  and .source_access == {riffdb_implementation: false, ticketdesk: false}
+  and .public_surface_only == true
+  and .database_isolation_passed == true
+  and .application_deployed == true
+  and .seed_completed == true
+  and .cli_named_query_passed == true
+  and .mcp_named_query_passed == true
+  and .least_authority_passed == true
+  and .boundary_passed == true
+  and all(.lock_hash, .contract_bundle_hash, .module_hash, .role_identity;
+      test("^[0-9a-f]{64}$"))
+  and (.time_to_complete_seconds | type) == "number"
+  and .time_to_complete_seconds >= 0
+  and .time_to_complete_seconds <= 7200
+  and (.rating | type) == "number"
+  and .rating >= 0 and .rating <= 10
+  and (.explanation | type) == "string" and (.explanation | length) > 0
+' "$report" >/dev/null || {
+    echo 'installed-agent report missed the WP-392 exit gate' >&2
+    exit 1
+}
+
+jq -s -e '
+  . as $events
+  | length >= 11 and length <= 64
+  and ([.[].sequence] == [range(1; length + 1)])
+  and all(.[];
+      (keys | sort) == ["elapsed_ms", "kind", "schema", "sequence", "status"]
+      and .schema == "riffdb-installed-agent-event/v1"
+      and (.kind | IN(
+        "public_docs", "database_isolation", "application_check",
+        "application_lock", "application_generate", "application_deploy",
+        "cli_named_query", "mcp_list", "mcp_named_query", "boundary_check",
+        "complete"
+      ))
+      and (.status | IN("passed", "failed"))
+      and (.elapsed_ms | type) == "number"
+      and .elapsed_ms >= 0 and (.elapsed_ms | floor) == .elapsed_ms)
+  and all([
+    "public_docs", "database_isolation", "application_check",
+    "application_lock", "application_generate", "application_deploy",
+    "cli_named_query", "mcp_list", "mcp_named_query", "boundary_check",
+    "complete"
+  ][]; . as $kind
+      | any($events[]; .kind == $kind and .status == "passed"))
+  and .[-1].kind == "complete"
+  and .[-1].status == "passed"
+' "$events" >/dev/null || {
+    echo 'installed-agent transcript is incomplete or contains unbounded evidence' >&2
+    exit 1
+}
+
+jq -e --slurpfile report "$report" --slurpfile lock "$lock" '
+  .schema == "riffdb.application-deployment-evidence/v1"
+  and .database == "ea"
+  and .contract_deployed == true
+  and (.query_module_identities | length) == 1
+  and .role.role_name == "MeetingActionsApplication"
+  and .role.bound == true
+  and .seed_completed == true
+  and .lock_hash == $report[0].lock_hash
+  and .contract_bundle_hash == $report[0].contract_bundle_hash
+  and .query_module_identities[0].module_hash == $report[0].module_hash
+  and .role.role_identity == $report[0].role_identity
+  and .contract_bundle_hash == $lock[0].contract.bundle_hash
+  and .query_module_identities[0].module_hash == $lock[0].modules[0].module_hash
+' "$state" >/dev/null || {
+    echo 'installed-agent exact lock, module, role, and deployment identities disagree' >&2
+    exit 1
+}
+
+printf '%s\n' 'riffdb-installed-first-application-agent-acceptance-v1: verified'

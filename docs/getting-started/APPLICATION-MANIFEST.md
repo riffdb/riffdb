@@ -128,3 +128,32 @@ contract, immutable query modules, environment, tenant binding, named
 operations, compiler-derived visibility, and resource ceiling. That identity
 is retained as a non-authorizing capability marker for audit and substitution
 detection. The marker cannot execute any operation.
+
+## One identity chain at deployment
+
+`riffdb application deploy` is the normal installed path for contract, query
+module, application role, generated client/MCP configuration, and seed data.
+It binds these steps into one checked chain:
+
+```text
+application lock
+  -> contract bundle hash
+  -> query module version + hash
+  -> compiled role identity
+  -> capability ID + private credential
+```
+
+The private deployment journal records each exact identity after remote
+verification. Query-module publication uses the observed active module hash as
+its compare-and-swap precondition. A concurrent change reports the selected
+database and the lock, locked-module, expected-active, and actual-active hashes
+instead of degrading to `invalid input`. A process interruption before local
+publication is recovered by rerunning the same deploy; retained request and
+capability identities make replay deterministic.
+
+A changed lock is deliberately not resumed under an old role. If a role is
+already retained, deploy requires `--provision-role <name>` together with
+`--replace-expired-credential`, revokes the predecessor capability, and binds
+the role compiled from the successor lock. Application code and scripts should
+read identity from the generated client or lock and should never hardcode a
+contract version or module hash.

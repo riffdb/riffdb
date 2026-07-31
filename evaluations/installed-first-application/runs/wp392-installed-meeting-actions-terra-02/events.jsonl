@@ -1,0 +1,13 @@
+{"schema":"riffdb-installed-agent-event/v1","sequence":1,"kind":"public_docs","status":"passed","elapsed_ms":0}
+{"schema":"riffdb-installed-agent-event/v1","sequence":2,"kind":"database_isolation","status":"passed","elapsed_ms":45000}
+{"schema":"riffdb-installed-agent-event/v1","sequence":3,"kind":"application_check","status":"passed","elapsed_ms":160000}
+{"schema":"riffdb-installed-agent-event/v1","sequence":4,"kind":"application_lock","status":"passed","elapsed_ms":180000}
+{"schema":"riffdb-installed-agent-event/v1","sequence":5,"kind":"application_generate","status":"passed","elapsed_ms":195000}
+{"schema":"riffdb-installed-agent-event/v1","sequence":6,"kind":"application_deploy","status":"failed","elapsed_ms":245000}
+{"schema":"riffdb-installed-agent-event/v1","sequence":7,"kind":"application_deploy","status":"failed","elapsed_ms":390000}
+{"schema":"riffdb-installed-agent-event/v1","sequence":8,"kind":"application_deploy","status":"passed","elapsed_ms":520000}
+{"schema":"riffdb-installed-agent-event/v1","sequence":9,"kind":"cli_named_query","status":"passed","elapsed_ms":555000}
+{"schema":"riffdb-installed-agent-event/v1","sequence":10,"kind":"mcp_list","status":"passed","elapsed_ms":590000}
+{"schema":"riffdb-installed-agent-event/v1","sequence":11,"kind":"mcp_named_query","status":"passed","elapsed_ms":595000}
+{"schema":"riffdb-installed-agent-event/v1","sequence":12,"kind":"boundary_check","status":"passed","elapsed_ms":630000}
+{"schema":"riffdb-installed-agent-event/v1","sequence":13,"kind":"complete","status":"passed","elapsed_ms":635000}

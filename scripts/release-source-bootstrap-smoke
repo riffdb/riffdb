@@ -117,6 +117,7 @@ chmod 0700 \
 
 unset \
     RIFFDB_AUDIENCE \
+    RIFFDB_APPLICATION_TEST_INTERRUPT_AFTER \
     RIFFDB_BACKUP_ROOT \
     RIFFDB_CAPABILITY_DIGEST_KEYS \
     RIFFDB_CAPABILITY_KEYS \
@@ -799,6 +800,80 @@ cp -a "$repo_root/examples/agent-alpha/riffdb" "$application_root/"
     "$bin_root/riffdb" application lock --write \
         >"$work_root/application-lock.out"
 )
+application_state_root="$application_root/.riffdb/deployments/agent"
+application_credential="$application_state_root/application.credential"
+application_client_config="$application_state_root/client.toml"
+application_mcp_config="$application_state_root/mcp.toml"
+application_deployment_state="$application_state_root/deployment-state.json"
+
+interrupt_application_deploy() {
+    local stage="$1"
+    local output="$work_root/application-deploy-$stage.json"
+    local stderr="$work_root/application-deploy-$stage.stderr"
+    local status
+
+    set +e
+    (
+        cd "$application_root"
+        RIFFDB_APPLICATION_TEST_INTERRUPT_AFTER="$stage" \
+            "$bin_root/riffdb" --config "$agent_client_config" --output json \
+            application deploy \
+            --provision-role AgentAlphaApplication \
+            --seed
+    ) >"$output" 2>"$stderr"
+    status=$?
+    set -e
+    if [[ "$status" -ne 86 ]]; then
+        sed "s/^/application $stage: /" "$output" >&2 || true
+        sed "s/^/application $stage stderr: /" "$stderr" >&2 || true
+        fail "application deployment did not stop at the armed $stage interruption"
+    fi
+}
+
+interrupt_application_deploy contract_remote
+if [[ -e "$application_deployment_state" ]]; then
+    fail "contract interruption published unverified local deployment state"
+fi
+
+interrupt_application_deploy query_module_remote
+if ! jq -e '
+    .contract_deployed == true
+    and (.contract_bundle_hash | test("^[0-9a-f]{64}$"))
+    and .query_modules_deployed == []
+    and .query_module_identities == []
+    and .role == null
+    and .seeds_completed == []
+' "$application_deployment_state" >/dev/null; then
+    fail "query-module interruption did not preserve only the verified contract stage"
+fi
+
+interrupt_application_deploy role_bound_remote
+if ! jq -e '
+    .contract_deployed == true
+    and .query_modules_deployed == ["agent_alpha"]
+    and (.query_module_identities | length) == 1
+    and .query_module_identities[0].module_name == "agent_alpha"
+    and .query_module_identities[0].module_version == 1
+    and (.query_module_identities[0].module_hash | test("^[0-9a-f]{64}$"))
+    and .role.role_name == "AgentAlphaApplication"
+    and (.role.role_identity | test("^[0-9a-f]{64}$"))
+    and .role.bound == false
+    and .seeds_completed == []
+' "$application_deployment_state" >/dev/null \
+   || [[ ! -f "$application_credential" ]]; then
+    fail "role interruption did not retain recoverable capability identity and credential"
+fi
+
+interrupt_application_deploy seed_remote
+if ! jq -e '
+    .role.role_name == "AgentAlphaApplication"
+    and (.role.role_identity | test("^[0-9a-f]{64}$"))
+    and .role.bound == true
+    and .seeds_completed == []
+' "$application_deployment_state" >/dev/null; then
+    fail "seed interruption did not preserve the verified role stage"
+fi
+
 (
     cd "$application_root"
     "$bin_root/riffdb" --config "$agent_client_config" --output json \
@@ -807,11 +882,6 @@ cp -a "$repo_root/examples/agent-alpha/riffdb" "$application_root/"
         --seed \
         >"$work_root/application-deploy.json"
 )
-application_state_root="$application_root/.riffdb/deployments/agent"
-application_credential="$application_state_root/application.credential"
-application_client_config="$application_state_root/client.toml"
-application_mcp_config="$application_state_root/mcp.toml"
-application_deployment_state="$application_state_root/deployment-state.json"
 for private_file in \
     "$application_credential" \
     "$application_client_config" \
@@ -824,8 +894,13 @@ if ! jq -e '
     .schema == "riffdb.application-deployment-state/v1"
     and .database == "agent"
     and .contract_deployed == true
+    and (.contract_bundle_hash | test("^[0-9a-f]{64}$"))
     and .query_modules_deployed == ["agent_alpha"]
+    and .query_module_identities[0].module_name == "agent_alpha"
+    and .query_module_identities[0].module_version == 1
+    and (.query_module_identities[0].module_hash | test("^[0-9a-f]{64}$"))
     and .role.role_name == "AgentAlphaApplication"
+    and (.role.role_identity | test("^[0-9a-f]{64}$"))
     and .role.bound == true
     and .seeds_completed == ["riffdb/seed/01-CreateItem.jsonl"]
 ' "$application_deployment_state" >/dev/null; then
@@ -866,6 +941,122 @@ if ! jq -e '
 ' "$work_root/application-mcp-doctor.json" >/dev/null; then
     fail "application MCP doctor did not prove its selected database and audience"
 fi
+application_mcp_input="$work_root/application-mcp-input.jsonl"
+application_mcp_output="$work_root/application-mcp-output.jsonl"
+jq -cn '{
+  jsonrpc: "2.0",
+  id: 1,
+  method: "initialize",
+  params: {
+    protocolVersion: "2025-11-25",
+    capabilities: {},
+    clientInfo: {name: "riffdb-installed-application-smoke", version: "1"}
+  }
+}' >"$application_mcp_input"
+jq -cn '{jsonrpc: "2.0", method: "notifications/initialized"}' \
+    >>"$application_mcp_input"
+jq -cn '{jsonrpc: "2.0", id: 2, method: "tools/list"}' \
+    >>"$application_mcp_input"
+jq -cn '{
+  jsonrpc: "2.0",
+  id: 3,
+  method: "tools/call",
+  params: {
+    name: "agent_alpha_item_page",
+    arguments: {item_id: "018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10"}
+  }
+}' >>"$application_mcp_input"
+timeout 45s "$bin_root/riffdb-mcp" --config "$application_mcp_config" \
+    <"$application_mcp_input" >"$application_mcp_output" \
+    2>"$work_root/application-mcp.stderr"
+if ! jq -s -e '
+    def response($id): first(.[] | select(.id == $id));
+    response(1).result.protocolVersion == "2025-11-25"
+    and (response(2).result.tools
+         | any(.name == "agent_alpha_item_page"
+               and .annotations.readOnlyHint == true
+               and .annotations.destructiveHint == false))
+    and response(3).result.isError == false
+    and response(3).result.structuredContent.outcome == "Found"
+    and response(3).result.structuredContent.item.item_id
+        == "018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10"
+' "$application_mcp_output" >/dev/null; then
+    sed 's/^/application MCP: /' "$application_mcp_output" >&2 || true
+    sed 's/^/application MCP stderr: /' \
+        "$work_root/application-mcp.stderr" >&2 || true
+    fail "bound application MCP did not execute its generated named-query tool"
+fi
+
+old_application_credential="$work_root/old-application.credential"
+cp "$application_credential" "$old_application_credential"
+chmod 0600 "$old_application_credential"
+old_application_lock_hash="$(jq -er '.lock_hash' "$application_deployment_state")"
+old_application_role_identity="$(jq -er '.role.role_identity' "$application_deployment_state")"
+old_application_capability_id="$(jq -er '.role.capability_id' "$application_deployment_state")"
+successor_source="$work_root/riffdb.application.successor.json"
+jq '.query_modules[0].version = 2' \
+    "$application_root/riffdb.application.json" >"$successor_source"
+mv "$successor_source" "$application_root/riffdb.application.json"
+(
+    cd "$application_root"
+    "$bin_root/riffdb" application lock --write \
+        >"$work_root/application-successor-lock.out"
+)
+set +e
+(
+    cd "$application_root"
+    "$bin_root/riffdb" --config "$agent_client_config" --output json \
+        application deploy \
+        --provision-role AgentAlphaApplication
+) >"$work_root/application-successor-without-replacement.json" \
+  2>"$work_root/application-successor-without-replacement.stderr"
+successor_without_replacement_status=$?
+set -e
+if [[ "$successor_without_replacement_status" -eq 0 ]] \
+   || ! jq -e '
+        .ok == false
+        and .error.code == "deployment_lock_changed_requires_role_replacement"
+    ' "$work_root/application-successor-without-replacement.json" >/dev/null \
+   || [[ "$(sha256sum "$application_credential" | sed 's/ .*//')" \
+         != "$application_credential_hash" ]]; then
+    fail "successor deployment did not require explicit credential replacement before mutation"
+fi
+(
+    cd "$application_root"
+    "$bin_root/riffdb" --config "$agent_client_config" --output json \
+        application deploy \
+        --provision-role AgentAlphaApplication \
+        --replace-expired-credential \
+        >"$work_root/application-successor-deploy.json"
+)
+new_application_lock_hash="$(jq -er '.lock_hash' "$application_deployment_state")"
+new_application_role_identity="$(jq -er '.role.role_identity' "$application_deployment_state")"
+new_application_capability_id="$(jq -er '.role.capability_id' "$application_deployment_state")"
+if [[ "$new_application_lock_hash" == "$old_application_lock_hash" \
+   || "$new_application_role_identity" == "$old_application_role_identity" \
+   || "$new_application_capability_id" == "$old_application_capability_id" \
+   || "$(sha256sum "$application_credential" | sed 's/ .*//')" \
+      == "$application_credential_hash" ]]; then
+    fail "successor deployment did not publish a new exact lock and role binding"
+fi
+if "$bin_root/riffdb" --endpoint "$endpoint" --database agent --output json \
+    --credential-file "$old_application_credential" server health \
+    >/dev/null 2>&1
+then
+    fail "successor deployment left the replaced application capability authorized"
+fi
+if ! "$bin_root/riffdb" --config "$application_client_config" --output json \
+    query run-named ItemPage \
+    --contract-lineage AgentAlpha \
+    --contract-version 1 \
+    --parameters \
+    '{"item_id":"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10"}' \
+    >"$work_root/application-successor-query.json"
+then
+    fail "successor application binding could not resolve its active locked module"
+fi
+"$bin_root/riffdb-mcp" doctor --config "$application_mcp_config" \
+    >"$work_root/application-successor-mcp-doctor.json"
 
 "$bin_root/riffdb" --config "$client_config" --output json \
     contract deploy "$repo_root/contracts/examples/budget.riff" \
