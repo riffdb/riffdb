@@ -8,6 +8,7 @@ digraph G {
   p2 [label="P2 / POC exit — Native agent and derived-system proof\nMCP • outbox dispatch • projection identities/generations/frontiers • public offline backup/restore\nchecksummed receipt recovery • final server composition • integrated recovery", fillcolor="#CFE6E8", penwidth=2.0];
   p3p6 [label="P3–P6 — Application platform and public handbook\nRiffQL • named authority • generated Rust/TypeScript/Python clients • multi-database operation • verified docs", fillcolor="#DCEFF0"];
   p7 [label="P7 — Robust offline contract migration (planned)\nexact .riffm artifacts • selected-database staging • immutable history • atomic publish/rollback", fillcolor="#FFF7E8", penwidth=2.0];
+  p8 [label="P8 — Reactive applications (planned)\npartitioned events • durable consumers • live RiffQL • contextual agent work", fillcolor="#E9F4FF", penwidth=2.0];
   evidence [label="Cross-stage budget comparison evidence\nPostgreSQL baseline → service parity → public SDK runner → safety counterexamples\nredb/Fjall semantic and benchmark comparison", style="rounded,filled,dashed", fillcolor="#FAFAFA"];
   a [label="Single-node alpha\ncontinued format evolution • hardened backup/restore • remote auth • generated clients"];
   b [label="Replicated beta\nRaft • snapshots • failover • unchanged command semantics"];
@@ -21,7 +22,8 @@ digraph G {
   evidence -> p2 [style=dashed, label="correctness + benchmark input", constraint=false];
   p2 -> p3p6 [label="application proof"];
   p3p6 -> p7 [label="migration ADR + recovery gate"];
-  p7 -> a [label="upgrade evidence"];
+  p7 -> p8 [label="format boundary"];
+  p8 -> a [label="reactive evidence"];
   a -> b [label="operational gate"];
   b -> c [label="failure gate"];
   c -> post [style=dashed, label="explicit research tracks"];

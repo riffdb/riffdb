@@ -6,8 +6,8 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.56
-**Status:** Contract-migration implementation
+**Version:** 0.57
+**Status:** Contract-migration and reactive-application implementation
 **Date:** 31 July 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
@@ -92,6 +92,7 @@
 | 0.54 | 2026-07-31 | Defined the public documentation handbook, its reproducible static build and generated-reference boundaries, progressive application and operator learning paths, and the same-change documentation maintenance requirement through WP-401 to WP-404. |
 | 0.55 | 2026-07-31 | Planned P7 robust offline contract migration through WP-405 to WP-413: exact parent-specific `.riffm` artifacts, a migration-required compatibility class, database-scoped staged copy and automatic rollback, immutable committed history, predecessor-write retirement, a dedicated migration capability, and gRPC/Rust SDK/CLI administration with no MCP or application-driver path. ADR-0076 through ADR-0079 remain Proposed and block production, grammar, IR, durable, permission, and protocol implementation until exact human acceptance. |
 | 0.56 | 2026-07-31 | Applied accepted ADR-0076 through ADR-0079 and completed the WP-405 architecture gate. P7 implementation may proceed in dependency order through WP-406 to WP-413 under the frozen migration compatibility, source/IR/lock, staged recovery, coordinator, permission, public API, immutable-history, predecessor-write, and automatic-rollback boundaries. |
+| 0.57 | 2026-07-31 | Applied accepted ADR-0080 and planned P8 through WP-414 to WP-421: partition-proved domain-event streams, bounded durable consumers, race-free live named RiffQL, generated reactive clients, and freshly authorized contextual agent work extend the existing atomic event/commit model without raw CDC, global ordering, exactly-once claims, persisted hydrated context, direct browser authority, or in-transaction agents. |
 
 ### Normative language
 
@@ -676,6 +677,149 @@ closed rather than silently degrade to a weaker transform.
 compiled, authorized, idempotent, provenance-bearing predecessor commands before
 retry. Migration MUST NOT add skip-row, generic administrative edit, cross-row
 split/merge, physical purge, online dual-write, or cross-database semantics.
+
+## 4.9 Reactive applications and event-based queries
+
+`EVT-001` A domain event MUST remain the immutable authoritative event already
+committed atomically with its originating command state, outcome, idempotency,
+provenance, and commit record. Application delivery MUST NOT create a second
+event identity or rewrite its canonical payload or hash.
+
+`EVT-002` An application-streamable event MUST declare an ordered partition
+field tuple. The compiler MUST prove every emit supplies the exact command
+partition expressions under the same canonical key schema. Missing proof,
+schema disagreement, or cross-partition construction MUST fail compilation.
+
+`EVT-003` Event evolution MUST use the stable event type and originating
+contract version. Compatible optional-field normalization MUST remain catalog
+owned; changed meaning MUST use a new event type. An independent event-version
+clock MUST NOT be introduced.
+
+`EVT-004` A bounded integrity-checked event routing index MUST preserve
+increasing `EventId` order inside one partition, be resumably rebuilt from
+authoritative commits, and be maintained atomically for new commits. Missing,
+orphaned, mismatched, or malformed routing evidence MUST fail closed.
+
+`EVT-005` A symbolic stream MUST select explicit event types and payload fields,
+cover exactly one typed partition, and use only bounded checked predicates.
+Cross-partition and global streams MUST be rejected in P8.
+
+`EVT-006` A normal event envelope MUST expose only symbolic event and command
+metadata, safe actor kind, authorized selected payload, provenance locator,
+causation/correlation, history incarnation, and opaque cursor. It MUST NOT
+expose raw principal/session identities, partition/conflict keys, unselected
+payload, credentials, or process-local trace identifiers.
+
+`EVT-007` Event catalog, replay, tail, and stream execution MUST use the shared
+application service, catalog materialization, authorization, response budget,
+redaction, and database-selection boundaries on gRPC, CLI, SDK, and MCP.
+
+`EVT-008` P8 MUST NOT promise physical time-based event retention, raw CDC,
+global order, cross-partition consumption, exactly-once delivery, or event-
+sourced reconstruction. Existing projection and outbox semantics remain valid
+for events without an application partition declaration.
+
+`CON-001` Durable consumer identity MUST cover database, reactive-module hash,
+operation name, canonical parameters, and bounded consumer name. A definition
+change MUST NOT silently inherit another identity's checkpoint.
+
+`CON-002` Delivery MUST be at least once in increasing `EventId` order within
+one partition. Stable event identity plus an idempotent command reaction, not a
+claim of exactly-once external effect, MUST be the duplicate-safety mechanism.
+
+`CON-003` Checkpoint advancement MUST require a contiguous acknowledged prefix.
+Out-of-order acknowledgement MAY use only a bounded sparse set, and one event
+MUST NOT be leased concurrently to two attempts in the same consumer group.
+
+`CON-004` Lease, ack, nack, retry-delay, dead-letter, and seek transitions MUST
+be durable, atomic operational metadata owned by one coordinator. They MUST
+assign no application commit sequence or mutate application entity state.
+
+`CON-005` Pull and wait operations MUST enforce the ADR-0080 item, byte, wait,
+lease, in-flight, retry, and delay ceilings. No API or worker may retain an
+unbounded delivery queue or unbounded sparse acknowledgement set.
+
+`CON-006` Startup and restore MUST validate checkpoint/lease/dead-letter
+reciprocity, release expired leases, and apply history-incarnation fences.
+Unknown durable evidence MUST fail closed without skipping an event.
+
+`CON-007` Consume, acknowledge, negative-acknowledge, seek, and status operations
+MUST reauthorize exact database, partition, reactive definition, and principal
+facts. Cursor or lease possession alone MUST grant no authority.
+
+`CON-008` Pull batches and gRPC streams, generated SDKs, CLI, and MCP tools MUST
+adapt the same API-neutral consumer service. MCP notifications MUST be
+payload-free wakeup hints; work is retrieved only through an authorized call.
+
+`LIVE-001` A live named query MUST first execute in one consistent snapshot at
+application head `S` and then consume authoritative commits strictly after `S`.
+A commit racing snapshot completion MUST be observed through durable catch-up.
+
+`LIVE-002` Live-query invalidation MUST be compiler-derived and partition-local.
+P8 MAY conservatively re-execute on a same-partition mutation of a referenced
+entity type, but MUST NOT miss a relevant mutation or execute an unbounded plan.
+
+`LIVE-003` Public updates MUST be the closed Snapshot, Patch, Reset, Checkpoint,
+or Terminal variants. Keyed patches require the complete authorized primary key
+to be explicitly selected; otherwise a complete bounded reset MUST be used.
+
+`LIVE-004` A live cursor MUST bind history incarnation, exact contract/module/
+query-plan identity, canonical parameters, partition, and frontier. Restore,
+definition drift, expiry, or identity mismatch MUST produce a typed reset or
+terminal result rather than ambiguous continuation.
+
+`LIVE-005` Authorization MUST be revalidated before delivery. Revocation or
+authority drift MUST close the watch, and generated clients MUST clear retained
+protected state rather than preserve a stale authorized snapshot.
+
+`LIVE-006` Watches MUST enforce the ADR-0080 per-database count, per-watch
+buffer, response, and lifetime ceilings. Burst coalescing MAY skip transient
+intermediate views but MUST converge to the same value as a fresh named query.
+
+`LIVE-007` Query outcome changes, excessive diffs, buffer pressure, and module
+or plan changes MUST use typed reset/terminal behavior. Internal keys, raw
+change records, and silently partial patches MUST NOT escape.
+
+`LIVE-008` Rust, TypeScript, Python, CLI, and MCP generated/application
+surfaces MUST share the exact watch identity and update semantics. A browser
+MUST connect through application-owned authenticated relay code and MUST NOT
+receive a RiffDB capability.
+
+`CTX-001` A contextual subscription MUST bind one exact event stream, bounded
+named hydration queries, explicit declared commands, exact reactive identity,
+and delivery limits. Every referenced event field MUST exist with one type on
+every selected event variant.
+
+`CTX-002` All hydration queries for one work item MUST execute in one shared
+read snapshot whose application head is at least the triggering event sequence.
+Context MUST be freshly authorized and recomputed on redelivery, not persisted.
+
+`CTX-003` A delivered work item MUST bind stable work/event identity, selected
+event, bounded context, currently authorized declared commands, lease token,
+and a server-issued causation token. "Available" commands MUST mean authorized,
+not guaranteed to satisfy business preconditions.
+
+`CTX-004` A reaction helper MUST derive retry-stable command idempotency from
+subscription identity, event ID, target command, and declared reaction name.
+P8 support is limited to one direct UUID or bounded-string idempotency input.
+
+`CTX-005` Before a new reaction commit, the service MUST validate causation
+token, live lease, history incarnation, database, partition, principal, and
+target command. An expired token MAY resolve an exact prior outcome but MUST
+NOT admit a new command.
+
+`CTX-006` Reaction provenance MUST persist the causing event and inherited root
+request correlation atomically with the command. Normal event delivery MUST
+not expose raw agent-session or principal identity to reconstruct causality.
+
+`CTX-007` Crash after reaction commit and before acknowledgement MUST redeliver
+the event; rerunning the generated reaction MUST resolve the original persisted
+outcome and MUST NOT duplicate business state.
+
+`CTX-008` Agent inference, arbitrary callbacks, connectors, webhooks, and
+external broker delivery MUST NOT run in the originating transaction or enter
+the P8 critical path. MCP notification streams remain non-durable wakeups over
+RiffDB-owned durable consumer truth.
 
 | gRPC API | Programmatic application and administration protocol | Alternative semantics |
 | MCP API | Dynamic tools, resources, prompts, progress, cancellation, and agent-safe result shaping | Direct storage access |
@@ -5667,6 +5811,24 @@ databases remain isolated.
 **P7 work-package members:** WP-405 through WP-413. WP-405 and exact acceptance
 of ADR-0076 through ADR-0079 block all migration production implementation.
 
+## 20.4.6 Stage P8 — reactive applications
+
+**Objective:** Let applications and agents consume named domain events, watch
+named RiffQL state, and receive bounded contextual work through the same typed,
+authorized, partition-local application model.
+
+**Gate P8:** `EVT-001` through `EVT-008`, `CON-001` through `CON-008`,
+`LIVE-001` through `LIVE-008`, and `CTX-001` through `CTX-008` pass. TicketDesk
+proves restart-safe at-least-once reaction, race-free browser live state,
+revocation, evolution reset, and generated Rust/TypeScript/Python/MCP parity
+without raw commit or storage access.
+
+**P8 work-package members:** WP-414 through WP-421. WP-414 and exact acceptance
+of ADR-0080 block reactive grammar, IR, durable, permission, protocol, and
+generated-client implementation. WP-416 additionally depends on migration-owned
+WP-406 so Application Source V4 and Lock V5 cannot precede Source V3 and Lock
+V4.
+
 ## 20.5 Stage A — single-node alpha hardening
 
 **Objective:** Turn the prototype into a stable, supportable single-node alpha for trusted design partners.
@@ -6694,6 +6856,10 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `PYD-*` | Python generated application driver, packaging, and language parity |
 | `HBK-*` | Public handbook, generated references, publication, and documentation maintenance |
 | `MIG-*` | Deterministic offline contract-data migration, cutover, recovery, and administration |
+| `EVT-*` | Partitioned typed domain-event catalog, routing, replay, and presentation |
+| `CON-*` | Durable bounded event-consumer delivery and recovery |
+| `LIVE-*` | Race-free live named RiffQL snapshots, updates, and resumption |
+| `CTX-*` | Contextual agent work, causation, and reaction-safe idempotency |
 | `DSL-*` | Contract language restrictions |
 | `OUT-*` | Typed outcome and idempotency behavior |
 | `TXN-*` | Command execution, conflict ownership, and validation |
