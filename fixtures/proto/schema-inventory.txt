@@ -35,6 +35,7 @@ files
     import riffdb/v1/value.proto
     import riffdb/v1/commit.proto
   riffdb/v1/command.proto
+    import riffdb/app/v1/application.proto
     import riffdb/v1/common.proto
     import riffdb/v1/value.proto
   riffdb/v1/commit.proto
@@ -920,10 +921,14 @@ messages
   riffdb.v1.ExactContractSelection fields=2
     1 contract_lineage optional string
     2 contract_version optional uint64
+  riffdb.v1.ExecuteCommandBatchItem fields=2
+    1 response optional .riffdb.v1.ExecuteCommandResponse oneof=result
+    2 error optional .riffdb.app.v1.ApplicationError oneof=result
   riffdb.v1.ExecuteCommandBatchRequest fields=1
     1 commands repeated .riffdb.v1.ExecuteCommandRequest
-  riffdb.v1.ExecuteCommandBatchResponse fields=1
+  riffdb.v1.ExecuteCommandBatchResponse fields=2
     1 responses repeated .riffdb.v1.ExecuteCommandResponse
+    2 items repeated .riffdb.v1.ExecuteCommandBatchItem
   riffdb.v1.ExecuteCommandRequest fields=4
     1 request_id optional bytes
     2 command_name optional string
