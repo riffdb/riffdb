@@ -35,7 +35,7 @@ use riffdb_ticketdesk::{
 };
 use tonic::transport::Endpoint;
 
-pub use server::RiffDbServerSession;
+pub use server::{RiffDbServerSession, ServerStartOptions};
 
 /// Default in-flight seed commands (bounded client concurrency, not a bulk RPC).
 const DEFAULT_SEED_CONCURRENCY: usize = 128;

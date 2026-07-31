@@ -81,6 +81,12 @@ pub(crate) struct BegunCapabilityMutation {
 pub(crate) struct OperationAuditLifecycle {
     operation: ServiceOperationV1,
     state: Mutex<OperationAuditState>,
+    /// True only after a durable Started audit row was successfully appended.
+    ///
+    /// Deferred compounds mark Started in-process without setting this flag until
+    /// the post-admission append succeeds. Pre-admission settle is safe only when
+    /// this remains false.
+    durable_start: AtomicBool,
 }
 
 enum OperationAuditState {
@@ -126,7 +132,19 @@ impl OperationAuditLifecycle {
         Self {
             operation,
             state: Mutex::new(OperationAuditState::Unstarted),
+            durable_start: AtomicBool::new(false),
         }
+    }
+
+    /// Records that a durable Started audit row was proven.
+    pub(crate) fn mark_durable_start(&self) {
+        self.durable_start.store(true, Ordering::Release);
+    }
+
+    /// Returns whether a durable Started audit has been proven for this job.
+    #[must_use]
+    pub(crate) fn has_durable_started(&self) -> bool {
+        self.durable_start.load(Ordering::Acquire)
     }
 
     fn prepare_start(
@@ -690,12 +708,18 @@ impl BegunInvocation {
         Ok(())
     }
 
-    /// Settles a pre-admission compound rejection without durable audit I/O.
+    /// True while a deferred compound Started has not yet been durably written.
+    #[must_use]
+    pub(crate) fn is_deferred_start_pending(&self) -> bool {
+        self.deferred_start.load(Ordering::Acquire)
+    }
+
+    /// Settles a pre-admission capacity rejection without durable audit I/O.
     ///
-    /// Used when the coordinator is saturated: no free slot remains for a Failed
-    /// append, and no durable Started was written under deferred start. Also
-    /// settles the active TLS lifecycle so the outer spawn wrapper does not
-    /// enter capacity-backed containment.
+    /// ADR-0071 sanctions this only for capacity rejections when no durable
+    /// Started was written (deferred compound start). Also settles the active
+    /// TLS lifecycle so the outer spawn wrapper does not enter capacity-backed
+    /// containment under saturation.
     pub(crate) fn settle_pre_admission_rejection(&self) {
         self.deferred_start.store(false, Ordering::Release);
         settle_lifecycle_pre_admission(&self.lifecycle);
@@ -888,6 +912,7 @@ impl BegunInvocation {
                 AuditAppendControl::Terminal,
             )
             .await?;
+        self.lifecycle.mark_durable_start();
         self.deferred_start.store(false, Ordering::Release);
         Ok(())
     }
@@ -1099,6 +1124,7 @@ impl RiffDbServiceInner {
             self.note_audit_failure_with_cause(operation, failure.cause());
             return Err(PublicError::storage_unavailable().into());
         }
+        lifecycle.mark_durable_start();
         if lifecycle.confirm_start().is_err() {
             self.note_audit_failure(operation);
             return Err(self.internal_failure(operation, InternalDefect::ProofMismatch));
@@ -1252,8 +1278,8 @@ impl RiffDbServiceInner {
             lifecycle
                 .prepare_start(operation, panic_terminal)
                 .map_err(|_| self.internal_failure(operation, InternalDefect::ProofMismatch))?;
-            if !defer_command_start
-                && let Err(failure) = self
+            if !defer_command_start {
+                if let Err(failure) = self
                     .append_audit(
                         context,
                         operation,
@@ -1264,10 +1290,12 @@ impl RiffDbServiceInner {
                         AuditAppendControl::Invocation,
                     )
                     .await
-            {
-                lifecycle.fail_start();
-                self.note_audit_failure_with_cause(operation, failure.cause());
-                return Err(PublicError::storage_unavailable().into());
+                {
+                    lifecycle.fail_start();
+                    self.note_audit_failure_with_cause(operation, failure.cause());
+                    return Err(PublicError::storage_unavailable().into());
+                }
+                lifecycle.mark_durable_start();
             }
             if lifecycle.confirm_start().is_err() {
                 self.note_audit_failure(operation);

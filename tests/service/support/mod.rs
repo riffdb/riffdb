@@ -178,6 +178,14 @@ impl ServiceHarness {
 
     /// Command harness with a single coordinator workload slot for saturation tests.
     pub(crate) fn command_capacity_one() -> Self {
+        Self::command_capacity_n(1)
+    }
+
+    /// Command harness with `n` coordinator workload slots for saturation tests.
+    ///
+    /// Uses a direct empty idempotency lane so inspect does not share the
+    /// writer queue (production uses a direct MVCC reader for the same reason).
+    pub(crate) fn command_capacity_n(workload_capacity: u16) -> Self {
         Self::compose_with_additional_commands_and_capacity(
             ReadCommitMode::ImmediateNotFound,
             false,
@@ -186,7 +194,22 @@ impl ServiceHarness {
             false,
             false,
             0,
+            workload_capacity.max(1),
+            true,
+        )
+    }
+
+    /// Capacity harness that also activates one read-only ObserveBudget command.
+    pub(crate) fn command_capacity_n_with_observe(workload_capacity: u16) -> Self {
+        Self::compose_with_additional_commands_and_capacity(
+            ReadCommitMode::ImmediateNotFound,
+            false,
+            true,
+            false,
+            false,
+            false,
             1,
+            workload_capacity.max(1),
             true,
         )
     }
@@ -458,6 +481,27 @@ impl ServiceHarness {
             .expect("hold one free command workload slot")
     }
 
+    /// Holds `count` command workload slots (for capacity-N saturation tests).
+    pub(crate) fn hold_command_capacity_n(
+        &self,
+        count: usize,
+    ) -> Vec<CommandExecutionCapacityPermit> {
+        let executor = self
+            .coordinator
+            .as_ref()
+            .expect("coordinator is running")
+            .command_executor();
+        let mut held = Vec::with_capacity(count);
+        for _ in 0..count {
+            held.push(
+                executor
+                    .try_reserve_capacity()
+                    .expect("hold free command workload slot"),
+            );
+        }
+        held
+    }
+
     /// Returns whether the next non-blocking command reservation is overload.
     pub(crate) fn try_command_capacity_is_full(&self) -> bool {
         matches!(
@@ -468,6 +512,18 @@ impl ServiceHarness {
                 .try_reserve_capacity(),
             Err(riffdb_commit::CommandExecutionAdmissionError::Overloaded)
         )
+    }
+
+    /// Exhausts the independent retained-byte budget (for RetainedBytes stage tests).
+    pub(crate) fn hold_all_retained_bytes(&self) -> tokio::sync::OwnedSemaphorePermit {
+        // Acquire the full 32 MiB / 1 KiB unit budget used by the coordinator.
+        const TOTAL_UNITS: u32 = (32 * 1_024 * 1_024) / 1_024;
+        self.coordinator
+            .as_ref()
+            .expect("coordinator is running")
+            .command_executor()
+            .try_acquire_retained_bytes(TOTAL_UNITS)
+            .expect("full retained-byte budget at start")
     }
 
     pub(crate) fn deploy_request(&self) -> DeployContractRequest {
@@ -1177,6 +1233,26 @@ impl ServiceHarness {
             SubmittedRecord::try_from(input).expect("bounded submitted command input"),
         )
         .expect("bounded command request")
+    }
+
+    /// Read-only ObserveBudget0000 request (requires `command_capacity_n_with_observe`).
+    pub(crate) fn observe_budget_request(&self) -> ExecuteCommandRequest {
+        let plan = self
+            .database
+            .active_catalog
+            .bundle()
+            .bundle()
+            .commands()
+            .iter()
+            .find(|plan| plan.name() == "ObserveBudget0000")
+            .expect("ObserveBudget0000 must be activated");
+        let input = build_command_input(plan, ORGANIZATION_ID);
+        ExecuteCommandRequest::new(
+            SourceName::new("ObserveBudget0000").expect("checked observe command name"),
+            Some(self.database.executable_plan.reference().contract_version()),
+            SubmittedRecord::try_from(input).expect("bounded observe input"),
+        )
+        .expect("bounded observe request")
     }
 
     pub(crate) fn resolve_command_outcome_request(&self) -> ResolveCommandOutcomeRequest {

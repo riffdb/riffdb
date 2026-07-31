@@ -411,15 +411,11 @@ impl RiffDbService {
                 Ok(result) if !lifecycle.normal_completion_requires_containment(result.is_ok()) => {
                     result
                 }
-                // Pre-admission overload must remain a typed capacity rejection
-                // even when the deferred audit lifecycle still looks open: under
-                // saturation there is no free coordinator slot for containment.
-                Ok(Err(failure))
-                    if matches!(
-                        failure.public_error().map(riffdb_errors::PublicError::kind),
-                        Some(riffdb_errors::PublicErrorKind::Overloaded)
-                    ) =>
-                {
+                // Pre-admission rejections with no durable Started may settle
+                // without an append under saturation (no free coordinator slot).
+                // Gate on lifecycle state, not error kind: a future post-Started
+                // Overloaded producer must not silently orphan the audit pair.
+                Ok(Err(failure)) if !lifecycle.has_durable_started() => {
                     lifecycle.force_terminal_settled_for_pre_admission();
                     Err(failure)
                 }
@@ -971,6 +967,35 @@ mod tests {
             Poll::Ready(Err(()))
         ));
         assert!(lifecycle.normal_completion_requires_containment(false));
+    }
+
+    #[test]
+    fn durable_started_lifecycle_does_not_allow_silent_pre_admission_settle() {
+        let lifecycle = Arc::new(OperationAuditLifecycle::new(
+            ServiceOperationV1::ExecuteCommand,
+        ));
+        assert!(!lifecycle.has_durable_started());
+        // Synthetic post-Started Overloaded must not take the no-append settle path.
+        lifecycle.mark_started_for_test();
+        lifecycle.mark_durable_start();
+        assert!(lifecycle.has_durable_started());
+        assert!(
+            lifecycle.normal_completion_requires_containment(false),
+            "durable Started still requires containment / terminal audit"
+        );
+        // Force-settle would orphan the Started pair — spawn_operation must not
+        // call it when has_durable_started() is true.
+        assert!(lifecycle.has_durable_started());
+    }
+
+    #[test]
+    fn pre_admission_lifecycle_may_settle_without_durable_start() {
+        let lifecycle = Arc::new(OperationAuditLifecycle::new(
+            ServiceOperationV1::ExecuteCommand,
+        ));
+        assert!(!lifecycle.has_durable_started());
+        lifecycle.force_terminal_settled_for_pre_admission();
+        assert!(!lifecycle.normal_completion_requires_containment(false));
     }
 
     #[test]

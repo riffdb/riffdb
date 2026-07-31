@@ -895,6 +895,22 @@ impl CommandExecutor {
             .map_err(|_| CommandExecutionAdmissionError::Overloaded)
     }
 
+    /// Bounded wait for retained-byte budget (same closed window as queue depth).
+    ///
+    /// Cancelling before resolution retains no bytes. Used by service admission
+    /// after a non-blocking miss.
+    pub async fn acquire_retained_bytes(
+        &self,
+        units: u32,
+    ) -> Result<OwnedSemaphorePermit, CommandExecutionAdmissionError> {
+        ensure_command_accepting(&self.lifecycle)?;
+        self.retained_byte_capacity
+            .clone()
+            .acquire_many_owned(units.max(1))
+            .await
+            .map_err(|_| command_lifecycle_error(&self.lifecycle))
+    }
+
     fn finish_queue_reservation(
         permit: mpsc::OwnedPermit<CoordinatorMessage>,
         lifecycle: &Arc<AtomicU8>,

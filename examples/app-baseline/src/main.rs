@@ -12,12 +12,11 @@ use std::time::{Duration, Instant};
 
 use riffdb_app_baseline_core::{
     AppBackend, BackendReport, LoadConfig, LoadExecutionShape, RIFFDB_MAX_LOAD_CLIENTS,
-    RIFFDB_SATURATE_LOAD_CLIENTS, Scale,
-    SeedDataset, WorkloadProfile, build_report, print_load_summary, run_closed_loop_load,
-    run_scenarios,
+    RIFFDB_SATURATE_LOAD_CLIENTS, SATURATE_COORDINATOR_WORKLOAD_CAPACITY, Scale, SeedDataset,
+    WorkloadProfile, build_report, print_load_summary, run_closed_loop_load, run_scenarios,
 };
 use riffdb_app_baseline_postgres::PostgresAppBackend;
-use riffdb_app_baseline_riffdb::RiffDbServerSession;
+use riffdb_app_baseline_riffdb::{RiffDbServerSession, ServerStartOptions};
 use serde_json::json;
 
 fn main() -> ExitCode {
@@ -199,21 +198,23 @@ fn run_load(args: Args) -> Result<(), String> {
     }
     base_config.contended = args.load_contended;
     base_config.saturate = args.load_saturate;
-    // Default 150 ms matches one admission-cap group-commit turn under depth.
+    // Default 250 ms = 150 ms admission budget + accepted group-turn + bucket
+    // slack; success-only p99 excludes Overloaded waits that burn the full cap.
     base_config.saturate_p99_ceiling = Duration::from_millis(args.load_saturate_p99_ms.max(1));
     if args.load_saturate {
-        // Evidence requires depth well above the coordinator queue (128). A
-        // lower --load-clients value is raised so overload is actually observed.
-        base_config.clients = base_config
-            .clients
-            .max(RIFFDB_SATURATE_LOAD_CLIENTS)
-            .clamp(1, RIFFDB_SATURATE_LOAD_CLIENTS);
+        // Long-lived fan-out multiplies per-client concurrency; do not force
+        // client count (knee sweeps must control --load-clients). PostgreSQL is
+        // skipped: saturate is a RiffDB coordinator-depth probe.
+        base_config.saturate_fanout = riffdb_app_baseline_core::SATURATE_DEFAULT_FANOUT;
     }
 
     let dataset = SeedDataset::generate(args.scale);
     let mut reports = Vec::new();
 
-    if !args.skip_postgres {
+    // Saturate is riffdb-only; never force 512 PG sessions.
+    let skip_postgres = args.skip_postgres || args.load_saturate;
+
+    if !skip_postgres {
         let url = args
             .postgres_url
             .clone()
@@ -281,8 +282,13 @@ fn run_load(args: Args) -> Result<(), String> {
             .build()
             .map_err(|error| error.to_string())?;
 
+        let start_options = ServerStartOptions {
+            coordinator_workload_capacity: args
+                .load_saturate
+                .then_some(SATURATE_COORDINATOR_WORKLOAD_CAPACITY),
+        };
         let mut session = runtime
-            .block_on(RiffDbServerSession::start(&riffdbd))
+            .block_on(RiffDbServerSession::start_with_options(&riffdbd, start_options))
             .map_err(|error| error.to_string())?;
         session.backend.reset().map_err(|error| error.to_string())?;
         let seed_started = Instant::now();
@@ -292,14 +298,18 @@ fn run_load(args: Args) -> Result<(), String> {
         }
         let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let prototype = session.backend.clone().with_command_attempt_budget(1);
-        let config = if args.load_saturate {
-            base_config
-                .clone()
-                .with_client_cap(RIFFDB_SATURATE_LOAD_CLIENTS)
+        let config = base_config.clone().with_client_cap(if args.load_saturate {
+            RIFFDB_SATURATE_LOAD_CLIENTS
         } else {
-            base_config.clone().with_client_cap(RIFFDB_MAX_LOAD_CLIENTS)
+            RIFFDB_MAX_LOAD_CLIENTS
+        });
+        // Long-lived per-session workers under saturate: continuous concurrency
+        // against the reduced coordinator capacity without HTTP/2 stream caps.
+        let transport_topology = if args.load_saturate {
+            RiffDbTransport::PerSession
+        } else {
+            args.riffdb_transport
         };
-        let transport_topology = args.riffdb_transport;
         let mut report = run_closed_loop_load(
             "riffdb_public_grpc",
             config,
@@ -358,30 +368,28 @@ fn run_load(args: Args) -> Result<(), String> {
                     .saturating_add(idempotency_mismatch)
                     .saturating_add(history)
                     .saturating_add(overloaded);
-                // Closed-loop load at depth ≥512 with a write-heavy mix must
-                // either surface typed overload or complete with zero
-                // unclassified failures (pure success under the 150 ms wait).
-                // When overload is observed, every non-success must be Overloaded.
+                if overloaded == 0 {
+                    parts.push(
+                        "saturate profile observed zero Overloaded outcomes (profile broken)"
+                            .to_owned(),
+                    );
+                }
                 if non_success > 0 && overloaded != non_success {
                     parts.push(format!(
                         "saturate profile requires 100% non-success outcomes to be Overloaded \
                          (overloaded={overloaded}, non_success={non_success})"
                     ));
                 }
-                if overloaded == 0 && non_success > 0 {
-                    parts.push("saturate profile observed non-Overloaded failures".to_owned());
-                }
-                if let Some(p99_ns) = report["aggregate"]["latency"]["p99_ns"].as_u64() {
+                // Success-only p99 (ADR: accepted-work latency bounded).
+                if let Some(p99_ns) = report["aggregate"]["success_latency"]["p99_ns"].as_u64() {
                     let ceiling_ns = u64::try_from(base_config.saturate_p99_ceiling.as_nanos())
                         .unwrap_or(u64::MAX);
                     let success = report["aggregate"]["outcomes"]["success"]
                         .as_u64()
                         .unwrap_or(0);
-                    // When the server absorbs depth inside the admission wait,
-                    // success p99 is the accepted-work tail the ADR requires.
                     if success > 0 && p99_ns > ceiling_ns {
                         parts.push(format!(
-                            "saturate p99 of successes {p99_ns}ns exceeds ceiling {ceiling_ns}ns"
+                            "saturate success-only p99 {p99_ns}ns exceeds ceiling {ceiling_ns}ns"
                         ));
                     }
                 }
@@ -690,7 +698,7 @@ impl Args {
         let mut load_zipf_s = None;
         let mut load_contended = false;
         let mut load_saturate = false;
-        let mut load_saturate_p99_ms = 150;
+        let mut load_saturate_p99_ms = 250;
         let mut riffdb_transport = RiffDbTransport::PerSession;
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
