@@ -17,7 +17,11 @@ use crate::{RequestControl, ServiceFailure};
 pub(crate) const MAX_READ_ATTEMPTS: u32 = 3;
 
 /// Minimum remaining request budget required to start another attempt.
-pub(crate) const READ_RETRY_MIN_REMAINING: Duration = Duration::from_millis(20);
+///
+/// Bound to the server port-admission deadline margin (`P1_PORT_ADMISSION_DEADLINE_MARGIN`
+/// = 25ms). Keeping this ≥ the margin ensures a near-deadline request surfaces
+/// the client's own deadline rather than being retried into `storage_unavailable`.
+pub(crate) const READ_RETRY_MIN_REMAINING: Duration = Duration::from_millis(25);
 
 /// Closed set of transient failures eligible for internal retry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,10 +56,13 @@ where
     let mut attempt = 0_u32;
     loop {
         attempt = attempt.saturating_add(1);
-        telemetry.record(ServiceTelemetryEvent::ReadRetryAttempt {
-            operation: operation_name,
-            attempt,
-        });
+        // Emit only for actual retries (attempt > 1); attempt 1 is the ordinary path.
+        if attempt > 1 {
+            telemetry.record(ServiceTelemetryEvent::ReadRetryAttempt {
+                operation: operation_name,
+                attempt,
+            });
+        }
         match operation(attempt).await {
             Ok(value) => return Ok(value),
             Err(Err(failure)) => return Err(failure),
@@ -79,9 +86,8 @@ where
                     .checked_duration_since(Instant::now())
                     .unwrap_or(Duration::ZERO);
                 if remaining < READ_RETRY_MIN_REMAINING {
-                    telemetry.record(ServiceTelemetryEvent::ReadRetryExhausted {
-                        operation: operation_name,
-                    });
+                    // Not exhausted-retry: the client's own deadline cannot fit
+                    // another attempt (including admission margin).
                     return Err(ServiceFailure::DeadlineExceeded);
                 }
                 let backoff = retry_backoff(attempt);
@@ -199,10 +205,8 @@ mod tests {
         ))
         .expect("eventual success");
         assert_eq!(value, 42);
-        assert_eq!(
-            telemetry.attempts.lock().expect("lock").as_slice(),
-            &[1, 2, 3]
-        );
+        // Attempts 2 and 3 are retries; attempt 1 is not counted as a retry.
+        assert_eq!(telemetry.attempts.lock().expect("lock").as_slice(), &[2, 3]);
         assert_eq!(telemetry.exhausted.load(Ordering::SeqCst), 0);
     }
 
@@ -233,7 +237,32 @@ mod tests {
             riffdb_errors::PublicErrorKind::StorageUnavailable
         );
         assert_eq!(public.code(), "storage_unavailable");
-        assert_eq!(telemetry.attempts.lock().expect("lock").len(), 3);
+        assert_eq!(telemetry.attempts.lock().expect("lock").as_slice(), &[2, 3]);
         assert_eq!(telemetry.exhausted.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn remaining_budget_below_min_returns_deadline_not_storage_unavailable() {
+        let deadline = Instant::now()
+            .checked_add(READ_RETRY_MIN_REMAINING - Duration::from_millis(1))
+            .expect("deadline");
+        let (control, _cancel) = RequestControl::new(deadline);
+        let telemetry = RecordingTelemetry {
+            attempts: Mutex::new(Vec::new()),
+            exhausted: AtomicU32::new(0),
+        };
+        let err = block_on(with_read_retry(
+            &control,
+            &TestScheduler,
+            &telemetry,
+            ServiceOperationV1::GetEntity,
+            |_attempt| async { Err::<u32, _>(Ok(RetryableReadFault::BackendUnavailable)) },
+        ))
+        .expect_err("near-deadline");
+        assert!(
+            matches!(err, ServiceFailure::DeadlineExceeded),
+            "expected client deadline, got {err:?}"
+        );
+        assert_eq!(telemetry.exhausted.load(Ordering::SeqCst), 0);
     }
 }

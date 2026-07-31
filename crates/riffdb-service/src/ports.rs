@@ -619,21 +619,21 @@ pub trait ProjectionQueryPort: Send + Sync {
     /// A behind-frontier observation completes as `PendingObservation`; the
     /// service performs its policy safe point and reserves fresh capacity before
     /// requesting another observation under the original absolute deadline.
-    fn reserve_query_projection(
-        &self,
-        control: &RequestControl,
+    fn reserve_query_projection<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<ProjectionPortRequest, ProjectionPortResult, ProjectionPortError>,
         PortAdmissionError,
     >;
 
     /// Reserves capacity for one exact projection lifecycle snapshot.
-    fn reserve_projection_status(
-        &self,
-        control: &RequestControl,
+    fn reserve_projection_status<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             riffdb_types::ProjectionIdentity,
             Option<ProjectionStatusSnapshot>,
@@ -655,11 +655,11 @@ pub enum OutboxStatusPortError {
 /// Optional payload-free outbox status source.
 pub trait OutboxStatusPort: Send + Sync {
     /// Reserves capacity for one page without event payloads or connector secrets.
-    fn reserve_pending_status(
-        &self,
-        control: &RequestControl,
+    fn reserve_pending_status<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<OutboxStatusRequest, OutboxStatusSnapshot, OutboxStatusPortError>,
         PortAdmissionError,
     >;
