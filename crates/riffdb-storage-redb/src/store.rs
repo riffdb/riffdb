@@ -1784,6 +1784,20 @@ impl RedbWriteAccess {
         self.shared.service_audit_sequences(request_id)
     }
 
+    /// Loads durable service-audit sequences for many request ids with one snapshot.
+    pub(crate) fn service_audit_sequences_for(
+        &self,
+        request_ids: &std::collections::BTreeSet<riffdb_types::RequestId>,
+    ) -> Result<
+        std::collections::BTreeMap<
+            riffdb_types::RequestId,
+            Vec<riffdb_types::AdministrationSequence>,
+        >,
+        StorageError,
+    > {
+        self.shared.service_audit_sequences_for(request_ids)
+    }
+
     pub(crate) fn ensure_outbox_indexes_available(&self) -> Result<(), StorageError> {
         self.shared.pending_outbox_page(None, 0)?;
         self.shared.undelivered_outbox_page(None, 0).map(|_| ())
@@ -1795,40 +1809,70 @@ impl SharedRedb {
         &self,
         request_id: riffdb_types::RequestId,
     ) -> Result<Vec<riffdb_types::AdministrationSequence>, StorageError> {
+        let mut ids = std::collections::BTreeSet::new();
+        ids.insert(request_id);
+        Ok(self
+            .service_audit_sequences_for(&ids)?
+            .remove(&request_id)
+            .unwrap_or_default())
+    }
+
+    /// One begin_read + one AUDIT_BY_REQUEST open; per-request bounded prefix ranges.
+    pub(crate) fn service_audit_sequences_for(
+        &self,
+        request_ids: &std::collections::BTreeSet<riffdb_types::RequestId>,
+    ) -> Result<
+        std::collections::BTreeMap<
+            riffdb_types::RequestId,
+            Vec<riffdb_types::AdministrationSequence>,
+        >,
+        StorageError,
+    > {
         const MAX_SERVICE_AUDIT_RECORDS_PER_REQUEST: usize = 2;
         let transaction = self.database.begin_read().map_err(transaction_error)?;
+        self.note_audit_sequence_begin_read();
         let table = transaction
             .open_table(AUDIT_BY_REQUEST)
             .map_err(table_error)?;
-        let prefix = encode_audit_by_request_prefix(request_id);
-        let mut sequences = Vec::new();
-        let scan = table
-            .range::<&[u8]>((std::ops::Bound::Included(prefix.as_slice()), Unbounded))
-            .map_err(precommit_storage_error)?;
-        for entry in scan {
-            let (key, value) = entry.map_err(precommit_storage_error)?;
-            if !key.value().starts_with(prefix.as_slice()) {
-                break;
+        let mut results = std::collections::BTreeMap::new();
+        for &request_id in request_ids {
+            let prefix = encode_audit_by_request_prefix(request_id);
+            let mut sequences = Vec::new();
+            let scan = table
+                .range::<&[u8]>((std::ops::Bound::Included(prefix.as_slice()), Unbounded))
+                .map_err(precommit_storage_error)?;
+            for entry in scan {
+                let (key, value) = entry.map_err(precommit_storage_error)?;
+                if !key.value().starts_with(prefix.as_slice()) {
+                    break;
+                }
+                let (decoded_request, sequence) = decode_audit_by_request_key(key.value())
+                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+                if decoded_request != request_id {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                let index = decode_service_audit_request_index_v1(value.value())?
+                    .into_parts()
+                    .0;
+                if index.request_id() != request_id || index.administration_sequence() != sequence {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                if sequences.len() >= MAX_SERVICE_AUDIT_RECORDS_PER_REQUEST
+                    || sequences.last().is_some_and(|prior| prior >= &sequence)
+                {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                sequences.push(sequence);
             }
-            let (decoded_request, sequence) = decode_audit_by_request_key(key.value())
-                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-            if decoded_request != request_id {
-                return Err(storage_error(StorageErrorKind::CorruptData));
-            }
-            let index = decode_service_audit_request_index_v1(value.value())?
-                .into_parts()
-                .0;
-            if index.request_id() != request_id || index.administration_sequence() != sequence {
-                return Err(storage_error(StorageErrorKind::CorruptData));
-            }
-            if sequences.len() >= MAX_SERVICE_AUDIT_RECORDS_PER_REQUEST
-                || sequences.last().is_some_and(|prior| prior >= &sequence)
-            {
-                return Err(storage_error(StorageErrorKind::CorruptData));
-            }
-            sequences.push(sequence);
+            results.insert(request_id, sequences);
         }
-        Ok(sequences)
+        Ok(results)
+    }
+
+    fn note_audit_sequence_begin_read(&self) {
+        if let Some(controller) = &self.test_controller {
+            controller.observe_audit_sequence_begin_read();
+        }
     }
 
     fn pending_outbox_page(

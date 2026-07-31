@@ -61,11 +61,10 @@ use crate::{
 /// deadline computed at the first wait; a queue wait that consumes the budget
 /// leaves retained-byte acquisition with no additional wait window.
 ///
-/// Fairness note: `try_reserve` may barge ahead of waiters parked on
-/// `reserve_capacity`, so rejections under sustained depth tend to concentrate
-/// on the oldest waiters (those that have already spent budget in the wait).
-/// This is accepted for the POC; a later fairness pass may use a single
-/// admission queue if agent-facing equity requires it.
+/// Fairness note: Tokio's mpsc semaphore grants released permits to parked
+/// FIFO waiters before the free pool, so `try_reserve` does not barge ahead of
+/// an already-parked `reserve_capacity` waiter. Rejections under sustained depth
+/// therefore still favor callers that have not yet entered the wait.
 const COMMAND_ADMISSION_MAX_WAIT: Duration = Duration::from_millis(150);
 /// Below this remaining client deadline, reject immediately rather than wait.
 const COMMAND_ADMISSION_MIN_REMAINING: Duration = Duration::from_millis(25);
@@ -2285,6 +2284,28 @@ async fn admit_command_capacity(
         }
         Err(CommandExecutionAdmissionError::Overloaded) => {}
         Err(error) => return Err(map_command_admission(service, error)),
+    }
+
+    // Pre-admission queue-delay shed: reject when the writer's EWMA estimate of
+    // enqueue→start + service exceeds remaining client budget minus MIN_REMAINING.
+    // A stale-zero estimate never sheds (writer has not completed a unit yet).
+    // Pre-admission ⇒ zero durable audit (ADR-0071).
+    let estimate_micros = service.executors.command.estimated_queue_delay_micros();
+    if estimate_micros > 0 {
+        let remaining = context
+            .control()
+            .deadline()
+            .saturating_duration_since(Instant::now());
+        let remaining_after_floor = remaining.saturating_sub(COMMAND_ADMISSION_MIN_REMAINING);
+        if Duration::from_micros(estimate_micros) > remaining_after_floor {
+            record_capacity_rejected(
+                service,
+                operation,
+                ingress,
+                CapacityRejectionStage::QueueDepth,
+            );
+            return Err(PublicError::overloaded().into());
+        }
     }
 
     // First wait is queue depth — open the absolute closed admission window here.

@@ -151,14 +151,12 @@ pub enum CommitTelemetryEvent {
     },
     /// The exact storage commit call returned.
     CommitCallCompleted {
-        /// Closed result of the storage call and exact graph check.
+        /// Closed result of the storage call and immediate exact-result check.
         terminal: CommitCallTerminal,
-        /// Time spent in the synchronous commit call and immediate exact-result check.
+        /// Time spent in the commit call and immediate exact-result check.
         elapsed: Duration,
         /// Commands in the staged batch. The POC command path is exactly one.
         batch_size: u16,
-        /// Whether synchronous durability was requested.
-        synchronous: bool,
     },
     /// A mandatory same-key uncertainty lookup returned.
     UncertaintyResolved {
@@ -166,6 +164,13 @@ pub enum CommitTelemetryEvent {
         stage: CommitUncertaintyStage,
         /// Closed same-key lookup result.
         resolution: CommitUncertaintyResolution,
+    },
+    /// One writer unit completed; reports busy and preceding idle durations.
+    WriterUnitCompleted {
+        /// Time spent executing the unit (storage + completion).
+        busy: Duration,
+        /// Time the writer waited idle before this unit.
+        idle: Duration,
     },
 }
 
