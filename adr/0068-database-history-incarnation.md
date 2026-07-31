@@ -1,6 +1,6 @@
 # ADR-0068: Database History Incarnation
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-30
 - **Decision owners:** RiffDB maintainers
 - **Related requirements:** `REC-002`, `R-16` (spec risk register), `STO-001`
@@ -92,5 +92,5 @@ The manifest version is unchanged.
 
 ## Acceptance
 
-Pending maintainer acceptance. Package F merges only after this record is
-accepted.
+The human maintainer explicitly accepted this exact record on 2026-07-30 in
+the current Claude session. Package F may merge against it.

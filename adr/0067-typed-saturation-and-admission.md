@@ -1,6 +1,6 @@
 # ADR-0067: Typed Saturation and Admission
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-30
 - **Decision owners:** RiffDB maintainers
 - **Related requirements:** `PERF-004`, `REC-001`, `ID-004`
@@ -88,5 +88,5 @@ high-cardinality labels.
 
 ## Acceptance
 
-Pending maintainer acceptance. Package S merges only after this record is
-accepted.
+The human maintainer explicitly accepted this exact record on 2026-07-30 in
+the current Claude session. Package S may merge against it.

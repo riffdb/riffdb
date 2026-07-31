@@ -1,6 +1,6 @@
 # ADR-0066: Read Stability and Internal Retry
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-30
 - **Decision owners:** RiffDB maintainers
 - **Related requirements:** `PERF-001`, `PERF-002`, `SAFE-*` read conformance, `TXN-001`
@@ -109,5 +109,5 @@ stopped; recoverability of the stopped state is unchanged and out of scope.
 
 ## Acceptance
 
-Pending maintainer acceptance. Package R merges only after this record is
-accepted.
+The human maintainer explicitly accepted this exact record on 2026-07-30 in
+the current Claude session. Package R may merge against it.
