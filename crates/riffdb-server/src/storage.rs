@@ -41,7 +41,7 @@ use riffdb_storage_api::{
     StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1, StoredQueryModuleV1,
     UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1,
 };
-use riffdb_storage_redb::RedbOperationalPorts;
+use riffdb_storage_redb::{RedbOperationalPorts, RedbSharedPorts};
 use riffdb_types::{
     CapabilityId, CapabilityTokenDigest, CommitSequence, ContractBundleHash, ContractLineage,
     ContractVersion, EventId, ProvenanceId, QueryModuleHash,
@@ -60,6 +60,7 @@ use riffdb_types::{
 )]
 pub(crate) struct SharedRedbOperationalPorts {
     cell: SharedStorageCell<RedbOperationalPorts>,
+    shared: RedbSharedPorts,
     catalog: Arc<CurrentCatalogView>,
     capabilities: Arc<CurrentCapabilityView>,
     health: Option<Arc<dyn ServiceHealthHooks>>,
@@ -75,10 +76,12 @@ impl SharedRedbOperationalPorts {
         ports: RedbOperationalPorts,
         health: Option<Arc<dyn ServiceHealthHooks>>,
     ) -> Result<Self, StorageError> {
-        let catalog = CurrentCatalogView::rebuild(&ports)?;
-        let capabilities = CurrentCapabilityView::rebuild(&ports)?;
+        let shared = ports.shared_ports();
+        let catalog = CurrentCatalogView::rebuild(&shared.operational())?;
+        let capabilities = CurrentCapabilityView::rebuild(&shared.operational())?;
         Ok(Self {
             cell: SharedStorageCell::new(ports),
+            shared,
             catalog: Arc::new(catalog),
             capabilities: Arc::new(capabilities),
             health,
@@ -97,6 +100,7 @@ impl Clone for SharedRedbOperationalPorts {
     fn clone(&self) -> Self {
         Self {
             cell: self.cell.clone(),
+            shared: self.shared.clone(),
             catalog: Arc::clone(&self.catalog),
             capabilities: Arc::clone(&self.capabilities),
             health: self.health.clone(),
@@ -111,12 +115,7 @@ impl QueryExecutionPort for SharedRedbOperationalPorts {
         parameters: &QueryParameters,
         prior: Option<&QueryContinuation>,
     ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
-        let guard = self
-            .cell
-            .inner
-            .read()
-            .map_err(|_| QueryExecutionError::BackendUnavailable)?;
-        QueryExecutionPort::execute_query_page(&*guard, program, parameters, prior)
+        QueryExecutionPort::execute_query_page(&self.shared, program, parameters, prior)
     }
 }
 
@@ -144,14 +143,6 @@ impl<T> SharedStorageCell<T> {
         Self {
             inner: Arc::new(RwLock::new(value)),
         }
-    }
-
-    fn with_ref<R>(
-        &self,
-        operation: impl FnOnce(&T) -> Result<R, StorageError>,
-    ) -> Result<R, StorageError> {
-        let guard = self.inner.read().map_err(|_| poisoned_storage_bridge())?;
-        operation(&guard)
     }
 
     fn with_mut<R>(
@@ -440,32 +431,28 @@ impl AdmissionRepository for SharedRedbOperationalPorts {
         &self,
         request: AdmissionRequestV1,
     ) -> Result<AdmissionResultV1, StorageError> {
-        self.cell
-            .with_ref(|ports| AdmissionRepository::admit_or_resolve(ports, request))
+        AdmissionRepository::admit_or_resolve(&self.shared, request)
     }
 
     fn admit_or_resolve_group(
         &self,
         requests: Vec<AdmissionRequestV1>,
     ) -> Result<Vec<AdmissionResultV1>, StorageError> {
-        self.cell
-            .with_ref(|ports| AdmissionRepository::admit_or_resolve_group(ports, requests))
+        AdmissionRepository::admit_or_resolve_group(&self.shared, requests)
     }
 
     fn lookup_admission(
         &self,
         candidates: IdempotencyLookupCandidatesV1,
     ) -> Result<AdmissionLookupResultV1, StorageError> {
-        self.cell
-            .with_ref(|ports| AdmissionRepository::lookup_admission(ports, candidates))
+        AdmissionRepository::lookup_admission(&self.shared, candidates)
     }
 
     fn lookup_admission_group(
         &self,
         candidates: Vec<IdempotencyLookupCandidatesV1>,
     ) -> Result<Vec<AdmissionLookupResultV1>, StorageError> {
-        self.cell
-            .with_ref(|ports| AdmissionRepository::lookup_admission_group(ports, candidates))
+        AdmissionRepository::lookup_admission_group(&self.shared, candidates)
     }
 }
 
@@ -474,16 +461,13 @@ impl AuditedAdmissionRepository for SharedRedbOperationalPorts {
         &self,
         requests: Vec<AuditedAdmissionRequestV1>,
     ) -> Result<Vec<AuditedAdmissionResultV1>, StorageError> {
-        self.cell.with_ref(|ports| {
-            AuditedAdmissionRepository::admit_or_resolve_audited_group(ports, requests)
-        })
+        AuditedAdmissionRepository::admit_or_resolve_audited_group(&self.shared, requests)
     }
 }
 
 impl SnapshotReader for SharedRedbOperationalPorts {
     fn read_snapshot(&self, request: SnapshotRequest) -> Result<ReadSnapshot, StorageError> {
-        self.cell
-            .with_ref(|ports| SnapshotReader::read_snapshot(ports, request))
+        SnapshotReader::read_snapshot(&self.shared, request)
     }
 }
 
@@ -491,8 +475,7 @@ impl ApplicationCommandTransactionPort for SharedRedbOperationalPorts {
     type EmptyBatch = <RedbOperationalPorts as ApplicationCommandTransactionPort>::EmptyBatch;
 
     fn begin_empty_batch(&self) -> Result<Self::EmptyBatch, StorageError> {
-        self.cell
-            .with_ref(ApplicationCommandTransactionPort::begin_empty_batch)
+        ApplicationCommandTransactionPort::begin_empty_batch(&self.shared)
     }
 }
 
@@ -503,9 +486,7 @@ impl ExecutionFailureTransitionPort for SharedRedbOperationalPorts {
         &self,
         request: ExecutionFailureTransitionRequestV1,
     ) -> Result<ExecutionFailureAdmissionResult<Self::Rechecked>, StorageError> {
-        self.cell.with_ref(|ports| {
-            ExecutionFailureTransitionPort::begin_execution_failure(ports, request)
-        })
+        ExecutionFailureTransitionPort::begin_execution_failure(&self.shared, request)
     }
 }
 
@@ -576,8 +557,7 @@ impl QueryModuleRepository for SharedRedbOperationalPorts {
         &self,
         module_hash: QueryModuleHash,
     ) -> Result<Option<StoredQueryModuleV1>, StorageError> {
-        self.cell
-            .with_ref(|ports| QueryModuleRepository::read_query_module(ports, module_hash))
+        QueryModuleRepository::read_query_module(&self.shared, module_hash)
     }
 
     fn read_active_query_module(
@@ -586,14 +566,12 @@ impl QueryModuleRepository for SharedRedbOperationalPorts {
         contract_version: ContractVersion,
         contract_bundle_hash: ContractBundleHash,
     ) -> Result<Option<riffdb_storage_api::ActiveQueryModulePointerV1>, StorageError> {
-        self.cell.with_ref(|ports| {
-            QueryModuleRepository::read_active_query_module(
-                ports,
-                lineage,
-                contract_version,
-                contract_bundle_hash,
-            )
-        })
+        QueryModuleRepository::read_active_query_module(
+            &self.shared,
+            lineage,
+            contract_version,
+            contract_bundle_hash,
+        )
     }
 }
 
@@ -605,9 +583,10 @@ impl CapabilityAdministrationTransactionPort for SharedRedbOperationalPorts {
         &self,
         candidate: CapabilityCreateCandidateV1,
     ) -> Result<Self::CreateCandidate, StorageError> {
-        let inner = self.cell.with_ref(|ports| {
-            CapabilityAdministrationTransactionPort::begin_capability_create(ports, candidate)
-        })?;
+        let inner = CapabilityAdministrationTransactionPort::begin_capability_create(
+            &self.shared,
+            candidate,
+        )?;
         Ok(SharedCapabilityCreateCandidate {
             inner,
             storage: self.clone(),
@@ -618,9 +597,10 @@ impl CapabilityAdministrationTransactionPort for SharedRedbOperationalPorts {
         &self,
         candidate: CapabilityRevokeCandidateV1,
     ) -> Result<Self::RevokeCandidate, StorageError> {
-        let inner = self.cell.with_ref(|ports| {
-            CapabilityAdministrationTransactionPort::begin_capability_revoke(ports, candidate)
-        })?;
+        let inner = CapabilityAdministrationTransactionPort::begin_capability_revoke(
+            &self.shared,
+            candidate,
+        )?;
         Ok(SharedCapabilityRevokeCandidate {
             inner,
             storage: self.clone(),
@@ -671,9 +651,7 @@ impl CapabilityCreateAwaitingDecision for SharedCapabilityCreateAwaiting {
             | CapabilityCreateResult::TokenDigestCollision => None,
         };
         if let Some(capability_id) = capability_id {
-            let record = storage
-                .cell
-                .with_ref(|ports| CapabilityReader::read_capability(ports, capability_id))
+            let record = CapabilityReader::read_capability(&storage.shared, capability_id)
                 .map_err(|error| storage.current_view_failure(error))?
                 .ok_or_else(poisoned_storage_bridge)
                 .map_err(|error| storage.current_view_failure(error))?;
@@ -725,9 +703,7 @@ impl CapabilityRevokeAwaitingDecision for SharedCapabilityRevokeAwaiting {
             CapabilityRevokeResult::CapabilityNotFound => None,
         };
         if let Some(capability_id) = capability_id {
-            let record = storage
-                .cell
-                .with_ref(|ports| CapabilityReader::read_capability(ports, capability_id))
+            let record = CapabilityReader::read_capability(&storage.shared, capability_id)
                 .map_err(|error| storage.current_view_failure(error))?
                 .ok_or_else(poisoned_storage_bridge)
                 .map_err(|error| storage.current_view_failure(error))?;
@@ -765,9 +741,7 @@ impl CapabilityBootstrapAdministrationRepository for SharedRedbOperationalPorts 
             CapabilityBootstrapResult::BootstrapConflict => None,
         };
         if let Some(capability_id) = capability_id {
-            let record = self
-                .cell
-                .with_ref(|ports| CapabilityReader::read_capability(ports, capability_id))
+            let record = CapabilityReader::read_capability(&self.shared, capability_id)
                 .map_err(|error| self.current_view_failure(error))?
                 .ok_or_else(poisoned_storage_bridge)
                 .map_err(|error| self.current_view_failure(error))?;
@@ -796,9 +770,7 @@ impl CatalogRepository for SharedRedbOperationalPorts {
         {
             return Ok(Some(bundle));
         }
-        self.cell.with_ref(|ports| {
-            CatalogRepository::read_contract_bundle(ports, lineage, contract_version)
-        })
+        CatalogRepository::read_contract_bundle(&self.shared, lineage, contract_version)
     }
 }
 
@@ -810,9 +782,7 @@ impl CapabilityReader for SharedRedbOperationalPorts {
         if let Some(record) = self.capabilities.read()?.records.get(&capability_id) {
             return Ok(Some(record.clone()));
         }
-        let record = self
-            .cell
-            .with_ref(|ports| CapabilityReader::read_capability(ports, capability_id))?;
+        let record = CapabilityReader::read_capability(&self.shared, capability_id)?;
         if let Some(record) = record.as_ref() {
             let mut view = self.capabilities.write()?;
             if let Some(current) = view.records.get(&capability_id) {
@@ -832,9 +802,7 @@ impl CapabilityReader for SharedRedbOperationalPorts {
         if let Some(cached) = self.capabilities.read()?.resolve(candidates) {
             return Ok(cached);
         }
-        let result = self
-            .cell
-            .with_ref(|ports| CapabilityReader::resolve_capability_digests(ports, candidates))?;
+        let result = CapabilityReader::resolve_capability_digests(&self.shared, candidates)?;
         let mut view = self.capabilities.write()?;
         if let Some(cached) = view.resolve(candidates) {
             return Ok(cached);
@@ -852,8 +820,7 @@ impl CapabilityInventoryReader for SharedRedbOperationalPorts {
         after: Option<CapabilityId>,
         limit: StorageScanLimit,
     ) -> Result<riffdb_storage_api::CapabilityInventoryPageV1, StorageError> {
-        self.cell
-            .with_ref(|ports| CapabilityInventoryReader::scan_capabilities(ports, after, limit))
+        CapabilityInventoryReader::scan_capabilities(&self.shared, after, limit)
     }
 }
 
@@ -862,40 +829,35 @@ impl AuthoritativePointReader for SharedRedbOperationalPorts {
         &self,
         target: &riffdb_storage_api::EntityTarget,
     ) -> Result<Option<StoredEntityRecordV1>, StorageError> {
-        self.cell
-            .with_ref(|ports| AuthoritativePointReader::read_entity(ports, target))
+        AuthoritativePointReader::read_entity(&self.shared, target)
     }
 
     fn read_stored_outcome(
         &self,
         identity: &IdempotencyIdentity,
     ) -> Result<Option<StoredOutcomeV1>, StorageError> {
-        self.cell
-            .with_ref(|ports| AuthoritativePointReader::read_stored_outcome(ports, identity))
+        AuthoritativePointReader::read_stored_outcome(&self.shared, identity)
     }
 
     fn read_commit(
         &self,
         sequence: CommitSequence,
     ) -> Result<Option<StoredCommitRecordV1>, StorageError> {
-        self.cell
-            .with_ref(|ports| AuthoritativePointReader::read_commit(ports, sequence))
+        AuthoritativePointReader::read_commit(&self.shared, sequence)
     }
 
     fn read_provenance(
         &self,
         provenance_id: ProvenanceId,
     ) -> Result<Option<StoredProvenanceRecordV1>, StorageError> {
-        self.cell
-            .with_ref(|ports| AuthoritativePointReader::read_provenance(ports, provenance_id))
+        AuthoritativePointReader::read_provenance(&self.shared, provenance_id)
     }
 
     fn read_durable_event(
         &self,
         event_id: EventId,
     ) -> Result<Option<StoredDurableEventV1>, StorageError> {
-        self.cell
-            .with_ref(|ports| AuthoritativePointReader::read_durable_event(ports, event_id))
+        AuthoritativePointReader::read_durable_event(&self.shared, event_id)
     }
 }
 
@@ -904,13 +866,11 @@ impl AuthoritativeScanReader for SharedRedbOperationalPorts {
         &self,
         request: AuthoritativeIndexScanRequest,
     ) -> Result<AuthoritativeIndexScanPage, StorageError> {
-        self.cell
-            .with_ref(|ports| AuthoritativeScanReader::scan_index(ports, request))
+        AuthoritativeScanReader::scan_index(&self.shared, request)
     }
 
     fn scan_commits(&self, request: CommitScanRequest) -> Result<CommitScanPageV1, StorageError> {
-        self.cell
-            .with_ref(|ports| AuthoritativeScanReader::scan_commits(ports, request))
+        AuthoritativeScanReader::scan_commits(&self.shared, request)
     }
 }
 
@@ -919,22 +879,20 @@ impl FilteredAuthoritativeScanReader for SharedRedbOperationalPorts {
         &self,
         request: FilteredAuthoritativeIndexScanRequest,
     ) -> Result<FilteredAuthoritativeIndexScanPage, StorageError> {
-        self.cell
-            .with_ref(|ports| FilteredAuthoritativeScanReader::scan_index_filtered(ports, request))
+        FilteredAuthoritativeScanReader::scan_index_filtered(&self.shared, request)
     }
 }
 
 impl OutboxRepository for SharedRedbOperationalPorts {
     fn has_undelivered_outbox(&self) -> Result<bool, StorageError> {
-        self.cell.with_ref(OutboxRepository::has_undelivered_outbox)
+        OutboxRepository::has_undelivered_outbox(&self.shared.operational())
     }
 
     fn read_outbox_status(
         &self,
         event_id: EventId,
     ) -> Result<OutboxStatusReadResultV1, StorageError> {
-        self.cell
-            .with_ref(|ports| OutboxRepository::read_outbox_status(ports, event_id))
+        OutboxRepository::read_outbox_status(&self.shared.operational(), event_id)
     }
 
     fn scan_pending_outbox(
@@ -942,16 +900,14 @@ impl OutboxRepository for SharedRedbOperationalPorts {
         after: Option<EventId>,
         limit: OutboxPageLimit,
     ) -> Result<PendingOutboxScanV1, StorageError> {
-        self.cell
-            .with_ref(|ports| OutboxRepository::scan_pending_outbox(ports, after, limit))
+        OutboxRepository::scan_pending_outbox(&self.shared.operational(), after, limit)
     }
 
     fn scan_undelivered_outbox_statuses(
         &self,
         request: UndeliveredOutboxStatusScanRequestV1,
     ) -> Result<UndeliveredOutboxStatusScanV1, StorageError> {
-        self.cell
-            .with_ref(|ports| OutboxRepository::scan_undelivered_outbox_statuses(ports, request))
+        OutboxRepository::scan_undelivered_outbox_statuses(&self.shared.operational(), request)
     }
 
     fn claim_outbox(
@@ -1000,8 +956,7 @@ impl ProjectionApplySnapshotReader for SharedRedbOperationalPorts {
         &self,
         request: &ProjectionApplySnapshotRequest,
     ) -> Result<ProjectionApplySnapshot, StorageError> {
-        self.cell
-            .with_ref(|ports| ProjectionApplySnapshotReader::read_apply_snapshot(ports, request))
+        ProjectionApplySnapshotReader::read_apply_snapshot(&self.shared, request)
     }
 }
 
@@ -1029,16 +984,14 @@ impl ProjectionQueryReader for SharedRedbOperationalPorts {
         &self,
         request: &ProjectionQueryRequest,
     ) -> Result<ProjectionQueryResult, StorageError> {
-        self.cell
-            .with_ref(|ports| ProjectionQueryReader::query_projection(ports, request))
+        ProjectionQueryReader::query_projection(&self.shared, request)
     }
 
     fn read_projection_status(
         &self,
         identity: &riffdb_types::ProjectionIdentity,
     ) -> Result<ProjectionStatus, StorageError> {
-        self.cell
-            .with_ref(|ports| ProjectionQueryReader::read_projection_status(ports, identity))
+        ProjectionQueryReader::read_projection_status(&self.shared, identity)
     }
 }
 
@@ -1048,25 +1001,20 @@ impl ProjectionRecoveryRepository for SharedRedbOperationalPorts {
         after: Option<&riffdb_types::ProjectionIdentity>,
         limit: ProjectionRecoveryPageLimit,
     ) -> Result<ProjectionControlScanV1, StorageError> {
-        self.cell.with_ref(|ports| {
-            ProjectionRecoveryRepository::scan_projection_controls(ports, after, limit)
-        })
+        ProjectionRecoveryRepository::scan_projection_controls(&self.shared, after, limit)
     }
 
     fn validate_projection_recovery_page(
         &self,
         request: &ProjectionRecoveryValidationRequestV1,
     ) -> Result<ProjectionRecoveryValidationResultV1, StorageError> {
-        self.cell.with_ref(|ports| {
-            ProjectionRecoveryRepository::validate_projection_recovery_page(ports, request)
-        })
+        ProjectionRecoveryRepository::validate_projection_recovery_page(&self.shared, request)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
-    use std::sync::Barrier;
     use std::thread;
 
     use riffdb_storage_api::{
@@ -1217,31 +1165,12 @@ mod tests {
             })
             .expect("mutate shared value");
 
-        assert_eq!(second.with_ref(|value| Ok(*value)).expect("read clone"), 7);
-    }
-
-    #[test]
-    fn cloned_cells_allow_concurrent_read_calls_without_sleeps() {
-        let cell = SharedStorageCell::new(());
-        let entered = Arc::new(Barrier::new(2));
-        let release = Arc::new(Barrier::new(2));
-        let worker_cell = cell.clone();
-        let worker_entered = Arc::clone(&entered);
-        let worker_release = Arc::clone(&release);
-        let worker = thread::spawn(move || {
-            worker_cell
-                .with_ref(|()| {
-                    worker_entered.wait();
-                    worker_release.wait();
-                    Ok(())
-                })
-                .expect("first read");
-        });
-
-        entered.wait();
-        cell.with_ref(|()| Ok(())).expect("concurrent read");
-        release.wait();
-        worker.join().expect("worker completed");
+        assert_eq!(
+            second
+                .with_mut(|value| Ok(*value))
+                .expect("read clone through write path"),
+            7
+        );
     }
 
     #[test]
@@ -1261,7 +1190,7 @@ mod tests {
 
         let bridge = SharedStorageCell::new(0_u8);
         let state = bridge
-            .with_ref(|_| {
+            .with_mut(|_| {
                 Ok(OwnedTransactionState {
                     bridge: bridge.clone(),
                 })
@@ -1296,7 +1225,7 @@ mod tests {
         assert!(result.is_err());
 
         let error = cell
-            .with_ref(|()| Ok(()))
+            .with_mut(|()| Ok(()))
             .expect_err("poisoned cell must fail closed");
         assert_eq!(error.kind(), StorageErrorKind::InvariantViolation);
     }

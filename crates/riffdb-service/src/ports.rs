@@ -362,47 +362,47 @@ pub trait CatalogReadPort: Send + Sync {
     /// The returned value is never caller output. It is used to derive stable
     /// schema and policy facts before a protected read is admitted, or to
     /// validate authoritative entity-key bytes before a result is released.
-    fn prepare_contract_version(
-        &self,
-        control: &RequestControl,
+    fn prepare_contract_version<'a>(
+        &'a self,
+        control: &'a RequestControl,
         lineage: ContractLineage,
         version: ContractVersion,
-    ) -> PortFuture<'_, Option<ValidatedContractBundle>, CatalogError>;
+    ) -> PortFuture<'a, Option<ValidatedContractBundle>, CatalogError>;
 
     /// Reserves cancellation-aware capacity for an active-catalog observation.
-    fn reserve_active_catalog(
-        &self,
-        control: &RequestControl,
+    fn reserve_active_catalog<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<(), Option<ActiveCatalogSnapshot>, CatalogError>,
         PortAdmissionError,
     >;
 
     /// Reserves cancellation-aware capacity for one historical-bundle observation.
-    fn reserve_contract_version(
-        &self,
-        control: &RequestControl,
-    ) -> PortFuture<'_, ContractVersionReadPermit, PortAdmissionError>;
+    fn reserve_contract_version<'a>(
+        &'a self,
+        control: &'a RequestControl,
+    ) -> PortFuture<'a, ContractVersionReadPermit, PortAdmissionError>;
 
     /// Resolves preparatory plan facts with bounded cancellation and deadline handling.
     ///
     /// This read returns no caller output and may run while a command-executor
     /// permit is held. The service performs a fresh policy check only after it
     /// obtains the resulting exact facts.
-    fn executable_plan(
-        &self,
-        control: &RequestControl,
+    fn executable_plan<'a>(
+        &'a self,
+        control: &'a RequestControl,
         request: CatalogExecutablePlanRequest,
-    ) -> PortFuture<'_, ResolvedExecutablePlan, CatalogError>;
+    ) -> PortFuture<'a, ResolvedExecutablePlan, CatalogError>;
 
     /// Performs bounded preparatory catalog validation before coordinator admission.
-    fn prepare_deployment(
-        &self,
-        control: &RequestControl,
+    fn prepare_deployment<'a>(
+        &'a self,
+        control: &'a RequestControl,
         candidate: ContractBundle,
         expected_active_version: Option<ContractVersion>,
-    ) -> PortFuture<'_, CatalogPreparationResult, CatalogError>;
+    ) -> PortFuture<'a, CatalogPreparationResult, CatalogError>;
 }
 
 /// Closed failure while reading and recompiling an immutable query module.
@@ -417,19 +417,19 @@ pub enum QueryModuleReadError {
 /// Exact query-module observations needed by named execution and inspection.
 pub trait QueryModuleReadPort: Send + Sync {
     /// Reads and recompiles the active module for one exact retained contract.
-    fn prepare_active_query_module(
-        &self,
-        control: &RequestControl,
+    fn prepare_active_query_module<'a>(
+        &'a self,
+        control: &'a RequestControl,
         contract: ValidatedContractBundle,
-    ) -> PortFuture<'_, Option<ValidatedQueryModule>, QueryModuleReadError>;
+    ) -> PortFuture<'a, Option<ValidatedQueryModule>, QueryModuleReadError>;
 
     /// Reads and recompiles one content-addressed module for an exact contract.
-    fn prepare_query_module(
-        &self,
-        control: &RequestControl,
+    fn prepare_query_module<'a>(
+        &'a self,
+        control: &'a RequestControl,
         contract: ValidatedContractBundle,
         module_hash: QueryModuleHash,
-    ) -> PortFuture<'_, Option<ValidatedQueryModule>, QueryModuleReadError>;
+    ) -> PortFuture<'a, Option<ValidatedQueryModule>, QueryModuleReadError>;
 }
 
 /// Closed authoritative-read failure with no storage diagnostic or handle.
@@ -441,6 +441,10 @@ pub enum AuthoritativeReadError {
     Integrity,
     /// A lower continuation or frozen fence no longer denotes a valid page.
     InvalidContinuation,
+    /// Cancellation was observed while waiting for read-path admission.
+    Cancelled,
+    /// The absolute request deadline elapsed before the read completed admission.
+    DeadlineExceeded,
 }
 
 /// A lower commit-notification source event.
@@ -491,11 +495,11 @@ pub trait CommitNotificationSource: Send {
 /// Authoritative entity, outcome, commit, provenance, and capability observations.
 pub trait AuthoritativeReadPort: Send + Sync {
     /// Reserves capacity for one exact authoritative entity observation.
-    fn reserve_read_entity(
-        &self,
-        control: &RequestControl,
+    fn reserve_read_entity<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             AuthoritativeEntityRequest,
             Option<AuthoritativeEntitySnapshot>,
@@ -505,11 +509,11 @@ pub trait AuthoritativeReadPort: Send + Sync {
     >;
 
     /// Reserves capacity for one bounded, fenced authoritative index page.
-    fn reserve_scan_index(
-        &self,
-        control: &RequestControl,
+    fn reserve_scan_index<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             AuthoritativeIndexRequest,
             AuthoritativeIndexPage,
@@ -519,11 +523,11 @@ pub trait AuthoritativeReadPort: Send + Sync {
     >;
 
     /// Reserves capacity for one exact durable command outcome observation.
-    fn reserve_read_outcome(
-        &self,
-        control: &RequestControl,
+    fn reserve_read_outcome<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             AuthoritativeOutcomeRequest,
             Option<AuthoritativeOutcomeSnapshot>,
@@ -533,11 +537,11 @@ pub trait AuthoritativeReadPort: Send + Sync {
     >;
 
     /// Reserves capacity for one exact application commit observation.
-    fn reserve_read_commit(
-        &self,
-        control: &RequestControl,
+    fn reserve_read_commit<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             riffdb_types::CommitSequence,
             Option<AuthoritativeCommitSnapshot>,
@@ -547,11 +551,11 @@ pub trait AuthoritativeReadPort: Send + Sync {
     >;
 
     /// Reserves capacity for one bounded upper-fenced commit page.
-    fn reserve_scan_commits(
-        &self,
-        control: &RequestControl,
+    fn reserve_scan_commits<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             AuthoritativeCommitScanRequest,
             AuthoritativeCommitPage,
@@ -561,11 +565,11 @@ pub trait AuthoritativeReadPort: Send + Sync {
     >;
 
     /// Reserves capacity to establish one bounded lower notification source.
-    fn reserve_subscribe_to_commits(
-        &self,
-        control: &RequestControl,
+    fn reserve_subscribe_to_commits<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             AuthoritativeCommitSubscriptionRequest,
             Box<dyn CommitNotificationSource>,
@@ -575,11 +579,11 @@ pub trait AuthoritativeReadPort: Send + Sync {
     >;
 
     /// Reserves capacity for one provenance trace root and bounded graph observation.
-    fn reserve_trace_provenance(
-        &self,
-        control: &RequestControl,
+    fn reserve_trace_provenance<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             ProvenanceSelector,
             Option<AuthoritativeProvenanceSnapshot>,
@@ -592,11 +596,11 @@ pub trait AuthoritativeReadPort: Send + Sync {
     ///
     /// The facts are never released as output. They are reloaded while a
     /// control-plane permit is held before the final policy safe point.
-    fn read_capability_revoke_target(
-        &self,
-        control: &RequestControl,
+    fn read_capability_revoke_target<'a>(
+        &'a self,
+        control: &'a RequestControl,
         capability_id: CapabilityId,
-    ) -> PortFuture<'_, CapabilityRevokeTargetSnapshot, AuthoritativeReadError>;
+    ) -> PortFuture<'a, CapabilityRevokeTargetSnapshot, AuthoritativeReadError>;
 }
 
 /// Closed derived-projection source failure.
@@ -1019,6 +1023,20 @@ pub enum ServiceTelemetryEvent {
     },
     /// A cursor source, registry, or monotonic-clock operation failed closed.
     CursorUnavailable,
+    /// A live cursor was evicted to make room for a newer registration.
+    CursorEvicted,
+    /// One internal read attempt failed with a closed transient and will retry.
+    ReadRetryAttempt {
+        /// Stable operation name for telemetry only.
+        operation: riffdb_types::ServiceOperationV1,
+        /// 1-based attempt index within the closed retry budget.
+        attempt: u32,
+    },
+    /// The closed internal read-retry budget was exhausted.
+    ReadRetryExhausted {
+        /// Stable operation name for telemetry only.
+        operation: riffdb_types::ServiceOperationV1,
+    },
     /// A post-establishment stream was closed at a current-policy safe point.
     StreamClosedByPolicy,
 }

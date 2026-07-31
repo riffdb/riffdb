@@ -10,6 +10,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use riffdb_service::{
     AuthoritativeReadinessFailure, BoxPortCapacityPermit, PortAdmissionError, PortCapacityPermit,
@@ -32,16 +35,29 @@ pub(crate) const P1_BLOCKING_PORT_WORKER_THREADS: usize = 32;
 /// subscription or notification capacity.
 pub(crate) const P1_MAX_BLOCKING_PORT_OPERATIONS: usize = 256;
 
+/// Maximum time a contended read waits for a free port permit.
+pub(crate) const P1_PORT_ADMISSION_MAX_WAIT: Duration = Duration::from_millis(250);
+
+/// Reserved margin so a waited admission still leaves room for the request body.
+pub(crate) const P1_PORT_ADMISSION_DEADLINE_MARGIN: Duration = Duration::from_millis(25);
+
+/// Maximum concurrent waiters blocked on port admission.
+///
+/// Beyond this cap, admission fails immediately with
+/// [`PortAdmissionError::Unavailable`] rather than unbounded queue growth.
+pub(crate) const P1_MAX_BLOCKING_PORT_WAITERS: usize = 512;
+
 type BlockingJob = Box<dyn FnOnce() + Send + 'static>;
 
 struct DriverState {
     accepting: bool,
-    in_flight: usize,
 }
 
 struct BlockingPortDriverInner {
     routing: RuntimeRoutingState,
     state: Mutex<DriverState>,
+    permits: Arc<Semaphore>,
+    waiters: AtomicUsize,
     queue: JobQueue,
     max_in_flight: usize,
     installed_workers: AtomicUsize,
@@ -105,10 +121,101 @@ impl JobQueue {
 }
 
 impl BlockingPortDriverInner {
-    fn reserve(
+    fn try_reserve(
         self: &Arc<Self>,
         control: &RequestControl,
     ) -> Result<Reservation, PortAdmissionError> {
+        self.precheck_control(control)?;
+        self.ensure_accepting()?;
+        let permit = Arc::clone(&self.permits)
+            .try_acquire_owned()
+            .map_err(|_| PortAdmissionError::Unavailable)?;
+        if !self.is_accepting() {
+            drop(permit);
+            return Err(PortAdmissionError::Stopped);
+        }
+        Ok(Reservation {
+            permit: Some(permit),
+        })
+    }
+
+    async fn reserve_async(
+        self: &Arc<Self>,
+        control: &RequestControl,
+    ) -> Result<Reservation, PortAdmissionError> {
+        self.precheck_control(control)?;
+        self.ensure_accepting()?;
+
+        if let Ok(permit) = Arc::clone(&self.permits).try_acquire_owned() {
+            if !self.is_accepting() {
+                drop(permit);
+                return Err(PortAdmissionError::Stopped);
+            }
+            return Ok(Reservation {
+                permit: Some(permit),
+            });
+        }
+
+        let waiter_slot = self.waiters.fetch_add(1, Ordering::AcqRel);
+        if waiter_slot >= P1_MAX_BLOCKING_PORT_WAITERS {
+            self.waiters.fetch_sub(1, Ordering::AcqRel);
+            return Err(PortAdmissionError::Unavailable);
+        }
+
+        let now = Instant::now();
+        let max_wait_deadline = now.checked_add(P1_PORT_ADMISSION_MAX_WAIT).unwrap_or(now);
+        let request_wait_deadline = control
+            .deadline()
+            .checked_sub(P1_PORT_ADMISSION_DEADLINE_MARGIN)
+            .unwrap_or(now);
+        let wait_until = max_wait_deadline.min(request_wait_deadline);
+        if wait_until <= now {
+            self.waiters.fetch_sub(1, Ordering::AcqRel);
+            return if control.is_deadline_exceeded() || Instant::now() >= control.deadline() {
+                Err(PortAdmissionError::DeadlineExceeded)
+            } else {
+                Err(PortAdmissionError::Unavailable)
+            };
+        }
+        let timeout = wait_until.saturating_duration_since(Instant::now());
+
+        let acquire = Arc::clone(&self.permits).acquire_owned();
+        let outcome = tokio::select! {
+            biased;
+            () = control.cancelled() => Err(PortAdmissionError::Cancelled),
+            result = tokio::time::timeout(timeout, acquire) => match result {
+                Ok(Ok(permit)) => Ok(permit),
+                Ok(Err(_)) => Err(PortAdmissionError::Stopped),
+                Err(_) => {
+                    if control.is_deadline_exceeded() || Instant::now() >= control.deadline() {
+                        Err(PortAdmissionError::DeadlineExceeded)
+                    } else {
+                        Err(PortAdmissionError::Unavailable)
+                    }
+                }
+            },
+        };
+        self.waiters.fetch_sub(1, Ordering::AcqRel);
+
+        let permit = outcome?;
+        if control.is_cancelled() {
+            drop(permit);
+            return Err(PortAdmissionError::Cancelled);
+        }
+        if control.is_deadline_exceeded() {
+            drop(permit);
+            return Err(PortAdmissionError::DeadlineExceeded);
+        }
+        if !self.is_accepting() {
+            drop(permit);
+            return Err(PortAdmissionError::Stopped);
+        }
+        Ok(Reservation {
+            permit: Some(permit),
+        })
+    }
+
+    fn precheck_control(&self, control: &RequestControl) -> Result<(), PortAdmissionError> {
         if control.is_cancelled() {
             return Err(PortAdmissionError::Cancelled);
         }
@@ -118,33 +225,10 @@ impl BlockingPortDriverInner {
         if !self.routing.is_routing_allowed() {
             return Err(PortAdmissionError::Stopped);
         }
-
-        let mut state = match self.state.lock() {
-            Ok(state) => state,
-            Err(poisoned) => {
-                self.close_poisoned(poisoned);
-                return Err(PortAdmissionError::Stopped);
-            }
-        };
-        if !state.accepting {
-            return Err(PortAdmissionError::Stopped);
-        }
-        if state.in_flight == self.max_in_flight {
-            return Err(PortAdmissionError::Unavailable);
-        }
-        state.in_flight += 1;
-        drop(state);
-
-        Ok(Reservation {
-            driver: Arc::clone(self),
-            released: false,
-        })
+        Ok(())
     }
 
-    fn ensure_submission_open(&self) -> Result<(), PortAdmissionError> {
-        if !self.routing.is_routing_allowed() {
-            return Err(PortAdmissionError::Stopped);
-        }
+    fn ensure_accepting(&self) -> Result<(), PortAdmissionError> {
         let state = match self.state.lock() {
             Ok(state) => state,
             Err(poisoned) => {
@@ -158,27 +242,18 @@ impl BlockingPortDriverInner {
         Ok(())
     }
 
-    fn release_reservation(&self) {
-        let mut poisoned = false;
-        let mut state = match self.state.lock() {
-            Ok(state) => state,
-            Err(error) => {
-                poisoned = true;
-                error.into_inner()
-            }
-        };
-        if state.in_flight == 0 {
-            poisoned = true;
-        } else {
-            state.in_flight -= 1;
+    fn is_accepting(&self) -> bool {
+        match self.state.lock() {
+            Ok(state) => state.accepting && self.routing.is_routing_allowed(),
+            Err(_) => false,
         }
-        if poisoned {
-            state.accepting = false;
+    }
+
+    fn ensure_submission_open(&self) -> Result<(), PortAdmissionError> {
+        if !self.routing.is_routing_allowed() {
+            return Err(PortAdmissionError::Stopped);
         }
-        drop(state);
-        if poisoned {
-            self.fail_integrity();
-        }
+        self.ensure_accepting()
     }
 
     fn close(&self) -> bool {
@@ -219,16 +294,11 @@ impl BlockingPortDriverInner {
         self.fail_integrity();
     }
 
-    fn in_flight_after_shutdown(&self) -> Result<usize, ()> {
-        match self.state.lock() {
-            Ok(state) => Ok(state.in_flight),
-            Err(error) => {
-                let in_flight = error.into_inner().in_flight;
-                self.fail_integrity();
-                let _ = in_flight;
-                Err(())
-            }
-        }
+    fn outstanding_permits_after_shutdown(&self) -> Result<usize, ()> {
+        // available_permits is the free count; outstanding = max - free.
+        Ok(self
+            .max_in_flight
+            .saturating_sub(self.permits.available_permits()))
     }
 }
 
@@ -264,10 +334,9 @@ impl BlockingPortDriver {
 
         let inner = Arc::new(BlockingPortDriverInner {
             routing,
-            state: Mutex::new(DriverState {
-                accepting: true,
-                in_flight: 0,
-            }),
+            state: Mutex::new(DriverState { accepting: true }),
+            permits: Arc::new(Semaphore::new(max_in_flight)),
+            waiters: AtomicUsize::new(0),
             queue: JobQueue::new(max_in_flight),
             max_in_flight,
             installed_workers: AtomicUsize::new(0),
@@ -347,7 +416,7 @@ impl BlockingPortDriver {
             }
         }
 
-        if state_was_poisoned || self.inner.in_flight_after_shutdown().is_err() {
+        if state_was_poisoned || self.inner.outstanding_permits_after_shutdown().is_err() {
             return Err(BlockingPortDriverShutdownError::StateCorrupted);
         }
         if worker_panicked {
@@ -355,7 +424,7 @@ impl BlockingPortDriver {
         }
         if self
             .inner
-            .in_flight_after_shutdown()
+            .outstanding_permits_after_shutdown()
             .expect("state was checked immediately above")
             != 0
         {
@@ -397,22 +466,14 @@ fn run_worker(inner: &Arc<BlockingPortDriverInner>) {
 }
 
 struct Reservation {
-    driver: Arc<BlockingPortDriverInner>,
-    released: bool,
+    /// Owned permit; dropping releases capacity. Taken on explicit release so
+    /// the permit is never held across an await in the service job.
+    permit: Option<OwnedSemaphorePermit>,
 }
 
 impl Reservation {
     fn release(mut self) {
-        self.released = true;
-        self.driver.release_reservation();
-    }
-}
-
-impl Drop for Reservation {
-    fn drop(&mut self) {
-        if !self.released {
-            self.driver.release_reservation();
-        }
+        self.permit.take();
     }
 }
 
@@ -437,12 +498,25 @@ where
     Response: Send + 'static,
     Failure: Send + 'static,
 {
-    /// Reserves one typed move-only permit after synchronous control checks.
+    /// Reserves one typed move-only permit without waiting (sync fast path).
     pub(crate) fn reserve(
         &self,
         control: &RequestControl,
     ) -> Result<BoxPortCapacityPermit<Request, Response, Failure>, PortAdmissionError> {
-        let reservation = self.inner.reserve(control)?;
+        let reservation = self.inner.try_reserve(control)?;
+        Ok(Box::new(BlockingPortPermit {
+            inner: Arc::clone(&self.inner),
+            operation: Arc::clone(&self.operation),
+            reservation,
+        }))
+    }
+
+    /// Reserves one typed move-only permit with deadline-aware contention wait.
+    pub(crate) async fn reserve_async(
+        &self,
+        control: &RequestControl,
+    ) -> Result<BoxPortCapacityPermit<Request, Response, Failure>, PortAdmissionError> {
+        let reservation = self.inner.reserve_async(control).await?;
         Ok(Box::new(BlockingPortPermit {
             inner: Arc::clone(&self.inner),
             operation: Arc::clone(&self.operation),
@@ -621,6 +695,57 @@ mod tests {
 
         let second = executor.reserve(&control).expect("released permit");
         drop(second);
+        driver.shutdown_and_drain().expect("clean shutdown");
+    }
+
+    #[test]
+    fn contended_async_reserve_succeeds_when_permit_frees_within_wait() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime");
+        let (_routing, driver) = test_driver(1, 1);
+        let executor = driver.executor(|value: u32| Ok::<_, ()>(value));
+        let control = live_control();
+        let held = executor.reserve(&control).expect("hold capacity");
+
+        let waiter = executor.clone();
+        let wait_control = live_control();
+        let join = std::thread::spawn(move || {
+            runtime.block_on(async move { waiter.reserve_async(&wait_control).await })
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        drop(held);
+        join.join()
+            .expect("waiter thread")
+            .expect("contended wait succeeds");
+        driver.shutdown_and_drain().expect("clean shutdown");
+    }
+
+    #[test]
+    fn async_reserve_maps_deadline_and_cancellation() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime");
+        let (_routing, driver) = test_driver(1, 1);
+        let executor = driver.executor(|value: u32| Ok::<_, ()>(value));
+        let live = live_control();
+        let held = executor.reserve(&live).expect("hold capacity");
+
+        let expired = RequestControl::new(Instant::now() - Duration::from_millis(1)).0;
+        assert_eq!(
+            admission_error(runtime.block_on(executor.reserve_async(&expired))),
+            PortAdmissionError::DeadlineExceeded
+        );
+
+        let (control, cancel) = RequestControl::new(Instant::now() + Duration::from_secs(60));
+        cancel.cancel();
+        assert_eq!(
+            admission_error(runtime.block_on(executor.reserve_async(&control))),
+            PortAdmissionError::Cancelled
+        );
+        drop(held);
         driver.shutdown_and_drain().expect("clean shutdown");
     }
 

@@ -1143,6 +1143,8 @@ fn authoritative_read_failure(
 ) -> ServiceFailure {
     match error {
         AuthoritativeReadError::Unavailable => PublicError::storage_unavailable().into(),
+        AuthoritativeReadError::Cancelled => ServiceFailure::Cancelled,
+        AuthoritativeReadError::DeadlineExceeded => ServiceFailure::DeadlineExceeded,
         AuthoritativeReadError::Integrity | AuthoritativeReadError::InvalidContinuation => {
             lower_integrity_failure(service, operation)
         }
@@ -1204,7 +1206,9 @@ impl CommitSubscription for ServiceCommitSubscription {
                         self.last_delivered = prior_last_delivered;
                         self.pending_upper = prior_pending_upper;
                         let terminal = match error {
-                            AuthoritativeReadError::Unavailable => {
+                            AuthoritativeReadError::Unavailable
+                            | AuthoritativeReadError::Cancelled
+                            | AuthoritativeReadError::DeadlineExceeded => {
                                 self.end(CommitSubscriptionEndReason::Unavailable)
                             }
                             AuthoritativeReadError::Integrity
@@ -1275,7 +1279,11 @@ impl ServiceCommitSubscription {
                 Ok(Err(AuthoritativeReadError::InvalidContinuation)) => {
                     return self.end(CommitSubscriptionEndReason::ScanGap);
                 }
-                Ok(Err(AuthoritativeReadError::Unavailable)) => {
+                Ok(Err(
+                    AuthoritativeReadError::Unavailable
+                    | AuthoritativeReadError::Cancelled
+                    | AuthoritativeReadError::DeadlineExceeded,
+                )) => {
                     return self.end(CommitSubscriptionEndReason::Unavailable);
                 }
                 Ok(Err(AuthoritativeReadError::Integrity)) => {
@@ -1352,7 +1360,11 @@ impl ServiceCommitSubscription {
                 AuthoritativeReadError::Integrity | AuthoritativeReadError::InvalidContinuation,
             )))
             | Ok(Err(PortDriverStopped)) => return self.end_integrity(),
-            Ok(Ok(Err(AuthoritativeReadError::Unavailable))) => {
+            Ok(Ok(Err(
+                AuthoritativeReadError::Unavailable
+                | AuthoritativeReadError::Cancelled
+                | AuthoritativeReadError::DeadlineExceeded,
+            ))) => {
                 return self.end(CommitSubscriptionEndReason::Unavailable);
             }
             Err(error) => return self.end_wait(error),

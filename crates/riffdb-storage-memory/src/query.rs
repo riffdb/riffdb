@@ -3,8 +3,9 @@
 use std::collections::BTreeMap;
 
 use riffdb_query_executor::{
-    BoundPredicate, QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryOwnedSnapshot,
-    QueryParameters, QueryReadView, QueryRow, QueryScanPage, execute_page_in_snapshot,
+    BoundPredicate, QueryBackendFault, QueryContinuation, QueryExecutionError, QueryExecutionPort,
+    QueryOwnedSnapshot, QueryParameters, QueryReadView, QueryRow, QueryScanPage,
+    execute_page_in_snapshot,
 };
 use riffdb_query_ir::{
     AccessDirection, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryPredicateOperator,
@@ -28,10 +29,32 @@ impl QueryExecutionPort for MemoryOperationalPorts {
                 program,
                 parameters,
             };
-            execute_page_in_snapshot(program, parameters, prior, &mut view)
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
+            Ok(execute_page_in_snapshot(
+                program, parameters, prior, &mut view,
+            ))
         })
-        .map_err(|_| QueryExecutionError::BackendUnavailable)
+        .map_err(map_storage_query_error)?
+    }
+}
+
+fn map_storage_query_error(error: StorageError) -> QueryExecutionError {
+    match storage_query_fault(&error) {
+        QueryBackendFault::Unavailable => QueryExecutionError::BackendUnavailable,
+        QueryBackendFault::Integrity => QueryExecutionError::BackendIntegrity,
+        QueryBackendFault::LimitExceeded => QueryExecutionError::BackendLimitExceeded,
+    }
+}
+
+const fn storage_query_fault(error: &StorageError) -> QueryBackendFault {
+    match error.kind() {
+        StorageErrorKind::Unavailable | StorageErrorKind::CommitStatusUnknown => {
+            QueryBackendFault::Unavailable
+        }
+        StorageErrorKind::LimitExceeded => QueryBackendFault::LimitExceeded,
+        StorageErrorKind::CorruptData
+        | StorageErrorKind::IncompatibleFormat
+        | StorageErrorKind::InvariantViolation
+        | StorageErrorKind::SequenceExhausted => QueryBackendFault::Integrity,
     }
 }
 
@@ -43,6 +66,10 @@ struct MemoryQueryView<'a> {
 
 impl QueryReadView for MemoryQueryView<'_> {
     type Error = StorageError;
+
+    fn fault(&self, error: &Self::Error) -> QueryBackendFault {
+        storage_query_fault(error)
+    }
 
     fn application_head(&self) -> u64 {
         self.state
@@ -153,6 +180,9 @@ impl QueryReadView for MemoryQueryView<'_> {
             .find(|row| row.target() == &target)
             .map_or(0, |row| row.epoch().get());
 
+        let page_limit =
+            usize::try_from(limit).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+        let fetch_limit = page_limit.saturating_add(1);
         let mut entries = Vec::<(&MemoryIndexEntry, IndexEntryKey)>::new();
         'prefixes: for prefix in prefixes {
             let upper = exclusive_prefix_end(prefix.as_bytes())
@@ -201,7 +231,7 @@ impl QueryReadView for MemoryQueryView<'_> {
                             continue;
                         }
                         entries.push((entry, entry.key().clone()));
-                        if entries.len() == limit as usize {
+                        if entries.len() == fetch_limit {
                             break 'prefixes;
                         }
                     }
@@ -216,16 +246,22 @@ impl QueryReadView for MemoryQueryView<'_> {
                             continue;
                         }
                         entries.push((entry, entry.key().clone()));
-                        if entries.len() == limit as usize {
+                        if entries.len() == fetch_limit {
                             break 'prefixes;
                         }
                     }
                 }
             }
         }
+        // Continuation only when an extra matching entry was observed. Bound is
+        // the last included key; the peeked row is never returned.
+        let has_more = entries.len() > page_limit;
+        if has_more {
+            entries.truncate(page_limit);
+        }
         let scanned_rows = u64::try_from(entries.len())
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
-        let continuation = (entries.len() == limit as usize)
+        let continuation = has_more
             .then(|| entries.last().map(|entry| entry.1.as_bytes().to_vec()))
             .flatten();
         let rows = entries
@@ -602,5 +638,142 @@ query ProjectMembers(
             Some(QueryResultValue::Many(rows))
                 if rows.len() == 1 && rows[0].field("user_id").cloned() != first_user
         ));
+        // Continuation lower bound is the last included row, never the peeked
+        // next row: the second page must not re-emit the first page's user.
+        assert_ne!(
+            second
+                .fields()
+                .get("members")
+                .and_then(|value| match value {
+                    QueryResultValue::Many(rows) =>
+                        rows.first().and_then(|row| row.field("user_id")),
+                    _ => None,
+                }),
+            first_user.as_ref()
+        );
+    }
+
+    #[test]
+    fn exact_end_page_mints_no_continuation_when_page_fills_the_range() {
+        // take 2 with exactly two partition-matching members → exact end.
+        const EXACT_END_QUERY: &str = r#"
+query list_members_exact(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+) {
+    many memberships from ProjectMember
+        where organization_id == $organization_id && project_id == $project_id
+        order by user_id asc
+        take 2
+    return Found { members: memberships { user_id role } }
+    outcomes Found
+}
+"#;
+        let bundle = compile_contract_source(CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let program = compile_query(&parse_query(EXACT_END_QUERY).expect("parse"), &catalog)
+            .expect("program");
+        let step = &program.steps()[0];
+        let organization = CanonicalValue::Uuid([1; 16]);
+        let project = CanonicalValue::Uuid([2; 16]);
+        let binding = DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+        );
+        let access = program
+            .internal_entity_access("ProjectMember")
+            .expect("access");
+        let mut state = MemoryState::default();
+        for (ordinal, partition_ordinal) in [(2_u8, 9_u8), (3_u8, 1_u8), (4_u8, 1_u8)] {
+            let user = CanonicalValue::Uuid([ordinal; 16]);
+            let key = step
+                .internal_entity_key_schema()
+                .encode_entity(&[organization.clone(), project.clone(), user.clone()])
+                .expect("entity key");
+            let target = EntityTarget::new(step.internal_entity_id(), key.clone()).expect("target");
+            let fields = CanonicalRecord::new(vec![
+                (
+                    access
+                        .internal_field_id("organization_id")
+                        .expect("organization"),
+                    organization.clone(),
+                ),
+                (
+                    access.internal_field_id("project_id").expect("project"),
+                    project.clone(),
+                ),
+                (
+                    access.internal_field_id("user_id").expect("user"),
+                    user.clone(),
+                ),
+                (
+                    access.internal_field_id("role").expect("role"),
+                    CanonicalValue::string("member").expect("role"),
+                ),
+            ])
+            .expect("fields");
+            state.entities.push(
+                StoredEntityRecordV1::new(
+                    target,
+                    EntityVersion::first(),
+                    bundle.contract_version(),
+                    binding.clone(),
+                    fields,
+                )
+                .expect("record"),
+            );
+            let index_key = step
+                .internal_index_key_schema()
+                .expect("index schema")
+                .encode_index(&[organization.clone(), project.clone(), user], key)
+                .expect("index key");
+            let mut partition =
+                PartitionKeyBuilder::new(AggregateTypeId::new(4).expect("aggregate"));
+            partition
+                .push_uuid(&[partition_ordinal; 16])
+                .expect("partition component");
+            let index = StoredIndexEntryV2::new(
+                index_key,
+                binding.clone(),
+                CanonicalRecord::new(Vec::new()).expect("cover"),
+                partition.finish().expect("partition"),
+            )
+            .expect("index");
+            let encoded = encode_index_entry_v2(&index).expect("encode");
+            let charge = EncodedContentCharge::new(encoded.as_bytes().len()).expect("charge");
+            state
+                .index_entries
+                .push(MemoryIndexEntry::current_from_encoded(
+                    index,
+                    encoded.as_bytes().to_vec(),
+                    charge,
+                ));
+        }
+        state
+            .entities
+            .sort_unstable_by(|left, right| left.target().cmp(right.target()));
+        state
+            .index_entries
+            .sort_unstable_by(|left, right| left.key().cmp(right.key()));
+        let parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), organization),
+            ("project_id".to_owned(), project),
+        ]))
+        .expect("parameters");
+        let mut view = MemoryQueryView {
+            state: &state,
+            program: &program,
+            parameters: &parameters,
+        };
+        let snapshot = execute_in_snapshot(&program, &parameters, &mut view).expect("execute");
+        assert!(matches!(
+            snapshot.fields().get("members"),
+            Some(QueryResultValue::Many(rows)) if rows.len() == 2
+        ));
+        assert!(
+            snapshot.continuation().is_none() && snapshot.continuation_binding().is_none(),
+            "exact-end page must not mint a continuation"
+        );
     }
 }

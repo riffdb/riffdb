@@ -988,11 +988,11 @@ impl
 }
 
 impl AuthoritativeReadPort for BudgetAuthoritativeReads {
-    fn reserve_read_entity(
-        &self,
-        _control: &RequestControl,
+    fn reserve_read_entity<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             AuthoritativeEntityRequest,
             Option<AuthoritativeEntitySnapshot>,
@@ -1004,11 +1004,11 @@ impl AuthoritativeReadPort for BudgetAuthoritativeReads {
         Box::pin(async move { Ok(Box::new(EntityReadPermit { entities }) as _) })
     }
 
-    fn reserve_scan_index(
-        &self,
-        _control: &RequestControl,
+    fn reserve_scan_index<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             AuthoritativeIndexRequest,
             AuthoritativeIndexPage,
@@ -1019,11 +1019,11 @@ impl AuthoritativeReadPort for BudgetAuthoritativeReads {
         unavailable_port()
     }
 
-    fn reserve_read_outcome(
-        &self,
-        _control: &RequestControl,
+    fn reserve_read_outcome<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             AuthoritativeOutcomeRequest,
             Option<AuthoritativeOutcomeSnapshot>,
@@ -1034,11 +1034,11 @@ impl AuthoritativeReadPort for BudgetAuthoritativeReads {
         unavailable_port()
     }
 
-    fn reserve_read_commit(
-        &self,
-        _control: &RequestControl,
+    fn reserve_read_commit<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             riffdb_types::CommitSequence,
             Option<AuthoritativeCommitSnapshot>,
@@ -1049,11 +1049,11 @@ impl AuthoritativeReadPort for BudgetAuthoritativeReads {
         unavailable_port()
     }
 
-    fn reserve_scan_commits(
-        &self,
-        _control: &RequestControl,
+    fn reserve_scan_commits<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             AuthoritativeCommitScanRequest,
             AuthoritativeCommitPage,
@@ -1064,11 +1064,11 @@ impl AuthoritativeReadPort for BudgetAuthoritativeReads {
         unavailable_port()
     }
 
-    fn reserve_subscribe_to_commits(
-        &self,
-        _control: &RequestControl,
+    fn reserve_subscribe_to_commits<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             AuthoritativeCommitSubscriptionRequest,
             Box<dyn CommitNotificationSource>,
@@ -1079,11 +1079,11 @@ impl AuthoritativeReadPort for BudgetAuthoritativeReads {
         unavailable_port()
     }
 
-    fn reserve_trace_provenance(
-        &self,
-        _control: &RequestControl,
+    fn reserve_trace_provenance<'a>(
+        &'a self,
+        _control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<
             riffdb_policy::ProvenanceSelector,
             Option<AuthoritativeProvenanceSnapshot>,
@@ -1094,11 +1094,11 @@ impl AuthoritativeReadPort for BudgetAuthoritativeReads {
         unavailable_port()
     }
 
-    fn read_capability_revoke_target(
-        &self,
-        _control: &RequestControl,
+    fn read_capability_revoke_target<'a>(
+        &'a self,
+        _control: &'a RequestControl,
         capability_id: CapabilityId,
-    ) -> PortFuture<'_, CapabilityRevokeTargetSnapshot, AuthoritativeReadError> {
+    ) -> PortFuture<'a, CapabilityRevokeTargetSnapshot, AuthoritativeReadError> {
         Box::pin(async move {
             Ok(CapabilityRevokeTargetSnapshot::Absent(
                 AbsentCapabilityRevokeTargetSnapshot::new(

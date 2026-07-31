@@ -434,7 +434,7 @@ impl PanicTerminalAudit {
             approval_id,
             ServiceAuditLinkV1::None,
         )
-        .map_err(|_| AuditAppendFailure)?;
+        .map_err(|_| AuditAppendFailure::subsystem())?;
         Ok(Self {
             input,
             deadline: context.control().deadline(),
@@ -593,10 +593,10 @@ impl BegunCapabilityMutation {
             self.approval_id.clone(),
             link,
         )
-        .map_err(|_| AuditAppendFailure)?;
+        .map_err(|_| AuditAppendFailure::subsystem())?;
         self.lifecycle
             .begin_terminal(phase, link)
-            .map_err(|_| AuditAppendFailure)?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         let control = terminal_audit_control(context.control());
         let result = service.append_prepared_audit(&control, input).await;
         self.lifecycle.finish_terminal(result.is_ok());
@@ -612,8 +612,8 @@ impl BegunCapabilityMutation {
         let result = self
             .finish(service, context, phase, ServiceAuditLinkV1::None)
             .await;
-        if result.is_err() {
-            service.note_audit_failure(self.operation);
+        if let Err(failure) = &result {
+            service.note_audit_failure_with_cause(self.operation, failure.cause());
         }
         result
     }
@@ -635,7 +635,7 @@ impl BegunInvocation {
         context: &RequestContext,
     ) -> Result<ServiceAuditInput, AuditAppendFailure> {
         if self.operation != ServiceOperationV1::ExecuteCommand || !self.started {
-            return Err(AuditAppendFailure);
+            return Err(AuditAppendFailure::subsystem());
         }
         ServiceAuditInput::new(
             context,
@@ -645,7 +645,7 @@ impl BegunInvocation {
             self.approval_id.clone(),
             ServiceAuditLinkV1::None,
         )
-        .map_err(|_| AuditAppendFailure)
+        .map_err(|_| AuditAppendFailure::subsystem())
     }
 
     pub(crate) fn confirm_compound_success(
@@ -655,7 +655,7 @@ impl BegunInvocation {
         self.deferred_start.store(false, Ordering::Release);
         self.lifecycle
             .begin_terminal(ServiceAuditPhaseV1::Succeeded, link)
-            .map_err(|_| AuditAppendFailure)?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         self.lifecycle.finish_terminal(true);
         Ok(())
     }
@@ -664,7 +664,7 @@ impl BegunInvocation {
         self.deferred_start.store(false, Ordering::Release);
         self.lifecycle
             .begin_terminal(ServiceAuditPhaseV1::Failed, ServiceAuditLinkV1::None)
-            .map_err(|_| AuditAppendFailure)?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         self.lifecycle.finish_terminal(true);
         Ok(())
     }
@@ -820,10 +820,10 @@ impl BegunInvocation {
             self.approval_id.clone(),
             link,
         )
-        .map_err(|_| AuditAppendFailure)?;
+        .map_err(|_| AuditAppendFailure::subsystem())?;
         self.lifecycle
             .begin_terminal(phase, link)
-            .map_err(|_| AuditAppendFailure)?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         let control = terminal_audit_control(context.control());
         let result = service.append_prepared_audit(&control, input).await;
         self.lifecycle.finish_terminal(result.is_ok());
@@ -877,8 +877,8 @@ impl BegunInvocation {
         } else {
             Ok(())
         };
-        if result.is_err() {
-            service.note_audit_failure(self.operation);
+        if let Err(failure) = &result {
+            service.note_audit_failure_with_cause(self.operation, failure.cause());
         }
         result
     }
@@ -909,10 +909,10 @@ impl BegunInvocationCompletion {
             self.approval_id.clone(),
             link,
         )
-        .map_err(|_| AuditAppendFailure)?;
+        .map_err(|_| AuditAppendFailure::subsystem())?;
         self.lifecycle
             .begin_terminal(phase, link)
-            .map_err(|_| AuditAppendFailure)?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         let control = terminal_audit_control(context.control());
         let result = service.append_prepared_audit(&control, input).await;
         self.lifecycle.finish_terminal(result.is_ok());
@@ -1044,7 +1044,7 @@ impl RiffDbServiceInner {
         lifecycle
             .prepare_start(operation, panic_terminal)
             .map_err(|_| self.internal_failure(operation, InternalDefect::ProofMismatch))?;
-        if self
+        if let Err(failure) = self
             .append_audit(
                 context,
                 operation,
@@ -1055,10 +1055,9 @@ impl RiffDbServiceInner {
                 AuditAppendControl::Invocation,
             )
             .await
-            .is_err()
         {
             lifecycle.fail_start();
-            self.note_audit_failure(operation);
+            self.note_audit_failure_with_cause(operation, failure.cause());
             return Err(PublicError::storage_unavailable().into());
         }
         if lifecycle.confirm_start().is_err() {
@@ -1152,7 +1151,7 @@ impl RiffDbServiceInner {
                         ServiceAuditPhaseV1::Denied,
                     )
                     .await?;
-                } else if self
+                } else if let Err(failure) = self
                     .append_audit(
                         context,
                         operation,
@@ -1163,9 +1162,8 @@ impl RiffDbServiceInner {
                         AuditAppendControl::Terminal,
                     )
                     .await
-                    .is_err()
                 {
-                    self.note_audit_failure(operation);
+                    self.note_audit_failure_with_cause(operation, failure.cause());
                 }
                 return Err(PublicError::authorization_denied().into());
             }
@@ -1216,7 +1214,7 @@ impl RiffDbServiceInner {
                 .prepare_start(operation, panic_terminal)
                 .map_err(|_| self.internal_failure(operation, InternalDefect::ProofMismatch))?;
             if !defer_command_start
-                && self
+                && let Err(failure) = self
                     .append_audit(
                         context,
                         operation,
@@ -1227,10 +1225,9 @@ impl RiffDbServiceInner {
                         AuditAppendControl::Invocation,
                     )
                     .await
-                    .is_err()
             {
                 lifecycle.fail_start();
-                self.note_audit_failure(operation);
+                self.note_audit_failure_with_cause(operation, failure.cause());
                 return Err(PublicError::storage_unavailable().into());
             }
             if lifecycle.confirm_start().is_err() {
@@ -1279,8 +1276,8 @@ impl RiffDbServiceInner {
             )
             .await;
         lifecycle.finish_terminal(result.is_ok());
-        if result.is_err() {
-            self.note_audit_failure(operation);
+        if let Err(failure) = &result {
+            self.note_audit_failure_with_cause(operation, failure.cause());
         }
         result.map_err(|_| PublicError::storage_unavailable().into())
     }
@@ -1297,7 +1294,7 @@ impl RiffDbServiceInner {
         control_mode: AuditAppendControl,
     ) -> Result<(), AuditAppendFailure> {
         let input = ServiceAuditInput::new(context, operation, phase, targets, approval_id, link)
-            .map_err(|_| AuditAppendFailure)?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         let terminal_control;
         let control = match control_mode {
             AuditAppendControl::Invocation => context.control(),
@@ -1320,26 +1317,38 @@ impl RiffDbServiceInner {
             self.executors.audit.reserve_capacity(),
         )
         .await
-        .map_err(|_: ControlledWaitError| AuditAppendFailure)?
-        .map_err(|_| AuditAppendFailure)?;
+        .map_err(|error: ControlledWaitError| match error {
+            ControlledWaitError::Cancelled | ControlledWaitError::DeadlineExceeded => {
+                AuditAppendFailure::request_scoped()
+            }
+        })?
+        // Coordinator admission failures are always subsystem-level.
+        .map_err(|_| AuditAppendFailure::subsystem())?;
         let receipt = permit
             .submit(Box::new(input))
-            .map_err(|_| AuditAppendFailure)?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         match receipt.completion().await {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.audit_failures.reset();
+                Ok(())
+            }
             Err(error) => {
-                if matches!(error, AdministrationAuditExecutionError::CoordinatorFenced)
-                    || self.executors.audit.lifecycle_state() == CoordinatorLifecycleState::Fenced
-                {
-                    self.providers.health.fail_authoritative_readiness(
-                        crate::AuthoritativeReadinessFailure::CoordinatorFenced,
-                    );
+                let fenced = matches!(error, AdministrationAuditExecutionError::CoordinatorFenced)
+                    || self.executors.audit.lifecycle_state() == CoordinatorLifecycleState::Fenced;
+                let stopped =
+                    matches!(error, AdministrationAuditExecutionError::CoordinatorStopped)
+                        || matches!(
+                            self.executors.audit.lifecycle_state(),
+                            CoordinatorLifecycleState::Stopped
+                                | CoordinatorLifecycleState::Draining
+                        );
+                if fenced || stopped {
+                    Err(AuditAppendFailure::subsystem())
                 } else {
-                    self.providers.health.fail_authoritative_readiness(
-                        crate::AuthoritativeReadinessFailure::AuditUnavailable,
-                    );
+                    // Durable transition failures are subsystem-level; they are
+                    // not request deadline/cancel/capacity.
+                    Err(AuditAppendFailure::subsystem())
                 }
-                Err(AuditAppendFailure)
             }
         }
     }
@@ -1393,10 +1402,10 @@ impl RiffDbServiceInner {
         let lifecycle = current_operation_audit_lifecycle(operation);
         lifecycle
             .prepare_bootstrap_terminal(operation, preparation, request_control.deadline())
-            .map_err(|_| AuditAppendFailure)?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         let (preparation, deadline) = lifecycle
             .begin_bootstrap_terminal()
-            .map_err(|_| AuditAppendFailure)?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         let (control, _unused_cancellation) = RequestControl::new(deadline);
         let result = self
             .append_prepared_bootstrap_terminal(&control, preparation)
@@ -1422,11 +1431,11 @@ impl RiffDbServiceInner {
                 self.note_bootstrap_terminal_failure(
                     error == ControlPlaneExecutionAdmissionError::Fenced,
                 );
-                return Err(AuditAppendFailure);
+                return Err(AuditAppendFailure::subsystem());
             }
             Err(_) => {
                 self.note_bootstrap_terminal_failure(false);
-                return Err(AuditAppendFailure);
+                return Err(AuditAppendFailure::subsystem());
             }
         };
         let receipt = match permit.submit_capability_bootstrap_terminal(preparation) {
@@ -1435,7 +1444,7 @@ impl RiffDbServiceInner {
                 self.note_bootstrap_terminal_failure(
                     error == ControlPlaneExecutionAdmissionError::Fenced,
                 );
-                return Err(AuditAppendFailure);
+                return Err(AuditAppendFailure::subsystem());
             }
         };
         match receipt.completion().await {
@@ -1446,7 +1455,7 @@ impl RiffDbServiceInner {
                     ControlPlaneExecutionErrorKind::OutcomeUnknown
                         | ControlPlaneExecutionErrorKind::CoordinatorFenced
                 ));
-                Err(AuditAppendFailure)
+                Err(AuditAppendFailure::subsystem())
             }
         }
     }
@@ -1467,12 +1476,31 @@ impl RiffDbServiceInner {
     }
 
     pub(crate) fn note_audit_failure(&self, operation: ServiceOperationV1) {
+        self.note_audit_failure_with_cause(operation, AuditFailureCause::SubsystemUnavailable);
+    }
+
+    pub(crate) fn note_audit_failure_with_cause(
+        &self,
+        operation: ServiceOperationV1,
+        cause: AuditFailureCause,
+    ) {
         self.providers
             .telemetry
             .record(crate::ServiceTelemetryEvent::AuditUnavailable { operation });
-        self.providers
-            .health
-            .fail_authoritative_readiness(crate::AuthoritativeReadinessFailure::AuditUnavailable);
+        match cause {
+            AuditFailureCause::SubsystemUnavailable => {
+                self.providers.health.fail_authoritative_readiness(
+                    crate::AuthoritativeReadinessFailure::AuditUnavailable,
+                );
+            }
+            AuditFailureCause::RequestScoped => {
+                if self.audit_failures.note_request_scoped_failure() {
+                    self.providers.health.fail_authoritative_readiness(
+                        crate::AuthoritativeReadinessFailure::AuditUnavailable,
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -1483,13 +1511,108 @@ pub(crate) fn terminal_audit_control(request: &RequestControl) -> RequestControl
 
 /// Required audit work could not be proven durable.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct AuditAppendFailure;
+pub(crate) struct AuditAppendFailure {
+    cause: AuditFailureCause,
+}
+
+impl AuditAppendFailure {
+    pub(crate) const fn subsystem() -> Self {
+        Self {
+            cause: AuditFailureCause::SubsystemUnavailable,
+        }
+    }
+
+    pub(crate) const fn request_scoped() -> Self {
+        Self {
+            cause: AuditFailureCause::RequestScoped,
+        }
+    }
+
+    pub(crate) const fn cause(self) -> AuditFailureCause {
+        self.cause
+    }
+}
+
+/// Closed classification for one audit-append failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AuditFailureCause {
+    /// Coordinator stopped/draining/fenced or an unknown audit outcome.
+    SubsystemUnavailable,
+    /// Deadline, cancellation, or capacity for this request only.
+    RequestScoped,
+}
+
+/// Consecutive request-scoped audit failures before permanent readiness stop.
+pub(crate) const MAX_CONSECUTIVE_AUDIT_FAILURES: u32 = 8;
+
+/// Process-local consecutive request-scoped audit failure counter.
+pub(crate) struct AuditFailureTracker {
+    consecutive: std::sync::atomic::AtomicU32,
+}
+
+impl AuditFailureTracker {
+    pub(crate) const fn new() -> Self {
+        Self {
+            consecutive: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    pub(crate) fn reset(&self) {
+        self.consecutive
+            .store(0, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Records one request-scoped failure. Returns true when the closed
+    /// consecutive threshold has been crossed and routing must stop.
+    pub(crate) fn note_request_scoped_failure(&self) -> bool {
+        let next = self
+            .consecutive
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            .saturating_add(1);
+        next >= MAX_CONSECUTIVE_AUDIT_FAILURES
+    }
+}
+
+impl Default for AuditFailureTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    #[test]
+    fn request_scoped_audit_tracker_resets_on_success_and_trips_at_eight() {
+        let tracker = AuditFailureTracker::new();
+        for _ in 0..7 {
+            assert!(!tracker.note_request_scoped_failure());
+        }
+        tracker.reset();
+        for _ in 0..7 {
+            assert!(!tracker.note_request_scoped_failure());
+        }
+        assert!(tracker.note_request_scoped_failure());
+    }
+
+    #[test]
+    fn request_scoped_cause_does_not_equal_subsystem_cause() {
+        assert_ne!(
+            AuditFailureCause::RequestScoped,
+            AuditFailureCause::SubsystemUnavailable
+        );
+        assert_eq!(
+            AuditAppendFailure::request_scoped().cause(),
+            AuditFailureCause::RequestScoped
+        );
+        assert_eq!(
+            AuditAppendFailure::subsystem().cause(),
+            AuditFailureCause::SubsystemUnavailable
+        );
+    }
 
     #[test]
     fn terminal_audit_control_keeps_deadline_without_caller_cancellation() {
