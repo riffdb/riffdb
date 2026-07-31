@@ -1,6 +1,6 @@
 //! Private sharing bridge for the one activated production redb port bundle.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -10,12 +10,13 @@ use riffdb_query_executor::{
 use riffdb_query_ir::QueryAccessProgramV1;
 use riffdb_service::{AuthoritativeReadinessFailure, ServiceHealthHooks};
 use riffdb_storage_api::{
-    ActiveCatalogPointerV1, AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1,
-    AdmissionResultV1, ApplicationCommandTransactionPort, AuditedAdmissionRepository,
-    AuditedAdmissionRequestV1, AuditedAdmissionResultV1, AuthoritativeIndexScanPage,
-    AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader,
-    CapabilityAdministrationTransactionPort, CapabilityBootstrapAdministrationRepository,
-    CapabilityBootstrapIntentV1, CapabilityBootstrapResult, CapabilityCreateAwaitingDecision,
+    ActiveCatalogPointerV1, ActiveQueryModulePointerV1, AdmissionLookupResultV1,
+    AdmissionRepository, AdmissionRequestV1, AdmissionResultV1, ApplicationCommandTransactionPort,
+    AuditedAdmissionRepository, AuditedAdmissionRequestV1, AuditedAdmissionResultV1,
+    AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
+    AuthoritativeScanReader, CapabilityAdministrationTransactionPort,
+    CapabilityBootstrapAdministrationRepository, CapabilityBootstrapIntentV1,
+    CapabilityBootstrapResult, CapabilityCreateAwaitingDecision,
     CapabilityCreateCandidateTransaction, CapabilityCreateCandidateV1, CapabilityCreateIntentV1,
     CapabilityCreateResult, CapabilityInventoryReader, CapabilityLookupResult, CapabilityReader,
     CapabilityRevokeAwaitingDecision, CapabilityRevokeCandidateTransaction,
@@ -63,6 +64,7 @@ pub(crate) struct SharedRedbOperationalPorts {
     shared: RedbSharedPorts,
     catalog: Arc<CurrentCatalogView>,
     capabilities: Arc<CurrentCapabilityView>,
+    query_modules: Arc<CurrentQueryModuleView>,
     health: Option<Arc<dyn ServiceHealthHooks>>,
 }
 
@@ -79,11 +81,13 @@ impl SharedRedbOperationalPorts {
         let shared = ports.shared_ports();
         let catalog = CurrentCatalogView::rebuild(&shared)?;
         let capabilities = CurrentCapabilityView::rebuild(&shared)?;
+        let query_modules = CurrentQueryModuleView::rebuild(&shared)?;
         Ok(Self {
             cell: SharedStorageCell::new(ports),
             shared,
             catalog: Arc::new(catalog),
             capabilities: Arc::new(capabilities),
+            query_modules: Arc::new(query_modules),
             health,
         })
     }
@@ -103,6 +107,7 @@ impl Clone for SharedRedbOperationalPorts {
             shared: self.shared.clone(),
             catalog: Arc::clone(&self.catalog),
             capabilities: Arc::clone(&self.capabilities),
+            query_modules: Arc::clone(&self.query_modules),
             health: self.health.clone(),
         }
     }
@@ -261,7 +266,114 @@ impl CurrentCatalogView {
     }
 }
 
+const MAX_CURRENT_QUERY_MODULE_VIEW_RECORDS: usize = 4_096;
+
+#[derive(Default)]
+struct CurrentQueryModuleViewState {
+    /// Active pointer keyed by (lineage, version, bundle_hash) identity string.
+    active: BTreeMap<
+        (ContractLineage, ContractVersion, ContractBundleHash),
+        ActiveQueryModulePointerV1,
+    >,
+    modules: BTreeMap<QueryModuleHash, StoredQueryModuleV1>,
+    module_order: VecDeque<QueryModuleHash>,
+}
+
+impl CurrentQueryModuleViewState {
+    fn install_rebuilt(
+        &mut self,
+        pointer: ActiveQueryModulePointerV1,
+        module: StoredQueryModuleV1,
+    ) -> Result<(), StorageError> {
+        if !pointer.matches_module(&module) {
+            return Err(poisoned_storage_bridge());
+        }
+        let key = (
+            pointer.contract_lineage().clone(),
+            pointer.contract_version(),
+            pointer.contract_bundle_hash(),
+        );
+        self.active.insert(key, pointer);
+        self.insert_module(module)?;
+        Ok(())
+    }
+
+    fn publish_activation(
+        &mut self,
+        pointer: ActiveQueryModulePointerV1,
+        module: StoredQueryModuleV1,
+        changed: bool,
+    ) -> Result<(), StorageError> {
+        if !pointer.matches_module(&module) {
+            return Err(poisoned_storage_bridge());
+        }
+        let key = (
+            pointer.contract_lineage().clone(),
+            pointer.contract_version(),
+            pointer.contract_bundle_hash(),
+        );
+        if !changed && self.active.get(&key) != Some(&pointer) {
+            return Err(poisoned_storage_bridge());
+        }
+        self.active.insert(key, pointer);
+        self.insert_module(module)?;
+        Ok(())
+    }
+
+    fn insert_module(&mut self, module: StoredQueryModuleV1) -> Result<(), StorageError> {
+        let hash = module.module_hash();
+        if let std::collections::btree_map::Entry::Occupied(mut entry) = self.modules.entry(hash) {
+            entry.insert(module);
+            return Ok(());
+        }
+        while self.modules.len() >= MAX_CURRENT_QUERY_MODULE_VIEW_RECORDS {
+            let Some(evict) = self.module_order.pop_front() else {
+                break;
+            };
+            self.modules.remove(&evict);
+        }
+        self.module_order.push_back(hash);
+        self.modules.insert(hash, module);
+        Ok(())
+    }
+
+    fn active(
+        &self,
+        lineage: &ContractLineage,
+        contract_version: ContractVersion,
+        contract_bundle_hash: ContractBundleHash,
+    ) -> Option<ActiveQueryModulePointerV1> {
+        self.active
+            .get(&(lineage.clone(), contract_version, contract_bundle_hash))
+            .cloned()
+    }
+}
+
+struct CurrentQueryModuleView {
+    state: RwLock<CurrentQueryModuleViewState>,
+}
+
+impl CurrentQueryModuleView {
+    fn rebuild(ports: &RedbSharedPorts) -> Result<Self, StorageError> {
+        // Start empty; activations and explicit reads warm the view. Full inventory of
+        // every historical query-module pointer is not required at process start.
+        let _ = ports;
+        Ok(Self {
+            state: RwLock::new(CurrentQueryModuleViewState::default()),
+        })
+    }
+
+    fn read(&self) -> Result<RwLockReadGuard<'_, CurrentQueryModuleViewState>, StorageError> {
+        self.state.read().map_err(|_| poisoned_storage_bridge())
+    }
+
+    fn write(&self) -> Result<RwLockWriteGuard<'_, CurrentQueryModuleViewState>, StorageError> {
+        self.state.write().map_err(|_| poisoned_storage_bridge())
+    }
+}
+
 const MAX_CURRENT_CAPABILITY_VIEW_RECORDS: usize = 4_096;
+const MAX_KNOWN_ABSENT_CAPABILITY_DIGESTS: usize = 4_096;
 type RedbCapabilityCreateCandidate =
     <RedbOperationalPorts as CapabilityAdministrationTransactionPort>::CreateCandidate;
 type RedbCapabilityCreateAwaiting =
@@ -276,6 +388,8 @@ struct CurrentCapabilityViewState {
     records: BTreeMap<CapabilityId, StoredCapabilityRecordV1>,
     digests: BTreeMap<CapabilityTokenDigest, CapabilityId>,
     known_absent_digests: BTreeSet<CapabilityTokenDigest>,
+    known_absent_order: VecDeque<CapabilityTokenDigest>,
+    record_order: VecDeque<CapabilityId>,
 }
 
 impl CurrentCapabilityViewState {
@@ -290,11 +404,13 @@ impl CurrentCapabilityViewState {
         {
             return Err(poisoned_storage_bridge());
         }
-        if self.records.len() == MAX_CURRENT_CAPABILITY_VIEW_RECORDS {
-            return Err(StorageError::new(StorageErrorKind::LimitExceeded, None));
+        if self.records.len() >= MAX_CURRENT_CAPABILITY_VIEW_RECORDS {
+            // Warm rebuild stops at the cap; remaining records are storage fallthrough.
+            return Ok(());
         }
-        self.known_absent_digests.remove(&digest);
+        self.remove_known_absent(digest);
         self.digests.insert(digest, capability_id);
+        self.record_order.push_back(capability_id);
         self.records.insert(capability_id, record);
         Ok(())
     }
@@ -306,6 +422,7 @@ impl CurrentCapabilityViewState {
             if existing == &record {
                 return Ok(());
             }
+            // Monotonicity enforced only for resident entries.
             let expected_revision = existing
                 .revision()
                 .get()
@@ -315,10 +432,10 @@ impl CurrentCapabilityViewState {
             if record.revision() != expected_revision || existing.token_digest() != digest {
                 return Err(poisoned_storage_bridge());
             }
+        } else if self.records.len() >= MAX_CURRENT_CAPABILITY_VIEW_RECORDS {
+            self.evict_one_record();
         } else if record.revision() != std::num::NonZeroU64::MIN {
-            return Err(poisoned_storage_bridge());
-        } else if self.records.len() == MAX_CURRENT_CAPABILITY_VIEW_RECORDS {
-            return Err(StorageError::new(StorageErrorKind::LimitExceeded, None));
+            // Cache-fill accepts stored revision for non-resident inserts.
         }
         if self
             .digests
@@ -327,10 +444,43 @@ impl CurrentCapabilityViewState {
         {
             return Err(poisoned_storage_bridge());
         }
-        self.known_absent_digests.remove(&digest);
+        self.remove_known_absent(digest);
+        if !self.records.contains_key(&capability_id) {
+            self.record_order.push_back(capability_id);
+        }
         self.digests.insert(digest, capability_id);
         self.records.insert(capability_id, record);
         Ok(())
+    }
+
+    fn evict_one_record(&mut self) {
+        while let Some(id) = self.record_order.pop_front() {
+            if let Some(record) = self.records.remove(&id) {
+                self.digests.remove(&record.token_digest());
+                return;
+            }
+        }
+    }
+
+    fn remove_known_absent(&mut self, digest: CapabilityTokenDigest) {
+        if self.known_absent_digests.remove(&digest) {
+            self.known_absent_order.retain(|value| *value != digest);
+        }
+    }
+
+    fn note_absent(&mut self, digest: CapabilityTokenDigest) {
+        if self.digests.contains_key(&digest) || self.known_absent_digests.contains(&digest) {
+            return;
+        }
+        while self.known_absent_digests.len() >= MAX_KNOWN_ABSENT_CAPABILITY_DIGESTS {
+            if let Some(evict) = self.known_absent_order.pop_front() {
+                self.known_absent_digests.remove(&evict);
+            } else {
+                break;
+            }
+        }
+        self.known_absent_digests.insert(digest);
+        self.known_absent_order.push_back(digest);
     }
 
     fn resolve(&self, candidates: &[CapabilityTokenDigest]) -> Option<CapabilityLookupResult> {
@@ -365,7 +515,7 @@ impl CurrentCapabilityViewState {
         }
         for candidate in candidates {
             if !self.digests.contains_key(candidate) {
-                self.known_absent_digests.insert(*candidate);
+                self.note_absent(*candidate);
             }
         }
         Ok(())
@@ -546,9 +696,25 @@ impl QueryModuleAdministrationRepository for SharedRedbOperationalPorts {
         &mut self,
         intent: &QueryModuleActivationIntentV1,
     ) -> Result<QueryModuleActivationResult, StorageError> {
-        self.cell.with_mut(|ports| {
+        let mut view = self.query_modules.write()?;
+        let result = self.cell.with_mut(|ports| {
             QueryModuleAdministrationRepository::activate_query_module(ports, intent)
-        })
+        })?;
+        let publication = match &result {
+            QueryModuleActivationResult::Activated { active, .. } => {
+                view.publish_activation(active.clone(), intent.module().clone(), true)
+            }
+            QueryModuleActivationResult::AlreadyActive { active, .. } => {
+                view.publish_activation(active.clone(), intent.module().clone(), false)
+            }
+            QueryModuleActivationResult::ContractUnavailable
+            | QueryModuleActivationResult::ModuleVersionConflict
+            | QueryModuleActivationResult::ExpectedActiveMismatch { .. } => Ok(()),
+        };
+        if let Err(error) = publication {
+            return Err(self.current_view_failure(error));
+        }
+        Ok(result)
     }
 }
 
@@ -565,13 +731,29 @@ impl QueryModuleRepository for SharedRedbOperationalPorts {
         lineage: &ContractLineage,
         contract_version: ContractVersion,
         contract_bundle_hash: ContractBundleHash,
-    ) -> Result<Option<riffdb_storage_api::ActiveQueryModulePointerV1>, StorageError> {
-        QueryModuleRepository::read_active_query_module(
+    ) -> Result<Option<ActiveQueryModulePointerV1>, StorageError> {
+        if let Some(active) =
+            self.query_modules
+                .read()?
+                .active(lineage, contract_version, contract_bundle_hash)
+        {
+            return Ok(Some(active));
+        }
+        // Cold path once: load from storage and publish into the process view.
+        let active = QueryModuleRepository::read_active_query_module(
             &self.shared,
             lineage,
             contract_version,
             contract_bundle_hash,
-        )
+        )?;
+        if let Some(pointer) = active.as_ref() {
+            let module =
+                QueryModuleRepository::read_query_module(&self.shared, pointer.module_hash())?
+                    .ok_or_else(poisoned_storage_bridge)?;
+            let mut view = self.query_modules.write()?;
+            view.install_rebuilt(pointer.clone(), module)?;
+        }
+        Ok(active)
     }
 }
 
@@ -637,12 +819,6 @@ impl CapabilityCreateAwaitingDecision for SharedCapabilityCreateAwaiting {
     ) -> Result<CapabilityCreateResult, StorageError> {
         let Self { inner, storage } = self;
         let mut view = storage.capabilities.write()?;
-        if !view.records.contains_key(&intent.capability_id())
-            && view.records.len() == MAX_CURRENT_CAPABILITY_VIEW_RECORDS
-        {
-            let _ = inner.abandon();
-            return Err(StorageError::new(StorageErrorKind::LimitExceeded, None));
-        }
         let result = inner.commit_create(intent)?;
         let capability_id = match result {
             CapabilityCreateResult::Created { capability_id, .. }
@@ -725,11 +901,6 @@ impl CapabilityBootstrapAdministrationRepository for SharedRedbOperationalPorts 
         intent: &CapabilityBootstrapIntentV1,
     ) -> Result<CapabilityBootstrapResult, StorageError> {
         let mut view = self.capabilities.write()?;
-        if !view.records.contains_key(&intent.capability_id())
-            && view.records.len() == MAX_CURRENT_CAPABILITY_VIEW_RECORDS
-        {
-            return Err(StorageError::new(StorageErrorKind::LimitExceeded, None));
-        }
         let result = self.cell.with_mut(|ports| {
             CapabilityBootstrapAdministrationRepository::bootstrap_capability(ports, intent)
         })?;

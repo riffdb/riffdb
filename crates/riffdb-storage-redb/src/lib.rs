@@ -49,4 +49,7 @@ pub use startup::{
     RedbCompletionAuthority, RedbHistoricalEvidenceEnd, RedbStartupIndexMigrationPort,
     RedbStructuralEvidenceEnd, RedbStructuralEvidenceSession,
 };
-pub use store::{RedbCommitProfile, RedbDormantPorts, RedbOperationalPorts, RedbStore};
+pub use store::{
+    RedbCommitProfile, RedbDormantPorts, RedbOperationalPorts, RedbStore,
+    last_repair_progress_basis_points,
+};

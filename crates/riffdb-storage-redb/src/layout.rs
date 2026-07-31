@@ -34,8 +34,10 @@ pub(crate) const CAPABILITIES: TableDefinition<&[u8], &[u8]> = TableDefinition::
 pub(crate) const CAPABILITY_TOKENS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("capability_tokens");
 pub(crate) const AUDIT: TableDefinition<&[u8], &[u8]> = TableDefinition::new("audit");
+pub(crate) const AUDIT_BY_REQUEST: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("audit_by_request");
 
-pub(crate) const TABLE_NAMES: [&str; 21] = [
+pub(crate) const TABLE_NAMES: [&str; 22] = [
     "meta",
     "contract_bundles",
     "catalog_active",
@@ -57,9 +59,10 @@ pub(crate) const TABLE_NAMES: [&str; 21] = [
     "capabilities",
     "capability_tokens",
     "audit",
+    "audit_by_request",
 ];
 
-pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 20] = [
+pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 21] = [
     CONTRACT_BUNDLES,
     CATALOG_ACTIVE,
     QUERY_MODULES,
@@ -80,6 +83,7 @@ pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 20] = [
     CAPABILITIES,
     CAPABILITY_TOKENS,
     AUDIT,
+    AUDIT_BY_REQUEST,
 ];
 
 pub(crate) const META_FORMAT_VERSION: &str = "format_version";
@@ -131,6 +135,7 @@ pub(crate) fn create_all_tables(tx: &WriteTransaction) -> Result<(), TableError>
     drop(tx.open_table(CAPABILITIES)?);
     drop(tx.open_table(CAPABILITY_TOKENS)?);
     drop(tx.open_table(AUDIT)?);
+    drop(tx.open_table(AUDIT_BY_REQUEST)?);
     Ok(())
 }
 
@@ -166,10 +171,11 @@ mod tests {
             CAPABILITIES.name(),
             CAPABILITY_TOKENS.name(),
             AUDIT.name(),
+            AUDIT_BY_REQUEST.name(),
         ];
 
         assert_eq!(definition_names, TABLE_NAMES);
-        assert_eq!(TABLE_NAMES.len(), 21);
+        assert_eq!(TABLE_NAMES.len(), 22);
         assert_eq!(
             TABLE_NAMES.into_iter().collect::<BTreeSet<_>>().len(),
             TABLE_NAMES.len()

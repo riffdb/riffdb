@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// Secondary index row binding one service-audit request identity to one
+// administration sequence. Self-verifying against the physical key
+// (request_id || administration_sequence big-endian).
+message StoredServiceAuditRequestIndexV1 {
+  bytes request_id = 1;
+  uint64 administration_sequence = 2;
+}

@@ -1,23 +1,18 @@
 //! Rebuildable operational accelerators derived from authoritative tables.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::ops::Bound::{Excluded, Unbounded};
 
 use redb::{ReadTransaction, ReadableTable};
-use riffdb_storage_api::{
-    OutboxDeliveryStateV1, StorageError, StorageErrorKind, StoredAdministrationAuditRecordV1,
-};
-use riffdb_types::{AdministrationSequence, EventId, RequestId};
+use riffdb_storage_api::{OutboxDeliveryStateV1, StorageError, StorageErrorKind};
+use riffdb_types::{EventId, RequestId};
 
-use crate::codec::{decode_administration_audit_record_v1, decode_outbox_status_v1};
+use crate::codec::decode_outbox_status_v1;
 use crate::error::{precommit_storage_error, table_error};
-use crate::keys::{decode_audit_key, decode_event_key};
-use crate::layout::{AUDIT, OUTBOX, OUTBOX_STATUS};
-
-const MAX_SERVICE_AUDIT_RECORDS_PER_REQUEST: usize = 2;
+use crate::keys::decode_event_key;
+use crate::layout::{OUTBOX, OUTBOX_STATUS};
 
 pub(crate) struct TransientIndexes {
-    service_audit_sequences: Option<BTreeMap<RequestId, Vec<AdministrationSequence>>>,
     pending_outbox: Option<BTreeSet<EventId>>,
     undelivered_outbox: Option<BTreeSet<EventId>>,
 }
@@ -35,13 +30,16 @@ pub(crate) enum TransientIndexState {
     Invalid,
 }
 
+#[allow(dead_code)]
 pub(crate) enum TransientIndexDelta {
     Composite(Vec<TransientIndexDelta>),
+    /// Retained for call-site compatibility; service-audit lookup is durable.
     ServiceAuditAppended {
         request_id: RequestId,
-        sequence: AdministrationSequence,
+        sequence: riffdb_types::AdministrationSequence,
     },
-    ServiceAuditGroupAppended(Vec<(RequestId, AdministrationSequence)>),
+    /// Retained for call-site compatibility; service-audit lookup is durable.
+    ServiceAuditGroupAppended(Vec<(RequestId, riffdb_types::AdministrationSequence)>),
     PendingOutboxInserted(Vec<EventId>),
     PendingOutboxMembership {
         event_id: EventId,
@@ -56,7 +54,6 @@ impl TransientIndexes {
     pub(crate) fn rebuild(transaction: &ReadTransaction) -> Result<Self, StorageError> {
         let rebuilt_outbox = rebuild_outbox_indexes(transaction)?;
         Ok(Self {
-            service_audit_sequences: Some(rebuild_service_audit(transaction)?),
             pending_outbox: rebuilt_outbox.pending,
             undelivered_outbox: rebuilt_outbox.undelivered,
         })
@@ -68,14 +65,6 @@ impl TransientIndexes {
         limit: usize,
     ) -> Option<(Vec<EventId>, bool)> {
         page_event_index(self.undelivered_outbox.as_ref()?, after, limit)
-    }
-
-    pub(crate) fn service_audit_sequences(
-        &self,
-        request_id: RequestId,
-    ) -> Option<&[AdministrationSequence]> {
-        let index = self.service_audit_sequences.as_ref()?;
-        Some(index.get(&request_id).map_or(&[], Vec::as_slice))
     }
 
     pub(crate) fn pending_outbox_page(
@@ -108,26 +97,9 @@ impl TransientIndexes {
                     self.apply(delta);
                 }
             }
-            TransientIndexDelta::ServiceAuditAppended {
-                request_id,
-                sequence,
-            } => {
-                let Some(index) = self.service_audit_sequences.as_mut() else {
-                    return;
-                };
-                if insert_service_audit(index, request_id, sequence).is_err() {
-                    self.service_audit_sequences = None;
-                }
-            }
-            TransientIndexDelta::ServiceAuditGroupAppended(records) => {
-                let Some(index) = self.service_audit_sequences.as_mut() else {
-                    return;
-                };
-                if records.into_iter().any(|(request_id, sequence)| {
-                    insert_service_audit(index, request_id, sequence).is_err()
-                }) {
-                    self.service_audit_sequences = None;
-                }
+            TransientIndexDelta::ServiceAuditAppended { .. }
+            | TransientIndexDelta::ServiceAuditGroupAppended(_) => {
+                // Durable AUDIT_BY_REQUEST is authoritative; no in-memory map.
             }
             TransientIndexDelta::PendingOutboxInserted(events) => {
                 let (Some(pending), Some(undelivered)) = (
@@ -180,102 +152,103 @@ impl TransientIndexes {
 impl Default for TransientIndexes {
     fn default() -> Self {
         Self {
-            service_audit_sequences: Some(BTreeMap::new()),
             pending_outbox: Some(BTreeSet::new()),
             undelivered_outbox: Some(BTreeSet::new()),
         }
     }
 }
 
-fn rebuild_service_audit(
-    transaction: &ReadTransaction,
-) -> Result<BTreeMap<RequestId, Vec<AdministrationSequence>>, StorageError> {
-    let mut index = BTreeMap::new();
-    let table = transaction.open_table(AUDIT).map_err(table_error)?;
-    for entry in table.iter().map_err(precommit_storage_error)? {
-        let (key, value) = entry.map_err(precommit_storage_error)?;
-        let sequence = decode_audit_key(key.value()).map_err(|_| corrupt())?;
-        let record = decode_administration_audit_record_v1(value.value())?
-            .into_parts()
-            .0;
-        if record.administration_sequence() != sequence {
-            return Err(corrupt());
-        }
-        if let StoredAdministrationAuditRecordV1::Service(service) = record {
-            insert_service_audit(&mut index, service.request_id(), sequence)
-                .map_err(|_| corrupt())?;
-        }
-    }
-    Ok(index)
-}
-
 fn rebuild_outbox_indexes(
     transaction: &ReadTransaction,
 ) -> Result<RebuiltOutboxIndexes, StorageError> {
+    // Single merge-join forward pass over OUTBOX and OUTBOX_STATUS (both ordered by event key).
     let mut pending = BTreeSet::new();
     let mut undelivered = BTreeSet::new();
     let intents = transaction.open_table(OUTBOX).map_err(table_error)?;
     let statuses = transaction.open_table(OUTBOX_STATUS).map_err(table_error)?;
-    for entry in intents.iter().map_err(precommit_storage_error)? {
-        let (key, _) = entry.map_err(precommit_storage_error)?;
-        let event_id = decode_event_key(key.value()).map_err(|_| corrupt())?;
-        let status = statuses.get(key.value()).map_err(precommit_storage_error)?;
-        let Some(status) = status else {
-            pending.insert(event_id);
-            undelivered.insert(event_id);
-            continue;
-        };
-        let Ok(status) = decode_outbox_status_v1(status.value()) else {
-            return Ok(RebuiltOutboxIndexes {
-                pending: None,
-                undelivered: None,
-            });
-        };
-        if status.value().event_id() != event_id {
-            return Ok(RebuiltOutboxIndexes {
-                pending: None,
-                undelivered: None,
-            });
-        }
-        if status.value().state().is_pending() {
-            pending.insert(event_id);
-        }
-        if !matches!(
-            status.value().state(),
-            OutboxDeliveryStateV1::Delivered { .. }
-        ) {
-            undelivered.insert(event_id);
-        }
-    }
-    for entry in statuses.iter().map_err(precommit_storage_error)? {
-        let (key, value) = entry.map_err(precommit_storage_error)?;
-        let Ok(event_id) = decode_event_key(key.value()) else {
-            return Ok(RebuiltOutboxIndexes {
-                pending: None,
-                undelivered: None,
-            });
-        };
-        if intents
-            .get(key.value())
-            .map_err(precommit_storage_error)?
-            .is_none()
-        {
-            return Ok(RebuiltOutboxIndexes {
-                pending: None,
-                undelivered: None,
-            });
-        }
-        let Ok(status) = decode_outbox_status_v1(value.value()) else {
-            return Ok(RebuiltOutboxIndexes {
-                pending: None,
-                undelivered: None,
-            });
-        };
-        if status.value().event_id() != event_id {
-            return Ok(RebuiltOutboxIndexes {
-                pending: None,
-                undelivered: None,
-            });
+    let mut intent_iter = intents.iter().map_err(precommit_storage_error)?;
+    let mut status_iter = statuses.iter().map_err(precommit_storage_error)?;
+    let mut next_intent = intent_iter
+        .next()
+        .transpose()
+        .map_err(precommit_storage_error)?;
+    let mut next_status = status_iter
+        .next()
+        .transpose()
+        .map_err(precommit_storage_error)?;
+
+    loop {
+        match (next_intent.take(), next_status.take()) {
+            (None, None) => break,
+            (Some((intent_key, _)), None) => {
+                let event_id = decode_event_key(intent_key.value()).map_err(|_| corrupt())?;
+                pending.insert(event_id);
+                undelivered.insert(event_id);
+                next_intent = intent_iter
+                    .next()
+                    .transpose()
+                    .map_err(precommit_storage_error)?;
+            }
+            (None, Some(_)) => {
+                return Ok(RebuiltOutboxIndexes {
+                    pending: None,
+                    undelivered: None,
+                });
+            }
+            (Some((intent_key, _)), Some((status_key, status_value))) => {
+                let intent_bytes = intent_key.value();
+                let status_bytes = status_key.value();
+                match intent_bytes.cmp(status_bytes) {
+                    std::cmp::Ordering::Less => {
+                        let event_id = decode_event_key(intent_bytes).map_err(|_| corrupt())?;
+                        pending.insert(event_id);
+                        undelivered.insert(event_id);
+                        next_intent = intent_iter
+                            .next()
+                            .transpose()
+                            .map_err(precommit_storage_error)?;
+                        next_status = Some((status_key, status_value));
+                    }
+                    std::cmp::Ordering::Greater => {
+                        return Ok(RebuiltOutboxIndexes {
+                            pending: None,
+                            undelivered: None,
+                        });
+                    }
+                    std::cmp::Ordering::Equal => {
+                        let event_id = decode_event_key(intent_bytes).map_err(|_| corrupt())?;
+                        let Ok(status) = decode_outbox_status_v1(status_value.value()) else {
+                            return Ok(RebuiltOutboxIndexes {
+                                pending: None,
+                                undelivered: None,
+                            });
+                        };
+                        if status.value().event_id() != event_id {
+                            return Ok(RebuiltOutboxIndexes {
+                                pending: None,
+                                undelivered: None,
+                            });
+                        }
+                        if status.value().state().is_pending() {
+                            pending.insert(event_id);
+                        }
+                        if !matches!(
+                            status.value().state(),
+                            OutboxDeliveryStateV1::Delivered { .. }
+                        ) {
+                            undelivered.insert(event_id);
+                        }
+                        next_intent = intent_iter
+                            .next()
+                            .transpose()
+                            .map_err(precommit_storage_error)?;
+                        next_status = status_iter
+                            .next()
+                            .transpose()
+                            .map_err(precommit_storage_error)?;
+                    }
+                }
+            }
         }
     }
     Ok(RebuiltOutboxIndexes {
@@ -323,25 +296,6 @@ fn update_event_membership(
     Ok(())
 }
 
-fn insert_service_audit(
-    index: &mut BTreeMap<RequestId, Vec<AdministrationSequence>>,
-    request_id: RequestId,
-    sequence: AdministrationSequence,
-) -> Result<(), StorageError> {
-    let sequences = index.entry(request_id).or_default();
-    if sequences.len() >= MAX_SERVICE_AUDIT_RECORDS_PER_REQUEST
-        || sequences.last().is_some_and(|prior| prior >= &sequence)
-    {
-        return Err(invariant());
-    }
-    sequences.push(sequence);
-    Ok(())
-}
-
-const fn invariant() -> StorageError {
-    StorageError::new(StorageErrorKind::InvariantViolation, None)
-}
-
 const fn corrupt() -> StorageError {
     StorageError::new(StorageErrorKind::CorruptData, None)
 }
@@ -351,35 +305,6 @@ mod tests {
     use riffdb_types::CommitSequence;
 
     use super::*;
-
-    fn uuid_bytes(seed: u8) -> [u8; 16] {
-        let mut bytes = [seed; 16];
-        bytes[6] = 0x70 | (seed & 0x0f);
-        bytes[8] = 0x80 | (seed & 0x3f);
-        bytes
-    }
-
-    fn request_id(seed: u8) -> RequestId {
-        RequestId::from_bytes(uuid_bytes(seed)).expect("request ID")
-    }
-
-    #[test]
-    fn service_audit_accelerator_enforces_one_bounded_ordered_lifecycle() {
-        let mut indexes = TransientIndexes::default();
-        let request = request_id(1);
-        for value in [1, 2] {
-            indexes.apply(TransientIndexDelta::ServiceAuditAppended {
-                request_id: request,
-                sequence: AdministrationSequence::new(value).expect("sequence"),
-            });
-        }
-        assert_eq!(indexes.service_audit_sequences(request).unwrap().len(), 2);
-        indexes.apply(TransientIndexDelta::ServiceAuditAppended {
-            request_id: request,
-            sequence: AdministrationSequence::new(3).expect("sequence"),
-        });
-        assert_eq!(indexes.service_audit_sequences(request), None);
-    }
 
     #[test]
     fn pending_outbox_accelerator_pages_in_event_order_and_tracks_membership() {
