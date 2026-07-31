@@ -1051,6 +1051,39 @@ renames/logical retirement/type replacement, WP-412 adds keys/partition/
 aggregate/conflict changes, and WP-413 closes installed, recovery, handbook,
 PostgreSQL-comparison, and performance evidence.
 
+### 6.9 P8 — Reactive Applications
+
+P8 is owned by WP-414 through WP-421 under accepted ADR-0080. It extends the
+existing authoritative event and named-query model rather than adding a second
+broker, raw CDC surface, or event-sourcing requirement.
+
+- Contract events may opt into application streaming with compiler-proved
+  partition fields. A generic integrity-checked route index provides bounded
+  partition-order replay while catalog remains the sole historical payload
+  materialization authority.
+- Reactive application modules define explicit event streams and contextual
+  subscriptions. Application Source V4 and Lock V5 follow the migration-owned
+  V3/V4 formats, and roles independently name streams, watched queries, and
+  contextual subscriptions.
+- Durable consumers provide bounded at-least-once delivery, leases, contiguous
+  checkpoints, ack/nack, retry, dead-letter, seek, recovery, and payload-free MCP
+  wakeups. They do not claim exactly-once external effects.
+- Live named RiffQL begins with a one-snapshot result at frontier S and catches
+  up authoritative commits after S. Compiler-proved public keys permit bounded
+  patches; every ambiguous or excessive case resets to a complete result.
+- Contextual work rehydrates all named queries in one freshly authorized
+  snapshot at or after the event, filters declared commands by current
+  capability, and composes lease-bound causation with generated deterministic
+  reaction idempotency.
+- Rust, TypeScript, Python, CLI, and MCP share one API-neutral model. Browsers
+  connect through generated application-owned SSE relay code and never receive
+  database capabilities.
+
+RT-1 through RT-5 close in WP-421 with TicketDesk browser, worker, and agent
+acceptance. Connectors, declarative reactions, cross-partition streams, physical
+event retention, historical entity snapshots, and in-database inference remain
+explicit later work.
+
 ## 7. WP-000 Detailed Plan
 
 WP-000 completed in commit `4407d59`. This section is retained as the reviewed
