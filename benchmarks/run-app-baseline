@@ -184,6 +184,8 @@ fi
 ((load_concurrency_sweep)) && extra_args+=(--load-concurrency-sweep)
 [[ -n "$load_riffdb_transport" ]] && extra_args+=(--load-riffdb-transport "$load_riffdb_transport")
 extra_args+=(--database-root "$database_root")
+extra_args+=(--postgres-data-host-path "$postgres_database_root")
+export RIFFDB_APP_BASELINE_POSTGRES_DATA_HOST="$postgres_database_root"
 ((skip_postgres)) && extra_args+=(--skip-postgres)
 ((skip_riffdb)) && extra_args+=(--skip-riffdb)
 ((assert_write_parity)) && extra_args+=(--assert-write-parity)
