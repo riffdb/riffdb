@@ -113,6 +113,20 @@ fn projection_materialization_view_is_move_only_and_hides_the_durable_event() {
 }
 
 #[test]
+fn symbolic_event_materialization_never_exposes_the_raw_event_or_private_actor_identity() {
+    const SOURCE: &str = include_str!("../src/event_materialization.rs");
+
+    assert!(SOURCE.contains("pub struct SymbolicEventView"));
+    assert!(SOURCE.contains("formatter.write_str(\"SymbolicEventView([REDACTED])\")"));
+    assert!(!SOURCE.contains("pub fn source_event("));
+    assert!(!SOURCE.contains("pub fn payload("));
+    assert!(!SOURCE.contains("pub fn principal_id("));
+    assert!(!SOURCE.contains("pub fn agent_session_id("));
+    assert!(!SOURCE.contains("pub fn partition_hash("));
+    assert!(!SOURCE.contains("pub fn conflict_hashes("));
+}
+
+#[test]
 fn catalog_storage_module_remains_ir_opaque_and_history_proof_remains_catalog_owned() {
     let storage_sources = [STORAGE_CATALOG, STORAGE_LIB].join("\n");
 
