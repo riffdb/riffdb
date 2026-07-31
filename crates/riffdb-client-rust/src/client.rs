@@ -147,6 +147,19 @@ macro_rules! unary_application {
     };
 }
 
+/// Explicit per-request observed incarnation wins; otherwise use remembered.
+#[must_use]
+pub(crate) const fn merge_observed_history_incarnation(
+    explicit: Option<u64>,
+    remembered: Option<u64>,
+) -> Option<u64> {
+    if explicit.is_some() {
+        explicit
+    } else {
+        remembered
+    }
+}
+
 /// Typed clients for every service in the public `riffdb.v1` API.
 ///
 /// Clones share one Tonic channel while retaining independent generated client
@@ -159,6 +172,12 @@ pub struct RiffDbClient {
     commit: CommitServiceClient<Channel>,
     admin: AdminServiceClient<Channel>,
     application_query: ApplicationQueryServiceClient<Channel>,
+    /// Optional client-remembered history incarnation for commit read surfaces.
+    ///
+    /// When set, [`Self::apply_observed_history_incarnation`] fills request
+    /// fields that are still unset so callers can fence stale history after
+    /// a destructive restore (ADR-0072).
+    observed_history_incarnation: Option<u64>,
 }
 
 impl RiffDbClient {
@@ -181,6 +200,75 @@ impl RiffDbClient {
             commit: CommitServiceClient::new(channel.clone()),
             admin: AdminServiceClient::new(channel.clone()),
             application_query: ApplicationQueryServiceClient::new(channel),
+            observed_history_incarnation: None,
+        }
+    }
+
+    /// Remembers an observed history incarnation for subsequent commit reads.
+    ///
+    /// Pass `None` to clear. Explicit per-request values always win.
+    pub fn set_observed_history_incarnation(&mut self, observed: Option<u64>) {
+        self.observed_history_incarnation = observed;
+    }
+
+    /// Returns the client-remembered observed history incarnation, if any.
+    #[must_use]
+    pub const fn observed_history_incarnation(&self) -> Option<u64> {
+        self.observed_history_incarnation
+    }
+
+    /// Fills `observed_history_incarnation` on a get-commit request when unset.
+    #[must_use]
+    pub fn apply_observed_history_incarnation_get(
+        &self,
+        mut request: v1::GetCommitRequest,
+    ) -> v1::GetCommitRequest {
+        request.observed_history_incarnation = merge_observed_history_incarnation(
+            request.observed_history_incarnation,
+            self.observed_history_incarnation,
+        );
+        request
+    }
+
+    /// Fills `observed_history_incarnation` on a scan-commits request when unset.
+    #[must_use]
+    pub fn apply_observed_history_incarnation_scan(
+        &self,
+        mut request: v1::ScanCommitsRequest,
+    ) -> v1::ScanCommitsRequest {
+        request.observed_history_incarnation = merge_observed_history_incarnation(
+            request.observed_history_incarnation,
+            self.observed_history_incarnation,
+        );
+        request
+    }
+
+    /// Fills `observed_history_incarnation` on a subscribe request when unset.
+    #[must_use]
+    pub fn apply_observed_history_incarnation_subscribe(
+        &self,
+        mut request: v1::SubscribeCommitsRequest,
+    ) -> v1::SubscribeCommitsRequest {
+        request.observed_history_incarnation = merge_observed_history_incarnation(
+            request.observed_history_incarnation,
+            self.observed_history_incarnation,
+        );
+        request
+    }
+
+    /// Remembers the history incarnation reported by a get-commit response.
+    pub fn remember_history_incarnation_from_get(&mut self, response: &v1::GetCommitResponse) {
+        if response.history_incarnation >= 1 {
+            self.observed_history_incarnation = Some(response.history_incarnation);
+        }
+    }
+
+    /// Remembers the history incarnation reported by a commit page.
+    pub fn remember_history_incarnation_from_scan(&mut self, response: &v1::ScanCommitsResponse) {
+        if let Some(page) = response.page.as_ref()
+            && page.history_incarnation >= 1
+        {
+            self.observed_history_incarnation = Some(page.history_incarnation);
         }
     }
 
@@ -2070,5 +2158,21 @@ mod tests {
             error,
             ClientError::Protocol(ProtocolFailure { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod history_incarnation_tests {
+    use super::merge_observed_history_incarnation;
+
+    #[test]
+    fn merge_prefers_explicit_over_remembered() {
+        assert_eq!(merge_observed_history_incarnation(None, Some(7)), Some(7));
+        assert_eq!(
+            merge_observed_history_incarnation(Some(3), Some(7)),
+            Some(3)
+        );
+        assert_eq!(merge_observed_history_incarnation(None, None), None);
+        assert_eq!(merge_observed_history_incarnation(Some(3), None), Some(3));
     }
 }

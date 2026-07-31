@@ -292,9 +292,9 @@ impl RiffDbPublicBudgetAdapter {
                     request_id: fresh_request_id_bytes()?,
                     after_sequence: None,
                     maximum_lifetime_nanos: SUBSCRIPTION_LIFETIME_NANOS,
-                
+
                     observed_history_incarnation: None,
-                    },
+                },
                 &self.metadata,
             )
             .await
@@ -802,9 +802,9 @@ impl RiffDbPublicBudgetAdapter {
                     request_id: fresh_request_id_bytes()?,
                     after_sequence: Some(sequence.get()),
                     maximum_lifetime_nanos: SUBSCRIPTION_LIFETIME_NANOS,
-                
+
                     observed_history_incarnation: None,
-                    },
+                },
                 &self.metadata,
             )
             .await
@@ -823,9 +823,9 @@ impl RiffDbPublicBudgetAdapter {
                         limit: Some(COMMIT_SCAN_LIMIT),
                         cursor: None,
                     }),
-                
+
                     observed_history_incarnation: None,
-                    },
+                },
                 &self.metadata,
             )
             .await
@@ -1466,8 +1466,8 @@ fn decode_notified_create_outcome(
             provenance_uri: commit.provenance_uri.clone(),
             durability_mode: "sync".to_owned(),
             outcome_uri: None,
-        history_incarnation: 1,
-    })
+            history_incarnation: 1,
+        })
         .map_err(|_| RiffDbPublicAdapterError::InvalidResponse)
 }
 
@@ -1492,8 +1492,8 @@ fn decode_notified_allocate_outcome(
             provenance_uri: commit.provenance_uri.clone(),
             durability_mode: "sync".to_owned(),
             outcome_uri: None,
-        history_incarnation: 1,
-    })
+            history_incarnation: 1,
+        })
         .map_err(|_| RiffDbPublicAdapterError::InvalidResponse)
 }
 

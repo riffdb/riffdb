@@ -29,6 +29,7 @@ message ExecuteCommandResponse {
   string provenance_uri = 7;
   string durability_mode = 8;
   optional string outcome_uri = 9;
+  // Durable history incarnation fence; ≥ 1 once the database is serving.
   uint64 history_incarnation = 10;
 }
 

@@ -101,17 +101,19 @@ pub(super) fn decode_receipt(encoded: &[u8]) -> Result<OfflineMaintenanceReceipt
         return Err(corrupt());
     }
 
-    match decode_receipt_body(body, true) {
-        Ok(receipt) if encode_receipt(&receipt)? == encoded => Ok(receipt),
-        Ok(_) => Err(corrupt()),
-        Err(_) => {
-            let receipt = decode_receipt_body(body, false)?;
-            if encode_receipt_pre_fence(&receipt)? != encoded {
-                return Err(corrupt());
-            }
-            Ok(receipt)
-        }
+    // Prefer post-fence (presence-tagged published incarnation). Fall through to
+    // pre-fence on any post-fence parse/canonicalization mismatch so mid-upgrade
+    // receipts remain resumable.
+    if let Ok(receipt) = decode_receipt_body(body, true)
+        && encode_receipt(&receipt)? == encoded
+    {
+        return Ok(receipt);
     }
+    let receipt = decode_receipt_body(body, false)?;
+    if encode_receipt_pre_fence(&receipt)? != encoded {
+        return Err(corrupt());
+    }
+    Ok(receipt)
 }
 
 fn decode_receipt_body(

@@ -480,7 +480,12 @@ impl RedbStore {
                 .value()
         };
         let current = riffdb_storage_api::proto_codec::current_record_registry_digest();
+        // Always run the (idempotent) index-generation row repair + validation.
+        // Short-circuit only the registry digest publish when already current so
+        // a current-digest database that still holds legacy INDEX_EPOCHS rows is
+        // repaired rather than deferred until a later runtime decode failure.
         if observed == current {
+            migrate_partition_index_generations(&self.shared)?;
             return Ok(());
         }
         if observed == SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST) {
@@ -492,6 +497,10 @@ impl RedbStore {
             )?;
         } else if observed != SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST) {
             return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        } else {
+            // PRE_HISTORY_INCARNATION digest still needs row repair if a prior
+            // cutover left legacy epoch rows behind a later digest bump.
+            migrate_partition_index_generations(&self.shared)?;
         }
         migrate_history_incarnation(&self.shared)?;
         publish_record_registry(
@@ -2162,5 +2171,179 @@ mod tests {
             .expect("core writes remain unfenced")
             .abort()
             .expect("abort proof transaction");
+    }
+
+    #[test]
+    fn history_incarnation_migration_inserts_initial_and_is_idempotent() {
+        let path = TestDatabasePath::new("history-incarnation-migrate");
+        let mut store = RedbStore::open(&path.0).expect("open");
+        store
+            .initialize_database(database_id(0x71))
+            .expect("initialize");
+
+        // Simulate a pre-fence database: drop the key and roll the registry
+        // digest back to PRE_HISTORY_INCARNATION.
+        {
+            let transaction = store.shared.database.begin_write().expect("begin write");
+            {
+                let mut meta = transaction.open_table(META).expect("meta");
+                meta.remove(META_HISTORY_INCARNATION).expect("remove key");
+                let predecessor = encode_record_registry_v2(SchemaHash::from_bytes(
+                    PRE_HISTORY_INCARNATION_REGISTRY_DIGEST,
+                ))
+                .expect("encode predecessor");
+                meta.insert(META_RECORD_REGISTRY, predecessor.as_bytes())
+                    .expect("install predecessor");
+            }
+            transaction.commit().expect("commit pre-fence fixture");
+        }
+
+        store
+            .complete_partition_index_generation_migration()
+            .expect("migrate history incarnation");
+
+        let read = store.shared.database.begin_read().expect("read");
+        let meta = read.open_table(META).expect("meta");
+        let encoded = meta
+            .get(META_HISTORY_INCARNATION)
+            .expect("get")
+            .expect("history key present after migration");
+        let incarnation = *decode_history_incarnation_v1(encoded.value())
+            .expect("decode")
+            .value();
+        assert_eq!(incarnation, HISTORY_INCARNATION_INITIAL);
+        let registry = meta
+            .get(META_RECORD_REGISTRY)
+            .expect("registry get")
+            .expect("registry present");
+        assert_eq!(
+            *decode_record_registry_v2(registry.value())
+                .expect("decode registry")
+                .value(),
+            riffdb_storage_api::proto_codec::current_record_registry_digest()
+        );
+        drop(registry);
+        drop(encoded);
+        drop(meta);
+        drop(read);
+
+        // Second open / migration is a no-op for both digest and key value.
+        store
+            .complete_partition_index_generation_migration()
+            .expect("idempotent migration");
+        let read = store.shared.database.begin_read().expect("read again");
+        let meta = read.open_table(META).expect("meta");
+        let encoded = meta
+            .get(META_HISTORY_INCARNATION)
+            .expect("get")
+            .expect("still present");
+        assert_eq!(
+            *decode_history_incarnation_v1(encoded.value())
+                .expect("decode")
+                .value(),
+            HISTORY_INCARNATION_INITIAL
+        );
+    }
+
+    #[test]
+    fn current_digest_still_runs_index_generation_row_repair() {
+        // I4: short-circuit must not skip migrate_partition_index_generations
+        // even when the registry digest is already current.
+        let path = TestDatabasePath::new("current-digest-epoch-repair");
+        let mut store = RedbStore::open(&path.0).expect("open");
+        store
+            .initialize_database(database_id(0x72))
+            .expect("initialize");
+
+        // Full downgrade_all_index_rows_to_v1_fixture shape: V2 index entry +
+        // legacy epoch row, with the current registry digest left in place.
+        let index_id = IndexId::new(9).expect("index");
+        let mut index = IndexEntryKeyBuilder::new(index_id);
+        index.push_u64(11).expect("index component");
+        let mut entity = EntityKeyBuilder::new(EntityTypeId::first());
+        entity.push_u64(1).expect("entity component");
+        let index_key = index
+            .finish(entity.finish().expect("entity key"))
+            .expect("index key");
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition.push_u64(3).expect("partition component");
+        let partition = partition.finish().expect("partition key");
+        let binding = DurableKeySchemaBindingV1::new(
+            ContractLineage::new("repair-i4").expect("lineage"),
+            ContractVersion::new(1).expect("contract version"),
+            ContractBundleHash::from_bytes([0x45; 32]),
+        );
+        let entry = StoredIndexEntryV2::new(
+            index_key.clone(),
+            binding.clone(),
+            CanonicalRecord::new(Vec::new()).expect("covered values"),
+            partition,
+        )
+        .expect("index entry");
+        let encoded_entry = crate::codec::encode_index_entry_v2(&entry).expect("encode index");
+        let mut live_prefix = IndexRangePrefixBuilder::new(index_id);
+        live_prefix.push_u64(11).expect("prefix component");
+        let prefix = StructurallyDecodedIndexRangePrefixV1::from_live(&live_prefix.finish());
+        let legacy = LegacyStoredIndexEpochV1::new(
+            prefix.clone(),
+            binding,
+            IndexEpoch::new(3).expect("legacy generation"),
+        );
+        let encoded_legacy =
+            encode_legacy_index_epoch_v1_fixture(&legacy).expect("encode legacy generation");
+        {
+            let transaction = store.shared.database.begin_write().expect("write");
+            transaction
+                .open_table(SECONDARY_INDEXES)
+                .expect("indexes")
+                .insert(index_key.as_bytes(), encoded_entry.as_bytes())
+                .expect("insert index");
+            transaction
+                .open_table(INDEX_EPOCHS)
+                .expect("epochs")
+                .insert(
+                    encode_index_range_prefix_key(&prefix),
+                    encoded_legacy.as_bytes(),
+                )
+                .expect("insert legacy");
+            transaction.commit().expect("commit legacy fixture");
+        }
+
+        // Registry is already current — this is the I4 short-circuit path.
+        {
+            let read = store.shared.database.begin_read().expect("read");
+            let meta = read.open_table(META).expect("meta");
+            let registry = meta
+                .get(META_RECORD_REGISTRY)
+                .expect("get")
+                .expect("registry");
+            assert_eq!(
+                *decode_record_registry_v2(registry.value())
+                    .expect("decode")
+                    .value(),
+                riffdb_storage_api::proto_codec::current_record_registry_digest()
+            );
+        }
+
+        store
+            .complete_partition_index_generation_migration()
+            .expect("row repair on current digest");
+
+        let read = store.shared.database.begin_read().expect("read");
+        let epochs = read.open_table(INDEX_EPOCHS).expect("epochs");
+        let rows = epochs
+            .iter()
+            .expect("iter")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows");
+        assert_eq!(rows.len(), 1);
+        let (_key, value) = &rows[0];
+        let generation = decode_index_epoch_v1(value.value())
+            .expect("legacy row repaired to current encoding")
+            .into_parts()
+            .0;
+        // Migration rewrites prefix-keyed legacy rows to partition-keyed current
+        // encoding; the retained epoch is at least the legacy maximum.
+        assert!(generation.epoch().get() >= 3);
     }
 }
