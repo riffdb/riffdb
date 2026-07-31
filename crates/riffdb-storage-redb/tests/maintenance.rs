@@ -723,6 +723,80 @@ fn named_backup_publication_retry_resolves_only_the_reserved_operation_artifact(
 }
 
 #[test]
+fn corrupt_target_restore_completes_and_fence_does_not_decrease() {
+    // N1: destructive restore may replace a present-but-unreadable target.
+    // Stage/seal against a healthy target first (staging copies the backup only),
+    // then corrupt the configured target immediately before publication.
+    let root = TestRoot::new("corrupt-target-restore");
+    let database = root.join("database.redb");
+    let backup_root = root.join("backups");
+    initialize(&database);
+    let (mut storage, _) =
+        RedbMaintenanceStorage::open(&database, &backup_root).expect("open maintenance");
+    let (_manifest, manifest_identity) = create_completed_named_backup(&mut storage, 0x71);
+
+    riffdb_storage_redb::stamp_history_incarnation(&database, 5).expect("stamp target");
+    assert_eq!(
+        riffdb_storage_redb::read_history_incarnation(&database).expect("read"),
+        Some(5)
+    );
+
+    let mut restore = receipt(0x72, OfflineMaintenanceOperationKind::RestoreBackup);
+    advance_offline(&mut restore);
+    storage
+        .create_or_read_receipt(&restore)
+        .expect("create restore receipt");
+    let staged = storage
+        .stage_restore(restore.operation_id(), restore.backup_name())
+        .expect("stage");
+    let staged_database_id = complete_structural_validation(staged.staged_database_file());
+    let mut sealed = staged
+        .seal_after_validation(staged_database_id)
+        .expect("seal");
+    // Unreadable target floor is staged; published = max(staged, staged)+1 when
+    // the driver cannot read the prior high-water mark.
+    let staged_inc = sealed.staged_history_incarnation();
+    let published = staged_inc + 1;
+    sealed
+        .apply_published_history_incarnation(published)
+        .expect("stamp staged");
+    restore
+        .record_staged_database_id(staged_database_id)
+        .expect("staged id");
+    restore
+        .record_manifest_identity(manifest_identity)
+        .expect("manifest");
+    restore
+        .record_published_incarnation(published)
+        .expect("receipt");
+    storage.replace_receipt(&restore).expect("persist receipt");
+
+    // Corrupt only after receipt authority is durable — mirrors crash/recovery
+    // where the operator replaces a brick-failed database file.
+    std::fs::write(&database, b"truncated-garbage-not-redb").expect("corrupt target");
+    assert!(
+        riffdb_storage_redb::read_history_incarnation(&database).is_err(),
+        "target must be unreadable for this scenario"
+    );
+
+    let result = storage
+        .publish_sealed_restore(
+            sealed,
+            OfflineRestoreOverwritePolicyV1::ExplicitlyAllowDestructive,
+        )
+        .expect("publish replaces corrupt target");
+    assert!(matches!(
+        result,
+        riffdb_storage_api::OfflineRestoreResultV1::Restored { .. }
+    ));
+    assert_eq!(
+        riffdb_storage_redb::read_history_incarnation(&database).expect("read restored"),
+        Some(published)
+    );
+    assert!(published >= 1);
+}
+
+#[test]
 fn restore_stamps_staged_before_publish_so_checksum_reconcile_holds() {
     // C2 option (b): stamp staged + reseal before rename; ArtifactPublished
     // reconcile compares target to staged seal and must remain valid.

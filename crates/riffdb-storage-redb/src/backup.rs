@@ -716,18 +716,32 @@ fn decode_manifest_body(
         enabled_features,
     )
     .map_err(value_error)?;
-    OfflineBackupManifestV1::new(
-        storage_format_version,
-        database_id,
-        BackupSnapshotKindV1::StorageEngineData,
-        catalog_bundles,
-        active_catalog,
-        last_commit_sequence,
-        history_incarnation,
-        vec![BackupArtifactChecksumV1::new(ordinal, checksum)],
-        build,
-    )
-    .map_err(value_error)
+    if include_history_field {
+        OfflineBackupManifestV1::new(
+            storage_format_version,
+            database_id,
+            BackupSnapshotKindV1::StorageEngineData,
+            catalog_bundles,
+            active_catalog,
+            last_commit_sequence,
+            history_incarnation,
+            vec![BackupArtifactChecksumV1::new(ordinal, checksum)],
+            build,
+        )
+        .map_err(value_error)
+    } else {
+        OfflineBackupManifestV1::new_pre_fence(
+            storage_format_version,
+            database_id,
+            BackupSnapshotKindV1::StorageEngineData,
+            catalog_bundles,
+            active_catalog,
+            last_commit_sequence,
+            vec![BackupArtifactChecksumV1::new(ordinal, checksum)],
+            build,
+        )
+        .map_err(value_error)
+    }
 }
 
 struct ManifestEncoder {
