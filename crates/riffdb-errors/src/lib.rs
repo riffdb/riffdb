@@ -906,6 +906,32 @@ impl PublicErrorKind {
         }
     }
 
+    /// Returns the one authoritative public status code for this kind.
+    ///
+    /// Server encoding and client validation must both use this mapping. Do not
+    /// re-derive the wire code from [`Self::class`] alone: some kinds deliberately
+    /// diverge (for example, overload keeps class [`ErrorClass::Unavailable`] while
+    /// carrying [`PublicErrorStatusCode::ResourceExhausted`]).
+    ///
+    /// This match is the sole wire-code authority and must remain exhaustive over
+    /// every [`PublicErrorKind`] variant.
+    #[must_use]
+    pub const fn status_code(self) -> PublicErrorStatusCode {
+        match self {
+            Self::Validation => PublicErrorStatusCode::InvalidArgument,
+            Self::IdempotencyKeyReuse => PublicErrorStatusCode::AlreadyExists,
+            Self::AuthorizationDenied => PublicErrorStatusCode::PermissionDenied,
+            Self::ConcurrencyDeadlineExceeded => PublicErrorStatusCode::DeadlineExceeded,
+            Self::ContractMismatch
+            | Self::CommandExecutionFailed
+            | Self::HistoryIncarnationMismatch => PublicErrorStatusCode::FailedPrecondition,
+            Self::StorageUnavailable => PublicErrorStatusCode::Unavailable,
+            Self::Overloaded => PublicErrorStatusCode::ResourceExhausted,
+            Self::OutcomeUnknown => PublicErrorStatusCode::Unknown,
+            Self::InternalDefect => PublicErrorStatusCode::Internal,
+        }
+    }
+
     /// Returns safe recovery guidance for this failure.
     #[must_use]
     pub const fn recovery_action(self) -> RecoveryAction {
@@ -922,6 +948,34 @@ impl PublicErrorKind {
             Self::InternalDefect | Self::CommandExecutionFailed => RecoveryAction::ContactOperator,
         }
     }
+}
+
+/// Authoritative status code carried for a public error on the gRPC wire.
+///
+/// Transport adapters map this closed set to their native status type. It is
+/// intentionally separate from [`ErrorClass`]: class is the protocol-neutral
+/// classification, while this value is the exact wire status both server and
+/// client must agree on.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum PublicErrorStatusCode {
+    /// The submitted request is invalid and must be corrected.
+    InvalidArgument,
+    /// The request conflicts with previously admitted state.
+    AlreadyExists,
+    /// The principal is not permitted to perform the operation.
+    PermissionDenied,
+    /// The operation did not complete before its deadline.
+    DeadlineExceeded,
+    /// The request targets state that is no longer current.
+    FailedPrecondition,
+    /// Capacity or resource bounds rejected the request without execution.
+    ResourceExhausted,
+    /// A required service is temporarily unavailable.
+    Unavailable,
+    /// The caller must resolve an uncertain command result.
+    Unknown,
+    /// The server encountered a defect that is not safe to disclose.
+    Internal,
 }
 
 /// A stable, caller-safe explanation for one validation failure.
@@ -1326,6 +1380,12 @@ impl PublicError {
         self.kind.class()
     }
 
+    /// Returns the authoritative public status code for this error.
+    #[must_use]
+    pub const fn status_code(&self) -> PublicErrorStatusCode {
+        self.kind.status_code()
+    }
+
     /// Returns safe recovery guidance.
     #[must_use]
     pub const fn recovery_action(&self) -> RecoveryAction {
@@ -1633,6 +1693,32 @@ mod tests {
             assert!(code.is_ascii());
             assert!(message.is_ascii());
         }
+    }
+
+    #[test]
+    fn every_kind_has_an_authoritative_wire_status_code() {
+        let expected = [
+            PublicErrorStatusCode::InvalidArgument,
+            PublicErrorStatusCode::AlreadyExists,
+            PublicErrorStatusCode::PermissionDenied,
+            PublicErrorStatusCode::DeadlineExceeded,
+            PublicErrorStatusCode::FailedPrecondition,
+            PublicErrorStatusCode::Unavailable,
+            PublicErrorStatusCode::Unknown,
+            PublicErrorStatusCode::Internal,
+            PublicErrorStatusCode::FailedPrecondition,
+            PublicErrorStatusCode::FailedPrecondition,
+            PublicErrorStatusCode::ResourceExhausted,
+        ];
+        for (kind, expected_code) in KINDS.into_iter().zip(expected) {
+            assert_eq!(kind.status_code(), expected_code);
+            assert_eq!(PublicError::contextless(kind).status_code(), expected_code);
+        }
+        assert_eq!(PublicErrorKind::Overloaded.class(), ErrorClass::Unavailable);
+        assert_eq!(
+            PublicErrorKind::Overloaded.status_code(),
+            PublicErrorStatusCode::ResourceExhausted
+        );
     }
 
     #[test]
