@@ -96,6 +96,16 @@ impl WorkloadProfile {
         }
     }
 
+    /// Write-heavy mix for saturation evidence (holds coordinator depth).
+    #[must_use]
+    pub fn saturating_weights() -> &'static [(LoadOp, u32)] {
+        &[
+            (LoadOp::CreateComment, 70),
+            (LoadOp::CloseTicketWithComment, 20),
+            (LoadOp::OpenTicketWithLabels, 10),
+        ]
+    }
+
     /// Burst length for agent pacing (interactive is continuous).
     #[must_use]
     pub const fn burst_ops(self) -> u32 {
@@ -127,6 +137,12 @@ impl WorkloadProfile {
 
 /// Hard cap for RiffDB load clients (matches seed concurrency bound).
 pub const RIFFDB_MAX_LOAD_CLIENTS: usize = 128;
+/// Client ceiling when driving intentional saturation above coordinator depth 128.
+///
+/// Depth must exceed queue capacity by enough that some waiters exceed the
+/// 150 ms admission cap under closed-loop load (≈3× depth keeps tail waiters
+/// above the cap when group-commit turns are ~50–60 ms).
+pub const RIFFDB_SATURATE_LOAD_CLIENTS: usize = 512;
 
 /// One operation drawn from the existing scenario catalog.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -204,6 +220,10 @@ pub enum OpOutcome {
     IdempotencyMismatch,
     /// Backend reported temporary storage or transport unavailability.
     Unavailable,
+    /// Typed capacity rejection (`RDB-CAPACITY-0101`); certain-not-executed.
+    Overloaded,
+    /// Observed history predates a restore (`RDB-HISTORY-0101`).
+    HistoryIncarnationMismatch,
     /// Intentional idempotent replay path completed.
     Replayed,
     /// Other failure (timeout, transport, unexpected).
@@ -227,6 +247,10 @@ pub struct LoadConfig {
     pub rng_seed: u64,
     /// Direct ticket reads and ticket writes at the same hot row.
     pub contended: bool,
+    /// Drive clients well above coordinator capacity to evidence overload.
+    pub saturate: bool,
+    /// p99 ceiling for successful ops under `--load-saturate` (default 50 ms).
+    pub saturate_p99_ceiling: Duration,
 }
 
 /// Backend-specific execution shape that materially affects load results.
@@ -250,6 +274,8 @@ impl LoadConfig {
             zipf_s: 1.0,
             rng_seed: 0x000A_11CE_BEEF,
             contended: false,
+            saturate: false,
+            saturate_p99_ceiling: Duration::from_millis(50),
         }
     }
 
@@ -264,6 +290,8 @@ impl LoadConfig {
             zipf_s: 1.0,
             rng_seed: 0x000A_11CE_BEEF,
             contended: false,
+            saturate: false,
+            saturate_p99_ceiling: Duration::from_millis(50),
         }
     }
 
@@ -288,6 +316,10 @@ pub struct OpStats {
     pub idempotency_mismatch: u64,
     /// Temporary storage or transport unavailability.
     pub unavailable: u64,
+    /// Typed capacity rejections.
+    pub overloaded: u64,
+    /// History incarnation fence rejections.
+    pub history_incarnation_mismatch: u64,
     /// Intentional replays.
     pub replayed: u64,
     /// Other errors.
@@ -306,6 +338,11 @@ impl OpStats {
                 self.idempotency_mismatch = self.idempotency_mismatch.saturating_add(1);
             }
             OpOutcome::Unavailable => self.unavailable = self.unavailable.saturating_add(1),
+            OpOutcome::Overloaded => self.overloaded = self.overloaded.saturating_add(1),
+            OpOutcome::HistoryIncarnationMismatch => {
+                self.history_incarnation_mismatch =
+                    self.history_incarnation_mismatch.saturating_add(1);
+            }
             OpOutcome::Replayed => self.replayed = self.replayed.saturating_add(1),
             OpOutcome::Error => self.error = self.error.saturating_add(1),
         }
@@ -324,6 +361,10 @@ impl OpStats {
             .idempotency_mismatch
             .saturating_add(other.idempotency_mismatch);
         self.unavailable = self.unavailable.saturating_add(other.unavailable);
+        self.overloaded = self.overloaded.saturating_add(other.overloaded);
+        self.history_incarnation_mismatch = self
+            .history_incarnation_mismatch
+            .saturating_add(other.history_incarnation_mismatch);
         self.replayed = self.replayed.saturating_add(other.replayed);
         self.error = self.error.saturating_add(other.error);
         if self.first_error.is_none() {
@@ -336,6 +377,8 @@ impl OpStats {
             .saturating_add(self.conflict)
             .saturating_add(self.idempotency_mismatch)
             .saturating_add(self.unavailable)
+            .saturating_add(self.overloaded)
+            .saturating_add(self.history_incarnation_mismatch)
             .saturating_add(self.replayed)
             .saturating_add(self.error)
     }
@@ -348,6 +391,8 @@ impl OpStats {
                 "conflict": self.conflict,
                 "idempotency_mismatch": self.idempotency_mismatch,
                 "unavailable": self.unavailable,
+                "overloaded": self.overloaded,
+                "history_incarnation_mismatch": self.history_incarnation_mismatch,
                 "replayed": self.replayed,
                 "error": self.error,
                 "logical_operations": self.total_operations(),
@@ -483,8 +528,13 @@ where
     B::Error: Send + 'static,
     Factory: Fn() -> Result<B, String> + Send + Sync + 'static,
 {
-    if !(1..=128).contains(&config.clients) {
-        return Err("load clients must be 1..=128".to_owned());
+    let client_ceiling = if config.saturate {
+        RIFFDB_SATURATE_LOAD_CLIENTS
+    } else {
+        RIFFDB_MAX_LOAD_CLIENTS
+    };
+    if !(1..=client_ceiling).contains(&config.clients) {
+        return Err(format!("load clients must be 1..={client_ceiling}"));
     }
     if config.duration.is_zero() {
         return Err("load duration must be positive".to_owned());
@@ -543,7 +593,11 @@ where
         return Err("load driver requires at least one open ticket in the seed".to_owned());
     }
     let zipf = Arc::new(Zipf::new(write_tickets.len(), config.zipf_s));
-    let weights = config.profile.weights();
+    let weights = if config.saturate {
+        WorkloadProfile::saturating_weights()
+    } else {
+        config.profile.weights()
+    };
     let weight_sum: u32 = weights.iter().map(|(_, w)| *w).sum();
     if weight_sum == 0 {
         return Err("workload profile has zero weight".to_owned());
@@ -929,6 +983,8 @@ fn classify_typed<B: AppBackend>(
         LoadErrorClass::Conflict => OpOutcome::Conflict,
         LoadErrorClass::IdempotencyMismatch => OpOutcome::IdempotencyMismatch,
         LoadErrorClass::Unavailable => OpOutcome::Unavailable,
+        LoadErrorClass::Overloaded => OpOutcome::Overloaded,
+        LoadErrorClass::HistoryIncarnationMismatch => OpOutcome::HistoryIncarnationMismatch,
         LoadErrorClass::Other => OpOutcome::Error,
     };
     let code = B::load_error_code(&error)

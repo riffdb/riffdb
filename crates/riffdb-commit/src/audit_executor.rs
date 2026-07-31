@@ -780,8 +780,21 @@ control_plane_receipt!(CapabilityBootstrapTerminalReceipt, ());
 /// Safe rejection before a command preparation is accepted by the coordinator.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandExecutionAdmissionError {
+    /// Coordinator queue depth or retained-byte budget is full.
+    ///
+    /// This is a certain-not-executed rejection: the coordinator did not accept
+    /// the preparation. Callers map it to the typed overload public error.
+    Overloaded,
     /// The independent retained-byte queue bound is full.
+    ///
+    /// Prefer [`Self::Overloaded`] at new call sites. Retained for legacy
+    /// submit-time acquisition paths that have not yet pre-admitted bytes.
     RetainedByteCapacityExceeded,
+    /// Pre-admitted retained-byte units were smaller than the preparation needs.
+    ///
+    /// This is an internal defect (units derivation mismatch), never a silent
+    /// accept and never a capacity rejection after accept.
+    PermitUnitMismatch,
     /// Shutdown has begun and new work is no longer accepted.
     Draining,
     /// An unknown authoritative write fenced all later work.
@@ -793,7 +806,11 @@ pub enum CommandExecutionAdmissionError {
 impl fmt::Display for CommandExecutionAdmissionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::Overloaded => "command coordinator is over capacity",
             Self::RetainedByteCapacityExceeded => "command retained-byte capacity is full",
+            Self::PermitUnitMismatch => {
+                "command capacity permit retained-byte units undershoot preparation"
+            }
             Self::Draining => "command coordinator is draining",
             Self::Fenced => "command coordinator fenced authoritative writes",
             Self::Stopped => "command coordinator has stopped",
@@ -828,16 +845,74 @@ impl CommandExecutor {
             .reserve_owned()
             .await
             .map_err(|_| command_lifecycle_error(&self.lifecycle))?;
-        if self.submission_gate.is_closed() {
-            drop(permit);
-            return Err(command_lifecycle_error(&self.lifecycle));
-        }
+        Self::finish_queue_reservation(
+            permit,
+            &self.lifecycle,
+            &self.submission_gate,
+            &self.retained_byte_capacity,
+        )
+    }
+
+    /// Non-blocking reservation of one shared coordinator workload slot.
+    ///
+    /// Returns [`CommandExecutionAdmissionError::Overloaded`] when the
+    /// coordinator queue is full without waiting. No clock enters this path.
+    /// Cancelling is unnecessary: the call never parks.
+    pub fn try_reserve_capacity(
+        &self,
+    ) -> Result<CommandExecutionCapacityPermit, CommandExecutionAdmissionError> {
         ensure_command_accepting(&self.lifecycle)?;
+        let permit = match self.sender.clone().try_reserve_owned() {
+            Ok(permit) => permit,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                return Err(CommandExecutionAdmissionError::Overloaded);
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                return Err(command_lifecycle_error(&self.lifecycle));
+            }
+        };
+        Self::finish_queue_reservation(
+            permit,
+            &self.lifecycle,
+            &self.submission_gate,
+            &self.retained_byte_capacity,
+        )
+    }
+
+    /// Non-blocking acquisition of retained-byte budget for one preparation.
+    ///
+    /// `units` must equal [`queued_preparation_units`] for the normalized
+    /// input that will be submitted. Exhaustion returns
+    /// [`CommandExecutionAdmissionError::Overloaded`].
+    pub fn try_acquire_retained_bytes(
+        &self,
+        units: u32,
+    ) -> Result<OwnedSemaphorePermit, CommandExecutionAdmissionError> {
+        ensure_command_accepting(&self.lifecycle)?;
+        self.retained_byte_capacity
+            .clone()
+            .try_acquire_many_owned(units.max(1))
+            .map_err(|_| CommandExecutionAdmissionError::Overloaded)
+    }
+
+    fn finish_queue_reservation(
+        permit: mpsc::OwnedPermit<CoordinatorMessage>,
+        lifecycle: &Arc<AtomicU8>,
+        submission_gate: &Arc<SubmissionGate>,
+        retained_byte_capacity: &Arc<Semaphore>,
+    ) -> Result<CommandExecutionCapacityPermit, CommandExecutionAdmissionError> {
+        if submission_gate.is_closed() {
+            drop(permit);
+            return Err(command_lifecycle_error(lifecycle));
+        }
+        ensure_command_accepting(lifecycle)?;
         Ok(CommandExecutionCapacityPermit {
             permit: Some(permit),
-            lifecycle: Arc::clone(&self.lifecycle),
-            submission_gate: Arc::clone(&self.submission_gate),
-            retained_byte_capacity: Arc::clone(&self.retained_byte_capacity),
+            lifecycle: Arc::clone(lifecycle),
+            submission_gate: Arc::clone(submission_gate),
+            retained_byte_capacity: Arc::clone(retained_byte_capacity),
+            retained_byte_permit: None,
+            retained_byte_units: 0,
         })
     }
 
@@ -870,9 +945,21 @@ pub struct CommandExecutionCapacityPermit {
     lifecycle: Arc<AtomicU8>,
     submission_gate: Arc<SubmissionGate>,
     retained_byte_capacity: Arc<Semaphore>,
+    retained_byte_permit: Option<OwnedSemaphorePermit>,
+    retained_byte_units: u32,
 }
 
 impl CommandExecutionCapacityPermit {
+    /// Attaches a pre-admitted retained-byte permit acquired for `units`.
+    ///
+    /// Service admission acquires retained bytes before authorization; submit
+    /// then asserts the preparation does not need more units than attached.
+    pub fn with_retained_bytes(mut self, permit: OwnedSemaphorePermit, units: u32) -> Self {
+        self.retained_byte_permit = Some(permit);
+        self.retained_byte_units = units;
+        self
+    }
+
     /// Synchronously transfers one checked command preparation to the actor.
     ///
     /// Success is the non-retroactive admission boundary. Dropping the returned
@@ -886,11 +973,8 @@ impl CommandExecutionCapacityPermit {
             .begin()
             .ok_or_else(|| command_lifecycle_error(&self.lifecycle))?;
         ensure_command_accepting(&self.lifecycle)?;
-        let retained_byte_permit = self
-            .retained_byte_capacity
-            .clone()
-            .try_acquire_many_owned(preparation.queued_byte_units())
-            .map_err(|_| CommandExecutionAdmissionError::RetainedByteCapacityExceeded)?;
+        let retained_byte_permit =
+            self.take_retained_byte_permit(preparation.queued_byte_units())?;
         let (completion, receiver) = oneshot::channel();
         let permit = self
             .permit
@@ -923,11 +1007,8 @@ impl CommandExecutionCapacityPermit {
             .begin()
             .ok_or_else(|| command_lifecycle_error(&self.lifecycle))?;
         ensure_command_accepting(&self.lifecycle)?;
-        let retained_byte_permit = self
-            .retained_byte_capacity
-            .clone()
-            .try_acquire_many_owned(preparation.queued_byte_units())
-            .map_err(|_| CommandExecutionAdmissionError::RetainedByteCapacityExceeded)?;
+        let retained_byte_permit =
+            self.take_retained_byte_permit(preparation.queued_byte_units())?;
         let (completion, receiver) = oneshot::channel();
         let permit = self
             .permit
@@ -944,6 +1025,25 @@ impl CommandExecutionCapacityPermit {
         });
         drop(submission);
         Ok(ReadOnlyExecutionReceipt { receiver })
+    }
+
+    fn take_retained_byte_permit(
+        &mut self,
+        required_units: u32,
+    ) -> Result<OwnedSemaphorePermit, CommandExecutionAdmissionError> {
+        if let Some(held) = self.retained_byte_permit.take() {
+            if required_units > self.retained_byte_units {
+                // Undersized pre-admission is an internal defect, never silent accept.
+                return Err(CommandExecutionAdmissionError::PermitUnitMismatch);
+            }
+            return Ok(held);
+        }
+        // Fallback: acquire at submit when the caller did not pre-admit bytes.
+        // Maps to Overloaded (typed capacity) so residual paths stay fail-closed.
+        self.retained_byte_capacity
+            .clone()
+            .try_acquire_many_owned(required_units.max(1))
+            .map_err(|_| CommandExecutionAdmissionError::Overloaded)
     }
 }
 

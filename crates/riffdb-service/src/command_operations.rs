@@ -2,18 +2,20 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use riffdb_auth::AuthenticatedPrincipal;
 use riffdb_catalog::{
     CatalogError, CatalogErrorKind, ResolvedExecutablePlan, ValidatedContractBundle,
 };
 use riffdb_commit::{
-    CommandExecutionAdmissionError, CommandExecutionErrorKind, CommandExecutionPreparation,
-    CommandExecutionResult as CoordinatorCommandResult, CommandIdempotencyConfirmationError,
-    CommandIdempotencyInspectionErrorKind, CommandIdempotencyInspectionRequest,
-    CommandIdempotencyPlanSelection, CommittedOutcome, CommittedOutcomeDisposition,
-    CoordinatorDurability, PostEvaluationAuthorizationError, PostEvaluationCommandAuthorizer,
-    ReadOnlyExecutionPreparation, ReadOnlyExecutionResult,
+    CommandExecutionAdmissionError, CommandExecutionCapacityPermit, CommandExecutionErrorKind,
+    CommandExecutionPreparation, CommandExecutionResult as CoordinatorCommandResult,
+    CommandIdempotencyConfirmationError, CommandIdempotencyInspectionErrorKind,
+    CommandIdempotencyInspectionRequest, CommandIdempotencyPlanSelection, CommittedOutcome,
+    CommittedOutcomeDisposition, CoordinatorDurability, PostEvaluationAuthorizationError,
+    PostEvaluationCommandAuthorizer, ReadOnlyExecutionPreparation, ReadOnlyExecutionResult,
+    queued_preparation_units,
 };
 use riffdb_contract_ir::{
     CommandPlan, ExecutionClass, McpCommandToolNameV2, RecordSchema, RecordTypeRef, SchemaIr,
@@ -37,19 +39,27 @@ use riffdb_types::{
 };
 
 use crate::orchestration::{AuditScope, BegunInvocation};
-use crate::wait::{ControlledWaitError, wait_with_control};
+use crate::wait::{
+    AdmissionWaitError, ControlledWaitError, wait_for_admission_capacity, wait_with_control,
+};
 use crate::{
     AuthoritativeOutcomeRequest, AuthoritativeOutcomeSnapshot, AuthoritativeReadError,
-    AuthoritativeReadinessFailure, CatalogExecutablePlanRequest, CommandApplication,
-    CommandDurability, CurrentPolicyPort, DeclaredOutcomeView, ExecuteCommandRequest,
-    ExecuteCommandResult, InternalDefect, JournaledCommandResult, JournaledCompletion,
-    OutcomeLocatorDigestEvidence, OutcomePlanBinding, OutcomeResourceLocator,
+    AuthoritativeReadinessFailure, CapacityRejectionStage, CatalogExecutablePlanRequest,
+    CommandApplication, CommandDurability, CurrentPolicyPort, DeclaredOutcomeView,
+    ExecuteCommandRequest, ExecuteCommandResult, InternalDefect, JournaledCommandResult,
+    JournaledCompletion, OutcomeLocatorDigestEvidence, OutcomePlanBinding, OutcomeResourceLocator,
     PendingTerminalResponse, PortAdmissionError, PortDriverStopped, ReadOnlyCommandResult,
     RecoveredJournaledCommandResult, RequestContext, ResolveCommandOutcomeRequest,
     ResolveCommandOutcomeResult, ResolveCommandOutcomeSelectorRef, RiffDbService,
     RiffDbServiceInner, ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult,
-    SubmittedFieldIdentity, SubmittedRecord, SubmittedValue, ensure_response_budget,
+    ServiceTelemetryEvent, SubmittedFieldIdentity, SubmittedRecord, SubmittedValue,
+    ensure_response_budget,
 };
+
+/// One group-commit turn at queue depth 128 — absolute admission wait cap.
+const COMMAND_ADMISSION_MAX_WAIT: Duration = Duration::from_millis(150);
+/// Below this remaining client deadline, reject immediately rather than wait.
+const COMMAND_ADMISSION_MIN_REMAINING: Duration = Duration::from_millis(25);
 
 impl CommandApplication for RiffDbService {
     fn execute_command(
@@ -237,22 +247,10 @@ async fn execute_read_only(
         .begin_invocation(context, operation, targets, AuditScope::StandardRead)
         .await?;
 
-    let permit = match wait_with_control(
-        context.control(),
-        service.providers.deadline_scheduler.as_ref(),
-        service.executors.command.reserve_capacity(),
-    )
-    .await
-    {
-        Ok(Ok(permit)) => permit,
-        Ok(Err(error)) => {
-            let failure = map_command_admission(service, error);
-            return Err(
-                finish_failure(service, context, &begun, failure, TerminalKind::Ordinary).await,
-            );
-        }
-        Err(error) => {
-            let failure = map_controlled_wait(error);
+    // Capacity admission precedes re-authorization and preparation construction.
+    let permit = match admit_command_capacity(service, context, &normalized).await {
+        Ok(permit) => permit,
+        Err(failure) => {
             return Err(
                 finish_failure(service, context, &begun, failure, TerminalKind::Ordinary).await,
             );
@@ -592,35 +590,17 @@ async fn execute_mutation(
         }
 
         let invocation = begun.as_ref().expect("mutation begins before admission");
-        let permit = match wait_with_control(
-            context.control(),
-            service.providers.deadline_scheduler.as_ref(),
-            service.executors.command.reserve_capacity(),
-        )
-        .await
-        {
-            Ok(Ok(permit)) => permit,
-            Ok(Err(error)) => {
-                let failure = map_command_admission(service, error);
-                return Err(finish_failure(
-                    service,
-                    context,
-                    invocation,
-                    failure,
-                    TerminalKind::Ordinary,
-                )
-                .await);
-            }
-            Err(error) => {
-                let failure = map_controlled_wait(error);
-                return Err(finish_failure(
-                    service,
-                    context,
-                    invocation,
-                    failure,
-                    TerminalKind::Ordinary,
-                )
-                .await);
+        // Capacity admission precedes re-authorization and preparation construction.
+        // Per preparation-attempt item: never hold item N capacity while admitting N+1.
+        let permit = match admit_command_capacity(service, context, &normalized).await {
+            Ok(permit) => permit,
+            Err(failure) => {
+                // Capacity admission is always pre-accept. Never spend a
+                // coordinator slot on terminal audit here: under saturation that
+                // slot is the scarce resource, and rewriting overload into
+                // storage_unavailable would destroy the typed contract.
+                invocation.settle_pre_admission_rejection();
+                return Err(failure);
             }
         };
 
@@ -2251,14 +2231,134 @@ fn map_authoritative_error(
     }
 }
 
+/// Admits one command's coordinator queue slot and retained-byte budget before
+/// re-authorization and preparation construction.
+///
+/// Queue wait is bounded by `min(request_deadline − MIN_REMAINING, now + MAX_WAIT)`.
+/// A deadline that elapses while still unadmitted is a typed overload
+/// (`RDB-CAPACITY-0101`), not a details-free deadline. Cancellation during
+/// admission remains [`ServiceFailure::Cancelled`]. Post-admission deadline and
+/// uncertainty semantics are unchanged.
+async fn admit_command_capacity(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    normalized: &CanonicalRecord,
+) -> Result<CommandExecutionCapacityPermit, ServiceFailure> {
+    let units = queued_preparation_units(normalized);
+    let operation = ServiceOperationV1::ExecuteCommand;
+    let ingress = context.ingress();
+
+    match service.executors.command.try_reserve_capacity() {
+        Ok(permit) => {
+            return attach_retained_bytes(service, permit, units, operation, ingress);
+        }
+        Err(CommandExecutionAdmissionError::Overloaded) => {}
+        Err(error) => return Err(map_command_admission(service, error)),
+    }
+
+    let now = Instant::now();
+    let request_deadline = context.control().deadline();
+    let remaining = request_deadline.saturating_duration_since(now);
+    if remaining < COMMAND_ADMISSION_MIN_REMAINING {
+        record_capacity_rejected(
+            service,
+            operation,
+            ingress,
+            CapacityRejectionStage::QueueDepth,
+        );
+        return Err(PublicError::overloaded().into());
+    }
+    let floor_deadline = request_deadline
+        .checked_sub(COMMAND_ADMISSION_MIN_REMAINING)
+        .unwrap_or(now);
+    let capped_deadline = now
+        .checked_add(COMMAND_ADMISSION_MAX_WAIT)
+        .unwrap_or(Instant::now());
+    let admission_deadline = floor_deadline.min(capped_deadline);
+
+    match wait_for_admission_capacity(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        admission_deadline,
+        service.executors.command.reserve_capacity(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => attach_retained_bytes(service, permit, units, operation, ingress),
+        Ok(Err(error)) => Err(map_command_admission(service, error)),
+        Err(AdmissionWaitError::Cancelled) => Err(ServiceFailure::Cancelled),
+        Err(AdmissionWaitError::AdmissionCapExceeded) => {
+            record_capacity_rejected(
+                service,
+                operation,
+                ingress,
+                CapacityRejectionStage::QueueDepth,
+            );
+            Err(PublicError::overloaded().into())
+        }
+    }
+}
+
+fn attach_retained_bytes(
+    service: &RiffDbServiceInner,
+    permit: CommandExecutionCapacityPermit,
+    units: u32,
+    operation: ServiceOperationV1,
+    ingress: riffdb_types::ServiceIngressKindV1,
+) -> Result<CommandExecutionCapacityPermit, ServiceFailure> {
+    match service.executors.command.try_acquire_retained_bytes(units) {
+        Ok(byte_permit) => Ok(permit.with_retained_bytes(byte_permit, units)),
+        Err(CommandExecutionAdmissionError::Overloaded)
+        | Err(CommandExecutionAdmissionError::RetainedByteCapacityExceeded) => {
+            // Drop queue permit on the Overloaded path — no leak.
+            drop(permit);
+            record_capacity_rejected(
+                service,
+                operation,
+                ingress,
+                CapacityRejectionStage::RetainedBytes,
+            );
+            Err(PublicError::overloaded().into())
+        }
+        Err(error) => {
+            drop(permit);
+            Err(map_command_admission(service, error))
+        }
+    }
+}
+
+fn record_capacity_rejected(
+    service: &RiffDbServiceInner,
+    operation: ServiceOperationV1,
+    ingress: riffdb_types::ServiceIngressKindV1,
+    stage: CapacityRejectionStage,
+) {
+    service
+        .providers
+        .telemetry
+        .record(ServiceTelemetryEvent::CapacityRejected {
+            operation,
+            ingress,
+            stage,
+        });
+}
+
 fn map_command_admission(
     service: &RiffDbServiceInner,
     error: CommandExecutionAdmissionError,
 ) -> ServiceFailure {
     match error {
-        CommandExecutionAdmissionError::RetainedByteCapacityExceeded
-        | CommandExecutionAdmissionError::Draining
-        | CommandExecutionAdmissionError::Stopped => PublicError::storage_unavailable().into(),
+        CommandExecutionAdmissionError::Overloaded
+        | CommandExecutionAdmissionError::RetainedByteCapacityExceeded => {
+            PublicError::overloaded().into()
+        }
+        CommandExecutionAdmissionError::PermitUnitMismatch => service.internal_failure(
+            ServiceOperationV1::ExecuteCommand,
+            InternalDefect::ProofMismatch,
+        ),
+        CommandExecutionAdmissionError::Draining | CommandExecutionAdmissionError::Stopped => {
+            PublicError::storage_unavailable().into()
+        }
         CommandExecutionAdmissionError::Fenced => {
             service.providers.health.fail_authoritative_readiness(
                 crate::AuthoritativeReadinessFailure::CoordinatorFenced,

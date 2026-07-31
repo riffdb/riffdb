@@ -331,6 +331,11 @@ impl ServiceTelemetry for Observability {
                 self.metrics.increment(MetricKey::ServiceReadRetryExhausted);
                 return;
             }
+            ServiceTelemetryEvent::CapacityRejected { stage, .. } => {
+                self.metrics
+                    .increment(MetricKey::ServiceCapacityRejected(stage));
+                return;
+            }
         };
         self.metrics.increment(metric);
         self.record_trace(trace);

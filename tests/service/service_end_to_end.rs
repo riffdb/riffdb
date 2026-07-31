@@ -4,20 +4,23 @@
 
 mod support;
 
-use riffdb_errors::PublicErrorKind;
+use std::time::{Duration, Instant};
+
+use riffdb_errors::{ApplicationErrorCode, PublicErrorKind};
 use riffdb_policy::PartitionConstraint;
 use riffdb_service::{
     AdministrationApplication, AuthoritativeOutcomeSelectorRef, AuthoritativeReadinessFailure,
-    CommandApplication, CommandDurability, CommitApplication, CompactResourceDescriptorRef,
-    ContractApplication, ContractValidationResult, CreateCapabilityInvocation,
-    DiscoverCommandToolsRequest, DiscoverCommandToolsResultRef, DiscoverResourcesRequest,
-    DiscoverResourcesResultRef, DiscoveryApplication, DiscoveryCatalogStateRef,
-    DiscoveryRepresentation, ExecuteCommandResult, ExplainCommandResult, GetActiveContractRequest,
-    GetActiveContractResult, GetCommitRequest, GetCommitResult, GetContractVersionResult,
-    GetEntityResult, GetProjectionStatusResult, HealthContext, HealthRequest, HealthResult,
-    HealthStatus, JournaledCompletion, PageLimit, PageRequest, PreBootstrapLifecycle,
-    QueryApplication, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
-    ResourceDescriptorRef, ResourceDiscoveryKind, StatisticsRequest, TraceProvenanceResult,
+    CapacityRejectionStage, CommandApplication, CommandDurability, CommitApplication,
+    CompactResourceDescriptorRef, ContractApplication, ContractValidationResult,
+    CreateCapabilityInvocation, DiscoverCommandToolsRequest, DiscoverCommandToolsResultRef,
+    DiscoverResourcesRequest, DiscoverResourcesResultRef, DiscoveryApplication,
+    DiscoveryCatalogStateRef, DiscoveryRepresentation, ExecuteCommandResult, ExplainCommandResult,
+    GetActiveContractRequest, GetActiveContractResult, GetCommitRequest, GetCommitResult,
+    GetContractVersionResult, GetEntityResult, GetProjectionStatusResult, HealthContext,
+    HealthRequest, HealthResult, HealthStatus, JournaledCompletion, PageLimit, PageRequest,
+    PreBootstrapLifecycle, QueryApplication, ResolveCommandOutcomeRequest,
+    ResolveCommandOutcomeResult, ResourceDescriptorRef, ResourceDiscoveryKind,
+    ServiceTelemetryEvent, StatisticsRequest, TraceProvenanceResult,
 };
 use riffdb_types::{
     PartitionScopeV1, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetV1,
@@ -156,6 +159,119 @@ fn concrete_service_reads_through_policy_port_and_real_audit_coordinator() {
             assert_eq!(record.approval_id(), None);
             assert_eq!(record.link(), ServiceAuditLinkV1::None);
         }
+    });
+}
+
+#[test]
+fn saturated_command_capacity_rejects_before_reauthorization_with_typed_overload() {
+    run_async(async move {
+        let mut harness = ServiceHarness::command_capacity_one();
+        // Hold the sole workload slot outside the service path.
+        let held = harness.hold_command_capacity();
+        assert!(
+            harness.try_command_capacity_is_full(),
+            "capacity-one harness must report full after one hold"
+        );
+
+        let (context, _cancellation) = harness.context(0xA1);
+        let failure = harness
+            .service
+            .execute_command(context, harness.execute_command_request())
+            .await
+            .expect_err("second concurrent command must be capacity-rejected");
+
+        assert_eq!(
+            failure.public_error().map(|error| error.kind()),
+            Some(PublicErrorKind::Overloaded),
+            "got {failure:?}"
+        );
+        assert_eq!(
+            failure
+                .public_error()
+                .map(|error| ApplicationErrorCode::from_public_kind(error.kind()).as_str()),
+            Some("RDB-CAPACITY-0101")
+        );
+        // begin_compound performs one initial authorize; reauthorization after
+        // capacity is skipped when admission rejects. A full committed command
+        // records several post-admission policy safe points.
+        assert_eq!(
+            harness.policy.calls(),
+            1,
+            "overload must reject after initial authorize and before reauthorization"
+        );
+        assert!(
+            harness.telemetry.events().iter().any(|event| matches!(
+                event,
+                ServiceTelemetryEvent::CapacityRejected {
+                    operation: ServiceOperationV1::ExecuteCommand,
+                    ingress: ServiceIngressKindV1::Grpc,
+                    stage: CapacityRejectionStage::QueueDepth,
+                }
+            )),
+            "CapacityRejected QueueDepth must be recorded"
+        );
+
+        drop(held);
+        harness.stop_coordinator();
+    });
+}
+
+#[test]
+fn admission_deadline_while_queued_is_overloaded_not_deadline_exceeded() {
+    run_async(async move {
+        let mut harness = ServiceHarness::command_capacity_one();
+        let held = harness.hold_command_capacity();
+
+        // Remaining budget below COMMAND_ADMISSION_MIN_REMAINING (25ms) rejects
+        // immediately as overload without burning the client's deadline class.
+        let (context, _cancellation) =
+            harness.context_with_deadline(0xA2, Instant::now() + Duration::from_millis(10));
+        let failure = harness
+            .service
+            .execute_command(context, harness.execute_command_request())
+            .await
+            .expect_err("queued-unadmitted deadline maps to overload");
+
+        assert_eq!(
+            failure.public_error().map(|error| error.kind()),
+            Some(PublicErrorKind::Overloaded),
+            "must not surface details-free DeadlineExceeded while unadmitted"
+        );
+        assert_ne!(
+            failure.public_error().map(|error| error.kind()),
+            Some(PublicErrorKind::InternalDefect)
+        );
+
+        drop(held);
+        harness.stop_coordinator();
+    });
+}
+
+#[test]
+fn cancellation_during_admission_remains_cancelled() {
+    run_async(async move {
+        let mut harness = ServiceHarness::command_capacity_one();
+        let held = harness.hold_command_capacity();
+
+        let (context, cancellation) =
+            harness.context_with_deadline(0xA3, Instant::now() + Duration::from_secs(5));
+        // Cancel before the bounded admission wait parks so the first poll sees
+        // cancellation while still unadmitted.
+        cancellation.cancel();
+
+        let failure = harness
+            .service
+            .execute_command(context, harness.execute_command_request())
+            .await
+            .expect_err("cancellation during admission is Cancelled");
+
+        assert!(
+            matches!(failure, riffdb_service::ServiceFailure::Cancelled),
+            "cancellation during admission must remain ServiceFailure::Cancelled, got {failure:?}"
+        );
+
+        drop(held);
+        harness.stop_coordinator();
     });
 }
 
