@@ -428,6 +428,9 @@ pub(crate) enum CommitCommand {
     Show {
         #[arg(value_name = "COMMIT_SEQUENCE")]
         commit_sequence: String,
+        /// Observed history incarnation fence (ADR-0072). Stale values fail closed.
+        #[arg(long = "observed-history-incarnation", value_name = "INCARNATION")]
+        observed_history_incarnation: Option<String>,
     },
 }
 

@@ -25,7 +25,3 @@ message StoredAdministrationSequenceAllocatorV1 {
     UnitV1 exhausted = 2;
   }
 }
-
-message StoredHistoryIncarnationV1 {
-  uint64 incarnation = 1;
-}

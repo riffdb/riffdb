@@ -947,7 +947,10 @@ impl HostedServiceMcpBackend {
                 call.complete();
                 render_index_result(result)
             }
-            McpFixedToolRequest::GetCommit { commit_sequence } => {
+            McpFixedToolRequest::GetCommit {
+                commit_sequence,
+                observed_history_incarnation,
+            } => {
                 let sequence =
                     CommitSequence::new(commit_sequence).ok_or(McpBackendError::InvalidResponse)?;
                 let mut call = self.prepare_call(
@@ -956,13 +959,20 @@ impl HostedServiceMcpBackend {
                 )?;
                 let result = self
                     .service
-                    .get_commit(call.take_context()?, GetCommitRequest::new(sequence))
+                    .get_commit(
+                        call.take_context()?,
+                        GetCommitRequest::new(sequence)
+                            .with_observed_history_incarnation(observed_history_incarnation),
+                    )
                     .await
                     .map_err(map_service_failure)?;
                 call.complete();
                 render_commit_result(result, sequence)
             }
-            McpFixedToolRequest::ScanCommits { page } => {
+            McpFixedToolRequest::ScanCommits {
+                page,
+                observed_history_incarnation,
+            } => {
                 let mut call = self.prepare_call(
                     invocation,
                     McpRateTarget::Service(ServiceOperationV1::ScanCommits),
@@ -971,7 +981,8 @@ impl HostedServiceMcpBackend {
                     .service
                     .scan_commits(
                         call.take_context()?,
-                        ScanCommitsRequest::new(service_page_request(page)?),
+                        ScanCommitsRequest::new(service_page_request(page)?)
+                            .with_observed_history_incarnation(observed_history_incarnation),
                     )
                     .await
                     .map_err(map_service_failure)?;

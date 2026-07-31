@@ -131,6 +131,9 @@ pub fn validate_execute_response(
             .ok_or(ExecuteWireError::MissingValue)?,
     )
     .map_err(|_| ExecuteWireError::InvalidValue)?;
+    if response.history_incarnation == 0 {
+        return Err(ExecuteWireError::InvalidCommitSequence);
+    }
     if response.encoded_len() > MAX_EXECUTE_RESPONSE_BYTES {
         return Err(ExecuteWireError::MessageTooLarge);
     }

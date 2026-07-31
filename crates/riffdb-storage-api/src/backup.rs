@@ -1354,7 +1354,9 @@ fn backup_manifest_semantic_bytes(
         bundles,
         active,
         1 + last_commit_sequence.map_or(0, |_| 8),
-        1 + history_incarnation.map_or(0, |_| 8),
+        // Match actual encoding: pre-fence omits the field entirely (None → 0);
+        // post-fence presence-tags a value (Some → 1 + 8).
+        history_incarnation.map_or(0, |_| 1 + 8),
         checksums,
         framed_backup_bytes(build.semantic_version.len())?,
         framed_backup_bytes(build.git_revision.len())?,

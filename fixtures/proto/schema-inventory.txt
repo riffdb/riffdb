@@ -16,6 +16,7 @@ files
   riffdb/storage/v1/event_references_v2.proto
     import riffdb/storage/v1/application.proto
     import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/history_incarnation_v1.proto
   riffdb/storage/v1/index_generation_v2.proto
     import riffdb/storage/v1/application.proto
   riffdb/storage/v1/index_v2.proto

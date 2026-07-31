@@ -214,6 +214,11 @@ mod tests {
         let mismatch_status = status_from_public_error(&mismatch);
         assert_eq!(mismatch_status.code(), Code::FailedPrecondition);
         assert_eq!(mismatch_status.message(), mismatch.safe_message());
+        assert_eq!(mismatch.code(), "history_incarnation_mismatch");
+        assert_eq!(
+            riffdb_errors::ApplicationErrorCode::from_public_kind(mismatch.kind()).as_str(),
+            "RDB-HISTORY-0101"
+        );
         assert_eq!(decode_public_error(mismatch_status.details()), Ok(mismatch));
 
         let overloaded = PublicError::overloaded();

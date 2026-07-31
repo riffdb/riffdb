@@ -28,7 +28,6 @@ use riffdb_storage_api::{
 use riffdb_storage_redb::{
     RedbCommitProfile, RedbMaintenanceOperationEvidence, RedbMaintenanceStorage,
     RedbSealedStagedRestore, RedbStagedRestore, read_history_incarnation,
-    stamp_history_incarnation,
 };
 use riffdb_types::{
     Audience, Environment, OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
@@ -727,12 +726,12 @@ fn run_restore(
         {
             drop(credential);
             drop(prepared);
-            if receipt.manifest_identity().is_none()
-                || receipt.staged_database_id().is_none()
-                || receipt.published_history_incarnation().is_none()
-            {
+            if receipt.manifest_identity().is_none() || receipt.staged_database_id().is_none() {
                 return Err(DriverFault::ReceiptIntegrity);
             }
+            // Pre-fence receipt resume: recompute published incarnation from the
+            // already-published target META when the receipt field is absent.
+            ensure_published_incarnation_on_receipt(storage, receipt)?;
             advance_receipt(
                 storage,
                 receipt,
@@ -740,7 +739,7 @@ fn run_restore(
             )?;
         }
         OfflineMaintenanceReceiptPhaseV1::Offline => {
-            let prepared = match prepared {
+            let mut prepared = match prepared {
                 Some(prepared) => {
                     drop(credential);
                     prepared
@@ -759,18 +758,28 @@ fn run_restore(
                     )?
                 }
             };
-            // Missing or unreadable target is treated as incarnation 0 for the bump.
-            let target_incarnation = read_history_incarnation(storage.configured_database_file())
-                .ok()
-                .flatten()
-                .unwrap_or(0);
+            let target_incarnation =
+                target_history_incarnation_for_bump(storage.configured_database_file())?;
             let staged_incarnation = prepared.sealed.staged_history_incarnation();
             if let Some(manifest_incarnation) = prepared.sealed.manifest().history_incarnation()
                 && manifest_incarnation > staged_incarnation
             {
                 return Err(DriverFault::ArtifactInvalid);
             }
-            let published_incarnation = target_incarnation.max(staged_incarnation) + 1;
+            // Prefer a receipt-recorded bump (exactly-once across crash-before-rename
+            // resume where staged may already hold the stamped value). Otherwise
+            // compute max(target, staged)+1. When staged already reflects a prior
+            // stamp that equals the receipt value, re-apply is idempotent.
+            let published_incarnation = match receipt.published_history_incarnation() {
+                Some(recorded) => recorded,
+                None => target_incarnation.max(staged_incarnation) + 1,
+            };
+            // Stamp staged before rename so publication stays byte-identical and
+            // crash-resume reconcile (checksum seal) remains valid.
+            prepared
+                .sealed
+                .apply_published_history_incarnation(published_incarnation)
+                .map_err(DriverFault::ArtifactStorage)?;
             let manifest_identity = prepared.sealed.manifest_identity().clone();
             update_receipt(storage, receipt, |candidate| {
                 candidate.record_staged_database_id(manifest_identity.database_id())?;
@@ -778,7 +787,7 @@ fn run_restore(
                 candidate.record_published_incarnation(published_incarnation)
             })?;
             let overwrite_policy = overwrite_policy(receipt.replacement_confirmation());
-            // Pure file swap — no writes between staging validation and rename.
+            // Pure file swap — no writes between re-seal and rename.
             let publication = storage.publish_sealed_restore(prepared.sealed, overwrite_policy);
             let manifest = match publication {
                 Ok(OfflineRestoreResultV1::Restored { manifest }) => *manifest,
@@ -829,6 +838,7 @@ fn run_restore(
             {
                 return Err(DriverFault::ArtifactInvalid);
             }
+            ensure_published_incarnation_on_receipt(storage, receipt)?;
         }
         OfflineMaintenanceReceiptPhaseV1::Accepted
         | OfflineMaintenanceReceiptPhaseV1::Draining
@@ -849,13 +859,8 @@ fn complete_post_publication_validation(
 ) -> Result<CheckedRedbStartup, DriverFault> {
     match receipt.current_phase() {
         OfflineMaintenanceReceiptPhaseV1::ArtifactPublished => {
-            if receipt.operation_kind() == OfflineMaintenanceOperationKind::RestoreBackup {
-                let published = receipt
-                    .published_history_incarnation()
-                    .ok_or(DriverFault::ReceiptIntegrity)?;
-                stamp_history_incarnation(storage.configured_database_file(), published)
-                    .map_err(DriverFault::ArtifactStorage)?;
-            }
+            // Stamp already applied to staged bytes before rename (C2 option b).
+            ensure_published_incarnation_on_receipt(storage, receipt)?;
             advance_receipt(
                 storage,
                 receipt,
@@ -863,7 +868,9 @@ fn complete_post_publication_validation(
             )?;
         }
         OfflineMaintenanceReceiptPhaseV1::Validating
-        | OfflineMaintenanceReceiptPhaseV1::Succeeded => {}
+        | OfflineMaintenanceReceiptPhaseV1::Succeeded => {
+            ensure_published_incarnation_on_receipt(storage, receipt)?;
+        }
         _ => return Err(DriverFault::ReceiptIntegrity),
     }
     mark_lifecycle_validating(lifecycle, receipt.operation_id())?;
@@ -1194,6 +1201,59 @@ fn production_backup_build_metadata() -> Result<BackupBuildMetadataV1, DriverFau
         Vec::new(),
     )
     .map_err(|_| DriverFault::ReceiptValue)
+}
+
+/// Target incarnation for the restore bump rule `max(target, staged) + 1`.
+///
+/// Absent file or pre-fence key → 0. Present-but-unreadable target fails closed
+/// so a corrupt high-incarnation database cannot be restored down to a lower fence.
+fn target_history_incarnation_for_bump(path: &std::path::Path) -> Result<u64, DriverFault> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    match read_history_incarnation(path) {
+        Ok(None) => Ok(0),
+        Ok(Some(incarnation)) => Ok(incarnation),
+        Err(_) => Err(DriverFault::ArtifactInvalid),
+    }
+}
+
+/// Ensures the receipt carries `published_history_incarnation`.
+///
+/// Pre-fence receipts (upgrade mid-restore) recompute deterministically from the
+/// published target META. After C2 option (b) the target already holds the
+/// stamp when offline completed; re-read it as authority. When the target is
+/// still pre-fence (legacy unstamped publish), apply max(0, 0)+1 = 1, stamp, and
+/// record. Fail closed only when the target is present but unreadable.
+fn ensure_published_incarnation_on_receipt(
+    storage: &mut RedbMaintenanceStorage,
+    receipt: &mut OfflineMaintenanceReceiptV1,
+) -> Result<(), DriverFault> {
+    if receipt.published_history_incarnation().is_some() {
+        return Ok(());
+    }
+    if receipt.operation_kind() != OfflineMaintenanceOperationKind::RestoreBackup {
+        return Ok(());
+    }
+    let target_path = storage.configured_database_file();
+    if !target_path.exists() {
+        return Err(DriverFault::ReceiptIntegrity);
+    }
+    let published = match read_history_incarnation(target_path) {
+        Ok(Some(incarnation)) => incarnation,
+        Ok(None) => {
+            // Legacy unstamped publish: target has no fence key. Stamp the
+            // minimum legal incarnation so resume can validate and complete.
+            let published = 1u64;
+            riffdb_storage_redb::stamp_history_incarnation(target_path, published)
+                .map_err(DriverFault::ArtifactStorage)?;
+            published
+        }
+        Err(_) => return Err(DriverFault::ArtifactInvalid),
+    };
+    update_receipt(storage, receipt, |candidate| {
+        candidate.record_published_incarnation(published)
+    })
 }
 
 fn artifact_storage_failure(error: &StorageError) -> OfflineMaintenanceReceiptFailureV1 {

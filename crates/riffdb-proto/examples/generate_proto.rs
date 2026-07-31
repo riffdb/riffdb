@@ -44,6 +44,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/common.proto",
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_references_v2.proto",
+    "riffdb/storage/v1/history_incarnation_v1.proto",
     "riffdb/storage/v1/index_generation_v2.proto",
     "riffdb/storage/v1/index_v2.proto",
     "riffdb/storage/v1/metadata.proto",
@@ -60,6 +61,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/common.proto",
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_references_v2.proto",
+    "riffdb/storage/v1/history_incarnation_v1.proto",
     "riffdb/storage/v1/index_generation_v2.proto",
     "riffdb/storage/v1/index_v2.proto",
     "riffdb/storage/v1/metadata.proto",
@@ -270,7 +272,7 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         PayloadBound::Tiny,
     ),
     durable(
-        "metadata.proto",
+        "history_incarnation_v1.proto",
         "StoredHistoryIncarnationV1",
         PayloadBound::Tiny,
     ),
@@ -929,7 +931,7 @@ fn build_durable_registry(
             .any(|file| file.package() != "riffdb.storage.v1")
     {
         return Err(io::Error::other(
-            "storage descriptor must contain exactly the thirteen riffdb.storage.v1 sources",
+            "storage descriptor must contain exactly the fourteen riffdb.storage.v1 sources",
         )
         .into());
     }

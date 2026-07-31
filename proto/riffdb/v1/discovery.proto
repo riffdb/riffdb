@@ -115,6 +115,7 @@ message DiscoveryCatalogFence {
   }
   bytes server_generation = 3;
   OperationSchemaCatalogIdentity operation_schemas = 4;
+  // Durable history incarnation fence; ≥ 1 once the database is serving.
   uint64 history_incarnation = 5;
 }
 

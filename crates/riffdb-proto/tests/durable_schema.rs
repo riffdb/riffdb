@@ -174,6 +174,10 @@ fn storage_source_import_and_type_inventory_is_exact() {
                 ],
             ),
             (
+                "riffdb/storage/v1/history_incarnation_v1.proto".to_owned(),
+                vec![],
+            ),
+            (
                 "riffdb/storage/v1/index_generation_v2.proto".to_owned(),
                 vec!["riffdb/storage/v1/application.proto"],
             ),
@@ -899,4 +903,67 @@ fn exact_fifteen_mibibyte_bundle_content_fits_the_structural_ceiling() {
         .expect("canonical large bundle wire form must decode");
     assert_eq!(decoded.record_type(), schema.record_type());
     assert_eq!(decoded.payload(), payload);
+}
+
+/// Frozen V1 metadata schema hashes. These must never rotate when additive
+/// durable records are introduced — each additive record lives in its own
+/// proto file so the metadata.proto descriptor hash stays stable.
+///
+/// Values are source literals independent of regenerated fixtures so a silent
+/// fixture regen cannot paper over a rotation (C1).
+#[test]
+fn legacy_metadata_v1_schema_hashes_are_frozen_source_literals() {
+    // Frozen at branch base a23f42a (pre-Package-F). Own-file
+    // history_incarnation_v1.proto must keep these identical.
+    const FROZEN: &[(&str, &str)] = &[
+        (
+            "riffdb.storage.v1.StoredStorageFormatVersionV1",
+            "07371c0b9eba9bfcad3118b345064b3d33a20a13641c6bde017e5c99dc6020ab",
+        ),
+        (
+            "riffdb.storage.v1.StoredDatabaseIdentityV1",
+            "de6f4f35fa52ca7664a85d9ffaa0041c506f3c5eb22632ba0ecd757dc6df1dea",
+        ),
+        (
+            "riffdb.storage.v1.StoredApplicationSequenceAllocatorV1",
+            "ff01f9e77e1d0ae47de12badcd541131a58fc6926b27543c681f0151f49aa24a",
+        ),
+        (
+            "riffdb.storage.v1.StoredAdministrationSequenceAllocatorV1",
+            "63cf6435a08786b0fae6e5eef2fde7c1e13395309e1e746a66e2c8b61c49e078",
+        ),
+    ];
+
+    for (record_type, expected_hex) in FROZEN {
+        let schema = readable_record_schema(record_type)
+            .unwrap_or_else(|| panic!("missing readable schema for {record_type}"));
+        assert_eq!(
+            schema_hash_hex(schema),
+            *expected_hex,
+            "{record_type} schema hash rotated — additive durable records must use own-file protos"
+        );
+        // Also pin against the checked-in registry fixture line.
+        let fixture_line = LEGACY_REGISTRY_FIXTURE
+            .lines()
+            .find(|line| line.starts_with(record_type))
+            .unwrap_or_else(|| panic!("missing fixture line for {record_type}"));
+        assert!(
+            fixture_line.contains(&format!("schema-hash={expected_hex}")),
+            "fixture registry disagrees with frozen literal for {record_type}"
+        );
+    }
+
+    // StoredHistoryIncarnationV1 must live in its own source file, not metadata.proto.
+    let history = readable_record_schema("riffdb.storage.v1.StoredHistoryIncarnationV1")
+        .expect("history incarnation schema");
+    let fixture_line = LEGACY_REGISTRY_FIXTURE
+        .lines()
+        .chain(READABLE_REGISTRY_FIXTURE.lines())
+        .find(|line| line.contains("StoredHistoryIncarnationV1"))
+        .expect("history incarnation fixture line");
+    assert!(
+        fixture_line.contains("source=history_incarnation_v1.proto"),
+        "history incarnation must use own-file source, got: {fixture_line}"
+    );
+    let _ = history;
 }

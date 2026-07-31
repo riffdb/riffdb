@@ -46,9 +46,10 @@ const STORAGE_ENGINE_DATA_TAG: u8 = 1;
 
 /// Reads the durable history incarnation from a closed database file.
 ///
-/// Returns `None` when the key is absent (pre-fence artifact).
+/// Returns `None` when the key is absent (pre-fence artifact). Opens read-only
+/// so a pure inspection never triggers redb recovery-on-open writes.
 pub fn read_history_incarnation(path: impl AsRef<Path>) -> Result<Option<u64>, StorageError> {
-    let database = Database::open(path.as_ref()).map_err(database_error)?;
+    let database = redb::ReadOnlyDatabase::open(path.as_ref()).map_err(database_error)?;
     let transaction = database.begin_read().map_err(transaction_error)?;
     let meta = transaction.open_table(META).map_err(table_error)?;
     match meta
@@ -605,18 +606,19 @@ fn decode_manifest(encoded: &[u8]) -> Result<OfflineBackupManifestV1, StorageErr
         return Err(limit_exceeded());
     }
     // Prefer post-fence (presence-tagged history field). Fall back to pre-fence
-    // bytes that omit the field entirely (accept-and-stamp at restore).
-    match decode_manifest_body(encoded, true) {
-        Ok(manifest) if encode_manifest(&manifest)? == encoded => Ok(manifest),
-        Ok(_) => Err(corrupt()),
-        Err(_) => {
-            let manifest = decode_manifest_body(encoded, false)?;
-            if encode_manifest_pre_fence(&manifest)? != encoded {
-                return Err(corrupt());
-            }
-            Ok(manifest)
-        }
+    // bytes that omit the field entirely (accept-and-stamp at restore). On any
+    // post-fence parse/canonicalization mismatch, try the pre-fence parser
+    // rather than fail closed — pre-fence bytes can partially parse as post-fence.
+    if let Ok(manifest) = decode_manifest_body(encoded, true)
+        && encode_manifest(&manifest)? == encoded
+    {
+        return Ok(manifest);
     }
+    let manifest = decode_manifest_body(encoded, false)?;
+    if encode_manifest_pre_fence(&manifest)? != encoded {
+        return Err(corrupt());
+    }
+    Ok(manifest)
 }
 
 fn decode_manifest_body(
@@ -1508,5 +1510,103 @@ mod tests {
                 .kind(),
             StorageErrorKind::IncompatibleFormat
         );
+    }
+
+    #[test]
+    fn pre_fence_manifest_and_stamp_round_trip() {
+        let checksum = BackupIntegrityChecksumV1::new(vec![0x5a; SHA256_BYTES]).expect("checksum");
+        let pre_fence = DatabaseFacts {
+            storage_format_version: StorageFormatVersion::V1,
+            database_id: database_id(),
+            catalog_bundles: Vec::new(),
+            active_catalog: None,
+            last_commit_sequence: None,
+            history_incarnation: None,
+        }
+        .into_manifest(checksum.clone(), build_metadata())
+        .expect("pre-fence manifest");
+        let encoded = encode_manifest_pre_fence(&pre_fence).expect("encode pre-fence");
+        let decoded = decode_manifest(&encoded).expect("decode pre-fence via dual-path");
+        assert_eq!(decoded.history_incarnation(), None);
+        assert_eq!(decoded.database_id(), pre_fence.database_id());
+
+        // Post-fence encode with presence tag also round-trips.
+        let with_field = DatabaseFacts {
+            storage_format_version: StorageFormatVersion::V1,
+            database_id: database_id(),
+            catalog_bundles: Vec::new(),
+            active_catalog: None,
+            last_commit_sequence: None,
+            history_incarnation: Some(1),
+        }
+        .into_manifest(checksum, build_metadata())
+        .expect("post-fence manifest");
+        let post = encode_manifest(&with_field).expect("encode post-fence");
+        assert_eq!(
+            decode_manifest(&post).expect("decode post-fence"),
+            with_field
+        );
+    }
+
+    #[test]
+    fn read_history_incarnation_absent_vs_unreadable() {
+        let root = std::env::temp_dir().join(format!(
+            "riffdb-history-read-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let db_path = root.join("database.redb");
+
+        // Absent file → open fails (not silently 0).
+        assert!(read_history_incarnation(&db_path).is_err());
+
+        let mut store = crate::RedbStore::open(&db_path).expect("open");
+        store
+            .initialize_database(database_id())
+            .expect("initialize");
+        drop(store);
+        assert_eq!(
+            read_history_incarnation(&db_path).expect("read present"),
+            Some(1)
+        );
+
+        // Truncate to corrupt: present-but-unreadable fails closed.
+        std::fs::write(&db_path, b"not-a-redb-file").expect("corrupt");
+        assert!(
+            read_history_incarnation(&db_path).is_err(),
+            "corrupt target must not be treated as incarnation 0"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stamp_history_incarnation_is_idempotent() {
+        let root = std::env::temp_dir().join(format!(
+            "riffdb-history-stamp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let db_path = root.join("database.redb");
+        let mut store = crate::RedbStore::open(&db_path).expect("open");
+        store
+            .initialize_database(database_id())
+            .expect("initialize");
+        drop(store);
+
+        stamp_history_incarnation(&db_path, 2).expect("stamp 2");
+        assert_eq!(read_history_incarnation(&db_path).expect("read"), Some(2));
+        stamp_history_incarnation(&db_path, 2).expect("idempotent stamp");
+        assert_eq!(read_history_incarnation(&db_path).expect("read"), Some(2));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
