@@ -10,7 +10,7 @@ usage() {
         '         [--concurrent-clients N] [--concurrent-operations N]' \
         '         [--load interactive|agent|membership_contention] [--load-clients N] [--load-duration-secs N]' \
         '         [--load-warmup-secs N] [--load-zipf-s F] [--load-contended]' \
-        '         [--load-saturate] [--load-saturate-p99-ms N]' \
+        '         [--load-saturate] [--load-saturate-p99-ms N] [--load-concurrency-sweep]' \
         '         [--load-riffdb-transport per-session|shared]' \
         '         [--output PATH] [--assert-write-parity|--assert-all-parity]' \
         '         [--skip-postgres] [--skip-riffdb]' >&2
@@ -37,6 +37,7 @@ load_zipf_s=
 load_contended=0
 load_saturate=0
 load_saturate_p99_ms=
+load_concurrency_sweep=0
 load_riffdb_transport=
 output=
 while (($#)); do
@@ -101,6 +102,10 @@ while (($#)); do
             load_saturate_p99_ms="$2"
             shift 2
             ;;
+        --load-concurrency-sweep)
+            load_concurrency_sweep=1
+            shift
+            ;;
         --load-riffdb-transport)
             (($# >= 2)) || usage
             load_riffdb_transport="$2"
@@ -122,7 +127,11 @@ done
 out_dir=target/app-baseline
 mkdir -p "$out_dir"
 if [[ -n "$load_profile" ]]; then
-    report="${output:-$repo_root/$out_dir/load-report-v1.json}"
+    if ((load_concurrency_sweep)); then
+        report="${output:-$repo_root/$out_dir/load-concurrency-sweep-v1.json}"
+    else
+        report="${output:-$repo_root/$out_dir/load-report-v1.json}"
+    fi
 else
     report="${output:-$repo_root/$out_dir/report-v1.json}"
 fi
@@ -154,6 +163,7 @@ fi
 ((load_contended)) && extra_args+=(--load-contended)
 ((load_saturate)) && extra_args+=(--load-saturate)
 [[ -n "$load_saturate_p99_ms" ]] && extra_args+=(--load-saturate-p99-ms "$load_saturate_p99_ms")
+((load_concurrency_sweep)) && extra_args+=(--load-concurrency-sweep)
 [[ -n "$load_riffdb_transport" ]] && extra_args+=(--load-riffdb-transport "$load_riffdb_transport")
 ((skip_postgres)) && extra_args+=(--skip-postgres)
 ((skip_riffdb)) && extra_args+=(--skip-riffdb)
@@ -168,12 +178,18 @@ if ((skip_postgres == 0)); then
         }
         image='postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818'
         docker pull "$image" >/dev/null
+        # Concurrency sweep needs 128 client sessions (+ reserved + harness).
+        # Default max_connections=100 is too low for the c=128 point.
+        pg_args=()
+        if ((load_concurrency_sweep)); then
+            pg_args+=(-c max_connections=200)
+        fi
         docker run -d --rm --name "$postgres_container" \
             -e POSTGRES_USER=riffdb \
             -e POSTGRES_PASSWORD=riffdb \
             -e POSTGRES_DB=riffdb_app_baseline \
             -p 127.0.0.1::5432 \
-            "$image" >/dev/null
+            "$image" "${pg_args[@]}" >/dev/null
         postgres_started=1
         for _ in $(seq 1 90); do
             host_port="$(docker port "$postgres_container" 5432/tcp 2>/dev/null | head -n1 | awk -F: '{print $NF}')"

@@ -11,9 +11,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use riffdb_app_baseline_core::{
-    AppBackend, BackendReport, LoadConfig, LoadExecutionShape, RIFFDB_MAX_LOAD_CLIENTS,
-    RIFFDB_SATURATE_LOAD_CLIENTS, SATURATE_COORDINATOR_WORKLOAD_CAPACITY, Scale, SeedDataset,
-    WorkloadProfile, build_report, print_load_summary, run_closed_loop_load, run_scenarios,
+    AppBackend, BackendReport, LOAD_CONCURRENCY_SWEEP_CLIENTS, LoadConfig, LoadExecutionShape,
+    RIFFDB_MAX_LOAD_CLIENTS, RIFFDB_SATURATE_LOAD_CLIENTS, SATURATE_COORDINATOR_WORKLOAD_CAPACITY,
+    Scale, SeedDataset, WorkloadProfile, build_report, concurrency_curve_point,
+    print_concurrency_sweep_summary, print_load_summary, run_closed_loop_load, run_scenarios,
 };
 use riffdb_app_baseline_postgres::PostgresAppBackend;
 use riffdb_app_baseline_riffdb::{RiffDbServerSession, ServerStartOptions};
@@ -208,8 +209,15 @@ fn run_load(args: Args) -> Result<(), String> {
         base_config.saturate_fanout = riffdb_app_baseline_core::SATURATE_DEFAULT_FANOUT;
     }
 
+    let client_points: Vec<usize> = if args.load_concurrency_sweep {
+        LOAD_CONCURRENCY_SWEEP_CLIENTS.to_vec()
+    } else {
+        vec![base_config.clients]
+    };
+
     let dataset = SeedDataset::generate(args.scale);
     let mut reports = Vec::new();
+    let mut curve = Vec::new();
 
     // Saturate is riffdb-only; never force 512 PG sessions.
     let skip_postgres = args.skip_postgres || args.load_saturate;
@@ -223,16 +231,16 @@ fn run_load(args: Args) -> Result<(), String> {
                 "PostgreSQL required: pass --postgres-url or set RIFFDB_APP_BASELINE_POSTGRES_URL"
                     .to_owned()
             })?;
-        let config = base_config.clone();
         let mut postgres = PostgresAppBackend::new(&url).map_err(|error| error.to_string())?;
         let capacity = postgres
             .load_session_capacity()
             .map_err(|error| error.to_string())?;
-        if config.clients > capacity {
+        let max_clients = *client_points.iter().max().unwrap_or(&1);
+        if max_clients > capacity {
             return Err(format!(
-                "--load-clients={} exceeds live PostgreSQL safe session capacity {capacity}; \
-                 raise max_connections or select no more than {capacity}",
-                config.clients
+                "concurrency sweep/load clients max {max_clients} exceeds live PostgreSQL safe \
+                 session capacity {capacity}; raise max_connections (e.g. docker -c max_connections=200) \
+                 or lower the client set"
             ));
         }
         postgres.reset().map_err(|error| error.to_string())?;
@@ -242,25 +250,35 @@ fn run_load(args: Args) -> Result<(), String> {
         // Drop seeder before load so workers own fresh connections.
         drop(postgres);
         let url = Arc::new(url);
-        let report = run_closed_loop_load(
-            "postgres_sql",
-            config,
-            LoadExecutionShape {
-                transport_topology: "per_session_tcp",
-                command_attempt_budget: 1,
-            },
-            &dataset,
-            seed_ns,
-            move || {
-                let mut backend =
-                    PostgresAppBackend::new(url.as_str()).map_err(|error| error.to_string())?;
-                // Prepare every timed statement before the shared measure window.
-                backend.prewarm().map_err(|error| error.to_string())?;
-                Ok(backend)
-            },
-        )?;
-        print_load_summary(&report);
-        reports.push(report.to_json());
+        // Each sweep point needs fresh write identities; leave a wide gap so
+        // warmup+measure ops never collide with the previous point.
+        const SAMPLE_GAP: u64 = 1_000_000_000;
+        for (point_index, &clients) in client_points.iter().enumerate() {
+            let mut config = base_config.clone();
+            config.clients = clients;
+            config.sample_id_base = (point_index as u64).saturating_mul(SAMPLE_GAP);
+            let url = Arc::clone(&url);
+            let report = run_closed_loop_load(
+                "postgres_sql",
+                config,
+                LoadExecutionShape {
+                    transport_topology: "per_session_tcp",
+                    command_attempt_budget: 1,
+                },
+                &dataset,
+                seed_ns,
+                move || {
+                    let mut backend = PostgresAppBackend::new(url.as_str())
+                        .map_err(|error| error.to_string())?;
+                    // Prepare every timed statement before the shared measure window.
+                    backend.prewarm().map_err(|error| error.to_string())?;
+                    Ok(backend)
+                },
+            )?;
+            print_load_summary(&report);
+            curve.push(concurrency_curve_point(&report));
+            reports.push(report.to_json());
+        }
     }
 
     if !args.skip_riffdb {
@@ -298,11 +316,6 @@ fn run_load(args: Args) -> Result<(), String> {
         }
         let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let prototype = session.backend.clone().with_command_attempt_budget(1);
-        let config = base_config.clone().with_client_cap(if args.load_saturate {
-            RIFFDB_SATURATE_LOAD_CLIENTS
-        } else {
-            RIFFDB_MAX_LOAD_CLIENTS
-        });
         // Long-lived per-session workers under saturate: continuous concurrency
         // against the reduced coordinator capacity without HTTP/2 stream caps.
         let transport_topology = if args.load_saturate {
@@ -310,38 +323,77 @@ fn run_load(args: Args) -> Result<(), String> {
         } else {
             args.riffdb_transport
         };
-        let mut report = run_closed_loop_load(
-            "riffdb_public_grpc",
-            config,
-            LoadExecutionShape {
-                transport_topology: transport_topology.as_report_str(),
-                command_attempt_budget: 1,
-            },
-            &dataset,
-            seed_ns,
-            move || {
-                let mut backend = match transport_topology {
-                    RiffDbTransport::PerSession => prototype.fresh_session(),
-                    RiffDbTransport::Shared => Ok(prototype.clone()),
-                }
-                .map_err(|error| error.to_string())?;
-                backend.prewarm().map_err(|error| error.to_string())?;
-                Ok(backend)
-            },
-        )?;
+        const SAMPLE_GAP: u64 = 1_000_000_000;
+        for (point_index, &clients) in client_points.iter().enumerate() {
+            let mut config = base_config
+                .clone()
+                .with_client_cap(if args.load_saturate {
+                    RIFFDB_SATURATE_LOAD_CLIENTS
+                } else {
+                    RIFFDB_MAX_LOAD_CLIENTS
+                });
+            config.clients = clients.clamp(
+                1,
+                if args.load_saturate {
+                    RIFFDB_SATURATE_LOAD_CLIENTS
+                } else {
+                    RIFFDB_MAX_LOAD_CLIENTS
+                },
+            );
+            // Offset independently of Postgres so each backend's first point is
+            // base 0; gaps only matter within one backend's accumulated state.
+            config.sample_id_base = (point_index as u64).saturating_mul(SAMPLE_GAP);
+            let prototype = prototype.clone();
+            let report = run_closed_loop_load(
+                "riffdb_public_grpc",
+                config,
+                LoadExecutionShape {
+                    transport_topology: transport_topology.as_report_str(),
+                    command_attempt_budget: 1,
+                },
+                &dataset,
+                seed_ns,
+                move || {
+                    let mut backend = match transport_topology {
+                        RiffDbTransport::PerSession => prototype.fresh_session(),
+                        RiffDbTransport::Shared => Ok(prototype.clone()),
+                    }
+                    .map_err(|error| error.to_string())?;
+                    backend.prewarm().map_err(|error| error.to_string())?;
+                    Ok(backend)
+                },
+            )?;
+            print_load_summary(&report);
+            curve.push(concurrency_curve_point(&report));
+            reports.push(report.to_json());
+        }
+        // Write-group histogram is process-lifetime; attach to the last RiffDB point.
         let groups = session.shutdown().map_err(|error| error.to_string())?;
-        report.write_completion_groups = Some(groups.to_vec());
-        print_load_summary(&report);
-        reports.push(report.to_json());
+        if let Some(last) = reports
+            .iter_mut()
+            .rev()
+            .find(|report| report["backend_id"].as_str() == Some("riffdb_public_grpc"))
+        {
+            last["write_completion_groups_by_size"] = json!(groups.to_vec());
+        }
     }
 
     if reports.is_empty() {
         return Err("no backends selected".to_owned());
     }
+    if args.load_concurrency_sweep {
+        print_concurrency_sweep_summary(&curve);
+    }
     let correctness_failures = reports
         .iter()
         .filter_map(|report| {
             let backend = report["backend_id"].as_str()?;
+            let clients = report["clients"].as_u64().unwrap_or(0);
+            let label = if args.load_concurrency_sweep {
+                format!("{backend}@c={clients}")
+            } else {
+                backend.to_owned()
+            };
             let unavailable = report["aggregate"]["outcomes"]["unavailable"]
                 .as_u64()
                 .unwrap_or(0);
@@ -411,7 +463,7 @@ fn run_load(args: Args) -> Result<(), String> {
                     }
                 }
             }
-            (!parts.is_empty()).then(|| format!("{backend}: {}", parts.join("; ")))
+            (!parts.is_empty()).then(|| format!("{label}: {}", parts.join("; ")))
         })
         .collect::<Vec<_>>();
     let encoded = serde_json::to_string_pretty(&json!({
@@ -421,13 +473,29 @@ fn run_load(args: Args) -> Result<(), String> {
             "approximate_row_count": args.scale.approximate_row_count(),
         },
         "comparison": {
-            "requested_clients": base_config.clients,
+            "requested_clients": if args.load_concurrency_sweep {
+                serde_json::Value::Null
+            } else {
+                json!(base_config.clients)
+            },
+            "concurrency_sweep": args.load_concurrency_sweep,
+            "client_points": client_points,
             "riffdb_transport": args.riffdb_transport.as_report_str(),
             "automatic_command_retries": false,
             "contended": args.load_contended,
             "saturate": args.load_saturate,
             "saturate_p99_ceiling_ms": args.load_saturate_p99_ms,
+            "notes": if args.load_concurrency_sweep {
+                json!([
+                    "Concurrency sweep: same workload mix, warmup, and measure window at each client_points entry.",
+                    "Seed once per backend; points run low→high so later points see accumulated write history.",
+                    "Curve is the defensible scaling evidence (throughput and latency vs clients), not a two-point inference."
+                ])
+            } else {
+                json!([])
+            },
         },
+        "curve": curve,
         "correctness": {
             "clean": correctness_failures.is_empty(),
             "failures": &correctness_failures,
@@ -674,6 +742,8 @@ struct Args {
     load_contended: bool,
     load_saturate: bool,
     load_saturate_p99_ms: u64,
+    /// Same mix at client points 1/8/32/128 (curve evidence).
+    load_concurrency_sweep: bool,
     riffdb_transport: RiffDbTransport,
 }
 
@@ -699,6 +769,7 @@ impl Args {
         let mut load_contended = false;
         let mut load_saturate = false;
         let mut load_saturate_p99_ms = 250;
+        let mut load_concurrency_sweep = false;
         let mut riffdb_transport = RiffDbTransport::PerSession;
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
@@ -795,6 +866,7 @@ impl Args {
                 }
                 "--load-contended" => load_contended = true,
                 "--load-saturate" => load_saturate = true,
+                "--load-concurrency-sweep" => load_concurrency_sweep = true,
                 "--load-saturate-p99-ms" => {
                     load_saturate_p99_ms = args
                         .next()
@@ -817,6 +889,7 @@ impl Args {
                          [--load interactive|agent|membership_contention] [--load-clients N] \
                          [--load-duration-secs N] [--load-warmup-secs N] [--load-zipf-s F] \
                          [--load-contended] [--load-saturate] [--load-saturate-p99-ms N] \
+                         [--load-concurrency-sweep] \
                          [--load-riffdb-transport per-session|shared] \
                          [--skip-postgres] [--skip-riffdb]"
                             .to_owned(),
@@ -855,9 +928,22 @@ impl Args {
                 || load_zipf_s.is_some()
                 || load_contended
                 || load_saturate
+                || load_concurrency_sweep
                 || riffdb_transport != RiffDbTransport::PerSession)
         {
             return Err("--load-* options require --load".to_owned());
+        }
+        if load_concurrency_sweep && load_clients.is_some() {
+            return Err(
+                "--load-concurrency-sweep is incompatible with --load-clients (points are 1/8/32/128)"
+                    .to_owned(),
+            );
+        }
+        if load_concurrency_sweep && load_saturate {
+            return Err(
+                "--load-concurrency-sweep is for the ordinary interactive/agent mix, not --load-saturate"
+                    .to_owned(),
+            );
         }
         if assert_write_parity && load_profile.is_some() {
             return Err(
@@ -888,6 +974,7 @@ impl Args {
             load_contended,
             load_saturate,
             load_saturate_p99_ms,
+            load_concurrency_sweep,
             riffdb_transport,
         })
     }
@@ -955,6 +1042,35 @@ mod tests {
             .err()
             .expect("must reject");
         assert_eq!(error, "--load-* options require --load");
+    }
+
+    #[test]
+    fn concurrency_sweep_rejects_load_clients() {
+        let error = Args::parse(
+            [
+                "--load",
+                "interactive",
+                "--load-concurrency-sweep",
+                "--load-clients",
+                "16",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .err()
+        .expect("must reject");
+        assert!(error.contains("--load-concurrency-sweep"));
+    }
+
+    #[test]
+    fn concurrency_sweep_flag_parses() {
+        let args = Args::parse(
+            ["--load", "interactive", "--load-concurrency-sweep"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .expect("sweep");
+        assert!(args.load_concurrency_sweep);
     }
 
     #[test]
