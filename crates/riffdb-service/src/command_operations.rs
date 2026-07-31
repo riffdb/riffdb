@@ -56,7 +56,10 @@ use crate::{
     ensure_response_budget,
 };
 
-/// One group-commit turn at queue depth 128 — absolute admission wait cap.
+/// Absolute closed admission wait across queue-depth and retained-byte stages
+/// (ADR-0071: at most one group-commit turn at depth). Both stages share one
+/// deadline computed at the first wait; a queue wait that consumes the budget
+/// leaves retained-byte acquisition with no additional wait window.
 ///
 /// Fairness note: `try_reserve` may barge ahead of waiters parked on
 /// `reserve_capacity`, so rejections under sustained depth tend to concentrate
@@ -2274,13 +2277,17 @@ async fn admit_command_capacity(
 
     match service.executors.command.try_reserve_capacity() {
         Ok(permit) => {
-            return attach_retained_bytes(service, context, permit, units, operation, ingress)
-                .await;
+            // No queue wait: open the absolute window only if retained bytes wait.
+            return attach_retained_bytes(
+                service, context, permit, units, operation, ingress, None,
+            )
+            .await;
         }
         Err(CommandExecutionAdmissionError::Overloaded) => {}
         Err(error) => return Err(map_command_admission(service, error)),
     }
 
+    // First wait is queue depth — open the absolute closed admission window here.
     let admission_deadline = match admission_deadline(context) {
         Ok(deadline) => deadline,
         Err(AdmissionBudget::RejectImmediately) => {
@@ -2303,7 +2310,17 @@ async fn admit_command_capacity(
     .await
     {
         Ok(Ok(permit)) => {
-            attach_retained_bytes(service, context, permit, units, operation, ingress).await
+            // Share remaining budget with retained-byte stage (not a second +150 ms).
+            attach_retained_bytes(
+                service,
+                context,
+                permit,
+                units,
+                operation,
+                ingress,
+                Some(admission_deadline),
+            )
+            .await
         }
         Ok(Err(error)) => Err(map_command_admission(service, error)),
         Err(AdmissionWaitError::Cancelled) => Err(ServiceFailure::Cancelled),
@@ -2338,6 +2355,11 @@ fn admission_deadline(context: &RequestContext) -> Result<Instant, AdmissionBudg
     Ok(floor_deadline.min(capped_deadline))
 }
 
+/// Attaches retained-byte budget under the shared absolute admission deadline.
+///
+/// `opened_deadline` is `Some` when queue depth already opened the closed window;
+/// retained bytes then use only the remainder. When `None`, this stage is the
+/// first wait and opens the window itself (still one absolute 150 ms, not stacked).
 async fn attach_retained_bytes(
     service: &RiffDbServiceInner,
     context: &RequestContext,
@@ -2345,6 +2367,7 @@ async fn attach_retained_bytes(
     units: u32,
     operation: ServiceOperationV1,
     ingress: riffdb_types::ServiceIngressKindV1,
+    opened_deadline: Option<Instant>,
 ) -> Result<CommandExecutionCapacityPermit, ServiceFailure> {
     match service.executors.command.try_acquire_retained_bytes(units) {
         Ok(byte_permit) => return Ok(permit.with_retained_bytes(byte_permit, units)),
@@ -2356,19 +2379,34 @@ async fn attach_retained_bytes(
         }
     }
 
-    // Same closed admission window as queue depth (ADR-0071 one contract).
-    let admission_deadline = match admission_deadline(context) {
-        Ok(deadline) => deadline,
-        Err(AdmissionBudget::RejectImmediately) => {
-            drop(permit);
-            record_capacity_rejected(
-                service,
-                operation,
-                ingress,
-                CapacityRejectionStage::RetainedBytes,
-            );
-            return Err(PublicError::overloaded().into());
+    let admission_deadline = match opened_deadline {
+        Some(deadline) => {
+            // Remainder of the shared window only.
+            if Instant::now() >= deadline {
+                drop(permit);
+                record_capacity_rejected(
+                    service,
+                    operation,
+                    ingress,
+                    CapacityRejectionStage::RetainedBytes,
+                );
+                return Err(PublicError::overloaded().into());
+            }
+            deadline
         }
+        None => match admission_deadline(context) {
+            Ok(deadline) => deadline,
+            Err(AdmissionBudget::RejectImmediately) => {
+                drop(permit);
+                record_capacity_rejected(
+                    service,
+                    operation,
+                    ingress,
+                    CapacityRejectionStage::RetainedBytes,
+                );
+                return Err(PublicError::overloaded().into());
+            }
+        },
     };
 
     match wait_for_admission_capacity(

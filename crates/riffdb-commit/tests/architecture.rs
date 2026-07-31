@@ -1428,6 +1428,9 @@ fn reviewed_tokio_owner_and_lock_graph_are_frozen() {
             "riffdb-api-grpc",
             "riffdb-api-mcp",
             "riffdb-cli",
+            // Client: `time` only for non-blocking Overloaded backoff (already
+            // transitive via tonic; see riffdb-client-rust Cargo.toml comment).
+            "riffdb-client-rust",
             "riffdb-commit",
             "riffdb-mcp-stdio",
             "riffdb-server",
