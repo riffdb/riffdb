@@ -2,7 +2,7 @@
 
 use riffdb_errors::{
     ApplicationError, ApplicationErrorCode, ErrorClass, MAX_APPLICATION_ERROR_BYTES, PublicError,
-    PublicErrorKind,
+    PublicErrorStatusCode,
 };
 use riffdb_proto::{MAX_PUBLIC_ERROR_BYTES, application_error_to_proto, public_error_to_proto};
 use riffdb_service::{ApplicationErrorContextBuilder, ServiceFailure};
@@ -121,15 +121,12 @@ pub const fn application_grpc_code(code: ApplicationErrorCode) -> Code {
 
 /// Returns the gRPC status code for one public error.
 ///
-/// Kind-level overrides run before the class fallback so overload rejections
-/// remain certain-not-executed (`ResourceExhausted`) while keeping class
-/// classification as [`ErrorClass::Unavailable`].
+/// Delegates to the single authoritative mapping on
+/// [`PublicError::status_code`] so server encoding cannot diverge from client
+/// validation.
 #[must_use]
 pub const fn grpc_code_for_public_error(error: &PublicError) -> Code {
-    match error.kind() {
-        PublicErrorKind::Overloaded => Code::ResourceExhausted,
-        _ => grpc_code(error.class()),
-    }
+    tonic_code(error.status_code())
 }
 
 /// Returns the canonical gRPC status code for one protocol-neutral error class.
@@ -144,6 +141,20 @@ pub const fn grpc_code(class: ErrorClass) -> Code {
         ErrorClass::Unavailable => Code::Unavailable,
         ErrorClass::Uncertain => Code::Unknown,
         ErrorClass::Internal => Code::Internal,
+    }
+}
+
+const fn tonic_code(code: PublicErrorStatusCode) -> Code {
+    match code {
+        PublicErrorStatusCode::InvalidArgument => Code::InvalidArgument,
+        PublicErrorStatusCode::AlreadyExists => Code::AlreadyExists,
+        PublicErrorStatusCode::PermissionDenied => Code::PermissionDenied,
+        PublicErrorStatusCode::DeadlineExceeded => Code::DeadlineExceeded,
+        PublicErrorStatusCode::FailedPrecondition => Code::FailedPrecondition,
+        PublicErrorStatusCode::ResourceExhausted => Code::ResourceExhausted,
+        PublicErrorStatusCode::Unavailable => Code::Unavailable,
+        PublicErrorStatusCode::Unknown => Code::Unknown,
+        PublicErrorStatusCode::Internal => Code::Internal,
     }
 }
 
@@ -214,6 +225,76 @@ mod tests {
             decode_public_error(overloaded_status.details()),
             Ok(overloaded)
         );
+    }
+
+    #[test]
+    fn every_public_kind_status_is_accepted_by_the_client() {
+        use riffdb_client_rust::ClientError;
+        use riffdb_errors::{
+            PublicErrorKind, ValidationCode, ValidationIssue, ValidationIssues, ValidationPath,
+            ValidationPathSegment,
+        };
+        use riffdb_types::{ContractVersion, ExecutionFailureCode, FieldId, IncidentId};
+
+        let mut incident = [0x42; 16];
+        incident[6] = 0x72;
+        incident[8] = 0x82;
+        let incident_id = IncidentId::from_bytes(incident).expect("UUIDv7");
+        let kinds = [
+            PublicErrorKind::Validation,
+            PublicErrorKind::IdempotencyKeyReuse,
+            PublicErrorKind::AuthorizationDenied,
+            PublicErrorKind::ConcurrencyDeadlineExceeded,
+            PublicErrorKind::ContractMismatch,
+            PublicErrorKind::StorageUnavailable,
+            PublicErrorKind::OutcomeUnknown,
+            PublicErrorKind::InternalDefect,
+            PublicErrorKind::CommandExecutionFailed,
+            PublicErrorKind::HistoryIncarnationMismatch,
+            PublicErrorKind::Overloaded,
+        ];
+        for kind in kinds {
+            let error = match kind {
+                PublicErrorKind::Validation => {
+                    PublicError::validation(ValidationIssues::one(ValidationIssue::new(
+                        ValidationCode::InvalidValue,
+                        ValidationPath::new(vec![ValidationPathSegment::Field(
+                            FieldId::new(1).expect("field"),
+                        )])
+                        .expect("path"),
+                    )))
+                }
+                PublicErrorKind::IdempotencyKeyReuse => PublicError::idempotency_key_reuse(),
+                PublicErrorKind::AuthorizationDenied => PublicError::authorization_denied(),
+                PublicErrorKind::ConcurrencyDeadlineExceeded => {
+                    PublicError::concurrency_deadline_exceeded()
+                }
+                PublicErrorKind::ContractMismatch => PublicError::contract_mismatch(
+                    ContractVersion::new(1).expect("contract version"),
+                ),
+                PublicErrorKind::StorageUnavailable => PublicError::storage_unavailable(),
+                PublicErrorKind::OutcomeUnknown => PublicError::outcome_unknown(),
+                PublicErrorKind::InternalDefect => PublicError::internal_defect(incident_id),
+                PublicErrorKind::CommandExecutionFailed => {
+                    PublicError::command_execution_failed(ExecutionFailureCode::ArithmeticFault)
+                }
+                PublicErrorKind::HistoryIncarnationMismatch => {
+                    PublicError::history_incarnation_mismatch()
+                }
+                PublicErrorKind::Overloaded => PublicError::overloaded(),
+            };
+            assert_eq!(error.kind(), kind);
+            let status = status_from_public_error(&error);
+            assert_eq!(
+                status.code(),
+                tonic_code(error.status_code()),
+                "server code for {kind:?}"
+            );
+            match ClientError::from_status(status) {
+                ClientError::Public(decoded) => assert_eq!(decoded, error),
+                other => panic!("client rejected {kind:?}: {other:?}"),
+            }
+        }
     }
 
     #[test]

@@ -4,8 +4,8 @@ use std::error::Error;
 use std::fmt;
 
 use riffdb_errors::{
-    ApplicationError, ApplicationErrorCode, ErrorClass, MAX_APPLICATION_ERROR_BYTES, PublicError,
-    PublicErrorKind,
+    ApplicationError, ApplicationErrorCode, MAX_APPLICATION_ERROR_BYTES, PublicError,
+    PublicErrorKind, PublicErrorStatusCode,
 };
 use riffdb_proto::{
     ApplicationErrorWireError, MAX_PUBLIC_ERROR_BYTES, PublicErrorWireError,
@@ -273,22 +273,20 @@ fn checked_details_free_status(code: Code, message: &str, has_local_source: bool
 }
 
 const fn code_for_public_error(error: &PublicError) -> Code {
-    match error.kind() {
-        PublicErrorKind::Overloaded => Code::ResourceExhausted,
-        _ => code_for_class(error.class()),
-    }
+    tonic_code(error.status_code())
 }
 
-const fn code_for_class(class: ErrorClass) -> Code {
-    match class {
-        ErrorClass::InvalidArgument => Code::InvalidArgument,
-        ErrorClass::Conflict => Code::AlreadyExists,
-        ErrorClass::PermissionDenied => Code::PermissionDenied,
-        ErrorClass::DeadlineExceeded => Code::DeadlineExceeded,
-        ErrorClass::FailedPrecondition => Code::FailedPrecondition,
-        ErrorClass::Unavailable => Code::Unavailable,
-        ErrorClass::Uncertain => Code::Unknown,
-        ErrorClass::Internal => Code::Internal,
+const fn tonic_code(code: PublicErrorStatusCode) -> Code {
+    match code {
+        PublicErrorStatusCode::InvalidArgument => Code::InvalidArgument,
+        PublicErrorStatusCode::AlreadyExists => Code::AlreadyExists,
+        PublicErrorStatusCode::PermissionDenied => Code::PermissionDenied,
+        PublicErrorStatusCode::DeadlineExceeded => Code::DeadlineExceeded,
+        PublicErrorStatusCode::FailedPrecondition => Code::FailedPrecondition,
+        PublicErrorStatusCode::ResourceExhausted => Code::ResourceExhausted,
+        PublicErrorStatusCode::Unavailable => Code::Unavailable,
+        PublicErrorStatusCode::Unknown => Code::Unknown,
+        PublicErrorStatusCode::Internal => Code::Internal,
     }
 }
 
@@ -401,6 +399,8 @@ pub(crate) const fn carries_uncertainty(error: &ClientError) -> bool {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+
+    use riffdb_errors::ErrorClass;
 
     use super::*;
 
