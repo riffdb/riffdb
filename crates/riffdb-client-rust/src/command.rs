@@ -16,7 +16,7 @@ use crate::status::{ClientError, OutcomeUnknown, carries_uncertainty, is_retryab
 ///
 /// RiffDB defines no default attempt count in the POC. Same-input recovery is
 /// budgeted here; Overloaded retries apply bounded exponential backoff with
-/// jitter (see [`RetryState::overloaded_backoff`]) to avoid retry storms.
+/// jitter (via a bounded async backoff) to avoid retry storms.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AttemptBudget(NonZeroU32);
 
