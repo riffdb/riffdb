@@ -1771,6 +1771,7 @@ dependencies = [
  "base64",
  "riffdb-api-mcp",
  "riffdb-client-rust",
+ "riffdb-types",
  "serde",
  "serde_json",
  "tokio",

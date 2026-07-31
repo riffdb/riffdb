@@ -11,15 +11,15 @@ use riffdb_service::{
     BootstrapCapabilityRequest, BootstrapCapabilityResult, CapabilityIdentityView,
     CapabilityTransitionView, CheckSymbolicQueryResult, CommandDurability, CommandToolDescriptor,
     CommandToolDiscoveryItem, CommitSubscriptionEndReason, CommitSubscriptionEvent, CommitView,
-    CompactCommandToolDescriptor, CompactCommandToolDiscoveryItem, CompactResourceDescriptor,
-    CompactResourceDescriptorRef, CompileSymbolicQueryRequest, ContractCompatibilityClass,
-    ContractDescriptor, ContractSelection, ContractSource, ContractValidationResult,
-    CreateCapabilityResult, CreateOfflineBackupRequest, CursorToken, DeclaredOutcomeView,
-    DeployContractRequest, DeployContractResult, DeployQueryModuleRequest, DeployQueryModuleResult,
-    DescribeSymbolicContractResult, DiscoverCommandToolsRequest, DiscoverCommandToolsResult,
-    DiscoverCommandToolsResultRef, DiscoverResourcesRequest, DiscoverResourcesResult,
-    DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryCatalogStateRef,
-    DiscoveryRepresentation, ExecuteCommandRequest, ExecuteCommandResult,
+    CompactCommandToolDescriptor, CompactCommandToolDiscoveryItem, CompactNamedQueryToolDescriptor,
+    CompactResourceDescriptor, CompactResourceDescriptorRef, CompileSymbolicQueryRequest,
+    ContractCompatibilityClass, ContractDescriptor, ContractSelection, ContractSource,
+    ContractValidationResult, CreateCapabilityResult, CreateOfflineBackupRequest, CursorToken,
+    DeclaredOutcomeView, DeployContractRequest, DeployContractResult, DeployQueryModuleRequest,
+    DeployQueryModuleResult, DescribeSymbolicContractResult, DiscoverCommandToolsRequest,
+    DiscoverCommandToolsResult, DiscoverCommandToolsResultRef, DiscoverResourcesRequest,
+    DiscoverResourcesResult, DiscoverResourcesResultRef, DiscoveryCatalogFence,
+    DiscoveryCatalogStateRef, DiscoveryRepresentation, ExecuteCommandRequest, ExecuteCommandResult,
     ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult, ExplainCommandRequest,
     ExplainCommandResult, ExplainSymbolicQueryResult, FieldSelection, FixedToolKind,
     GeneratedSchemaIdentity, GetActiveContractRequest, GetActiveContractResult, GetCommitRequest,
@@ -28,24 +28,25 @@ use riffdb_service::{
     GetProjectionStatusRequest, GetProjectionStatusResult, GetQueryModuleRequest,
     HealthComponentKind, HealthComponentStatus, HealthRequest, HealthResult, HealthStatus,
     JournaledCommandResult, JournaledCompletion, ListPendingOutboxDeliveriesRequest,
-    ListPendingOutboxDeliveriesResult, NamedSymbolicQueryRequest, NormalCreateCapabilityRequest,
-    NormalCreateCapabilityResult, OfflineMaintenanceObservationFailure,
-    OfflineMaintenanceObservationPhase, OfflineMaintenanceOperationObservation,
-    OfflineMaintenanceStartDisposition, OfflineMaintenanceStartResult, OperationSchemaArtifact,
-    OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
-    OutboxDeliveryState, OutcomeResourceLocator, PageLimit, PageRequest, PreBootstrapLifecycle,
-    ProjectionFailureCode, ProjectionLifecycle, ProjectionUnavailableReason, ProvenanceSelection,
-    PublishedApplyMode, QueryModuleActiveExpectation, QueryModuleDeploymentDisposition,
-    QueryModuleInspection, QueryProjectionRequest, QueryProjectionResult,
-    ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, ResourceDescriptor,
-    ResourceDescriptorRef, ResourceDiscoveryKind, RestoreOfflineBackupRequest,
-    RevokeCapabilityRequest, RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult,
-    ScanIndexRequest, ScanIndexResult, SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue,
-    SourceName, StatisticsRequest, StatisticsResult, SubmittedDecimal, SubmittedEnum,
-    SubmittedField, SubmittedFieldIdentity, SubmittedMoney, SubmittedRecord, SubmittedValue,
-    SubscribeToCommitsRequest, SymbolicContractSelector, SymbolicDiagnostic, SymbolicQueryIdentity,
-    SymbolicQueryParameters, SymbolicQuerySchema, SymbolicQuerySource, SymbolicResultField,
-    SymbolicResultRecord, TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
+    ListPendingOutboxDeliveriesResult, NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact,
+    NamedSymbolicQueryRequest, NormalCreateCapabilityRequest, NormalCreateCapabilityResult,
+    OfflineMaintenanceObservationFailure, OfflineMaintenanceObservationPhase,
+    OfflineMaintenanceOperationObservation, OfflineMaintenanceStartDisposition,
+    OfflineMaintenanceStartResult, OperationSchemaArtifact, OperationSchemaCatalog,
+    OperationSchemaCatalogIdentity, OperationSchemaIdentity, OutboxDeliveryState,
+    OutcomeResourceLocator, PageLimit, PageRequest, PreBootstrapLifecycle, ProjectionFailureCode,
+    ProjectionLifecycle, ProjectionUnavailableReason, ProvenanceSelection, PublishedApplyMode,
+    QueryModuleActiveExpectation, QueryModuleDeploymentDisposition, QueryModuleInspection,
+    QueryProjectionRequest, QueryProjectionResult, ResolveCommandOutcomeRequest,
+    ResolveCommandOutcomeResult, ResourceDescriptor, ResourceDescriptorRef, ResourceDiscoveryKind,
+    RestoreOfflineBackupRequest, RevokeCapabilityRequest, RevokeCapabilityResult,
+    ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult,
+    SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue, SourceName, StatisticsRequest,
+    StatisticsResult, SubmittedDecimal, SubmittedEnum, SubmittedField, SubmittedFieldIdentity,
+    SubmittedMoney, SubmittedRecord, SubmittedValue, SubscribeToCommitsRequest,
+    SymbolicContractSelector, SymbolicDiagnostic, SymbolicQueryIdentity, SymbolicQueryParameters,
+    SymbolicQuerySchema, SymbolicQuerySource, SymbolicResultField, SymbolicResultRecord,
+    TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
 };
 use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, ApplicationRoleHash, Audience, BackupNameV1,
@@ -1787,6 +1788,11 @@ fn command_tool_discovery_item_to_proto(
                 descriptor,
             )?)
         }
+        CommandToolDiscoveryItem::NamedQuery(descriptor) => {
+            v1::command_tool_discovery_item::Item::NamedQueryTool(
+                named_query_tool_descriptor_to_proto(descriptor),
+            )
+        }
     };
     Ok(v1::CommandToolDiscoveryItem { item: Some(item) })
 }
@@ -1803,6 +1809,11 @@ fn compact_command_tool_discovery_item_to_proto(
         CompactCommandToolDiscoveryItem::Command(descriptor) => {
             v1::compact_command_tool_discovery_item::Item::CommandTool(
                 compact_command_tool_descriptor_to_proto(descriptor)?,
+            )
+        }
+        CompactCommandToolDiscoveryItem::NamedQuery(descriptor) => {
+            v1::compact_command_tool_discovery_item::Item::NamedQueryTool(
+                compact_named_query_tool_descriptor_to_proto(descriptor),
             )
         }
     };
@@ -1879,6 +1890,47 @@ fn compact_command_tool_descriptor_to_proto(
             descriptor.outcome_schema(),
         )?),
     })
+}
+
+fn named_query_schema_to_proto(
+    schema: &NamedQueryToolSchemaArtifact,
+) -> v1::NamedQueryToolSchemaArtifact {
+    v1::NamedQueryToolSchemaArtifact {
+        schema_hash: schema.schema_hash().as_bytes().to_vec(),
+        canonical_json: schema.canonical_json().to_owned(),
+    }
+}
+
+fn named_query_tool_descriptor_to_proto(
+    descriptor: &NamedQueryToolDescriptor,
+) -> v1::NamedQueryToolDescriptor {
+    v1::NamedQueryToolDescriptor {
+        tool_name: descriptor.name().to_owned(),
+        source_query: descriptor.source_query().as_str().to_owned(),
+        contract_lineage: descriptor.lineage().as_str().to_owned(),
+        contract_version: descriptor.version().get(),
+        query_module_name: descriptor.module_name().as_str().to_owned(),
+        query_module_version: descriptor.module_version().get(),
+        query_module_hash: descriptor.module_hash().as_bytes().to_vec(),
+        input_schema: Some(named_query_schema_to_proto(descriptor.input_schema())),
+        result_schema: Some(named_query_schema_to_proto(descriptor.result_schema())),
+    }
+}
+
+fn compact_named_query_tool_descriptor_to_proto(
+    descriptor: &CompactNamedQueryToolDescriptor,
+) -> v1::CompactNamedQueryToolDescriptor {
+    v1::CompactNamedQueryToolDescriptor {
+        tool_name: descriptor.name().to_owned(),
+        source_query: descriptor.source_query().as_str().to_owned(),
+        contract_lineage: descriptor.lineage().as_str().to_owned(),
+        contract_version: descriptor.version().get(),
+        query_module_name: descriptor.module_name().as_str().to_owned(),
+        query_module_version: descriptor.module_version().get(),
+        query_module_hash: descriptor.module_hash().as_bytes().to_vec(),
+        input_schema_hash: descriptor.input_schema_hash().as_bytes().to_vec(),
+        result_schema_hash: descriptor.result_schema_hash().as_bytes().to_vec(),
+    }
 }
 
 fn resource_descriptor_to_proto(
@@ -2847,7 +2899,20 @@ fn semantic_discovery_fence_from_proto(
             let version =
                 ContractVersion::new(active.contract_version).ok_or_else(invalid_request)?;
             let bundle_hash = ContractBundleHash::from_bytes(exact_hash(&active.bundle_hash)?);
-            DiscoveryCatalogFence::active_contract(lineage, version, bundle_hash, operation_schemas)
+            let active_query_module_hash = if active.active_query_module_hash.is_empty() {
+                None
+            } else {
+                Some(QueryModuleHash::from_bytes(exact_hash(
+                    &active.active_query_module_hash,
+                )?))
+            };
+            DiscoveryCatalogFence::active_contract_with_query_module(
+                lineage,
+                version,
+                bundle_hash,
+                active_query_module_hash,
+                operation_schemas,
+            )
         }
     };
     Ok((supplied_generation == current_generation).then_some(semantic))
@@ -2913,6 +2978,9 @@ fn discovery_fence_to_proto(
             contract_lineage: lineage.as_str().to_owned(),
             contract_version: version.get(),
             bundle_hash: bundle_hash.as_bytes().to_vec(),
+            active_query_module_hash: fence
+                .active_query_module_hash()
+                .map_or_else(Vec::new, |hash| hash.as_bytes().to_vec()),
         }),
     };
     Ok(v1::DiscoveryCatalogFence {
@@ -3700,6 +3768,32 @@ mod tests {
             panic!("expected catalog unchanged")
         };
         assert_eq!(fence.server_generation, generation);
+    }
+
+    #[test]
+    fn discovery_fence_round_trips_active_query_module_identity() {
+        let generation = [0x61; 16];
+        let operation_schemas = OperationSchemaCatalog::accepted()
+            .expect("accepted operation schemas")
+            .identity();
+        let module_hash = QueryModuleHash::from_bytes([0x71; 32]);
+        let semantic = DiscoveryCatalogFence::active_contract_with_query_module(
+            ContractLineage::new("TicketDesk").expect("lineage"),
+            ContractVersion::new(7).expect("contract version"),
+            ContractBundleHash::from_bytes([0x42; 32]),
+            Some(module_hash),
+            operation_schemas,
+        );
+        let wire = discovery_fence_to_proto(&semantic, generation, 1).expect("public fence");
+        let Some(v1::discovery_catalog_fence::State::ActiveContract(active)) = wire.state.as_ref()
+        else {
+            panic!("active fence")
+        };
+        assert_eq!(active.active_query_module_hash, module_hash.as_bytes());
+        assert_eq!(
+            semantic_discovery_fence_from_proto(wire, generation).expect("semantic fence"),
+            Some(semantic)
+        );
     }
 
     #[test]

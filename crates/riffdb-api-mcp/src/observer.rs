@@ -175,6 +175,52 @@ impl McpVisibleFingerprint {
         )
     }
 
+    /// Constructs the common visible identity of one deployed named-query tool.
+    #[allow(clippy::too_many_arguments)]
+    pub fn named_query_tool(
+        name: &str,
+        source_query: &str,
+        contract_lineage: &str,
+        contract_version: u64,
+        module_name: &str,
+        module_version: u64,
+        module_hash: &[u8],
+        input_schema_hash: &[u8],
+        result_schema_hash: &[u8],
+    ) -> Result<Self, McpObserverError> {
+        if name.is_empty()
+            || name.len() > 128
+            || !name.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+            || source_query.is_empty()
+            || contract_lineage.is_empty()
+            || contract_version == 0
+            || module_name.is_empty()
+            || module_version == 0
+            || module_hash.len() != 32
+            || input_schema_hash.len() != 32
+            || result_schema_hash.len() != 32
+        {
+            return Err(McpObserverError::Unsupported);
+        }
+        Self::from_components(
+            5,
+            &[
+                name.as_bytes(),
+                source_query.as_bytes(),
+                contract_lineage.as_bytes(),
+                &contract_version.to_be_bytes(),
+                module_name.as_bytes(),
+                &module_version.to_be_bytes(),
+                module_hash,
+                input_schema_hash,
+                result_schema_hash,
+            ],
+        )
+    }
+
     /// Constructs the common visible identity of one checked resource descriptor.
     pub fn resource_descriptor(
         descriptor: &crate::McpResourceDescriptor,

@@ -42,6 +42,7 @@ fn fence(active: bool, generation: u8) -> v1::DiscoveryCatalogFence {
                 contract_lineage: "budget".to_owned(),
                 contract_version: 1,
                 bundle_hash: vec![0x44; 32],
+                active_query_module_hash: Vec::new(),
             })
         } else {
             v1::discovery_catalog_fence::State::NoActiveContract(v1::Unit {})

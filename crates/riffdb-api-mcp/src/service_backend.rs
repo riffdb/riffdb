@@ -22,14 +22,15 @@ use riffdb_service::{
     FieldSelection, GetActiveContractRequest, GetActiveContractResult, GetCommitRequest,
     GetContractVersionRequest, GetContractVersionResult, GetEntityRequest,
     GetProjectionStatusRequest, GetProjectionStatusResult, HealthContext, HealthRequest,
-    HealthResult, ListPendingOutboxDeliveriesRequest, OperationSchemaCatalog, PageLimit,
-    PageRequest, ProvenanceSelection, QueryProjectionRequest, RequestCancellationHandle,
-    RequestContext, RequestControl, ResolveCommandOutcomeRequest, ResourceDescriptorRef,
-    ResourceDiscoveryKind, ScanCommitsRequest, ScanIndexRequest, ServiceFailure, SourceName,
-    SubmittedDecimal, SubmittedField, SubmittedFieldIdentity, SubmittedList, SubmittedMoney,
-    SubmittedRecord, SubmittedValue, SymbolicContractSelector, SymbolicDiagnostic,
-    SymbolicQueryIdentity, SymbolicQueryParameters, SymbolicQuerySchema, SymbolicQuerySource,
-    SymbolicResultField, SymbolicResultRecord, TraceProvenanceRequest, ValidateContractRequest,
+    HealthResult, ListPendingOutboxDeliveriesRequest, NamedQueryToolDescriptor,
+    NamedSymbolicQueryRequest, OperationSchemaCatalog, PageLimit, PageRequest, ProvenanceSelection,
+    QueryProjectionRequest, RequestCancellationHandle, RequestContext, RequestControl,
+    ResolveCommandOutcomeRequest, ResourceDescriptorRef, ResourceDiscoveryKind, ScanCommitsRequest,
+    ScanIndexRequest, ServiceFailure, SourceName, SubmittedDecimal, SubmittedField,
+    SubmittedFieldIdentity, SubmittedList, SubmittedMoney, SubmittedRecord, SubmittedValue,
+    SymbolicContractSelector, SymbolicDiagnostic, SymbolicQueryIdentity, SymbolicQueryParameters,
+    SymbolicQuerySchema, SymbolicQuerySource, SymbolicResultField, SymbolicResultRecord,
+    TraceProvenanceRequest, ValidateContractRequest,
 };
 use riffdb_types::{
     Audience, CanonicalRecord, CanonicalValue, CommandId, CommitSequence, ContractLineage,
@@ -76,6 +77,11 @@ const HOSTED_SERVICE_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_RESOLUTION_DISCOVERY_PAGES: usize = 3;
 const MAX_RESOLUTION_DISCOVERY_ITEMS: usize = 1_024;
 const MAX_FULL_CONCRETE_RESOURCE_ITEMS: usize = 16_387;
+
+enum ResolvedServiceApplicationTool {
+    Command(CommandToolDescriptor),
+    NamedQuery(NamedQueryToolDescriptor),
+}
 
 pub(crate) enum HostedObserverServiceRequest {
     DiscoverCommandTools(DiscoverCommandToolsRequest),
@@ -261,11 +267,11 @@ impl HostedServiceMcpBackend {
         Err(McpBackendError::TargetUnavailable)
     }
 
-    async fn resolve_service_command(
+    async fn resolve_service_application_tool(
         &self,
         invocation: &HostedServiceInvocation,
         exact_name: &str,
-    ) -> Result<CommandToolDescriptor, McpBackendError> {
+    ) -> Result<ResolvedServiceApplicationTool, McpBackendError> {
         let mut cursor = None;
         let mut observed = 0_usize;
         for page_index in 0..MAX_RESOLUTION_DISCOVERY_PAGES {
@@ -299,7 +305,16 @@ impl HostedServiceMcpBackend {
                 if let CommandToolDiscoveryItem::Command(descriptor) = item
                     && descriptor.name().as_str() == exact_name
                 {
-                    return Ok((**descriptor).clone());
+                    return Ok(ResolvedServiceApplicationTool::Command(
+                        (**descriptor).clone(),
+                    ));
+                }
+                if let CommandToolDiscoveryItem::NamedQuery(descriptor) = item
+                    && descriptor.name() == exact_name
+                {
+                    return Ok(ResolvedServiceApplicationTool::NamedQuery(
+                        (**descriptor).clone(),
+                    ));
                 }
             }
             cursor = page.next_cursor().map(|cursor| *cursor.as_bytes());
@@ -1216,7 +1231,28 @@ impl HostedServiceMcpBackend {
         exact_name: &str,
         request: &McpToolInvocation,
     ) -> Result<McpToolResult, McpBackendError> {
-        let descriptor = self.resolve_service_command(invocation, exact_name).await?;
+        match self
+            .resolve_service_application_tool(invocation, exact_name)
+            .await?
+        {
+            ResolvedServiceApplicationTool::Command(descriptor) => {
+                self.invoke_dynamic_command(invocation, exact_name, request, descriptor)
+                    .await
+            }
+            ResolvedServiceApplicationTool::NamedQuery(descriptor) => {
+                self.invoke_dynamic_named_query(invocation, exact_name, request, descriptor)
+                    .await
+            }
+        }
+    }
+
+    async fn invoke_dynamic_command(
+        &self,
+        invocation: &HostedServiceInvocation,
+        exact_name: &str,
+        request: &McpToolInvocation,
+        descriptor: CommandToolDescriptor,
+    ) -> Result<McpToolResult, McpBackendError> {
         let command_id = descriptor.command_id().get();
         let input_artifact = descriptor.input_schema();
         let input_schema = SchemaDocument::from_public_parts(
@@ -1264,6 +1300,71 @@ impl HostedServiceMcpBackend {
             definition.outcome_schema(),
             definition.result_schema(),
         )
+    }
+
+    async fn invoke_dynamic_named_query(
+        &self,
+        invocation: &HostedServiceInvocation,
+        exact_name: &str,
+        request: &McpToolInvocation,
+        descriptor: NamedQueryToolDescriptor,
+    ) -> Result<McpToolResult, McpBackendError> {
+        let input_schema = SchemaDocument::from_public_parts(
+            format!(
+                "riffdb.named-query/{}/{}/input/v1",
+                lower_hex(descriptor.module_hash().as_bytes()),
+                descriptor.source_query()
+            ),
+            descriptor.input_schema().schema_hash().as_bytes(),
+            descriptor.input_schema().canonical_json(),
+        )
+        .map_err(invalid_response)?;
+        let result_schema = SchemaDocument::from_public_parts(
+            format!(
+                "riffdb.named-query/{}/{}/result/v1",
+                lower_hex(descriptor.module_hash().as_bytes()),
+                descriptor.source_query()
+            ),
+            descriptor.result_schema().schema_hash().as_bytes(),
+            descriptor.result_schema().canonical_json(),
+        )
+        .map_err(invalid_response)?;
+        McpDynamicToolDefinition::from_discovered_query(exact_name, input_schema, result_schema)
+            .map_err(invalid_response)?;
+        let values = request
+            .arguments()
+            .deserialize::<BTreeMap<String, serde_json::Value>>()
+            .map_err(invalid_response)?
+            .into_iter()
+            .map(|(name, value)| Ok((name, natural_parameter(value)?)))
+            .collect::<Result<BTreeMap<_, _>, McpBackendError>>()?;
+        let named = NamedSymbolicQueryRequest::new(
+            SymbolicContractSelector::from_selection(ContractSelection::Exact {
+                lineage: descriptor.lineage().clone(),
+                version: descriptor.version(),
+            }),
+            descriptor.source_query().as_str().to_owned(),
+            Some(descriptor.module_hash()),
+            SymbolicQueryParameters::new(values).map_err(invalid_response)?,
+        )
+        .map_err(invalid_response)?;
+        let target =
+            McpRateTarget::command_tool(exact_name.to_owned()).map_err(invalid_response)?;
+        let mut call = self.prepare_call(invocation, target)?;
+        let result = self
+            .service
+            .execute_named_symbolic_query(call.take_context()?, named)
+            .await
+            .map_err(map_service_failure)?;
+        if result.identity().lineage() != descriptor.lineage()
+            || result.identity().version() != descriptor.version()
+            || result.identity().module_hash() != Some(descriptor.module_hash())
+            || result.identity().name() != Some(descriptor.source_query().as_str())
+        {
+            return Err(McpBackendError::InvalidResponse);
+        }
+        call.complete();
+        render_dynamic_named_query(&result)
     }
 
     pub(crate) async fn invoke_observer_service(
@@ -1835,6 +1936,23 @@ fn compact_tool_observation_result(
                         )
                         .map_err(|_| McpObserverBackendError::RetryNextTick)?
                     }
+                    CompactCommandToolDiscoveryItem::NamedQuery(descriptor) => {
+                        if !names.insert(descriptor.name().to_owned()) {
+                            return Err(McpObserverBackendError::RetryNextTick);
+                        }
+                        McpVisibleFingerprint::named_query_tool(
+                            descriptor.name(),
+                            descriptor.source_query().as_str(),
+                            descriptor.lineage().as_str(),
+                            descriptor.version().get(),
+                            descriptor.module_name().as_str(),
+                            descriptor.module_version().get(),
+                            descriptor.module_hash().as_bytes(),
+                            descriptor.input_schema_hash().as_bytes(),
+                            descriptor.result_schema_hash().as_bytes(),
+                        )
+                        .map_err(|_| McpObserverBackendError::RetryNextTick)?
+                    }
                 };
                 fingerprints.push(fingerprint);
             }
@@ -1962,6 +2080,38 @@ fn tool_item_from_service(
                 descriptor.name().as_str(),
                 input_schema,
                 outcome_schema,
+            )
+            .map(Box::new)
+            .map(McpToolDiscoveryItem::Dynamic)
+            .map_err(|_| McpBackendError::InvalidResponse)
+        }
+        CommandToolDiscoveryItem::NamedQuery(descriptor) => {
+            let input = descriptor.input_schema();
+            let result = descriptor.result_schema();
+            let input_schema = SchemaDocument::from_public_parts(
+                format!(
+                    "riffdb.named-query/{}/{}/input/v1",
+                    lower_hex(descriptor.module_hash().as_bytes()),
+                    descriptor.source_query()
+                ),
+                input.schema_hash().as_bytes(),
+                input.canonical_json(),
+            )
+            .map_err(|_| McpBackendError::InvalidResponse)?;
+            let result_schema = SchemaDocument::from_public_parts(
+                format!(
+                    "riffdb.named-query/{}/{}/result/v1",
+                    lower_hex(descriptor.module_hash().as_bytes()),
+                    descriptor.source_query()
+                ),
+                result.schema_hash().as_bytes(),
+                result.canonical_json(),
+            )
+            .map_err(|_| McpBackendError::InvalidResponse)?;
+            McpDynamicToolDefinition::from_discovered_query(
+                descriptor.name(),
+                input_schema,
+                result_schema,
             )
             .map(Box::new)
             .map(McpToolDiscoveryItem::Dynamic)
@@ -2982,6 +3132,97 @@ fn render_symbolic_execution(
         McpFixedResultBranch::QueryCompleted,
         Some(payload_from(&payload)?),
     )
+}
+
+fn render_dynamic_named_query(
+    result: &ExecuteSymbolicQueryResult,
+) -> Result<McpToolResult, McpBackendError> {
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "outcome".to_owned(),
+        serde_json::Value::String(result.outcome().to_owned()),
+    );
+    for (name, field) in result.fields() {
+        let value = match field {
+            SymbolicResultField::One(record) => named_query_record(result, record)?,
+            SymbolicResultField::Maybe(record) => match record {
+                Some(record) => named_query_record(result, record)?,
+                None => serde_json::Value::Null,
+            },
+            SymbolicResultField::Many(records) => serde_json::Value::Array(
+                records
+                    .iter()
+                    .map(|record| named_query_record(result, record))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+        };
+        if payload.insert(name.clone(), value).is_some() {
+            return Err(McpBackendError::InvalidResponse);
+        }
+    }
+    McpToolResult::from_serializable(&serde_json::Value::Object(payload)).map_err(invalid_response)
+}
+
+fn named_query_record(
+    result: &ExecuteSymbolicQueryResult,
+    record: &SymbolicResultRecord,
+) -> Result<serde_json::Value, McpBackendError> {
+    let fields = record
+        .fields()
+        .iter()
+        .map(|(name, value)| Ok((name.clone(), named_query_value(result, value)?)))
+        .collect::<Result<serde_json::Map<_, _>, McpBackendError>>()?;
+    Ok(serde_json::Value::Object(fields))
+}
+
+fn named_query_value(
+    result: &ExecuteSymbolicQueryResult,
+    value: &CanonicalValue,
+) -> Result<serde_json::Value, McpBackendError> {
+    match value {
+        CanonicalValue::Null => Ok(serde_json::Value::Null),
+        CanonicalValue::Bool(value) => Ok(serde_json::Value::Bool(*value)),
+        CanonicalValue::I64(value) => Ok(serde_json::Value::Number((*value).into())),
+        CanonicalValue::U64(value) => Ok(serde_json::Value::Number((*value).into())),
+        CanonicalValue::Decimal(value) => Ok(serde_json::Value::String(format!(
+            "{}e-{}",
+            value.coefficient(),
+            value.spec().scale()
+        ))),
+        CanonicalValue::Money(value) => Ok(serde_json::Value::String(format!(
+            "{}:{}e-{}",
+            value.currency(),
+            value.amount().coefficient(),
+            value.amount().spec().scale()
+        ))),
+        CanonicalValue::String(value) => Ok(serde_json::Value::String(value.as_str().to_owned())),
+        CanonicalValue::Bytes(value) => Ok(serde_json::Value::String(
+            base64::engine::general_purpose::STANDARD.encode(value.as_bytes()),
+        )),
+        CanonicalValue::Timestamp(value) => Ok(serde_json::Value::String(format!(
+            "{}.{:09}",
+            value.seconds(),
+            value.nanos()
+        ))),
+        CanonicalValue::Date(value) => Ok(serde_json::Value::String(
+            value.days_since_unix_epoch().to_string(),
+        )),
+        CanonicalValue::Uuid(value) => Ok(serde_json::Value::String(format_uuid(*value))),
+        CanonicalValue::Enum {
+            type_id,
+            variant_id,
+        } => result
+            .enum_variant_name(type_id.get(), variant_id.get())
+            .map(|name| serde_json::Value::String(name.to_owned()))
+            .ok_or(McpBackendError::InvalidResponse),
+        CanonicalValue::List(values) => values
+            .values()
+            .iter()
+            .map(|value| named_query_value(result, value))
+            .collect::<Result<Vec<_>, _>>()
+            .map(serde_json::Value::Array),
+        CanonicalValue::Record(_) => Err(McpBackendError::InvalidResponse),
+    }
 }
 
 fn render_symbolic_command(

@@ -3880,6 +3880,7 @@ fn public_discovery_fence_for_version(
                 contract_lineage: lineage.to_owned(),
                 contract_version,
                 bundle_hash: vec![0x11; 32],
+                active_query_module_hash: Vec::new(),
             })
         } else {
             v1::discovery_catalog_fence::State::NoActiveContract(v1::Unit {})

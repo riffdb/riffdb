@@ -80,3 +80,17 @@ The bootstrap MCP credential is an authoring identity: validation, catalog,
 deployment, and health. A separately bound application-role credential is the
 runtime identity for named queries and commands. Register a second MCP process
 with that application credential rather than widening the bootstrap identity.
+
+Application-tool discovery is deliberately not an execution proof. It shows a
+compiled command only for an exact `InvokeCommand` permission and a named query
+only for an exact contract-lineage, query-module-hash, and query-name
+`ExecuteNamedQuery` permission. Tenant and partition scoping do not hide the
+operation because its actual partition is derived from invocation inputs. Each
+call resolves the tool again and performs fresh current-policy authorization
+against those inputs; revocation, scope, module substitution, and query-name
+substitution therefore fail closed after an earlier successful tool listing.
+
+Deployed named-query tools use the compiler-owned
+`<module_snake>_<query_snake>` name, advertise the generated parameter and
+result schemas, and execute one named query in one snapshot. They never submit
+ad-hoc RiffQL or gain raw entity/index authority.

@@ -1984,8 +1984,57 @@ pub struct CompactCommandToolDescriptor {
     pub outcome_schema: ::core::option::Option<GeneratedSchemaIdentity>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NamedQueryToolSchemaArtifact {
+    #[prost(bytes = "vec", tag = "1")]
+    pub schema_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "2")]
+    pub canonical_json: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NamedQueryToolDescriptor {
+    #[prost(string, tag = "1")]
+    pub tool_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub source_query: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "4")]
+    pub contract_version: u64,
+    #[prost(string, tag = "5")]
+    pub query_module_name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "6")]
+    pub query_module_version: u64,
+    #[prost(bytes = "vec", tag = "7")]
+    pub query_module_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "8")]
+    pub input_schema: ::core::option::Option<NamedQueryToolSchemaArtifact>,
+    #[prost(message, optional, tag = "9")]
+    pub result_schema: ::core::option::Option<NamedQueryToolSchemaArtifact>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CompactNamedQueryToolDescriptor {
+    #[prost(string, tag = "1")]
+    pub tool_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub source_query: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "4")]
+    pub contract_version: u64,
+    #[prost(string, tag = "5")]
+    pub query_module_name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "6")]
+    pub query_module_version: u64,
+    #[prost(bytes = "vec", tag = "7")]
+    pub query_module_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "8")]
+    pub input_schema_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "9")]
+    pub result_schema_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CommandToolDiscoveryItem {
-    #[prost(oneof = "command_tool_discovery_item::Item", tags = "1, 2")]
+    #[prost(oneof = "command_tool_discovery_item::Item", tags = "1, 2, 3")]
     pub item: ::core::option::Option<command_tool_discovery_item::Item>,
 }
 /// Nested message and enum types in `CommandToolDiscoveryItem`.
@@ -1996,11 +2045,13 @@ pub mod command_tool_discovery_item {
         FixedTool(i32),
         #[prost(message, tag = "2")]
         CommandTool(super::CommandToolDescriptor),
+        #[prost(message, tag = "3")]
+        NamedQueryTool(super::NamedQueryToolDescriptor),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CompactCommandToolDiscoveryItem {
-    #[prost(oneof = "compact_command_tool_discovery_item::Item", tags = "1, 2")]
+    #[prost(oneof = "compact_command_tool_discovery_item::Item", tags = "1, 2, 3")]
     pub item: ::core::option::Option<compact_command_tool_discovery_item::Item>,
 }
 /// Nested message and enum types in `CompactCommandToolDiscoveryItem`.
@@ -2011,6 +2062,8 @@ pub mod compact_command_tool_discovery_item {
         FixedTool(i32),
         #[prost(message, tag = "2")]
         CommandTool(super::CompactCommandToolDescriptor),
+        #[prost(message, tag = "3")]
+        NamedQueryTool(super::CompactNamedQueryToolDescriptor),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -2053,6 +2106,8 @@ pub struct ActiveDiscoveryCatalogFence {
     pub contract_version: u64,
     #[prost(bytes = "vec", tag = "3")]
     pub bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub active_query_module_hash: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DiscoveryCatalogFence {

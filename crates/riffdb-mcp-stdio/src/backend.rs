@@ -1,6 +1,6 @@
 //! Ordinary public-gRPC backend for the common MCP handler.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_api_mcp::{
     McpBackend, McpBackendError, McpBackendFuture, McpBackendRequest, McpCancellationSignal,
@@ -22,7 +22,8 @@ use riffdb_api_mcp::{
     format_server_health_locator, parse_resource_locator,
 };
 use riffdb_client_rust::{
-    CallMetadata, ClientError, DetailsFreeStatus, RiffDbClient, generate_request_id, v1,
+    ApplicationContract, ApplicationValue, CallMetadata, ClientError, DetailsFreeStatus,
+    NamedQuery, RiffDbClient, generate_request_id, v1,
 };
 
 use crate::response;
@@ -63,12 +64,29 @@ enum CommandResourceKind {
 }
 
 #[derive(Clone)]
-struct ResolvedDynamicTool {
-    definition: McpDynamicToolDefinition,
-    source_command: String,
-    contract_lineage: String,
-    contract_version: u64,
-    command_id: u32,
+enum ResolvedDynamicTool {
+    Command {
+        definition: McpDynamicToolDefinition,
+        source_command: String,
+        contract_lineage: String,
+        contract_version: u64,
+        command_id: u32,
+    },
+    NamedQuery {
+        definition: McpDynamicToolDefinition,
+        source_query: String,
+        contract_lineage: String,
+        contract_version: u64,
+        module_hash: [u8; 32],
+    },
+}
+
+impl ResolvedDynamicTool {
+    fn into_definition(self) -> McpDynamicToolDefinition {
+        match self {
+            Self::Command { definition, .. } | Self::NamedQuery { definition, .. } => definition,
+        }
+    }
 }
 
 impl PublicGrpcMcpBackend {
@@ -732,12 +750,21 @@ impl PublicGrpcMcpBackend {
                 response.result.as_ref()
             {
                 for item in &page.items {
-                    if let Some(v1::command_tool_discovery_item::Item::CommandTool(tool)) =
-                        item.item.as_ref()
-                        && tool.tool_name == exact_name
-                        && matched
-                            .replace(resolved_dynamic_tool_from_public(tool.clone())?)
-                            .is_some()
+                    let candidate = match item.item.as_ref() {
+                        Some(v1::command_tool_discovery_item::Item::CommandTool(tool))
+                            if tool.tool_name == exact_name =>
+                        {
+                            Some(resolved_dynamic_command_from_public(tool.clone())?)
+                        }
+                        Some(v1::command_tool_discovery_item::Item::NamedQueryTool(tool))
+                            if tool.tool_name == exact_name =>
+                        {
+                            Some(resolved_dynamic_query_from_public(tool.clone())?)
+                        }
+                        _ => None,
+                    };
+                    if let Some(candidate) = candidate
+                        && matched.replace(candidate).is_some()
                     {
                         return Err(McpBackendError::TargetUnavailable);
                     }
@@ -912,9 +939,59 @@ impl PublicGrpcMcpBackend {
         let resolved = self
             .resolve_dynamic(resolution_request_id, exact_name)
             .await?;
-        let fields =
-            decode_dynamic_command_input(request.arguments(), resolved.definition.input_schema())
-                .map_err(|_| McpBackendError::InvalidResponse)?;
+        match resolved {
+            ResolvedDynamicTool::Command {
+                definition,
+                source_command,
+                contract_lineage,
+                contract_version,
+                command_id,
+            } => {
+                self.invoke_dynamic_command(
+                    invocation,
+                    request,
+                    definition,
+                    source_command,
+                    contract_lineage,
+                    contract_version,
+                    command_id,
+                )
+                .await
+            }
+            ResolvedDynamicTool::NamedQuery {
+                definition,
+                source_query,
+                contract_lineage,
+                contract_version,
+                module_hash,
+            } => {
+                self.invoke_dynamic_named_query(
+                    invocation,
+                    request,
+                    definition,
+                    source_query,
+                    contract_lineage,
+                    contract_version,
+                    module_hash,
+                )
+                .await
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn invoke_dynamic_command(
+        &self,
+        invocation: &PublicGrpcInvocation,
+        request: &McpToolInvocation,
+        definition: McpDynamicToolDefinition,
+        source_command: String,
+        contract_lineage: String,
+        contract_version: u64,
+        expected_command_id: u32,
+    ) -> Result<McpToolResult, McpBackendError> {
+        let fields = decode_dynamic_command_input(request.arguments(), definition.input_schema())
+            .map_err(|_| McpBackendError::InvalidResponse)?;
         let input = wire::submitted_record_to_proto(fields)
             .map_err(|_| McpBackendError::InvalidResponse)?;
         reject_cancelled(invocation)?;
@@ -924,8 +1001,8 @@ impl PublicGrpcMcpBackend {
             .execute(
                 v1::ExecuteCommandRequest {
                     request_id: request_id.to_vec(),
-                    command_name: resolved.source_command,
-                    expected_contract_version: Some(resolved.contract_version),
+                    command_name: source_command,
+                    expected_contract_version: Some(contract_version),
                     input: Some(input),
                 },
                 &self.metadata,
@@ -939,19 +1016,78 @@ impl PublicGrpcMcpBackend {
                     command_id,
                     tool_name,
                     ..
-                }) if lineage.as_str() == resolved.contract_lineage
-                    && command_id.get() == resolved.command_id
-                    && tool_name == resolved.definition.name() => {}
+                }) if lineage.as_str() == contract_lineage
+                    && command_id.get() == expected_command_id
+                    && tool_name == definition.name() => {}
                 _ => return Err(McpBackendError::InvalidResponse),
             }
         }
         response::dynamic_command_result(
             response,
-            resolved.contract_version,
-            resolved.definition.outcome_schema(),
-            resolved.definition.result_schema(),
+            contract_version,
+            definition.outcome_schema(),
+            definition.result_schema(),
         )
         .map_err(|_| McpBackendError::InvalidResponse)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn invoke_dynamic_named_query(
+        &self,
+        invocation: &PublicGrpcInvocation,
+        request: &McpToolInvocation,
+        definition: McpDynamicToolDefinition,
+        source_query: String,
+        contract_lineage: String,
+        contract_version: u64,
+        module_hash: [u8; 32],
+    ) -> Result<McpToolResult, McpBackendError> {
+        let parameters = request
+            .arguments()
+            .deserialize::<BTreeMap<String, serde_json::Value>>()
+            .map_err(|_| McpBackendError::InvalidResponse)?
+            .into_iter()
+            .map(|(name, value)| Ok((name, application_value(value)?)))
+            .collect::<Result<BTreeMap<_, _>, McpBackendError>>()?;
+        let query = NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: contract_lineage.clone(),
+                version: contract_version,
+                bundle_hash: None,
+            },
+            source_query.clone(),
+            Some(module_hash),
+            parameters,
+            None,
+        )
+        .map_err(|_| McpBackendError::InvalidResponse)?;
+        reject_cancelled(invocation)?;
+        let mut client = self.client.clone();
+        let result = client
+            .execute_named_application_query(query, &self.metadata)
+            .await
+            .map_err(|error| match error {
+                riffdb_client_rust::ApplicationClientError::Client(error) => {
+                    map_client_error(error)
+                }
+                riffdb_client_rust::ApplicationClientError::InvalidInput
+                | riffdb_client_rust::ApplicationClientError::InvalidResponse
+                | riffdb_client_rust::ApplicationClientError::IdentifierUnavailable => {
+                    McpBackendError::InvalidResponse
+                }
+            })?;
+        if result.identity.contract_lineage != contract_lineage
+            || result.identity.contract_version != contract_version
+            || result.identity.module_hash != module_hash
+            || result.identity.query_name != source_query
+        {
+            return Err(McpBackendError::InvalidResponse);
+        }
+        let payload = named_query_result_payload(result)?;
+        let value = McpToolResult::from_serializable(&payload)
+            .map_err(|_| McpBackendError::InvalidResponse)?;
+        let _ = definition;
+        Ok(value)
     }
 }
 
@@ -997,7 +1133,7 @@ impl McpBackend for PublicGrpcMcpBackend {
             reject_cancelled(invocation)?;
             self.resolve_dynamic(invocation.request_id, exact_name)
                 .await
-                .map(|resolved| resolved.definition)
+                .map(ResolvedDynamicTool::into_definition)
         })
     }
 
@@ -1170,7 +1306,9 @@ pub(crate) fn validate_public_fence(
                 active.contract_version,
             )
             .map_err(|_| McpBackendError::InvalidResponse)?;
-            if active.bundle_hash.len() != 32 {
+            if active.bundle_hash.len() != 32
+                || !matches!(active.active_query_module_hash.len(), 0 | 32)
+            {
                 return Err(McpBackendError::InvalidResponse);
             }
         }
@@ -1489,6 +1627,11 @@ fn tool_item_from_public(
                 .map(Box::new)
                 .map(McpToolDiscoveryItem::Dynamic)
         }
+        Some(v1::command_tool_discovery_item::Item::NamedQueryTool(tool)) => {
+            dynamic_query_from_public(tool)
+                .map(Box::new)
+                .map(McpToolDiscoveryItem::Dynamic)
+        }
         None => Err(McpBackendError::InvalidResponse),
     }
 }
@@ -1515,7 +1658,7 @@ fn dynamic_tool_from_public(
         .map_err(|_| McpBackendError::InvalidResponse)
 }
 
-fn resolved_dynamic_tool_from_public(
+fn resolved_dynamic_command_from_public(
     tool: v1::CommandToolDescriptor,
 ) -> Result<ResolvedDynamicTool, McpBackendError> {
     let source_command = tool.source_command.clone();
@@ -1523,12 +1666,200 @@ fn resolved_dynamic_tool_from_public(
     let contract_version = tool.contract_version;
     let command_id = tool.command_id;
     let definition = dynamic_tool_from_public(tool)?;
-    Ok(ResolvedDynamicTool {
+    Ok(ResolvedDynamicTool::Command {
         definition,
         source_command,
         contract_lineage,
         contract_version,
         command_id,
+    })
+}
+
+fn dynamic_query_schema(
+    schema: Option<v1::NamedQueryToolSchemaArtifact>,
+    schema_id: String,
+) -> Result<SchemaDocument, McpBackendError> {
+    let schema = schema.ok_or(McpBackendError::InvalidResponse)?;
+    SchemaDocument::from_public_parts(schema_id, &schema.schema_hash, &schema.canonical_json)
+        .map_err(|_| McpBackendError::InvalidResponse)
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
+fn application_value(value: serde_json::Value) -> Result<ApplicationValue, McpBackendError> {
+    match value {
+        serde_json::Value::Null => Ok(ApplicationValue::Null),
+        serde_json::Value::Bool(value) => Ok(ApplicationValue::Bool(value)),
+        serde_json::Value::Number(value) => value
+            .as_i64()
+            .map(ApplicationValue::I64)
+            .or_else(|| value.as_u64().map(ApplicationValue::U64))
+            .ok_or(McpBackendError::InvalidResponse),
+        serde_json::Value::String(value) => Ok(ApplicationValue::String(value)),
+        serde_json::Value::Array(values) => values
+            .into_iter()
+            .map(application_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map(ApplicationValue::List),
+        serde_json::Value::Object(values) => values
+            .into_iter()
+            .map(|(name, value)| Ok((name, application_value(value)?)))
+            .collect::<Result<BTreeMap<_, _>, McpBackendError>>()
+            .map(ApplicationValue::Record),
+    }
+}
+
+fn named_query_result_payload(
+    result: riffdb_client_rust::NamedQueryResult,
+) -> Result<serde_json::Value, McpBackendError> {
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "outcome".to_owned(),
+        serde_json::Value::String(result.outcome),
+    );
+    for (name, field) in result.fields {
+        let value = match field.cardinality {
+            riffdb_client_rust::ApplicationCardinality::One => {
+                let [record] = <[_; 1]>::try_from(field.records)
+                    .map_err(|_| McpBackendError::InvalidResponse)?;
+                application_record_payload(record)?
+            }
+            riffdb_client_rust::ApplicationCardinality::Maybe => match field.records.as_slice() {
+                [] => serde_json::Value::Null,
+                [_] => application_record_payload(
+                    field
+                        .records
+                        .into_iter()
+                        .next()
+                        .ok_or(McpBackendError::InvalidResponse)?,
+                )?,
+                _ => return Err(McpBackendError::InvalidResponse),
+            },
+            riffdb_client_rust::ApplicationCardinality::Many => serde_json::Value::Array(
+                field
+                    .records
+                    .into_iter()
+                    .map(application_record_payload)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+        };
+        if payload.insert(name, value).is_some() {
+            return Err(McpBackendError::InvalidResponse);
+        }
+    }
+    Ok(serde_json::Value::Object(payload))
+}
+
+fn application_record_payload(
+    record: riffdb_client_rust::ApplicationRecord,
+) -> Result<serde_json::Value, McpBackendError> {
+    record
+        .fields
+        .into_iter()
+        .map(|(name, value)| Ok((name, application_result_value(value)?)))
+        .collect::<Result<serde_json::Map<_, _>, McpBackendError>>()
+        .map(serde_json::Value::Object)
+}
+
+fn application_result_value(value: ApplicationValue) -> Result<serde_json::Value, McpBackendError> {
+    match value {
+        ApplicationValue::Null => Ok(serde_json::Value::Null),
+        ApplicationValue::Bool(value) => Ok(serde_json::Value::Bool(value)),
+        ApplicationValue::I64(value) => Ok(serde_json::Value::Number(value.into())),
+        ApplicationValue::U64(value) => Ok(serde_json::Value::Number(value.into())),
+        ApplicationValue::String(value)
+        | ApplicationValue::Uuid(value)
+        | ApplicationValue::Enum(value) => Ok(serde_json::Value::String(value)),
+        ApplicationValue::Bytes(value) => Ok(serde_json::Value::String(base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            value,
+        ))),
+        ApplicationValue::Date(value) => Ok(serde_json::Value::String(value.to_string())),
+        ApplicationValue::Timestamp { seconds, nanos } => {
+            Ok(serde_json::Value::String(format!("{seconds}.{nanos:09}")))
+        }
+        ApplicationValue::Decimal {
+            coefficient_twos_complement,
+            scale,
+            precision: _,
+        } => Ok(serde_json::Value::String(format!(
+            "{}e-{scale}",
+            base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                coefficient_twos_complement
+            )
+        ))),
+        ApplicationValue::Money { currency, amount } => Ok(serde_json::Value::String(format!(
+            "{currency}:{}",
+            application_result_value(*amount)?
+        ))),
+        ApplicationValue::List(values) => values
+            .into_iter()
+            .map(application_result_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map(serde_json::Value::Array),
+        ApplicationValue::Record(values) => values
+            .into_iter()
+            .map(|(name, value)| Ok((name, application_result_value(value)?)))
+            .collect::<Result<serde_json::Map<_, _>, McpBackendError>>()
+            .map(serde_json::Value::Object),
+    }
+}
+
+fn dynamic_query_from_public(
+    tool: v1::NamedQueryToolDescriptor,
+) -> Result<McpDynamicToolDefinition, McpBackendError> {
+    let module_hash: [u8; 32] = tool
+        .query_module_hash
+        .as_slice()
+        .try_into()
+        .map_err(|_| McpBackendError::InvalidResponse)?;
+    if tool.contract_version == 0
+        || tool.query_module_version == 0
+        || tool.source_query.is_empty()
+        || tool.query_module_name.is_empty()
+    {
+        return Err(McpBackendError::InvalidResponse);
+    }
+    let hash = lower_hex(&module_hash);
+    let input = dynamic_query_schema(
+        tool.input_schema,
+        format!("riffdb.named-query/{hash}/{}/input/v1", tool.source_query),
+    )?;
+    let result = dynamic_query_schema(
+        tool.result_schema,
+        format!("riffdb.named-query/{hash}/{}/result/v1", tool.source_query),
+    )?;
+    McpDynamicToolDefinition::from_discovered_query(tool.tool_name, input, result)
+        .map_err(|_| McpBackendError::InvalidResponse)
+}
+
+fn resolved_dynamic_query_from_public(
+    tool: v1::NamedQueryToolDescriptor,
+) -> Result<ResolvedDynamicTool, McpBackendError> {
+    let source_query = tool.source_query.clone();
+    let contract_lineage = tool.contract_lineage.clone();
+    let contract_version = tool.contract_version;
+    let module_hash = tool
+        .query_module_hash
+        .as_slice()
+        .try_into()
+        .map_err(|_| McpBackendError::InvalidResponse)?;
+    let definition = dynamic_query_from_public(tool)?;
+    Ok(ResolvedDynamicTool::NamedQuery {
+        definition,
+        source_query,
+        contract_lineage,
+        contract_version,
+        module_hash,
     })
 }
 
@@ -1804,6 +2135,53 @@ mod tests {
             )),
         };
         assert!(resource_descriptor_from_public(descriptor).is_err());
+    }
+
+    #[test]
+    fn deployed_named_query_descriptor_becomes_a_read_only_dynamic_tool() {
+        let input = concat!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+            "\"additionalProperties\":false,\"properties\":{},\"required\":[],\"type\":\"object\"}"
+        );
+        let result = concat!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+            "\"oneOf\":[{\"additionalProperties\":false,\"properties\":{",
+            "\"outcome\":{\"const\":\"Found\",\"type\":\"string\"}},",
+            "\"required\":[\"outcome\"],\"type\":\"object\"}]}"
+        );
+        let schema = |source: &str| v1::NamedQueryToolSchemaArtifact {
+            schema_hash: riffdb_types::hash_schema(source.as_bytes())
+                .as_bytes()
+                .to_vec(),
+            canonical_json: source.to_owned(),
+        };
+        let descriptor = v1::NamedQueryToolDescriptor {
+            tool_name: "ticket_desk_ticket_page".to_owned(),
+            source_query: "TicketPage".to_owned(),
+            contract_lineage: "TicketDesk".to_owned(),
+            contract_version: 7,
+            query_module_name: "TicketDesk".to_owned(),
+            query_module_version: 2,
+            query_module_hash: vec![0x71; 32],
+            input_schema: Some(schema(input)),
+            result_schema: Some(schema(result)),
+        };
+
+        let definition = dynamic_query_from_public(descriptor.clone()).expect("query tool");
+        assert_eq!(definition.name(), "ticket_desk_ticket_page");
+        assert_eq!(definition.input_schema().canonical_json(), input);
+        assert_eq!(definition.result_schema().canonical_json(), result);
+
+        let resolved = resolved_dynamic_query_from_public(descriptor).expect("resolved query");
+        assert!(matches!(
+            resolved,
+            ResolvedDynamicTool::NamedQuery {
+                source_query,
+                contract_version: 7,
+                module_hash,
+                ..
+            } if source_query == "TicketPage" && module_hash == [0x71; 32]
+        ));
     }
 
     #[test]

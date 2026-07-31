@@ -53,10 +53,40 @@ message CompactCommandToolDescriptor {
   GeneratedSchemaIdentity outcome_schema = 7;
 }
 
+message NamedQueryToolSchemaArtifact {
+  bytes schema_hash = 1;
+  string canonical_json = 2;
+}
+
+message NamedQueryToolDescriptor {
+  string tool_name = 1;
+  string source_query = 2;
+  string contract_lineage = 3;
+  uint64 contract_version = 4;
+  string query_module_name = 5;
+  uint64 query_module_version = 6;
+  bytes query_module_hash = 7;
+  NamedQueryToolSchemaArtifact input_schema = 8;
+  NamedQueryToolSchemaArtifact result_schema = 9;
+}
+
+message CompactNamedQueryToolDescriptor {
+  string tool_name = 1;
+  string source_query = 2;
+  string contract_lineage = 3;
+  uint64 contract_version = 4;
+  string query_module_name = 5;
+  uint64 query_module_version = 6;
+  bytes query_module_hash = 7;
+  bytes input_schema_hash = 8;
+  bytes result_schema_hash = 9;
+}
+
 message CommandToolDiscoveryItem {
   oneof item {
     FixedToolKind fixed_tool = 1;
     CommandToolDescriptor command_tool = 2;
+    NamedQueryToolDescriptor named_query_tool = 3;
   }
 }
 
@@ -64,6 +94,7 @@ message CompactCommandToolDiscoveryItem {
   oneof item {
     FixedToolKind fixed_tool = 1;
     CompactCommandToolDescriptor command_tool = 2;
+    CompactNamedQueryToolDescriptor named_query_tool = 3;
   }
 }
 
@@ -106,6 +137,8 @@ message ActiveDiscoveryCatalogFence {
   string contract_lineage = 1;
   uint64 contract_version = 2;
   bytes bundle_hash = 3;
+  // Empty when no query module is active; otherwise exactly 32 bytes.
+  bytes active_query_module_hash = 4;
 }
 
 message DiscoveryCatalogFence {

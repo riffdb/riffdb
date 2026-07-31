@@ -3189,6 +3189,83 @@ fn validate_compact_command_tool_descriptor(
     Ok(())
 }
 
+fn validate_named_query_schema_artifact(
+    artifact: Option<&v1::NamedQueryToolSchemaArtifact>,
+) -> Result<(), PublicWireError> {
+    let artifact = artifact.ok_or(PublicWireError::MissingRequiredField)?;
+    hash(&artifact.schema_hash)?;
+    if artifact.canonical_json.is_empty()
+        || artifact.canonical_json.len() > MAX_OPERATION_SCHEMA_BYTES
+        || artifact.schema_hash != hash_schema(artifact.canonical_json.as_bytes()).as_bytes()
+    {
+        return Err(PublicWireError::InvalidBytes);
+    }
+    Ok(())
+}
+
+fn query_tool_segment(name: &str) -> String {
+    let mut output = String::new();
+    let mut word_start = true;
+    for character in name.chars() {
+        if !character.is_ascii_alphanumeric() {
+            word_start = true;
+            continue;
+        }
+        if (character.is_ascii_uppercase() && !word_start) || (word_start && !output.is_empty()) {
+            output.push('_');
+        }
+        output.push(character.to_ascii_lowercase());
+        word_start = false;
+    }
+    output
+}
+
+fn validate_named_query_tool_descriptor(
+    descriptor: &v1::NamedQueryToolDescriptor,
+) -> Result<(), PublicWireError> {
+    let expected = format!(
+        "{}_{}",
+        query_tool_segment(&descriptor.query_module_name),
+        query_tool_segment(&descriptor.source_query)
+    );
+    if descriptor.tool_name != expected
+        || descriptor.tool_name.len() > MAX_MCP_COMMAND_TOOL_NAME_BYTES
+        || !valid_name(&descriptor.source_query)
+        || !valid_name(&descriptor.query_module_name)
+        || !valid_bounded_text(&descriptor.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+        || descriptor.contract_version == 0
+        || descriptor.query_module_version == 0
+    {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    hash(&descriptor.query_module_hash)?;
+    validate_named_query_schema_artifact(descriptor.input_schema.as_ref())?;
+    validate_named_query_schema_artifact(descriptor.result_schema.as_ref())
+}
+
+fn validate_compact_named_query_tool_descriptor(
+    descriptor: &v1::CompactNamedQueryToolDescriptor,
+) -> Result<(), PublicWireError> {
+    let expected = format!(
+        "{}_{}",
+        query_tool_segment(&descriptor.query_module_name),
+        query_tool_segment(&descriptor.source_query)
+    );
+    if descriptor.tool_name != expected
+        || descriptor.tool_name.len() > MAX_MCP_COMMAND_TOOL_NAME_BYTES
+        || !valid_name(&descriptor.source_query)
+        || !valid_name(&descriptor.query_module_name)
+        || !valid_bounded_text(&descriptor.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+        || descriptor.contract_version == 0
+        || descriptor.query_module_version == 0
+    {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    hash(&descriptor.query_module_hash)?;
+    hash(&descriptor.input_schema_hash)?;
+    hash(&descriptor.result_schema_hash)
+}
+
 fn hash_matches_hex(bytes: &[u8], expected: &str) -> bool {
     bytes.len() == 32
         && expected.len() == 64
@@ -3314,6 +3391,9 @@ fn validate_discovery_fence(
                 return Err(PublicWireError::InvalidIdentity);
             }
             hash(&active.bundle_hash)?;
+            if !active.active_query_module_hash.is_empty() {
+                hash(&active.active_query_module_hash)?;
+            }
         }
     }
     if fence.server_generation.len() != 16 {
@@ -3354,6 +3434,13 @@ fn validate_command_tool_items(
                 }
                 prior_command = Some(&descriptor.tool_name);
             }
+            v1::command_tool_discovery_item::Item::NamedQueryTool(descriptor) => {
+                validate_named_query_tool_descriptor(descriptor)?;
+                if prior_command.is_some_and(|prior| prior >= descriptor.tool_name.as_str()) {
+                    return Err(PublicWireError::NonCanonical);
+                }
+                prior_command = Some(&descriptor.tool_name);
+            }
             v1::command_tool_discovery_item::Item::FixedTool(_) => {
                 return Err(PublicWireError::NonCanonical);
             }
@@ -3384,6 +3471,13 @@ fn validate_compact_command_tool_items(
             }
             v1::compact_command_tool_discovery_item::Item::CommandTool(descriptor) => {
                 validate_compact_command_tool_descriptor(descriptor)?;
+                if prior_command.is_some_and(|prior| prior >= descriptor.tool_name.as_str()) {
+                    return Err(PublicWireError::NonCanonical);
+                }
+                prior_command = Some(&descriptor.tool_name);
+            }
+            v1::compact_command_tool_discovery_item::Item::NamedQueryTool(descriptor) => {
+                validate_compact_named_query_tool_descriptor(descriptor)?;
                 if prior_command.is_some_and(|prior| prior >= descriptor.tool_name.as_str()) {
                     return Err(PublicWireError::NonCanonical);
                 }

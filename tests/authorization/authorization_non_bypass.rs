@@ -276,7 +276,7 @@ fn discovery_is_visibility_only_and_each_invocation_reauthorizes() {
     let visibility = proof
         .into_discovery()
         .expect("discovery proof")
-        .tool_catalog(FixedToolCandidate::ALL.as_slice(), &[candidate])
+        .tool_catalog(FixedToolCandidate::ALL.as_slice(), &[candidate], &[])
         .expect("bounded catalog");
     assert_eq!(visibility.command_tools(), &[DiscoveryVisibility::Visible]);
 
@@ -357,6 +357,7 @@ fn stable_application_authority_and_catalog_are_named_only() {
     .tool_catalog(
         FixedToolCandidate::ALL.as_slice(),
         &[CommandToolCandidate::new(lineage(), CommandId::first())],
+        &[],
     )
     .expect("catalog");
     for hidden in [

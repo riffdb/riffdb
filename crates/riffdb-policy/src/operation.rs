@@ -292,6 +292,54 @@ impl fmt::Debug for CommandToolCandidate {
     }
 }
 
+/// One deployed named query considered for application-tool discovery.
+#[derive(Clone, Eq, PartialEq)]
+pub struct NamedQueryToolCandidate {
+    lineage: ContractLineage,
+    module_hash: QueryModuleHash,
+    query_name: QueryOperationName,
+}
+
+impl NamedQueryToolCandidate {
+    /// Constructs one exact lineage-, module-, and query-scoped candidate.
+    #[must_use]
+    pub const fn new(
+        lineage: ContractLineage,
+        module_hash: QueryModuleHash,
+        query_name: QueryOperationName,
+    ) -> Self {
+        Self {
+            lineage,
+            module_hash,
+            query_name,
+        }
+    }
+
+    /// Returns the exact candidate lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Returns the exact deployed module identity.
+    #[must_use]
+    pub const fn module_hash(&self) -> QueryModuleHash {
+        self.module_hash
+    }
+
+    /// Returns the exact named-query identity.
+    #[must_use]
+    pub const fn query_name(&self) -> &QueryOperationName {
+        &self.query_name
+    }
+}
+
+impl fmt::Debug for NamedQueryToolCandidate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NamedQueryToolCandidate([REDACTED])")
+    }
+}
+
 /// Safe failure to construct checked field-selection facts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationRequestError {
@@ -1434,6 +1482,16 @@ pub(crate) fn command_tool_permission(candidate: &CommandToolCandidate) -> Permi
     PermissionRequirement::Exact(CapabilityPermissionV1::InvokeCommand(
         candidate.lineage.clone(),
         candidate.command_id,
+    ))
+}
+
+pub(crate) fn named_query_tool_permission(
+    candidate: &NamedQueryToolCandidate,
+) -> PermissionRequirement {
+    PermissionRequirement::Exact(CapabilityPermissionV1::ExecuteNamedQuery(
+        candidate.lineage.clone(),
+        candidate.module_hash,
+        candidate.query_name.clone(),
     ))
 }
 

@@ -5981,8 +5981,9 @@ work_packages:
   requirements: [DX-009, DX-010, DX-011]
   required_adrs: [ADR-0040, ADR-0064, ADR-0065]
   allowed_paths: [SPEC.md, work_packages.yaml, proto/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
-    crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**, crates/riffdb-client-rust/**, crates/riffdb-cli/**, fixtures/**,
-    tests/**, scripts/**, docs/**]
+    crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**, crates/riffdb-client-rust/**, crates/riffdb-cli/**,
+    crates/riffdb-service/**, crates/riffdb-policy/**, crates/riffdb-server/**, fixtures/**, tests/**, scripts/**,
+    docs/**]
   deliverables:
   - Database alias and audience on public health/active-contract responses
   - Authorized deployed named-query MCP tools

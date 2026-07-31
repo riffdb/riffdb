@@ -286,6 +286,23 @@ fn compact_tool_fingerprints(
                 )
                 .map_err(observer_retry)?
             }
+            v1::compact_command_tool_discovery_item::Item::NamedQueryTool(tool) => {
+                if !visible_names.insert(tool.tool_name.clone()) {
+                    return Err(McpObserverBackendError::RetryNextTick);
+                }
+                McpVisibleFingerprint::named_query_tool(
+                    &tool.tool_name,
+                    &tool.source_query,
+                    &tool.contract_lineage,
+                    tool.contract_version,
+                    &tool.query_module_name,
+                    tool.query_module_version,
+                    &tool.query_module_hash,
+                    &tool.input_schema_hash,
+                    &tool.result_schema_hash,
+                )
+                .map_err(observer_retry)?
+            }
         };
         fingerprints.push(fingerprint);
     }
