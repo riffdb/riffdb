@@ -200,6 +200,15 @@ an authorized, read-only server preview against the active parent and writes
 `application lock --check` and `application generate --locked` decode that
 pinned bundle instead of recompiling the successor as genesis.
 
+When a V3 lock already pins byte-identical contract source, `application lock
+--write` refreshes query, role, and generated-client artifacts locally from that
+checked bundle. This is the supported path after installing a corrected code
+generator: it rewrites compiler-owned artifact hashes without treating the
+already-active contract as another successor. Any contract-source change still
+requires the authorized server preview against the active parent, and a damaged
+or substituted pinned bundle fails closed instead of falling back to the
+network path.
+
 Before deployment, the server compares the lock's expected parent version and
 bundle hash and its candidate bundle hash. A disagreement returns the lock,
 expected-parent, actual-active, and server-compiled candidate identities and

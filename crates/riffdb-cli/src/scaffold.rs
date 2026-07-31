@@ -18,7 +18,7 @@ use riffdb_query_module::{
     generate_mcp_commands, generate_mcp_tools, generate_python_client, generate_rust_client,
     generate_typescript_client,
 };
-use riffdb_types::{TenantId, hash_source};
+use riffdb_types::{TenantId, hash_generated_artifact, hash_source};
 use serde_json::json;
 
 const CONTRACT_TEMPLATE: &str = include_str!("../../../templates/application/contract.riff");
@@ -52,6 +52,13 @@ pub(crate) enum ScaffoldLanguage {
     Rust,
     Typescript,
     Python,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PinnedLockRefresh {
+    Refreshed,
+    ContractSourceChanged,
+    NotPinned,
 }
 
 #[derive(Debug)]
@@ -323,6 +330,53 @@ pub(crate) fn write_application_lock_with_bundle(
 ) -> Result<(), ScaffoldError> {
     let compiled = compile_symbolic_application_with_bundle(source_path, contract)?;
     publish_compiled_application_lock(source_path, lock_path, &compiled)
+}
+
+pub(crate) fn refresh_application_lock_from_pinned_bundle(
+    source_path: &Path,
+    lock_path: Option<&Path>,
+) -> Result<PinnedLockRefresh, ScaffoldError> {
+    let root = source_parent(source_path);
+    let absolute_lock_path = workspace_lock_path(root, lock_path)?;
+    let existing = match read_bounded(&absolute_lock_path, 4 * 1_024 * 1_024) {
+        Ok(existing) => existing,
+        Err(ScaffoldError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(PinnedLockRefresh::NotPinned);
+        }
+        Err(error) => return Err(error),
+    };
+    let lock = ApplicationLock::decode_canonical(&existing)
+        .map_err(|error| lock_diagnostic(&absolute_lock_path, error.kind()))?;
+    if lock.schema() != riffdb_query_module::APPLICATION_LOCK_SCHEMA_V3 {
+        return Ok(PinnedLockRefresh::NotPinned);
+    }
+    let artifact = lock.contract_bundle_artifact().ok_or_else(|| {
+        lock_diagnostic(
+            &absolute_lock_path,
+            riffdb_query_module::ApplicationLockErrorKind::InvalidShape,
+        )
+    })?;
+    let bundle_bytes =
+        read_workspace_file(root, artifact.path(), riffdb_contract_ir::MAX_BUNDLE_BYTES)?;
+    if hash_generated_artifact(&bundle_bytes) != artifact.content_hash() {
+        return Err(lock_diagnostic(
+            &absolute_lock_path,
+            riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+        ));
+    }
+    let contract = ContractBundle::decode(&bundle_bytes).map_err(|_| {
+        lock_diagnostic(
+            &absolute_lock_path,
+            riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+        )
+    })?;
+    let current_contract_source = application_contract_source(source_path)?;
+    if hash_source(current_contract_source.as_bytes()) != contract.source_hash() {
+        return Ok(PinnedLockRefresh::ContractSourceChanged);
+    }
+    let compiled = compile_symbolic_application_with_bundle(source_path, contract)?;
+    publish_compiled_application_lock(source_path, lock_path, &compiled)?;
+    Ok(PinnedLockRefresh::Refreshed)
 }
 
 fn publish_compiled_application_lock(
@@ -2251,6 +2305,57 @@ mod tests {
                 .map(|parent| parent.bundle_hash()),
             Some(genesis.bundle_hash())
         );
+        let generated_rust = base.join("generated/rust/client.rs");
+        fs::write(&generated_rust, b"substituted\n").expect("substitute generated client");
+        assert!(check_application_lock(&source_path, None).is_err());
+        assert_eq!(
+            refresh_application_lock_from_pinned_bundle(&source_path, None)
+                .expect("refresh from pinned successor bundle"),
+            PinnedLockRefresh::Refreshed
+        );
+        check_application_lock(&source_path, None).expect("refreshed generated client is exact");
+        assert_ne!(
+            fs::read(&generated_rust).expect("regenerated client"),
+            b"substituted\n"
+        );
+
+        let query_path = base.join("riffdb/queries/item_page.riffq");
+        let query_source = fs::read_to_string(&query_path).expect("query source");
+        fs::write(
+            &query_path,
+            query_source.replace("            created_at\n", ""),
+        )
+        .expect("change only the query source");
+        let lock_before_query_change = fs::read(base.join(DEFAULT_LOCK_PATH)).expect("old lock");
+        assert_eq!(
+            refresh_application_lock_from_pinned_bundle(&source_path, None)
+                .expect("refresh query identity from the same contract"),
+            PinnedLockRefresh::Refreshed
+        );
+        assert_ne!(
+            fs::read(base.join(DEFAULT_LOCK_PATH)).expect("new lock"),
+            lock_before_query_change
+        );
+        let refreshed = load_locked_application(&source_path, None).expect("refreshed successor");
+        assert_eq!(refreshed.contract().bundle_hash(), successor.bundle_hash());
+
+        let contract_before_change =
+            fs::read_to_string(&contract_path).expect("locked contract source");
+        let lock_before_contract_change =
+            fs::read(base.join(DEFAULT_LOCK_PATH)).expect("lock before contract change");
+        fs::write(&contract_path, format!("{contract_before_change}\n"))
+            .expect("change contract source bytes");
+        assert_eq!(
+            refresh_application_lock_from_pinned_bundle(&source_path, None)
+                .expect("contract changes select the server-preview path"),
+            PinnedLockRefresh::ContractSourceChanged
+        );
+        assert_eq!(
+            fs::read(base.join(DEFAULT_LOCK_PATH)).expect("unchanged lock"),
+            lock_before_contract_change
+        );
+        fs::write(&contract_path, contract_before_change).expect("restore contract source");
+
         fs::write(base.join(CONTRACT_BUNDLE_ARTIFACT_PATH), b"truncated")
             .expect("substitute pinned bundle");
         let error = check_application(&source_path).expect_err("bundle substitution rejected");
