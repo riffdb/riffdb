@@ -518,6 +518,7 @@ fn structural_item_count(state: &MemoryState) -> Result<u64, StorageError> {
         state.committed_admissions.len(),
         state.provenance.len(),
         state.events.len(),
+        state.event_routes.len(),
         state.outbox_intents.len(),
         state.outbox_statuses.len(),
         state.capabilities.len(),
@@ -652,6 +653,10 @@ fn inspect_structural_item(
     locate!(
         events,
         crate::integrity_command::inspect_event_graph(state, position)
+    );
+    locate!(
+        event_routes,
+        crate::integrity_command::inspect_event_route_graph(state, position)
     );
     locate!(
         outbox_intents,

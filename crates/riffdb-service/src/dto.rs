@@ -435,6 +435,8 @@ pub enum ContractCompatibilityClass {
     Compatible,
     /// Requires callers to select the new version explicitly.
     RequiresExplicitVersion,
+    /// Requires an exact checked migration before activation.
+    RequiresMigration,
     /// Not activatable under the POC policy.
     Incompatible,
 }
@@ -444,6 +446,7 @@ impl From<CompatibilityClass> for ContractCompatibilityClass {
         match value {
             CompatibilityClass::Compatible => Self::Compatible,
             CompatibilityClass::RequiresExplicitVersion => Self::RequiresExplicitVersion,
+            CompatibilityClass::RequiresMigration => Self::RequiresMigration,
             CompatibilityClass::Incompatible => Self::Incompatible,
         }
     }
@@ -909,6 +912,8 @@ pub enum DeployContractResult {
     InvalidSource(CompilationError),
     /// The checked successor is outside the active additive compatibility policy.
     IncompatibleCandidate(ContractDescriptor),
+    /// The checked successor is migratable but cannot use ordinary deployment.
+    MigrationRequired(ContractDescriptor),
     /// A new active pointer was committed.
     Activated(ContractDescriptor),
     /// The exact immutable pointer was already active.

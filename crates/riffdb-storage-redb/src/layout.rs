@@ -21,6 +21,7 @@ pub(crate) const IDEMPOTENCY_PENDING: TableDefinition<&[u8], &[u8]> =
 pub(crate) const COMMITS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("commits");
 pub(crate) const PROVENANCE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("provenance");
 pub(crate) const EVENTS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("events");
+pub(crate) const EVENT_ROUTES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("event_routes");
 pub(crate) const OUTBOX: TableDefinition<&[u8], &[u8]> = TableDefinition::new("outbox");
 pub(crate) const OUTBOX_STATUS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("outbox_status");
@@ -37,7 +38,7 @@ pub(crate) const AUDIT: TableDefinition<&[u8], &[u8]> = TableDefinition::new("au
 pub(crate) const AUDIT_BY_REQUEST: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("audit_by_request");
 
-pub(crate) const TABLE_NAMES: [&str; 22] = [
+pub(crate) const TABLE_NAMES: [&str; 23] = [
     "meta",
     "contract_bundles",
     "catalog_active",
@@ -51,6 +52,7 @@ pub(crate) const TABLE_NAMES: [&str; 22] = [
     "commits",
     "provenance",
     "events",
+    "event_routes",
     "outbox",
     "outbox_status",
     "projection_state",
@@ -62,7 +64,7 @@ pub(crate) const TABLE_NAMES: [&str; 22] = [
     "audit_by_request",
 ];
 
-pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 21] = [
+pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 22] = [
     CONTRACT_BUNDLES,
     CATALOG_ACTIVE,
     QUERY_MODULES,
@@ -75,6 +77,7 @@ pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 21] = [
     COMMITS,
     PROVENANCE,
     EVENTS,
+    EVENT_ROUTES,
     OUTBOX,
     OUTBOX_STATUS,
     PROJECTION_STATE,
@@ -127,6 +130,7 @@ pub(crate) fn create_all_tables(tx: &WriteTransaction) -> Result<(), TableError>
     drop(tx.open_table(COMMITS)?);
     drop(tx.open_table(PROVENANCE)?);
     drop(tx.open_table(EVENTS)?);
+    drop(tx.open_table(EVENT_ROUTES)?);
     drop(tx.open_table(OUTBOX)?);
     drop(tx.open_table(OUTBOX_STATUS)?);
     drop(tx.open_table(PROJECTION_STATE)?);
@@ -163,6 +167,7 @@ mod tests {
             COMMITS.name(),
             PROVENANCE.name(),
             EVENTS.name(),
+            EVENT_ROUTES.name(),
             OUTBOX.name(),
             OUTBOX_STATUS.name(),
             PROJECTION_STATE.name(),
@@ -175,7 +180,7 @@ mod tests {
         ];
 
         assert_eq!(definition_names, TABLE_NAMES);
-        assert_eq!(TABLE_NAMES.len(), 22);
+        assert_eq!(TABLE_NAMES.len(), 23);
         assert_eq!(
             TABLE_NAMES.into_iter().collect::<BTreeSet<_>>().len(),
             TABLE_NAMES.len()

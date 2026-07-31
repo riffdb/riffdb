@@ -336,6 +336,11 @@ fn expected_enum_values() -> BTreeSet<String> {
             "CONTRACT_COMPATIBILITY_CLASS_INCOMPATIBLE",
         ),
         (
+            "riffdb.v1.ContractCompatibilityClass",
+            4,
+            "CONTRACT_COMPATIBILITY_CLASS_REQUIRES_MIGRATION",
+        ),
+        (
             "riffdb.v1.DiscoveryRepresentation",
             0,
             "DISCOVERY_REPRESENTATION_UNSPECIFIED",

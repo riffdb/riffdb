@@ -147,6 +147,11 @@ pub(crate) fn deploy_contract(
             McpFixedResultBranch::DeployIncompatibleCandidate,
             Some(payload_from(&ContractDescriptor::try_from(contract)?)?),
         ),
+        Result::MigrationRequired(contract) => compose(
+            4,
+            McpFixedResultBranch::DeployMigrationRequired,
+            Some(payload_from(&ContractDescriptor::try_from(contract)?)?),
+        ),
         Result::Activated(contract) => compose(
             4,
             McpFixedResultBranch::DeployActivated,
@@ -1038,6 +1043,9 @@ fn contract_presentation(
         }
         Some(v1::ContractCompatibilityClass::RequiresExplicitVersion) => {
             McpContractCompatibilityClass::RequiresExplicitVersion
+        }
+        Some(v1::ContractCompatibilityClass::RequiresMigration) => {
+            McpContractCompatibilityClass::RequiresMigration
         }
         Some(v1::ContractCompatibilityClass::Incompatible) => {
             McpContractCompatibilityClass::Incompatible

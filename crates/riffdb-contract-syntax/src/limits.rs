@@ -2,6 +2,8 @@
 
 /// Maximum accepted source size in UTF-8 bytes.
 pub const MAX_SOURCE_BYTES: usize = 1_048_576;
+/// Maximum accepted migration-source size in UTF-8 bytes.
+pub const MAX_MIGRATION_SOURCE_BYTES: usize = 1_048_576;
 /// Maximum identifier length in ASCII bytes.
 pub const MAX_IDENTIFIER_BYTES: usize = 256;
 /// Maximum delimiter and expression nesting depth.

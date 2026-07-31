@@ -5,8 +5,12 @@ use std::fmt;
 use std::sync::Arc;
 
 use riffdb_contract_ir::{FieldSchema, Instruction};
-use riffdb_storage_api::{DurableKeySchemaBindingV1, ExecutablePlanRef, StoredDurableEventV1};
-use riffdb_types::{CanonicalValue, ContractVersion, EventId, PlanHash};
+use riffdb_storage_api::{
+    DurableKeySchemaBindingV1, ExecutablePlanRef, StoredDurableEventV1, StoredEventRouteV1,
+};
+use riffdb_types::{
+    CanonicalValue, ContractVersion, EventId, PartitionKeyHash, PlanHash, hash_partition_key,
+};
 
 use crate::lineage::{LineageMaterializationProof, RecordOwnerV1, WriterRelation};
 use crate::materialization::validate_static_value;
@@ -20,6 +24,8 @@ pub const MAX_EVENT_MATERIALIZATION_FIELDS: usize = 256;
 pub enum EventMaterializationErrorKind {
     /// The requested event or payload field is not present in the active contract.
     UnknownSymbol,
+    /// The event exists but has no compiler-proved application partition.
+    NotStreamable,
     /// Event, route, writer, lineage, schema, or payload evidence was inconsistent.
     Integrity,
     /// The requested selection exceeded a fixed semantic limit.
@@ -32,6 +38,7 @@ impl EventMaterializationErrorKind {
     pub const fn safe_message(self) -> &'static str {
         match self {
             Self::UnknownSymbol => "event materialization symbol is unavailable",
+            Self::NotStreamable => "event is not application streamable",
             Self::Integrity => "event materialization integrity failure",
             Self::HardLimit => "event materialization exceeds the hard limit",
         }
@@ -55,6 +62,10 @@ impl EventMaterializationError {
 
     const fn integrity() -> Self {
         Self::new(EventMaterializationErrorKind::Integrity)
+    }
+
+    const fn not_streamable() -> Self {
+        Self::new(EventMaterializationErrorKind::NotStreamable)
     }
 
     const fn hard_limit() -> Self {
@@ -116,15 +127,78 @@ impl ResolvedEventMaterializer {
         self.selected_fields.iter().map(|field| field.schema.name())
     }
 
-    /// Validates and symbolically materializes one immutable historical event.
+    pub(crate) fn event_type_id(&self) -> riffdb_types::EventTypeId {
+        self.event_type_id
+    }
+
+    pub(crate) fn derive_partition_hash<'a>(
+        &self,
+        supplied: impl IntoIterator<Item = (&'a str, CanonicalValue)>,
+    ) -> Result<PartitionKeyHash, EventMaterializationError> {
+        let active_event = self
+            .active_bundle
+            .bundle()
+            .schema()
+            .event(self.event_type_id)
+            .ok_or_else(EventMaterializationError::integrity)?;
+        let partition = active_event
+            .partition()
+            .ok_or_else(EventMaterializationError::not_streamable)?;
+        let supplied = supplied.into_iter().collect::<Vec<_>>();
+        if supplied.len() != partition.fields().len()
+            || supplied
+                .iter()
+                .enumerate()
+                .any(|(index, (name, _))| supplied[..index].iter().any(|(prior, _)| prior == name))
+        {
+            return Err(EventMaterializationError::unknown_symbol());
+        }
+        let values = partition
+            .fields()
+            .iter()
+            .map(|field_id| {
+                let field = active_event
+                    .payload()
+                    .field(*field_id)
+                    .ok_or_else(EventMaterializationError::integrity)?;
+                let value = supplied
+                    .iter()
+                    .find(|(name, _)| *name == field.name())
+                    .map(|(_, value)| value)
+                    .ok_or_else(EventMaterializationError::unknown_symbol)?;
+                validate_static_value(
+                    self.active_bundle.bundle().schema(),
+                    field.value_type(),
+                    value,
+                )
+                .map_err(|_| EventMaterializationError::integrity())?;
+                Ok(value.clone())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let key = partition
+            .key_schema()
+            .encode_partition(&values)
+            .map_err(|_| EventMaterializationError::integrity())?;
+        Ok(hash_partition_key(key.as_bytes()))
+    }
+
+    /// Validates and symbolically materializes one immutable routed event.
     ///
     /// The returned view owns only selected values. Unknown source fields and
     /// the complete durable payload remain inaccessible.
-    pub fn materialize_event(
+    pub fn materialize_routed_event(
         &self,
         writer: &ExecutablePlanRef,
+        route_partition_hash: PartitionKeyHash,
+        route: StoredEventRouteV1,
         event: &StoredDurableEventV1,
     ) -> Result<SymbolicEventView, EventMaterializationError> {
+        if route.event_id() != event.event_id()
+            || route.event_type_id() != event.event_type_id()
+            || route.event_hash() != event.event_hash()
+        {
+            return Err(EventMaterializationError::integrity());
+        }
         let (writer_ordinal, writer_bundle) = self
             .lineage_proof
             .exact_member(writer.contract_version(), writer.contract_bundle_hash())
@@ -168,6 +242,9 @@ impl ResolvedEventMaterializer {
             .schema()
             .event(self.event_type_id)
             .ok_or_else(EventMaterializationError::integrity)?;
+        let partition = active_schema
+            .partition()
+            .ok_or_else(EventMaterializationError::integrity)?;
         if null_fill
             .as_ref()
             .is_some_and(|mask| !mask.has_canonical_shape(active_schema.payload().fields().len()))
@@ -175,37 +252,60 @@ impl ResolvedEventMaterializer {
             return Err(EventMaterializationError::integrity());
         }
 
-        let mut fields = Vec::with_capacity(self.selected_fields.len());
-        for selected in &self.selected_fields {
+        let active_value = |field: &FieldSchema| {
             let position = active_schema
                 .payload()
                 .fields()
-                .binary_search_by_key(&selected.schema.id(), FieldSchema::id)
+                .binary_search_by_key(&field.id(), FieldSchema::id)
                 .map_err(|_| EventMaterializationError::integrity())?;
             let source_value = event
                 .payload()
                 .fields()
-                .binary_search_by_key(&selected.schema.id(), |(field_id, _)| *field_id)
+                .binary_search_by_key(&field.id(), |(field_id, _)| *field_id)
                 .ok()
                 .map(|index| &event.payload().fields()[index].1);
-            let value = match source_value {
+            match source_value {
                 Some(value) => {
                     validate_static_value(
                         self.active_bundle.bundle().schema(),
-                        selected.schema.value_type(),
+                        field.value_type(),
                         value,
                     )
                     .map_err(|_| EventMaterializationError::integrity())?;
-                    value.clone()
+                    Ok(value.clone())
                 }
                 None if relation == WriterRelation::Ancestor
                     && null_fill.as_ref().is_some_and(|mask| mask.allows(position))
-                    && selected.schema.value_type().is_optional() =>
+                    && field.value_type().is_optional() =>
                 {
-                    CanonicalValue::Null
+                    Ok(CanonicalValue::Null)
                 }
-                None => return Err(EventMaterializationError::integrity()),
-            };
+                None => Err(EventMaterializationError::integrity()),
+            }
+        };
+
+        let partition_values = partition
+            .fields()
+            .iter()
+            .map(|field_id| {
+                let field = active_schema
+                    .payload()
+                    .field(*field_id)
+                    .ok_or_else(EventMaterializationError::integrity)?;
+                active_value(field)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let encoded_partition = partition
+            .key_schema()
+            .encode_partition(&partition_values)
+            .map_err(|_| EventMaterializationError::integrity())?;
+        if hash_partition_key(encoded_partition.as_bytes()) != route_partition_hash {
+            return Err(EventMaterializationError::integrity());
+        }
+
+        let mut fields = Vec::with_capacity(self.selected_fields.len());
+        for selected in &self.selected_fields {
+            let value = active_value(&selected.schema)?;
             fields.push(SymbolicEventField {
                 name: selected.schema.name().to_owned(),
                 value,
@@ -337,6 +437,9 @@ impl ActiveCatalogSnapshot {
             .iter()
             .find(|event| event.name() == event_name)
             .ok_or_else(EventMaterializationError::unknown_symbol)?;
+        if event.partition().is_none() {
+            return Err(EventMaterializationError::not_streamable());
+        }
         let names = selected_field_names.into_iter().collect::<Vec<_>>();
         if names.is_empty() || names.len() > MAX_EVENT_MATERIALIZATION_FIELDS {
             return Err(EventMaterializationError::hard_limit());

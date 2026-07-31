@@ -718,6 +718,28 @@ async fn deploy_contract(
         return Ok(result);
     }
 
+    if descriptor.compatibility().overall() == ContractCompatibilityClass::RequiresMigration
+        && actual_active_version == request.expected_active_version()
+    {
+        let _fresh = begun.reauthorize(service, &context).await?;
+        let result = DeployContractResult::MigrationRequired(descriptor);
+        if let Err(failure) = ensure_response_budget(&result) {
+            return Err(
+                finish_terminal_failure(service, &context, &begun, OPERATION, failure).await,
+            );
+        }
+        finish_phase(
+            service,
+            &context,
+            &begun,
+            OPERATION,
+            ServiceAuditPhaseV1::Failed,
+            ServiceAuditLinkV1::None,
+        )
+        .await?;
+        return Ok(result);
+    }
+
     let preparation = match wait_with_control(
         context.control(),
         service.providers.deadline_scheduler.as_ref(),

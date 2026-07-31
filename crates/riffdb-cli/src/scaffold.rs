@@ -5,18 +5,18 @@ use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
-use riffdb_contract_compiler::compile_contract_source;
+use riffdb_contract_compiler::{compile_contract_source, compile_migration_source};
 use riffdb_contract_ir::ContractBundle;
 use riffdb_diagnostics::{
     AuthoringDiagnostics, AuthoringSourcePath, FileChangeDisposition, FilesystemDiagnosticClass,
 };
 use riffdb_query_module::{
-    ApplicationLock, ApplicationManifest, ApplicationSourceManifest, ApplicationSourceTenantScope,
-    CONTRACT_BUNDLE_ARTIFACT_PATH, GeneratedApplicationArtifact, GeneratedApplicationArtifactKind,
-    GeneratedMcpCommand, GeneratedMcpTool, NamedQuerySource, PythonGenerationError, QueryModule,
-    QueryModuleCandidate, QueryModuleName, QueryModuleVersion, compile_application_role,
-    generate_mcp_commands, generate_mcp_tools, generate_python_client, generate_rust_client,
-    generate_typescript_client,
+    ApplicationLock, ApplicationManifest, ApplicationMigrationLockInput, ApplicationSourceManifest,
+    ApplicationSourceTenantScope, CONTRACT_BUNDLE_ARTIFACT_PATH, GeneratedApplicationArtifact,
+    GeneratedApplicationArtifactKind, GeneratedMcpCommand, GeneratedMcpTool, NamedQuerySource,
+    PythonGenerationError, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+    compile_application_role, generate_mcp_commands, generate_mcp_tools, generate_python_client,
+    generate_rust_client, generate_typescript_client,
 };
 use riffdb_types::{TenantId, hash_generated_artifact, hash_source};
 use serde_json::json;
@@ -130,15 +130,19 @@ pub(crate) fn generate_application(
         Some("riffdb.application-manifest/v1") if !locked => {
             generate_legacy_application(manifest_path)
         }
-        Some("riffdb.application-source/v1" | "riffdb.application-source/v2") if locked => {
-            generate_application_locked(
-                manifest_path,
-                lock_path.unwrap_or_else(|| Path::new(DEFAULT_LOCK_PATH)),
-            )
-        }
-        Some("riffdb.application-source/v1" | "riffdb.application-source/v2") => {
-            Err(ScaffoldError::LockRequired)
-        }
+        Some(
+            "riffdb.application-source/v1"
+            | "riffdb.application-source/v2"
+            | "riffdb.application-source/v3",
+        ) if locked => generate_application_locked(
+            manifest_path,
+            lock_path.unwrap_or_else(|| Path::new(DEFAULT_LOCK_PATH)),
+        ),
+        Some(
+            "riffdb.application-source/v1"
+            | "riffdb.application-source/v2"
+            | "riffdb.application-source/v3",
+        ) => Err(ScaffoldError::LockRequired),
         _ => Err(ScaffoldError::Manifest),
     }
 }
@@ -347,7 +351,11 @@ pub(crate) fn refresh_application_lock_from_pinned_bundle(
     };
     let lock = ApplicationLock::decode_canonical(&existing)
         .map_err(|error| lock_diagnostic(&absolute_lock_path, error.kind()))?;
-    if lock.schema() != riffdb_query_module::APPLICATION_LOCK_SCHEMA_V3 {
+    if !matches!(
+        lock.schema(),
+        riffdb_query_module::APPLICATION_LOCK_SCHEMA_V3
+            | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V4
+    ) {
         return Ok(PinnedLockRefresh::NotPinned);
     }
     let artifact = lock.contract_bundle_artifact().ok_or_else(|| {
@@ -421,6 +429,106 @@ pub(crate) fn check_application_lock(
     Ok(())
 }
 
+pub(crate) fn plan_application_migrations(
+    source_path: &Path,
+    lock_path: Option<&Path>,
+) -> Result<serde_json::Value, ScaffoldError> {
+    check_application_lock(source_path, lock_path)?;
+    let root = source_parent(source_path);
+    let lock_path = workspace_lock_path(root, lock_path)?;
+    let lock = ApplicationLock::decode_canonical(&read_bounded(
+        &lock_path,
+        riffdb_query_module::MAX_APPLICATION_LOCK_BYTES,
+    )?)
+    .map_err(|error| lock_diagnostic(&lock_path, error.kind()))?;
+    if lock.schema() != riffdb_query_module::APPLICATION_LOCK_SCHEMA_V4 {
+        return Err(lock_diagnostic(
+            &lock_path,
+            riffdb_query_module::ApplicationLockErrorKind::UnsupportedVersion,
+        ));
+    }
+    let candidate_artifact = lock.contract_bundle_artifact().ok_or_else(|| {
+        lock_diagnostic(
+            &lock_path,
+            riffdb_query_module::ApplicationLockErrorKind::InvalidShape,
+        )
+    })?;
+    let candidate = ContractBundle::decode(&read_workspace_file(
+        root,
+        candidate_artifact.path(),
+        riffdb_contract_ir::MAX_BUNDLE_BYTES,
+    )?)
+    .map_err(|_| ScaffoldError::ApplicationLock)?;
+    let mut parents = Vec::with_capacity(lock.migrations().len());
+    for entry in lock.migrations() {
+        let bundle = riffdb_contract_ir::MigrationBundleV1::decode(&read_workspace_file(
+            root,
+            entry.migration_artifact_path(),
+            riffdb_contract_ir::MAX_MIGRATION_BUNDLE_BYTES_V1,
+        )?)
+        .map_err(|_| ScaffoldError::ApplicationLock)?;
+        if bundle.bundle_hash() != entry.migration_bundle_hash()
+            || bundle.parent_version() != entry.parent_version()
+            || bundle.parent_bundle_hash() != entry.parent_bundle_hash()
+            || bundle.candidate_version() != candidate.contract_version()
+            || bundle.candidate_bundle_hash() != candidate.bundle_hash()
+        {
+            return Err(ScaffoldError::IdentityMismatch);
+        }
+        let categories = bundle
+            .steps()
+            .iter()
+            .map(|step| migration_step_category(step.kind()))
+            .collect::<std::collections::BTreeSet<_>>();
+        let bounds = bundle.resource_bounds();
+        parents.push(json!({
+            "migration_bundle_hash": hex(bundle.bundle_hash().as_bytes()),
+            "migration_bundle_path": entry.migration_artifact_path(),
+            "parent_bundle_hash": hex(entry.parent_bundle_hash().as_bytes()),
+            "parent_bundle_path": entry.parent_artifact_path(),
+            "parent_version": entry.parent_version().get(),
+            "resource_bounds": {
+                "maximum_bundle_bytes": bounds.maximum_bundle_bytes(),
+                "maximum_expression_nodes": bounds.maximum_expression_nodes(),
+                "maximum_source_bytes": bounds.maximum_source_bytes(),
+                "maximum_steps": bounds.maximum_steps(),
+            },
+            "source_hash": hex(entry.source_hash().as_bytes()),
+            "source_path": entry.source_path(),
+            "step_categories": categories,
+            "step_count": bundle.steps().len(),
+        }));
+    }
+    Ok(json!({
+        "candidate_bundle_hash": hex(candidate.bundle_hash().as_bytes()),
+        "candidate_version": candidate.contract_version().get(),
+        "lineage": candidate.lineage().as_str(),
+        "schema": "riffdb.migration-plan/v1",
+        "supported_parents": parents,
+    }))
+}
+
+fn migration_step_category(kind: &riffdb_contract_ir::MigrationStepKindV1) -> &'static str {
+    use riffdb_contract_ir::MigrationStepKindV1 as Step;
+    match kind {
+        Step::RenameIdentity { .. } => "rename_identity",
+        Step::RetireIdentity { .. } => "retire_identity",
+        Step::SetField { .. } => "set_field",
+        Step::ReplaceField { .. } => "replace_field",
+        Step::RequireEntity { .. } => "require_entity",
+        Step::RekeyEntity { .. } => "rekey_entity",
+        Step::MapEnum { .. } => "map_enum",
+        Step::RebuildIndex { .. } => "rebuild_index",
+        Step::ValidateRelationship { .. } => "validate_relationship",
+        Step::ValidateUnique { .. } => "validate_unique",
+        Step::ValidateInvariant { .. } => "validate_invariant",
+        Step::RebuildProjection { .. } => "rebuild_projection",
+        Step::AcknowledgeRepartition { .. } => "acknowledge_repartition",
+        Step::AcknowledgeAggregate { .. } => "acknowledge_aggregate",
+        Step::AcknowledgeConflict { .. } => "acknowledge_conflict",
+    }
+}
+
 pub(crate) fn load_locked_application(
     source_path: &Path,
     lock_path: Option<&Path>,
@@ -476,7 +584,11 @@ fn compile_for_existing_lock(
     lock_path: &Path,
     lock: &ApplicationLock,
 ) -> Result<CompiledSymbolicApplication, ScaffoldError> {
-    if lock.schema() == riffdb_query_module::APPLICATION_LOCK_SCHEMA_V3 {
+    if matches!(
+        lock.schema(),
+        riffdb_query_module::APPLICATION_LOCK_SCHEMA_V3
+            | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V4
+    ) {
         let artifact = lock.contract_bundle_artifact().ok_or_else(|| {
             lock_diagnostic(
                 lock_path,
@@ -583,6 +695,45 @@ fn compile_symbolic_application_mode(
         compile_contract_source(&contract_source)
             .map_err(|error| contract_diagnostic(source.contract().source(), &error))?
     };
+    let mut migration_inputs = Vec::with_capacity(source.migrations().len());
+    let mut migration_outputs = Vec::with_capacity(source.migrations().len());
+    for declared in source.migrations() {
+        let parent_bytes = read_workspace_file(
+            root,
+            declared.parent_bundle(),
+            riffdb_contract_ir::MAX_BUNDLE_BYTES,
+        )?;
+        let parent = ContractBundle::decode(&parent_bytes).map_err(|_| {
+            lock_diagnostic(
+                Path::new(declared.parent_bundle()),
+                riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+            )
+        })?;
+        let migration_source = read_workspace_text(
+            root,
+            declared.source(),
+            riffdb_contract_ir::MAX_MIGRATION_SOURCE_BYTES_V1,
+        )?;
+        let migration = compile_migration_source(&migration_source, &parent, &contract)
+            .map_err(|error| contract_diagnostic(declared.source(), &error))?;
+        let artifact_path = format!(
+            "generated/migrations/{}-to-{}.riffdb.migration.bundle",
+            parent.contract_version().get(),
+            contract.contract_version().get(),
+        );
+        migration_inputs.push(
+            ApplicationMigrationLockInput::new(
+                declared.source(),
+                migration_source.as_bytes(),
+                declared.parent_bundle(),
+                &parent,
+                &artifact_path,
+                &migration,
+            )
+            .map_err(|error| lock_diagnostic(Path::new(DEFAULT_LOCK_PATH), error.kind()))?,
+        );
+        migration_outputs.push((artifact_path, migration.canonical_bytes().to_vec()));
+    }
     let mut modules = Vec::with_capacity(source.query_modules().len());
     let mut python_query_sources = Vec::new();
     for declared in source.query_modules() {
@@ -710,12 +861,22 @@ fn compile_symbolic_application_mode(
                 .map_err(|error| lock_diagnostic(Path::new(DEFAULT_LOCK_PATH), error.kind()))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let lock = if lock_v3 {
+    let lock = if source.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V3 {
+        ApplicationLock::compile_v4(
+            &source,
+            &exact,
+            &contract,
+            &modules,
+            &artifacts,
+            &migration_inputs,
+        )
+    } else if lock_v3 {
         ApplicationLock::compile_v3(&source, &exact, &contract, &modules, &artifacts)
     } else {
         ApplicationLock::compile(&source, &exact, &contract, &modules, &artifacts)
     }
     .map_err(|error| lock_diagnostic(Path::new(DEFAULT_LOCK_PATH), error.kind()))?;
+    outputs.extend(migration_outputs);
     Ok(CompiledSymbolicApplication { lock, outputs })
 }
 
@@ -2368,6 +2529,96 @@ mod tests {
                 .as_str(),
             "RDB-AL008"
         );
+        fs::remove_dir_all(base).expect("cleanup");
+    }
+
+    #[test]
+    fn v4_lock_pins_and_plans_an_exact_direct_parent_migration() {
+        let base = std::env::temp_dir().join(format!(
+            "riffdb-lock-test-{}-{}",
+            std::process::id(),
+            "migration-v4"
+        ));
+        if base.exists() {
+            fs::remove_dir_all(&base).expect("remove prior test directory");
+        }
+        create_application("safe-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
+        let source_path = base.join("riffdb.application.json");
+        let contract_path = base.join("riffdb/contract.riff");
+        let genesis_source = fs::read_to_string(&contract_path).expect("genesis source");
+        let genesis = compile_contract_source(&genesis_source).expect("genesis bundle");
+
+        fs::create_dir_all(base.join("retained")).expect("retained artifacts");
+        fs::write(base.join("retained/v1.bundle"), genesis.canonical_bytes())
+            .expect("retained parent bundle");
+        fs::create_dir_all(base.join("riffdb/migrations")).expect("migration sources");
+        let migration_source = "migration SafeApp from 1 to 2 {}\n";
+        fs::write(
+            base.join("riffdb/migrations/v1-to-v2.riffm"),
+            migration_source,
+        )
+        .expect("migration source");
+
+        let successor_source = genesis_source
+            .replacen("version 1", "version 2", 1)
+            .replace(
+                "field created_at: timestamp",
+                "field created_at: timestamp\n    index by_title (title, item_id)",
+            );
+        let successor =
+            riffdb_contract_compiler::compile_contract_successor(&successor_source, &genesis)
+                .expect("index successor");
+        fs::write(&contract_path, successor_source).expect("successor source");
+
+        let mut source: serde_json::Value =
+            serde_json::from_slice(&fs::read(&source_path).expect("application source"))
+                .expect("source JSON");
+        source["schema"] = json!(riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V3);
+        source["contract"]["version"] = json!(2);
+        source["generation"]["python"] = json!("generated/python/client.py");
+        source["migrations"] = json!([{
+            "parent_bundle": "retained/v1.bundle",
+            "source": "riffdb/migrations/v1-to-v2.riffm",
+        }]);
+        fs::write(
+            &source_path,
+            serde_json::to_vec(&source).expect("updated source JSON"),
+        )
+        .expect("updated source");
+
+        write_application_lock_with_bundle(&source_path, None, successor)
+            .expect("write migration lock");
+        check_application_lock(&source_path, None).expect("offline exact check");
+        let lock = ApplicationLock::decode_canonical(
+            &fs::read(base.join(DEFAULT_LOCK_PATH)).expect("lock bytes"),
+        )
+        .expect("canonical V4 lock");
+        assert_eq!(
+            lock.schema(),
+            riffdb_query_module::APPLICATION_LOCK_SCHEMA_V4
+        );
+        assert_eq!(lock.migrations().len(), 1);
+        assert!(
+            base.join(lock.migrations()[0].migration_artifact_path())
+                .is_file()
+        );
+
+        let plan = plan_application_migrations(&source_path, None).expect("local migration plan");
+        assert_eq!(plan["schema"], "riffdb.migration-plan/v1");
+        assert_eq!(plan["candidate_version"], 2);
+        assert_eq!(plan["supported_parents"][0]["parent_version"], 1);
+        assert_eq!(plan["supported_parents"][0]["step_count"], 1);
+        assert_eq!(
+            plan["supported_parents"][0]["step_categories"][0],
+            "rebuild_index"
+        );
+
+        fs::write(
+            base.join("riffdb/migrations/v1-to-v2.riffm"),
+            "migration SafeApp from 1 to 2 { acknowledge conflict ItemRoot }\n",
+        )
+        .expect("change migration source");
+        assert!(check_application_lock(&source_path, None).is_err());
         fs::remove_dir_all(base).expect("cleanup");
     }
 

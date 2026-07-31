@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 37;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 38;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 32;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 33;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -74,6 +74,14 @@ const SERVICE_AUDIT_REQUEST_INDEX_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_byte
 const SERVICE_AUDIT_REQUEST_INDEX_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-service-audit-request-index-v1-record-bound.bin"
+));
+const EVENT_ROUTE_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-event-route-v1-schema-hash.bin"
+));
+const EVENT_ROUTE_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-event-route-v1-record-bound.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
@@ -182,6 +190,19 @@ const fn service_audit_request_index_v1_record_bound(offset: usize) -> usize {
         SERVICE_AUDIT_REQUEST_INDEX_V1_RECORD_BOUND_BYTES[offset + 1],
         SERVICE_AUDIT_REQUEST_INDEX_V1_RECORD_BOUND_BYTES[offset + 2],
         SERVICE_AUDIT_REQUEST_INDEX_V1_RECORD_BOUND_BYTES[offset + 3],
+    ]) as usize
+}
+
+const fn event_route_v1_schema_hash() -> SchemaHash {
+    SchemaHash::from_bytes(*EVENT_ROUTE_V1_SCHEMA_HASH_BYTES)
+}
+
+const fn event_route_v1_record_bound(offset: usize) -> usize {
+    u32::from_be_bytes([
+        EVENT_ROUTE_V1_RECORD_BOUND_BYTES[offset],
+        EVENT_ROUTE_V1_RECORD_BOUND_BYTES[offset + 1],
+        EVENT_ROUTE_V1_RECORD_BOUND_BYTES[offset + 2],
+        EVENT_ROUTE_V1_RECORD_BOUND_BYTES[offset + 3],
     ]) as usize
 }
 
@@ -385,6 +406,16 @@ const SERVICE_AUDIT_REQUEST_INDEX_V1_RECORD_SCHEMA: RecordSchema<'static> =
     )
     .with_compact_identity(32, 1);
 
+const EVENT_ROUTE_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredEventRouteV1",
+    event_route_v1_schema_hash(),
+    event_route_v1_record_bound(0),
+    event_route_v1_record_bound(4),
+    preflight_payload::<36>,
+    validate_payload::<36, v1::StoredEventRouteV1>,
+)
+.with_compact_identity(33, 1);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -489,6 +520,7 @@ readable_message!(
     v1::StoredServiceAuditRequestIndexV1,
     SERVICE_AUDIT_REQUEST_INDEX_V1_RECORD_SCHEMA
 );
+readable_message!(v1::StoredEventRouteV1, EVENT_ROUTE_V1_RECORD_SCHEMA);
 
 writable_message!(v1::StoredStorageFormatVersionV1);
 writable_message!(v1::StoredDatabaseIdentityV1);
@@ -522,6 +554,7 @@ writable_message!(v1::StoredOutboxIntentV2);
 writable_message!(v1::StoredIndexGenerationV2);
 writable_message!(v1::StoredHistoryIncarnationV1);
 writable_message!(v1::StoredServiceAuditRequestIndexV1);
+writable_message!(v1::StoredEventRouteV1);
 
 /// Encodes one sealed generated message after the same allocation-free shape preflight.
 pub fn encode_current_message<M: WritableRecordMessage>(
@@ -578,6 +611,7 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     INDEX_GENERATION_V2_RECORD_SCHEMA,
     HISTORY_INCARNATION_V1_RECORD_SCHEMA,
     SERVICE_AUDIT_REQUEST_INDEX_V1_RECORD_SCHEMA,
+    EVENT_ROUTE_V1_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
 ];
 
@@ -614,6 +648,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     CURRENT_V1_RECORD_SCHEMAS[28],
     HISTORY_INCARNATION_V1_RECORD_SCHEMA,
     SERVICE_AUDIT_REQUEST_INDEX_V1_RECORD_SCHEMA,
+    EVENT_ROUTE_V1_RECORD_SCHEMA,
     REGISTRY_V2_RECORD_SCHEMA,
 ];
 

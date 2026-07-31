@@ -5,6 +5,7 @@ contract ProjectionEventEvolution version 1 {
   }
 
   event Changed {
+    partition_by (id)
     id: uuid
   }
 

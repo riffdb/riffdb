@@ -157,6 +157,8 @@ pub(crate) struct HirEvent {
     pub(crate) id: EventTypeId,
     pub(crate) name: String,
     pub(crate) span: Span,
+    pub(crate) partition_fields: Vec<(FieldId, Span)>,
+    pub(crate) partition_span: Option<Span>,
     pub(crate) fields: Vec<HirField>,
 }
 
@@ -344,7 +346,7 @@ pub(crate) fn lower_contract_hir(
     let mut diagnostics = Vec::new();
     let enums = lower_enums(document, symbols);
     let entities = lower_entities(document, symbols, types, &mut diagnostics);
-    let events = lower_events(document, symbols, types);
+    let events = lower_events(document, symbols, types, &mut diagnostics);
     let aggregates = lower_aggregates(document, symbols, types, &mut diagnostics);
     let commands = lower_commands(
         document,
@@ -607,6 +609,7 @@ fn lower_events(
     document: &ContractDocument,
     symbols: &GenesisSymbols,
     types: &ResolvedTypes,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
 ) -> Vec<HirEvent> {
     document
         .contract
@@ -634,10 +637,34 @@ fn lower_events(
                     )
                 })
                 .collect();
+            let partition_fields = source
+                .partition_by
+                .as_ref()
+                .map(|partition| {
+                    partition
+                        .value
+                        .iter()
+                        .filter_map(|name| {
+                            let Some(field_id) =
+                                symbols.event_fields.get(&(id, name.value.clone())).copied()
+                            else {
+                                diagnostics.push(CompilerDiagnostic::new(
+                                    CompilerDiagnosticCode::UnknownName,
+                                    name.span,
+                                ));
+                                return None;
+                            };
+                            Some((field_id, name.span))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             Some(HirEvent {
                 id,
                 name: source.name.value.clone(),
                 span: source.name.span,
+                partition_fields,
+                partition_span: source.partition_by.as_ref().map(|partition| partition.span),
                 fields,
             })
         })

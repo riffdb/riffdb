@@ -22,10 +22,11 @@ pub use application_role::{
     ApplicationRoleOperationKind, CompiledApplicationRole, compile_application_role,
 };
 pub use application_source::{
-    APPLICATION_SOURCE_SCHEMA_V1, APPLICATION_SOURCE_SCHEMA_V2, ApplicationSourceContract,
-    ApplicationSourceError, ApplicationSourceErrorKind, ApplicationSourceGeneration,
-    ApplicationSourceManifest, ApplicationSourceQuery, ApplicationSourceQueryModule,
-    ApplicationSourceRole, ApplicationSourceTenantScope, MAX_APPLICATION_SOURCE_BYTES,
+    APPLICATION_SOURCE_SCHEMA_V1, APPLICATION_SOURCE_SCHEMA_V2, APPLICATION_SOURCE_SCHEMA_V3,
+    ApplicationSourceContract, ApplicationSourceError, ApplicationSourceErrorKind,
+    ApplicationSourceGeneration, ApplicationSourceManifest, ApplicationSourceMigration,
+    ApplicationSourceQuery, ApplicationSourceQueryModule, ApplicationSourceRole,
+    ApplicationSourceTenantScope, MAX_APPLICATION_MIGRATIONS, MAX_APPLICATION_SOURCE_BYTES,
 };
 pub use generation::{
     GeneratedMcpCommand, GeneratedMcpTool, McpToolGenerationError, generate_mcp_commands,
@@ -736,7 +737,8 @@ impl<'a> Reader<'a> {
 }
 pub use application_lock::{
     APPLICATION_LOCK_SCHEMA_V1, APPLICATION_LOCK_SCHEMA_V2, APPLICATION_LOCK_SCHEMA_V3,
-    APPLICATION_ROLE_DEFINITION_FORMAT_V1, ApplicationLock, ApplicationLockError,
-    ApplicationLockErrorKind, CONTRACT_BUNDLE_ARTIFACT_PATH, GeneratedApplicationArtifact,
-    GeneratedApplicationArtifactKind, MAX_APPLICATION_LOCK_BYTES,
+    APPLICATION_LOCK_SCHEMA_V4, APPLICATION_ROLE_DEFINITION_FORMAT_V1, ApplicationLock,
+    ApplicationLockError, ApplicationLockErrorKind, ApplicationMigrationLockInput,
+    CONTRACT_BUNDLE_ARTIFACT_PATH, GeneratedApplicationArtifact, GeneratedApplicationArtifactKind,
+    LockedApplicationMigration, MAX_APPLICATION_LOCK_BYTES,
 };

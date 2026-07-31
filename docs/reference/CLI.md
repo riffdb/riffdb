@@ -14,6 +14,7 @@ Usage: riffdb [OPTIONS] <COMMAND>
 Commands:
   new          Creates a deterministic application-first RiffDB repository
   application  Validates and regenerates an exact application package
+  migration    Inspects exact local contract migration artifacts
   dev          Starts the bounded local symbolic development workflow
   contract
   command
@@ -83,6 +84,26 @@ Commands:
   generate       Regenerates V1 manifests or exact locked symbolic application bindings
   deploy         Deploys one exact lock, with optional explicit role provisioning and seed
   bind-dev-role  Idempotently deploys and binds one explicit short-lived application role
+
+Options:
+      --config <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+### `riffdb migration`
+
+```text
+Inspects exact local contract migration artifacts
+
+Usage: riffdb migration [OPTIONS] <COMMAND>
+
+Commands:
+  plan  Prints the exact read-only migration plan for a locked application
 
 Options:
       --config <PATH>
@@ -503,6 +524,25 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --replace-role-credential
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb migration plan`
+
+```text
+Prints the exact read-only migration plan for a locked application
+
+Usage: riffdb migration plan [OPTIONS]
+
+Options:
+      --application <APPLICATION_SOURCE>   [default: riffdb.application.json]
+      --config <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --lock <APPLICATION_LOCK>            [default: riffdb.application.lock.json]
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
       --credential-file <PATH>
   -h, --help                               Print help
 ```

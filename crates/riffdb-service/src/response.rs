@@ -854,6 +854,7 @@ impl ServiceResponseCharge for DeployContractResult {
                 charge.nested(&validation)?;
             }
             Self::IncompatibleCandidate(descriptor)
+            | Self::MigrationRequired(descriptor)
             | Self::Activated(descriptor)
             | Self::AlreadyActive(descriptor) => {
                 charge_contract_descriptor(&mut charge, descriptor)?;

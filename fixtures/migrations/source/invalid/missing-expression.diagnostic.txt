@@ -1,0 +1,7 @@
+kind=syntax
+count=1
+diagnostic.0.code=RDB-S004
+diagnostic.0.message=contract source contains an unexpected token
+diagnostic.0.primary=79..80
+diagnostic.0.expected=
+diagnostic.0.help=use the grammar-version-1 spelling shown in the language reference

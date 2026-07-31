@@ -63,6 +63,18 @@ pub enum CompilerDiagnosticCode {
     InvalidUniqueKey,
     /// `RDB-C026`: a unique-key change cannot be derived entirely from command inputs.
     UniqueKeyNotInputComputable,
+    /// `RDB-C027`: migration source does not bind the exact parent and candidate.
+    InvalidMigrationIdentity,
+    /// `RDB-C028`: a required migration proof is absent.
+    MissingMigrationProof,
+    /// `RDB-C029`: migration source proves one semantic change more than once.
+    DuplicateMigrationProof,
+    /// `RDB-C030`: migration source contains a clause unrelated to the exact contract diff.
+    UnnecessaryMigrationProof,
+    /// `RDB-C031`: a frozen migration step is not executable in the current implementation gate.
+    UnsupportedMigrationStep,
+    /// `RDB-C032`: a migration conversion or expression is not exact and deterministic.
+    InvalidMigrationExpression,
     /// `RDB-C201`: an identifier cannot form an ADR-0064 command tool-name segment.
     InvalidCommandToolName,
     /// `RDB-C202`: a complete ADR-0064 command tool name exceeds 128 bytes.
@@ -73,7 +85,7 @@ pub enum CompilerDiagnosticCode {
 
 impl CompilerDiagnosticCode {
     /// Complete pre-freeze public semantic diagnostic registry in code order.
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 35] = [
         Self::InvalidContractVersion,
         Self::DuplicateName,
         Self::MissingDeclaration,
@@ -100,6 +112,12 @@ impl CompilerDiagnosticCode {
         Self::MissingRelationshipRead,
         Self::InvalidUniqueKey,
         Self::UniqueKeyNotInputComputable,
+        Self::InvalidMigrationIdentity,
+        Self::MissingMigrationProof,
+        Self::DuplicateMigrationProof,
+        Self::UnnecessaryMigrationProof,
+        Self::UnsupportedMigrationStep,
+        Self::InvalidMigrationExpression,
         Self::InvalidCommandToolName,
         Self::CommandToolNameTooLong,
         Self::CommandToolNameCollision,
@@ -135,6 +153,12 @@ impl CompilerDiagnosticCode {
             Self::MissingRelationshipRead => "RDB-C024",
             Self::InvalidUniqueKey => "RDB-C025",
             Self::UniqueKeyNotInputComputable => "RDB-C026",
+            Self::InvalidMigrationIdentity => "RDB-C027",
+            Self::MissingMigrationProof => "RDB-C028",
+            Self::DuplicateMigrationProof => "RDB-C029",
+            Self::UnnecessaryMigrationProof => "RDB-C030",
+            Self::UnsupportedMigrationStep => "RDB-C031",
+            Self::InvalidMigrationExpression => "RDB-C032",
             Self::InvalidCommandToolName => "RDB-C201",
             Self::CommandToolNameTooLong => "RDB-C202",
             Self::CommandToolNameCollision => "RDB-C203",
@@ -186,6 +210,20 @@ impl CompilerDiagnosticCode {
             }
             Self::UniqueKeyNotInputComputable => {
                 "a changed unique value must be computable from validated command inputs"
+            }
+            Self::InvalidMigrationIdentity => {
+                "migration source does not bind the exact parent and candidate"
+            }
+            Self::MissingMigrationProof => "a required migration proof is missing",
+            Self::DuplicateMigrationProof => "a migration change is proved more than once",
+            Self::UnnecessaryMigrationProof => {
+                "a migration clause does not correspond to the exact contract change"
+            }
+            Self::UnsupportedMigrationStep => {
+                "the migration step is not executable in the current implementation gate"
+            }
+            Self::InvalidMigrationExpression => {
+                "the migration expression or conversion is not exact and deterministic"
             }
             Self::InvalidCommandToolName => {
                 "an identifier cannot form a valid MCP command tool-name segment"
@@ -260,6 +298,22 @@ impl CompilerDiagnosticCode {
             ),
             Self::UniqueKeyNotInputComputable => Some(
                 "assign every changed unique component from command inputs or input-only expressions",
+            ),
+            Self::InvalidMigrationIdentity => {
+                Some("use the exact lineage, parent version, and candidate version")
+            }
+            Self::MissingMigrationProof => {
+                Some("add the source clause required by the reported compatibility change")
+            }
+            Self::DuplicateMigrationProof => Some("retain exactly one proof for the change"),
+            Self::UnnecessaryMigrationProof => {
+                Some("remove the clause or compile it against the intended exact parent")
+            }
+            Self::UnsupportedMigrationStep => {
+                Some("wait for the documented migration implementation gate")
+            }
+            Self::InvalidMigrationExpression => Some(
+                "use only the old row, canonical literals, checked operators, and closed conversions",
             ),
             Self::InvalidCommandToolName => {
                 Some("start contract and command identifiers with an ASCII letter")
@@ -435,7 +489,7 @@ mod tests {
 
     #[test]
     fn public_diagnostic_registry_is_complete_unique_and_code_ordered() {
-        assert_eq!(CompilerDiagnosticCode::ALL.len(), 29);
+        assert_eq!(CompilerDiagnosticCode::ALL.len(), 35);
         let codes = CompilerDiagnosticCode::ALL.map(CompilerDiagnosticCode::as_str);
         assert!(codes.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(CompilerDiagnosticCode::ALL.iter().all(|code| {

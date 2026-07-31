@@ -34,6 +34,10 @@ pub(crate) enum ExpressionScope {
         entity_id: EntityTypeId,
         fields: BTreeMap<String, (FieldId, ValueType)>,
     },
+    Migration {
+        entity_id: EntityTypeId,
+        fields: BTreeMap<String, (FieldId, ValueType)>,
+    },
     Command {
         command_id: CommandId,
         inputs: BTreeMap<String, (FieldId, ValueType)>,
@@ -375,6 +379,22 @@ impl<'a> ExpressionLowerer<'a> {
                         value_type,
                     )
                 }),
+            ExpressionScope::Migration { entity_id, fields }
+                if segments.len() == 2 && segments[0].value == "old" =>
+            {
+                fields
+                    .get(&segments[1].value)
+                    .cloned()
+                    .map(|(field, value_type)| {
+                        (
+                            ExpressionKind::SchemaField {
+                                entity_type: *entity_id,
+                                field,
+                            },
+                            value_type,
+                        )
+                    })
+            }
             ExpressionScope::Command {
                 command_id,
                 inputs,

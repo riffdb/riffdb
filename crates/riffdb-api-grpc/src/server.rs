@@ -801,6 +801,7 @@ pub fn classify_grpc_deployment_completion(
         | Ok(DeployContractResult::ExpectedApplicationIdentityMismatch { .. })
         | Ok(DeployContractResult::InvalidSource(_))
         | Ok(DeployContractResult::IncompatibleCandidate(_))
+        | Ok(DeployContractResult::MigrationRequired(_))
         | Ok(DeployContractResult::BundleConflict)
         | Err(_) => GrpcDeploymentCompletion::NotActivated,
     }

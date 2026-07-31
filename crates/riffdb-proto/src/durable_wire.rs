@@ -421,6 +421,10 @@ shape!(SERVICE_AUDIT [
 
 shape!(OUTBOX_INTENT[message(1, &DURABLE_EVENT)]);
 shape!(OUTBOX_INTENT_V2[message(1, &EVENT_REFERENCE_V2)]);
+shape!(EVENT_ROUTE_V1 [
+    message(1, &EVENT_ID),
+    fixed_bytes(3, 32),
+]);
 shape!(OUTBOX_RETRY [
     message(2, &TIMESTAMP),
     message(3, &TIMESTAMP),
@@ -469,7 +473,7 @@ shape!(PROJECTION_CONTROL [
     message(7, &PROJECTION_FAILURE),
 ]);
 
-const ROOTS: [&Shape; 36] = [
+const ROOTS: [&Shape; 37] = [
     &Shape { rules: &[] },
     &Shape {
         rules: &[fixed_bytes(1, 16)],
@@ -516,6 +520,7 @@ const ROOTS: [&Shape; 36] = [
     &Shape {
         rules: &[fixed_bytes(1, 16)],
     },
+    &EVENT_ROUTE_V1,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

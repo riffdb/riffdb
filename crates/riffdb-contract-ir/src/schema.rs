@@ -443,10 +443,64 @@ impl EntitySchema {
 
 /// One durable event payload schema.
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventPartitionSchema {
+    fields: Vec<FieldId>,
+    key_schema: KeySchema,
+}
+
+impl EventPartitionSchema {
+    /// Creates an exact event-payload derivation of one command partition key.
+    pub fn new(
+        fields: Vec<FieldId>,
+        key_schema: KeySchema,
+        payload: &RecordSchema,
+    ) -> Result<Self, IrValidationError> {
+        if fields.is_empty() || fields.len() != key_schema.components().len() {
+            return Err(IrValidationError::InvalidKey {
+                reason: "event partition field/key arity mismatch",
+            });
+        }
+        if !matches!(key_schema.purpose(), KeyPurpose::Partition(_)) {
+            return Err(IrValidationError::InvalidKey {
+                reason: "event partition does not use a partition key schema",
+            });
+        }
+        let mut seen = BTreeSet::new();
+        for (field_id, component) in fields.iter().zip(key_schema.components()) {
+            let field = payload
+                .field(*field_id)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "event partition field",
+                })?;
+            if !seen.insert(*field_id) || field.value_type() != component.value_type() {
+                return Err(IrValidationError::InvalidKey {
+                    reason: "event partition field/type mismatch",
+                });
+            }
+        }
+        Ok(Self { fields, key_schema })
+    }
+
+    /// Event payload fields in canonical partition-component order.
+    #[must_use]
+    pub fn fields(&self) -> &[FieldId] {
+        &self.fields
+    }
+
+    /// Exact aggregate-namespaced canonical partition key schema.
+    #[must_use]
+    pub const fn key_schema(&self) -> &KeySchema {
+        &self.key_schema
+    }
+}
+
+/// One durable event payload schema.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EventSchema {
     id: EventTypeId,
     name: String,
     payload: RecordSchema,
+    partition: Option<EventPartitionSchema>,
 }
 
 impl EventSchema {
@@ -463,7 +517,33 @@ impl EventSchema {
                 kind: "event payload owner",
             });
         }
-        Ok(Self { id, name, payload })
+        Ok(Self {
+            id,
+            name,
+            payload,
+            partition: None,
+        })
+    }
+
+    /// Creates an application-streamable event with an exact partition derivation.
+    pub fn partitioned(
+        id: EventTypeId,
+        name: impl Into<String>,
+        payload: RecordSchema,
+        partition: EventPartitionSchema,
+    ) -> Result<Self, IrValidationError> {
+        let mut event = Self::new(id, name, payload)?;
+        if partition
+            .fields()
+            .iter()
+            .any(|field| event.payload.field(*field).is_none())
+        {
+            return Err(IrValidationError::InvalidReference {
+                kind: "event partition field",
+            });
+        }
+        event.partition = Some(partition);
+        Ok(event)
     }
     /// Stable event ID.
     #[must_use]
@@ -479,6 +559,11 @@ impl EventSchema {
     #[must_use]
     pub const fn payload(&self) -> &RecordSchema {
         &self.payload
+    }
+    /// Exact application-stream partition derivation, when declared.
+    #[must_use]
+    pub const fn partition(&self) -> Option<&EventPartitionSchema> {
+        self.partition.as_ref()
     }
 }
 
@@ -964,6 +1049,28 @@ impl SchemaIr {
         }
         for unique in &unique_keys {
             validate_unique_key(unique, &entity_map, &aggregates, &ownership)?;
+        }
+        for event in &events {
+            let Some(partition) = event.partition() else {
+                continue;
+            };
+            let KeyPurpose::Partition(aggregate_id) = partition.key_schema().purpose() else {
+                return Err(IrValidationError::InvalidKey {
+                    reason: "event partition purpose",
+                });
+            };
+            let aggregate = aggregates
+                .binary_search_by_key(&aggregate_id, AggregateSchema::id)
+                .ok()
+                .map(|index| &aggregates[index])
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "event partition aggregate",
+                })?;
+            if partition.key_schema() != aggregate.keys().partition_schema() {
+                return Err(IrValidationError::InvalidKey {
+                    reason: "event partition key schema differs from aggregate",
+                });
+            }
         }
         let result = Self {
             entities,
@@ -1891,5 +1998,27 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn event_partition_requires_an_exact_declared_aggregate_key_schema() {
+        let event_id = EventTypeId::first();
+        let field_id = FieldId::first();
+        let payload = RecordSchema::new(
+            RecordTypeRef::Event(event_id),
+            vec![FieldSchema::new(field_id, "tenant_id", ValueType::uuid()).expect("field")],
+        )
+        .expect("payload");
+        let key_schema = KeySchema::new(
+            KeyPurpose::Partition(AggregateTypeId::first()),
+            vec![KeyComponentSchema::new(ValueType::uuid(), vec![]).expect("component")],
+        )
+        .expect("partition key");
+        let partition = EventPartitionSchema::new(vec![field_id], key_schema, &payload)
+            .expect("partition schema");
+        let event = EventSchema::partitioned(event_id, "Changed", payload, partition)
+            .expect("partitioned event");
+
+        assert!(SchemaIr::new(vec![], vec![event], vec![], vec![]).is_err());
     }
 }

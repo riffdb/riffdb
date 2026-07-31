@@ -3,10 +3,12 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use riffdb_contract_ir::ContractBundle;
+use riffdb_contract_ir::{ContractBundle, MigrationBundleV1};
 use riffdb_types::{
-    ApplicationLockHash, ApplicationManifestHash, ApplicationSourceHash, GeneratedArtifactHash,
+    ApplicationLockHash, ApplicationManifestHash, ApplicationSourceHash, ContractBundleHash,
+    ContractVersion, GeneratedArtifactHash, MigrationBundleHash, MigrationSourceHash,
     hash_application_lock, hash_application_role_definition, hash_generated_artifact,
+    hash_migration_source,
 };
 use serde_json::{Map, Value, json};
 
@@ -21,6 +23,8 @@ pub const APPLICATION_LOCK_SCHEMA_V1: &str = "riffdb.application-lock/v1";
 pub const APPLICATION_LOCK_SCHEMA_V2: &str = "riffdb.application-lock/v2";
 /// Exact lock schema pinning one canonical contract-bundle artifact.
 pub const APPLICATION_LOCK_SCHEMA_V3: &str = "riffdb.application-lock/v3";
+/// Exact lock schema pinning direct-parent migration artifacts.
+pub const APPLICATION_LOCK_SCHEMA_V4: &str = "riffdb.application-lock/v4";
 /// Compiler-owned canonical contract-bundle artifact path.
 pub const CONTRACT_BUNDLE_ARTIFACT_PATH: &str = "generated/riffdb.contract.bundle";
 /// Maximum accepted canonical application-lock bytes.
@@ -29,6 +33,112 @@ pub const MAX_APPLICATION_LOCK_BYTES: usize = 4 * 1_024 * 1_024;
 pub const APPLICATION_ROLE_DEFINITION_FORMAT_V1: u32 = 1;
 const MAX_ARTIFACT_BYTES: usize = 16 * 1_024 * 1_024;
 const MAX_ARTIFACTS: usize = 128;
+
+/// Exact decoded inputs for one V4 direct-parent migration lock entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationMigrationLockInput {
+    source_path: String,
+    source_hash: MigrationSourceHash,
+    parent_artifact_path: String,
+    parent_version: ContractVersion,
+    parent_bundle_hash: ContractBundleHash,
+    migration_artifact_path: String,
+    migration_bundle: MigrationBundleV1,
+}
+
+impl ApplicationMigrationLockInput {
+    /// Validates the source and retained-parent identities without I/O.
+    pub fn new(
+        source_path: impl Into<String>,
+        source_bytes: &[u8],
+        parent_artifact_path: impl Into<String>,
+        parent: &ContractBundle,
+        migration_artifact_path: impl Into<String>,
+        migration_bundle: &MigrationBundleV1,
+    ) -> Result<Self, ApplicationLockError> {
+        let source_path = source_path.into();
+        let parent_artifact_path = parent_artifact_path.into();
+        let migration_artifact_path = migration_artifact_path.into();
+        if !valid_path(&source_path)
+            || !valid_path(&parent_artifact_path)
+            || !valid_path(&migration_artifact_path)
+            || source_bytes.len() > riffdb_contract_ir::MAX_MIGRATION_SOURCE_BYTES_V1
+        {
+            return Err(ApplicationLockError::new(
+                ApplicationLockErrorKind::InvalidPath,
+            ));
+        }
+        let source_hash = hash_migration_source(source_bytes);
+        if source_hash != migration_bundle.source_hash()
+            || migration_bundle.parent_version() != parent.contract_version()
+            || migration_bundle.parent_bundle_hash() != parent.bundle_hash()
+            || migration_bundle.lineage() != parent.lineage()
+        {
+            return Err(ApplicationLockError::new(
+                ApplicationLockErrorKind::IdentityMismatch,
+            ));
+        }
+        Ok(Self {
+            source_path,
+            source_hash,
+            parent_artifact_path,
+            parent_version: parent.contract_version(),
+            parent_bundle_hash: parent.bundle_hash(),
+            migration_artifact_path,
+            migration_bundle: migration_bundle.clone(),
+        })
+    }
+}
+
+/// One canonical V4 direct-parent migration entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LockedApplicationMigration {
+    source_path: String,
+    source_hash: MigrationSourceHash,
+    parent_artifact_path: String,
+    parent_version: ContractVersion,
+    parent_bundle_hash: ContractBundleHash,
+    migration_artifact_path: String,
+    migration_bundle_hash: MigrationBundleHash,
+}
+
+impl LockedApplicationMigration {
+    /// Migration source path.
+    #[must_use]
+    pub fn source_path(&self) -> &str {
+        &self.source_path
+    }
+    /// Exact source hash.
+    #[must_use]
+    pub const fn source_hash(&self) -> MigrationSourceHash {
+        self.source_hash
+    }
+    /// Retained parent-bundle path.
+    #[must_use]
+    pub fn parent_artifact_path(&self) -> &str {
+        &self.parent_artifact_path
+    }
+    /// Supported parent version.
+    #[must_use]
+    pub const fn parent_version(&self) -> ContractVersion {
+        self.parent_version
+    }
+    /// Supported parent bundle hash.
+    #[must_use]
+    pub const fn parent_bundle_hash(&self) -> ContractBundleHash {
+        self.parent_bundle_hash
+    }
+    /// Canonical migration bundle path.
+    #[must_use]
+    pub fn migration_artifact_path(&self) -> &str {
+        &self.migration_artifact_path
+    }
+    /// Exact migration bundle hash.
+    #[must_use]
+    pub const fn migration_bundle_hash(&self) -> MigrationBundleHash {
+        self.migration_bundle_hash
+    }
+}
 
 /// Closed compiler-generated artifact kind.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -121,6 +231,7 @@ pub struct ApplicationLock {
     canonical_bytes: Vec<u8>,
     identity: ApplicationLockHash,
     contract_bundle_artifact: Option<GeneratedApplicationArtifact>,
+    migrations: Vec<LockedApplicationMigration>,
 }
 
 impl ApplicationLock {
@@ -132,7 +243,7 @@ impl ApplicationLock {
         modules: &[QueryModule],
         artifacts: &[GeneratedApplicationArtifact],
     ) -> Result<Self, ApplicationLockError> {
-        Self::compile_inner(source, manifest, contract, modules, artifacts, false)
+        Self::compile_inner(source, manifest, contract, modules, artifacts, false, None)
     }
 
     /// Compiles lock V3 with the exact canonical contract bundle as an artifact.
@@ -143,7 +254,27 @@ impl ApplicationLock {
         modules: &[QueryModule],
         artifacts: &[GeneratedApplicationArtifact],
     ) -> Result<Self, ApplicationLockError> {
-        Self::compile_inner(source, manifest, contract, modules, artifacts, true)
+        Self::compile_inner(source, manifest, contract, modules, artifacts, true, None)
+    }
+
+    /// Compiles lock V4 with every exact direct-parent migration artifact.
+    pub fn compile_v4(
+        source: &ApplicationSourceManifest,
+        manifest: &ApplicationManifest,
+        contract: &ContractBundle,
+        modules: &[QueryModule],
+        artifacts: &[GeneratedApplicationArtifact],
+        migrations: &[ApplicationMigrationLockInput],
+    ) -> Result<Self, ApplicationLockError> {
+        Self::compile_inner(
+            source,
+            manifest,
+            contract,
+            modules,
+            artifacts,
+            true,
+            Some(migrations),
+        )
     }
 
     fn compile_inner(
@@ -153,7 +284,13 @@ impl ApplicationLock {
         modules: &[QueryModule],
         artifacts: &[GeneratedApplicationArtifact],
         pin_contract_bundle: bool,
+        migration_inputs: Option<&[ApplicationMigrationLockInput]>,
     ) -> Result<Self, ApplicationLockError> {
+        if source.schema() == crate::APPLICATION_SOURCE_SCHEMA_V3 && migration_inputs.is_none() {
+            return Err(ApplicationLockError::new(
+                ApplicationLockErrorKind::UnsupportedVersion,
+            ));
+        }
         let expected = source
             .exact_manifest(contract, modules)
             .map_err(|_| ApplicationLockError::new(ApplicationLockErrorKind::IdentityMismatch))?;
@@ -188,7 +325,7 @@ impl ApplicationLock {
                 ApplicationLockErrorKind::InvalidShape,
             ));
         }
-        let schema = if pin_contract_bundle {
+        if pin_contract_bundle {
             let expected_bundle_artifact = GeneratedApplicationArtifact::new(
                 GeneratedApplicationArtifactKind::ContractBundle,
                 CONTRACT_BUNDLE_ARTIFACT_PATH,
@@ -207,6 +344,16 @@ impl ApplicationLock {
                     ApplicationLockErrorKind::IdentityMismatch,
                 ));
             }
+        }
+        let schema = if migration_inputs.is_some() {
+            if source.schema() != crate::APPLICATION_SOURCE_SCHEMA_V3 {
+                return Err(ApplicationLockError::new(
+                    ApplicationLockErrorKind::InvalidShape,
+                ));
+            }
+            require_python_artifact(source, &artifacts)?;
+            APPLICATION_LOCK_SCHEMA_V4
+        } else if pin_contract_bundle {
             if source.schema() == crate::APPLICATION_SOURCE_SCHEMA_V2 {
                 require_python_artifact(source, &artifacts)?;
             } else if artifacts
@@ -249,6 +396,13 @@ impl ApplicationLock {
             APPLICATION_LOCK_SCHEMA_V1
         };
 
+        let migrations = validate_migration_inputs(
+            source,
+            contract,
+            &artifacts,
+            migration_inputs.unwrap_or_default(),
+            schema == APPLICATION_LOCK_SCHEMA_V4,
+        )?;
         let mut sorted_modules = modules.iter().collect::<Vec<_>>();
         sorted_modules.sort_by(|left, right| left.name().cmp(right.name()));
         let module_values = sorted_modules
@@ -260,7 +414,7 @@ impl ApplicationLock {
             .iter()
             .map(|role| role_value(role, modules, contract))
             .collect::<Result<Vec<_>, _>>()?;
-        let value = json!({
+        let mut value = json!({
             "artifacts": artifacts.iter().map(|artifact| json!({
                 "content_hash": hex(artifact.content_hash.as_bytes()),
                 "kind": artifact.kind.as_str(),
@@ -287,6 +441,31 @@ impl ApplicationLock {
             "schema": schema,
             "source_hash": hex(source.identity().as_bytes()),
         });
+        if schema == APPLICATION_LOCK_SCHEMA_V4 {
+            let object = value
+                .as_object_mut()
+                .expect("compiler-created application lock is an object");
+            object.insert(
+                "migrations".to_owned(),
+                json!(migrations.iter().map(migration_value).collect::<Vec<_>>()),
+            );
+            let formats = object
+                .get_mut("compiler_formats")
+                .and_then(Value::as_object_mut)
+                .expect("compiler-created formats are an object");
+            formats.insert(
+                "migration_bundle".to_owned(),
+                json!(riffdb_contract_ir::MIGRATION_BUNDLE_FORMAT_VERSION_V1),
+            );
+            formats.insert(
+                "migration_grammar".to_owned(),
+                json!(riffdb_contract_ir::MIGRATION_GRAMMAR_VERSION_V1),
+            );
+            formats.insert(
+                "migration_ir".to_owned(),
+                json!(riffdb_contract_ir::MIGRATION_IR_VERSION_V1),
+            );
+        }
         let mut canonical_bytes = serde_json::to_vec(&value)
             .map_err(|_| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
         canonical_bytes.push(b'\n');
@@ -302,6 +481,7 @@ impl ApplicationLock {
             identity: hash_application_lock(&canonical_bytes),
             canonical_bytes,
             contract_bundle_artifact,
+            migrations,
         })
     }
 
@@ -332,7 +512,10 @@ impl ApplicationLock {
             object,
             "exact_manifest_hash",
         )?)?);
-        let contract_bundle_artifact = if schema == APPLICATION_LOCK_SCHEMA_V3 {
+        let contract_bundle_artifact = if matches!(
+            schema,
+            APPLICATION_LOCK_SCHEMA_V3 | APPLICATION_LOCK_SCHEMA_V4
+        ) {
             let artifacts = required(object, "artifacts")?
                 .as_array()
                 .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
@@ -361,6 +544,16 @@ impl ApplicationLock {
         } else {
             None
         };
+        let migrations = if schema == APPLICATION_LOCK_SCHEMA_V4 {
+            required(object, "migrations")?
+                .as_array()
+                .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?
+                .iter()
+                .map(decode_locked_migration)
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             schema,
             source_hash,
@@ -368,6 +561,7 @@ impl ApplicationLock {
             identity: hash_application_lock(&canonical),
             canonical_bytes: canonical,
             contract_bundle_artifact,
+            migrations,
         })
     }
 
@@ -406,6 +600,136 @@ impl ApplicationLock {
     pub const fn contract_bundle_artifact(&self) -> Option<&GeneratedApplicationArtifact> {
         self.contract_bundle_artifact.as_ref()
     }
+
+    /// Direct-parent migrations in canonical parent-artifact order.
+    #[must_use]
+    pub fn migrations(&self) -> &[LockedApplicationMigration] {
+        &self.migrations
+    }
+}
+
+fn validate_migration_inputs(
+    source: &ApplicationSourceManifest,
+    candidate: &ContractBundle,
+    artifacts: &[GeneratedApplicationArtifact],
+    inputs: &[ApplicationMigrationLockInput],
+    required: bool,
+) -> Result<Vec<LockedApplicationMigration>, ApplicationLockError> {
+    if !required {
+        if !inputs.is_empty() || !source.migrations().is_empty() {
+            return Err(ApplicationLockError::new(
+                ApplicationLockErrorKind::InvalidShape,
+            ));
+        }
+        return Ok(Vec::new());
+    }
+    if inputs.is_empty() || inputs.len() != source.migrations().len() {
+        return Err(ApplicationLockError::new(
+            ApplicationLockErrorKind::IdentityMismatch,
+        ));
+    }
+    let mut inputs = inputs.iter().collect::<Vec<_>>();
+    inputs.sort_by(|left, right| {
+        left.parent_artifact_path
+            .cmp(&right.parent_artifact_path)
+            .then_with(|| left.source_path.cmp(&right.source_path))
+    });
+    let mut paths = artifacts
+        .iter()
+        .map(|artifact| artifact.path.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut versions = BTreeSet::new();
+    let mut locked = Vec::with_capacity(inputs.len());
+    for (declared, input) in source.migrations().iter().zip(inputs) {
+        if declared.source() != input.source_path
+            || declared.parent_bundle() != input.parent_artifact_path
+            || input.migration_bundle.candidate_version() != candidate.contract_version()
+            || input.migration_bundle.candidate_bundle_hash() != candidate.bundle_hash()
+            || input.migration_bundle.lineage() != candidate.lineage()
+            || input.parent_version >= candidate.contract_version()
+        {
+            return Err(ApplicationLockError::new(
+                ApplicationLockErrorKind::IdentityMismatch,
+            ));
+        }
+        if !versions.insert(input.parent_version)
+            || !paths.insert(&input.source_path)
+            || !paths.insert(&input.parent_artifact_path)
+            || !paths.insert(&input.migration_artifact_path)
+        {
+            return Err(ApplicationLockError::new(
+                ApplicationLockErrorKind::Duplicate,
+            ));
+        }
+        locked.push(LockedApplicationMigration {
+            source_path: input.source_path.clone(),
+            source_hash: input.source_hash,
+            parent_artifact_path: input.parent_artifact_path.clone(),
+            parent_version: input.parent_version,
+            parent_bundle_hash: input.parent_bundle_hash,
+            migration_artifact_path: input.migration_artifact_path.clone(),
+            migration_bundle_hash: input.migration_bundle.bundle_hash(),
+        });
+    }
+    Ok(locked)
+}
+
+fn migration_value(migration: &LockedApplicationMigration) -> Value {
+    json!({
+        "migration_artifact": {
+            "bundle_hash": hex(migration.migration_bundle_hash.as_bytes()),
+            "path": migration.migration_artifact_path,
+        },
+        "parent_artifact": {
+            "bundle_hash": hex(migration.parent_bundle_hash.as_bytes()),
+            "path": migration.parent_artifact_path,
+            "version": migration.parent_version.get(),
+        },
+        "source_artifact": {
+            "path": migration.source_path,
+            "source_hash": hex(migration.source_hash.as_bytes()),
+        },
+    })
+}
+
+fn decode_locked_migration(
+    value: &Value,
+) -> Result<LockedApplicationMigration, ApplicationLockError> {
+    let entry = exact_object(
+        value,
+        &["migration_artifact", "parent_artifact", "source_artifact"],
+    )?;
+    let migration = exact_object(
+        required(entry, "migration_artifact")?,
+        &["bundle_hash", "path"],
+    )?;
+    let parent = exact_object(
+        required(entry, "parent_artifact")?,
+        &["bundle_hash", "path", "version"],
+    )?;
+    let source = exact_object(
+        required(entry, "source_artifact")?,
+        &["path", "source_hash"],
+    )?;
+    let parent_version = required(parent, "version")?
+        .as_u64()
+        .and_then(ContractVersion::new)
+        .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
+    Ok(LockedApplicationMigration {
+        source_path: parse_path(required(source, "path")?)?,
+        source_hash: MigrationSourceHash::from_bytes(parse_hash(required(source, "source_hash")?)?),
+        parent_artifact_path: parse_path(required(parent, "path")?)?,
+        parent_version,
+        parent_bundle_hash: ContractBundleHash::from_bytes(parse_hash(required(
+            parent,
+            "bundle_hash",
+        )?)?),
+        migration_artifact_path: parse_path(required(migration, "path")?)?,
+        migration_bundle_hash: MigrationBundleHash::from_bytes(parse_hash(required(
+            migration,
+            "bundle_hash",
+        )?)?),
+    })
 }
 
 fn require_python_artifact(
@@ -563,8 +887,24 @@ fn role_value(
 }
 
 fn validate_lock_shape(value: &Value) -> Result<&'static str, ApplicationLockError> {
-    let root = exact_object(
-        value,
+    let schema_value = value
+        .as_object()
+        .and_then(|root| root.get("schema"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
+    let root_keys = if schema_value == APPLICATION_LOCK_SCHEMA_V4 {
+        &[
+            "artifacts",
+            "compiler_formats",
+            "contract",
+            "exact_manifest_hash",
+            "migrations",
+            "modules",
+            "roles",
+            "schema",
+            "source_hash",
+        ][..]
+    } else {
         &[
             "artifacts",
             "compiler_formats",
@@ -574,12 +914,14 @@ fn validate_lock_shape(value: &Value) -> Result<&'static str, ApplicationLockErr
             "roles",
             "schema",
             "source_hash",
-        ],
-    )?;
+        ][..]
+    };
+    let root = exact_object(value, root_keys)?;
     let schema = match required(root, "schema")?.as_str() {
         Some(APPLICATION_LOCK_SCHEMA_V1) => APPLICATION_LOCK_SCHEMA_V1,
         Some(APPLICATION_LOCK_SCHEMA_V2) => APPLICATION_LOCK_SCHEMA_V2,
         Some(APPLICATION_LOCK_SCHEMA_V3) => APPLICATION_LOCK_SCHEMA_V3,
+        Some(APPLICATION_LOCK_SCHEMA_V4) => APPLICATION_LOCK_SCHEMA_V4,
         _ => {
             return Err(ApplicationLockError::new(
                 ApplicationLockErrorKind::UnsupportedVersion,
@@ -588,16 +930,27 @@ fn validate_lock_shape(value: &Value) -> Result<&'static str, ApplicationLockErr
     };
     parse_hash(required(root, "source_hash")?)?;
     parse_hash(required(root, "exact_manifest_hash")?)?;
-    let formats = exact_object(
-        required(root, "compiler_formats")?,
+    let format_keys = if schema == APPLICATION_LOCK_SCHEMA_V4 {
+        &[
+            "application_role_definition",
+            "contract_bundle",
+            "contract_grammar",
+            "contract_ir",
+            "migration_bundle",
+            "migration_grammar",
+            "migration_ir",
+            "query_module",
+        ][..]
+    } else {
         &[
             "application_role_definition",
             "contract_bundle",
             "contract_grammar",
             "contract_ir",
             "query_module",
-        ],
-    )?;
+        ][..]
+    };
+    let formats = exact_object(required(root, "compiler_formats")?, format_keys)?;
     if formats.values().any(|value| value.as_u64().is_none()) {
         return Err(ApplicationLockError::new(
             ApplicationLockErrorKind::InvalidShape,
@@ -629,7 +982,10 @@ fn validate_lock_shape(value: &Value) -> Result<&'static str, ApplicationLockErr
     validate_sorted_roles(required(root, "roles")?)?;
     let artifacts = required(root, "artifacts")?;
     validate_sorted_array(artifacts, "path", |value| validate_artifact(value, schema))?;
-    if schema == APPLICATION_LOCK_SCHEMA_V2 {
+    if matches!(
+        schema,
+        APPLICATION_LOCK_SCHEMA_V2 | APPLICATION_LOCK_SCHEMA_V4
+    ) {
         let python_count = artifacts
             .as_array()
             .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?
@@ -642,7 +998,10 @@ fn validate_lock_shape(value: &Value) -> Result<&'static str, ApplicationLockErr
             ));
         }
     }
-    if schema == APPLICATION_LOCK_SCHEMA_V3 {
+    if matches!(
+        schema,
+        APPLICATION_LOCK_SCHEMA_V3 | APPLICATION_LOCK_SCHEMA_V4
+    ) {
         let contract_bundles = artifacts
             .as_array()
             .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?
@@ -658,7 +1017,50 @@ fn validate_lock_shape(value: &Value) -> Result<&'static str, ApplicationLockErr
             ));
         }
     }
+    if schema == APPLICATION_LOCK_SCHEMA_V4 {
+        validate_migration_array(
+            required(root, "migrations")?,
+            required(contract, "version")?
+                .as_u64()
+                .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?,
+        )?;
+    }
     Ok(schema)
+}
+
+fn validate_migration_array(
+    value: &Value,
+    candidate_version: u64,
+) -> Result<(), ApplicationLockError> {
+    let entries = value
+        .as_array()
+        .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
+    if entries.is_empty() || entries.len() > crate::MAX_APPLICATION_MIGRATIONS {
+        return Err(ApplicationLockError::new(
+            ApplicationLockErrorKind::LimitExceeded,
+        ));
+    }
+    let mut previous_path = None::<String>;
+    let mut versions = BTreeSet::new();
+    let mut paths = BTreeSet::<String>::new();
+    for value in entries {
+        let migration = decode_locked_migration(value)?;
+        if migration.parent_version.get() >= candidate_version
+            || !versions.insert(migration.parent_version)
+            || !paths.insert(migration.source_path.clone())
+            || !paths.insert(migration.parent_artifact_path.clone())
+            || !paths.insert(migration.migration_artifact_path.clone())
+            || previous_path
+                .as_deref()
+                .is_some_and(|previous| previous >= migration.parent_artifact_path.as_str())
+        {
+            return Err(ApplicationLockError::new(
+                ApplicationLockErrorKind::NonCanonical,
+            ));
+        }
+        previous_path = Some(migration.parent_artifact_path);
+    }
+    Ok(())
 }
 
 fn validate_module(value: &Value) -> Result<(), ApplicationLockError> {
@@ -763,9 +1165,22 @@ fn validate_artifact(value: &Value, schema: &str) -> Result<(), ApplicationLockE
         .as_str()
         .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
     if !matches!(kind, "manifest" | "rust" | "typescript" | "mcp")
-        && !((schema == APPLICATION_LOCK_SCHEMA_V2 || schema == APPLICATION_LOCK_SCHEMA_V3)
-            && kind == "python")
-        && !(schema == APPLICATION_LOCK_SCHEMA_V3 && kind == "contract_bundle")
+        && !matches!(
+            (schema, kind),
+            (
+                APPLICATION_LOCK_SCHEMA_V2
+                    | APPLICATION_LOCK_SCHEMA_V3
+                    | APPLICATION_LOCK_SCHEMA_V4,
+                "python"
+            )
+        )
+        && !matches!(
+            (schema, kind),
+            (
+                APPLICATION_LOCK_SCHEMA_V3 | APPLICATION_LOCK_SCHEMA_V4,
+                "contract_bundle"
+            )
+        )
     {
         return Err(ApplicationLockError::new(
             ApplicationLockErrorKind::InvalidShape,
@@ -850,6 +1265,18 @@ fn parse_hash(value: &Value) -> Result<[u8; 32], ApplicationLockError> {
         bytes[index] = (high << 4) | low;
     }
     Ok(bytes)
+}
+
+fn parse_path(value: &Value) -> Result<String, ApplicationLockError> {
+    let path = value
+        .as_str()
+        .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
+    if !valid_path(path) {
+        return Err(ApplicationLockError::new(
+            ApplicationLockErrorKind::InvalidPath,
+        ));
+    }
+    Ok(path.to_owned())
 }
 
 fn hex_nibble(byte: u8) -> Result<u8, ApplicationLockError> {

@@ -38,12 +38,12 @@ use crate::error::{codec_error, precommit_storage_error, table_error};
 use crate::hooks::RedbTestOperation;
 use crate::keys::{
     encode_application_sequence_key, encode_contract_bundle_key, encode_entity_key,
-    encode_event_key, encode_idempotency_key, encode_index_entry_key, encode_partition_index_key,
-    encode_provenance_key,
+    encode_event_key, encode_event_route_key, encode_idempotency_key, encode_index_entry_key,
+    encode_partition_index_key, encode_provenance_key,
 };
 use crate::layout::{
-    COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS,
-    META, META_APPLICATION_SEQUENCE, OUTBOX, PROVENANCE, SECONDARY_INDEXES,
+    COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING,
+    INDEX_EPOCHS, META, META_APPLICATION_SEQUENCE, OUTBOX, PROVENANCE, SECONDARY_INDEXES,
 };
 use crate::store::{RedbOperationalPorts, RedbWriteAccess};
 use crate::transient::TransientIndexDelta;
@@ -885,21 +885,29 @@ fn apply_record_set(
     }
     {
         let mut events = transaction.open_table(EVENTS).map_err(table_error)?;
+        let mut event_routes = transaction.open_table(EVENT_ROUTES).map_err(table_error)?;
         let mut outbox = transaction.open_table(OUTBOX).map_err(table_error)?;
-        for ((event, intent), (event_bytes, intent_bytes)) in records
+        for (((event, intent), route_bytes), (event_bytes, intent_bytes)) in records
             .events()
             .iter()
             .zip(records.outbox_intents())
+            .zip(encoded.event_routes())
             .zip(encoded.events().iter().zip(encoded.outbox_intents()))
         {
             if event != intent.event() {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
             let key = encode_event_key(event.event_id());
+            let route_key =
+                encode_event_route_key(records.intent().partition_hash(), event.event_id());
             if events
                 .insert(key.as_slice(), event_bytes.as_bytes())
                 .map_err(precommit_storage_error)?
                 .is_some()
+                || event_routes
+                    .insert(route_key.as_slice(), route_bytes.as_bytes())
+                    .map_err(precommit_storage_error)?
+                    .is_some()
                 || outbox
                     .insert(key.as_slice(), intent_bytes.as_bytes())
                     .map_err(precommit_storage_error)?

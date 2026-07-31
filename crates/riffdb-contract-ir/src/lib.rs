@@ -16,6 +16,7 @@ mod format_registry;
 mod json_schema;
 mod key_schema;
 mod mcp;
+mod migration;
 mod plan;
 mod projection;
 mod schema;
@@ -31,6 +32,7 @@ pub use format_registry::{render_format_markdown, render_json_schema_format_mark
 pub use json_schema::*;
 pub use key_schema::*;
 pub use mcp::*;
+pub use migration::*;
 pub use plan::*;
 pub use projection::*;
 pub use schema::*;

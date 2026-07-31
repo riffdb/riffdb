@@ -33,9 +33,9 @@ use crate::batch::{
 };
 use crate::cli::{
     ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli, CommandCommand,
-    CommitCommand, ContractCommand, ContractSelectionArgs, DemoCommand, EntityCommand, OutputMode,
-    ProjectionCommand, QueryCommand, RevocationReason, RoleActorKind, RoleCommand, ServerCommand,
-    TopLevel,
+    CommitCommand, ContractCommand, ContractSelectionArgs, DemoCommand, EntityCommand,
+    MigrationCommand, OutputMode, ProjectionCommand, QueryCommand, RevocationReason, RoleActorKind,
+    RoleCommand, ServerCommand, TopLevel,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -172,7 +172,8 @@ use crate::scaffold::{
     ApplicationCheckStatus, PinnedLockRefresh, ScaffoldLanguage, application_contract_source,
     application_contract_version, check_application, check_application_lock, create_application,
     generate_application, load_locked_application, migrate_application_source_v2,
-    preview_application_lock, refresh_application_lock_from_pinned_bundle, write_application_lock,
+    plan_application_migrations, preview_application_lock,
+    refresh_application_lock_from_pinned_bundle, write_application_lock,
     write_application_lock_with_bundle,
 };
 use crate::value::{InputValue, RecordInput, ValueError, parse_uuid};
@@ -290,6 +291,22 @@ pub async fn run() -> ExitCode {
             }
             Err(error) => {
                 emit_scaffold_failure("riffdb new failed", &error, cli.output);
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if let TopLevel::Migration {
+        command: MigrationCommand::Plan { application, lock },
+    } = &cli.command
+    {
+        return match plan_application_migrations(Path::new(application), Some(Path::new(lock))) {
+            Ok(plan) => success(CommandIdentity::MigrationPlan, "planned", &plan).emit(
+                cli.output.unwrap_or(OutputMode::Human),
+                &mut io::stdout().lock(),
+                &mut io::stderr().lock(),
+            ),
+            Err(error) => {
+                emit_scaffold_failure("riffdb migration plan failed", &error, cli.output);
                 ExitCode::FAILURE
             }
         };
@@ -588,6 +605,11 @@ async fn dispatch(
         TopLevel::Application { command } => {
             application_command(command, config, environment, stdin).await
         }
+        TopLevel::Migration { .. } => local_error(
+            CommandIdentity::MigrationPlan,
+            "migration_plan_dispatch_invalid",
+            "migration plan dispatch is invalid",
+        ),
         TopLevel::New { .. } => local_error(
             CommandIdentity::ServerHealth,
             "new_dispatch_invalid",
@@ -868,6 +890,13 @@ async fn application_command(
                 identity,
                 "locked_contract_incompatible",
                 "the exact locked contract is incompatible with the active lineage",
+            );
+        }
+        Some(v1::deploy_contract_response::Result::MigrationRequired(_)) => {
+            return local_error(
+                identity,
+                "locked_contract_requires_migration",
+                "the exact locked contract requires a migration from the active lineage",
             );
         }
         Some(v1::deploy_contract_response::Result::ExpectedActiveVersionMismatch(_)) => {
@@ -4756,6 +4785,7 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
             command: ApplicationCommand::BindDevRole { .. },
         } => CommandIdentity::ApplicationBindDevRole,
         TopLevel::Application { .. } => CommandIdentity::ServerHealth,
+        TopLevel::Migration { .. } => CommandIdentity::MigrationPlan,
         TopLevel::New { .. } => CommandIdentity::ServerHealth,
         TopLevel::Dev { .. } => CommandIdentity::ServerHealth,
         TopLevel::Contract {

@@ -903,6 +903,8 @@ pub enum McpFixedResultBranch {
     DeployInvalidSource,
     /// Checked candidate is outside the active compatibility policy.
     DeployIncompatibleCandidate,
+    /// Checked candidate requires a migration operation.
+    DeployMigrationRequired,
     /// No persisted outcome matched.
     GetOutcomeNotFound,
     /// A persisted outcome was replayed.
@@ -968,7 +970,8 @@ impl McpFixedResultBranch {
             | Self::DeployExpectedActiveVersionMismatch
             | Self::DeployBundleConflict
             | Self::DeployInvalidSource
-            | Self::DeployIncompatibleCandidate => 4,
+            | Self::DeployIncompatibleCandidate
+            | Self::DeployMigrationRequired => 4,
             Self::GetOutcomeNotFound | Self::GetOutcomeReplayed => 5,
             Self::EntityNotFound | Self::EntityFound => 6,
             Self::ScanIndexPage => 7,
@@ -1013,6 +1016,7 @@ impl McpFixedResultBranch {
             Self::DeployBundleConflict => "bundle_conflict",
             Self::DeployInvalidSource => "invalid_source",
             Self::DeployIncompatibleCandidate => "incompatible_candidate",
+            Self::DeployMigrationRequired => "migration_required",
             Self::GetOutcomeReplayed => "replayed",
             Self::ScanIndexPage | Self::CommitScanPage | Self::OutboxPage => "page",
             Self::ProjectionReady => "ready",

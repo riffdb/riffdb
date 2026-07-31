@@ -2,12 +2,17 @@
 
 //! Compiler-owned source/lock acceptance tests.
 
-use riffdb_contract_compiler::compile_contract_source;
-use riffdb_query_module::{
-    ApplicationLock, ApplicationLockErrorKind, ApplicationSourceManifest,
-    GeneratedApplicationArtifact, GeneratedApplicationArtifactKind, NamedQuerySource, QueryModule,
-    QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+use riffdb_contract_compiler::{compile_contract_source, compile_contract_successor};
+use riffdb_contract_ir::{
+    MigrationBundleV1, MigrationResourceBoundsV1, MigrationStepId, MigrationStepKindV1,
+    MigrationStepV1, StableIdNamespaceTag,
 };
+use riffdb_query_module::{
+    ApplicationLock, ApplicationLockErrorKind, ApplicationMigrationLockInput,
+    ApplicationSourceManifest, GeneratedApplicationArtifact, GeneratedApplicationArtifactKind,
+    NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+};
+use riffdb_types::hash_migration_source;
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
 const LIST_TICKETS: &str = include_str!("../../../queries/ticketdesk/list_tickets.riffq");
@@ -297,5 +302,123 @@ fn v2_lock_requires_exact_python_artifact_and_v1_rejects_it() {
         .expect_err("v1 rejects Python")
         .kind(),
         ApplicationLockErrorKind::InvalidShape
+    );
+}
+
+#[test]
+fn v4_lock_pins_and_round_trips_one_canonical_successor_with_exact_parent_entries() {
+    let parent = compile_contract_source(CONTRACT).expect("parent");
+    let candidate_source = CONTRACT.replace("version 1", "version 2");
+    let candidate = compile_contract_successor(&candidate_source, &parent).expect("candidate");
+    let source_text = SOURCE
+        .replace("application-source/v1", "application-source/v3")
+        .replacen("\"version\": 1", "\"version\": 2", 1)
+        .replace(
+            "\"mcp\": \"generated/mcp/tools.json\"",
+            "\"mcp\": \"generated/mcp/tools.json\",\n    \"python\": \"generated/python/client.py\"",
+        )
+        .replace(
+            "\"query_modules\":",
+            concat!(
+                "\"migrations\": [{",
+                "\"parent_bundle\":\"retained/ticketdesk-v1.bundle\",",
+                "\"source\":\"riffdb/migrations/v1-to-v2.riffm\"}],\n  ",
+                "\"query_modules\":"
+            ),
+        );
+    let source = ApplicationSourceManifest::parse(&source_text).expect("v3 source");
+    let module = QueryModule::compile(
+        QueryModuleCandidate::new(
+            QueryModuleName::new("ticketdesk").expect("module name"),
+            QueryModuleVersion::new(1).expect("module version"),
+            vec![NamedQuerySource::new("ListTickets", LIST_TICKETS).expect("query")],
+        )
+        .expect("module candidate"),
+        &candidate,
+    )
+    .expect("module");
+    let manifest = source
+        .exact_manifest(&candidate, std::slice::from_ref(&module))
+        .expect("manifest");
+    let migration_source = "migration TicketDesk from 1 to 2 {}";
+    let step = MigrationStepV1::new(
+        MigrationStepId::new(1).expect("step ID"),
+        Vec::new(),
+        MigrationStepKindV1::RetireIdentity {
+            namespace: StableIdNamespaceTag::Entity,
+            stable_id: 1,
+        },
+    )
+    .expect("structural migration step");
+    let migration = MigrationBundleV1::new(
+        env!("CARGO_PKG_VERSION"),
+        candidate.lineage().clone(),
+        parent.contract_version(),
+        parent.bundle_hash(),
+        candidate.contract_version(),
+        candidate.bundle_hash(),
+        hash_migration_source(migration_source.as_bytes()),
+        vec![step],
+        MigrationResourceBoundsV1::fixed(),
+    )
+    .expect("migration bundle");
+    let input = ApplicationMigrationLockInput::new(
+        "riffdb/migrations/v1-to-v2.riffm",
+        migration_source.as_bytes(),
+        "retained/ticketdesk-v1.bundle",
+        &parent,
+        "generated/migrations/v1-to-v2.bundle",
+        &migration,
+    )
+    .expect("lock input");
+    let artifacts = [
+        GeneratedApplicationArtifact::new(
+            GeneratedApplicationArtifactKind::ContractBundle,
+            riffdb_query_module::CONTRACT_BUNDLE_ARTIFACT_PATH,
+            candidate.canonical_bytes(),
+        )
+        .expect("candidate artifact"),
+        GeneratedApplicationArtifact::new(
+            GeneratedApplicationArtifactKind::Python,
+            source.generation().python().expect("Python path"),
+            b"generated python",
+        )
+        .expect("Python artifact"),
+    ];
+    let lock = ApplicationLock::compile_v4(
+        &source,
+        &manifest,
+        &candidate,
+        std::slice::from_ref(&module),
+        &artifacts,
+        std::slice::from_ref(&input),
+    )
+    .expect("v4 lock");
+    assert_eq!(
+        lock.schema(),
+        riffdb_query_module::APPLICATION_LOCK_SCHEMA_V4
+    );
+    assert_eq!(lock.migrations().len(), 1);
+    assert_eq!(
+        lock.migrations()[0].parent_bundle_hash(),
+        parent.bundle_hash()
+    );
+    assert_eq!(
+        ApplicationLock::decode_canonical(lock.canonical_bytes()).expect("strict V4 round trip"),
+        lock
+    );
+
+    assert_eq!(
+        ApplicationLock::compile_v4(
+            &source,
+            &manifest,
+            &candidate,
+            std::slice::from_ref(&module),
+            &artifacts,
+            &[],
+        )
+        .expect_err("missing retained parent")
+        .kind(),
+        ApplicationLockErrorKind::IdentityMismatch
     );
 }

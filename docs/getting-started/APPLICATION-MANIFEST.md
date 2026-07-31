@@ -42,6 +42,28 @@ server. Run `riffdb application lock --write` separately after reviewing the
 canonical source change. Lock V2 then covers the exact generated Python path,
 bytes, and digest alongside the existing three artifacts.
 
+Application Source V3 adds an exact `migrations` array while retaining the V2
+Python target. Each entry names one `.riffm` source and one retained canonical
+parent bundle. Lock V4 pins those sources, parent identities, generated
+migration bundles, and the one canonical successor bundle. Source V3 is for
+contract-data migration; `application migrate --to v2` remains only the
+source-format V1-to-V2 helper and does not create V3.
+
+```json
+{
+  "schema": "riffdb.application-source/v3",
+  "migrations": [
+    {
+      "parent_bundle": "retained/ticketdesk-v1.riffdb.contract.bundle",
+      "source": "riffdb/migrations/ticketdesk-v1-to-v2.riffm"
+    }
+  ]
+}
+```
+
+See [Contract Migrations](../contracts/MIGRATIONS.md) for the complete identity
+model, supported Gate A changes, and read-only planning workflow.
+
 The source document is closed JSON with exactly these top-level members:
 
 ```json
@@ -126,7 +148,8 @@ riffdb application generate --locked
 ```
 
 Generated Rust and TypeScript facades are present in V1; V2 also requires the
-generated Python facade. They own parameter serialization, response decoding,
+generated Python facade. V3 retains all four generation targets. They own
+parameter serialization, response decoding,
 exact identity checks, opaque cursors, read-after-commit fences, typed command
 outcomes, and retry-safe uncertainty recovery. Generated MCP schemas come from
 the same operation registry. Application code uses these facades or RiffQL
@@ -208,6 +231,12 @@ already-active contract as another successor. Any contract-source change still
 requires the authorized server preview against the active parent, and a damaged
 or substituted pinned bundle fails closed instead of falling back to the
 network path.
+
+Lock V4 retains the V3 contract-bundle pin and adds exact direct-parent
+migration artifacts. `riffdb migration plan --application
+riffdb.application.json` validates and prints that local plan. In the current
+WP-406 implementation this command is inspection only; it cannot mutate or
+activate a database.
 
 Before deployment, the server compares the lock's expected parent version and
 bundle hash and its candidate bundle hash. A disagreement returns the lock,

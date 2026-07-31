@@ -377,8 +377,16 @@ hash_id!(
     SourceHash
 );
 hash_id!(
+    /// The hash of one exact migration source document.
+    MigrationSourceHash
+);
+hash_id!(
     /// The hash of an immutable contract bundle.
     ContractBundleHash
+);
+hash_id!(
+    /// The hash of one canonical compiled migration bundle.
+    MigrationBundleHash
 );
 hash_id!(
     /// The hash of canonical command input.

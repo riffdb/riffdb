@@ -1404,7 +1404,7 @@ contract Example version 1 {
     }
 
     #[test]
-    fn adding_relationship_is_an_explicit_incompatible_invariant_change() {
+    fn adding_relationship_requires_historical_validation() {
         let genesis_source = relationship_source(
             "",
             concat!(
@@ -1429,14 +1429,14 @@ contract Example version 1 {
             compile_contract_successor(&successor_source, &genesis).expect("successor compiles");
         assert_eq!(
             successor.compatibility().overall(),
-            CompatibilityClass::Incompatible
+            CompatibilityClass::RequiresMigration
         );
         assert!(
             successor
                 .compatibility()
                 .entries()
                 .iter()
-                .any(|entry| entry.code() == CompatibilityCode::InvariantChange)
+                .any(|entry| entry.code() == CompatibilityCode::AddedRelationship)
         );
     }
 

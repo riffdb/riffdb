@@ -79,7 +79,9 @@ The pre-alpha compatibility classes are:
 | Add an aggregate whose root and children are all new in this successor | Compatible |
 | Add a relationship or unique constraint confined to new entities | Compatible |
 | Append a fresh variant to an existing enum | Requires explicit version |
-| Add a field, key part, index, invariant, relationship, or unique constraint to an existing entity | Incompatible |
+| Add an optional field to an existing entity | Compatible |
+| Add a required field, index, invariant, relationship, or unique constraint to an existing entity | Requires migration |
+| Add a projection over existing authoritative state | Requires migration |
 | Change or remove an existing declaration, type, key, variant, constraint, aggregate membership, partition rule, or conflict rule | Incompatible |
 
 The complete initial definition of a newly added entity or aggregate is
@@ -111,6 +113,12 @@ but incompatible successor returns `incompatible_candidate` with its parent,
 overall compatibility class, and stable compatibility-code counts. Neither
 result activates the candidate. Do not work around incompatibility by
 reusing stable IDs or editing the active database file.
+
+A valid successor that needs existing state to be checked or transformed
+returns `migration_required`. Use Application Source V3, a parent-specific
+`.riffm` proof, Application Lock V4, and the read-only plan described in
+[Contract Migrations](MIGRATIONS.md). Planning is implemented before runtime
+migration and therefore cannot activate that successor yet.
 
 `contract deploy` is a mutating operator command, not a compatibility probe.
 There is no contract rollback RPC. Use `contract validate` for source-only

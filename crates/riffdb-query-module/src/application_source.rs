@@ -13,6 +13,8 @@ use crate::{ApplicationManifest, QueryModule};
 pub const APPLICATION_SOURCE_SCHEMA_V1: &str = "riffdb.application-source/v1";
 /// Symbolic application-source schema with a required Python target.
 pub const APPLICATION_SOURCE_SCHEMA_V2: &str = "riffdb.application-source/v2";
+/// Symbolic application-source schema with direct-parent migration declarations.
+pub const APPLICATION_SOURCE_SCHEMA_V3: &str = "riffdb.application-source/v3";
 /// Maximum accepted application-source bytes.
 pub const MAX_APPLICATION_SOURCE_BYTES: usize = 1_048_576;
 const MAX_NAME_BYTES: usize = 256;
@@ -22,6 +24,8 @@ const MAX_QUERY_SOURCES: usize = 4_096;
 const MAX_ROLES: usize = 128;
 const MAX_ROLE_OPERATIONS: usize = 4_096;
 const MAX_SEED_INPUTS: usize = 256;
+/// Maximum exact direct-parent migrations retained by one application release.
+pub const MAX_APPLICATION_MIGRATIONS: usize = 32;
 
 /// Symbolic contract source selected by an application author.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -48,6 +52,27 @@ impl ApplicationSourceContract {
     #[must_use]
     pub const fn version(&self) -> u64 {
         self.version
+    }
+}
+
+/// One direct-parent migration source and its retained parent-bundle artifact.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationSourceMigration {
+    source: String,
+    parent_bundle: String,
+}
+
+impl ApplicationSourceMigration {
+    /// Workspace-relative `.riffm` source path.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Workspace-relative canonical parent-bundle artifact path.
+    #[must_use]
+    pub fn parent_bundle(&self) -> &str {
+        &self.parent_bundle
     }
 }
 
@@ -205,6 +230,7 @@ pub struct ApplicationSourceManifest {
     roles: Vec<ApplicationSourceRole>,
     generation: ApplicationSourceGeneration,
     seed_inputs: Vec<String>,
+    migrations: Vec<ApplicationSourceMigration>,
     canonical_bytes: Vec<u8>,
     identity: ApplicationSourceHash,
 }
@@ -219,8 +245,23 @@ impl ApplicationSourceManifest {
         }
         let value: Value = serde_json::from_str(source)
             .map_err(|_| ApplicationSourceError::new(ApplicationSourceErrorKind::InvalidJson))?;
-        let root = object(
-            &value,
+        let schema_value = value
+            .as_object()
+            .and_then(|root| root.get("schema"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApplicationSourceError::new(ApplicationSourceErrorKind::InvalidShape))?;
+        let root_keys = if schema_value == APPLICATION_SOURCE_SCHEMA_V3 {
+            &[
+                "application",
+                "contract",
+                "generation",
+                "migrations",
+                "query_modules",
+                "roles",
+                "schema",
+                "seed_inputs",
+            ][..]
+        } else {
             &[
                 "application",
                 "contract",
@@ -229,11 +270,13 @@ impl ApplicationSourceManifest {
                 "roles",
                 "schema",
                 "seed_inputs",
-            ],
-        )?;
+            ][..]
+        };
+        let root = object(&value, root_keys)?;
         let schema = match string(root, "schema")? {
             APPLICATION_SOURCE_SCHEMA_V1 => APPLICATION_SOURCE_SCHEMA_V1,
             APPLICATION_SOURCE_SCHEMA_V2 => APPLICATION_SOURCE_SCHEMA_V2,
+            APPLICATION_SOURCE_SCHEMA_V3 => APPLICATION_SOURCE_SCHEMA_V3,
             _ => {
                 return Err(ApplicationSourceError::new(
                     ApplicationSourceErrorKind::UnsupportedVersion,
@@ -246,15 +289,21 @@ impl ApplicationSourceManifest {
         let roles = parse_roles(required(root, "roles")?, &query_modules)?;
         let generation = parse_generation(required(root, "generation")?, schema)?;
         let seed_inputs = parse_paths(required(root, "seed_inputs")?, MAX_SEED_INPUTS)?;
-        let canonical_value = canonical_value(
-            &application_name,
-            &contract,
-            &query_modules,
-            &roles,
-            &generation,
-            &seed_inputs,
+        let migrations = if schema == APPLICATION_SOURCE_SCHEMA_V3 {
+            parse_migrations(required(root, "migrations")?)?
+        } else {
+            Vec::new()
+        };
+        let canonical_value = canonical_value(CanonicalApplicationSource {
+            application: &application_name,
+            contract: &contract,
+            modules: &query_modules,
+            roles: &roles,
+            generation: &generation,
+            seeds: &seed_inputs,
+            migrations: &migrations,
             schema,
-        );
+        });
         let mut canonical_bytes = serde_json::to_vec(&canonical_value)
             .map_err(|_| ApplicationSourceError::new(ApplicationSourceErrorKind::InvalidJson))?;
         canonical_bytes.push(b'\n');
@@ -272,6 +321,7 @@ impl ApplicationSourceManifest {
             roles,
             generation,
             seed_inputs,
+            migrations,
             canonical_bytes,
             identity,
         })
@@ -330,6 +380,12 @@ impl ApplicationSourceManifest {
     #[must_use]
     pub fn seed_inputs(&self) -> &[String] {
         &self.seed_inputs
+    }
+
+    /// Direct-parent migrations in canonical parent-artifact order.
+    #[must_use]
+    pub fn migrations(&self) -> &[ApplicationSourceMigration] {
+        &self.migrations
     }
 
     /// Canonical source bytes.
@@ -492,15 +548,28 @@ impl fmt::Display for ApplicationSourceError {
 
 impl std::error::Error for ApplicationSourceError {}
 
-fn canonical_value(
-    application: &str,
-    contract: &ApplicationSourceContract,
-    modules: &[ApplicationSourceQueryModule],
-    roles: &[ApplicationSourceRole],
-    generation: &ApplicationSourceGeneration,
-    seeds: &[String],
+struct CanonicalApplicationSource<'a> {
+    application: &'a str,
+    contract: &'a ApplicationSourceContract,
+    modules: &'a [ApplicationSourceQueryModule],
+    roles: &'a [ApplicationSourceRole],
+    generation: &'a ApplicationSourceGeneration,
+    seeds: &'a [String],
+    migrations: &'a [ApplicationSourceMigration],
     schema: &'static str,
-) -> Value {
+}
+
+fn canonical_value(source: CanonicalApplicationSource<'_>) -> Value {
+    let CanonicalApplicationSource {
+        application,
+        contract,
+        modules,
+        roles,
+        generation,
+        seeds,
+        migrations,
+        schema,
+    } = source;
     let mut generation_value = Map::new();
     generation_value.insert("mcp".to_owned(), json!(generation.mcp));
     if let Some(python) = &generation.python {
@@ -508,32 +577,91 @@ fn canonical_value(
     }
     generation_value.insert("rust".to_owned(), json!(generation.rust));
     generation_value.insert("typescript".to_owned(), json!(generation.typescript));
-    json!({
-        "application": application,
-        "contract": {
+    let mut root = Map::new();
+    root.insert("application".to_owned(), json!(application));
+    root.insert(
+        "contract".to_owned(),
+        json!({
             "lineage": contract.lineage,
             "source": contract.source,
             "version": contract.version,
-        },
-        "generation": generation_value,
-        "query_modules": modules.iter().map(|module| json!({
-            "name": module.name,
-            "queries": module.queries.iter().map(|query| json!({
-                "name": query.name,
-                "source": query.source,
-            })).collect::<Vec<_>>(),
-            "version": module.version,
-        })).collect::<Vec<_>>(),
-        "roles": roles.iter().map(|role| json!({
-            "commands": role.commands,
-            "environment": role.environment,
-            "name": role.name,
-            "queries": role.queries,
-            "tenant_scope": role.tenant_scope.as_str(),
-        })).collect::<Vec<_>>(),
-        "schema": schema,
-        "seed_inputs": seeds,
-    })
+        }),
+    );
+    root.insert("generation".to_owned(), Value::Object(generation_value));
+    if schema == APPLICATION_SOURCE_SCHEMA_V3 {
+        root.insert(
+            "migrations".to_owned(),
+            json!(
+                migrations
+                    .iter()
+                    .map(|migration| json!({
+                        "parent_bundle": migration.parent_bundle,
+                        "source": migration.source,
+                    }))
+                    .collect::<Vec<_>>()
+            ),
+        );
+    }
+    root.insert(
+        "query_modules".to_owned(),
+        json!(
+            modules
+                .iter()
+                .map(|module| json!({
+                    "name": module.name,
+                    "queries": module.queries.iter().map(|query| json!({
+                        "name": query.name,
+                        "source": query.source,
+                    })).collect::<Vec<_>>(),
+                    "version": module.version,
+                }))
+                .collect::<Vec<_>>()
+        ),
+    );
+    root.insert(
+        "roles".to_owned(),
+        json!(
+            roles
+                .iter()
+                .map(|role| json!({
+                    "commands": role.commands,
+                    "environment": role.environment,
+                    "name": role.name,
+                    "queries": role.queries,
+                    "tenant_scope": role.tenant_scope.as_str(),
+                }))
+                .collect::<Vec<_>>()
+        ),
+    );
+    root.insert("schema".to_owned(), json!(schema));
+    root.insert("seed_inputs".to_owned(), json!(seeds));
+    Value::Object(root)
+}
+
+fn parse_migrations(
+    value: &Value,
+) -> Result<Vec<ApplicationSourceMigration>, ApplicationSourceError> {
+    let values = array(value, 0, MAX_APPLICATION_MIGRATIONS)?;
+    let mut migrations = Vec::with_capacity(values.len());
+    for value in values {
+        let migration = object(value, &["parent_bundle", "source"])?;
+        migrations.push(ApplicationSourceMigration {
+            source: checked_path(string(migration, "source")?)?,
+            parent_bundle: checked_path(string(migration, "parent_bundle")?)?,
+        });
+    }
+    migrations.sort_by(|left, right| {
+        left.parent_bundle
+            .cmp(&right.parent_bundle)
+            .then_with(|| left.source.cmp(&right.source))
+    });
+    ensure_unique(
+        migrations
+            .iter()
+            .map(|migration| migration.parent_bundle.as_str()),
+    )?;
+    ensure_unique(migrations.iter().map(|migration| migration.source.as_str()))?;
+    Ok(migrations)
 }
 
 fn parse_contract(value: &Value) -> Result<ApplicationSourceContract, ApplicationSourceError> {
@@ -638,7 +766,7 @@ fn parse_generation(
         rust: checked_path(string(object, "rust")?)?,
         typescript: checked_path(string(object, "typescript")?)?,
         mcp: checked_path(string(object, "mcp")?)?,
-        python: if schema == APPLICATION_SOURCE_SCHEMA_V2 {
+        python: if schema != APPLICATION_SOURCE_SCHEMA_V1 {
             Some(checked_path(string(object, "python")?)?)
         } else {
             None
@@ -906,6 +1034,50 @@ mod tests {
             .expect_err("v1 remains closed")
             .kind(),
             ApplicationSourceErrorKind::InvalidShape
+        );
+    }
+
+    #[test]
+    fn v3_canonically_orders_bounded_direct_parent_migrations() {
+        let source = SOURCE
+            .replace("application-source/v1", "application-source/v3")
+            .replace(
+                "\"mcp\": \"generated/mcp/tools.json\"",
+                "\"mcp\": \"generated/mcp/tools.json\",\n        \"python\": \"generated/python/client.py\"",
+            )
+            .replace(
+                "\"query_modules\":",
+                concat!(
+                    "\"migrations\": [",
+                    "{\"source\":\"riffdb/migrations/v2.riffm\",",
+                    "\"parent_bundle\":\"retained/v2.bundle\"},",
+                    "{\"source\":\"riffdb/migrations/v1.riffm\",",
+                    "\"parent_bundle\":\"retained/v1.bundle\"}],\n      ",
+                    "\"query_modules\":"
+                ),
+            );
+        let manifest = ApplicationSourceManifest::parse(&source).expect("v3 source");
+        assert_eq!(manifest.schema(), APPLICATION_SOURCE_SCHEMA_V3);
+        assert_eq!(manifest.migrations().len(), 2);
+        assert_eq!(
+            manifest.migrations()[0].parent_bundle(),
+            "retained/v1.bundle"
+        );
+        assert_eq!(
+            manifest.migrations()[1].source(),
+            "riffdb/migrations/v2.riffm"
+        );
+        assert_eq!(
+            ApplicationSourceManifest::decode_canonical(manifest.canonical_bytes()),
+            Ok(manifest)
+        );
+
+        let duplicate = source.replace("retained/v2.bundle", "retained/v1.bundle");
+        assert_eq!(
+            ApplicationSourceManifest::parse(&duplicate)
+                .expect_err("duplicate parent")
+                .kind(),
+            ApplicationSourceErrorKind::Duplicate
         );
     }
 }
