@@ -10,6 +10,7 @@ usage() {
         '         [--concurrent-clients N] [--concurrent-operations N]' \
         '         [--load interactive|agent|membership_contention] [--load-clients N] [--load-duration-secs N]' \
         '         [--load-warmup-secs N] [--load-zipf-s F] [--load-contended]' \
+        '         [--load-saturate] [--load-saturate-p99-ms N]' \
         '         [--load-riffdb-transport per-session|shared]' \
         '         [--output PATH] [--assert-write-parity|--assert-all-parity]' \
         '         [--skip-postgres] [--skip-riffdb]' >&2
@@ -34,6 +35,8 @@ load_duration_secs=
 load_warmup_secs=
 load_zipf_s=
 load_contended=0
+load_saturate=0
+load_saturate_p99_ms=
 load_riffdb_transport=
 output=
 while (($#)); do
@@ -89,6 +92,15 @@ while (($#)); do
             load_contended=1
             shift
             ;;
+        --load-saturate)
+            load_saturate=1
+            shift
+            ;;
+        --load-saturate-p99-ms)
+            (($# >= 2)) || usage
+            load_saturate_p99_ms="$2"
+            shift 2
+            ;;
         --load-riffdb-transport)
             (($# >= 2)) || usage
             load_riffdb_transport="$2"
@@ -140,6 +152,8 @@ fi
 [[ -n "$load_warmup_secs" ]] && extra_args+=(--load-warmup-secs "$load_warmup_secs")
 [[ -n "$load_zipf_s" ]] && extra_args+=(--load-zipf-s "$load_zipf_s")
 ((load_contended)) && extra_args+=(--load-contended)
+((load_saturate)) && extra_args+=(--load-saturate)
+[[ -n "$load_saturate_p99_ms" ]] && extra_args+=(--load-saturate-p99-ms "$load_saturate_p99_ms")
 [[ -n "$load_riffdb_transport" ]] && extra_args+=(--load-riffdb-transport "$load_riffdb_transport")
 ((skip_postgres)) && extra_args+=(--skip-postgres)
 ((skip_riffdb)) && extra_args+=(--skip-riffdb)

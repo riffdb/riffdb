@@ -161,6 +161,10 @@ impl AppBackend for RiffDbPublicBackend {
                 "RDB-STORAGE-0101" => LoadErrorClass::Unavailable,
                 // Result exceeds service limit under concurrent load.
                 "RDB-RESOURCE-0101" => LoadErrorClass::Unavailable,
+                // Typed capacity rejection — certain-not-executed, retryable.
+                "RDB-CAPACITY-0101" => LoadErrorClass::Overloaded,
+                // History incarnation fence after restore.
+                "RDB-HISTORY-0101" => LoadErrorClass::HistoryIncarnationMismatch,
                 _ => LoadErrorClass::Other,
             },
             RiffDbError::Connection | RiffDbError::Runtime | RiffDbError::Server => {
@@ -932,6 +936,14 @@ mod tests {
         assert_eq!(
             RiffDbPublicBackend::load_error_class(&application_error("RDB-STORAGE-0101")),
             LoadErrorClass::Unavailable
+        );
+        assert_eq!(
+            RiffDbPublicBackend::load_error_class(&application_error("RDB-CAPACITY-0101")),
+            LoadErrorClass::Overloaded
+        );
+        assert_eq!(
+            RiffDbPublicBackend::load_error_class(&application_error("RDB-HISTORY-0101")),
+            LoadErrorClass::HistoryIncarnationMismatch
         );
         assert_eq!(
             RiffDbPublicBackend::load_error_class(&application_error("RDB-QUERY-0101")),

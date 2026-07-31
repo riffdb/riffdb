@@ -411,6 +411,18 @@ impl RiffDbService {
                 Ok(result) if !lifecycle.normal_completion_requires_containment(result.is_ok()) => {
                     result
                 }
+                // Pre-admission overload must remain a typed capacity rejection
+                // even when the deferred audit lifecycle still looks open: under
+                // saturation there is no free coordinator slot for containment.
+                Ok(Err(failure))
+                    if matches!(
+                        failure.public_error().map(riffdb_errors::PublicError::kind),
+                        Some(riffdb_errors::PublicErrorKind::Overloaded)
+                    ) =>
+                {
+                    lifecycle.force_terminal_settled_for_pre_admission();
+                    Err(failure)
+                }
                 Ok(_) => {
                     let failure =
                         job_inner.internal_failure(operation, InternalDefect::UnterminatedAudit);
