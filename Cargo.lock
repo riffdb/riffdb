@@ -1653,6 +1653,7 @@ dependencies = [
  "riffdb-auth",
  "riffdb-client-rust",
  "riffdb-errors",
+ "riffdb-observability",
  "riffdb-proto",
  "riffdb-service",
  "riffdb-testkit",

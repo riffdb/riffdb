@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use riffdb_query_executor::{
@@ -434,6 +435,15 @@ struct CurrentCapabilityViewState {
     known_absent_digests: BTreeSet<CapabilityTokenDigest>,
     known_absent_order: VecDeque<CapabilityTokenDigest>,
     record_order: VecDeque<CapabilityId>,
+    /// Monotonic view generation bumped on every real publish mutation.
+    ///
+    /// Race window (no wider than today): a recheck concurrent with revoke
+    /// either observes the pre-publish generation (revoke not yet published —
+    /// same as today's read-before-publish window) or the post-publish
+    /// generation (full re-evaluation). Generation is bumped inside
+    /// [`CurrentCapabilityViewState::publish`] under the view write lock that
+    /// also serializes revoke publication, so the window cannot widen.
+    generation: AtomicU64,
 }
 
 impl CurrentCapabilityViewState {
@@ -488,6 +498,10 @@ impl CurrentCapabilityViewState {
         {
             return Err(poisoned_storage_bridge());
         }
+        // Bump before installing the new record so concurrent rechecks either
+        // see the old generation (revoke/create not yet published) or the new
+        // generation (full re-eval). Same race window as today's view publish.
+        self.generation.fetch_add(1, Ordering::Release);
         self.remove_known_absent(digest);
         if !self.records.contains_key(&capability_id) {
             self.record_order.push_back(capability_id);
@@ -495,6 +509,10 @@ impl CurrentCapabilityViewState {
         self.digests.insert(digest, capability_id);
         self.records.insert(capability_id, record);
         Ok(())
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 
     fn evict_one_record(&mut self) {
@@ -1037,6 +1055,13 @@ impl CapabilityReader for SharedRedbOperationalPorts {
         Ok(record)
     }
 
+    fn capability_view_generation(&self) -> u64 {
+        self.capabilities
+            .read()
+            .map(|view| view.generation())
+            .unwrap_or(u64::MAX)
+    }
+
     fn resolve_capability_digests(
         &self,
         candidates: &[CapabilityTokenDigest],
@@ -1408,6 +1433,58 @@ mod tests {
             found.lifecycle(),
             riffdb_storage_api::CapabilityLifecycleV1::Revoked { .. }
         ));
+    }
+
+    #[test]
+    fn capability_view_generation_bumps_on_publish_create_update_and_identical_is_noop() {
+        let active = capability_record();
+        let mut view = CurrentCapabilityViewState::default();
+        assert_eq!(view.generation(), 0, "fresh view starts at generation 0");
+
+        // Create / first insert via publish (same path as create + bootstrap install).
+        view.publish(active.clone())
+            .expect("publish create into empty view");
+        assert_eq!(view.generation(), 1, "create publish bumps generation");
+
+        // Identical re-publish is a no-op (no bump).
+        view.publish(active.clone())
+            .expect("identical publish is idempotent");
+        assert_eq!(
+            view.generation(),
+            1,
+            "identical record must not bump generation"
+        );
+
+        // Update / revoke successor revises the resident record.
+        let revoked = active
+            .revoked(
+                NonZeroU64::MIN,
+                Timestamp::new(150, 0).expect("revoked at"),
+                AdministrationSequence::new(2).expect("sequence"),
+                RevocationReasonCodeV1::Requested,
+            )
+            .expect("revoked record");
+        view.publish(revoked).expect("publish revoke update");
+        assert_eq!(view.generation(), 2, "revoke publish bumps generation");
+    }
+
+    #[test]
+    fn capability_view_generation_bumps_on_note_lookup_bootstrap_style_fill() {
+        // note_lookup → publish is the cache-fill path used when storage falls
+        // through into the warm view (same mutation surface as bootstrap install).
+        let active = capability_record();
+        let mut view = CurrentCapabilityViewState::default();
+        let before = view.generation();
+        view.note_lookup(
+            &[active.token_digest()],
+            &CapabilityLookupResult::Found(Box::new(active)),
+        )
+        .expect("note_lookup publishes Found");
+        assert_eq!(
+            view.generation(),
+            before + 1,
+            "bootstrap-style note_lookup publish bumps generation"
+        );
     }
 
     #[test]

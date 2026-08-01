@@ -976,8 +976,8 @@ impl CommandMetricSeries {
 
 const COMMAND_GROUP_DISPATCH_REASON_COUNT: usize = 4;
 const COMMAND_PIPELINE_STAGE_COUNT: usize = 5;
-/// Closed service-side symbolic read pipeline stage cardinality.
-pub const READ_PIPELINE_STAGE_COUNT: usize = 7;
+/// Closed end-to-end symbolic read pipeline stage cardinality.
+pub const READ_PIPELINE_STAGE_COUNT: usize = 12;
 
 struct MetricRegistryInner {
     counters: [AtomicU64; MAX_METRIC_SERIES],
@@ -1268,13 +1268,18 @@ const fn command_pipeline_stage_index(stage: CommandPipelineStage) -> usize {
 #[must_use]
 pub const fn read_pipeline_stage_index(stage: ReadPipelineStage) -> usize {
     match stage {
-        ReadPipelineStage::PlanLookup => 0,
-        ReadPipelineStage::ParamMaterialize => 1,
-        ReadPipelineStage::AuthorizeBegin => 2,
-        ReadPipelineStage::AuthorizePre => 3,
-        ReadPipelineStage::Execute => 4,
-        ReadPipelineStage::AuthorizePost => 5,
-        ReadPipelineStage::ResponseBuild => 6,
+        ReadPipelineStage::TransportAdapt => 0,
+        ReadPipelineStage::Authn => 1,
+        ReadPipelineStage::AdmissionContext => 2,
+        ReadPipelineStage::SpawnDispatch => 3,
+        ReadPipelineStage::PlanLookup => 4,
+        ReadPipelineStage::ParamMaterialize => 5,
+        ReadPipelineStage::AuthorizeBegin => 6,
+        ReadPipelineStage::AuthorizePre => 7,
+        ReadPipelineStage::Execute => 8,
+        ReadPipelineStage::AuthorizePost => 9,
+        ReadPipelineStage::ResponseBuild => 10,
+        ReadPipelineStage::EncodeConvert => 11,
     }
 }
 

@@ -404,7 +404,15 @@ impl RiffDbService {
         let (sender, receipt) = port_completion_channel();
         let job_inner = Arc::clone(&self.inner);
         let lifecycle = Arc::new(OperationAuditLifecycle::new(operation));
+        let spawn_submitted_at = Instant::now();
         let job = Box::pin(async move {
+            // First statement of the spawned task: measure submission → run gap.
+            job_inner.providers.telemetry.record(
+                crate::ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                    stage: crate::ReadPipelineStage::SpawnDispatch,
+                    elapsed: spawn_submitted_at.elapsed(),
+                },
+            );
             let started_at = Instant::now();
             let observed = catch_future_panic(future, &lifecycle).await;
             let result = match observed {

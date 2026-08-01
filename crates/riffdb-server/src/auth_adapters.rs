@@ -17,7 +17,7 @@ use riffdb_policy::{
     TrustedAudienceCatalog,
 };
 use riffdb_service::{CapabilityTokenIssueError, CapabilityTokenIssuer, CurrentPolicyPort};
-use riffdb_storage_api::IdempotencyKeyDigest;
+use riffdb_storage_api::{CapabilityReader, IdempotencyKeyDigest};
 use riffdb_types::{DatabaseId, Environment, IdempotencyKey};
 
 use crate::clocks::{ServerAuthenticationClock, ServerAuthorizationClock};
@@ -140,6 +140,10 @@ impl CurrentPolicyPort for ServerCurrentPolicyPort {
         )
         .with_trusted_audience_catalog(&self.trusted_audiences);
         authorizer.authorize_offline_maintenance(principal, request)
+    }
+
+    fn capability_view_generation(&self) -> u64 {
+        CapabilityReader::capability_view_generation(&self.storage)
     }
 }
 

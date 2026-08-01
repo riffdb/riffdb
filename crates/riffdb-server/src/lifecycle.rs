@@ -14,7 +14,7 @@ use riffdb_api_grpc::{
 use riffdb_service::{
     ApplicationService, HealthContext, HealthRequest, HealthResult, InitializingRiffDbService,
     PreBootstrapHealthContextIssuer, PreBootstrapLifecycle, RecoveryOfflineMaintenanceApplication,
-    RestoreRetryOfflineMaintenanceApplication, ServiceFuture,
+    RestoreRetryOfflineMaintenanceApplication, ServiceFuture, ServiceTelemetry,
 };
 use riffdb_types::{OfflineMaintenanceOperationId, ServiceOperationV1};
 
@@ -33,6 +33,7 @@ pub(crate) struct ProductionLifecycleRoute {
     recovery: OnceLock<Arc<dyn RecoveryOfflineMaintenanceApplication>>,
     restore_retry: OnceLock<Arc<dyn RestoreRetryOfflineMaintenanceApplication>>,
     restore_retry_security: OnceLock<CheckedGrpcRestoreRetrySecurityContext>,
+    read_stage_telemetry: OnceLock<Arc<dyn ServiceTelemetry>>,
     runtime: RuntimeRoutingState,
     maintenance: Arc<MaintenanceLifecycle>,
     state: Mutex<RouteState>,
@@ -69,6 +70,7 @@ impl ProductionLifecycleRoute {
             recovery: OnceLock::new(),
             restore_retry: OnceLock::new(),
             restore_retry_security: OnceLock::new(),
+            read_stage_telemetry: OnceLock::new(),
             runtime,
             maintenance,
             state: Mutex::new(RouteState {
@@ -87,6 +89,29 @@ impl ProductionLifecycleRoute {
         history_incarnation: u64,
         lifecycle: ValidatedStartupLifecycle,
         capacity: ValidatedAllocatorCapacity,
+    ) -> Result<(), LifecycleInstallError> {
+        self.install_activated_with_telemetry(
+            service,
+            security,
+            server_generation,
+            history_incarnation,
+            lifecycle,
+            capacity,
+            None,
+        )
+    }
+
+    /// Installs the activated service and optional read-stage telemetry sink.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn install_activated_with_telemetry(
+        &self,
+        service: Arc<dyn ApplicationService>,
+        security: CheckedGrpcSecurityContext,
+        server_generation: ServerGenerationV1,
+        history_incarnation: u64,
+        lifecycle: ValidatedStartupLifecycle,
+        capacity: ValidatedAllocatorCapacity,
+        read_stage_telemetry: Option<Arc<dyn ServiceTelemetry>>,
     ) -> Result<(), LifecycleInstallError> {
         let installed = LifecycleModel::from_startup(lifecycle, capacity)?;
         let mut state = self.lock_state();
@@ -112,6 +137,11 @@ impl ProductionLifecycleRoute {
         self.history_incarnation
             .set(history_incarnation)
             .map_err(|_| LifecycleInstallError::AlreadyInstalled)?;
+        if let Some(telemetry) = read_stage_telemetry {
+            self.read_stage_telemetry
+                .set(telemetry)
+                .map_err(|_| LifecycleInstallError::AlreadyInstalled)?;
+        }
 
         if lifecycle != ValidatedStartupLifecycle::BootstrapRequired {
             close_issuer(&mut state.issuer);
@@ -308,6 +338,10 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
             return None;
         }
         self.history_incarnation.get().copied()
+    }
+
+    fn read_stage_telemetry(&self) -> Option<Arc<dyn ServiceTelemetry>> {
+        self.read_stage_telemetry.get().cloned()
     }
 
     fn restricted_health(&self, request: HealthRequest) -> Option<ServiceFuture<'_, HealthResult>> {
