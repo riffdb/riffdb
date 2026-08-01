@@ -528,15 +528,21 @@ impl GrpcApplication {
         security: &CheckedGrpcSecurityContext,
     ) -> Result<(RequestContext, CancellationGuard), Status> {
         self.normal_context_timed(metadata, request_id, security, None)
+            .map(|(context, cancellation, _authn)| (context, cancellation))
     }
 
+    /// Assembles the request context and reports how long authentication took.
+    ///
+    /// The caller subtracts the returned authentication span from its own
+    /// enclosing span, so `Authn` and `AdmissionContext` partition the residual
+    /// instead of double counting it.
     fn normal_context_timed(
         &self,
         metadata: &MetadataMap,
         request_id: RequestId,
         security: &CheckedGrpcSecurityContext,
         telemetry: Option<&dyn ServiceTelemetry>,
-    ) -> Result<(RequestContext, CancellationGuard), Status> {
+    ) -> Result<(RequestContext, CancellationGuard, Duration), Status> {
         let deadline = self.limits.deadline(metadata)?;
         let authn_started = Instant::now();
         let principal = authenticate_normal_request(
@@ -544,16 +550,18 @@ impl GrpcApplication {
             security.authenticator.as_ref(),
             &security.authentication,
         )?;
+        let authn_elapsed = authn_started.elapsed();
         if let Some(telemetry) = telemetry {
             telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
                 stage: ReadPipelineStage::Authn,
-                elapsed: authn_started.elapsed(),
+                elapsed: authn_elapsed,
             });
         }
         let (control, cancellation) = RequestControl::new(deadline);
         Ok((
             RequestContext::from_authenticated_grpc(request_id, principal, control, None),
             CancellationGuard(cancellation),
+            authn_elapsed,
         ))
     }
 
@@ -589,24 +597,23 @@ impl GrpcApplication {
         Status,
     > {
         let telemetry = lifecycle.read_stage_telemetry();
+        // AdmissionContext spans lifecycle admission, security selection,
+        // deadline parsing, and request-context assembly — everything in this
+        // function except the authentication measured as `Authn`.
         let admission_started = Instant::now();
         let (service, security) = self.normal_admission(lifecycle, operation)?;
-        // AdmissionContext covers lifecycle admit + security + deadline assembly
-        // excluding the Authn stage measured inside normal_context_timed.
-        let deadline = self.limits.deadline(metadata)?;
-        let _ = deadline;
-        if let Some(telemetry) = telemetry.as_ref() {
-            telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
-                stage: ReadPipelineStage::AdmissionContext,
-                elapsed: admission_started.elapsed(),
-            });
-        }
-        let (context, cancellation) = self.normal_context_timed(
+        let (context, cancellation, authn_elapsed) = self.normal_context_timed(
             metadata,
             request_id,
             &security,
             telemetry.as_ref().map(AsRef::as_ref),
         )?;
+        if let Some(telemetry) = telemetry.as_ref() {
+            telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                stage: ReadPipelineStage::AdmissionContext,
+                elapsed: admission_started.elapsed().saturating_sub(authn_elapsed),
+            });
+        }
         Ok((service, context, cancellation))
     }
 

@@ -93,6 +93,27 @@ impl SharedRedbOperationalPorts {
         })
     }
 
+    /// Reads the active query-module pointer from process-local state only.
+    ///
+    /// Never touches redb, never takes a write lock, and never blocks on the
+    /// view lock: the outer `Option` is `None` whenever the answer is not
+    /// already resident (unpublished identity, or a contended/poisoned view),
+    /// which callers must treat as "consult the blocking port". The inner
+    /// `Option` distinguishes a cached active pointer from a cached
+    /// known-absent identity.
+    pub(crate) fn cached_active_query_module(
+        &self,
+        lineage: &ContractLineage,
+        contract_version: ContractVersion,
+        contract_bundle_hash: ContractBundleHash,
+    ) -> Option<Option<ActiveQueryModulePointerV1>> {
+        self.query_modules.state.try_read().ok()?.active(
+            lineage,
+            contract_version,
+            contract_bundle_hash,
+        )
+    }
+
     fn current_view_failure(&self, error: StorageError) -> StorageError {
         if let Some(health) = &self.health {
             health.fail_authoritative_readiness(AuthoritativeReadinessFailure::Integrity);
@@ -1055,11 +1076,12 @@ impl CapabilityReader for SharedRedbOperationalPorts {
         Ok(record)
     }
 
-    fn capability_view_generation(&self) -> u64 {
-        self.capabilities
-            .read()
-            .map(|view| view.generation())
-            .unwrap_or(u64::MAX)
+    fn capability_view_generation(&self) -> Option<u64> {
+        // A poisoned view is not a generation. Returning any constant would let
+        // two unreadable observations compare equal and admit a revision-checked
+        // reissue over state nobody can read, so this fails closed with `None`
+        // and the caller performs a full evaluation.
+        self.capabilities.read().ok().map(|view| view.generation())
     }
 
     fn resolve_capability_digests(

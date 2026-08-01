@@ -1398,14 +1398,19 @@ pub trait CapabilityReader {
         candidates: &[CapabilityTokenDigest],
     ) -> Result<CapabilityLookupResult, StorageError>;
 
-    /// Returns the monotonic capability-view generation for revision-checked reauthorization.
+    /// Returns the monotonic capability-view generation, when one is published.
     ///
-    /// Default returns a unique value each call so readers without a published
-    /// view always force full re-evaluation.
-    fn capability_view_generation(&self) -> u64 {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static FALLBACK: AtomicU64 = AtomicU64::new(1);
-        FALLBACK.fetch_add(1, Ordering::Relaxed)
+    /// The generation MUST advance on every mutation that can change what
+    /// [`CapabilityReader::read_capability`] or
+    /// [`CapabilityReader::resolve_capability_digests`] would return.
+    ///
+    /// `None` means "no usable generation" and MUST be returned by readers that
+    /// publish no generation and by any reader whose generation state is
+    /// unreadable (for example a poisoned lock). Consumers treat `None` as "the
+    /// view may have changed" and fall back to full re-evaluation, so a missing
+    /// generation costs work but never weakens an authorization outcome.
+    fn capability_view_generation(&self) -> Option<u64> {
+        None
     }
 }
 

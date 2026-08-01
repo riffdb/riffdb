@@ -919,7 +919,10 @@ impl ExecuteSymbolicQueryResult {
     ///
     /// Not a semantic query outcome; fields are empty and identity is fixed
     /// fixture material used only by protocol residual instrumentation tests.
-    #[doc(hidden)]
+    /// Gated behind the `test-fixtures` feature so no shipped configuration
+    /// exposes a synthetic success through the public service surface.
+    #[cfg(feature = "test-fixtures")]
+    #[must_use]
     pub fn transport_residual_fixture() -> Self {
         Self {
             identity: SymbolicQueryIdentity {
@@ -1754,8 +1757,10 @@ async fn execute_compiled_query(
         return Err(finish_failure(&service, &context, &begun, failure).await);
     };
     let authorize_pre_started = Instant::now();
+    // Read safe point 2. Revision-checked: reissues the begin proof only when
+    // the capability view, the validity window, and the request are unchanged.
     let execution_authorization = begun
-        .reauthorize(&service, &context)
+        .reauthorize_read(&service, &context)
         .await?
         .into_application_query()
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
@@ -1860,7 +1865,8 @@ async fn execute_compiled_query(
         return Err(finish_failure(&service, &context, &begun, failure).await);
     }
     let authorize_post_started = Instant::now();
-    begun.reauthorize(&service, &context).await?;
+    // Read safe point 3, same revision-checked contract as safe point 2.
+    begun.reauthorize_read(&service, &context).await?;
     service
         .providers
         .telemetry
