@@ -11,7 +11,9 @@ use riffdb_catalog::CatalogTelemetryEvent;
 use riffdb_commit::{CommandPipelineStage, CommitCommandTerminal, CommitGroupDispatchReason};
 use riffdb_conflict::ConflictEventKind;
 use riffdb_policy::{AuthorizationDefect, PolicyCode};
-use riffdb_service::{AuthoritativeReadinessFailure, CapacityRejectionStage, ServiceTerminalClass};
+use riffdb_service::{
+    AuthoritativeReadinessFailure, CapacityRejectionStage, ReadPipelineStage, ServiceTerminalClass,
+};
 use riffdb_types::{CommandId, ServiceIngressKindV1, ServiceOperationV1};
 
 use crate::IncidentClass;
@@ -164,6 +166,8 @@ pub enum RequiredMetricFamily {
     CommandGroupDeferred,
     /// Coordinator CPU stage duration by closed stage identity.
     CommandStageDurationMicroseconds,
+    /// Service-side symbolic read pipeline stage duration by closed stage identity.
+    ReadStageDurationMicroseconds,
     /// Cumulative time the pipelined writer spent executing units.
     WriterBusyMicroseconds,
     /// Cumulative time the pipelined writer spent idle between units.
@@ -191,9 +195,10 @@ const PROJECTION_LABELS: &[&str] = &["projection_identity"];
 const MCP_RISK_LABELS: &[&str] = &["risk_class"];
 const DISPATCH_REASON_LABELS: &[&str] = &["reason"];
 const COMMAND_STAGE_LABELS: &[&str] = &["stage"];
+const READ_STAGE_LABELS: &[&str] = &["stage"];
 
 /// Exact local inventory required before WP-185 composition.
-pub const REQUIRED_METRIC_INVENTORY: [RequiredMetricDescriptor; 39] = [
+pub const REQUIRED_METRIC_INVENTORY: [RequiredMetricDescriptor; 40] = [
     descriptor(
         RequiredMetricFamily::CommandRequests,
         "riffdb_command_requests_total",
@@ -409,6 +414,12 @@ pub const REQUIRED_METRIC_INVENTORY: [RequiredMetricDescriptor; 39] = [
         "riffdb_command_stage_duration_microseconds",
         MetricSemantics::Histogram,
         COMMAND_STAGE_LABELS,
+    ),
+    descriptor(
+        RequiredMetricFamily::ReadStageDurationMicroseconds,
+        "riffdb_read_stage_duration_microseconds",
+        MetricSemantics::Histogram,
+        READ_STAGE_LABELS,
     ),
     descriptor(
         RequiredMetricFamily::WriterBusyMicroseconds,
@@ -798,11 +809,12 @@ pub enum RequiredHistogram {
     DurableFlushDurationMicroseconds,
     StartupRecoveryDurationMilliseconds,
     CommandStageDurationMicroseconds,
+    ReadStageDurationMicroseconds,
 }
 
 impl RequiredHistogram {
     /// All required histograms in stable storage order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::CommandLatencyMicroseconds,
         Self::StorageQueueLatencyMicroseconds,
         Self::LockWaitMicroseconds,
@@ -811,6 +823,7 @@ impl RequiredHistogram {
         Self::DurableFlushDurationMicroseconds,
         Self::StartupRecoveryDurationMilliseconds,
         Self::CommandStageDurationMicroseconds,
+        Self::ReadStageDurationMicroseconds,
     ];
 
     const fn index(self) -> usize {
@@ -963,6 +976,8 @@ impl CommandMetricSeries {
 
 const COMMAND_GROUP_DISPATCH_REASON_COUNT: usize = 4;
 const COMMAND_PIPELINE_STAGE_COUNT: usize = 5;
+/// Closed service-side symbolic read pipeline stage cardinality.
+pub const READ_PIPELINE_STAGE_COUNT: usize = 7;
 
 struct MetricRegistryInner {
     counters: [AtomicU64; MAX_METRIC_SERIES],
@@ -973,6 +988,7 @@ struct MetricRegistryInner {
     mcp_tool_calls: [AtomicU64; McpRiskClass::ALL.len()],
     command_group_dispatch_reasons: [AtomicU64; COMMAND_GROUP_DISPATCH_REASON_COUNT],
     command_stage_durations: [FixedHistogram; COMMAND_PIPELINE_STAGE_COUNT],
+    read_stage_durations: [FixedHistogram; READ_PIPELINE_STAGE_COUNT],
 }
 
 /// Cloneable fixed-cardinality counter registry.
@@ -995,6 +1011,7 @@ impl MetricRegistry {
                 mcp_tool_calls: std::array::from_fn(|_| AtomicU64::new(0)),
                 command_group_dispatch_reasons: std::array::from_fn(|_| AtomicU64::new(0)),
                 command_stage_durations: std::array::from_fn(|_| FixedHistogram::new()),
+                read_stage_durations: std::array::from_fn(|_| FixedHistogram::new()),
             }),
         }
     }
@@ -1164,6 +1181,18 @@ impl MetricRegistry {
         self.inner.command_stage_durations[command_pipeline_stage_index(stage)].snapshot()
     }
 
+    /// Observes one service-side read pipeline stage duration under its closed stage label.
+    pub fn observe_read_stage_duration(&self, stage: ReadPipelineStage, value: u64) {
+        self.inner.read_stage_durations[read_pipeline_stage_index(stage)].observe(value);
+        self.observe_required_histogram(RequiredHistogram::ReadStageDurationMicroseconds, value);
+    }
+
+    /// Returns the fixed histogram for one closed read pipeline stage.
+    #[must_use]
+    pub fn read_stage_duration(&self, stage: ReadPipelineStage) -> HistogramSnapshot {
+        self.inner.read_stage_durations[read_pipeline_stage_index(stage)].snapshot()
+    }
+
     /// Adds busy time spent on the pipelined writer thread.
     pub fn add_writer_busy_microseconds(&self, micros: u64) {
         saturating_add(
@@ -1232,6 +1261,20 @@ const fn command_pipeline_stage_index(stage: CommandPipelineStage) -> usize {
         CommandPipelineStage::Evaluation => 2,
         CommandPipelineStage::ValidationEncodingStaging => 3,
         CommandPipelineStage::Publication => 4,
+    }
+}
+
+/// Stable registry index for one closed read pipeline stage.
+#[must_use]
+pub const fn read_pipeline_stage_index(stage: ReadPipelineStage) -> usize {
+    match stage {
+        ReadPipelineStage::PlanLookup => 0,
+        ReadPipelineStage::ParamMaterialize => 1,
+        ReadPipelineStage::AuthorizeBegin => 2,
+        ReadPipelineStage::AuthorizePre => 3,
+        ReadPipelineStage::Execute => 4,
+        ReadPipelineStage::AuthorizePost => 5,
+        ReadPipelineStage::ResponseBuild => 6,
     }
 }
 

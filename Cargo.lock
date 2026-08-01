@@ -2048,6 +2048,7 @@ dependencies = [
  "riffdb-errors",
  "riffdb-idempotency",
  "riffdb-invariant",
+ "riffdb-observability",
  "riffdb-policy",
  "riffdb-query-compiler",
  "riffdb-query-executor",
