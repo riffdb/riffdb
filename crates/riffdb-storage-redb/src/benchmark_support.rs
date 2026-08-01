@@ -258,6 +258,9 @@ impl ServiceAuditGrowthHarness {
     }
 
     /// Appends one started/failed lifecycle per command through the real port.
+    ///
+    /// Uses two independent durable transitions per command (Started, then
+    /// Failed). Retained for PERF-013 windows and generation-mode equivalence.
     pub fn run_window(
         &mut self,
         first_command: u64,
@@ -267,26 +270,7 @@ impl ServiceAuditGrowthHarness {
             return Err(EngineBenchmarkError::InvalidConfiguration);
         }
         let preparation_started = Instant::now();
-        let mut intents = Vec::with_capacity(
-            commands
-                .checked_mul(2)
-                .ok_or(EngineBenchmarkError::InvalidConfiguration)?,
-        );
-        for offset in 0..commands {
-            let command = sequence_at(first_command, offset)?;
-            let request_id = RequestId::from_bytes(uuid_v7_bytes(0x33, command))
-                .map_err(|_| EngineBenchmarkError::Engine)?;
-            intents.push(service_audit_intent(
-                request_id,
-                command,
-                ServiceAuditPhaseV1::Started,
-            )?);
-            intents.push(service_audit_intent(
-                request_id,
-                command,
-                ServiceAuditPhaseV1::Failed,
-            )?);
-        }
+        let intents = build_started_failed_intents(first_command, commands)?;
         let preparation = preparation_started.elapsed();
 
         let append_started = Instant::now();
@@ -313,6 +297,94 @@ impl ServiceAuditGrowthHarness {
             file_bytes,
         })
     }
+
+    /// Appends Started+Failed fused pairs in groups of up to
+    /// [`riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS`] commands per durable
+    /// transaction via the engine fused staging path (same mechanics as
+    /// `append_service_audit_fused_pair`, multi-request).
+    ///
+    /// History shape matches sequential Started-then-Failed per command (same
+    /// administration-sequence order); only the commit batching changes.
+    pub fn run_window_grouped_fused(
+        &mut self,
+        first_command: u64,
+        commands: usize,
+    ) -> Result<ServiceAuditGrowthSample, EngineBenchmarkError> {
+        use crate::administration::stage_service_audit_group_in_write;
+        use crate::hooks::RedbTestOperation;
+
+        if first_command == 0 || commands == 0 || commands > MAX_WINDOW_COMMANDS {
+            return Err(EngineBenchmarkError::InvalidConfiguration);
+        }
+        let group_bound = riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
+        let preparation_started = Instant::now();
+        // Pre-build all intents so preparation is comparable to run_window.
+        let intents = build_started_failed_intents(first_command, commands)?;
+        let preparation = preparation_started.elapsed();
+
+        let append_started = Instant::now();
+        let mut offset = 0_usize;
+        while offset < intents.len() {
+            // Two intents per command; group by command count ≤ group_bound.
+            let commands_left = (intents.len() - offset) / 2;
+            let group_commands = commands_left.min(group_bound);
+            let intent_end = offset
+                .checked_add(
+                    group_commands
+                        .checked_mul(2)
+                        .ok_or(EngineBenchmarkError::InvalidConfiguration)?,
+                )
+                .ok_or(EngineBenchmarkError::InvalidConfiguration)?;
+            let group = &intents[offset..intent_end];
+            let access = self
+                .ports
+                .begin_write()
+                .map_err(|_| EngineBenchmarkError::Engine)?;
+            stage_service_audit_group_in_write(&access, group)
+                .map_err(|_| EngineBenchmarkError::Engine)?;
+            access
+                .commit_for(RedbTestOperation::ServiceAudit)
+                .map_err(|_| EngineBenchmarkError::Engine)?;
+            offset = intent_end;
+        }
+        let append = append_started.elapsed();
+        let file_bytes = fs::metadata(&self.path)
+            .map_err(|_| EngineBenchmarkError::Engine)?
+            .len();
+        Ok(ServiceAuditGrowthSample {
+            commands,
+            preparation,
+            append,
+            file_bytes,
+        })
+    }
+}
+
+fn build_started_failed_intents(
+    first_command: u64,
+    commands: usize,
+) -> Result<Vec<ServiceAuditAppendIntentV1>, EngineBenchmarkError> {
+    let mut intents = Vec::with_capacity(
+        commands
+            .checked_mul(2)
+            .ok_or(EngineBenchmarkError::InvalidConfiguration)?,
+    );
+    for offset in 0..commands {
+        let command = sequence_at(first_command, offset)?;
+        let request_id = RequestId::from_bytes(uuid_v7_bytes(0x33, command))
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+        intents.push(service_audit_intent(
+            request_id,
+            command,
+            ServiceAuditPhaseV1::Started,
+        )?);
+        intents.push(service_audit_intent(
+            request_id,
+            command,
+            ServiceAuditPhaseV1::Failed,
+        )?);
+    }
+    Ok(intents)
 }
 
 /// Creates the exact table inventory used by RiffDB and installs durable metadata.
@@ -436,7 +508,128 @@ pub fn measure_clean_startup(path: &Path) -> Result<Duration, EngineBenchmarkErr
     Ok(started.elapsed())
 }
 
+/// Timing for one PERF-013 clean startup with evidence-drain half-split.
+///
+/// `first_half` / `second_half` sum wall time over the first and second halves of
+/// combined structural + historical evidence *page reads* (by page count, each
+/// ExactEnd response counted as one page). Opaque cursors do not expose a
+/// retained-command sequence midpoint, so page-count half-split is the drain-API
+/// linear check. Validation work is unchanged.
+///
+/// **Interpretation:** only the *movement* of `first_half / second_half` across
+/// retained counts N is meaningful — the absolute ratio is not 1:1 (structural
+/// work is front-loaded). A midpoint that crosses the structural→historical
+/// junction confounds the ratio; use `structural_pages` / `historical_pages` to
+/// detect that.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CleanStartupMeasurement {
+    elapsed: Duration,
+    first_half: Duration,
+    second_half: Duration,
+    structural_pages: u64,
+    historical_pages: u64,
+    evidence_pages: u64,
+}
+
+impl CleanStartupMeasurement {
+    /// Full open + structural + historical + operational handoff wall time.
+    #[must_use]
+    pub const fn elapsed(self) -> Duration {
+        self.elapsed
+    }
+
+    /// Wall time spent in the first half of evidence page reads.
+    #[must_use]
+    pub const fn first_half(self) -> Duration {
+        self.first_half
+    }
+
+    /// Wall time spent in the second half of evidence page reads.
+    #[must_use]
+    pub const fn second_half(self) -> Duration {
+        self.second_half
+    }
+
+    /// Structural evidence page reads (including ExactEnd).
+    #[must_use]
+    pub const fn structural_pages(self) -> u64 {
+        self.structural_pages
+    }
+
+    /// Historical evidence page reads (including ExactEnd).
+    #[must_use]
+    pub const fn historical_pages(self) -> u64 {
+        self.historical_pages
+    }
+
+    /// Structural + historical evidence page reads (including ExactEnd responses).
+    #[must_use]
+    pub const fn evidence_pages(self) -> u64 {
+        self.evidence_pages
+    }
+}
+
+/// Full clean startup with combined structural+historical page half-split timings.
+///
+/// `expected_retained_commands` pre-sizes the per-page timing buffer so a 10M-command
+/// drain does not reallocate (RSS pollution) mid-measurement.
+pub fn measure_clean_startup_linear(
+    path: &Path,
+    expected_retained_commands: u64,
+) -> Result<CleanStartupMeasurement, EngineBenchmarkError> {
+    let started = Instant::now();
+    let detail = drain_startup_evidence_linear(path, expected_retained_commands)?;
+    Ok(CleanStartupMeasurement {
+        elapsed: started.elapsed(),
+        first_half: detail.first_half,
+        second_half: detail.second_half,
+        structural_pages: detail.structural_pages,
+        historical_pages: detail.historical_pages,
+        evidence_pages: detail.evidence_pages,
+    })
+}
+
+/// Splits ordered page durations into first/second half sums (by page count).
+///
+/// When the page count is odd the extra page is attributed to the second half
+/// (`mid = len / 2`). Empty input yields `(0, 0)`.
+#[must_use]
+pub fn split_half_page_durations(page_ns: &[u64]) -> (u64, u64) {
+    let mid = page_ns.len() / 2;
+    let first = page_ns[..mid].iter().copied().sum();
+    let second = page_ns[mid..].iter().copied().sum();
+    (first, second)
+}
+
+/// Soft upper bound on structural+historical page reads for a retained count.
+///
+/// Page limit is 64 entries; structural evidence is denser than one item per
+/// command. Over-estimate slightly so the Vec never reallocates during drain.
+#[must_use]
+pub fn expected_evidence_page_capacity(retained_commands: u64) -> usize {
+    // ~4 evidence items/command worst case + both ExactEnd pages + headroom.
+    let items = retained_commands.saturating_mul(4).saturating_add(128);
+    let pages = items.div_ceil(32).saturating_add(16);
+    usize::try_from(pages).unwrap_or(usize::MAX).max(32)
+}
+
+struct DrainLinearDetail {
+    first_half: Duration,
+    second_half: Duration,
+    structural_pages: u64,
+    historical_pages: u64,
+    evidence_pages: u64,
+}
+
 fn drain_startup_evidence(path: &Path) -> Result<(), EngineBenchmarkError> {
+    let _ = drain_startup_evidence_linear(path, 0)?;
+    Ok(())
+}
+
+fn drain_startup_evidence_linear(
+    path: &Path,
+    expected_retained_commands: u64,
+) -> Result<DrainLinearDetail, EngineBenchmarkError> {
     use riffdb_storage_api::{
         EvidencePageLimit, HistoricalEvidenceCursor, HistoricalEvidencePage,
         ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
@@ -460,26 +653,50 @@ fn drain_startup_evidence(path: &Path) -> Result<(), EngineBenchmarkError> {
     let database_id = session.database_id();
     let open_session_id = session.open_session_id();
     let limit = EvidencePageLimit::new(64).ok_or(EngineBenchmarkError::Engine)?;
+    let mut page_ns =
+        Vec::with_capacity(expected_evidence_page_capacity(expected_retained_commands));
+    let mut structural_pages = 0_u64;
     let mut structural = StructuralEvidenceCursor::start(database_id, open_session_id);
     let structural_end = loop {
+        let page_started = Instant::now();
         match session
             .read_structural_evidence(structural, limit)
             .map_err(|_| EngineBenchmarkError::Engine)?
         {
-            StructuralEvidencePage::Page { next, .. } => structural = next,
-            StructuralEvidencePage::ExactEnd(end) => break end,
+            StructuralEvidencePage::Page { next, .. } => {
+                page_ns.push(u64::try_from(page_started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+                structural_pages = structural_pages.saturating_add(1);
+                structural = next;
+            }
+            StructuralEvidencePage::ExactEnd(end) => {
+                page_ns.push(u64::try_from(page_started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+                structural_pages = structural_pages.saturating_add(1);
+                break end;
+            }
         }
     };
+    let mut historical_pages = 0_u64;
     let mut historical = HistoricalEvidenceCursor::start(database_id, open_session_id);
     let historical_end = loop {
+        let page_started = Instant::now();
         match session
             .read_historical_evidence(historical, limit)
             .map_err(|_| EngineBenchmarkError::Engine)?
         {
-            HistoricalEvidencePage::Page { next, .. } => historical = next,
-            HistoricalEvidencePage::ExactEnd(end) => break end,
+            HistoricalEvidencePage::Page { next, .. } => {
+                page_ns.push(u64::try_from(page_started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+                historical_pages = historical_pages.saturating_add(1);
+                historical = next;
+            }
+            HistoricalEvidencePage::ExactEnd(end) => {
+                page_ns.push(u64::try_from(page_started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+                historical_pages = historical_pages.saturating_add(1);
+                break end;
+            }
         }
     };
+    let evidence_pages = u64::try_from(page_ns.len()).unwrap_or(u64::MAX);
+    let (first_half_ns, second_half_ns) = split_half_page_durations(&page_ns);
     let outcome = session
         .finish(structural_end, historical_end)
         .map_err(|_| EngineBenchmarkError::Engine)?;
@@ -494,7 +711,13 @@ fn drain_startup_evidence(path: &Path) -> Result<(), EngineBenchmarkError> {
             return Err(EngineBenchmarkError::Engine);
         }
     }
-    Ok(())
+    Ok(DrainLinearDetail {
+        first_half: Duration::from_nanos(first_half_ns),
+        second_half: Duration::from_nanos(second_half_ns),
+        structural_pages,
+        historical_pages,
+        evidence_pages,
+    })
 }
 
 fn configure(
@@ -674,4 +897,116 @@ fn uuid_v7_bytes(tag: u8, sequence: u64) -> [u8; 16] {
     bytes[8] = 0x80 | (tag & 0x3f);
     bytes[9..].copy_from_slice(&sequence.to_be_bytes()[1..]);
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        EngineDurability, EngineMechanicsProfile, ServiceAuditGrowthHarness,
+        expected_evidence_page_capacity, initialize_engine_mechanics, measure_clean_startup,
+        measure_clean_startup_linear, run_engine_mechanics_window, split_half_page_durations,
+    };
+    use std::time::Duration;
+
+    #[test]
+    fn split_half_page_durations_empty_and_balanced() {
+        assert_eq!(split_half_page_durations(&[]), (0, 0));
+        assert_eq!(split_half_page_durations(&[10]), (0, 10));
+        assert_eq!(split_half_page_durations(&[10, 20]), (10, 20));
+        assert_eq!(split_half_page_durations(&[1, 2, 3, 4]), (3, 7));
+        assert_eq!(split_half_page_durations(&[1, 2, 3]), (1, 5));
+    }
+
+    #[test]
+    fn expected_page_capacity_grows_with_retained() {
+        assert!(
+            expected_evidence_page_capacity(10_000_000) > expected_evidence_page_capacity(1_000)
+        );
+        assert!(expected_evidence_page_capacity(0) >= 32);
+    }
+
+    #[test]
+    fn clean_startup_linear_matches_plain_measurement_shape() {
+        let dir = tempfile_dir();
+        let path = dir.join("linear-check.redb");
+        let mut harness = ServiceAuditGrowthHarness::new(&path).expect("new harness");
+        harness.run_window(1, 32).expect("seed window");
+        drop(harness);
+
+        let plain = measure_clean_startup(&path).expect("plain startup");
+        let linear = measure_clean_startup_linear(&path, 32).expect("linear startup");
+        assert!(linear.elapsed() > Duration::ZERO);
+        assert!(plain > Duration::ZERO);
+        // Page-read halves are subsets of the full open+drain+handoff wall time.
+        let halves = linear.first_half().saturating_add(linear.second_half());
+        assert!(halves <= linear.elapsed());
+        assert!(linear.evidence_pages() >= 1);
+        assert_eq!(
+            linear.evidence_pages(),
+            linear
+                .structural_pages()
+                .saturating_add(linear.historical_pages())
+        );
+    }
+
+    #[test]
+    fn grouped_fused_and_ungrouped_generation_yield_identical_drain_shape() {
+        // Equivalence: same Started/Failed history order → same evidence page counts.
+        let dir = tempfile_dir();
+        let ungrouped_path = dir.join("ungrouped.redb");
+        let grouped_path = dir.join("grouped.redb");
+        const N: usize = 128;
+
+        let mut ungrouped = ServiceAuditGrowthHarness::new(&ungrouped_path).expect("ungrouped new");
+        ungrouped.run_window(1, N).expect("ungrouped generate");
+        drop(ungrouped);
+
+        let mut grouped = ServiceAuditGrowthHarness::new(&grouped_path).expect("grouped new");
+        grouped
+            .run_window_grouped_fused(1, N)
+            .expect("grouped generate");
+        drop(grouped);
+
+        let u = measure_clean_startup_linear(&ungrouped_path, N as u64).expect("ungrouped drain");
+        let g = measure_clean_startup_linear(&grouped_path, N as u64).expect("grouped drain");
+        assert_eq!(
+            u.structural_pages(),
+            g.structural_pages(),
+            "structural pages"
+        );
+        assert_eq!(
+            u.historical_pages(),
+            g.historical_pages(),
+            "historical pages"
+        );
+        assert_eq!(u.evidence_pages(), g.evidence_pages(), "evidence pages");
+        assert!(u.structural_pages() >= 1);
+        assert!(u.historical_pages() >= 1);
+    }
+
+    #[test]
+    fn engine_mechanics_profile_rejects_zero_group() {
+        assert!(EngineMechanicsProfile::new(EngineDurability::None, 0).is_err());
+    }
+
+    #[test]
+    fn initialize_and_window_still_compile_paths() {
+        let dir = tempfile_dir();
+        let path = dir.join("mechanics.redb");
+        initialize_engine_mechanics(&path).expect("init");
+        let profile =
+            EngineMechanicsProfile::new(EngineDurability::ImmediateOnePhase, 1).expect("profile");
+        let sample = run_engine_mechanics_window(&path, 1, 4, profile).expect("window");
+        assert_eq!(sample.commands(), 4);
+    }
+
+    fn tempfile_dir() -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("riffdb-bench-support-{stamp}"));
+        std::fs::create_dir_all(&path).expect("mkdir");
+        path
+    }
 }
