@@ -110,10 +110,16 @@ impl RedbTestController {
         }
     }
 
-    /// Observes service-audit sequence prefix-scan begin_read traffic only.
+    /// Installs a controller that counts service-audit sequence begin_read calls.
+    #[must_use]
+    pub fn count_audit_sequence_begin_reads() -> Self {
+        Self::observe_index_migration()
+    }
+
+    /// Deprecated alias — prefer [`Self::count_audit_sequence_begin_reads`].
     #[must_use]
     pub fn observe_audit_sequence_reads() -> Self {
-        Self::observe_index_migration()
+        Self::count_audit_sequence_begin_reads()
     }
 
     /// Returns how many begin_read calls service-audit sequence lookup performed.

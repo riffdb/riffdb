@@ -532,11 +532,17 @@ impl CommitTelemetry for Observability {
                         .increment_required_counter(RequiredCounter::Commits);
                 }
             }
-            CommitTelemetryEvent::WriterUnitCompleted { busy, idle } => {
+            CommitTelemetryEvent::WriterUnitCompleted {
+                busy,
+                idle,
+                queue_delay_estimate_micros,
+            } => {
                 self.metrics
                     .add_writer_busy_microseconds(duration_micros(busy));
                 self.metrics
                     .add_writer_idle_microseconds(duration_micros(idle));
+                self.metrics
+                    .set_command_queue_delay_estimate_microseconds(queue_delay_estimate_micros);
             }
         }
         self.record_trace(TraceRecord::commit(event));
