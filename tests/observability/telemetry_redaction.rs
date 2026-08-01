@@ -480,6 +480,14 @@ fn owner_adapters_map_closed_events_to_required_metrics_and_traces() {
     );
     CommitTelemetry::record(
         &observability,
+        CommitTelemetryEvent::WriterUnitCompleted {
+            busy: Duration::from_micros(9),
+            idle: Duration::from_micros(3),
+            queue_delay_estimate_micros: 12,
+        },
+    );
+    CommitTelemetry::record(
+        &observability,
         CommitTelemetryEvent::UncertaintyResolved {
             stage: CommitUncertaintyStage::CommandCommit,
             resolution: CommitUncertaintyResolution::Outcome,
@@ -612,7 +620,7 @@ fn owner_adapters_map_closed_events_to_required_metrics_and_traces() {
             .iter()
             .filter(|kind| **kind == TraceKind::Commit)
             .count(),
-        6
+        7
     );
     assert_eq!(
         trace_kinds
@@ -809,6 +817,88 @@ fn upstream_readiness_hook_is_monotonic_and_redaction_safe() {
             .value(MetricKey::AuthoritativeReadinessFailure(
                 AuthoritativeReadinessFailure::CoordinatorFenced
             )),
+        1
+    );
+}
+
+#[test]
+fn writer_unit_completed_updates_busy_idle_and_queue_delay_gauge() {
+    let source = Arc::new(ScriptedIncidentIds::new([]));
+    let observability = Observability::new(source, 8).expect("bounded");
+    CommitTelemetry::record(
+        &observability,
+        CommitTelemetryEvent::WriterUnitCompleted {
+            busy: Duration::from_micros(100),
+            idle: Duration::from_micros(40),
+            queue_delay_estimate_micros: 140,
+        },
+    );
+    assert_eq!(
+        observability
+            .metrics()
+            .required_counter(RequiredCounter::WriterBusyMicroseconds),
+        100
+    );
+    assert_eq!(
+        observability
+            .metrics()
+            .required_counter(RequiredCounter::WriterIdleMicroseconds),
+        40
+    );
+    assert_eq!(
+        observability
+            .metrics()
+            .required_gauge(RequiredGauge::CommandQueueDelayEstimateMicroseconds),
+        Some(140)
+    );
+}
+
+#[test]
+fn durable_flush_duration_is_recorded_under_group_durability() {
+    // Group durability still emits CommitCallCompleted without a synchronous flag;
+    // flush histogram must observe every commit call.
+    let source = Arc::new(ScriptedIncidentIds::new([]));
+    let observability = Observability::new(source, 8).expect("bounded");
+    CommitTelemetry::record(
+        &observability,
+        CommitTelemetryEvent::CommitCallCompleted {
+            terminal: CommitCallTerminal::Committed,
+            elapsed: Duration::from_micros(42),
+            batch_size: 3,
+        },
+    );
+    let flush = observability
+        .metrics()
+        .required_histogram(RequiredHistogram::DurableFlushDurationMicroseconds);
+    assert_eq!(flush.count, 1);
+    assert_eq!(flush.sum, 42);
+}
+
+#[test]
+fn command_group_dispatch_reasons_are_labeled_in_registry() {
+    let source = Arc::new(ScriptedIncidentIds::new([]));
+    let observability = Observability::new(source, 8).expect("bounded");
+    CommitTelemetry::record(
+        &observability,
+        CommitTelemetryEvent::CommandGroupDispatched {
+            reason: CommitGroupDispatchReason::Full,
+            selected: 4,
+            deferred: 1,
+            elapsed: Duration::from_micros(5),
+        },
+    );
+    let reasons = observability.metrics().command_group_dispatch_reasons();
+    assert_eq!(reasons[0], 1); // Full
+    assert_eq!(
+        observability
+            .metrics()
+            .required_counter(RequiredCounter::CommandGroupSelected),
+        4
+    );
+    assert_eq!(
+        observability
+            .metrics()
+            .required_counter(RequiredCounter::CommandGroupDeferred),
         1
     );
 }

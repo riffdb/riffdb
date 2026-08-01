@@ -416,6 +416,8 @@ pub struct AdministrationAuditExecutor {
     sender: mpsc::Sender<CoordinatorMessage>,
     lifecycle: Arc<AtomicU8>,
     submission_gate: Arc<SubmissionGate>,
+    /// Counts accepted Single and FusedPair submissions (each counts as one message).
+    accepted_submissions: Arc<AtomicU64>,
 }
 
 impl AdministrationAuditExecutor {
@@ -452,6 +454,7 @@ impl AdministrationAuditExecutor {
             permit: Some(permit),
             lifecycle: Arc::clone(&self.lifecycle),
             submission_gate: Arc::clone(&self.submission_gate),
+            accepted_submissions: Arc::clone(&self.accepted_submissions),
         })
     }
 
@@ -468,6 +471,16 @@ impl AdministrationAuditExecutor {
     #[must_use]
     pub fn lifecycle_state(&self) -> CoordinatorLifecycleState {
         lifecycle_state(&self.lifecycle)
+    }
+
+    /// Number of accepted administration-audit submissions (Single or FusedPair).
+    ///
+    /// Each `submit` / `submit_fused_pair` success increments by one. Used by
+    /// service tests that prove fused replay is one coordinator message.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn accepted_submission_count(&self) -> u64 {
+        self.accepted_submissions.load(Ordering::Relaxed)
     }
 }
 
@@ -492,6 +505,7 @@ pub struct AdministrationAuditCapacityPermit {
     permit: Option<mpsc::OwnedPermit<CoordinatorMessage>>,
     lifecycle: Arc<AtomicU8>,
     submission_gate: Arc<SubmissionGate>,
+    accepted_submissions: Arc<AtomicU64>,
 }
 
 impl AdministrationAuditCapacityPermit {
@@ -538,6 +552,7 @@ impl AdministrationAuditCapacityPermit {
             submission: submission_payload,
             completion,
         });
+        self.accepted_submissions.fetch_add(1, Ordering::Relaxed);
         drop(submission);
         Ok(AdministrationAuditReceipt { receiver })
     }
@@ -980,6 +995,13 @@ impl CommandExecutor {
     pub fn estimated_queue_delay_micros(&self) -> u64 {
         self.queue_delay_estimate_micros.load(Ordering::Relaxed)
     }
+
+    /// Test-only: force the EWMA queue-delay estimate used by pre-admission shed.
+    #[doc(hidden)]
+    pub fn force_queue_delay_estimate_micros_for_tests(&self, micros: u64) {
+        self.queue_delay_estimate_micros
+            .store(micros, Ordering::Relaxed);
+    }
 }
 
 impl fmt::Debug for CommandExecutor {
@@ -1313,8 +1335,8 @@ impl fmt::Debug for CommandIdempotencyInspector {
 /// Owning lifecycle guard for the one extensible sole-writer coordinator actor.
 ///
 /// Call [`Self::shutdown`] to close admission, drain already accepted work, and
-/// join the actor. Dropping this guard initiates the same drain but deliberately
-/// detaches the join so `Drop` never blocks or risks joining the current thread.
+/// join the actor. Dropping this guard initiates the same drain and joins the
+/// intake actor (so `WriterHandle` joins the writer before drop returns).
 pub struct RunningCommandCoordinator {
     executor: AdministrationAuditExecutor,
     command_executor: CommandExecutor,
@@ -1537,25 +1559,30 @@ impl RunningCommandCoordinator {
         let actor_thread = thread::Builder::new()
             .name("riffdb-command-coordinator".to_owned())
             .spawn(move || {
-                // WriterHandle Drop joins the writer before StoppedLifecycle publishes stop.
+                // Drop order is reverse of declaration: WriterHandle joins the
+                // writer first; only then does StoppedLifecycle publish stop so
+                // a panicking actor never advertises Stopped while a write txn
+                // may still be open on the writer thread.
+                let _stopped = StoppedLifecycle {
+                    lifecycle: actor_lifecycle,
+                    submission_gate: actor_submission_gate,
+                };
                 let _writer = WriterHandle {
                     work_tx: Some(work_tx.clone()),
                     join: Some(writer_thread),
                     panicked: writer_panic_flag,
                 };
-                let _stopped = StoppedLifecycle {
-                    lifecycle: actor_lifecycle,
-                    submission_gate: actor_submission_gate,
-                };
-                runtime.block_on(actor.run(work_tx));
+                runtime.block_on(actor.run(work_tx, usize::from(workload_capacity.get())));
             })
             .map_err(|_| CoordinatorStartError::ThreadUnavailable)?;
         let actor_thread_id = actor_thread.thread().id();
+        let accepted_submissions = Arc::new(AtomicU64::new(0));
         Ok(Self {
             executor: AdministrationAuditExecutor {
                 sender: sender.clone(),
                 lifecycle: Arc::clone(&lifecycle),
                 submission_gate: Arc::clone(&submission_gate),
+                accepted_submissions,
             },
             command_executor: CommandExecutor {
                 sender: sender.clone(),
@@ -1590,6 +1617,25 @@ impl RunningCommandCoordinator {
             workload_capacity,
             Arc::new(DiscardApplicationCommitNotifications),
             Arc::new(NoopCommitTelemetry),
+            move |_| Box::new(AuditOnlyCoordinatorOperations { repository, clock }),
+        )
+    }
+
+    #[cfg(test)]
+    fn start_audit_with_telemetry<Repository, Clock>(
+        workload_capacity: CoordinatorWorkloadCapacity,
+        repository: Repository,
+        clock: Clock,
+        telemetry: Arc<dyn CommitTelemetry>,
+    ) -> Result<Self, CoordinatorStartError>
+    where
+        Repository: ServiceAuditAppendRepository + Send + 'static,
+        Clock: AdministrationClock + 'static,
+    {
+        Self::spawn_with_operations(
+            workload_capacity,
+            Arc::new(DiscardApplicationCommitNotifications),
+            telemetry,
             move |_| Box::new(AuditOnlyCoordinatorOperations { repository, clock }),
         )
     }
@@ -1677,7 +1723,11 @@ impl fmt::Debug for RunningCommandCoordinator {
 impl Drop for RunningCommandCoordinator {
     fn drop(&mut self) {
         self.initiate_shutdown();
-        self.actor_thread.take();
+        // Join the intake actor so WriterHandle Drop joins the writer before
+        // this Drop returns; detaching would leave an open write txn orphaned.
+        if let Some(actor_thread) = self.actor_thread.take() {
+            let _ = actor_thread.join();
+        }
     }
 }
 
@@ -2208,15 +2258,30 @@ struct CommandCoordinatorActor {
 }
 
 impl CommandCoordinatorActor {
-    async fn run(mut self, work_tx: std::sync::mpsc::SyncSender<WorkUnit>) {
+    async fn run(
+        mut self,
+        work_tx: std::sync::mpsc::SyncSender<WorkUnit>,
+        workload_capacity: usize,
+    ) {
         let mut pending = VecDeque::new();
         let mut writer_busy = false;
         let mut shutting_down = false;
+        let mut formation_anchor = Instant::now();
         loop {
             if !writer_busy {
-                // Formation edge: pull every immediately available message so
-                // group selection sees the full ready prefix, then form one unit.
+                // Formation edge: drain ready channel messages into pending while
+                // under admission capacity (concurrent equal-key groups form here),
+                // then form. Concurrent intake while the writer is busy also fills
+                // pending via the select arm below. Capacity bounds both paths so
+                // reserve_capacity parks under a blocked writer.
+                //
+                // Pipelining-removal neuter (pre-split): disable the busy-path
+                // select arm *and* this multi-message drain — arm-only is not
+                // enough because this drain would re-batch at the completion edge.
                 let receiver_closed = loop {
+                    if pending.len() >= workload_capacity {
+                        break false;
+                    }
                     match self.receiver.try_recv() {
                         Ok(message) => pending.push_back(message),
                         Err(mpsc::error::TryRecvError::Empty) => break false,
@@ -2228,7 +2293,15 @@ impl CommandCoordinatorActor {
                 }
 
                 if let Some((unit, reason)) = form_next_unit(&mut pending) {
-                    match unit {
+                    let reason = if matches!(reason, CommitGroupDispatchReason::QueueDrained)
+                        && shutting_down
+                    {
+                        CommitGroupDispatchReason::ReceiverClosed
+                    } else {
+                        reason
+                    };
+                    let elapsed = formation_anchor.elapsed();
+                    match &unit {
                         WorkUnit::Shutdown => {
                             self.receiver.close();
                             while let Some(message) = self.receiver.recv().await {
@@ -2237,34 +2310,30 @@ impl CommandCoordinatorActor {
                             shutting_down = true;
                             continue;
                         }
-                        WorkUnit::CommandGroup(ref group) => {
+                        WorkUnit::CommandGroup(group) => {
                             self.telemetry
                                 .record(CommitTelemetryEvent::CommandGroupDispatched {
-                                    reason: if matches!(
-                                        reason,
-                                        CommitGroupDispatchReason::QueueDrained
-                                    ) && shutting_down
-                                    {
-                                        CommitGroupDispatchReason::ReceiverClosed
-                                    } else {
-                                        reason
-                                    },
+                                    reason,
                                     selected: u16::try_from(group.len()).unwrap_or(u16::MAX),
                                     deferred: u16::try_from(pending.len()).unwrap_or(u16::MAX),
-                                    elapsed: Duration::ZERO,
+                                    elapsed,
                                 });
-                            work_tx
-                                .try_send(unit)
-                                .expect("writer idle: work channel must accept the formed unit");
-                            writer_busy = true;
                         }
-                        unit => {
-                            work_tx
-                                .try_send(unit)
-                                .expect("writer idle: work channel must accept the formed unit");
-                            writer_busy = true;
+                        WorkUnit::AuditGroup(group) => {
+                            self.telemetry
+                                .record(CommitTelemetryEvent::CommandGroupDispatched {
+                                    reason,
+                                    selected: u16::try_from(group.len()).unwrap_or(u16::MAX),
+                                    deferred: u16::try_from(pending.len()).unwrap_or(u16::MAX),
+                                    elapsed,
+                                });
                         }
+                        WorkUnit::Single(_) => {}
                     }
+                    work_tx
+                        .try_send(unit)
+                        .expect("writer idle: work channel must accept the formed unit");
+                    writer_busy = true;
                     continue;
                 }
                 if shutting_down && pending.is_empty() {
@@ -2275,29 +2344,46 @@ impl CommandCoordinatorActor {
             }
 
             if writer_busy {
-                // While the writer holds unit N, accumulate arrivals without
-                // draining the admission channel empty (preserves permit backpressure).
+                // While the writer holds unit N, accept at most one message when
+                // pending is under capacity — further arrivals remain in the
+                // bounded channel so reserve_capacity parks. Formation of the
+                // next group uses the pending collected during this window at
+                // the completion edge (see `if !writer_busy` above).
                 tokio::select! {
                     biased;
                     completed = self.feedback.recv() => {
                         match completed {
                             Some(UnitCompleted) => {
                                 writer_busy = false;
-                                if self.reject_after_published_terminal_state().await {
+                                formation_anchor = Instant::now();
+                                if matches!(
+                                    lifecycle_state(&self.lifecycle.lifecycle),
+                                    CoordinatorLifecycleState::Fenced
+                                        | CoordinatorLifecycleState::Stopped
+                                ) {
+                                    // Older deferred work first, then channel.
                                     self.reject_pending(&mut pending);
+                                    if lifecycle_state(&self.lifecycle.lifecycle)
+                                        == CoordinatorLifecycleState::Fenced
+                                    {
+                                        self.reject_remaining_after_fence().await;
+                                    } else {
+                                        self.reject_remaining_after_stop().await;
+                                    }
                                     return;
                                 }
                             }
                             None => {
                                 self.lifecycle.stop();
-                                self.receiver.close();
                                 self.reject_pending(&mut pending);
                                 self.reject_remaining_after_stop().await;
                                 return;
                             }
                         }
                     }
-                    message = self.receiver.recv(), if !shutting_down => {
+                    message = self.receiver.recv(), if !shutting_down
+                        && pending.len() < workload_capacity =>
+                    {
                         match message {
                             Some(message) => pending.push_back(message),
                             None => shutting_down = true,
@@ -2318,20 +2404,6 @@ impl CommandCoordinatorActor {
     fn reject_pending(&self, pending: &mut VecDeque<CoordinatorMessage>) {
         while let Some(message) = pending.pop_front() {
             reject_message_stopped_or_fenced(message, &self.lifecycle);
-        }
-    }
-
-    async fn reject_after_published_terminal_state(&mut self) -> bool {
-        match lifecycle_state(&self.lifecycle.lifecycle) {
-            CoordinatorLifecycleState::Fenced => {
-                self.reject_remaining_after_fence().await;
-                true
-            }
-            CoordinatorLifecycleState::Stopped => {
-                self.reject_remaining_after_stop().await;
-                true
-            }
-            CoordinatorLifecycleState::Accepting | CoordinatorLifecycleState::Draining => false,
         }
     }
 
@@ -2381,11 +2453,8 @@ impl CommandWriter {
         runtime: &runtime::Runtime,
     ) {
         let mut last_edge = Instant::now();
-        let mut idle_micros_total = 0u64;
-        let mut busy_micros_total = 0u64;
         while let Ok(unit) = work_rx.recv() {
             let idle = last_edge.elapsed();
-            idle_micros_total = idle_micros_total.saturating_add(duration_micros(idle));
             let busy_started = Instant::now();
             let unit_enqueued_hint = unit_enqueue_hint(&unit);
             // Fence/stop takes effect between units: reject without storage access.
@@ -2408,17 +2477,21 @@ impl CommandWriter {
                 }
             }
             let busy = busy_started.elapsed();
-            busy_micros_total = busy_micros_total.saturating_add(duration_micros(busy));
+            let queue_delay_estimate_micros = self.observe_ewma(unit_enqueued_hint, busy);
             self.telemetry
-                .record(CommitTelemetryEvent::WriterUnitCompleted { busy, idle });
-            self.observe_ewma(unit_enqueued_hint, busy);
-            let _ = feedback_tx.try_send(UnitCompleted);
+                .record(CommitTelemetryEvent::WriterUnitCompleted {
+                    busy,
+                    idle,
+                    queue_delay_estimate_micros,
+                });
+            feedback_tx
+                .try_send(UnitCompleted)
+                .expect("intake actor must accept writer feedback");
             last_edge = Instant::now();
         }
-        let _ = (busy_micros_total, idle_micros_total);
     }
 
-    fn observe_ewma(&mut self, enqueue_hint: Option<Instant>, service: Duration) {
+    fn observe_ewma(&mut self, enqueue_hint: Option<Instant>, service: Duration) -> u64 {
         let service_us = duration_micros(service);
         let enqueue_us = enqueue_hint
             .map(|started| duration_micros(started.elapsed().saturating_sub(service)))
@@ -2440,8 +2513,7 @@ impl CommandWriter {
             .saturating_add(self.enqueue_ewma_micros);
         self.queue_delay_estimate_micros
             .store(estimate, Ordering::Relaxed);
-        // Composition that implements CommitTelemetry may also publish the gauge;
-        // the AtomicU64 is the authoritative cross-thread estimate for admission.
+        estimate
     }
 
     async fn execute_single(&mut self, message: CoordinatorMessage) {
@@ -2556,8 +2628,19 @@ impl CommandWriter {
             let result = self
                 .operations
                 .append_audit_fused_pair(started.as_ref(), terminal.as_ref());
+            // LimitExceeded is the call-scoped "unsupported fused pair" signal
+            // from conformance shells — fail the call without stopping.
+            let result = match result {
+                Err(AdministrationAuditExecutionError::Storage(error))
+                    if error.kind() == riffdb_storage_api::StorageErrorKind::LimitExceeded =>
+                {
+                    Err(AdministrationAuditExecutionError::PhaseConflict)
+                }
+                other => other,
+            };
             match &result {
                 Ok(()) => {}
+                Err(AdministrationAuditExecutionError::PhaseConflict) => {}
                 Err(AdministrationAuditExecutionError::Storage(error))
                     if error.kind()
                         == riffdb_storage_api::StorageErrorKind::CommitStatusUnknown =>
@@ -2882,15 +2965,8 @@ fn form_next_unit(
             while let Some(message) = deferred_obs.pop_back() {
                 pending.push_front(message);
             }
-            if group.is_empty() {
-                // Only observations remain ahead of a barrier or end; emit the
-                // observation as Single so the barrier is not overtaken.
-                let message = pending.pop_front()?;
-                return Some((
-                    WorkUnit::Single(message),
-                    CommitGroupDispatchReason::QueueDrained,
-                ));
-            }
+            // Head was Command, so the group is non-empty.
+            debug_assert!(!group.is_empty());
             Some((WorkUnit::CommandGroup(group), reason))
         }
         CommandGroupingClass::Barrier
@@ -2914,19 +2990,27 @@ fn form_next_unit(
                 else {
                     unreachable!("front was AdministrationAudit");
                 };
-                return Some((
-                    WorkUnit::AuditGroup(vec![(submission, completion)]),
-                    CommitGroupDispatchReason::QueueDrained,
-                ));
+                // Next non-audit (if any) is a barrier for subsequent formation.
+                let reason = if pending
+                    .front()
+                    .is_some_and(|m| !matches!(m, CoordinatorMessage::AdministrationAudit { .. }))
+                {
+                    CommitGroupDispatchReason::Barrier
+                } else {
+                    CommitGroupDispatchReason::QueueDrained
+                };
+                return Some((WorkUnit::AuditGroup(vec![(submission, completion)]), reason));
             }
             let mut group = Vec::new();
             let mut seen = std::collections::BTreeSet::new();
+            let mut reason = CommitGroupDispatchReason::QueueDrained;
             while let Some(CoordinatorMessage::AdministrationAudit {
                 submission: AdministrationAuditSubmission::Single(_),
                 ..
             }) = pending.front()
             {
                 if group.len() >= riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
+                    reason = CommitGroupDispatchReason::Full;
                     break;
                 }
                 let Some(CoordinatorMessage::AdministrationAudit {
@@ -2937,11 +3021,7 @@ fn form_next_unit(
                     unreachable!("front was AdministrationAudit");
                 };
                 let AdministrationAuditSubmission::Single(input) = submission else {
-                    pending.push_front(CoordinatorMessage::AdministrationAudit {
-                        submission,
-                        completion,
-                    });
-                    break;
+                    unreachable!("while matched Single");
                 };
                 let request = *input.request_id();
                 if !seen.insert(request) {
@@ -2949,16 +3029,29 @@ fn form_next_unit(
                         submission: AdministrationAuditSubmission::Single(input),
                         completion,
                     });
+                    // Duplicate request_id is a formation boundary (like Full).
+                    reason = CommitGroupDispatchReason::Full;
                     break;
                 }
                 group.push((AdministrationAuditSubmission::Single(input), completion));
             }
+            if reason == CommitGroupDispatchReason::QueueDrained
+                && pending
+                    .front()
+                    .is_some_and(|m| !matches!(m, CoordinatorMessage::AdministrationAudit { .. }))
+            {
+                reason = CommitGroupDispatchReason::Barrier;
+            }
+            Some((WorkUnit::AuditGroup(group), reason))
+        }
+        CommandGroupingClass::DeferrableObservation => {
+            let message = pending.pop_front()?;
             Some((
-                WorkUnit::AuditGroup(group),
+                WorkUnit::Single(message),
                 CommitGroupDispatchReason::QueueDrained,
             ))
         }
-        CommandGroupingClass::Barrier | CommandGroupingClass::DeferrableObservation => {
+        CommandGroupingClass::Barrier => {
             let message = pending.pop_front()?;
             if matches!(message, CoordinatorMessage::Shutdown) {
                 Some((WorkUnit::Shutdown, CommitGroupDispatchReason::QueueDrained))
@@ -3694,6 +3787,10 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "audit_executor/form_next_unit_tests.rs"]
+mod form_next_unit_tests;
 
 #[cfg(test)]
 #[path = "audit_executor/actor_tests.rs"]

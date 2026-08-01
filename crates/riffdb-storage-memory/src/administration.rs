@@ -741,24 +741,48 @@ impl ServiceAuditAppendRepository for MemoryOperationalPorts {
         started: &ServiceAuditAppendIntentV1,
         terminal: &ServiceAuditAppendIntentV1,
     ) -> Result<(), StorageError> {
-        // Memory backend applies both intents sequentially under one state
-        // mutation boundary (same fail-closed lifecycle rules as redb staging).
-        match self.append_service_audit(started)? {
-            ServiceAuditAppendResult::Appended(_) => {}
-            ServiceAuditAppendResult::PhaseConflict => {
-                return Err(StorageError::new(
-                    riffdb_storage_api::StorageErrorKind::InvariantViolation,
-                    None,
-                ));
+        // One exclusive gate lease covers validate-both-then-apply-both so a
+        // terminal conflict never leaves a Started row committed.
+        self.apply_exclusive_mut(|state| {
+            let checkpoint = AdminAuditCheckpoint::capture(state);
+            match append_service_audit_in_state(state, started) {
+                Ok(_) => {}
+                Err(error) => return Err(error),
             }
+            match append_service_audit_in_state(state, terminal) {
+                Ok(_) => Ok(()),
+                Err(error) => {
+                    checkpoint.restore(state);
+                    Err(error)
+                }
+            }
+        })
+    }
+}
+
+/// Rollback snapshot for the administration stream fields touched by service audit.
+struct AdminAuditCheckpoint {
+    metadata: MemoryMetadataSlot,
+    administration_audit: Vec<StoredAdministrationAuditRecordV1>,
+    service_audit_invocations: Vec<ServiceAuditInvocationIndexRow>,
+    administration_charges: Vec<KeyedSyntheticCharge<AdministrationSequence>>,
+}
+
+impl AdminAuditCheckpoint {
+    fn capture(state: &MemoryState) -> Self {
+        Self {
+            metadata: state.metadata.clone(),
+            administration_audit: state.administration_audit.clone(),
+            service_audit_invocations: state.service_audit_invocations.clone(),
+            administration_charges: state.synthetic_charges.administration_audit.clone(),
         }
-        match self.append_service_audit(terminal)? {
-            ServiceAuditAppendResult::Appended(_) => Ok(()),
-            ServiceAuditAppendResult::PhaseConflict => Err(StorageError::new(
-                riffdb_storage_api::StorageErrorKind::InvariantViolation,
-                None,
-            )),
-        }
+    }
+
+    fn restore(self, state: &mut MemoryState) {
+        state.metadata = self.metadata;
+        state.administration_audit = self.administration_audit;
+        state.service_audit_invocations = self.service_audit_invocations;
+        state.synthetic_charges.administration_audit = self.administration_charges;
     }
 }
 
@@ -1713,6 +1737,50 @@ mod tests {
             metadata: MemoryMetadataSlot::Retained(RetainedMetadataV1::initial(database_id())),
             ..MemoryState::default()
         }
+    }
+
+    #[test]
+    fn memory_fused_pair_is_atomic_on_terminal_conflict() {
+        use crate::startup::MemoryDormantPorts;
+        use crate::store::MemoryStore;
+
+        let mut store = MemoryStore::new();
+        store
+            .initialize_database(database_id())
+            .expect("initialize database");
+        let mut ports = MemoryDormantPorts { store }.into_operational();
+        let actor = principal(capability_id(3));
+        let started = audit_intent(
+            90,
+            ServiceOperationV1::GetHealth,
+            ServiceAuditPhaseV1::Started,
+            actor.clone(),
+            ServiceAuditLinkV1::None,
+        );
+        // Terminal mismatches operation → conflict after Started would have been applied.
+        let bad_terminal = audit_intent(
+            90,
+            ServiceOperationV1::GetStatistics,
+            ServiceAuditPhaseV1::Succeeded,
+            actor,
+            ServiceAuditLinkV1::None,
+        );
+        let err = ports
+            .append_service_audit_fused_pair(&started, &bad_terminal)
+            .expect_err("terminal conflict must fail closed");
+        assert_eq!(err.kind(), StorageErrorKind::InvariantViolation);
+        // Pair-or-absent: no Started row may remain.
+        let scan = ports
+            .scan_administration_audit(AdministrationAuditScanRequest::new(
+                None,
+                StorageScanLimit::new(64).expect("limit"),
+            ))
+            .expect("scan");
+        let count = match scan {
+            AdministrationAuditScan::ExactEnd { records } => records.len(),
+            AdministrationAuditScan::Page { records, .. } => records.len(),
+        };
+        assert_eq!(count, 0, "started must not remain after terminal conflict");
     }
 
     fn apply<O>(state: &mut MemoryState, prepared: AdministrationPreparation<O>) -> O {

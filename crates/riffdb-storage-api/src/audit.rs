@@ -651,10 +651,10 @@ pub trait ServiceAuditAppendRepository {
         terminal: &ServiceAuditAppendIntentV1,
     ) -> Result<(), StorageError> {
         let _ = (started, terminal);
-        Err(StorageError::new(
-            StorageErrorKind::InvariantViolation,
-            None,
-        ))
+        // Call-scoped unsupported: LimitExceeded does not fence or stop the
+        // coordinator (mapped to PhaseConflict on the fused path). InvariantViolation
+        // would stop the coordinator.
+        Err(StorageError::new(StorageErrorKind::LimitExceeded, None))
     }
 }
 
