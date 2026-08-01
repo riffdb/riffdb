@@ -815,10 +815,10 @@ where
     // On abort: store the reason, always signal stop, join every worker, then
     // return the error — never drop JoinHandles while workers still loop.
     let mut abort_reason: Option<String> = None;
-    if !config.warmup.is_zero() {
-        if let Err(reason) = sleep_with_abort(config.warmup, abort.as_ref()) {
-            abort_reason = Some(reason);
-        }
+    if !config.warmup.is_zero()
+        && let Err(reason) = sleep_with_abort(config.warmup, abort.as_ref())
+    {
+        abort_reason = Some(reason);
     }
     if abort_reason.is_none() {
         measuring.store(true, Ordering::Release);
@@ -1265,11 +1265,10 @@ pub fn print_load_summary(report: &LoadReport) {
 pub fn concurrency_curve_point(report: &LoadReport) -> serde_json::Value {
     let elapsed_ns = u64::try_from(report.measured_elapsed.as_nanos()).unwrap_or(u64::MAX);
     let logical_ops = report.aggregate.total_operations();
-    let throughput = if elapsed_ns == 0 {
-        0
-    } else {
-        logical_ops.saturating_mul(1_000_000_000) / elapsed_ns
-    };
+    let throughput = logical_ops
+        .saturating_mul(1_000_000_000)
+        .checked_div(elapsed_ns.max(1))
+        .unwrap_or(0);
     let write_p50 = |op: LoadOp| -> Option<u64> {
         report
             .by_op
@@ -1307,10 +1306,10 @@ fn sleep_with_abort(
     const SLICE: Duration = Duration::from_millis(250);
     let deadline = Instant::now() + total;
     loop {
-        if let Some(hook) = abort {
-            if let Some(reason) = hook() {
-                return Err(format!("backend died mid-load: {reason}"));
-            }
+        if let Some(hook) = abort
+            && let Some(reason) = hook()
+        {
+            return Err(format!("backend died mid-load: {reason}"));
         }
         let now = Instant::now();
         if now >= deadline {
@@ -1643,10 +1642,7 @@ mod tests {
             self.ops.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
-        fn swap_member_roles(
-            &mut self,
-            _: &crate::SwapMemberRolesSeed,
-        ) -> Result<(), Self::Error> {
+        fn swap_member_roles(&mut self, _: &crate::SwapMemberRolesSeed) -> Result<(), Self::Error> {
             self.ops.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }

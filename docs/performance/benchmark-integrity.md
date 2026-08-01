@@ -67,6 +67,26 @@ exit status, stderr tail, resolved database root, and free-bytes-at-start.
 Workers are joined; `BenchDir` Drop still runs. PostgreSQL load sites pass no
 abort hook.
 
+### Enforceable self-test entry point
+
+The kill-9 e2e lives in `examples/app-baseline/tests/dead_peer_abort.rs`. Soft-skip
+without a built daemon is intentional for plain `cargo test`; the **enforced**
+path is:
+
+```bash
+benchmarks/run-app-baseline --self-test
+```
+
+That builds `riffdbd` (release), exports `RIFFDB_APP_BASELINE_RIFFDBD_BIN` and
+`RUN_RIFFDB_DEAD_PEER=1`, then runs:
+
+```bash
+cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+```
+
+Use `--workspace` always: the manifest is both package and workspace root;
+without it member crates (and most T2 unit tests) are skipped.
+
 ## Statistical protocol
 
 | Mode | Measure | Warmup | Default reps |
@@ -79,7 +99,8 @@ abort hook.
   SSD SLC-cache state from backend identity.
 - Gated scalars report `{median, min, max, reps, spread_ratio}`;
   `spread_ratio > 2.0` ⇒ `stability: "unstable"`.
-- `--require-stable` exits nonzero on unstable gated metrics.
+- `--require-stable` exits nonzero on unstable gated metrics, and **refuses**
+  when `--reps < 2` (single-rep stability is trivial).
 - Parity gates evaluate the **median** of reps and **refuse** (do not pass)
   when either backend’s gated metric is unstable.
 
