@@ -543,6 +543,19 @@ where
     Response: Send + 'static,
     Failure: Send + 'static,
 {
+    /// Applies the admission gates a reservation applies, without taking capacity.
+    ///
+    /// A caller that answers a request inline instead of dispatching to the
+    /// pool MUST run this first. It is the same routing-allowed, cancellation,
+    /// deadline, and accepting-state refusal set that [`Self::reserve`] and
+    /// [`Self::reserve_async`] apply before acquiring a permit, so a drained,
+    /// stopping, cancelled, or deadline-exceeded request is never served from
+    /// process-local cache.
+    pub(crate) fn precheck(&self, control: &RequestControl) -> Result<(), PortAdmissionError> {
+        self.inner.precheck_control(control)?;
+        self.inner.ensure_accepting()
+    }
+
     /// Reserves one typed move-only permit without waiting (sync fast path).
     pub(crate) fn reserve(
         &self,

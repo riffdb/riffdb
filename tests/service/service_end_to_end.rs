@@ -1727,31 +1727,8 @@ query GetBudget(
         }
     });
 }
-
-/// THE security test for generation-checked reauthorization.
-///
-/// begin authorize succeeds → revoke (real harness revoke path bumps
-/// generation) → site-2/site-3 recheck full-re-evaluates and fails closed.
-///
-/// Falsifiability: set FORCE_GENERATION_ALWAYS_EQUAL → cheap path reissues the
-/// begin Allow after revoke → this test fails → restore the flag.
-#[test]
-fn reauthorization_fails_closed_after_capability_view_generation_bump_via_revoke() {
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-
-    use riffdb_query_module::{
-        NamedQuerySource, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
-    };
-    use riffdb_service::{
-        CHEAP_REAUTHORIZE_COUNT, FORCE_GENERATION_ALWAYS_EQUAL, FULL_REAUTHORIZE_COUNT,
-        NamedSymbolicQueryRequest, NoopServiceTelemetry, QueryModuleReadPort, ServiceTelemetry,
-        SymbolicContractSelector, SymbolicQueryApplication, SymbolicQueryParameters,
-    };
-    use riffdb_types::{CapabilityPermissionV1, QueryOperationName};
-    use support::{EmptyQueryExecutor, FixedQueryModulePort, ServiceHarness};
-
-    const GET_BUDGET: &str = r#"
+/// Source and permission fixture shared by the read-path safe-point tests.
+const GET_BUDGET_QUERY: &str = r#"
 query GetBudget(
     $organization_id: Budget.organization_id,
     $fiscal_year: Budget.fiscal_year,
@@ -1775,122 +1752,255 @@ query GetBudget(
 }
 "#;
 
-    // Ensure the force flag is clear for the primary assertion.
-    FORCE_GENERATION_ALWAYS_EQUAL.store(false, Ordering::SeqCst);
-    FULL_REAUTHORIZE_COUNT.store(0, Ordering::SeqCst);
-    CHEAP_REAUTHORIZE_COUNT.store(0, Ordering::SeqCst);
+/// Builds an operations harness that can execute the named `GetBudget` query.
+fn named_query_harness(
+    telemetry: Option<std::sync::Arc<dyn riffdb_service::ServiceTelemetry>>,
+) -> (support::ServiceHarness, riffdb_types::QueryModuleHash) {
+    use std::sync::Arc;
+
+    use riffdb_query_module::{
+        NamedQuerySource, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+    };
+    use riffdb_service::{NoopServiceTelemetry, QueryModuleReadPort, ServiceTelemetry};
+    use riffdb_types::{CapabilityPermissionV1, QueryOperationName};
+    use support::{EmptyQueryExecutor, FixedQueryModulePort, ServiceHarness};
+
+    let seed = ServiceHarness::operations();
+    let validated = seed.active_validated_bundle();
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new("budget_reads").expect("module name"),
+        QueryModuleVersion::new(1).expect("module version"),
+        vec![NamedQuerySource::new("GetBudget", GET_BUDGET_QUERY).expect("query source")],
+    )
+    .expect("module candidate");
+    let module = riffdb_catalog::ValidatedQueryModule::compile(candidate, &validated)
+        .expect("named query module compiles");
+    let module_hash = module.identity();
+    let named_permission = CapabilityPermissionV1::ExecuteNamedQuery(
+        validated.lineage().clone(),
+        module_hash,
+        QueryOperationName::new("GetBudget").expect("query name"),
+    );
+    let harness = ServiceHarness::operations_with_read_stage_telemetry(
+        telemetry.unwrap_or_else(|| Arc::new(NoopServiceTelemetry) as Arc<dyn ServiceTelemetry>),
+        Arc::new(EmptyQueryExecutor),
+        Arc::new(FixedQueryModulePort::new(module)) as Arc<dyn QueryModuleReadPort>,
+        vec![named_permission],
+    );
+    (harness, module_hash)
+}
+
+fn named_budget_request(
+    module_hash: riffdb_types::QueryModuleHash,
+) -> riffdb_service::NamedSymbolicQueryRequest {
+    use riffdb_service::{
+        NamedSymbolicQueryRequest, SymbolicContractSelector, SymbolicQueryParameters,
+    };
+
+    let mut values = std::collections::BTreeMap::new();
+    values.insert(
+        "organization_id".to_owned(),
+        riffdb_service::SubmittedValue::Uuid([0x31; 16]),
+    );
+    values.insert(
+        "fiscal_year".to_owned(),
+        riffdb_service::SubmittedValue::I64(2026),
+    );
+    NamedSymbolicQueryRequest::new(
+        SymbolicContractSelector::active(),
+        "GetBudget".to_owned(),
+        Some(module_hash),
+        SymbolicQueryParameters::new(values).expect("parameters"),
+    )
+    .expect("named request")
+}
+
+/// Revoking between begin and recheck must fail the read closed.
+///
+/// The harness never hand-sets a generation. `revoke()` applies the real
+/// active-to-revoked record transition to the capability the production
+/// `CurrentAuthorizer` resolves, and the capability-view generation this
+/// policy reports is derived from that transition. Read safe point 2 therefore
+/// sees a moved generation, declines the revision-checked reissue, and the
+/// mandatory full re-evaluation denies.
+///
+/// Falsifiability: neuter the generation comparison in
+/// `AuthorizedOperation::reissue_for_unchanged_view` (drop the
+/// `observed.generation() != baseline_generation` disjunct) and this test fails
+/// — the revoked read succeeds.
+#[test]
+fn named_read_fails_closed_when_the_capability_is_revoked_between_begin_and_recheck() {
+    use riffdb_service::SymbolicQueryApplication;
 
     run_async(async move {
-        let seed = ServiceHarness::operations();
-        let validated = seed.active_validated_bundle();
-        let candidate = QueryModuleCandidate::new(
-            QueryModuleName::new("budget_reads").expect("module name"),
-            QueryModuleVersion::new(1).expect("module version"),
-            vec![NamedQuerySource::new("GetBudget", GET_BUDGET).expect("query source")],
-        )
-        .expect("module candidate");
-        let module =
-            riffdb_catalog::ValidatedQueryModule::compile(candidate, &validated).expect("module");
-        let module_hash = module.identity();
-        let query_name = QueryOperationName::new("GetBudget").expect("query name");
-        let named_permission = CapabilityPermissionV1::ExecuteNamedQuery(
-            validated.lineage().clone(),
-            module_hash,
-            query_name,
-        );
-
-        let modules = Arc::new(FixedQueryModulePort::new(module)) as Arc<dyn QueryModuleReadPort>;
-        let executor = Arc::new(EmptyQueryExecutor);
-        let harness = ServiceHarness::operations_with_read_stage_telemetry(
-            Arc::new(NoopServiceTelemetry) as Arc<dyn ServiceTelemetry>,
-            executor,
-            modules,
-            vec![named_permission],
-        );
-        // Stable generation so cheap reauth is eligible when the world is unchanged.
-        harness.policy.enable_stable_capability_view_generation();
-        // After begin Allow, revoke via the real harness revoke path (bumps gen).
+        let (harness, module_hash) = named_query_harness(None);
+        // Revoke immediately after the begin safe point's allow.
         harness.deny_after_next_policy_allows(1);
 
         let (context, _cancellation) = harness.context(0x92);
-        let mut values = std::collections::BTreeMap::new();
-        values.insert(
-            "organization_id".to_owned(),
-            riffdb_service::SubmittedValue::Uuid([0x31; 16]),
-        );
-        values.insert(
-            "fiscal_year".to_owned(),
-            riffdb_service::SubmittedValue::I64(2026),
-        );
-        let request = NamedSymbolicQueryRequest::new(
-            SymbolicContractSelector::active(),
-            "GetBudget".to_owned(),
-            Some(module_hash),
-            SymbolicQueryParameters::new(values).expect("parameters"),
-        )
-        .expect("named request");
-
         let failure = harness
             .service
-            .execute_named_symbolic_query(context, request)
+            .execute_named_symbolic_query(context, named_budget_request(module_hash))
             .await
-            .expect_err("revoked capability must fail closed at reauth safe points");
+            .expect_err("a revoked capability must fail closed at a read safe point");
         assert_eq!(
             failure.public_error().map(|error| error.kind()),
             Some(PublicErrorKind::AuthorizationDenied),
             "post-revoke recheck must deny, got {failure:?}"
         );
-        assert!(
-            FULL_REAUTHORIZE_COUNT.load(Ordering::SeqCst) >= 1,
-            "revoke must force at least one full reauthorization evaluation"
+        assert_eq!(
+            harness.policy.calls(),
+            2,
+            "the recheck must fall through to a full evaluation after the revoke"
         );
     });
-
-    // --- Falsifiability transcript (documented; runs only when force flag is set) ---
-    // FORCE_GENERATION_ALWAYS_EQUAL.store(true, Ordering::SeqCst);
-    // → re-run the body above → query would SUCCEED (cheap reissue of begin Allow)
-    // → this test's expect_err would fail → proves generation comparison is load-bearing.
-    // FORCE_GENERATION_ALWAYS_EQUAL.store(false, Ordering::SeqCst);
-    assert!(
-        !FORCE_GENERATION_ALWAYS_EQUAL.load(Ordering::SeqCst),
-        "falsifiability force flag must be restored off"
-    );
 }
 
-/// Unchanged generation + different reauthorize target must full-evaluate.
+/// Expiry between begin and recheck must fail the read closed.
+///
+/// Nothing is published, so the capability-view generation does not move. Only
+/// the clock advances past the capability's `expires_at`. The retained validity
+/// window must reject the reissue and the full re-evaluation must deny.
+///
+/// Falsifiability: neuter the time comparison in
+/// `AuthorizedOperation::reissue_for_unchanged_view` (drop the
+/// `!self.identity.validity.admits(observed.now())` disjunct) and this test
+/// fails — the expired read succeeds.
 #[test]
-fn reauthorize_with_divergent_target_full_evaluates_even_when_generation_unchanged() {
-    use std::sync::atomic::Ordering;
-
-    use riffdb_service::{
-        CHEAP_REAUTHORIZE_COUNT, FULL_REAUTHORIZE_COUNT, GetActiveContractRequest,
-    };
-
-    // Default unstable harness generation forces full reauth. Stable-generation
-    // + same-request cheap path is covered by the security and perf-smoke tests;
-    // request-identity inequality is enforced by `request == self.request` in
-    // reauthorize_request (any divergent OperationRequest skips the cheap path).
-    FULL_REAUTHORIZE_COUNT.store(0, Ordering::SeqCst);
-    CHEAP_REAUTHORIZE_COUNT.store(0, Ordering::SeqCst);
+fn named_read_fails_closed_when_the_capability_expires_between_begin_and_recheck() {
+    use riffdb_service::SymbolicQueryApplication;
 
     run_async(async move {
-        let harness = ServiceHarness::operations();
-        let (context, _cancellation) = harness.context(0x93);
-        let _ = harness
+        let (harness, module_hash) = named_query_harness(None);
+        let generation_at_begin = {
+            use riffdb_service::CurrentPolicyPort;
+            harness
+                .policy
+                .capability_view_generation()
+                .expect("harness publishes a generation")
+        };
+        // The harness capability is valid for BASE_SECONDS..BASE_SECONDS+1_000.
+        // Step past that boundary right after the begin safe point's allow.
+        harness.advance_policy_clock_after_next_allows(1, support::BASE_SECONDS + 5_000);
+
+        let (context, _cancellation) = harness.context(0x94);
+        let failure = harness
+            .service
+            .execute_named_symbolic_query(context, named_budget_request(module_hash))
+            .await
+            .expect_err("an expired capability must fail closed at a read safe point");
+        assert_eq!(
+            failure.public_error().map(|error| error.kind()),
+            Some(PublicErrorKind::AuthorizationDenied),
+            "post-expiry recheck must deny, got {failure:?}"
+        );
+        assert_eq!(
+            harness.policy.calls(),
+            2,
+            "the recheck must fall through to a full evaluation once the window closed"
+        );
+        let generation_after = {
+            use riffdb_service::CurrentPolicyPort;
+            harness
+                .policy
+                .capability_view_generation()
+                .expect("harness publishes a generation")
+        };
+        assert_eq!(
+            generation_at_begin, generation_after,
+            "expiry is a clock event, not a view mutation: the generation must not move"
+        );
+    });
+}
+
+/// An unchanged world reissues at both read safe points.
+///
+/// One full evaluation at begin, then safe points 2 and 3 reissue. The outcome
+/// is identical to pre-R2 semantics; only the cost changes.
+#[test]
+fn unchanged_view_reissues_the_begin_proof_at_both_read_safe_points() {
+    use riffdb_service::SymbolicQueryApplication;
+
+    run_async(async move {
+        let (harness, module_hash) = named_query_harness(None);
+        let (context, _cancellation) = harness.context(0x95);
+        let result = harness
+            .service
+            .execute_named_symbolic_query(context, named_budget_request(module_hash))
+            .await
+            .expect("named query succeeds through the empty executor");
+        assert_eq!(result.outcome(), "NotFound");
+        assert_eq!(
+            harness.policy.calls(),
+            1,
+            "an unchanged view must cost exactly one full evaluation for three safe points"
+        );
+    });
+}
+
+/// The revision-checked shortcut is scoped to the read pipeline.
+///
+/// A contract read reauthorizes through the shared entry point, which always
+/// re-evaluates in full even though the capability view never moved. This is
+/// the assertion that fails if the shortcut is ever hoisted back into
+/// `BegunInvocation::reauthorize`, where commits and administration would
+/// inherit it — including the mandatory recheck after a capacity wait.
+#[test]
+fn non_read_reauthorization_always_evaluates_in_full_on_an_unchanged_view() {
+    use riffdb_service::GetActiveContractRequest;
+
+    run_async(async move {
+        let harness = support::ServiceHarness::operations();
+        let (context, _cancellation) = harness.context(0x96);
+        let _active = harness
             .service
             .get_active_contract(context, GetActiveContractRequest)
             .await
             .expect("active contract read succeeds");
-        assert!(
-            FULL_REAUTHORIZE_COUNT.load(Ordering::SeqCst) >= 1,
-            "unstable generation forces full reauth evaluations"
-        );
         assert_eq!(
-            CHEAP_REAUTHORIZE_COUNT.load(Ordering::SeqCst),
-            0,
-            "unstable harness generation never takes the cheap path"
+            harness.policy.calls(),
+            3,
+            "every safe point outside the read pipeline stays a full evaluation"
         );
     });
+}
+
+/// A divergent reauthorization target never reuses the begin proof.
+#[test]
+fn a_divergent_request_is_never_reissued_from_an_unchanged_view() {
+    use riffdb_policy::{CapabilityViewCheckpoint, Decision, OperationRequest};
+    use riffdb_service::CurrentPolicyPort;
+
+    let harness = support::ServiceHarness::operations();
+    let baseline = harness
+        .policy
+        .capability_view_generation()
+        .expect("harness publishes a generation");
+    let authorized = OperationRequest::get_active_contract();
+    let Ok(Decision::Allow(proof)) = harness
+        .policy
+        .authorize(&harness.policy.principal(), authorized.clone())
+    else {
+        panic!("the harness capability may read the active contract");
+    };
+    let observed = CapabilityViewCheckpoint::new(baseline, harness.policy.now());
+
+    assert!(
+        proof
+            .reissue_for_unchanged_view(baseline, observed, &authorized)
+            .is_some(),
+        "the authorized request reissues on an unchanged view"
+    );
+    let divergent = OperationRequest::get_contract_version(
+        riffdb_types::ContractLineage::new("other_lineage").expect("lineage"),
+        riffdb_types::ContractVersion::new(7).expect("version"),
+    );
+    assert!(
+        proof
+            .reissue_for_unchanged_view(baseline, observed, &divergent)
+            .is_none(),
+        "a different target must force a full evaluation even on an unchanged view"
+    );
 }
 
 /// Perf smoke (non-gating, report-only): mean plan_lookup and authorize stage times.
@@ -1898,59 +2008,9 @@ fn reauthorize_with_divergent_target_full_evaluates_even_when_generation_unchang
 fn read_stage_perf_smoke_reports_plan_lookup_and_authorize_means() {
     use std::sync::Arc;
 
-    use riffdb_query_module::{
-        NamedQuerySource, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
-    };
-    use riffdb_service::{
-        NamedSymbolicQueryRequest, QueryModuleReadPort, ReadPipelineStage, ServiceTelemetry,
-        SymbolicContractSelector, SymbolicQueryApplication, SymbolicQueryParameters,
-    };
-    use riffdb_types::{CapabilityPermissionV1, QueryOperationName};
-    use support::{EmptyQueryExecutor, FixedQueryModulePort, ServiceHarness};
-
-    const GET_BUDGET: &str = r#"
-query GetBudget(
-    $organization_id: Budget.organization_id,
-    $fiscal_year: Budget.fiscal_year,
-) {
-    one budget from Budget
-        where organization_id == $organization_id
-            && fiscal_year == $fiscal_year
-        else NotFound
-
-    return Found {
-        budget: budget {
-            organization_id
-            fiscal_year
-            approved_amount
-            allocated_amount
-            updated_at
-        }
-    }
-
-    outcomes Found | NotFound
-}
-"#;
+    use riffdb_service::{ReadPipelineStage, ServiceTelemetry, SymbolicQueryApplication};
 
     run_async(async move {
-        let seed = ServiceHarness::operations();
-        let validated = seed.active_validated_bundle();
-        let candidate = QueryModuleCandidate::new(
-            QueryModuleName::new("budget_reads").expect("module name"),
-            QueryModuleVersion::new(1).expect("module version"),
-            vec![NamedQuerySource::new("GetBudget", GET_BUDGET).expect("query source")],
-        )
-        .expect("module candidate");
-        let module =
-            riffdb_catalog::ValidatedQueryModule::compile(candidate, &validated).expect("module");
-        let module_hash = module.identity();
-        let query_name = QueryOperationName::new("GetBudget").expect("query name");
-        let named_permission = CapabilityPermissionV1::ExecuteNamedQuery(
-            validated.lineage().clone(),
-            module_hash,
-            query_name,
-        );
-
         struct FixedIncidents;
         impl riffdb_errors::IncidentIdSource for FixedIncidents {
             fn next_incident_id(
@@ -1965,73 +2025,50 @@ query GetBudget(
             riffdb_observability::Observability::new(Arc::new(FixedIncidents), 32)
                 .expect("bounded observability"),
         );
-        let modules = Arc::new(FixedQueryModulePort::new(module)) as Arc<dyn QueryModuleReadPort>;
-        let executor = Arc::new(EmptyQueryExecutor);
-        let harness = ServiceHarness::operations_with_read_stage_telemetry(
-            Arc::clone(&observability) as Arc<dyn ServiceTelemetry>,
-            executor,
-            modules,
-            vec![named_permission],
-        );
-        harness.policy.enable_stable_capability_view_generation();
+        let (harness, module_hash) =
+            named_query_harness(Some(Arc::clone(&observability) as Arc<dyn ServiceTelemetry>));
 
         const ITERATIONS: u64 = 32;
-        for i in 0..ITERATIONS {
-            let (context, _cancellation) = harness.context(0xa0 + (i as u8));
-            let mut values = std::collections::BTreeMap::new();
-            values.insert(
-                "organization_id".to_owned(),
-                riffdb_service::SubmittedValue::Uuid([0x31; 16]),
-            );
-            values.insert(
-                "fiscal_year".to_owned(),
-                riffdb_service::SubmittedValue::I64(2026),
-            );
-            let request = NamedSymbolicQueryRequest::new(
-                SymbolicContractSelector::active(),
-                "GetBudget".to_owned(),
-                Some(module_hash),
-                SymbolicQueryParameters::new(values).expect("parameters"),
-            )
-            .expect("named request");
-            let _ = harness
+        for index in 0..ITERATIONS {
+            let (context, _cancellation) = harness.context(0xa0 + (index as u8));
+            let _result = harness
                 .service
-                .execute_named_symbolic_query(context, request)
+                .execute_named_symbolic_query(context, named_budget_request(module_hash))
                 .await
                 .expect("named query succeeds");
         }
 
-        let plan = observability
-            .metrics()
-            .read_stage_duration(ReadPipelineStage::PlanLookup);
-        let auth_begin = observability
-            .metrics()
-            .read_stage_duration(ReadPipelineStage::AuthorizeBegin);
-        let auth_pre = observability
-            .metrics()
-            .read_stage_duration(ReadPipelineStage::AuthorizePre);
-        let auth_post = observability
-            .metrics()
-            .read_stage_duration(ReadPipelineStage::AuthorizePost);
-        let mean = |count: u64, sum: u64| -> f64 {
-            if count == 0 {
+        let mean = |snapshot: riffdb_observability::HistogramSnapshot| -> f64 {
+            if snapshot.count == 0 {
                 0.0
             } else {
-                sum as f64 / count as f64
+                snapshot.sum as f64 / snapshot.count as f64
             }
         };
+        let stage = |stage| observability.metrics().read_stage_duration(stage);
         eprintln!(
             "perf-smoke plan_lookup mean_us={:.2} (n={}); authorize_begin mean_us={:.2}; authorize_pre mean_us={:.2}; authorize_post mean_us={:.2}",
-            mean(plan.count, plan.sum),
-            plan.count,
-            mean(auth_begin.count, auth_begin.sum),
-            mean(auth_pre.count, auth_pre.sum),
-            mean(auth_post.count, auth_post.sum),
+            mean(stage(ReadPipelineStage::PlanLookup)),
+            stage(ReadPipelineStage::PlanLookup).count,
+            mean(stage(ReadPipelineStage::AuthorizeBegin)),
+            mean(stage(ReadPipelineStage::AuthorizePre)),
+            mean(stage(ReadPipelineStage::AuthorizePost)),
         );
-        assert!(plan.count >= ITERATIONS);
-        assert!(auth_begin.count >= ITERATIONS);
-        // With stable generation, pre/post reauth are cheap (still recorded).
-        assert!(auth_pre.count >= ITERATIONS);
-        assert!(auth_post.count >= ITERATIONS);
+        for recorded in [
+            ReadPipelineStage::PlanLookup,
+            ReadPipelineStage::AuthorizeBegin,
+            ReadPipelineStage::AuthorizePre,
+            ReadPipelineStage::AuthorizePost,
+        ] {
+            assert!(
+                stage(recorded).count >= ITERATIONS,
+                "every read safe point must still record its stage"
+            );
+        }
+        assert_eq!(
+            harness.policy.calls() as u64,
+            ITERATIONS,
+            "each unchanged-view read costs exactly one full evaluation"
+        );
     });
 }

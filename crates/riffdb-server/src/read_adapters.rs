@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 use std::fmt;
 #[cfg(test)]
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -60,24 +59,25 @@ const MAX_HOT_HISTORICAL_CONTRACTS: usize = 4_096;
 const MAX_HOT_QUERY_MODULES: usize = 4_096;
 const MAX_HOT_EXECUTABLE_PLANS: usize = 4_096;
 
-/// Test-only: force every plan lookup through the blocking pool (neuter fast path).
+/// Counts blocking-pool dispatches for query-module lookup.
+///
+/// Test-only observation of whether the inline path served a request. Compiled
+/// out of normal builds so no shipped configuration carries the counter.
 #[cfg(test)]
-pub(crate) static FORCE_PLAN_LOOKUP_VIA_POOL: AtomicBool = AtomicBool::new(false);
-
-/// Process-local count of query-module blocking-pool dispatches (test / perf evidence).
 static QUERY_MODULE_POOL_DISPATCHES: AtomicU64 = AtomicU64::new(0);
 
-/// Returns the number of query-module blocking-pool dispatches observed.
-#[must_use]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn query_module_pool_dispatch_count() -> u64 {
-    QUERY_MODULE_POOL_DISPATCHES.load(Ordering::Relaxed)
+#[cfg(test)]
+fn note_query_module_pool_dispatch() {
+    QUERY_MODULE_POOL_DISPATCHES.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Resets the query-module blocking-pool dispatch counter (tests only).
+#[cfg(not(test))]
+const fn note_query_module_pool_dispatch() {}
+
+/// Returns the number of query-module blocking-pool dispatches observed.
 #[cfg(test)]
-pub(crate) fn reset_query_module_pool_dispatch_count() {
-    QUERY_MODULE_POOL_DISPATCHES.store(0, Ordering::Relaxed);
+fn query_module_pool_dispatch_count() -> u64 {
+    QUERY_MODULE_POOL_DISPATCHES.load(Ordering::Relaxed)
 }
 
 #[derive(Default)]
@@ -415,23 +415,17 @@ impl QueryModuleReadPort for ServerCatalogReadPort {
         control: &'a RequestControl,
         contract: ValidatedContractBundle,
     ) -> PortFuture<'a, Option<ValidatedQueryModule>, QueryModuleReadError> {
-        // Non-blocking fast path: active-module pointer (RwLock) + plan-cache
-        // hit (Arc-cheap). Cold compile stays on the blocking pool.
-        #[cfg(test)]
-        let force_pool = FORCE_PLAN_LOOKUP_VIA_POOL.load(Ordering::Relaxed);
-        #[cfg(not(test))]
-        let force_pool = false;
-        if !force_pool
-            && let Some(hit) = try_query_module_cache_hit(
-                &self.module_storage,
-                &self.module_cache,
-                &contract,
-                None,
-            )
+        // Inline fast path. Admission control runs first (a draining, stopping,
+        // cancelled, or deadline-exceeded request must not be served from
+        // cache), then process-local state only. Anything else — including
+        // every error — goes to the blocking pool unchanged.
+        if self.query_module.precheck(control).is_ok()
+            && let Some(module) =
+                try_cached_query_module(&self.module_storage, &self.module_cache, &contract, None)
         {
-            return Box::pin(async move { hit });
+            return Box::pin(async move { Ok(module) });
         }
-        QUERY_MODULE_POOL_DISPATCHES.fetch_add(1, Ordering::Relaxed);
+        note_query_module_pool_dispatch();
         submit_query_module(self.query_module.reserve_async(control), (contract, None))
     }
 
@@ -441,21 +435,17 @@ impl QueryModuleReadPort for ServerCatalogReadPort {
         contract: ValidatedContractBundle,
         module_hash: QueryModuleHash,
     ) -> PortFuture<'a, Option<ValidatedQueryModule>, QueryModuleReadError> {
-        #[cfg(test)]
-        let force_pool = FORCE_PLAN_LOOKUP_VIA_POOL.load(Ordering::Relaxed);
-        #[cfg(not(test))]
-        let force_pool = false;
-        if !force_pool
-            && let Some(hit) = try_query_module_cache_hit(
+        if self.query_module.precheck(control).is_ok()
+            && let Some(module) = try_cached_query_module(
                 &self.module_storage,
                 &self.module_cache,
                 &contract,
                 Some(module_hash),
             )
         {
-            return Box::pin(async move { hit });
+            return Box::pin(async move { Ok(module) });
         }
-        QUERY_MODULE_POOL_DISPATCHES.fetch_add(1, Ordering::Relaxed);
+        note_query_module_pool_dispatch();
         submit_query_module(
             self.query_module.reserve_async(control),
             (contract, Some(module_hash)),
@@ -463,42 +453,38 @@ impl QueryModuleReadPort for ServerCatalogReadPort {
     }
 }
 
-/// Attempts a non-blocking plan-cache hit (and active-pointer read when needed).
+/// Answers a query-module lookup from process-local state, or declines.
 ///
-/// Returns `Some` when the lookup completes without cold compile work:
-/// - active module absent → `Some(Ok(None))`
-/// - plan-cache hit → `Some(Ok(Some(module)))`
-/// - storage/integrity errors on the non-blocking path → `Some(Err(...))`
+/// This is the inline fast path and it is deliberately incapable of failing.
+/// It performs no storage I/O, acquires no write lock, and never blocks: it
+/// reads the already-resident active-module pointer with `try_read` and the
+/// compiled-plan cache with `try_lock`.
 ///
-/// Returns `None` when cold compile (or any would-block compile path) is
-/// required; the caller must fall through to the blocking pool unchanged.
-fn try_query_module_cache_hit(
+/// `Some(answer)` is a complete successful result — a cached compiled module,
+/// or `None` for an identity the view already knows has no active module.
+/// `None` means "not answerable here": the identity is not resident, the plan
+/// cache misses, a lock is contended or poisoned, or any other would-block
+/// condition. The caller then dispatches to the blocking pool, which owns
+/// every cold read, every compile, and therefore the entire error taxonomy.
+fn try_cached_query_module(
     storage: &SharedRedbOperationalPorts,
     cache: &Mutex<QueryModulePlanCache>,
     contract: &ValidatedContractBundle,
     selected: Option<QueryModuleHash>,
-) -> Option<Result<Option<ValidatedQueryModule>, QueryModuleReadError>> {
+) -> Option<Option<ValidatedQueryModule>> {
     let module_hash = match selected {
         Some(module_hash) => module_hash,
-        None => {
-            match QueryModuleRepository::read_active_query_module(
-                storage,
-                contract.lineage(),
-                contract.contract_version(),
-                contract.bundle_hash(),
-            ) {
-                Ok(Some(pointer)) => pointer.module_hash(),
-                Ok(None) => return Some(Ok(None)),
-                Err(_) => return Some(Err(QueryModuleReadError::Unavailable)),
-            }
-        }
+        None => match storage.cached_active_query_module(
+            contract.lineage(),
+            contract.contract_version(),
+            contract.bundle_hash(),
+        )? {
+            Some(pointer) => pointer.module_hash(),
+            None => return Some(None),
+        },
     };
-    match cache.lock() {
-        Ok(guard) => guard
-            .get(module_hash, contract)
-            .map(|module| Ok(Some(module))),
-        Err(_) => Some(Err(QueryModuleReadError::Integrity)),
-    }
+    let module = cache.try_lock().ok()?.get(module_hash, contract)?;
+    Some(Some(module))
 }
 
 /// Full query-module resolution for the blocking pool (unchanged semantics).
@@ -2115,39 +2101,191 @@ mod tests {
         assert_authoritative::<ServerAuthoritativeReadPort>();
     }
 
+    /// Real `ServerCatalogReadPort` over a real on-disk redb database with a
+    /// deployed query module.
+    ///
+    /// This is the only construction of the production catalog read port
+    /// outside `process_graph`, so it is the seam that makes the inline
+    /// plan-lookup path falsifiable: deleting the fast path makes the
+    /// "cache hit does not enter the pool" assertions fail, and serving the
+    /// fast path without admission control makes the drained-routing
+    /// assertion fail.
     #[test]
-    fn plan_cache_miss_returns_none_for_pool_fallthrough_and_force_pool_is_restored() {
-        // Cache miss with an empty plan cache must fall through to the pool
-        // (try_query_module_cache_hit returns None). The force-pool flag is the
-        // falsifiability neuter for the inline path.
-        let cache = Mutex::new(QueryModulePlanCache::default());
-        let module_hash = QueryModuleHash::from_bytes([0xab; 32]);
-        // Without a ValidatedContractBundle we still prove the force-pool hook
-        // is off by default and the pool counter can be reset.
-        assert!(!FORCE_PLAN_LOOKUP_VIA_POOL.load(Ordering::SeqCst));
-        reset_query_module_pool_dispatch_count();
-        assert_eq!(query_module_pool_dispatch_count(), 0);
+    fn real_catalog_read_port_serves_warm_plan_lookups_inline_and_pools_everything_else() {
+        use std::time::{Duration, Instant};
 
-        FORCE_PLAN_LOOKUP_VIA_POOL.store(true, Ordering::SeqCst);
-        // Falsifiability: with force-pool on, prepare_* always dispatches to the
-        // pool (counting test would fail if it asserted "no pool on hit").
-        assert!(FORCE_PLAN_LOOKUP_VIA_POOL.load(Ordering::SeqCst));
-        FORCE_PLAN_LOOKUP_VIA_POOL.store(false, Ordering::SeqCst);
-        assert!(!FORCE_PLAN_LOOKUP_VIA_POOL.load(Ordering::SeqCst));
+        use riffdb_contract_compiler::compile_contract_source;
+        use riffdb_query_module::{
+            NamedQuerySource, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+        };
+        use std::num::NonZeroU64;
 
-        // Empty cache: selected-hash lookup misses without consulting storage.
-        // Construct a minimal contract via re-using get's lineage/version/hash
-        // mismatch path by inserting nothing — get returns None → overall None.
-        let _ = (cache, module_hash);
-    }
+        use riffdb_service::{
+            AuthoritativeReadinessFailure, QueryModuleReadPort, ServiceHealthHooks,
+        };
+        use riffdb_storage_api::{
+            AuditPrincipalV1, CatalogActivationIntentV1, CatalogActivationResult,
+            CatalogAdministrationRepository, QueryModuleActivationIntentV1,
+            QueryModuleActivationResult, QueryModuleActiveExpectationV1,
+            QueryModuleAdministrationRepository,
+        };
+        use riffdb_types::{ActorId, ActorKind, CapabilityId, RequestId, Timestamp};
 
-    #[test]
-    fn pool_dispatch_counter_resets_and_increments_independently() {
-        reset_query_module_pool_dispatch_count();
-        assert_eq!(query_module_pool_dispatch_count(), 0);
-        super::QUERY_MODULE_POOL_DISPATCHES.fetch_add(1, Ordering::Relaxed);
-        assert_eq!(query_module_pool_dispatch_count(), 1);
-        reset_query_module_pool_dispatch_count();
-        assert_eq!(query_module_pool_dispatch_count(), 0);
+        use crate::port_driver::BlockingPortDriver;
+        use crate::real_storage_support::RealStorage;
+        use crate::runtime_support::RuntimeRoutingState;
+
+        const CONTRACT: &str =
+            include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
+        const LIST_TICKETS: &str = include_str!("../../../queries/ticketdesk/list_tickets.riffq");
+
+        fn principal() -> AuditPrincipalV1 {
+            AuditPrincipalV1::new(
+                ActorId::new("plan-lookup-operator").expect("bounded principal"),
+                ActorKind::Human,
+                CapabilityId::from_unix_milliseconds_and_random(3, [0x3c; 10])
+                    .expect("capability UUIDv7"),
+                NonZeroU64::MIN,
+            )
+        }
+
+        fn request_id(seed: u8) -> RequestId {
+            RequestId::from_unix_milliseconds_and_random(u64::from(seed), [seed; 10])
+                .expect("request UUIDv7")
+        }
+
+        let real = RealStorage::open("plan-lookup");
+        let mut storage = real.storage.clone();
+
+        let bundle = ValidatedContractBundle::from_compiler_bundle(
+            compile_contract_source(CONTRACT).expect("ticketdesk contract compiles"),
+        )
+        .expect("compiled bundle is catalog-valid");
+        let activated = CatalogAdministrationRepository::activate_catalog(
+            &mut storage,
+            &CatalogActivationIntentV1::new(
+                None,
+                bundle.to_stored().expect("encode contract bundle"),
+                request_id(0x41),
+                principal(),
+                Timestamp::new(1_000, 0).expect("activation timestamp"),
+                None,
+            ),
+        )
+        .expect("activate the contract in real storage");
+        assert!(matches!(
+            activated,
+            CatalogActivationResult::Activated { .. }
+        ));
+
+        let module = ValidatedQueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("ticketdesk").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![NamedQuerySource::new("ListTickets", LIST_TICKETS).expect("query source")],
+            )
+            .expect("module candidate"),
+            &bundle,
+        )
+        .expect("query module compiles against the activated contract");
+        let module_hash = module.identity();
+        let deployed = QueryModuleAdministrationRepository::activate_query_module(
+            &mut storage,
+            &QueryModuleActivationIntentV1::new(
+                QueryModuleActiveExpectationV1::Absent,
+                module.to_stored().expect("encode query module"),
+                request_id(0x42),
+                principal(),
+                Timestamp::new(1_001, 0).expect("deployment timestamp"),
+                None,
+            ),
+        )
+        .expect("deploy the query module into real storage");
+        assert!(matches!(
+            deployed,
+            QueryModuleActivationResult::Activated { .. }
+        ));
+
+        let routing = RuntimeRoutingState::new();
+        let driver = BlockingPortDriver::new(routing.clone()).expect("blocking port driver starts");
+        let port = ServerCatalogReadPort::new(real.storage.clone(), &driver);
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let (control, _cancellation) =
+            RequestControl::new(Instant::now() + Duration::from_secs(30));
+
+        let baseline = query_module_pool_dispatch_count();
+        runtime.block_on(async {
+            // Cold: the plan cache is empty, so compilation must happen on the
+            // blocking pool.
+            let cold = port
+                .prepare_query_module(&control, bundle.clone(), module_hash)
+                .await
+                .expect("cold query-module lookup succeeds");
+            assert_eq!(
+                cold.expect("deployed module resolves").identity(),
+                module_hash
+            );
+            assert_eq!(
+                query_module_pool_dispatch_count(),
+                baseline + 1,
+                "a cold plan lookup must enter the blocking pool"
+            );
+
+            // Warm: identical result, served inline.
+            let warm = port
+                .prepare_query_module(&control, bundle.clone(), module_hash)
+                .await
+                .expect("warm query-module lookup succeeds");
+            assert_eq!(
+                warm.expect("deployed module resolves").identity(),
+                module_hash
+            );
+            assert_eq!(
+                query_module_pool_dispatch_count(),
+                baseline + 1,
+                "a plan-cache hit must not enter the blocking pool"
+            );
+
+            // The active-pointer entry point resolves the same module inline:
+            // the pointer is resident from the startup view rebuild plus the
+            // deployment publish, and the plan cache is now warm.
+            let active = port
+                .prepare_active_query_module(&control, bundle.clone())
+                .await
+                .expect("active query-module lookup succeeds");
+            assert_eq!(
+                active.expect("active module resolves").identity(),
+                module_hash
+            );
+            assert_eq!(
+                query_module_pool_dispatch_count(),
+                baseline + 1,
+                "an active-pointer cache hit must not enter the blocking pool"
+            );
+        });
+
+        // Admission control: once routing stops, a warm cache must not be a
+        // bypass. The request has to reach the pool and be refused there.
+        routing.fail_authoritative_readiness(AuthoritativeReadinessFailure::Integrity);
+        runtime.block_on(async {
+            let refused = port
+                .prepare_query_module(&control, bundle.clone(), module_hash)
+                .await;
+            assert!(
+                matches!(refused, Err(QueryModuleReadError::Unavailable)),
+                "a request refused by port admission must not be served from cache"
+            );
+            assert_eq!(
+                query_module_pool_dispatch_count(),
+                baseline + 2,
+                "a refused request must be routed to the pool, not answered inline"
+            );
+        });
+
+        driver.shutdown_and_drain().expect("driver drains cleanly");
     }
 }
