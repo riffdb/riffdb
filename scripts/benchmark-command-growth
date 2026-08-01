@@ -4,6 +4,19 @@ set -eu
 repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repository_root"
 
+# F8: pass through --startup-scale / --startup-scale-db (and companions) without
+# forcing a checked/assert mode. Measurement path is opt-in and does not evaluate
+# PERF gates; skip the multi-crate semantic preflight (controller-run may be hours).
+startup_scale=0
+for arg in "$@"; do
+    case "$arg" in
+        --startup-scale|--startup-scale-db) startup_scale=1 ;;
+    esac
+done
+if [ "$startup_scale" -eq 1 ]; then
+    exec cargo run --release --manifest-path benchmarks/command-growth/Cargo.toml -- "$@"
+fi
+
 mode=--checked
 if [ "${1-}" = "--assert-perf-003" ]; then
     mode=--assert-perf-003
@@ -25,6 +38,7 @@ elif [ "${1-}" = "--checked" ]; then
     mode=--checked
 elif [ "$#" -ne 0 ]; then
     echo "usage: $0 [--smoke|--checked|--assert-perf-003|--assert-perf-004|--assert-perf-006|--assert-perf-008|--assert-perf-009|--assert-perf-012|--assert-perf-013]" >&2
+    echo "   or: $0 --startup-scale N[,N...] [--startup-scale-db PATH] [--database-root PATH] [--allow-tmpfs]" >&2
     exit 2
 fi
 
