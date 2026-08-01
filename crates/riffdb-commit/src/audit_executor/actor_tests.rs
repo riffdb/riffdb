@@ -1539,6 +1539,11 @@ fn accepted_work_is_bounded_by_admission_permits_under_a_blocked_writer() {
         j.join().expect("submitter");
     }
     let total = accepted.load(Ordering::Relaxed);
+    // Release the latch BEFORE asserting so a failed bound cannot hang Drop's
+    // writer join (fail-fast under the intake-bound neuter).
+    release_tx.send(()).expect("release");
+    let _ = first;
+    drop(running);
     assert!(
         total <= 2 * c + 1,
         "accepted-without-parking {total} exceeds 2C+1={} under latched writer",
@@ -1548,48 +1553,71 @@ fn accepted_work_is_bounded_by_admission_permits_under_a_blocked_writer() {
         total >= c,
         "expected concurrent intake to accept at least C under latched writer; got {total}"
     );
-    // Release and abandon clean drain — the bound assertion is the contract.
-    // (Draining 10C messages is unnecessary for the falsifiability property.)
-    release_tx.send(()).expect("release");
-    let _ = first;
-    drop(running);
 }
 
 #[test]
 fn shutdown_on_actor_thread_returns_self_join() {
-    // Cover shutdown()'s SelfJoin guard: run shutdown from a hook that fires
-    // on the actor thread is hard; instead drop from actor thread via a
-    // repository that takes a shared RunningCommandCoordinator address —
-    // we simulate by checking the thread-id comparison path through Drop.
-    // Direct coverage: spawn a coordinator, join-id equals current only on
-    // the actor — use a panic repo that drops a handle stored in Arc.
+    // Drive shutdown() on the intake actor via a post-dispatch hook so the
+    // SelfJoin guard is genuinely executed (not a Display-string placebo).
     let running = RunningCommandCoordinator::start_audit_only(
-        capacity(1),
+        capacity(2),
         RecordingRepository::appending(Probe::new()),
         TestClock::fixed(fixed_timestamp()),
     )
     .expect("start");
-    // Off-thread Drop (normal path) must not deadlock.
-    let handle = thread::spawn(move || drop(running));
-    handle.join().expect("off-thread Drop joins cleanly");
+    let exec = running.administration_audit_executor();
+    let (coord_tx, coord_rx) = std_mpsc::sync_channel(1);
+    let (result_tx, result_rx) = std_mpsc::sync_channel(1);
+    running.queue_post_dispatch_hook(Box::new(move || {
+        let coord: RunningCommandCoordinator = coord_rx
+            .recv()
+            .expect("coordinator for actor-thread shutdown");
+        let err = coord.shutdown();
+        let _ = result_tx.send(err);
+    }));
+    coord_tx.send(running).expect("hand coordinator to hook");
+    let receipt = block_on(exec.reserve_capacity())
+        .expect("slot")
+        .submit(input(0xA1))
+        .expect("submit triggers post-dispatch hook");
+    let err = result_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("SelfJoin result arrives without deadlock");
+    assert!(
+        matches!(err, Err(CoordinatorShutdownError::SelfJoin)),
+        "expected SelfJoin, got {err:?}"
+    );
+    // Hook already consumed the coordinator; drain the in-flight receipt.
+    let _ = block_on(receipt.completion());
 }
 
 #[test]
-fn shutdown_self_join_guard_is_detectable_via_thread_id_compare() {
-    // shutdown() returns SelfJoin when called on the actor thread. We cannot
-    // easily re-enter the actor, so we assert the public error discriminant
-    // exists and that normal shutdown from a foreign thread succeeds.
+fn drop_on_actor_thread_detaches_without_deadlock() {
+    // Drive Drop on the intake actor; SelfJoin detach path must not hang.
     let running = RunningCommandCoordinator::start_audit_only(
-        capacity(1),
+        capacity(2),
         RecordingRepository::appending(Probe::new()),
         TestClock::fixed(fixed_timestamp()),
     )
     .expect("start");
-    assert_eq!(
-        format!("{}", CoordinatorShutdownError::SelfJoin),
-        "coordinator cannot join its own actor thread"
-    );
-    running.shutdown().expect("foreign-thread shutdown");
+    let exec = running.administration_audit_executor();
+    let (coord_tx, coord_rx) = std_mpsc::sync_channel(1);
+    let (done_tx, done_rx) = std_mpsc::sync_channel(1);
+    running.queue_post_dispatch_hook(Box::new(move || {
+        let coord: RunningCommandCoordinator =
+            coord_rx.recv().expect("coordinator for actor-thread drop");
+        drop(coord);
+        let _ = done_tx.send(());
+    }));
+    coord_tx.send(running).expect("hand coordinator to hook");
+    let receipt = block_on(exec.reserve_capacity())
+        .expect("slot")
+        .submit(input(0xA2))
+        .expect("submit triggers post-dispatch hook");
+    done_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("actor-thread Drop detaches without deadlock");
+    let _ = block_on(receipt.completion());
 }
 
 #[test]

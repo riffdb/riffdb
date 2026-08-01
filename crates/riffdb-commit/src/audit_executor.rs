@@ -1359,6 +1359,10 @@ pub struct RunningCommandCoordinator {
     actor_thread: Option<thread::JoinHandle<()>>,
     actor_thread_id: thread::ThreadId,
     writer_panicked: Arc<AtomicU8>,
+    /// One-shot hooks run on the intake actor after a unit is dispatched.
+    /// Used only by SelfJoin coverage tests (safe test path onto the actor thread).
+    #[cfg(test)]
+    post_dispatch_hook_tx: Option<std::sync::mpsc::SyncSender<Box<dyn FnOnce() + Send>>>,
 }
 
 impl RunningCommandCoordinator {
@@ -1459,10 +1463,11 @@ impl RunningCommandCoordinator {
         )
     }
 
-    /// Starts the coordinator with telemetry and no evaluation worker pool.
-    ///
-    /// Same bound set as [`Self::start`] (no [`Clone`]), for move-only storage
-    /// ports that still need a real commit telemetry sink.
+    /// Supported pool-less entry point: starts the coordinator with telemetry
+    /// and no evaluation worker pool (same bound set as [`Self::start`], no
+    /// [`Clone`] on the repository). Use when storage ports are move-only
+    /// (e.g. redb operational ports) but a real commit telemetry sink is needed.
+    #[doc(hidden)]
     #[allow(clippy::too_many_arguments)]
     #[allow(private_bounds)]
     pub fn start_with_commit_telemetry<Repository>(
@@ -1597,6 +1602,9 @@ impl RunningCommandCoordinator {
         let (feedback_tx, feedback_rx) = mpsc::channel::<UnitCompleted>(2);
         let writer_panicked = Arc::new(AtomicU8::new(0));
         let writer_panic_flag = Arc::clone(&writer_panicked);
+        #[cfg(test)]
+        let (post_dispatch_hook_tx, post_dispatch_hook_rx) =
+            std::sync::mpsc::sync_channel::<Box<dyn FnOnce() + Send>>(4);
         let writer_thread = thread::Builder::new()
             .name("riffdb-command-writer".to_owned())
             .spawn(move || {
@@ -1621,6 +1629,8 @@ impl RunningCommandCoordinator {
             telemetry,
             lifecycle: lifecycle_publisher,
             feedback: feedback_rx,
+            #[cfg(test)]
+            post_dispatch_hooks: Some(post_dispatch_hook_rx),
         };
         let actor_thread = thread::Builder::new()
             .name("riffdb-command-coordinator".to_owned())
@@ -1666,7 +1676,22 @@ impl RunningCommandCoordinator {
             actor_thread: Some(actor_thread),
             actor_thread_id,
             writer_panicked,
+            #[cfg(test)]
+            post_dispatch_hook_tx: Some(post_dispatch_hook_tx),
         })
+    }
+
+    /// Queues a closure to run on the intake actor after the next unit dispatch.
+    ///
+    /// Used to drive SelfJoin/Drop-on-actor-thread coverage without deadlocking
+    /// the test harness.
+    #[cfg(test)]
+    fn queue_post_dispatch_hook(&self, hook: Box<dyn FnOnce() + Send>) {
+        self.post_dispatch_hook_tx
+            .as_ref()
+            .expect("test hook channel")
+            .send(hook)
+            .expect("actor accepts post-dispatch hook");
     }
 
     #[cfg(test)]
@@ -1793,15 +1818,13 @@ impl Drop for RunningCommandCoordinator {
         // writer before this Drop returns (blocking is acceptable — Drop is
         // rare outside tests/shutdown and must not leave a write txn open).
         // On the actor thread, joining would deadlock (same SelfJoin case
-        // shutdown() already refuses); detach with a debug log instead.
+        // shutdown() already refuses); detach instead.
         if let Some(actor_thread) = self.actor_thread.take() {
             if thread::current().id() == self.actor_thread_id {
-                // Detach by dropping the JoinHandle without join (SelfJoin path).
-                // Logging is best-effort; the crate has no tracing dependency.
-                let _ = std::io::Write::write_all(
-                    &mut std::io::stderr(),
-                    b"riffdb_commit: RunningCommandCoordinator dropped on actor thread; detaching\n",
-                );
+                // Detach: drop JoinHandle without join (SelfJoin path).
+                // No unconditional library eprintln — detach is silent by design;
+                // tests assert via post-dispatch hooks that this branch runs.
+                let _ = actor_thread;
                 return;
             }
             let _ = actor_thread.join();
@@ -2338,6 +2361,8 @@ struct CommandCoordinatorActor {
     telemetry: Arc<dyn CommitTelemetry>,
     lifecycle: ActorLifecyclePublisher,
     feedback: mpsc::Receiver<UnitCompleted>,
+    #[cfg(test)]
+    post_dispatch_hooks: Option<std::sync::mpsc::Receiver<Box<dyn FnOnce() + Send>>>,
 }
 
 impl CommandCoordinatorActor {
@@ -2357,16 +2382,19 @@ impl CommandCoordinatorActor {
                 // then form. Concurrent intake while the writer is busy also fills
                 // pending via the select arm below.
                 //
-                // Accepted backlog bound under a blocked writer is 2C+1:
-                // pending ≤ C (this drain guard) plus channel capacity C+1
-                // (workload_capacity + 1 for the shutdown slot). Permit parking
-                // still engages once the channel is full.
+                // Accepted backlog under a *blocked* writer is 2C+1: pending ≤ C
+                // is enforced by the busy-path select arm (`pending.len() <
+                // workload_capacity`), plus channel capacity C+1. This idle
+                // try_recv bound is defense-in-depth for an idle burst larger
+                // than C already sitting in the channel (also keeps pending ≤ C
+                // after feedback when the channel was full).
                 //
                 // Pipelining-removal neuter (pre-split): disable the busy-path
                 // select arm *and* this multi-message drain — arm-only is not
                 // enough because this drain would re-batch at the completion edge.
                 let pending_was_empty = pending.is_empty();
                 let receiver_closed = loop {
+                    // Defense-in-depth: cap pending on idle drain sweeps too.
                     if pending.len() >= workload_capacity {
                         break false;
                     }
@@ -2435,6 +2463,11 @@ impl CommandCoordinatorActor {
                         {
                             TEST_PANIC_LIFECYCLE.store(std::ptr::null_mut(), Ordering::Release);
                             panic!("test: intentional actor panic after dispatch");
+                        }
+                        if let Some(hooks) = self.post_dispatch_hooks.as_ref() {
+                            while let Ok(hook) = hooks.try_recv() {
+                                hook();
+                            }
                         }
                     }
                     continue;

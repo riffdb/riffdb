@@ -459,27 +459,9 @@ fn expected_units(seq: &[Cls]) -> Vec<Expected> {
                         }
                     }
                 }
-                // After a command run, observations that were skipped are left
-                // for subsequent formation (oracle tracks index without hoisting
-                // into a side buffer — advance only over consumed commands).
-                let mut advanced = 0;
-                let mut k = i;
-                while advanced < len {
-                    if seq[k] == Cls::C {
-                        advanced += 1;
-                    }
-                    k += 1;
-                }
-                // Leave observations between commands in place: production
-                // re-queues them at the front after the group, so the next unit
-                // sees them. For index purposes, skip only the consumed C's and
-                // any O's that sat inside the run (they reappear before the next
-                // unconsumed item). Model: next index is i + span, where span
-                // covers C's and interior O's; O's are then expected as Singles
-                // before the next group. Simpler approach below.
+                // Production re-queues interior observations at the front after
+                // the command group; emit them next, then continue past the run.
                 out.push(Expected::CommandGroup { len, reason });
-                // Re-emit deferred observations that were inside the run, then
-                // continue from the barrier or remaining work.
                 let mut interior_obs = 0;
                 let mut pos = i;
                 let mut taken = 0;
@@ -503,7 +485,6 @@ fn expected_units(seq: &[Cls]) -> Vec<Expected> {
             }
             Cls::A => {
                 let mut len = 0;
-                let mut seen = 0u32; // count only; production uses request_id set
                 let mut reason = CommitGroupDispatchReason::QueueDrained;
                 // In our factory each A gets a distinct request_id unless we
                 // deliberately reuse seeds. Group until non-A or Full.
@@ -514,8 +495,6 @@ fn expected_units(seq: &[Cls]) -> Vec<Expected> {
                         break;
                     }
                     len += 1;
-                    seen += 1;
-                    let _ = seen;
                     j += 1;
                 }
                 if reason == CommitGroupDispatchReason::QueueDrained
