@@ -18,7 +18,7 @@ from riffdb_application._binding import decode_variant, encode_record
 CONTRACT_LINEAGE: Final[str] = "TicketDesk"
 CONTRACT_VERSION: Final[int] = 1
 CONTRACT_BUNDLE_HASH: Final[str] = "4137b07572c6efc3423411e782ca5424fb66eaf1baee117dc340c5d978e92986"
-QUERY_MODULE_HASH: Final[str] = "0579ffc8ef997023a2472ef84bc5ea1a41a1aaff64ca963aabb3be048f44f15a"
+QUERY_MODULE_HASH: Final[str] = "af7f316551add4b4c12025387b206e384406821b5d327c378f4fa93838ebac97"
 
 class TicketStatus(StrEnum):
     OPEN = "Open"
@@ -88,6 +88,31 @@ class ProjectMember:
     created_at: Timestamp
     project_id: UUID
     organization_id: UUID
+
+BOARD_PAGE_QUERY_PLAN_HASH: Final[str] = "23101f02a3fb909062807b49d8932c7e6234be7cfe8055471098d4984ae0903e"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BoardPageParams:
+    organization_id: UUID
+    project_id: UUID
+    status: TicketStatus
+    limit: Annotated[int, "u64"] | None = None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BoardPageFoundTickets:
+    ticket_id: UUID
+    project_id: UUID
+    title: str
+    status: TicketStatus
+    reporter_id: UUID
+    assignee_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BoardPageFound:
+    tickets: tuple[BoardPageFoundTickets, ...]
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+BoardPageResult: TypeAlias = BoardPageFound
 
 GET_TICKET_QUERY_PLAN_HASH: Final[str] = "1fb6b4cbb4a7810457d07826d0cbbab74354cc82e04e5d056af7985761e0028c"
 
@@ -693,6 +718,18 @@ class TicketDeskClient:
         self._transport = transport
         self._command_attempts = command_attempts
 
+    def board_page(self, parameters: BoardPageParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPageResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="BoardPage", plan_hash=BOARD_PAGE_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": BoardPageFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
     def get_ticket(self, parameters: GetTicketParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetTicketResult]:
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -1017,6 +1054,18 @@ class AsyncTicketDeskClient:
     def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+
+    async def board_page(self, parameters: BoardPageParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPageResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="BoardPage", plan_hash=BOARD_PAGE_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": BoardPageFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def get_ticket(self, parameters: GetTicketParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetTicketResult]:
         raw = await self._transport._execute_named_query(

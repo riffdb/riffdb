@@ -10,6 +10,10 @@ const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ti
 
 const QUERIES: &[(&str, &str)] = &[
     (
+        "board_page",
+        include_str!("../../../queries/ticketdesk/board_page.riffq"),
+    ),
+    (
         "get_ticket",
         include_str!("../../../queries/ticketdesk/get_ticket.riffq"),
     ),
@@ -91,6 +95,26 @@ fn list_query_schema_uses_contract_names_and_declared_page_bound() {
     assert_eq!(
         resolved.schemas().parameters()[0].value_type(),
         &NamedTypeSchema::Scalar("uuid".to_owned())
+    );
+    let tickets = &resolved.schemas().results()[0].fields()[0];
+    assert_eq!(tickets.name(), "tickets");
+    assert!(matches!(tickets.value_type(), NamedTypeSchema::List { .. }));
+}
+
+#[test]
+fn board_page_resolves_wide_row_with_runtime_limit() {
+    let bundle = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");
+    let source = QUERIES
+        .iter()
+        .find_map(|(name, source)| (*name == "board_page").then_some(*source))
+        .expect("BoardPage query is present");
+    let document = parse_query(source).expect("parse BoardPage");
+    let resolved = resolve_query_surface(&document, &catalog).expect("resolve BoardPage");
+    let params = resolved.schemas().parameters();
+    assert!(
+        params.iter().any(|param| param.name() == "limit"),
+        "BoardPage exposes a runtime Limit parameter for 50/200/500 board sizes"
     );
     let tickets = &resolved.schemas().results()[0].fields()[0];
     assert_eq!(tickets.name(), "tickets");

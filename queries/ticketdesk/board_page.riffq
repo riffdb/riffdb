@@ -1,0 +1,26 @@
+query BoardPage(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $status: TicketStatus,
+    $limit: Limit = 50,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == $status
+        order by ticket_id asc
+        take $limit
+
+    return Found {
+        tickets: tickets {
+            ticket_id
+            project_id
+            title
+            status
+            reporter_id
+            assignee_id
+        }
+    }
+
+    outcomes Found
+}

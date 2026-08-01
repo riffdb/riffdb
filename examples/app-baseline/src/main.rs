@@ -1108,6 +1108,9 @@ fn assert_all_parity(report: &serde_json::Value) -> Result<(), String> {
     let scenarios = report["comparisons"]["scenarios"]
         .as_array()
         .ok_or("all-parity assertion is missing scenario ratios")?;
+    // Require the full scenario set (including board_page_*). Use --full (or
+    // --board-density >= 500) so board pages are measured; --smoke skips them
+    // and therefore cannot pass all-parity.
     for expected in riffdb_app_baseline_core::ScenarioId::all() {
         let expected = expected.as_str();
         let row = scenarios
@@ -1345,8 +1348,12 @@ fn print_summary(report: &serde_json::Value) {
                     let name = scenario["scenario"].as_str().unwrap_or("?");
                     let p50 =
                         scenario["timing"]["p50_ns"].as_u64().unwrap_or(0) as f64 / 1_000_000.0;
-                    println!("  {name}: p50={p50:.3}ms");
+                    let rows = scenario["last_row_count"].as_u64().unwrap_or(0);
+                    println!("  {name}: p50={p50:.3}ms rows={rows}");
                 }
+            }
+            if let Some(marginal) = backend["board_marginal_ns_per_row"].as_u64() {
+                println!("  board_marginal_ns_per_row={marginal}  ( (p50_500 − p50_50) / 450 )");
             }
         }
     }
@@ -1358,6 +1365,11 @@ fn print_summary(report: &serde_json::Value) {
                 let ratio = gated_ratio(&row["ratio_riffdb_over_postgres"]).unwrap_or(0.0);
                 println!("  {name}: {ratio:.2}x");
             }
+        }
+        if let Some(obj) = report["comparisons"]["board_marginal_ns_per_row"].as_object() {
+            let pg = obj.get("postgres").and_then(|v| v.as_u64()).unwrap_or(0);
+            let rd = obj.get("riffdb").and_then(|v| v.as_u64()).unwrap_or(0);
+            println!("\nboard marginal ns/row: postgres={pg} riffdb={rd}");
         }
     }
 }
@@ -1454,6 +1466,7 @@ impl Args {
         let mut reps: Option<usize> = None;
         let mut require_stable = false;
         let mut full = false;
+        let mut board_density: Option<u32> = None;
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -1586,11 +1599,22 @@ impl Args {
                     );
                 }
                 "--require-stable" => require_stable = true,
+                "--board-density" => {
+                    let value = args
+                        .next()
+                        .ok_or("--board-density needs a value")?
+                        .parse::<u32>()
+                        .map_err(|_| "--board-density must be u32")?;
+                    if value > 10_000 {
+                        return Err("--board-density must be <= 10000".to_owned());
+                    }
+                    board_density = Some(value);
+                }
                 "--help" | "-h" => {
                     return Err(
                         "usage: riffdb-app-baseline [--smoke|--full] [--samples N] [--warmup N] \
-                         [--postgres-url URL] [--riffdbd-bin PATH] [--output PATH] \
-                         [--assert-write-parity|--assert-all-parity] \
+                         [--board-density N] [--postgres-url URL] [--riffdbd-bin PATH] \
+                         [--output PATH] [--assert-write-parity|--assert-all-parity] \
                          [--concurrent-clients N] [--concurrent-operations N] \
                          [--load interactive|agent|membership_contention] [--load-clients N] \
                          [--load-duration-secs N] [--load-warmup-secs N] [--load-zipf-s F] \
@@ -1605,6 +1629,9 @@ impl Args {
                 }
                 other => return Err(format!("unknown argument: {other}")),
             }
+        }
+        if let Some(density) = board_density {
+            scale.board_dense_open = density;
         }
         let reps = reps.unwrap_or(if full { 3 } else { 1 });
         if !(1..=32).contains(&reps) {

@@ -2,7 +2,20 @@
 
 use serde_json::{Value, json};
 
-use crate::{SampleSummary, Scale, ScenarioResult};
+use crate::{SampleSummary, Scale, ScenarioId, ScenarioResult, board_marginal_from_results};
+
+/// Side-by-side board query sources (identical predicate/order/limit semantics).
+pub const BOARD_PAGE_RIFFQ: &str = include_str!("../../../../queries/ticketdesk/board_page.riffq");
+
+/// PostgreSQL SQL for the board page (matches `BOARD_PAGE_RIFFQ` semantics).
+pub const BOARD_PAGE_SQL: &str = "SELECT organization_id::text, ticket_id::text, project_id::text,\n\
+            reporter_id::text, assignee_id::text, status, title\n\
+     FROM ticket\n\
+     WHERE organization_id = $1::text::uuid\n\
+       AND project_id = $2::text::uuid\n\
+       AND status = $3\n\
+     ORDER BY ticket_id ASC\n\
+     LIMIT $4";
 
 /// One backend's complete measured layer.
 #[derive(Clone, Debug)]
@@ -57,6 +70,7 @@ pub fn build_report(
             "comments_per_ticket": scale.comments_per_ticket,
             "labels_per_org": scale.labels_per_org,
             "labels_per_ticket": scale.labels_per_ticket,
+            "board_dense_open": scale.board_dense_open,
             "approximate_row_count": scale.approximate_row_count(),
         },
         "configuration": {
@@ -65,6 +79,23 @@ pub fn build_report(
             "timing_source": "std::time::Instant",
             "distribution_method": "nearest-rank p50/p95/p99",
             "list_limit": 50,
+            "board_page_sizes": [50, 200, 500],
+            "board_scenarios_in_smoke": "skipped (board_dense_open=0)",
+        },
+        "board_page_query": {
+            "riffql_source": "queries/ticketdesk/board_page.riffq",
+            "riffql": BOARD_PAGE_RIFFQ,
+            "sql": BOARD_PAGE_SQL,
+            "predicate": "organization_id + project_id + status",
+            "order_by": "ticket_id ASC",
+            "columns": [
+                "ticket_id",
+                "project_id",
+                "title",
+                "status",
+                "reporter_id",
+                "assignee_id"
+            ],
         },
         "backends": backend_values,
         "comparisons": comparisons,
@@ -75,6 +106,7 @@ pub fn build_report(
             "Results are architectural feedback for optimization prioritization, not marketing claims.",
             "Write scenarios execute one new durable write per measured sample on both backends (no idempotent replays).",
             "PostgreSQL runs behind a Docker userland port proxy; RiffDB listens directly on loopback.",
+            "Board scenarios skip under --smoke (board_dense_open=0); full profile densifies org-0/project-0 open tickets.",
         ],
     })
 }
@@ -92,7 +124,7 @@ fn backend_json(backend: &BackendReport) -> Value {
             })
         })
         .collect();
-    json!({
+    let mut value = json!({
         "backend_id": backend.backend_id,
         "description": backend.description,
         "guarantee_notes": backend.guarantee_notes,
@@ -100,7 +132,11 @@ fn backend_json(backend: &BackendReport) -> Value {
         "seed_rows": backend.seed_rows,
         "write_completion_groups_by_size": backend.write_completion_groups,
         "scenarios": scenarios,
-    })
+    });
+    if let Some(marginal) = board_marginal_from_results(&backend.scenarios) {
+        value["board_marginal_ns_per_row"] = json!(marginal);
+    }
+    value
 }
 
 fn summary_json(summary: &SampleSummary) -> Value {
@@ -164,7 +200,7 @@ fn build_comparisons(backends: &[BackendReport]) -> Value {
 
     let pg_seed = postgres.seed_ns;
     let rd_seed = riffdb.seed_ns;
-    json!({
+    let mut comparisons = json!({
         "available": true,
         "seed": {
             "postgres_ns": pg_seed,
@@ -176,7 +212,15 @@ fn build_comparisons(backends: &[BackendReport]) -> Value {
             },
         },
         "scenarios": scenarios,
-    })
+    });
+    if let (Some(pg_m), Some(rd_m)) = (
+        board_marginal_from_results(&postgres.scenarios),
+        board_marginal_from_results(&riffdb.scenarios),
+    ) {
+        comparisons["board_marginal_ns_per_row"] = json!({
+            "postgres": pg_m,
+            "riffdb": rd_m,
+        });
+    }
+    comparisons
 }
-
-use crate::ScenarioId;

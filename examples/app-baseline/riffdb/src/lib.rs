@@ -25,13 +25,13 @@ use riffdb_client_rust::{
     GeneratedBatchOptions, GeneratedBatchResult, StableApplicationClient,
 };
 use riffdb_ticketdesk::{
-    AddProjectMemberInput, AttachLabelInput, CloseTicketWithCommentInput, CreateCommentInput,
-    CreateLabelInput, CreateOrganizationInput, CreateProjectInput, CreateTicketInput,
-    CreateUserInput, GetTicketParams, GetTicketResult, GetUserParams, GetUserResult,
-    ListCommentsParams, ListCommentsResult, ListTicketsByAssigneeParams,
-    ListTicketsByAssigneeResult, ListTicketsParams, ListTicketsResult, OpenTicketWithLabelsInput,
-    ProjectMembersParams, ProjectMembersResult, SwapMemberRolesInput, TicketDeskClient,
-    TicketPageParams, TicketPageResult,
+    AddProjectMemberInput, AttachLabelInput, BoardPageParams, BoardPageResult,
+    CloseTicketWithCommentInput, CreateCommentInput, CreateLabelInput, CreateOrganizationInput,
+    CreateProjectInput, CreateTicketInput, CreateUserInput, GetTicketParams, GetTicketResult,
+    GetUserParams, GetUserResult, ListCommentsParams, ListCommentsResult,
+    ListTicketsByAssigneeParams, ListTicketsByAssigneeResult, ListTicketsParams, ListTicketsResult,
+    OpenTicketWithLabelsInput, ProjectMembersParams, ProjectMembersResult, SwapMemberRolesInput,
+    TicketDeskClient, TicketPageParams, TicketPageResult,
 };
 use tonic::transport::Endpoint;
 
@@ -404,6 +404,42 @@ impl AppBackend for RiffDbPublicBackend {
                     project_id: uuid_text(project_id),
                     statuses: vec![status_name(status).to_owned()],
                     after: None,
+                    limit: u64::from(limit),
+                })
+                .await
+                .map_err(map_app)?;
+            found
+                .tickets
+                .into_iter()
+                .map(|ticket| {
+                    Ok(TicketRow {
+                        organization_id,
+                        ticket_id: parse_uuid(&ticket.ticket_id)?,
+                        project_id: parse_uuid(&ticket.project_id)?,
+                        reporter_id: parse_uuid(&ticket.reporter_id)?,
+                        assignee_id: parse_uuid(&ticket.assignee_id)?,
+                        status: parse_status(&ticket.status)?,
+                        title: ticket.title,
+                    })
+                })
+                .collect()
+        })
+    }
+
+    fn board_page(
+        &mut self,
+        organization_id: UuidBytes,
+        project_id: UuidBytes,
+        status: TicketStatus,
+        limit: u32,
+    ) -> Result<Vec<TicketRow>, Self::Error> {
+        self.block_on(async {
+            let BoardPageResult::Found(found) = self
+                .ticketdesk()
+                .board_page(BoardPageParams {
+                    organization_id: uuid_text(organization_id),
+                    project_id: uuid_text(project_id),
+                    status: status_name(status).to_owned(),
                     limit: u64::from(limit),
                 })
                 .await
