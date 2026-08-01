@@ -458,13 +458,14 @@ impl ProductionGraphBuilder {
         let service: Arc<dyn ApplicationService> =
             Arc::new(activator.activate(identity, process, executors, providers));
 
-        if let Err(source) = lifecycle.install_activated(
+        if let Err(source) = lifecycle.install_activated_with_telemetry(
             service,
             security,
             server_generation,
             retained_metadata.history_incarnation(),
             startup_lifecycle,
             allocator_capacity,
+            Some(observability.clone() as Arc<dyn ServiceTelemetry>),
         ) {
             lifecycle.stop();
             let cleanup =
@@ -931,7 +932,7 @@ mod tests {
             .find("activator.activate(")
             .expect("service activation");
         let install = source
-            .find("lifecycle.install_activated(")
+            .find("lifecycle.install_activated_with_telemetry(")
             .expect("route publication");
         assert!(sample < activate);
         assert!(activate < install);

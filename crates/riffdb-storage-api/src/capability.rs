@@ -1397,6 +1397,16 @@ pub trait CapabilityReader {
         &self,
         candidates: &[CapabilityTokenDigest],
     ) -> Result<CapabilityLookupResult, StorageError>;
+
+    /// Returns the monotonic capability-view generation for revision-checked reauthorization.
+    ///
+    /// Default returns a unique value each call so readers without a published
+    /// view always force full re-evaluation.
+    fn capability_view_generation(&self) -> u64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static FALLBACK: AtomicU64 = AtomicU64::new(1);
+        FALLBACK.fetch_add(1, Ordering::Relaxed)
+    }
 }
 
 /// Complete ordered capability inventory used to rebuild a non-authoritative view.
