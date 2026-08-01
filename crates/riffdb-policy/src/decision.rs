@@ -7,7 +7,7 @@ use riffdb_types::{
     ActorId, ActorKind, ApprovalId, CapabilityGrantV1, CapabilityId, CapabilityPermissionV1,
     ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, EntityTypeId, Environment,
     FieldId, MAX_CAPABILITY_FIELD_VISIBILITY, PartitionScopeV1, ScopedPartitionV1,
-    ServiceOperationV1, TenantScope,
+    ServiceOperationV1, TenantScope, Timestamp,
 };
 
 use crate::operation::{
@@ -484,12 +484,85 @@ impl fmt::Debug for AuthorizedApplicationQuery {
     }
 }
 
+/// The exact capability validity window compared by a current-policy safe point.
+///
+/// This is the sole definition of the time clause enforced by current
+/// authorization. Full evaluation and revision-checked reauthorization both
+/// call [`CheckedCapabilityValidity::admits`], so the two can never drift.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CheckedCapabilityValidity {
+    issued_at: Timestamp,
+    expires_at: Timestamp,
+}
+
+impl CheckedCapabilityValidity {
+    /// Binds the exact issue and expiry instants recorded on a capability.
+    #[must_use]
+    pub const fn new(issued_at: Timestamp, expires_at: Timestamp) -> Self {
+        Self {
+            issued_at,
+            expires_at,
+        }
+    }
+
+    /// Returns whether `now` is inside the half-open validity window.
+    #[must_use]
+    pub fn admits(&self, now: Timestamp) -> bool {
+        self.issued_at <= now && now < self.expires_at
+    }
+
+    /// Returns the exact instant the capability became valid.
+    #[must_use]
+    pub const fn issued_at(&self) -> Timestamp {
+        self.issued_at
+    }
+
+    /// Returns the exact instant the capability stops being valid.
+    #[must_use]
+    pub const fn expires_at(&self) -> Timestamp {
+        self.expires_at
+    }
+}
+
+/// One observation of live current-capability state taken at a safe point.
+///
+/// A checkpoint pairs the monotonic capability-view generation with the fresh
+/// authorization time sampled from the same clock full evaluation uses. It is
+/// the only input that permits [`AuthorizedOperation::reissue_for_unchanged_view`],
+/// so a caller cannot reissue a proof without consulting live state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CapabilityViewCheckpoint {
+    generation: u64,
+    now: Timestamp,
+}
+
+impl CapabilityViewCheckpoint {
+    /// Pairs a live capability-view generation with a fresh authorization time.
+    #[must_use]
+    pub const fn new(generation: u64, now: Timestamp) -> Self {
+        Self { generation, now }
+    }
+
+    /// Returns the observed capability-view generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Returns the fresh authorization time observed with the generation.
+    #[must_use]
+    pub const fn now(&self) -> Timestamp {
+        self.now
+    }
+}
+
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) struct CurrentAuthorizationIdentity {
     capability_id: CapabilityId,
     capability_revision: NonZeroU64,
     principal_id: ActorId,
     actor_kind: ActorKind,
+    validity: CheckedCapabilityValidity,
 }
 
 impl CurrentAuthorizationIdentity {
@@ -498,12 +571,14 @@ impl CurrentAuthorizationIdentity {
         capability_revision: NonZeroU64,
         principal_id: ActorId,
         actor_kind: ActorKind,
+        validity: CheckedCapabilityValidity,
     ) -> Self {
         Self {
             capability_id,
             capability_revision,
             principal_id,
             actor_kind,
+            validity,
         }
     }
 }
@@ -574,23 +649,69 @@ impl AuthorizedOperation {
         self.request.operation()
     }
 
-    /// Re-issues the same allow proof when the capability-view generation is
-    /// unchanged and the operation target is identical to the begin evaluation.
+    /// Re-issues this allow proof only when live state proves it still holds.
     ///
-    /// This does not replace a current-policy safe point. Callers must have
-    /// consulted the live generation (or fallen through to a full evaluation).
-    /// The proof is deliberately not `Clone` for general use; this reissue is
-    /// restricted to the generation-checked reauthorization path.
+    /// `baseline_generation` is the capability-view generation observed
+    /// immediately *before* the full evaluation that produced this proof.
+    /// `observed` is a fresh checkpoint taken at the reauthorization safe
+    /// point. `request` is the exact operation being reauthorized.
+    ///
+    /// Returns `None` — meaning the caller must perform a full evaluation —
+    /// unless all three hold:
+    ///
+    /// 1. the generation is unchanged,
+    /// 2. the checkpoint time is inside the capability validity window that
+    ///    was checked when this proof was issued, and
+    /// 3. the request is byte-identical to the authorized request.
+    ///
+    /// # Soundness
+    ///
+    /// Full evaluation is `validate_current` (identity, activity, revision,
+    /// database, environment, principal, actor kind, audience, tenant scope,
+    /// and `issued_at <= now < expires_at`) followed by the request-shaped
+    /// permission, budget, tenant, partition, field, and row checks.
+    ///
+    /// * The capability-view generation is bumped on every publication that can
+    ///   change what current-capability resolution returns. Generation unchanged
+    ///   therefore implies the capability record is unchanged, so every fact
+    ///   this proof was evaluated against still holds *except* facts that depend
+    ///   on the passage of time.
+    /// * The only time-dependent clause is the validity window. Because the
+    ///   record is unchanged, the captured window **is** the current window, so
+    ///   `self.identity.validity.admits(observed.now())` is exactly the clause a
+    ///   full evaluation would apply — it calls the same
+    ///   [`CheckedCapabilityValidity::admits`] predicate on the same values.
+    /// * Every remaining clause is a pure function of (unchanged record,
+    ///   unchanged static configuration, request). Requiring request equality
+    ///   closes the last input.
+    ///
+    /// Hence the reissued proof is bit-identical to the proof a full evaluation
+    /// would produce. The race window is no wider than a full evaluation's: a
+    /// concurrent publication either has not been published (this checkpoint
+    /// sees the old generation, exactly as a full evaluation reading the view
+    /// before publication would) or has been published (generation moved, so
+    /// this returns `None` and the caller fully re-evaluates and fails closed).
     #[must_use]
-    pub fn reissue_for_unchanged_view(&self) -> Self {
-        Self {
+    pub fn reissue_for_unchanged_view(
+        &self,
+        baseline_generation: u64,
+        observed: CapabilityViewCheckpoint,
+        request: &OperationRequest,
+    ) -> Option<Self> {
+        if observed.generation() != baseline_generation
+            || !self.identity.validity.admits(observed.now())
+            || request != &self.request
+        {
+            return None;
+        }
+        Some(Self {
             database_id: self.database_id,
             environment: self.environment.clone(),
             request: self.request.clone(),
             obligations: self.obligations.clone(),
             identity: self.identity.clone(),
             discovery_authority: self.discovery_authority.clone(),
-        }
+        })
     }
 
     /// Consumes this fresh allow proof into one exact application-query proof.
@@ -1345,6 +1466,10 @@ mod tests {
             NonZeroU64::MIN,
             ActorId::new("discovery-principal").expect("bounded principal"),
             ActorKind::Service,
+            CheckedCapabilityValidity::new(
+                riffdb_types::Timestamp::new(0, 0).expect("issued at"),
+                riffdb_types::Timestamp::new(1_000, 0).expect("expires at"),
+            ),
         )
     }
 

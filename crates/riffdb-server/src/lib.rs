@@ -23,6 +23,8 @@ mod process_graph;
 mod projection_adapter;
 mod projection_worker;
 mod read_adapters;
+#[cfg(test)]
+mod real_storage_support;
 mod recovery_host;
 mod restore_retry_host;
 mod runtime_support;

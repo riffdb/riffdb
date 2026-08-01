@@ -1,7 +1,7 @@
 //! Shared authorization and durable service-audit orchestration.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -55,29 +55,14 @@ pub(crate) struct BegunInvocation {
     started: bool,
     deferred_start: AtomicBool,
     initial_authorization: Box<AuthorizedOperation>,
-    /// Capability-view generation observed immediately after the begin evaluation.
+    /// Capability-view generation observed immediately *before* the begin evaluation.
     ///
-    /// Used by revision-checked reauthorization: when the generation is still
-    /// equal and the request target is identical, the begin decision stands
-    /// without a full storage-backed re-evaluation. The safe point still runs
-    /// — it consults current state via the generation.
-    policy_generation_at_begin: u64,
+    /// Only [`BegunInvocation::reauthorize_read`] consumes it. `None` when the
+    /// policy port publishes no generation, which permanently disables the
+    /// revision-checked path for this invocation.
+    policy_generation_at_begin: Option<u64>,
     lifecycle: Arc<OperationAuditLifecycle>,
 }
-
-/// Test hook: when true, generation comparison always reports equal so the
-/// cheap reauth path is taken even after a real view mutation. Used solely by
-/// the security falsifiability transcript (neuter → test fails → restore).
-#[doc(hidden)]
-pub static FORCE_GENERATION_ALWAYS_EQUAL: AtomicBool = AtomicBool::new(false);
-
-/// Test counter of full (non-cheap) reauthorization evaluations.
-#[doc(hidden)]
-pub static FULL_REAUTHORIZE_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// Test counter of generation-checked cheap reauthorization hits.
-#[doc(hidden)]
-pub static CHEAP_REAUTHORIZE_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Retained audit authority after a one-use initial policy proof is consumed.
 pub(crate) struct BegunInvocationCompletion {
@@ -779,13 +764,62 @@ impl BegunInvocation {
             .await
     }
 
+    /// Performs the read pipeline's revision-checked reauthorization safe point.
+    ///
+    /// This is deliberately a *separate* entry point from
+    /// [`BegunInvocation::reauthorize`]: the revision-checked shortcut is
+    /// available only to the symbolic read pipeline. Commit, command,
+    /// contract, discovery, and administration reauthorization keep
+    /// unconditional full evaluation, including the mandatory recheck after a
+    /// capacity wait.
+    ///
+    /// The safe point still executes. It observes live current state through
+    /// [`CurrentPolicyPort::capability_view_checkpoint`] and reissues the begin
+    /// proof only when [`AuthorizedOperation::reissue_for_unchanged_view`]
+    /// proves the world (generation), the clock (validity window), and the
+    /// request are all still what the full evaluation decided against.
+    /// Anything else falls through to a byte-identical full re-evaluation.
+    pub(crate) async fn reauthorize_read(
+        &self,
+        service: &RiffDbServiceInner,
+        context: &RequestContext,
+    ) -> ServiceResult<Box<AuthorizedOperation>> {
+        let request = self.request.clone();
+        self.check_reauthorization_preconditions(service, context, &request)
+            .await?;
+        if let Some(baseline) = self.policy_generation_at_begin
+            && let Some(observed) = service.providers.policy.capability_view_checkpoint()
+            && let Some(proof) = self
+                .initial_authorization
+                .reissue_for_unchanged_view(baseline, observed, &request)
+        {
+            return Ok(Box::new(proof));
+        }
+        self.full_reauthorize(service, context, request).await
+    }
+
     /// Reauthorizes newly loaded exact facts for the same audited operation.
+    ///
+    /// Always a full evaluation; no revision-checked shortcut applies here.
     pub(crate) async fn reauthorize_request(
         &self,
         service: &RiffDbServiceInner,
         context: &RequestContext,
         request: OperationRequest,
     ) -> ServiceResult<Box<AuthorizedOperation>> {
+        self.check_reauthorization_preconditions(service, context, &request)
+            .await?;
+        self.full_reauthorize(service, context, request).await
+    }
+
+    /// Applies the proof-shape, cancellation, and deadline gates shared by
+    /// every reauthorization entry point.
+    async fn check_reauthorization_preconditions(
+        &self,
+        service: &RiffDbServiceInner,
+        context: &RequestContext,
+        request: &OperationRequest,
+    ) -> ServiceResult<()> {
         if request.operation() != self.operation {
             if self
                 .finish_reauthorization_phase(service, context, ServiceAuditPhaseV1::Failed)
@@ -816,34 +850,16 @@ impl BegunInvocation {
             }
             return Err(ServiceFailure::DeadlineExceeded);
         }
+        Ok(())
+    }
 
-        // Generation-checked reauthorization (unchanged-world cheap path).
-        // The safe point still executes: it loads the current generation and
-        // compares it to the begin evaluation. When equal and the operation
-        // target is identical, the prior decision stands. When the generation
-        // moved (create/update/revoke/bootstrap published) or the target
-        // differs, fall through to full re-evaluation — byte-identical to the
-        // historical path.
-        //
-        // Race window is no wider than today: a concurrent revoke either has
-        // not yet published (old generation → same as reading the view before
-        // publish) or has published (new generation → full re-eval fails
-        // closed). Do not cache across requests; generation is per-invocation.
-        if request == self.request {
-            let mut current_generation = service.providers.policy.capability_view_generation();
-            if FORCE_GENERATION_ALWAYS_EQUAL.load(Ordering::Relaxed) {
-                current_generation = self.policy_generation_at_begin;
-            }
-            if current_generation == self.policy_generation_at_begin {
-                CHEAP_REAUTHORIZE_COUNT.fetch_add(1, Ordering::Relaxed);
-                return Ok(Box::new(
-                    self.initial_authorization.reissue_for_unchanged_view(),
-                ));
-            }
-        }
-
-        FULL_REAUTHORIZE_COUNT.fetch_add(1, Ordering::Relaxed);
-
+    /// Reloads exact current facts and re-decides — the historical safe point.
+    async fn full_reauthorize(
+        &self,
+        service: &RiffDbServiceInner,
+        context: &RequestContext,
+        request: OperationRequest,
+    ) -> ServiceResult<Box<AuthorizedOperation>> {
         match service
             .providers
             .policy

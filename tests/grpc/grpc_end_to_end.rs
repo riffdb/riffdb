@@ -716,6 +716,35 @@ impl DiscoveryApplication for ProjectionService {
     }
 }
 
+impl ProjectionService {
+    /// Denies exactly like every other unimplemented operation unless this
+    /// harness was explicitly configured for residual-stage instrumentation.
+    ///
+    /// The default is denial so no other test's expectations change; only the
+    /// residual-stage test opts into the synthetic success needed to reach the
+    /// response-encoding stage.
+    fn residual_symbolic_query(
+        &self,
+    ) -> ServiceFuture<'_, riffdb_service::ExecuteSymbolicQueryResult> {
+        let Some(telemetry) = self.read_stage_telemetry.clone() else {
+            return denied();
+        };
+        // Production records SpawnDispatch as the first statement of the
+        // spawned task; this harness has no spawner, so it records the same
+        // stage at service-body entry.
+        let submitted = Instant::now();
+        Box::pin(async move {
+            telemetry.record(
+                riffdb_service::ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                    stage: riffdb_service::ReadPipelineStage::SpawnDispatch,
+                    elapsed: submitted.elapsed(),
+                },
+            );
+            Ok(riffdb_service::ExecuteSymbolicQueryResult::transport_residual_fixture())
+        })
+    }
+}
+
 impl SymbolicQueryApplication for ProjectionService {
     denied_operation!(
         describe_symbolic_contract,
@@ -740,22 +769,7 @@ impl SymbolicQueryApplication for ProjectionService {
         _context: RequestContext,
         _request: riffdb_service::ExecuteSymbolicQueryRequest,
     ) -> ServiceFuture<'_, riffdb_service::ExecuteSymbolicQueryResult> {
-        // Residual-stage harness: record SpawnDispatch at service-body entry
-        // (production records it at spawn_operation task start) and return a
-        // minimal success so EncodeConvert runs.
-        let telemetry = self.read_stage_telemetry.clone();
-        let submitted = Instant::now();
-        Box::pin(async move {
-            if let Some(telemetry) = telemetry.as_ref() {
-                telemetry.record(
-                    riffdb_service::ServiceTelemetryEvent::ReadPipelineStageCompleted {
-                        stage: riffdb_service::ReadPipelineStage::SpawnDispatch,
-                        elapsed: submitted.elapsed(),
-                    },
-                );
-            }
-            Ok(riffdb_service::ExecuteSymbolicQueryResult::transport_residual_fixture())
-        })
+        self.residual_symbolic_query()
     }
     denied_operation!(
         deploy_query_module,
@@ -780,19 +794,7 @@ impl SymbolicQueryApplication for ProjectionService {
         _context: RequestContext,
         _request: riffdb_service::NamedSymbolicQueryRequest,
     ) -> ServiceFuture<'_, riffdb_service::ExecuteSymbolicQueryResult> {
-        let telemetry = self.read_stage_telemetry.clone();
-        let submitted = Instant::now();
-        Box::pin(async move {
-            if let Some(telemetry) = telemetry.as_ref() {
-                telemetry.record(
-                    riffdb_service::ServiceTelemetryEvent::ReadPipelineStageCompleted {
-                        stage: riffdb_service::ReadPipelineStage::SpawnDispatch,
-                        elapsed: submitted.elapsed(),
-                    },
-                );
-            }
-            Ok(riffdb_service::ExecuteSymbolicQueryResult::transport_residual_fixture())
-        })
+        self.residual_symbolic_query()
     }
 }
 

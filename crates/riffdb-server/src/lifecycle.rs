@@ -1241,6 +1241,76 @@ mod tests {
     }
 
     #[test]
+    fn read_stage_telemetry_is_published_only_when_activation_supplies_a_sink() {
+        use std::sync::Mutex as StdMutex;
+
+        use riffdb_service::{ServiceTelemetry, ServiceTelemetryEvent};
+
+        #[derive(Default)]
+        struct RecordingTelemetry {
+            stages: StdMutex<Vec<riffdb_service::ReadPipelineStage>>,
+        }
+
+        impl ServiceTelemetry for RecordingTelemetry {
+            fn record(&self, event: ServiceTelemetryEvent) {
+                if let ServiceTelemetryEvent::ReadPipelineStageCompleted { stage, .. } = event {
+                    self.stages.lock().expect("stage mutex").push(stage);
+                }
+            }
+        }
+
+        // Activation without a sink: the route publishes nothing and the gRPC
+        // layer simply does not record residual stages.
+        let (initializing, _activator, issuer) =
+            riffdb_service::RiffDbService::begin_initialization();
+        let without =
+            ProductionLifecycleRoute::new(initializing, issuer, RuntimeRoutingState::new());
+        assert!(without.read_stage_telemetry().is_none());
+        without
+            .install_activated(
+                Arc::new(ClosedApplicationService),
+                test_security_context(),
+                test_server_generation(),
+                1,
+                ValidatedStartupLifecycle::ActiveContract,
+                ValidatedAllocatorCapacity::Available,
+            )
+            .expect("activation installs once");
+        assert!(
+            without.read_stage_telemetry().is_none(),
+            "an activation without a telemetry sink must publish none"
+        );
+
+        // Activation with a sink: the published sink is the one composition
+        // supplied, and recording through it reaches that exact sink.
+        let (initializing, _activator, issuer) =
+            riffdb_service::RiffDbService::begin_initialization();
+        let with = ProductionLifecycleRoute::new(initializing, issuer, RuntimeRoutingState::new());
+        let sink = Arc::new(RecordingTelemetry::default());
+        with.install_activated_with_telemetry(
+            Arc::new(ClosedApplicationService),
+            test_security_context(),
+            test_server_generation(),
+            1,
+            ValidatedStartupLifecycle::ActiveContract,
+            ValidatedAllocatorCapacity::Available,
+            Some(Arc::clone(&sink) as Arc<dyn ServiceTelemetry>),
+        )
+        .expect("activation installs once");
+        let published = with
+            .read_stage_telemetry()
+            .expect("an activation with a telemetry sink must publish it");
+        published.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+            stage: riffdb_service::ReadPipelineStage::TransportAdapt,
+            elapsed: std::time::Duration::from_micros(3),
+        });
+        assert_eq!(
+            sink.stages.lock().expect("stage mutex").as_slice(),
+            [riffdb_service::ReadPipelineStage::TransportAdapt]
+        );
+    }
+
+    #[test]
     fn credential_retry_route_exposes_only_narrow_exact_restore_and_current_security() {
         let (initializing, _activator, issuer) =
             riffdb_service::RiffDbService::begin_initialization();

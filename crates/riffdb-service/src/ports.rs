@@ -18,7 +18,7 @@ use riffdb_contract_ir::ContractBundle;
 use riffdb_errors::InternalError;
 use riffdb_policy::{
     AuthorizationClock, AuthorizationError, AuthorizationTelemetry, AuthorizedOfflineMaintenance,
-    CurrentAuthorizer, Decision, OfflineMaintenanceAuthorizationRequest,
+    CapabilityViewCheckpoint, CurrentAuthorizer, Decision, OfflineMaintenanceAuthorizationRequest,
     OfflineMaintenanceDecision, OperationRequest, ProvenanceSelector,
 };
 use riffdb_types::{
@@ -248,15 +248,24 @@ pub trait CurrentPolicyPort: Send + Sync {
         Err(AuthorizationError::CurrentCapabilityUnavailable)
     }
 
-    /// Returns the current capability-view generation for revision-checked reauthorization.
+    /// Returns the live capability-view generation without sampling the clock.
     ///
-    /// Default implementation returns a unique value on every call so ports that
-    /// do not publish a monotonic generation always fall through to full
-    /// re-evaluation (fail closed on cost, never on outcomes).
-    fn capability_view_generation(&self) -> u64 {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static FALLBACK: AtomicU64 = AtomicU64::new(1);
-        FALLBACK.fetch_add(1, Ordering::Relaxed)
+    /// Captured immediately *before* a full evaluation so a publication racing
+    /// that evaluation cannot stamp a post-publication generation onto a proof.
+    /// `None` disables revision-checked reauthorization for the invocation.
+    fn capability_view_generation(&self) -> Option<u64> {
+        None
+    }
+
+    /// Observes the live capability view and fresh authorization time together.
+    ///
+    /// This is the read-path reauthorization safe point's view of current
+    /// state. Implementations MUST sample the same authorization clock
+    /// [`CurrentPolicyPort::authorize`] uses, so the time clause checked
+    /// against a retained validity window is the clause a full evaluation
+    /// would apply. `None` forces full re-evaluation.
+    fn capability_view_checkpoint(&self) -> Option<CapabilityViewCheckpoint> {
+        None
     }
 }
 

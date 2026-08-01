@@ -229,6 +229,18 @@ impl AuthorizationFixture {
     pub fn make_current_available(&self) -> Result<(), AuthorizationFixtureError> {
         self.reader.set_mode(CurrentResolutionMode::Available)
     }
+
+    /// Returns the fixture's capability-view generation.
+    ///
+    /// Advances on every fixture mutation that can change what current
+    /// resolution returns, so a consumer implementing
+    /// [`riffdb_storage_api::CapabilityReader::capability_view_generation`]
+    /// over this fixture obeys the production contract without any test
+    /// hand-setting the value.
+    #[must_use]
+    pub fn view_generation(&self) -> Option<u64> {
+        self.reader.generation()
+    }
 }
 
 impl fmt::Debug for AuthorizationFixture {
@@ -255,6 +267,12 @@ enum CurrentResolutionMode {
 struct FixtureReaderState {
     record: StoredCapabilityRecordV1,
     mode: CurrentResolutionMode,
+    /// Advances on every mutation that can change what resolution returns.
+    ///
+    /// This is the fixture's capability-view generation. It is derived from the
+    /// state changes themselves — never hand-set by a test — so it obeys the
+    /// same contract the production current-capability view obeys.
+    generation: u64,
 }
 
 struct FixtureCapabilityReader {
@@ -267,8 +285,13 @@ impl FixtureCapabilityReader {
             state: Mutex::new(FixtureReaderState {
                 record,
                 mode: CurrentResolutionMode::Available,
+                generation: 1,
             }),
         }
+    }
+
+    fn generation(&self) -> Option<u64> {
+        self.state.lock().ok().map(|state| state.generation)
     }
 
     fn update_record(
@@ -281,15 +304,35 @@ impl FixtureCapabilityReader {
             .state
             .lock()
             .map_err(|_| AuthorizationFixtureError::StateUnavailable)?;
-        state.record = update(&state.record)?;
+        let updated = update(&state.record)?;
+        if updated != state.record {
+            state.record = updated;
+            state.generation = state.generation.saturating_add(1);
+        }
         Ok(())
     }
 
     fn set_mode(&self, mode: CurrentResolutionMode) -> Result<(), AuthorizationFixtureError> {
-        self.state
+        let mut state = self
+            .state
             .lock()
-            .map_err(|_| AuthorizationFixtureError::StateUnavailable)?
-            .mode = mode;
+            .map_err(|_| AuthorizationFixtureError::StateUnavailable)?;
+        if !matches!(
+            (state.mode, mode),
+            (
+                CurrentResolutionMode::Available,
+                CurrentResolutionMode::Available
+            ) | (
+                CurrentResolutionMode::Missing,
+                CurrentResolutionMode::Missing
+            ) | (
+                CurrentResolutionMode::Unavailable,
+                CurrentResolutionMode::Unavailable
+            )
+        ) {
+            state.generation = state.generation.saturating_add(1);
+        }
+        state.mode = mode;
         Ok(())
     }
 
@@ -302,6 +345,10 @@ impl FixtureCapabilityReader {
 }
 
 impl CapabilityReader for FixtureCapabilityReader {
+    fn capability_view_generation(&self) -> Option<u64> {
+        self.generation()
+    }
+
     fn read_capability(
         &self,
         capability_id: CapabilityId,

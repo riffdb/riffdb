@@ -40,6 +40,8 @@ tower-service = { version = "=0.3.3", default-features = false }
 
 [dev-dependencies]
 riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
+riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
+riffdb-query-module = { version = "0.1.0", path = "../riffdb-query-module", default-features = false }
 riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }
 riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", default-features = false, features = ["test-fixtures"] }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "sync", "test-util", "time"] }
