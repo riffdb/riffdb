@@ -69,8 +69,11 @@ curve; together, startup is O(recent activity) regardless of database age.
   (checkpoint digest), and the proof is verified, not trusted.
 - The durable format gains one meta key, one tombstone record schema, and one
   checkpoint record schema — all via the established migration chain.
-- Projection health becomes retention-critical: a stalled projection blocks
-  the watermark. Projection-frontier monitoring is a prerequisite deliverable.
+- Projection health becomes retention-critical, with a bounded blast radius:
+  a stalled projection fences the watermark only within its replay budget
+  (max age / bytes / backlog, ADR-0086 §8); on breach it is marked
+  RebuildRequired and detached rather than retaining the log indefinitely.
+  Projection-frontier monitoring is a prerequisite deliverable.
 - PERF-013 gains a checkpointed variant; the linear-drain evidence
   (startup-scale records) is the baseline both mechanisms are measured against.
 

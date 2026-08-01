@@ -42,7 +42,7 @@ Add three unary `AdminService` RPCs to the versioned kernel API:
 - `GetContractMigrationOperation` observes one caller-stable operation after
   the selected database is available.
 
-The RPC inventory grows from 25 to 28 without modifying existing services,
+The RPC inventory grows from 26 to 29 without modifying existing services,
 methods, fields, numbers, or message meanings. The API-neutral service owns all
 request validation, authentication/policy input, canonical input hashing,
 response budgeting, redaction, and typed results. gRPC maps without semantic
@@ -164,3 +164,10 @@ diagnostics.
 
 Exact human acceptance is required before WP-409 changes the durable capability
 registry, public Protobuf inventory, API-neutral service, SDK, or CLI.
+
+## Accepted Inventory Clarification
+
+On 2026-08-01, the human maintainer approved correcting the pre-migration
+baseline from 25 to 26 to include the already-shipped `ExecuteBatch` RPC. The
+three additive migration RPCs therefore freeze a 29-RPC kernel inventory. This
+clarification removes no existing RPC and changes no method meaning.
