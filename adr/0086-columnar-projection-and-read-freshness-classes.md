@@ -1,6 +1,6 @@
 # ADR-0086: Columnar Projection, Read Sources, and Freshness Policies
 
-- **Status:** Proposed (revised per maintainer review, 2026-08-01)
+- **Status:** Accepted
 - **Date:** 2026-08-01
 - **Decision owners:** RiffDB maintainers
 - **Related:** ADR-0010 (frontiers), ADR-0070 (read stability), ADR-0080 (partitioned events, durable consumers), ADR-0082 (single total order), ADR-0085 (retention), ADR-0087 (projected ad-hoc query surface — planned)
@@ -187,4 +187,4 @@ projected row, CPU split, rebuild throughput.
 
 ## Acceptance
 
-Pending maintainer acceptance.
+Accepted by the maintainer on 2026-08-01.

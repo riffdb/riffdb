@@ -1,10 +1,10 @@
 # ADR-0085: History Retention and Startup Scaling
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-01
 - **Decision owners:** RiffDB maintainers
 - **Related requirements:** `REC-001`, `PERF-013`
-- **Amends (on acceptance):** ADR-0019 (validated-prefix checkpoint), ADR-0073 (startup-scale evidence), ADR-0082 (retention conclusions)
+- **Amends:** ADR-0019 (validated-prefix checkpoint), ADR-0073 (startup-scale evidence), ADR-0082 (retention conclusions)
 
 ## Context
 
@@ -86,5 +86,5 @@ curve; together, startup is O(recent activity) regardless of database age.
 
 ## Acceptance
 
-Pending maintainer acceptance. Design detail (checkpoint digest composition,
+Accepted by the maintainer on 2026-08-01.
 sample policy, tombstone schema) proceeds to package briefs after acceptance.

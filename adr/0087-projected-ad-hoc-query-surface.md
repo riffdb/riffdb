@@ -1,6 +1,6 @@
 # ADR-0087: Projected Ad-Hoc Query Surface and Resource Governance
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-01
 - **Decision owners:** RiffDB maintainers
 - **Related:** ADR-0086 (establishes the projection plane as an allowed source for bounded symbolic ad-hoc queries; this record governs the surface itself)
@@ -56,5 +56,5 @@ a hardening item.
 
 ## Acceptance
 
-Pending maintainer acceptance. Implementation follows ADR-0086's prototype
+Accepted by the maintainer on 2026-08-01.
 evidence.
