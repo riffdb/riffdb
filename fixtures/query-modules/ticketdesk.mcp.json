@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "d657d5f24c83da911ac14dc8a0ebc719065b15bbe9859c1ee237261b14063a04",
+  "application_manifest_hash": "8c75b8d871198dac0e58db6a74a39a6fd52783b42ea911ffa37262eb24f00ed4",
   "commands": [
     {
       "annotations": {
@@ -1714,6 +1714,99 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
+      "description": "Execute the exact BoardPage named query from immutable module ticketdesk.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "project_id",
+          "status"
+        ],
+        "type": "object"
+      },
+      "module_hash": "af7f316551add4b4c12025387b206e384406821b5d327c378f4fa93838ebac97",
+      "name": "ticketdesk_board_page",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "tickets": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "assignee_id": {
+                      "type": "string"
+                    },
+                    "project_id": {
+                      "type": "string"
+                    },
+                    "reporter_id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "ticket_id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ticket_id",
+                    "project_id",
+                    "title",
+                    "status",
+                    "reporter_id",
+                    "assignee_id"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 500,
+                "type": "array"
+              }
+            },
+            "required": [
+              "outcome",
+              "tickets"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run BoardPage"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
       "description": "Execute the exact GetTicket named query from immutable module ticketdesk.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1732,7 +1825,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "0579ffc8ef997023a2472ef84bc5ea1a41a1aaff64ca963aabb3be048f44f15a",
+      "module_hash": "af7f316551add4b4c12025387b206e384406821b5d327c378f4fa93838ebac97",
       "name": "ticketdesk_get_ticket",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1825,7 +1918,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "0579ffc8ef997023a2472ef84bc5ea1a41a1aaff64ca963aabb3be048f44f15a",
+      "module_hash": "af7f316551add4b4c12025387b206e384406821b5d327c378f4fa93838ebac97",
       "name": "ticketdesk_get_user",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1921,7 +2014,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "0579ffc8ef997023a2472ef84bc5ea1a41a1aaff64ca963aabb3be048f44f15a",
+      "module_hash": "af7f316551add4b4c12025387b206e384406821b5d327c378f4fa93838ebac97",
       "name": "ticketdesk_list_comments",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2020,7 +2113,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "0579ffc8ef997023a2472ef84bc5ea1a41a1aaff64ca963aabb3be048f44f15a",
+      "module_hash": "af7f316551add4b4c12025387b206e384406821b5d327c378f4fa93838ebac97",
       "name": "ticketdesk_list_tickets",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2131,7 +2224,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "0579ffc8ef997023a2472ef84bc5ea1a41a1aaff64ca963aabb3be048f44f15a",
+      "module_hash": "af7f316551add4b4c12025387b206e384406821b5d327c378f4fa93838ebac97",
       "name": "ticketdesk_list_tickets_by_assignee",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2229,7 +2322,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "0579ffc8ef997023a2472ef84bc5ea1a41a1aaff64ca963aabb3be048f44f15a",
+      "module_hash": "af7f316551add4b4c12025387b206e384406821b5d327c378f4fa93838ebac97",
       "name": "ticketdesk_project_members",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2301,7 +2394,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "0579ffc8ef997023a2472ef84bc5ea1a41a1aaff64ca963aabb3be048f44f15a",
+      "module_hash": "af7f316551add4b4c12025387b206e384406821b5d327c378f4fa93838ebac97",
       "name": "ticketdesk_project_summary",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2417,7 +2510,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "0579ffc8ef997023a2472ef84bc5ea1a41a1aaff64ca963aabb3be048f44f15a",
+      "module_hash": "af7f316551add4b4c12025387b206e384406821b5d327c378f4fa93838ebac97",
       "name": "ticketdesk_ticket_page",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

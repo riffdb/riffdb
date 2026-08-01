@@ -164,6 +164,17 @@ const LIST_TICKETS_BY_PROJECT_STATUS_SQL: &str =
      ORDER BY ticket_id
      LIMIT $4";
 
+/// Board-scale wide page — must stay byte-identical in semantics to
+/// `queries/ticketdesk/board_page.riffq` and `BOARD_PAGE_SQL` in core::report.
+const BOARD_PAGE_SQL: &str = "SELECT organization_id::text, ticket_id::text, project_id::text,
+            reporter_id::text, assignee_id::text, status, title
+     FROM ticket
+     WHERE organization_id = $1::text::uuid
+       AND project_id = $2::text::uuid
+       AND status = $3
+     ORDER BY ticket_id ASC
+     LIMIT $4";
+
 const LIST_OPEN_TICKETS_FOR_ASSIGNEE_SQL: &str =
     "SELECT organization_id::text, ticket_id::text, project_id::text,
             reporter_id::text, assignee_id::text, status, title
@@ -292,6 +303,7 @@ impl PostgresAppBackend {
             SELECT_TICKET_SQL,
             SELECT_USER_SQL,
             LIST_TICKETS_BY_PROJECT_STATUS_SQL,
+            BOARD_PAGE_SQL,
             LIST_OPEN_TICKETS_FOR_ASSIGNEE_SQL,
             LIST_COMMENTS_SQL,
             LIST_PROJECT_MEMBERS_SQL,
@@ -594,6 +606,29 @@ impl AppBackend for PostgresAppBackend {
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error> {
         let statement = self.statement(LIST_TICKETS_BY_PROJECT_STATUS_SQL)?;
+        let client = self.client()?;
+        let rows = client
+            .query(
+                &statement,
+                &[
+                    &format_uuid(organization_id),
+                    &format_uuid(project_id),
+                    &status.as_str().to_owned(),
+                    &(i64::from(limit)),
+                ],
+            )
+            .map_err(db_err)?;
+        rows.iter().map(decode_ticket).collect()
+    }
+
+    fn board_page(
+        &mut self,
+        organization_id: UuidBytes,
+        project_id: UuidBytes,
+        status: TicketStatus,
+        limit: u32,
+    ) -> Result<Vec<TicketRow>, Self::Error> {
+        let statement = self.statement(BOARD_PAGE_SQL)?;
         let client = self.client()?;
         let rows = client
             .query(

@@ -1627,6 +1627,16 @@ mod tests {
             self.ops.fetch_add(1, Ordering::Relaxed);
             Ok(None)
         }
+        fn board_page(
+            &mut self,
+            _: crate::UuidBytes,
+            _: crate::UuidBytes,
+            _: crate::TicketStatus,
+            _: u32,
+        ) -> Result<Vec<crate::TicketRow>, Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(Vec::new())
+        }
         fn create_comment(&mut self, _: &crate::CommentSeed) -> Result<(), Self::Error> {
             self.ops.fetch_add(1, Ordering::Relaxed);
             Ok(())

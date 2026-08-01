@@ -14,7 +14,11 @@ use riffdb_types::{
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
 const MANIFEST: &str = include_str!("../../../fixtures/application-manifests/ticketdesk-v1.json");
-const QUERIES: [(&str, &str); 8] = [
+const QUERIES: [(&str, &str); 9] = [
+    (
+        "BoardPage",
+        include_str!("../../../queries/ticketdesk/board_page.riffq"),
+    ),
     (
         "GetTicket",
         include_str!("../../../queries/ticketdesk/get_ticket.riffq"),
@@ -79,9 +83,12 @@ fn symbolic_role_lowers_only_to_exact_application_operations() {
     assert_eq!(role.role_name(), "TicketDeskAgent");
     assert_eq!(role.environment().as_str(), "development");
     assert_eq!(role.tenant_scope(), &TenantScope::Global);
-    assert_eq!(role.operations().len(), 19);
+    assert_eq!(role.operations().len(), 20);
     assert!(role.operations().iter().any(|operation| {
         operation.kind() == ApplicationRoleOperationKind::Query && operation.name() == "TicketPage"
+    }));
+    assert!(role.operations().iter().any(|operation| {
+        operation.kind() == ApplicationRoleOperationKind::Query && operation.name() == "BoardPage"
     }));
     for command in [
         "CloseTicketWithComment",

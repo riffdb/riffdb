@@ -20,7 +20,11 @@ use riffdb_query_module::{
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
 const APPLICATION_MANIFEST: &str =
     include_str!("../../../fixtures/application-manifests/ticketdesk-v1.json");
-const QUERIES: [(&str, &str); 8] = [
+const QUERIES: [(&str, &str); 9] = [
+    (
+        "BoardPage",
+        include_str!("../../../queries/ticketdesk/board_page.riffq"),
+    ),
     (
         "GetTicket",
         include_str!("../../../queries/ticketdesk/get_ticket.riffq"),
