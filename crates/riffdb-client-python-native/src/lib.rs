@@ -438,7 +438,10 @@ fn parse_value(value: Value, depth: usize, budget: &mut ValueBudget) -> PyResult
             exact_string(object, "value")?.to_owned(),
         )),
         "uuid" if object.len() == 2 => Ok(ApplicationValue::Uuid(
-            exact_string(object, "value")?.to_owned(),
+            riffdb_client_rust::ApplicationUuid::from_text(
+                exact_string(object, "value")?.to_owned(),
+            )
+            .map_err(|_| native_error("invalid_input", None))?,
         )),
         "enum" if object.len() == 2 => Ok(ApplicationValue::Enum(
             exact_string(object, "value")?.to_owned(),
@@ -601,7 +604,7 @@ fn value_to_json(value: ApplicationValue) -> Value {
             json!({"$riffdb": "money", "currency": currency, "amount": value_to_json(*amount)})
         }
         ApplicationValue::String(value) => Value::String(value),
-        ApplicationValue::Uuid(value) => json!({"$riffdb": "uuid", "value": value}),
+        ApplicationValue::Uuid(value) => json!({"$riffdb": "uuid", "value": value.into_string()}),
         ApplicationValue::Enum(value) => json!({"$riffdb": "enum", "value": value}),
         ApplicationValue::Bytes(value) => json!({"$riffdb": "bytes", "value": hex(&value)}),
         ApplicationValue::Date(value) => json!({"$riffdb": "date", "value": value}),

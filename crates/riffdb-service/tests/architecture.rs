@@ -543,8 +543,8 @@ fn the_revision_checked_reauthorization_shortcut_is_reachable_only_from_the_read
     // The pin covers the whole crate, not just orchestration: a reissue call
     // appearing in any other service source would bypass the read-entry scoping.
     let mut crate_wide_uses = 0;
-    for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))
-        .expect("service src dir")
+    for entry in
+        std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src")).expect("service src dir")
     {
         let path = entry.expect("src entry").path();
         if path.extension().and_then(|e| e.to_str()) == Some("rs") {
