@@ -1578,3 +1578,151 @@ fn capability_create_and_revoke_fail_closed_at_their_owned_dependency_boundaries
         );
     });
 }
+
+#[test]
+fn named_query_records_read_pipeline_stage_histograms() {
+    use std::sync::Arc;
+
+    use riffdb_errors::IncidentIdSource;
+    use riffdb_observability::Observability;
+    use riffdb_query_module::{
+        NamedQuerySource, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+    };
+    use riffdb_service::{
+        NamedSymbolicQueryRequest, QueryModuleReadPort, ReadPipelineStage, ServiceTelemetry,
+        SymbolicContractSelector, SymbolicQueryApplication, SymbolicQueryParameters,
+    };
+    use riffdb_types::{CapabilityPermissionV1, QueryOperationName};
+    use support::{EmptyQueryExecutor, FixedQueryModulePort, ServiceHarness};
+
+    const GET_BUDGET: &str = r#"
+query GetBudget(
+    $organization_id: Budget.organization_id,
+    $fiscal_year: Budget.fiscal_year,
+) {
+    one budget from Budget
+        where organization_id == $organization_id
+            && fiscal_year == $fiscal_year
+        else NotFound
+
+    return Found {
+        budget: budget {
+            organization_id
+            fiscal_year
+            approved_amount
+            allocated_amount
+            updated_at
+        }
+    }
+
+    outcomes Found | NotFound
+}
+"#;
+
+    run_async(async move {
+        // Seed harness supplies the exact active catalog the named query will bind to.
+        let seed = ServiceHarness::operations();
+        let validated = seed.active_validated_bundle();
+        let candidate = QueryModuleCandidate::new(
+            QueryModuleName::new("budget_reads").expect("module name"),
+            QueryModuleVersion::new(1).expect("module version"),
+            vec![NamedQuerySource::new("GetBudget", GET_BUDGET).expect("query source")],
+        )
+        .expect("module candidate");
+        let module =
+            riffdb_catalog::ValidatedQueryModule::compile(candidate, &validated).expect("module");
+        let module_hash = module.identity();
+        let query_name = QueryOperationName::new("GetBudget").expect("query name");
+        let named_permission = CapabilityPermissionV1::ExecuteNamedQuery(
+            validated.lineage().clone(),
+            module_hash,
+            query_name,
+        );
+
+        struct FixedIncidents;
+        impl IncidentIdSource for FixedIncidents {
+            fn next_incident_id(
+                &self,
+            ) -> Result<riffdb_types::IncidentId, riffdb_errors::IncidentIdSourceError>
+            {
+                riffdb_types::IncidentId::from_bytes([0xab; 16])
+                    .map_err(|_| riffdb_errors::IncidentIdSourceError)
+            }
+        }
+        let observability = Arc::new(
+            Observability::new(Arc::new(FixedIncidents), 32).expect("bounded observability"),
+        );
+        let modules = Arc::new(FixedQueryModulePort::new(module)) as Arc<dyn QueryModuleReadPort>;
+        let executor = Arc::new(EmptyQueryExecutor);
+        let harness = ServiceHarness::operations_with_read_stage_telemetry(
+            Arc::clone(&observability) as Arc<dyn ServiceTelemetry>,
+            executor,
+            modules,
+            vec![named_permission],
+        );
+
+        let (context, _cancellation) = harness.context(0x91);
+        let mut values = std::collections::BTreeMap::new();
+        values.insert(
+            "organization_id".to_owned(),
+            riffdb_service::SubmittedValue::Uuid([0x31; 16]),
+        );
+        values.insert(
+            "fiscal_year".to_owned(),
+            riffdb_service::SubmittedValue::I64(2026),
+        );
+        let request = NamedSymbolicQueryRequest::new(
+            SymbolicContractSelector::active(),
+            "GetBudget".to_owned(),
+            Some(module_hash),
+            SymbolicQueryParameters::new(values).expect("parameters"),
+        )
+        .expect("named request");
+
+        let result = harness
+            .service
+            .execute_named_symbolic_query(context, request)
+            .await
+            .expect("named query succeeds through empty executor");
+        assert_eq!(result.outcome(), "NotFound");
+
+        let queries = 1_u64;
+        for stage in [
+            ReadPipelineStage::PlanLookup,
+            ReadPipelineStage::Execute,
+            ReadPipelineStage::ResponseBuild,
+        ] {
+            let snapshot = observability.metrics().read_stage_duration(stage);
+            assert!(
+                snapshot.count >= 1,
+                "expected {stage:?} count >= 1, got {}",
+                snapshot.count
+            );
+        }
+        let authorize_total = [
+            ReadPipelineStage::AuthorizeBegin,
+            ReadPipelineStage::AuthorizePre,
+            ReadPipelineStage::AuthorizePost,
+        ]
+        .into_iter()
+        .map(|stage| observability.metrics().read_stage_duration(stage).count)
+        .sum::<u64>();
+        assert_eq!(
+            authorize_total,
+            3 * queries,
+            "authorize stages should fire once each per successful query"
+        );
+        for stage in [
+            ReadPipelineStage::ParamMaterialize,
+            ReadPipelineStage::AuthorizeBegin,
+            ReadPipelineStage::AuthorizePre,
+            ReadPipelineStage::AuthorizePost,
+        ] {
+            assert_eq!(
+                observability.metrics().read_stage_duration(stage).count,
+                1,
+                "{stage:?} should observe exactly once"
+            );
+        }
+    });
+}

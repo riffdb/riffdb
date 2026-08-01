@@ -523,6 +523,9 @@ impl ServiceTelemetry for ProductionServiceTelemetry {
             ServiceTelemetryEvent::ReadRetryExhausted { .. } => &self.read_retry_exhausted,
             ServiceTelemetryEvent::StreamClosedByPolicy => &self.stream_closed_by_policy,
             ServiceTelemetryEvent::CapacityRejected { .. } => &self.capacity_rejected,
+            // Stage histograms are retained on Observability; this aggregate
+            // counter surface does not expose stage labels.
+            ServiceTelemetryEvent::ReadPipelineStageCompleted { .. } => return,
         };
         saturating_increment(counter);
     }

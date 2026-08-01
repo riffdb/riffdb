@@ -20,14 +20,15 @@ use riffdb_conflict::{ConflictEvent, ConflictObserver};
 use riffdb_errors::{IncidentIdSource, InternalError};
 use riffdb_policy::{AuthorizationTelemetry, AuthorizationTelemetryEvent};
 use riffdb_service::{
-    AuthoritativeReadinessFailure, ServiceDiagnostics, ServiceHealthHooks, ServiceTelemetry,
-    ServiceTelemetryEvent,
+    AuthoritativeReadinessFailure, ReadPipelineStage, ServiceDiagnostics, ServiceHealthHooks,
+    ServiceTelemetry, ServiceTelemetryEvent,
 };
 use riffdb_types::{ConflictKeyHash, IncidentId};
 
 use crate::{
-    HealthRegistry, MetricKey, MetricLabel, MetricRegistry, RequiredCounter, RequiredGauge,
-    RequiredHistogram, TraceCollector, TraceRecord,
+    HISTOGRAM_UPPER_BOUNDS, HealthRegistry, MetricKey, MetricLabel, MetricRegistry,
+    READ_PIPELINE_STAGE_COUNT, RequiredCounter, RequiredGauge, RequiredHistogram, TraceCollector,
+    TraceRecord, read_pipeline_stage_index,
 };
 
 /// Maximum redacted incidents retained for operator correlation.
@@ -190,6 +191,21 @@ impl Observability {
         )
     }
 
+    /// Returns per-stage read-pipeline histogram snapshots in [`ReadPipelineStage::ALL`] order.
+    ///
+    /// Each entry is `(count, sum_us, cumulative_buckets)`.
+    #[must_use]
+    pub fn read_stage_snapshot(
+        &self,
+    ) -> [(u64, u64, [u64; HISTOGRAM_UPPER_BOUNDS.len()]); READ_PIPELINE_STAGE_COUNT] {
+        std::array::from_fn(|index| {
+            let stage = ReadPipelineStage::ALL[index];
+            debug_assert_eq!(read_pipeline_stage_index(stage), index);
+            let snapshot = self.metrics.read_stage_duration(stage);
+            (snapshot.count, snapshot.sum, snapshot.cumulative_buckets)
+        })
+    }
+
     /// Returns a cloneable bounded trace collector.
     #[must_use]
     pub fn traces(&self) -> TraceCollector {
@@ -340,10 +356,92 @@ impl ServiceTelemetry for Observability {
                     .increment(MetricKey::ServiceCapacityRejected(stage));
                 return;
             }
+            ServiceTelemetryEvent::ReadPipelineStageCompleted { stage, elapsed } => {
+                self.metrics
+                    .observe_read_stage_duration(stage, duration_micros(elapsed));
+                return;
+            }
         };
         self.metrics.increment(metric);
         self.record_trace(trace);
     }
+}
+
+/// Renders the process-shutdown evidence line for service-side read stages.
+///
+/// Format:
+/// `riffdb-read-stages-v1\t<stage>:<count>:<sum_us>:<b0,...,b15>;...`
+#[must_use]
+pub fn format_read_stages_v1_line(
+    snapshot: &[(u64, u64, [u64; HISTOGRAM_UPPER_BOUNDS.len()]); READ_PIPELINE_STAGE_COUNT],
+) -> String {
+    let mut parts = Vec::with_capacity(READ_PIPELINE_STAGE_COUNT);
+    for (index, (count, sum_us, buckets)) in snapshot.iter().enumerate() {
+        let stage = ReadPipelineStage::ALL[index];
+        let buckets = buckets
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        parts.push(format!(
+            "{}:{count}:{sum_us}:{buckets}",
+            stage.metric_label()
+        ));
+    }
+    format!("riffdb-read-stages-v1\t{}", parts.join(";"))
+}
+
+/// One parsed stage entry from a `riffdb-read-stages-v1` payload.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParsedReadStageV1 {
+    /// Snake_case stage label.
+    pub name: String,
+    /// Observation count.
+    pub count: u64,
+    /// Saturating sum of observed microseconds.
+    pub sum_us: u64,
+    /// Cumulative fixed histogram buckets.
+    pub buckets: Vec<u64>,
+}
+
+/// Parses one [`format_read_stages_v1_line`] payload after the prefix tab.
+///
+/// Returns per-stage entries in emission order.
+pub fn parse_read_stages_v1_payload(payload: &str) -> Result<Vec<ParsedReadStageV1>, &'static str> {
+    let mut stages = Vec::with_capacity(READ_PIPELINE_STAGE_COUNT);
+    for part in payload.split(';') {
+        let mut fields = part.splitn(4, ':');
+        let name = fields.next().ok_or("missing stage name")?.to_owned();
+        let count = fields
+            .next()
+            .ok_or("missing count")?
+            .parse()
+            .map_err(|_| "invalid count")?;
+        let sum_us = fields
+            .next()
+            .ok_or("missing sum")?
+            .parse()
+            .map_err(|_| "invalid sum")?;
+        let buckets = fields
+            .next()
+            .ok_or("missing buckets")?
+            .split(',')
+            .map(|value| value.parse().map_err(|_| "invalid bucket"))
+            .collect::<Result<Vec<_>, _>>()?;
+        if buckets.len() != HISTOGRAM_UPPER_BOUNDS.len() {
+            return Err("bucket cardinality");
+        }
+        stages.push(ParsedReadStageV1 {
+            name,
+            count,
+            sum_us,
+            buckets,
+        });
+    }
+    if stages.len() != READ_PIPELINE_STAGE_COUNT {
+        return Err("stage cardinality");
+    }
+    Ok(stages)
 }
 
 impl ServiceDiagnostics for Observability {

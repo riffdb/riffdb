@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroU16;
 use std::sync::Arc;
+use std::time::Instant;
 
 use riffdb_catalog::{
     ActiveQueryModuleExpectation, PreparedQueryModuleActivation, ValidatedQueryModule,
@@ -48,9 +49,9 @@ use crate::query_discovery_operations::{
 use crate::wait::{ControlledWaitError, wait_with_control};
 use crate::{
     ContractSelection, CursorAccessError, CursorContractIdentity, CursorToken, InternalDefect,
-    QueryCursorLookup, QueryCursorState, RequestContext, RiffDbService, RiffDbServiceInner,
-    ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult, SourceName, SubmittedEnum,
-    SubmittedValue,
+    QueryCursorLookup, QueryCursorState, ReadPipelineStage, RequestContext, RiffDbService,
+    RiffDbServiceInner, ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult,
+    ServiceTelemetryEvent, SourceName, SubmittedEnum, SubmittedValue,
 };
 
 /// Stricter application-surface source ceiling.
@@ -1499,6 +1500,7 @@ async fn execute_named_query(
     request: NamedSymbolicQueryRequest,
 ) -> ServiceResult<ExecuteSymbolicQueryResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
+    let plan_lookup_started = Instant::now();
     let bundle =
         prepare_selected_contract(&service, &context, request.contract.selection(), OPERATION)
             .await?;
@@ -1526,6 +1528,13 @@ async fn execute_named_query(
             ApplicationErrorCode::QueryUnavailable,
         )
     })?;
+    service
+        .providers
+        .telemetry
+        .record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+            stage: ReadPipelineStage::PlanLookup,
+            elapsed: plan_lookup_started.elapsed(),
+        });
     execute_compiled_query(
         service,
         context,
@@ -1643,6 +1652,7 @@ async fn execute_compiled_query(
     if program.steps().len() > MAX_SYMBOLIC_QUERY_STEPS {
         return Err(validation_failure(ValidationCode::InvalidValue));
     }
+    let param_materialize_started = Instant::now();
     let parameters =
         materialize_query_parameters(&service, OPERATION, bundle.bundle(), &document, &submitted)?;
     let parameter_hash = query_parameter_hash(&parameters)
@@ -1675,7 +1685,22 @@ async fn execute_compiled_query(
         context.principal().capability_id(),
         context.principal().capability_revision(),
     );
+    service
+        .providers
+        .telemetry
+        .record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+            stage: ReadPipelineStage::ParamMaterialize,
+            elapsed: param_materialize_started.elapsed(),
+        });
+    let authorize_begin_started = Instant::now();
     let begun = begin_symbolic(&service, &context, &bundle, operation_request, OPERATION).await?;
+    service
+        .providers
+        .telemetry
+        .record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+            stage: ReadPipelineStage::AuthorizeBegin,
+            elapsed: authorize_begin_started.elapsed(),
+        });
     let prior = match cursor {
         Some(token) => match service.cursors.resolve_query(
             token,
@@ -1704,11 +1729,19 @@ async fn execute_compiled_query(
         let failure = PublicError::storage_unavailable().into();
         return Err(finish_failure(&service, &context, &begun, failure).await);
     };
+    let authorize_pre_started = Instant::now();
     let execution_authorization = begun
         .reauthorize(&service, &context)
         .await?
         .into_application_query()
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    service
+        .providers
+        .telemetry
+        .record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+            stage: ReadPipelineStage::AuthorizePre,
+            elapsed: authorize_pre_started.elapsed(),
+        });
 
     // Query execution and continuation registration retry together; audit
     // begin/finish stay outside the loop.
@@ -1729,6 +1762,7 @@ async fn execute_compiled_query(
             let service = &service;
             let telemetry = service.providers.telemetry.as_ref();
             async move {
+                let execute_started = Instant::now();
                 let snapshot = match execute_authorized_query_page(
                     execution_authorization,
                     executor,
@@ -1736,7 +1770,13 @@ async fn execute_compiled_query(
                     parameters,
                     prior_cont,
                 ) {
-                    Ok(snapshot) => snapshot,
+                    Ok(snapshot) => {
+                        telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                            stage: ReadPipelineStage::Execute,
+                            elapsed: execute_started.elapsed(),
+                        });
+                        snapshot
+                    }
                     Err(QueryExecutionError::BackendUnavailable) => {
                         return Err(Ok(
                             crate::read_retry::RetryableReadFault::BackendUnavailable,
@@ -1769,7 +1809,7 @@ async fn execute_compiled_query(
                         ) {
                             Ok(guard) => {
                                 if guard.capacity_evicted() {
-                                    telemetry.record(crate::ServiceTelemetryEvent::CursorEvicted);
+                                    telemetry.record(ServiceTelemetryEvent::CursorEvicted);
                                 }
                                 Some(guard)
                             }
@@ -1795,12 +1835,28 @@ async fn execute_compiled_query(
         let failure = PublicError::concurrency_deadline_exceeded().into();
         return Err(finish_failure(&service, &context, &begun, failure).await);
     }
+    let authorize_post_started = Instant::now();
     begun.reauthorize(&service, &context).await?;
+    service
+        .providers
+        .telemetry
+        .record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+            stage: ReadPipelineStage::AuthorizePost,
+            elapsed: authorize_post_started.elapsed(),
+        });
+    let response_build_started = Instant::now();
     let mut result =
         ExecuteSymbolicQueryResult::from_snapshot(&program, &snapshot, bundle.bundle());
     if let Some(module_hash) = module_hash {
         result.identity = SymbolicQueryIdentity::from_named(&program, module_hash);
     }
+    service
+        .providers
+        .telemetry
+        .record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+            stage: ReadPipelineStage::ResponseBuild,
+            elapsed: response_build_started.elapsed(),
+        });
     finish_success(&service, &context, &begun).await?;
     result.next_cursor = cursor_guard.map(crate::CursorPublicationGuard::publish);
     Ok(result)
