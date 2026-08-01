@@ -33,6 +33,7 @@ riffdb-storage-api = { version = "0.1.0", path = "../../crates/riffdb-storage-ap
 riffdb-types = { version = "0.1.0", path = "../../crates/riffdb-types", default-features = false }
 
 [dev-dependencies]
+riffdb-bench-root = { version = "0.1.0", path = "../../crates/riffdb-bench-root", default-features = false }
 riffdb-catalog = { version = "0.1.0", path = "../../crates/riffdb-catalog", default-features = false }
 riffdb-proto = { version = "0.1.0", path = "../../crates/riffdb-proto", default-features = false }
 

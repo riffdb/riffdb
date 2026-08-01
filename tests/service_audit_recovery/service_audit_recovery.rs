@@ -2,7 +2,7 @@
 
 //! Durable bootstrap and service-audit reopen evidence for redb.
 
-use std::num::{NonZeroU16, NonZeroU32};
+use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -182,6 +182,95 @@ fn audit_count(ports: &RedbOperationalPorts) -> usize {
             .all(|record| record.encoded_content_charge().get() > 0)
     );
     records.len()
+}
+
+fn command_audit(
+    request: u8,
+    phase: riffdb_types::ServiceAuditPhaseV1,
+    seconds: i64,
+) -> ServiceAuditAppendIntentV1 {
+    use riffdb_storage_api::AuditPrincipalV1;
+    use riffdb_types::{
+        ActorId, ActorKind, ServiceAuditLinkV1, ServiceAuditTargetsV1, ServiceOperationV1,
+    };
+    let principal = AuditPrincipalV1::new(
+        ActorId::new("operator").expect("actor"),
+        ActorKind::Human,
+        capability_id(),
+        NonZeroU64::MIN,
+    );
+    ServiceAuditAppendIntentV1::new(
+        request_id(request),
+        Timestamp::new(seconds, 0).expect("timestamp"),
+        ServiceOperationV1::ExecuteCommand,
+        phase,
+        principal,
+        ServiceIngressKindV1::Grpc,
+        ServiceAuditTargetsV1::empty(),
+        None,
+        ServiceAuditLinkV1::None,
+    )
+    .expect("command audit intent")
+}
+
+#[test]
+fn fused_replay_pair_is_present_or_absent_after_crash() {
+    use riffdb_storage_redb::{RedbTestController, RedbTestOperation};
+    use riffdb_types::ServiceAuditPhaseV1;
+
+    // Crash mid-pair (before engine commit): neither row survives reopen.
+    {
+        let path = TestPath::new();
+        let controller = RedbTestController::return_before_commit(RedbTestOperation::ServiceAudit);
+        let mut store = RedbStore::open_with_test_controller(&path.0, controller)
+            .expect("open controlled database");
+        assert_eq!(
+            store
+                .initialize_database(database_id())
+                .expect("initialize"),
+            DatabaseInitializationResult::Installed(database_id())
+        );
+        let mut ports = open_operational(store);
+        let started = command_audit(30, ServiceAuditPhaseV1::Started, 30);
+        let terminal = command_audit(30, ServiceAuditPhaseV1::Failed, 31);
+        let err = ports
+            .append_service_audit_fused_pair(&started, &terminal)
+            .expect_err("injected pre-commit failure");
+        let _ = err;
+        drop(ports);
+        let ports = open_operational(RedbStore::open(&path.0).expect("reopen after crash"));
+        assert_eq!(
+            audit_count(&ports),
+            0,
+            "interrupted fused pair must leave neither Started nor terminal"
+        );
+    }
+
+    // Committed pair: both rows present after reopen.
+    {
+        let path = TestPath::new();
+        let mut store = RedbStore::open(&path.0).expect("open database");
+        assert_eq!(
+            store
+                .initialize_database(database_id())
+                .expect("initialize"),
+            DatabaseInitializationResult::Installed(database_id())
+        );
+        let mut ports = open_operational(store);
+        let started = command_audit(31, ServiceAuditPhaseV1::Started, 40);
+        let terminal = command_audit(31, ServiceAuditPhaseV1::Failed, 41);
+        ports
+            .append_service_audit_fused_pair(&started, &terminal)
+            .expect("committed fused pair");
+        assert_eq!(audit_count(&ports), 2);
+        drop(ports);
+        let ports = open_operational(RedbStore::open(&path.0).expect("reopen after commit"));
+        assert_eq!(
+            audit_count(&ports),
+            2,
+            "committed fused pair must reopen with both rows"
+        );
+    }
 }
 
 #[test]

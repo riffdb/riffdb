@@ -1,6 +1,6 @@
 //! Closed, redaction-safe storage diagnostics and process-test failpoints.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use riffdb_storage_api::{StorageError, StorageErrorKind};
@@ -73,6 +73,7 @@ struct TestControllerInner {
     fired: AtomicBool,
     events: Mutex<Vec<RedbTestEvent>>,
     index_migration: Mutex<IndexMigrationObservation>,
+    audit_sequence_begin_reads: AtomicU64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -106,8 +107,29 @@ impl RedbTestController {
                 fired: AtomicBool::new(false),
                 events: Mutex::new(Vec::new()),
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
+                audit_sequence_begin_reads: AtomicU64::new(0),
             }),
         }
+    }
+
+    /// Installs a controller that counts service-audit sequence begin_read calls.
+    #[must_use]
+    pub fn count_audit_sequence_begin_reads() -> Self {
+        Self::observe_index_migration()
+    }
+
+    /// Deprecated alias — prefer [`Self::count_audit_sequence_begin_reads`].
+    #[must_use]
+    pub fn observe_audit_sequence_reads() -> Self {
+        Self::count_audit_sequence_begin_reads()
+    }
+
+    /// Returns how many begin_read calls service-audit sequence lookup performed.
+    #[must_use]
+    pub fn audit_sequence_begin_reads(&self) -> u64 {
+        self.inner
+            .audit_sequence_begin_reads
+            .load(Ordering::Relaxed)
     }
 
     /// Injects one proven-not-committed storage failure.
@@ -181,6 +203,7 @@ impl RedbTestController {
                 fired: AtomicBool::new(false),
                 events: Mutex::new(Vec::new()),
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
+                audit_sequence_begin_reads: AtomicU64::new(0),
             }),
         }
     }
@@ -196,6 +219,13 @@ impl RedbTestController {
             observation.v1_rewrites = observation.v1_rewrites.saturating_add(v1_rewrites);
             observation.v2_confirms = observation.v2_confirms.saturating_add(v2_confirms);
         }
+    }
+
+    pub(crate) fn observe_audit_sequence_begin_read(&self) {
+        let _ = self
+            .inner
+            .audit_sequence_begin_reads
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn before_commit(&self, operation: RedbTestOperation) -> Result<(), StorageError> {

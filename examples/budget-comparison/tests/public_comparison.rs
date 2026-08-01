@@ -1009,6 +1009,8 @@ fn write_protected_file(path: &Path, document: &[u8]) -> io::Result<()> {
     .sync_all()
 }
 
+mod bench_root_support;
+
 fn test_failure(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
     Box::new(io::Error::other(message.into()))
 }
@@ -1019,24 +1021,12 @@ struct TemporaryDirectory {
 
 impl TemporaryDirectory {
     fn new() -> io::Result<Self> {
-        static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-
-        for _ in 0..1_024 {
-            let ordinal = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "riffdb-wp135-public-{}-{ordinal}",
-                std::process::id()
-            ));
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "could not allocate a unique WP-135 test directory",
-        ))
+        let dir = bench_root_support::unique_bench_dir("wp135-public");
+        // Leak ownership into path; Drop of TemporaryDirectory still cleans.
+        let path = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        fs::create_dir_all(&path)?;
+        Ok(Self { path })
     }
 
     fn path(&self) -> &Path {

@@ -5,10 +5,12 @@
 mod support;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use riffdb_commit::{
     ApplicationCommitNotificationSink, CommandExecutionAdmissionError, CommandExecutionResult,
-    CommittedOutcomeDisposition, CoordinatorLifecycleState,
+    CommitCallTerminal, CommitTelemetry, CommitTelemetryEvent, CommittedOutcomeDisposition,
+    CoordinatorLifecycleState,
 };
 use riffdb_storage_api::AuthoritativePointReader;
 use riffdb_storage_api::{ApplicationCommandTransactionPort, EmptyCommandBatch};
@@ -19,8 +21,27 @@ use support::{
     BudgetDatabase, CountingProvenanceSource, FailingApplicationCommitNotifications,
     FixedAdmissionClock, IncrementingProvenanceSource, PanickingApplicationCommitNotifications,
     RecordingApplicationCommitNotifications, UniqueUserDatabase, command_timestamp, runtime,
-    start_coordinator_with_notifications, start_group_coordinator_with_notifications,
+    start_coordinator_with_notifications, start_group_coordinator_with_commit_telemetry,
+    start_group_coordinator_with_notifications,
 };
+
+/// Counts CommitCallCompleted samples that feed durable-flush histograms.
+struct FlushCountingTelemetry {
+    commits: AtomicUsize,
+}
+impl CommitTelemetry for FlushCountingTelemetry {
+    fn record(&self, event: CommitTelemetryEvent) {
+        if matches!(
+            event,
+            CommitTelemetryEvent::CommitCallCompleted {
+                terminal: CommitCallTerminal::Committed,
+                ..
+            }
+        ) {
+            self.commits.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
 
 #[test]
 fn disjoint_commands_share_two_immediate_transitions_and_keep_independent_results() {
@@ -233,6 +254,43 @@ fn equal_key_commands_commit_once_and_replay_exactly() {
 
     let ports = database.open();
     database.assert_one_budget_commit(&ports, &durable, 12_500);
+}
+
+#[test]
+fn durable_flush_duration_is_recorded_under_group_durability() {
+    // End-to-end (M8): one Group commit through a real store emits
+    // CommitCallCompleted (source of the durable-flush histogram).
+    let database = BudgetDatabase::create("group-flush-histogram");
+    let ports = database.open();
+    let preparation = database.prepare(&ports, 9_900, 0x56);
+    let telemetry = Arc::new(FlushCountingTelemetry {
+        commits: AtomicUsize::new(0),
+    });
+    let coordinator = start_group_coordinator_with_commit_telemetry(
+        ports,
+        Arc::new(FixedAdmissionClock::new(command_timestamp())),
+        Arc::new(IncrementingProvenanceSource::new(0xf1)),
+        Arc::new(RecordingApplicationCommitNotifications::default()),
+        Arc::clone(&telemetry) as Arc<dyn CommitTelemetry>,
+    );
+    let executor = coordinator.command_executor();
+    let result = runtime().block_on(async {
+        executor
+            .reserve_capacity()
+            .await
+            .expect("reserve")
+            .submit(preparation)
+            .expect("submit")
+            .completion()
+            .await
+            .expect("complete")
+    });
+    assert!(matches!(result, CommandExecutionResult::Committed(_)));
+    coordinator.shutdown().expect("shutdown");
+    assert!(
+        telemetry.commits.load(Ordering::Relaxed) > 0,
+        "Group commit must emit CommitCallCompleted (durable-flush source event)"
+    );
 }
 
 #[test]

@@ -1775,9 +1775,10 @@ fn application_result_value(value: ApplicationValue) -> Result<serde_json::Value
         ApplicationValue::Bool(value) => Ok(serde_json::Value::Bool(value)),
         ApplicationValue::I64(value) => Ok(serde_json::Value::Number(value.into())),
         ApplicationValue::U64(value) => Ok(serde_json::Value::Number(value.into())),
-        ApplicationValue::String(value)
-        | ApplicationValue::Uuid(value)
-        | ApplicationValue::Enum(value) => Ok(serde_json::Value::String(value)),
+        ApplicationValue::String(value) | ApplicationValue::Enum(value) => {
+            Ok(serde_json::Value::String(value))
+        }
+        ApplicationValue::Uuid(value) => Ok(serde_json::Value::String(value.into_string())),
         ApplicationValue::Bytes(value) => Ok(serde_json::Value::String(base64::Engine::encode(
             &base64::engine::general_purpose::STANDARD,
             value,

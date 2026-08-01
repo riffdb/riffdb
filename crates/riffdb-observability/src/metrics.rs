@@ -8,10 +8,12 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use riffdb_api_mcp::McpRiskClass;
 use riffdb_auth::{AuthenticationDefect, AuthenticationRejection};
 use riffdb_catalog::CatalogTelemetryEvent;
-use riffdb_commit::CommitCommandTerminal;
+use riffdb_commit::{CommandPipelineStage, CommitCommandTerminal, CommitGroupDispatchReason};
 use riffdb_conflict::ConflictEventKind;
 use riffdb_policy::{AuthorizationDefect, PolicyCode};
-use riffdb_service::{AuthoritativeReadinessFailure, CapacityRejectionStage, ServiceTerminalClass};
+use riffdb_service::{
+    AuthoritativeReadinessFailure, CapacityRejectionStage, ReadPipelineStage, ServiceTerminalClass,
+};
 use riffdb_types::{CommandId, ServiceIngressKindV1, ServiceOperationV1};
 
 use crate::IncidentClass;
@@ -156,6 +158,22 @@ pub enum RequiredMetricFamily {
     CommitLogRecords,
     /// Startup recovery duration.
     StartupRecoveryDurationMilliseconds,
+    /// Command-group dispatch count by closed selection reason.
+    CommandGroupDispatch,
+    /// Commands selected into dispatched groups.
+    CommandGroupSelected,
+    /// Messages deferred after group selection.
+    CommandGroupDeferred,
+    /// Coordinator CPU stage duration by closed stage identity.
+    CommandStageDurationMicroseconds,
+    /// Service-side symbolic read pipeline stage duration by closed stage identity.
+    ReadStageDurationMicroseconds,
+    /// Cumulative time the pipelined writer spent executing units.
+    WriterBusyMicroseconds,
+    /// Cumulative time the pipelined writer spent idle between units.
+    WriterIdleMicroseconds,
+    /// EWMA estimate of coordinator queue delay observed by the writer.
+    CommandQueueDelayEstimateMicroseconds,
 }
 
 /// Frozen name, semantics, and closed dimension names for a required family.
@@ -175,9 +193,12 @@ const NO_LABELS: &[&str] = &[];
 const COMMAND_LABELS: &[&str] = &["command_id", "transport", "terminal_class"];
 const PROJECTION_LABELS: &[&str] = &["projection_identity"];
 const MCP_RISK_LABELS: &[&str] = &["risk_class"];
+const DISPATCH_REASON_LABELS: &[&str] = &["reason"];
+const COMMAND_STAGE_LABELS: &[&str] = &["stage"];
+const READ_STAGE_LABELS: &[&str] = &["stage"];
 
 /// Exact local inventory required before WP-185 composition.
-pub const REQUIRED_METRIC_INVENTORY: [RequiredMetricDescriptor; 32] = [
+pub const REQUIRED_METRIC_INVENTORY: [RequiredMetricDescriptor; 40] = [
     descriptor(
         RequiredMetricFamily::CommandRequests,
         "riffdb_command_requests_total",
@@ -368,6 +389,54 @@ pub const REQUIRED_METRIC_INVENTORY: [RequiredMetricDescriptor; 32] = [
         RequiredMetricFamily::StartupRecoveryDurationMilliseconds,
         "riffdb_startup_recovery_duration_milliseconds",
         MetricSemantics::Histogram,
+        NO_LABELS,
+    ),
+    descriptor(
+        RequiredMetricFamily::CommandGroupDispatch,
+        "riffdb_command_group_dispatch_total",
+        MetricSemantics::Counter,
+        DISPATCH_REASON_LABELS,
+    ),
+    descriptor(
+        RequiredMetricFamily::CommandGroupSelected,
+        "riffdb_command_group_selected_total",
+        MetricSemantics::Counter,
+        NO_LABELS,
+    ),
+    descriptor(
+        RequiredMetricFamily::CommandGroupDeferred,
+        "riffdb_command_group_deferred_total",
+        MetricSemantics::Counter,
+        NO_LABELS,
+    ),
+    descriptor(
+        RequiredMetricFamily::CommandStageDurationMicroseconds,
+        "riffdb_command_stage_duration_microseconds",
+        MetricSemantics::Histogram,
+        COMMAND_STAGE_LABELS,
+    ),
+    descriptor(
+        RequiredMetricFamily::ReadStageDurationMicroseconds,
+        "riffdb_read_stage_duration_microseconds",
+        MetricSemantics::Histogram,
+        READ_STAGE_LABELS,
+    ),
+    descriptor(
+        RequiredMetricFamily::WriterBusyMicroseconds,
+        "riffdb_writer_busy_microseconds_total",
+        MetricSemantics::Counter,
+        NO_LABELS,
+    ),
+    descriptor(
+        RequiredMetricFamily::WriterIdleMicroseconds,
+        "riffdb_writer_idle_microseconds_total",
+        MetricSemantics::Counter,
+        NO_LABELS,
+    ),
+    descriptor(
+        RequiredMetricFamily::CommandQueueDelayEstimateMicroseconds,
+        "riffdb_command_queue_delay_estimate_microseconds",
+        MetricSemantics::CurrentGauge,
         NO_LABELS,
     ),
 ];
@@ -689,11 +758,16 @@ pub enum RequiredCounter {
     McpSchemaFailures,
     McpAuthorizationDenials,
     McpListChangeNotifications,
+    CommandGroupDispatch,
+    CommandGroupSelected,
+    CommandGroupDeferred,
+    WriterBusyMicroseconds,
+    WriterIdleMicroseconds,
 }
 
 impl RequiredCounter {
     /// All required counters in stable storage order.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 19] = [
         Self::CommandRequests,
         Self::LockTimeouts,
         Self::Commits,
@@ -708,6 +782,11 @@ impl RequiredCounter {
         Self::McpSchemaFailures,
         Self::McpAuthorizationDenials,
         Self::McpListChangeNotifications,
+        Self::CommandGroupDispatch,
+        Self::CommandGroupSelected,
+        Self::CommandGroupDeferred,
+        Self::WriterBusyMicroseconds,
+        Self::WriterIdleMicroseconds,
     ];
 
     const fn index(self) -> usize {
@@ -729,11 +808,13 @@ pub enum RequiredHistogram {
     CommitBatchSize,
     DurableFlushDurationMicroseconds,
     StartupRecoveryDurationMilliseconds,
+    CommandStageDurationMicroseconds,
+    ReadStageDurationMicroseconds,
 }
 
 impl RequiredHistogram {
     /// All required histograms in stable storage order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::CommandLatencyMicroseconds,
         Self::StorageQueueLatencyMicroseconds,
         Self::LockWaitMicroseconds,
@@ -741,6 +822,8 @@ impl RequiredHistogram {
         Self::CommitBatchSize,
         Self::DurableFlushDurationMicroseconds,
         Self::StartupRecoveryDurationMilliseconds,
+        Self::CommandStageDurationMicroseconds,
+        Self::ReadStageDurationMicroseconds,
     ];
 
     const fn index(self) -> usize {
@@ -766,11 +849,12 @@ pub enum RequiredGauge {
     McpSessions,
     StorageBytes,
     CommitLogRecords,
+    CommandQueueDelayEstimateMicroseconds,
 }
 
 impl RequiredGauge {
     /// All required current gauges in stable storage order.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::ConflictQueueDepth,
         Self::HotConflictKeyCardinality,
         Self::ActiveContractVersion,
@@ -782,6 +866,7 @@ impl RequiredGauge {
         Self::McpSessions,
         Self::StorageBytes,
         Self::CommitLogRecords,
+        Self::CommandQueueDelayEstimateMicroseconds,
     ];
 
     const fn index(self) -> usize {
@@ -889,6 +974,11 @@ impl CommandMetricSeries {
     }
 }
 
+const COMMAND_GROUP_DISPATCH_REASON_COUNT: usize = 4;
+const COMMAND_PIPELINE_STAGE_COUNT: usize = 5;
+/// Closed end-to-end symbolic read pipeline stage cardinality.
+pub const READ_PIPELINE_STAGE_COUNT: usize = 12;
+
 struct MetricRegistryInner {
     counters: [AtomicU64; MAX_METRIC_SERIES],
     required_counters: [AtomicU64; RequiredCounter::ALL.len()],
@@ -896,6 +986,9 @@ struct MetricRegistryInner {
     required_gauges: Mutex<[Option<u64>; RequiredGauge::ALL.len()]>,
     command_series: Mutex<BTreeMap<CommandMetricDimensions, CommandMetricSeries>>,
     mcp_tool_calls: [AtomicU64; McpRiskClass::ALL.len()],
+    command_group_dispatch_reasons: [AtomicU64; COMMAND_GROUP_DISPATCH_REASON_COUNT],
+    command_stage_durations: [FixedHistogram; COMMAND_PIPELINE_STAGE_COUNT],
+    read_stage_durations: [FixedHistogram; READ_PIPELINE_STAGE_COUNT],
 }
 
 /// Cloneable fixed-cardinality counter registry.
@@ -916,6 +1009,9 @@ impl MetricRegistry {
                 required_gauges: Mutex::new([None; RequiredGauge::ALL.len()]),
                 command_series: Mutex::new(BTreeMap::new()),
                 mcp_tool_calls: std::array::from_fn(|_| AtomicU64::new(0)),
+                command_group_dispatch_reasons: std::array::from_fn(|_| AtomicU64::new(0)),
+                command_stage_durations: std::array::from_fn(|_| FixedHistogram::new()),
+                read_stage_durations: std::array::from_fn(|_| FixedHistogram::new()),
             }),
         }
     }
@@ -1043,6 +1139,81 @@ impl MetricRegistry {
         self.inner.mcp_tool_calls[mcp_risk_index(risk)].load(Ordering::Relaxed)
     }
 
+    /// Records one command-group dispatch observation with closed reason labels.
+    pub fn record_command_group_dispatch(
+        &self,
+        reason: CommitGroupDispatchReason,
+        selected: u64,
+        deferred: u64,
+    ) {
+        saturating_add(
+            &self.inner.command_group_dispatch_reasons[command_group_dispatch_reason_index(reason)],
+            1,
+        );
+        self.increment_required_counter(RequiredCounter::CommandGroupDispatch);
+        saturating_add(
+            &self.inner.required_counters[RequiredCounter::CommandGroupSelected.index()],
+            selected,
+        );
+        saturating_add(
+            &self.inner.required_counters[RequiredCounter::CommandGroupDeferred.index()],
+            deferred,
+        );
+    }
+
+    /// Returns dispatch counts in full, barrier, queue-drained, receiver-closed order.
+    #[must_use]
+    pub fn command_group_dispatch_reasons(&self) -> [u64; COMMAND_GROUP_DISPATCH_REASON_COUNT] {
+        std::array::from_fn(|index| {
+            self.inner.command_group_dispatch_reasons[index].load(Ordering::Relaxed)
+        })
+    }
+
+    /// Observes one coordinator CPU stage duration under its closed stage label.
+    pub fn observe_command_stage_duration(&self, stage: CommandPipelineStage, value: u64) {
+        self.inner.command_stage_durations[command_pipeline_stage_index(stage)].observe(value);
+        self.observe_required_histogram(RequiredHistogram::CommandStageDurationMicroseconds, value);
+    }
+
+    /// Returns the fixed histogram for one closed pipeline stage.
+    #[must_use]
+    pub fn command_stage_duration(&self, stage: CommandPipelineStage) -> HistogramSnapshot {
+        self.inner.command_stage_durations[command_pipeline_stage_index(stage)].snapshot()
+    }
+
+    /// Observes one service-side read pipeline stage duration under its closed stage label.
+    pub fn observe_read_stage_duration(&self, stage: ReadPipelineStage, value: u64) {
+        self.inner.read_stage_durations[read_pipeline_stage_index(stage)].observe(value);
+        self.observe_required_histogram(RequiredHistogram::ReadStageDurationMicroseconds, value);
+    }
+
+    /// Returns the fixed histogram for one closed read pipeline stage.
+    #[must_use]
+    pub fn read_stage_duration(&self, stage: ReadPipelineStage) -> HistogramSnapshot {
+        self.inner.read_stage_durations[read_pipeline_stage_index(stage)].snapshot()
+    }
+
+    /// Adds busy time spent on the pipelined writer thread.
+    pub fn add_writer_busy_microseconds(&self, micros: u64) {
+        saturating_add(
+            &self.inner.required_counters[RequiredCounter::WriterBusyMicroseconds.index()],
+            micros,
+        );
+    }
+
+    /// Adds idle time between units on the pipelined writer thread.
+    pub fn add_writer_idle_microseconds(&self, micros: u64) {
+        saturating_add(
+            &self.inner.required_counters[RequiredCounter::WriterIdleMicroseconds.index()],
+            micros,
+        );
+    }
+
+    /// Publishes the writer's EWMA queue-delay estimate as a current gauge.
+    pub fn set_command_queue_delay_estimate_microseconds(&self, micros: u64) {
+        self.set_required_gauge(RequiredGauge::CommandQueueDelayEstimateMicroseconds, micros);
+    }
+
     /// Applies a signed delta to a present-or-zero current gauge.
     pub fn adjust_required_gauge(&self, gauge: RequiredGauge, delta: i64) {
         let slot = &mut self.lock_gauges()[gauge.index()];
@@ -1071,6 +1242,44 @@ impl Default for MetricRegistry {
 impl fmt::Debug for MetricRegistry {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("MetricRegistry([REDACTED])")
+    }
+}
+
+const fn command_group_dispatch_reason_index(reason: CommitGroupDispatchReason) -> usize {
+    match reason {
+        CommitGroupDispatchReason::Full => 0,
+        CommitGroupDispatchReason::Barrier => 1,
+        CommitGroupDispatchReason::QueueDrained => 2,
+        CommitGroupDispatchReason::ReceiverClosed => 3,
+    }
+}
+
+const fn command_pipeline_stage_index(stage: CommandPipelineStage) -> usize {
+    match stage {
+        CommandPipelineStage::Admission => 0,
+        CommandPipelineStage::Compatibility => 1,
+        CommandPipelineStage::Evaluation => 2,
+        CommandPipelineStage::ValidationEncodingStaging => 3,
+        CommandPipelineStage::Publication => 4,
+    }
+}
+
+/// Stable registry index for one closed read pipeline stage.
+#[must_use]
+pub const fn read_pipeline_stage_index(stage: ReadPipelineStage) -> usize {
+    match stage {
+        ReadPipelineStage::TransportAdapt => 0,
+        ReadPipelineStage::Authn => 1,
+        ReadPipelineStage::AdmissionContext => 2,
+        ReadPipelineStage::SpawnDispatch => 3,
+        ReadPipelineStage::PlanLookup => 4,
+        ReadPipelineStage::ParamMaterialize => 5,
+        ReadPipelineStage::AuthorizeBegin => 6,
+        ReadPipelineStage::AuthorizePre => 7,
+        ReadPipelineStage::Execute => 8,
+        ReadPipelineStage::AuthorizePost => 9,
+        ReadPipelineStage::ResponseBuild => 10,
+        ReadPipelineStage::EncodeConvert => 11,
     }
 }
 

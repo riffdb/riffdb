@@ -148,11 +148,7 @@ pub fn run_scenarios<B: AppBackend>(
                 }
                 ScenarioId::ListProjectMembers => {
                     let (value, elapsed) = time_call(|| {
-                        backend.list_project_members(
-                            probes.organization_id,
-                            probes.project_id,
-                            50,
-                        )
+                        backend.list_project_members(probes.organization_id, probes.project_id, 50)
                     });
                     value.map(|rows| (rows.len(), elapsed))
                 }
@@ -179,8 +175,7 @@ pub fn run_scenarios<B: AppBackend>(
                 }
                 ScenarioId::CloseTicketWithComment => {
                     let input = probes.close_ticket_with_comment(sample);
-                    let (value, elapsed) =
-                        time_call(|| backend.close_ticket_with_comment(&input));
+                    let (value, elapsed) = time_call(|| backend.close_ticket_with_comment(&input));
                     // Two entity mutations: ticket + comment.
                     value.map(|()| (2, elapsed))
                 }
@@ -191,8 +186,7 @@ pub fn run_scenarios<B: AppBackend>(
                 }
                 ScenarioId::OpenTicketWithLabels => {
                     let input = probes.open_ticket_with_labels(sample);
-                    let (value, elapsed) =
-                        time_call(|| backend.open_ticket_with_labels(&input));
+                    let (value, elapsed) = time_call(|| backend.open_ticket_with_labels(&input));
                     // Ticket + two label links.
                     value.map(|()| (3, elapsed))
                 }
@@ -211,10 +205,7 @@ pub fn run_scenarios<B: AppBackend>(
     Ok(results)
 }
 
-fn run_once<B: AppBackend>(
-    backend: &mut B,
-    probes: &ScenarioProbes,
-) -> Result<(), B::Error> {
+fn run_once<B: AppBackend>(backend: &mut B, probes: &ScenarioProbes) -> Result<(), B::Error> {
     let _ = backend.point_get_ticket(probes.organization_id, probes.ticket_id)?;
     let _ = backend.point_get_user(probes.organization_id, probes.user_id)?;
     let _ = backend.list_tickets_by_project_status(
@@ -223,11 +214,8 @@ fn run_once<B: AppBackend>(
         probes.open_status,
         50,
     )?;
-    let _ = backend.list_open_tickets_for_assignee(
-        probes.organization_id,
-        probes.assignee_id,
-        50,
-    )?;
+    let _ =
+        backend.list_open_tickets_for_assignee(probes.organization_id, probes.assignee_id, 50)?;
     let _ = backend.list_comments_for_ticket(probes.organization_id, probes.ticket_id, 50)?;
     let _ = backend.list_project_members(probes.organization_id, probes.project_id, 50)?;
     let _ = backend.ticket_detail_page(probes.organization_id, probes.ticket_id, 50)?;

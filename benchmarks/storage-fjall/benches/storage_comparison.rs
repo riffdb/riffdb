@@ -25,8 +25,6 @@ const GROUP_SIZE: usize = 8;
 const FIXTURE_CONTRACT_VERSION: &str =
     "none (substrate-only explicit semantic conformance failure)";
 
-static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
-
 fn main() {
     if let Err(error) = run() {
         eprintln!("Fjall comparison benchmark failed: {error}");
@@ -490,26 +488,32 @@ fn display_adapter(
     move |error| format!("{operation}: {error}")
 }
 
-struct TempRoot(PathBuf);
+struct TempRoot {
+    _root: riffdb_bench_root::BenchRoot,
+    dir: riffdb_bench_root::BenchDir,
+}
 
 impl TempRoot {
     fn new() -> Result<Self, String> {
-        let path = env::temp_dir().join(format!(
-            "riffdb-storage-fjall-benchmark-{}-{}",
-            std::process::id(),
-            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&path).map_err(|error| format!("create benchmark root: {error}"))?;
-        Ok(Self(path))
+        let default_root = riffdb_bench_root::default_perf_db_root(
+            Path::new(env!("CARGO_MANIFEST_DIR")),
+            "storage-fjall",
+        );
+        let root = riffdb_bench_root::BenchRoot::resolve(riffdb_bench_root::BenchRootOptions {
+            harness: "storage-fjall",
+            cli_override: std::env::var_os("RIFFDB_BENCH_DB_ROOT").map(PathBuf::from),
+            default_root,
+            allow_tmpfs: std::env::var_os("RIFFDB_BENCH_ALLOW_TMPFS").is_some(),
+            min_free_bytes: 64 * 1024 * 1024,
+        })
+        .map_err(|error| format!("resolve storage-fjall root: {error}"))?;
+        let _ = riffdb_bench_root::sweep_stale(&root);
+        let dir = riffdb_bench_root::BenchDir::create(&root, "bench")
+            .map_err(|error| format!("create storage-fjall dir: {error}"))?;
+        Ok(Self { _root: root, dir })
     }
 
     fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempRoot {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        self.dir.path()
     }
 }

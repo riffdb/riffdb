@@ -9,6 +9,7 @@ if [[ "${1:-}" == "--check" ]]; then
     generated="$(mktemp -d)"
     trap 'rm -rf "$generated"' EXIT
     cargo run --quiet -p riffdb-query-module --example generate_clients -- "$generated"
+    cargo run --quiet -p riffdb-query-module --example generate_agent_alpha_clients -- "$generated"
     diff -u fixtures/query-modules/ticketdesk.rs "$generated/fixtures/query-modules/ticketdesk.rs"
     diff -u fixtures/query-modules/ticketdesk.mcp.json "$generated/fixtures/query-modules/ticketdesk.mcp.json"
     diff -u fixtures/application-manifests/ticketdesk-v1.identity \
@@ -23,12 +24,20 @@ if [[ "${1:-}" == "--check" ]]; then
         "$generated/fixtures/application-locks/ticketdesk-migration-v4.json"
     diff -u clients/typescript/ticketdesk/client.ts "$generated/clients/typescript/ticketdesk/client.ts"
     diff -u clients/python/ticketdesk/generated.py "$generated/clients/python/ticketdesk/generated.py"
+    # agent-alpha Rust clients (non-workspace packages; previously invisible to battery)
+    diff -u examples/agent-alpha/generated/rust/client.rs \
+        "$generated/examples/agent-alpha/generated/rust/client.rs"
+    diff -u examples/agent-alpha/domains/agent-blog/generated/rust/client.rs \
+        "$generated/examples/agent-alpha/domains/agent-blog/generated/rust/client.rs"
+    diff -u examples/agent-alpha/domains/agent-orders/generated/rust/client.rs \
+        "$generated/examples/agent-alpha/domains/agent-orders/generated/rust/client.rs"
     python3 -c 'compile(open("clients/python/ticketdesk/generated.py", encoding="utf-8").read(), "clients/python/ticketdesk/generated.py", "exec")'
     if command -v mypy >/dev/null 2>&1; then
         MYPYPATH=clients/python/runtime/src \
             mypy --strict clients/python/ticketdesk/generated.py
     fi
     cargo check --quiet -p riffdb-ticketdesk --all-targets
+    cargo check --quiet --manifest-path examples/agent-alpha/domains/rust/Cargo.toml
     if command -v tsc >/dev/null 2>&1; then
         tsc --noEmit --strict --target ES2022 \
             "$generated/clients/typescript/ticketdesk/client.ts"
@@ -40,3 +49,4 @@ if [[ "${1:-}" == "--check" ]]; then
 fi
 
 cargo run --quiet -p riffdb-query-module --example generate_clients -- "$repo_root"
+cargo run --quiet -p riffdb-query-module --example generate_agent_alpha_clients -- "$repo_root"

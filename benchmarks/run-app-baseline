@@ -6,7 +6,8 @@ export TZ=UTC
 
 usage() {
     printf '%s\n' \
-        'usage: benchmarks/run-app-baseline [--smoke|--full] [--samples N] [--warmup N]' \
+        'usage: benchmarks/run-app-baseline [--self-test]' \
+        '         | [--smoke|--full] [--samples N] [--warmup N]' \
         '         [--concurrent-clients N] [--concurrent-operations N]' \
         '         [--load interactive|agent|membership_contention] [--load-clients N] [--load-duration-secs N]' \
         '         [--load-warmup-secs N] [--load-zipf-s F] [--load-contended]' \
@@ -20,6 +21,28 @@ usage() {
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
+
+# --self-test: build riffdbd and run the full app-baseline --workspace suite,
+# including the kill -9 dead-peer e2e (RUN_RIFFDB_DEAD_PEER=1).
+if [[ "${1:-}" == "--self-test" ]]; then
+    if (($# != 1)); then
+        printf 'benchmarks/run-app-baseline --self-test takes no other arguments\n' >&2
+        exit 2
+    fi
+    printf 'self-test: building riffdbd (release)\n'
+    cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd
+    riffdbd_bin="$repo_root/target/release/riffdbd"
+    [[ -x "$riffdbd_bin" ]] || {
+        printf 'self-test: riffdbd missing after build: %s\n' "$riffdbd_bin" >&2
+        exit 1
+    }
+    printf 'self-test: cargo test --workspace (dead-peer e2e enforced)\n'
+    export RIFFDB_APP_BASELINE_RIFFDBD_BIN="$riffdbd_bin"
+    export RUN_RIFFDB_DEAD_PEER=1
+    cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+    printf 'self-test: ok\n'
+    exit 0
+fi
 
 mode=smoke
 samples=
@@ -44,6 +67,10 @@ database_root=
 output=
 while (($#)); do
     case "$1" in
+        --self-test)
+            printf 'benchmarks/run-app-baseline --self-test must be the only argument\n' >&2
+            exit 2
+            ;;
         --smoke) mode=smoke; shift ;;
         --full) mode=full; shift ;;
         --samples)
@@ -143,14 +170,25 @@ else
     report="${output:-$repo_root/$out_dir/report-v1.json}"
 fi
 
+# Both engines place durable state under the same real-disk tree by default.
+if [[ -z "$database_root" ]]; then
+    database_root="$repo_root/target/perf-db/app-baseline"
+fi
+mkdir -p "$database_root"
+postgres_database_root="$database_root/postgres"
+mkdir -p "$postgres_database_root"
+
 postgres_container="riffdb-app-baseline-$$"
 postgres_started=0
 cleanup() {
     if ((postgres_started)); then
+        docker exec "$postgres_container" \
+            chmod -R a+rwx /var/lib/postgresql >/dev/null 2>&1 || true
         docker rm -f "$postgres_container" >/dev/null 2>&1 || true
+        rm -rf "$postgres_database_root" || true
     fi
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 extra_args=()
 if [[ "$mode" == full ]]; then
@@ -172,7 +210,9 @@ fi
 [[ -n "$load_saturate_p99_ms" ]] && extra_args+=(--load-saturate-p99-ms "$load_saturate_p99_ms")
 ((load_concurrency_sweep)) && extra_args+=(--load-concurrency-sweep)
 [[ -n "$load_riffdb_transport" ]] && extra_args+=(--load-riffdb-transport "$load_riffdb_transport")
-[[ -n "$database_root" ]] && extra_args+=(--database-root "$database_root")
+extra_args+=(--database-root "$database_root")
+extra_args+=(--postgres-data-host-path "$postgres_database_root")
+export RIFFDB_APP_BASELINE_POSTGRES_DATA_HOST="$postgres_database_root"
 ((skip_postgres)) && extra_args+=(--skip-postgres)
 ((skip_riffdb)) && extra_args+=(--skip-riffdb)
 ((assert_write_parity)) && extra_args+=(--assert-write-parity)
@@ -192,10 +232,12 @@ if ((skip_postgres == 0)); then
         if ((load_concurrency_sweep)); then
             pg_args+=(-c max_connections=200)
         fi
+        # Bind-mount PG data onto the same real-disk tree as RiffDB.
         docker run -d --rm --name "$postgres_container" \
             -e POSTGRES_USER=riffdb \
             -e POSTGRES_PASSWORD=riffdb \
             -e POSTGRES_DB=riffdb_app_baseline \
+            --mount "type=bind,source=$postgres_database_root,target=/var/lib/postgresql" \
             -p 127.0.0.1::5432 \
             "$image" "${pg_args[@]}" >/dev/null
         postgres_started=1

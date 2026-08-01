@@ -80,6 +80,13 @@ macro_rules! unary {
             message: $request,
             metadata: &CallMetadata,
         ) -> Result<$response, ClientError> {
+            // Walk inventory (five structural validations per unary round-trip):
+            // (1) client validate_outbound — certain local fail-fast classification
+            // (2) client StrictProstEncoder — wire-bound encode
+            // (3) server StrictProstDecoder — wire contract on requests
+            // (4) server StrictProstEncoder — server fail-closed outbound
+            // (5) client StrictProstDecoder — canonical wire on responses
+            // Inbound re-walk after decode is intentionally absent (codec owns it).
             validate_outbound(&message)?;
             let mut request = Request::new(message);
             metadata.apply(&mut request);
@@ -89,7 +96,6 @@ macro_rules! unary {
                 .await
                 .map_err(checked_status)?
                 .into_inner();
-            validate_inbound(&response)?;
             Ok(response)
         }
     };
@@ -113,7 +119,10 @@ macro_rules! unary_exchange {
                 .await
                 .map_err(checked_status)?
                 .into_inner();
-            validate_inbound(&response)?;
+            // Structural re-walk of the response is omitted: the decoder already
+            // ran decode_public_message. Exchange checks assert request↔response
+            // relations only (they may re-validate structure internally — that
+            // is riffdb-proto ownership, not this client layer).
             $exchange(&exchange_request, &response).map_err(|_| invalid_inbound())?;
             Ok(response)
         }
@@ -141,7 +150,6 @@ macro_rules! unary_application {
                 .await
                 .map_err(checked_application_status)?
                 .into_inner();
-            validate_inbound(&response)?;
             Ok(response)
         }
     };
@@ -540,7 +548,6 @@ impl RiffDbClient {
             .await
             .map_err(checked_status)?
             .into_inner();
-        validate_inbound(&response)?;
         validate_create_capability_exchange(&exchange_request, &response)
             .map_err(|_| invalid_inbound())?;
         Ok(response)
@@ -548,7 +555,9 @@ impl RiffDbClient {
 
     /// Starts a checked commit stream.
     ///
-    /// Each item is structurally validated before it is returned to the caller.
+    /// Items are decoded by the strict codec (`decode_public_message`). This
+    /// stream does not re-walk structure after decode; exchange-style relations
+    /// do not apply to commit notifications.
     pub async fn subscribe_commits(
         &mut self,
         message: v1::SubscribeCommitsRequest,
@@ -629,6 +638,7 @@ impl RiffDbClient {
             let request_id = request_ids
                 .next_request_id()
                 .map_err(|error| retry.request_id_failure(error))?;
+            retry.note_request_id(&request_id);
             match self
                 .create_offline_backup(create.request(request_id), metadata)
                 .await
@@ -661,6 +671,7 @@ impl RiffDbClient {
             let request_id = request_ids
                 .next_request_id()
                 .map_err(|error| retry.request_id_failure(error))?;
+            retry.note_request_id(&request_id);
             match self
                 .restore_offline_backup(restore.request(request_id), metadata)
                 .await
@@ -878,7 +889,10 @@ fn next_retry_request<S: RetryRequestIdSource>(
     }
     request_ids
         .next_request_id()
-        .map(|request_id| Some(command.request(request_id)))
+        .map(|request_id| {
+            retry.note_request_id(&request_id);
+            Some(command.request(request_id))
+        })
         .map_err(|error| retry.request_id_failure(error))
 }
 
@@ -892,7 +906,10 @@ fn next_normal_create_request<S: RetryRequestIdSource>(
     }
     request_ids
         .next_request_id()
-        .map(|request_id| Some(create.request(request_id)))
+        .map(|request_id| {
+            retry.note_request_id(&request_id);
+            Some(create.request(request_id))
+        })
         .map_err(|error| retry.request_id_failure(error))
 }
 
@@ -906,23 +923,22 @@ fn next_bootstrap_create_request<S: RetryRequestIdSource>(
     }
     request_ids
         .next_request_id()
-        .map(|request_id| Some(create.request(request_id)))
+        .map(|request_id| {
+            retry.note_request_id(&request_id);
+            Some(create.request(request_id))
+        })
         .map_err(|error| retry.request_id_failure(error))
 }
 
-/// A commit-notification stream that validates each peer-provided item.
+/// A commit-notification stream decoded by the strict client codec.
 pub struct CommitNotificationStream {
     inner: Streaming<v1::CommitNotification>,
 }
 
 impl CommitNotificationStream {
-    /// Receives and validates the next commit notification.
+    /// Receives the next commit notification (structure enforced at decode).
     pub async fn message(&mut self) -> Result<Option<v1::CommitNotification>, ClientError> {
-        let item = self.inner.message().await.map_err(checked_status)?;
-        if let Some(item) = &item {
-            validate_inbound(item)?;
-        }
-        Ok(item)
+        self.inner.message().await.map_err(checked_status)
     }
 }
 
@@ -972,6 +988,14 @@ impl fmt::Display for GeneratedExecutionError {
 
 impl Error for GeneratedExecutionError {}
 
+/// Client-side outbound structural validation (walk 1 of 5 per unary trip).
+///
+/// Load-bearing classification, not repeated representation: invalid
+/// client-built messages become certain, non-retryable
+/// [`ProtocolFailureKind::InvalidOutboundMessage`]. The encoder (walk 2) still
+/// validates before wire write, but encoder failures surface through Tonic as
+/// details-free transport errors and can be misclassified as retryable
+/// uncertainty. Inbound has no client re-walk after decode (codec owns that).
 fn validate_outbound<M: PublicMessage>(message: &M) -> Result<(), ClientError> {
     validate_public_message(message).map_err(|_| {
         ClientError::Protocol(ProtocolFailure::new(
@@ -988,10 +1012,6 @@ fn configure_projection_wait(
     message.required_sequence = Some(required_sequence.get());
     message.wait_nanos = u64::try_from(maximum_wait.as_nanos()).map_err(|_| invalid_outbound())?;
     validate_outbound(message)
-}
-
-fn validate_inbound<M: PublicMessage>(message: &M) -> Result<(), ClientError> {
-    validate_public_message(message).map_err(|_| invalid_inbound())
 }
 
 const fn invalid_inbound() -> ClientError {
@@ -2171,10 +2191,113 @@ mod tests {
             Duration::from_nanos(30_000_000_001),
         )
         .expect_err("over-limit wait");
-        assert!(matches!(
-            error,
-            ClientError::Protocol(ProtocolFailure { .. })
-        ));
+        match error {
+            ClientError::Protocol(failure) => {
+                assert_eq!(failure.kind(), ProtocolFailureKind::InvalidOutboundMessage);
+            }
+            other => panic!("expected InvalidOutboundMessage, got {other:?}"),
+        }
+    }
+
+    /// Invalid unary outbound is certain `InvalidOutboundMessage`, never
+    /// transport-unavailable uncertainty. Re-dropping `validate_outbound`'s
+    /// `validate_public_message` walk fails this test (transcript).
+    #[test]
+    fn invalid_unary_outbound_is_protocol_not_transport_unavailable() {
+        use crate::status::{carries_uncertainty, is_retryable};
+
+        let request = v1::QueryProjectionRequest {
+            request_id: riffdb_types::RequestId::from_unix_milliseconds_and_random(1, [3; 10])
+                .expect("request ID")
+                .into_bytes()
+                .to_vec(),
+            contract: Some(v1::ContractSelection {
+                selection: Some(v1::contract_selection::Selection::Active(v1::Unit {})),
+            }),
+            projection_id: 1,
+            leading_components: Vec::new(),
+            required_sequence: Some(1),
+            wait_nanos: 30_000_000_001,
+            page: Some(v1::PageRequest {
+                limit: Some(1),
+                cursor: None,
+            }),
+        };
+        let error =
+            validate_outbound(&request).expect_err("invalid outbound must fail before any RPC");
+        match &error {
+            ClientError::Protocol(failure) => {
+                assert_eq!(
+                    failure.kind(),
+                    ProtocolFailureKind::InvalidOutboundMessage,
+                    "encoder-only rejection would surface as TransportUnavailable"
+                );
+            }
+            other => panic!("expected Protocol(InvalidOutboundMessage), got {other:?}"),
+        }
+        assert!(!is_retryable(&error));
+        assert!(!carries_uncertainty(&error));
+    }
+
+    /// A legal max-sized command input can assemble an ExecuteCommandRequest
+    /// over MAX_EXECUTE_REQUEST_BYTES. Local validate_outbound must reject with
+    /// zero server submissions (no retry-budget burn / OutcomeUnknown).
+    #[test]
+    fn max_canonical_input_that_overflows_execute_request_fails_locally() {
+        use crate::status::{carries_uncertainty, is_retryable};
+        use riffdb_types::MAX_CANONICAL_DOCUMENT_BYTES;
+
+        let payload_len = MAX_CANONICAL_DOCUMENT_BYTES - 32;
+        let input = v1::Value {
+            kind: Some(v1::value::Kind::RecordValue(v1::ValueRecord {
+                fields: vec![v1::ValueField {
+                    field_id: Some(1),
+                    name: "b".to_owned(),
+                    value: Some(v1::Value {
+                        kind: Some(v1::value::Kind::BytesValue(vec![0x61; payload_len])),
+                    }),
+                }],
+            })),
+        };
+        let request_id = riffdb_types::RequestId::from_unix_milliseconds_and_random(1, [4; 10])
+            .expect("request ID");
+        let execute = v1::ExecuteCommandRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            command_name: "CreateTicket".to_owned(),
+            expected_contract_version: Some(1),
+            input: Some(input.clone()),
+        };
+        let error = validate_outbound(&execute)
+            .expect_err("oversize execute request must fail locally before encode/RPC");
+        match &error {
+            ClientError::Protocol(failure) => {
+                assert_eq!(failure.kind(), ProtocolFailureKind::InvalidOutboundMessage);
+            }
+            other => panic!("expected Protocol(InvalidOutboundMessage), got {other:?}"),
+        }
+        assert!(!is_retryable(&error));
+        assert!(!carries_uncertainty(&error));
+
+        let command = IdempotentCommand::new("CreateTicket", Some(1), input)
+            .expect("max-bound input is a legal command document");
+        let built = command.request(request_id);
+        let error = validate_outbound(&built).expect_err(
+            "execute_with_retry would call validate_outbound via execute() before submit",
+        );
+        match &error {
+            ClientError::Protocol(failure) => {
+                assert_eq!(
+                    failure.kind(),
+                    ProtocolFailureKind::InvalidOutboundMessage,
+                    "without local outbound validation this becomes OutcomeUnknown"
+                );
+            }
+            other => panic!("expected Protocol(InvalidOutboundMessage), got {other:?}"),
+        }
+        assert!(!is_retryable(&error));
+        assert!(!carries_uncertainty(&error));
+        assert!(!matches!(error, ClientError::OutcomeUnknown(_)));
+        let _budget = AttemptBudget::new(5).expect("budget");
     }
 }
 

@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use futures_util::{StreamExt, stream};
@@ -393,11 +394,13 @@ fn record_generated_batch_item_completion<T, F>(
 /// surfaces directly with zero re-entry.
 ///
 /// Undecodable error details and unset oneof arms are **defense-in-depth**:
-/// production clients reject both shapes at `validate_inbound` before an `Ok`
-/// batch response exists, so those wire defects arrive as transport-level
-/// protocol failures and take the blanket re-entry path. If a decoded response
-/// still reaches these arms, same-key re-entry is scheduled; when that re-entry
-/// is exhausted, the original protocol failure is surfaced as the item error.
+/// production clients reject both shapes at the kept client inbound decode
+/// (`decode_public_message` inside StrictProstDecoder — no separate client
+/// re-walk after decode) before an `Ok` batch response exists, so those wire
+/// defects arrive as transport-level protocol failures and take the blanket
+/// re-entry path. If a decoded response still reaches these arms, same-key
+/// re-entry is scheduled; when that re-entry is exhausted, the original
+/// protocol failure is surfaced as the item error.
 fn resolve_generated_batch_items<C: GeneratedCommand>(
     prepared: Vec<(usize, C)>,
     items: Vec<v1::ExecuteCommandBatchItem>,
@@ -612,6 +615,95 @@ impl fmt::Display for GeneratedBatchError {
 
 impl std::error::Error for GeneratedBatchError {}
 
+/// Canonical UUID value with lazy display text.
+///
+/// Wire raise paths keep the 16-byte form; the 36-char text is formatted only
+/// when a caller asks for display via [`as_str`](Self::as_str) or
+/// [`into_string`](Self::into_string). Parameter construction from validated
+/// text retains the original string so adapters that already hold display form
+/// do not re-allocate.
+#[derive(Debug)]
+pub struct ApplicationUuid {
+    bytes: [u8; 16],
+    text: OnceLock<String>,
+}
+
+impl Clone for ApplicationUuid {
+    fn clone(&self) -> Self {
+        let text = OnceLock::new();
+        if let Some(existing) = self.text.get() {
+            let _ = text.set(existing.clone());
+        }
+        Self {
+            bytes: self.bytes,
+            text,
+        }
+    }
+}
+
+impl ApplicationUuid {
+    /// Builds from the exact 16-byte public UUID value (raise path).
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self {
+            bytes,
+            text: OnceLock::new(),
+        }
+    }
+
+    /// Builds from canonical UUID text (parameter path).
+    pub fn from_text(text: impl Into<String>) -> Result<Self, ApplicationClientError> {
+        let text = text.into();
+        let bytes = parse_uuid(&text)?;
+        let cell = OnceLock::new();
+        let _ = cell.set(text);
+        Ok(Self { bytes, text: cell })
+    }
+
+    /// Exact 16-byte form without a text round-trip.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.bytes
+    }
+
+    /// Canonical 36-char text; formatted on first access when raised from bytes.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.text
+            .get_or_init(|| format_uuid_text(&self.bytes))
+            .as_str()
+    }
+
+    /// Consumes into canonical text (formats once if never requested).
+    #[must_use]
+    pub fn into_string(self) -> String {
+        match self.text.into_inner() {
+            Some(text) => text,
+            None => format_uuid_text(&self.bytes),
+        }
+    }
+
+    /// True when display text has already been materialized.
+    #[must_use]
+    pub fn text_is_materialized(&self) -> bool {
+        self.text.get().is_some()
+    }
+}
+
+impl PartialEq for ApplicationUuid {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes == other.bytes
+    }
+}
+
+impl Eq for ApplicationUuid {}
+
+impl From<[u8; 16]> for ApplicationUuid {
+    fn from(bytes: [u8; 16]) -> Self {
+        Self::from_bytes(bytes)
+    }
+}
+
 /// A bounded application value addressed only by contract names.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ApplicationValue {
@@ -641,8 +733,8 @@ pub enum ApplicationValue {
     },
     /// Exact text.
     String(String),
-    /// Canonical UUID text lowered to the typed public value.
-    Uuid(String),
+    /// Canonical UUID (bytes form; display text is lazy).
+    Uuid(ApplicationUuid),
     /// Contract enum variant name lowered without caller-visible numeric IDs.
     Enum(String),
     /// Opaque bytes.
@@ -986,20 +1078,19 @@ impl RiffDbClient {
         let expected_name = query.name.clone();
         let expected_module_hash = query.module_hash;
         let expected_plan_hash = query.expected_plan_hash;
-        let request_id = generate_request_id()
-            .map_err(|_| ApplicationClientError::IdentifierUnavailable)?
-            .into_bytes()
-            .to_vec();
-        let parameters = query
-            .parameters
-            .into_iter()
-            .map(|(name, value)| {
-                Ok(app_v1::Parameter {
-                    name,
-                    value: Some(lower_value(value)?),
-                })
-            })
-            .collect::<Result<Vec<_>, ApplicationClientError>>()?;
+        let request_id = Vec::from(
+            generate_request_id()
+                .map_err(|_| ApplicationClientError::IdentifierUnavailable)?
+                .into_bytes(),
+        );
+        // Move owned parameter names once; avoid intermediate (name, value) copies.
+        let mut parameters = Vec::with_capacity(query.parameters.len());
+        for (name, value) in query.parameters {
+            parameters.push(app_v1::Parameter {
+                name,
+                value: Some(lower_value(value)?),
+            });
+        }
         let response = self
             .execute_query(
                 app_v1::ExecuteQueryRequest {
@@ -1162,7 +1253,7 @@ fn lower_value(value: ApplicationValue) -> Result<v1::Value, ApplicationClientEr
             })
         }
         ApplicationValue::String(value) => Kind::StringValue(value),
-        ApplicationValue::Uuid(value) => Kind::UuidValue(parse_uuid(&value)?.to_vec()),
+        ApplicationValue::Uuid(value) => Kind::UuidValue(value.as_bytes().to_vec()),
         ApplicationValue::Enum(name) if !name.is_empty() && name.len() <= 256 => {
             Kind::EnumValue(v1::EnumValue {
                 type_id: 0,
@@ -1315,7 +1406,13 @@ fn raise_value(value: v1::Value) -> Result<ApplicationValue, ApplicationClientEr
         }
         Kind::StringValue(value) => Ok(ApplicationValue::String(value)),
         Kind::BytesValue(value) => Ok(ApplicationValue::Bytes(value)),
-        Kind::UuidValue(value) => Ok(ApplicationValue::Uuid(uuid_text(&value)?)),
+        Kind::UuidValue(value) => {
+            let bytes: [u8; 16] = value
+                .as_slice()
+                .try_into()
+                .map_err(|_| ApplicationClientError::InvalidResponse)?;
+            Ok(ApplicationValue::Uuid(ApplicationUuid::from_bytes(bytes)))
+        }
         Kind::EnumValue(value) if !value.name.is_empty() => Ok(ApplicationValue::Enum(value.name)),
         Kind::ListValue(values) => Ok(ApplicationValue::List(
             values
@@ -1355,11 +1452,8 @@ fn raise_value(value: v1::Value) -> Result<ApplicationValue, ApplicationClientEr
     }
 }
 
-fn uuid_text(bytes: &[u8]) -> Result<String, ApplicationClientError> {
-    let bytes: [u8; 16] = bytes
-        .try_into()
-        .map_err(|_| ApplicationClientError::InvalidResponse)?;
-    Ok(format!(
+fn format_uuid_text(bytes: &[u8; 16]) -> String {
+    format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         bytes[0],
         bytes[1],
@@ -1377,7 +1471,7 @@ fn uuid_text(bytes: &[u8]) -> Result<String, ApplicationClientError> {
         bytes[13],
         bytes[14],
         bytes[15],
-    ))
+    )
 }
 
 fn parse_uuid(value: &str) -> Result<[u8; 16], ApplicationClientError> {
@@ -2244,5 +2338,37 @@ mod tests {
         assert_eq!(state.checkpoint, 4);
         assert_eq!(state.completed, 4);
         assert_eq!(progress, vec![(3, 3), (4, 4)]);
+    }
+
+    /// R3d: raised UUID bytes equal the text path after parse, without forcing
+    /// text materialization on raise.
+    #[test]
+    fn raised_uuid_bytes_match_parsed_text_and_text_is_lazy() {
+        let bytes = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef,
+        ];
+        let raised = raise_value(v1::Value {
+            kind: Some(v1::value::Kind::UuidValue(bytes.to_vec())),
+        })
+        .expect("raise uuid");
+        let ApplicationValue::Uuid(uuid) = raised else {
+            panic!("expected uuid value");
+        };
+        assert!(!uuid.text_is_materialized(), "raise must not allocate text");
+        assert_eq!(uuid.as_bytes(), &bytes);
+        let text = uuid.as_str().to_owned();
+        assert!(uuid.text_is_materialized());
+        let from_text = ApplicationUuid::from_text(text.clone()).expect("parse text");
+        assert_eq!(from_text.as_bytes(), &bytes);
+        assert_eq!(from_text.into_string(), text);
+        // Adapter-equivalence: bytes path and re-parsed text path agree.
+        let re_lowered = lower_value(ApplicationValue::Uuid(ApplicationUuid::from_bytes(bytes)))
+            .expect("lower bytes");
+        let text_lowered = lower_value(ApplicationValue::Uuid(
+            ApplicationUuid::from_text(text).expect("text"),
+        ))
+        .expect("lower text");
+        assert_eq!(re_lowered, text_lowered);
     }
 }

@@ -21,10 +21,11 @@ use riffdb_service::{
     ApplicationErrorContextBuilder, ApplicationService, BootstrapCapabilityResult,
     BootstrapRequestContext, CommitSubscription, CommitSubscriptionEvent,
     CreateCapabilityInvocation, CreateCapabilityResult, DeployContractResult, HealthContext,
-    HealthRequest, HealthResult, MAX_COMMIT_SUBSCRIPTION_LIFETIME,
+    HealthRequest, HealthResult, MAX_COMMIT_SUBSCRIPTION_LIFETIME, ReadPipelineStage,
     RecoveryOfflineMaintenanceApplication, RecoveryRestoreOfflineBackupInvocation,
     RequestCancellationHandle, RequestContext, RequestControl, RestoreOfflineBackupInvocation,
     RestoreRetryOfflineMaintenanceApplication, ServiceFailure, ServiceFuture, ServiceResult,
+    ServiceTelemetry, ServiceTelemetryEvent,
 };
 use riffdb_types::{
     Audience, ContractLineage, ContractVersion, DatabaseAlias, MAX_DATABASES_PER_PROCESS,
@@ -173,6 +174,14 @@ pub trait GrpcLifecycleRoute: Send + Sync {
 
     /// Applies the terminal lifecycle disposition for an admitted first deployment.
     fn finish_deployment(&self, completion: GrpcDeploymentCompletion);
+
+    /// Returns the service telemetry sink for read-pipeline residual stages.
+    ///
+    /// Populated after activation on production routes. Test and initializing
+    /// routes return `None` (stages are simply not recorded).
+    fn read_stage_telemetry(&self) -> Option<Arc<dyn ServiceTelemetry>> {
+        None
+    }
 }
 
 /// Bounded selector registry for independently owned database lifecycle routes.
@@ -518,16 +527,41 @@ impl GrpcApplication {
         request_id: RequestId,
         security: &CheckedGrpcSecurityContext,
     ) -> Result<(RequestContext, CancellationGuard), Status> {
+        self.normal_context_timed(metadata, request_id, security, None)
+            .map(|(context, cancellation, _authn)| (context, cancellation))
+    }
+
+    /// Assembles the request context and reports how long authentication took.
+    ///
+    /// The caller subtracts the returned authentication span from its own
+    /// enclosing span, so `Authn` and `AdmissionContext` partition the residual
+    /// instead of double counting it.
+    fn normal_context_timed(
+        &self,
+        metadata: &MetadataMap,
+        request_id: RequestId,
+        security: &CheckedGrpcSecurityContext,
+        telemetry: Option<&dyn ServiceTelemetry>,
+    ) -> Result<(RequestContext, CancellationGuard, Duration), Status> {
         let deadline = self.limits.deadline(metadata)?;
+        let authn_started = Instant::now();
         let principal = authenticate_normal_request(
             metadata,
             security.authenticator.as_ref(),
             &security.authentication,
         )?;
+        let authn_elapsed = authn_started.elapsed();
+        if let Some(telemetry) = telemetry {
+            telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                stage: ReadPipelineStage::Authn,
+                elapsed: authn_elapsed,
+            });
+        }
         let (control, cancellation) = RequestControl::new(deadline);
         Ok((
             RequestContext::from_authenticated_grpc(request_id, principal, control, None),
             CancellationGuard(cancellation),
+            authn_elapsed,
         ))
     }
 
@@ -562,8 +596,24 @@ impl GrpcApplication {
         ),
         Status,
     > {
+        let telemetry = lifecycle.read_stage_telemetry();
+        // AdmissionContext spans lifecycle admission, security selection,
+        // deadline parsing, and request-context assembly — everything in this
+        // function except the authentication measured as `Authn`.
+        let admission_started = Instant::now();
         let (service, security) = self.normal_admission(lifecycle, operation)?;
-        let (context, cancellation) = self.normal_context(metadata, request_id, &security)?;
+        let (context, cancellation, authn_elapsed) = self.normal_context_timed(
+            metadata,
+            request_id,
+            &security,
+            telemetry.as_ref().map(AsRef::as_ref),
+        )?;
+        if let Some(telemetry) = telemetry.as_ref() {
+            telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                stage: ReadPipelineStage::AdmissionContext,
+                elapsed: admission_started.elapsed().saturating_sub(authn_elapsed),
+            });
+        }
         Ok((service, context, cancellation))
     }
 
@@ -1364,6 +1414,7 @@ impl ApplicationQueryService for GrpcApplication {
         &self,
         request: Request<app_v1::ExecuteQueryRequest>,
     ) -> Result<Response<app_v1::ExecuteQueryResponse>, Status> {
+        let transport_started = Instant::now();
         let (metadata, _peer, message) = split_request(request);
         let boundary =
             ApplicationErrorContextBuilder::without_trace(ApplicationOperation::ExecuteQuery);
@@ -1380,8 +1431,24 @@ impl ApplicationQueryService for GrpcApplication {
             original.contract.as_ref(),
             operation_symbol,
         );
+        // TransportAdapt ends once the domain request is ready; residual stages
+        // after this are admission/authn/spawn/service/encode.
+        let lifecycle = self
+            .select_lifecycle(&metadata)
+            .map_err(|status| status_from_application_boundary(status, &application))?;
+        if let Some(telemetry) = lifecycle.read_stage_telemetry() {
+            telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                stage: ReadPipelineStage::TransportAdapt,
+                elapsed: transport_started.elapsed(),
+            });
+        }
         let (service, context, _cancellation) = self
-            .normal_invocation(ServiceOperationV1::ExecuteQuery, &metadata, request_id)
+            .normal_invocation_with(
+                lifecycle.as_ref(),
+                ServiceOperationV1::ExecuteQuery,
+                &metadata,
+                request_id,
+            )
             .map_err(|status| status_from_application_boundary(status, &application))?;
         let result = match request {
             ExecuteSymbolicQueryInvocation::AdHoc(request) => map_application_service(
@@ -1393,9 +1460,15 @@ impl ApplicationQueryService for GrpcApplication {
                 &application,
             )?,
         };
-        Ok(Response::new(execute_symbolic_query_result_to_proto(
-            &result,
-        )?))
+        let encode_started = Instant::now();
+        let response = execute_symbolic_query_result_to_proto(&result)?;
+        if let Some(telemetry) = lifecycle.read_stage_telemetry() {
+            telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                stage: ReadPipelineStage::EncodeConvert,
+                elapsed: encode_started.elapsed(),
+            });
+        }
+        Ok(Response::new(response))
     }
 
     async fn deploy_query_module(

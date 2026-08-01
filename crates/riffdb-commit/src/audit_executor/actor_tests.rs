@@ -439,7 +439,7 @@ fn dropping_receipt_does_not_cancel_accepted_append() {
 #[test]
 fn shutdown_drains_a_full_workload_queue_without_sleeping() {
     let probe = Probe::new();
-    let (entered_sender, entered_receiver) = std_mpsc::sync_channel(0);
+    let (entered_sender, entered_receiver) = std_mpsc::sync_channel(1);
     let (release_sender, release_receiver) = std_mpsc::sync_channel(0);
     let repository = BlockingRepository {
         probe: probe.clone(),
@@ -467,7 +467,8 @@ fn shutdown_drains_a_full_workload_queue_without_sleeping() {
         .expect("third slot")
         .submit(input(0x53))
         .expect("third submit");
-    assert_eq!(executor.sender.capacity(), 0);
+    // Pipelined intake may drain the admission channel into pending while the
+    // writer holds the first unit, so occupancy is not a stable backpressure probe.
 
     let (shutdown_started_sender, shutdown_started_receiver) = std_mpsc::sync_channel(0);
     let shutdown_thread = thread::spawn(move || {
@@ -487,7 +488,7 @@ fn shutdown_drains_a_full_workload_queue_without_sleeping() {
 
 #[test]
 fn actor_drains_the_exact_64_item_internal_group_boundary_without_waiting() {
-    let (entered_sender, entered_receiver) = std_mpsc::sync_channel(0);
+    let (entered_sender, entered_receiver) = std_mpsc::sync_channel(1);
     let (release_sender, release_receiver) = std_mpsc::sync_channel(0);
     let group_sizes = Arc::new(Mutex::new(Vec::new()));
     let repository = BoundaryGroupRepository {
@@ -518,7 +519,9 @@ fn actor_drains_the_exact_64_item_internal_group_boundary_without_waiting() {
                 .expect("queued accepted append")
         })
         .collect::<Vec<_>>();
-    assert_eq!(executor.sender.capacity(), 0);
+    // Under the pipelined writer the intake actor may drain the admission
+    // channel into pending while the first unit is in-flight, so channel
+    // occupancy is not a stable backpressure probe. Group size is the contract.
 
     release_sender.send(()).expect("release first append");
     assert_eq!(block_on(first.completion()), Ok(()));
@@ -700,7 +703,7 @@ fn reservation_completed_before_shutdown_is_rejected_by_the_post_reservation_gat
 #[test]
 fn unknown_audit_status_fences_before_completion_and_rejects_queued_work() {
     let probe = Probe::new();
-    let (entered_sender, entered_receiver) = std_mpsc::sync_channel(0);
+    let (entered_sender, entered_receiver) = std_mpsc::sync_channel(1);
     let (release_sender, release_receiver) = std_mpsc::sync_channel(0);
     let unknown = StorageError::new(StorageErrorKind::CommitStatusUnknown, None);
     let running = RunningCommandCoordinator::start_audit_only(
@@ -757,7 +760,7 @@ fn unknown_audit_status_fences_before_completion_and_rejects_queued_work() {
 
 #[test]
 fn unexpected_actor_panic_stops_admission_and_every_queued_receipt() {
-    let (entered_sender, entered_receiver) = std_mpsc::sync_channel(0);
+    let (entered_sender, entered_receiver) = std_mpsc::sync_channel(1);
     let (release_sender, release_receiver) = std_mpsc::sync_channel(0);
     let running = RunningCommandCoordinator::start_audit_only(
         capacity(2),
@@ -855,7 +858,7 @@ fn proven_clock_audit_failure_stops_all_admission_without_retry() {
 #[test]
 fn proven_storage_audit_failure_stops_before_completion_and_rejects_queued_work() {
     let expected = StorageError::new(StorageErrorKind::Unavailable, None);
-    let (entered_sender, entered_receiver) = std_mpsc::sync_channel(0);
+    let (entered_sender, entered_receiver) = std_mpsc::sync_channel(1);
     let (release_sender, release_receiver) = std_mpsc::sync_channel(0);
     let clock = TestClock::fixed(fixed_timestamp());
     let clock_calls = Arc::clone(&clock.calls);
@@ -882,7 +885,6 @@ fn proven_storage_audit_failure_stops_before_completion_and_rejects_queued_work(
         .expect("queued workload slot")
         .submit(input(0x73))
         .expect("queued accepted append");
-
     release_sender.send(()).expect("release failed append");
     assert_eq!(
         block_on(first.completion()),
@@ -1045,4 +1047,618 @@ fn undersized_pre_admitted_byte_permit_is_internal_defect_not_silent_accept() {
     // Queue slot remains held until the permit drops; drop without accept.
     drop(permit);
     running.shutdown().expect("clean shutdown");
+}
+
+// --- T1.4 pipeline falsifiability (tests 9–15) ---
+
+struct DispatchRecordingTelemetry {
+    dispatches: Mutex<Vec<(CommitGroupDispatchReason, u16)>>,
+}
+
+impl DispatchRecordingTelemetry {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            dispatches: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn snapshot(&self) -> Vec<(CommitGroupDispatchReason, u16)> {
+        self.dispatches.lock().expect("dispatches").clone()
+    }
+}
+
+impl CommitTelemetry for DispatchRecordingTelemetry {
+    fn record(&self, event: CommitTelemetryEvent) {
+        if let CommitTelemetryEvent::CommandGroupDispatched {
+            reason, selected, ..
+        } = event
+        {
+            self.dispatches
+                .lock()
+                .expect("dispatches")
+                .push((reason, selected));
+        }
+    }
+}
+
+struct LoggingLatchedRepository {
+    entered: std_mpsc::SyncSender<()>,
+    release: Option<std_mpsc::Receiver<()>>,
+    log: Arc<Mutex<Vec<&'static str>>>,
+    next_sequence: AtomicUsize,
+}
+
+impl ServiceAuditAppendRepository for LoggingLatchedRepository {
+    fn append_service_audit(
+        &mut self,
+        intent: &ServiceAuditAppendIntentV1,
+    ) -> Result<ServiceAuditAppendResult, StorageError> {
+        self.append_service_audit_group(std::slice::from_ref(intent))
+            .map(|mut v| v.pop().expect("one result"))
+    }
+
+    fn append_service_audit_group(
+        &mut self,
+        intents: &[ServiceAuditAppendIntentV1],
+    ) -> Result<Vec<ServiceAuditAppendResult>, StorageError> {
+        if let Some(release) = self.release.take() {
+            self.entered.send(()).expect("entered");
+            release.recv().expect("release");
+        }
+        self.log
+            .lock()
+            .expect("log")
+            .push("writer-operations-returned");
+        intents
+            .iter()
+            .map(|intent| {
+                let seq = self.next_sequence.fetch_add(1, Ordering::Relaxed) + 1;
+                Ok(ServiceAuditAppendResult::Appended(
+                    StoredServiceAuditRecordV1::from_intent(
+                        AdministrationSequence::try_from(seq as u64).expect("seq"),
+                        intent,
+                    ),
+                ))
+            })
+            .collect()
+    }
+}
+
+struct LatchedGroupRepository {
+    entered: std_mpsc::SyncSender<()>,
+    release: Option<std_mpsc::Receiver<()>>,
+    group_sizes: Arc<Mutex<Vec<usize>>>,
+    next_sequence: AtomicUsize,
+}
+
+impl ServiceAuditAppendRepository for LatchedGroupRepository {
+    fn append_service_audit(
+        &mut self,
+        intent: &ServiceAuditAppendIntentV1,
+    ) -> Result<ServiceAuditAppendResult, StorageError> {
+        self.append_service_audit_group(std::slice::from_ref(intent))
+            .map(|mut v| v.pop().expect("one result"))
+    }
+
+    fn append_service_audit_group(
+        &mut self,
+        intents: &[ServiceAuditAppendIntentV1],
+    ) -> Result<Vec<ServiceAuditAppendResult>, StorageError> {
+        self.group_sizes.lock().expect("sizes").push(intents.len());
+        if let Some(release) = self.release.take() {
+            self.entered.send(()).expect("entered");
+            release.recv().expect("release");
+        }
+        intents
+            .iter()
+            .map(|intent| {
+                let seq = self.next_sequence.fetch_add(1, Ordering::Relaxed) + 1;
+                Ok(ServiceAuditAppendResult::Appended(
+                    StoredServiceAuditRecordV1::from_intent(
+                        AdministrationSequence::try_from(seq as u64).expect("seq"),
+                        intent,
+                    ),
+                ))
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn pipelined_writer_forms_the_next_group_while_the_prior_unit_commits() {
+    let (entered_tx, entered_rx) = std_mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std_mpsc::sync_channel(0);
+    let group_sizes = Arc::new(Mutex::new(Vec::new()));
+    let telemetry = DispatchRecordingTelemetry::new();
+    let running = RunningCommandCoordinator::start_audit_with_telemetry(
+        capacity(8),
+        LatchedGroupRepository {
+            entered: entered_tx,
+            release: Some(release_rx),
+            group_sizes: Arc::clone(&group_sizes),
+            next_sequence: AtomicUsize::new(0),
+        },
+        TestClock::fixed(fixed_timestamp()),
+        Arc::clone(&telemetry) as Arc<dyn CommitTelemetry>,
+    )
+    .expect("start");
+    let exec = running.administration_audit_executor();
+
+    let first = block_on(exec.reserve_capacity())
+        .expect("slot")
+        .submit(input(0x10))
+        .expect("submit first");
+    entered_rx.recv().expect("writer occupied");
+
+    let mut more = Vec::new();
+    for i in 0u8..3 {
+        more.push(
+            block_on(exec.reserve_capacity())
+                .expect("slot")
+                .submit(input(0x20 + i))
+                .expect("submit more"),
+        );
+    }
+    // Formation of the second unit happens at the completion edge of the first.
+    release_tx.send(()).expect("release first unit");
+    assert_eq!(block_on(first.completion()), Ok(()));
+    for r in more {
+        assert_eq!(block_on(r.completion()), Ok(()));
+    }
+    running.shutdown().expect("shutdown");
+
+    let dispatches = telemetry.snapshot();
+    let selected: Vec<u16> = dispatches.iter().map(|(_, s)| *s).collect();
+    assert_eq!(
+        selected,
+        vec![1, 3],
+        "exactly two dispatches sized [1, k]: {dispatches:?}"
+    );
+    assert_eq!(group_sizes.lock().expect("sizes").as_slice(), &[1, 3]);
+}
+
+#[test]
+fn no_completion_is_delivered_while_the_writer_is_inside_operations() {
+    let (entered_tx, entered_rx) = std_mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std_mpsc::sync_channel(0);
+    let running = RunningCommandCoordinator::start_audit_only(
+        capacity(2),
+        LatchedGroupRepository {
+            entered: entered_tx,
+            release: Some(release_rx),
+            group_sizes: Arc::new(Mutex::new(Vec::new())),
+            next_sequence: AtomicUsize::new(0),
+        },
+        TestClock::fixed(fixed_timestamp()),
+    )
+    .expect("start");
+    let exec = running.administration_audit_executor();
+    let receipt = block_on(exec.reserve_capacity())
+        .expect("slot")
+        .submit(input(0x30))
+        .expect("submit");
+    entered_rx.recv().expect("inside operations");
+    let mut fut = Box::pin(receipt.completion());
+    assert!(
+        matches!(poll_once(fut.as_mut()), Poll::Pending),
+        "completion must stay Pending while operations is latched"
+    );
+    release_tx.send(()).expect("release");
+    assert_eq!(block_on(fut), Ok(()));
+    running.shutdown().expect("shutdown");
+}
+
+#[test]
+fn idle_writer_dispatches_a_single_command_immediately() {
+    // Audit-path stand-in: idle dispatch semantics are identical for audit and
+    // command units; a full command-path variant needs ApplicationCommandTransactionPort
+    // and is covered by command_concurrency integration tests.
+    let probe = Probe::new();
+    let telemetry = DispatchRecordingTelemetry::new();
+    let running = RunningCommandCoordinator::start_audit_with_telemetry(
+        capacity(2),
+        RecordingRepository::appending(probe.clone()),
+        TestClock::fixed(fixed_timestamp()),
+        Arc::clone(&telemetry) as Arc<dyn CommitTelemetry>,
+    )
+    .expect("start");
+    let exec = running.administration_audit_executor();
+    let receipt = block_on(exec.reserve_capacity())
+        .expect("slot")
+        .submit(input(0x40))
+        .expect("submit");
+    assert_eq!(block_on(receipt.completion()), Ok(()));
+    let dispatches = telemetry.snapshot();
+    assert_eq!(dispatches.len(), 1);
+    assert_eq!(dispatches[0].1, 1);
+    running.shutdown().expect("shutdown");
+}
+
+#[test]
+fn fence_in_unit_n_rejects_every_later_unit_with_coordinator_fenced() {
+    // Audit-path fence; command-path admission variant below.
+    let (entered_tx, entered_rx) = std_mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std_mpsc::sync_channel(0);
+    let unknown = StorageError::new(StorageErrorKind::CommitStatusUnknown, None);
+    let running = RunningCommandCoordinator::start_audit_only(
+        capacity(4),
+        BlockingFailureRepository {
+            probe: Probe::new(),
+            entered: entered_tx,
+            release: Some(release_rx),
+            error: unknown.clone(),
+        },
+        TestClock::fixed(fixed_timestamp()),
+    )
+    .expect("start");
+    let exec = running.administration_audit_executor();
+    let first = block_on(exec.reserve_capacity())
+        .expect("slot")
+        .submit(input(0x50))
+        .expect("first");
+    entered_rx.recv().expect("entered");
+    let later = block_on(exec.reserve_capacity())
+        .expect("slot")
+        .submit(input(0x51))
+        .expect("later");
+    release_tx.send(()).expect("release fence unit");
+    assert_eq!(
+        block_on(first.completion()),
+        Err(AdministrationAuditExecutionError::Storage(unknown))
+    );
+    assert_eq!(
+        block_on(later.completion()),
+        Err(AdministrationAuditExecutionError::CoordinatorFenced)
+    );
+    running.shutdown().expect("shutdown");
+}
+
+#[test]
+fn fence_in_unit_n_rejects_command_path_admission_with_coordinator_fenced() {
+    // Command-path variant of test 12: after an audit unit fences, command
+    // admission must refuse with CoordinatorFenced.
+    let (entered_tx, entered_rx) = std_mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std_mpsc::sync_channel(0);
+    let unknown = StorageError::new(StorageErrorKind::CommitStatusUnknown, None);
+    let running = RunningCommandCoordinator::start_audit_only(
+        capacity(4),
+        BlockingFailureRepository {
+            probe: Probe::new(),
+            entered: entered_tx,
+            release: Some(release_rx),
+            error: unknown,
+        },
+        TestClock::fixed(fixed_timestamp()),
+    )
+    .expect("start");
+    let audit = running.administration_audit_executor();
+    let command = running.command_executor();
+    let first = block_on(audit.reserve_capacity())
+        .expect("slot")
+        .submit(input(0x52))
+        .expect("fence unit");
+    entered_rx.recv().expect("entered");
+    release_tx.send(()).expect("release fence");
+    let _ = block_on(first.completion());
+    assert_eq!(command.lifecycle_state(), CoordinatorLifecycleState::Fenced);
+    assert!(matches!(
+        block_on(command.reserve_capacity()),
+        Err(CommandExecutionAdmissionError::Fenced)
+    ));
+    let _ = running.shutdown();
+}
+
+#[test]
+fn writer_thread_panic_delivers_coordinator_stopped_to_command_callers() {
+    // Audit-path panic delivery; command-path admission variant below.
+    let (entered_tx, entered_rx) = std_mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std_mpsc::sync_channel(0);
+    let running = RunningCommandCoordinator::start_audit_only(
+        capacity(2),
+        BlockingPanicRepository {
+            entered: entered_tx,
+            release: Some(release_rx),
+        },
+        TestClock::fixed(fixed_timestamp()),
+    )
+    .expect("start");
+    let exec = running.administration_audit_executor();
+    let first = block_on(exec.reserve_capacity())
+        .expect("slot")
+        .submit(input(0x60))
+        .expect("first");
+    entered_rx.recv().expect("entered");
+    let later = block_on(exec.reserve_capacity())
+        .expect("slot")
+        .submit(input(0x61))
+        .expect("later");
+    release_tx.send(()).expect("release panic");
+    assert_eq!(
+        block_on(first.completion()),
+        Err(AdministrationAuditExecutionError::CoordinatorStopped)
+    );
+    assert_eq!(
+        block_on(later.completion()),
+        Err(AdministrationAuditExecutionError::CoordinatorStopped)
+    );
+    let _ = running.shutdown();
+}
+
+#[test]
+fn writer_thread_panic_rejects_command_path_admission_with_coordinator_stopped() {
+    // Command-path variant of test 13: after writer panic, command admission stops.
+    let (entered_tx, entered_rx) = std_mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std_mpsc::sync_channel(0);
+    let running = RunningCommandCoordinator::start_audit_only(
+        capacity(2),
+        BlockingPanicRepository {
+            entered: entered_tx,
+            release: Some(release_rx),
+        },
+        TestClock::fixed(fixed_timestamp()),
+    )
+    .expect("start");
+    let audit = running.administration_audit_executor();
+    let command = running.command_executor();
+    let first = block_on(audit.reserve_capacity())
+        .expect("slot")
+        .submit(input(0x62))
+        .expect("panic unit");
+    entered_rx.recv().expect("entered");
+    release_tx.send(()).expect("release panic");
+    let _ = block_on(first.completion());
+    // Allow StoppedLifecycle to publish.
+    for _ in 0..50 {
+        if command.lifecycle_state() == CoordinatorLifecycleState::Stopped {
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(
+        command.lifecycle_state(),
+        CoordinatorLifecycleState::Stopped
+    );
+    assert!(matches!(
+        block_on(command.reserve_capacity()),
+        Err(CommandExecutionAdmissionError::Stopped)
+    ));
+    let _ = running.shutdown();
+}
+
+#[test]
+fn stopped_lifecycle_is_not_published_before_the_writer_thread_is_joined() {
+    // Panic the actor while the writer is latched; release the latch from a
+    // third thread. Drop-order log must show writer-handle-drop-end before
+    // stopped-lifecycle-drop (join before Stopped publish).
+    use std::time::Instant;
+    TEST_DROP_SEQ.store(0, Ordering::Release);
+    TEST_WRITER_HANDLE_DROP_END_SEQ.store(0, Ordering::Release);
+    TEST_STOPPED_LIFECYCLE_DROP_SEQ.store(0, Ordering::Release);
+    let (entered_tx, entered_rx) = std_mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std_mpsc::sync_channel(0);
+    let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+    let log_repo = Arc::clone(&log);
+    let running = RunningCommandCoordinator::start_audit_only(
+        capacity(1),
+        LoggingLatchedRepository {
+            entered: entered_tx,
+            release: Some(release_rx),
+            log: log_repo,
+            next_sequence: AtomicUsize::new(0),
+        },
+        TestClock::fixed(fixed_timestamp()),
+    )
+    .expect("start");
+    let exec = running.administration_audit_executor();
+    let lifecycle = Arc::clone(&exec.lifecycle);
+    // Target only this coordinator's actor for the intentional panic.
+    TEST_PANIC_LIFECYCLE.store(Arc::as_ptr(&lifecycle) as *mut AtomicU8, Ordering::Release);
+    let _receipt = block_on(exec.reserve_capacity())
+        .expect("slot")
+        .submit(input(0x70))
+        .expect("submit");
+    entered_rx.recv().expect("writer inside ops");
+    // Actor panics after dispatch; WriterHandle::drop is blocked on join.
+    let release_thread = thread::spawn(move || {
+        thread::sleep(std::time::Duration::from_millis(30));
+        release_tx.send(()).expect("release latched writer");
+    });
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    while lifecycle.load(Ordering::Acquire) != LIFECYCLE_STOPPED {
+        if Instant::now() > deadline {
+            break;
+        }
+        thread::yield_now();
+    }
+    release_thread.join().expect("release thread");
+    TEST_PANIC_LIFECYCLE.store(std::ptr::null_mut(), Ordering::Release);
+    let _ = running.shutdown();
+    let writer_end = TEST_WRITER_HANDLE_DROP_END_SEQ.load(Ordering::Acquire);
+    let stopped = TEST_STOPPED_LIFECYCLE_DROP_SEQ.load(Ordering::Acquire);
+    assert!(
+        writer_end > 0 && stopped > 0 && writer_end < stopped,
+        "WriterHandle join (seq={writer_end}) must precede StoppedLifecycle (seq={stopped})"
+    );
+    let ops_log = log.lock().expect("log").clone();
+    assert!(
+        ops_log.contains(&"writer-operations-returned"),
+        "writer must have returned from operations; ops_log={ops_log:?}"
+    );
+}
+
+#[test]
+fn accepted_work_is_bounded_by_admission_permits_under_a_blocked_writer() {
+    // Bound: pending ≤ C and channel ≤ C+1 ⇒ accepted-without-parking ≤ 2C+1
+    // while the writer is latched (including the unit held by the writer).
+    let capacity_n = 2u16;
+    let c = usize::from(capacity_n);
+    let (entered_tx, entered_rx) = std_mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std_mpsc::sync_channel(0);
+    let running = RunningCommandCoordinator::start_audit_only(
+        capacity(capacity_n),
+        LatchedGroupRepository {
+            entered: entered_tx,
+            release: Some(release_rx),
+            group_sizes: Arc::new(Mutex::new(Vec::new())),
+            next_sequence: AtomicUsize::new(0),
+        },
+        TestClock::fixed(fixed_timestamp()),
+    )
+    .expect("start");
+    let exec = running.administration_audit_executor();
+    let first = block_on(exec.reserve_capacity())
+        .expect("first")
+        .submit(input(0x80))
+        .expect("submit first");
+    entered_rx.recv().expect("writer blocked");
+
+    let accepted = Arc::new(AtomicUsize::new(1)); // the latched unit
+    let mut joiners = Vec::new();
+    for i in 0..(10 * c) {
+        let exec = exec.clone();
+        let accepted = Arc::clone(&accepted);
+        joiners.push(thread::spawn(move || {
+            // Non-blocking path: only count accepts that do not park.
+            match exec.sender.clone().try_reserve_owned() {
+                Ok(permit) => {
+                    let (completion, _rx) = oneshot::channel();
+                    // Use the permit to enqueue a real audit message.
+                    let _ = permit.send(CoordinatorMessage::AdministrationAudit {
+                        submission: AdministrationAuditSubmission::Single(input(0x90 + (i as u8))),
+                        completion,
+                    });
+                    accepted.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(_) => {
+                    // Would park — do not count as accepted-without-parking.
+                }
+            }
+        }));
+    }
+    for j in joiners {
+        j.join().expect("submitter");
+    }
+    let total = accepted.load(Ordering::Relaxed);
+    // Release the latch BEFORE asserting so a failed bound cannot hang Drop's
+    // writer join (fail-fast under the intake-bound neuter).
+    release_tx.send(()).expect("release");
+    let _ = first;
+    drop(running);
+    assert!(
+        total <= 2 * c + 1,
+        "accepted-without-parking {total} exceeds 2C+1={} under latched writer",
+        2 * c + 1
+    );
+    assert!(
+        total >= c,
+        "expected concurrent intake to accept at least C under latched writer; got {total}"
+    );
+}
+
+#[test]
+fn shutdown_on_actor_thread_returns_self_join() {
+    // Drive shutdown() on the intake actor via a post-dispatch hook so the
+    // SelfJoin guard is genuinely executed (not a Display-string placebo).
+    let running = RunningCommandCoordinator::start_audit_only(
+        capacity(2),
+        RecordingRepository::appending(Probe::new()),
+        TestClock::fixed(fixed_timestamp()),
+    )
+    .expect("start");
+    let exec = running.administration_audit_executor();
+    let (coord_tx, coord_rx) = std_mpsc::sync_channel(1);
+    let (result_tx, result_rx) = std_mpsc::sync_channel(1);
+    running.queue_post_dispatch_hook(Box::new(move || {
+        let coord: RunningCommandCoordinator = coord_rx
+            .recv()
+            .expect("coordinator for actor-thread shutdown");
+        let err = coord.shutdown();
+        let _ = result_tx.send(err);
+    }));
+    coord_tx.send(running).expect("hand coordinator to hook");
+    let receipt = block_on(exec.reserve_capacity())
+        .expect("slot")
+        .submit(input(0xA1))
+        .expect("submit triggers post-dispatch hook");
+    let err = result_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("SelfJoin result arrives without deadlock");
+    assert!(
+        matches!(err, Err(CoordinatorShutdownError::SelfJoin)),
+        "expected SelfJoin, got {err:?}"
+    );
+    // Hook already consumed the coordinator; drain the in-flight receipt.
+    let _ = block_on(receipt.completion());
+}
+
+#[test]
+fn drop_on_actor_thread_detaches_without_deadlock() {
+    // Drive Drop on the intake actor; SelfJoin detach path must not hang.
+    let running = RunningCommandCoordinator::start_audit_only(
+        capacity(2),
+        RecordingRepository::appending(Probe::new()),
+        TestClock::fixed(fixed_timestamp()),
+    )
+    .expect("start");
+    let exec = running.administration_audit_executor();
+    let (coord_tx, coord_rx) = std_mpsc::sync_channel(1);
+    let (done_tx, done_rx) = std_mpsc::sync_channel(1);
+    running.queue_post_dispatch_hook(Box::new(move || {
+        let coord: RunningCommandCoordinator =
+            coord_rx.recv().expect("coordinator for actor-thread drop");
+        drop(coord);
+        let _ = done_tx.send(());
+    }));
+    coord_tx.send(running).expect("hand coordinator to hook");
+    let receipt = block_on(exec.reserve_capacity())
+        .expect("slot")
+        .submit(input(0xA2))
+        .expect("submit triggers post-dispatch hook");
+    done_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("actor-thread Drop detaches without deadlock");
+    let _ = block_on(receipt.completion());
+}
+
+#[test]
+fn parked_reserve_capacity_waiter_wins_a_released_permit_over_try_reserve() {
+    // Proof that Tokio mpsc grants released permits to parked FIFO waiters
+    // before the free pool — the rewritten fairness comment's foundation.
+    let probe = Probe::new();
+    let running = RunningCommandCoordinator::start_audit_only(
+        capacity(1),
+        RecordingRepository::appending(probe),
+        TestClock::fixed(fixed_timestamp()),
+    )
+    .expect("start");
+    let exec = running.administration_audit_executor();
+    // Fill the single work slot.
+    let held = block_on(exec.reserve_capacity()).expect("fill");
+    let (parked_ready_tx, parked_ready_rx) = std_mpsc::sync_channel(0);
+    let (parked_done_tx, parked_done_rx) = std_mpsc::sync_channel(0);
+    let (release_permit_tx, release_permit_rx) = std_mpsc::sync_channel(0);
+    let exec_parked = exec.clone();
+    let waiter = thread::spawn(move || {
+        parked_ready_tx.send(()).expect("signal parking");
+        let permit = block_on(exec_parked.reserve_capacity()).expect("parked waiter wins");
+        parked_done_tx.send(()).expect("parked acquired");
+        // Hold the permit until the main thread has probed try_reserve.
+        release_permit_rx.recv().expect("release held permit");
+        drop(permit);
+    });
+    parked_ready_rx.recv().expect("waiter is parking");
+    thread::yield_now();
+    thread::sleep(std::time::Duration::from_millis(20));
+    drop(held);
+    parked_done_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("parked waiter must acquire the released permit");
+    // While the parked waiter still holds the permit, try_reserve must be Full.
+    assert!(
+        exec.sender.clone().try_reserve_owned().is_err(),
+        "try_reserve must not barge ahead of a parked waiter that already holds the slot"
+    );
+    release_permit_tx.send(()).expect("allow waiter to drop");
+    waiter.join().expect("waiter");
+    running.shutdown().expect("shutdown");
 }

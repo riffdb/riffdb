@@ -18,7 +18,7 @@ use riffdb_contract_ir::ContractBundle;
 use riffdb_errors::InternalError;
 use riffdb_policy::{
     AuthorizationClock, AuthorizationError, AuthorizationTelemetry, AuthorizedOfflineMaintenance,
-    CurrentAuthorizer, Decision, OfflineMaintenanceAuthorizationRequest,
+    CapabilityViewCheckpoint, CurrentAuthorizer, Decision, OfflineMaintenanceAuthorizationRequest,
     OfflineMaintenanceDecision, OperationRequest, ProvenanceSelector,
 };
 use riffdb_types::{
@@ -246,6 +246,26 @@ pub trait CurrentPolicyPort: Send + Sync {
         _request: OfflineMaintenanceAuthorizationRequest,
     ) -> Result<OfflineMaintenanceDecision, AuthorizationError> {
         Err(AuthorizationError::CurrentCapabilityUnavailable)
+    }
+
+    /// Returns the live capability-view generation without sampling the clock.
+    ///
+    /// Captured immediately *before* a full evaluation so a publication racing
+    /// that evaluation cannot stamp a post-publication generation onto a proof.
+    /// `None` disables revision-checked reauthorization for the invocation.
+    fn capability_view_generation(&self) -> Option<u64> {
+        None
+    }
+
+    /// Observes the live capability view and fresh authorization time together.
+    ///
+    /// This is the read-path reauthorization safe point's view of current
+    /// state. Implementations MUST sample the same authorization clock
+    /// [`CurrentPolicyPort::authorize`] uses, so the time clause checked
+    /// against a retained validity window is the clause a full evaluation
+    /// would apply. `None` forces full re-evaluation.
+    fn capability_view_checkpoint(&self) -> Option<CapabilityViewCheckpoint> {
+        None
     }
 }
 
@@ -1011,6 +1031,79 @@ impl CapacityRejectionStage {
     pub const ALL: [Self; 2] = [Self::QueueDepth, Self::RetainedBytes];
 }
 
+/// Closed stages of the end-to-end symbolic read pipeline.
+///
+/// Stage identities are redaction-safe metric labels only. They never carry
+/// application values, plan hashes, or request parameters.
+///
+/// Transport residual stages (`TransportAdapt`, `Authn`, `AdmissionContext`,
+/// `SpawnDispatch`, `EncodeConvert`) decompose the client-visible gap outside
+/// the original seven service-side stages. Codec internals stay uninstrumented.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ReadPipelineStage {
+    /// gRPC request split and protobuf → domain conversion.
+    TransportAdapt,
+    /// Credential authentication for a normal request.
+    Authn,
+    /// Lifecycle admission and request-context assembly excluding authentication.
+    AdmissionContext,
+    /// Service spawn submission until the job body first runs.
+    SpawnDispatch,
+    /// Named-query contract selection and module/query plan lookup.
+    PlanLookup,
+    /// Parameter materialization and cursor-lookup identity construction.
+    ParamMaterialize,
+    /// Audit begin for the symbolic query invocation.
+    AuthorizeBegin,
+    /// Pre-execution current-policy reauthorization.
+    AuthorizePre,
+    /// Authorized page execution (fence + snapshot + execute).
+    Execute,
+    /// Post-execution current-policy reauthorization.
+    AuthorizePost,
+    /// Snapshot-to-response projection assembly.
+    ResponseBuild,
+    /// Domain result → protobuf response conversion.
+    EncodeConvert,
+}
+
+impl ReadPipelineStage {
+    /// Every read-pipeline stage in stable metric and shutdown-line order.
+    pub const ALL: [Self; 12] = [
+        Self::TransportAdapt,
+        Self::Authn,
+        Self::AdmissionContext,
+        Self::SpawnDispatch,
+        Self::PlanLookup,
+        Self::ParamMaterialize,
+        Self::AuthorizeBegin,
+        Self::AuthorizePre,
+        Self::Execute,
+        Self::AuthorizePost,
+        Self::ResponseBuild,
+        Self::EncodeConvert,
+    ];
+
+    /// Stable snake_case label value for the `{stage}` metric dimension.
+    #[must_use]
+    pub const fn metric_label(self) -> &'static str {
+        match self {
+            Self::TransportAdapt => "transport_adapt",
+            Self::Authn => "authn",
+            Self::AdmissionContext => "admission_context",
+            Self::SpawnDispatch => "spawn_dispatch",
+            Self::PlanLookup => "plan_lookup",
+            Self::ParamMaterialize => "param_materialize",
+            Self::AuthorizeBegin => "authorize_begin",
+            Self::AuthorizePre => "authorize_pre",
+            Self::Execute => "execute",
+            Self::AuthorizePost => "authorize_post",
+            Self::ResponseBuild => "response_build",
+            Self::EncodeConvert => "encode_convert",
+        }
+    }
+}
+
 /// Redaction-safe service orchestration telemetry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceTelemetryEvent {
@@ -1061,6 +1154,13 @@ pub enum ServiceTelemetryEvent {
         ingress: riffdb_types::ServiceIngressKindV1,
         /// Closed capacity stage that rejected the request.
         stage: CapacityRejectionStage,
+    },
+    /// One bounded service-side read pipeline stage completed.
+    ReadPipelineStageCompleted {
+        /// Closed stage identity; no application values are retained.
+        stage: ReadPipelineStage,
+        /// Wall duration of this service stage.
+        elapsed: std::time::Duration,
     },
 }
 

@@ -89,6 +89,8 @@ struct ProjectionService {
     current_authority: Option<Arc<AuthorizationFixture>>,
     resource_cursors: Mutex<ResourceCursorState>,
     maintenance_invocations: Mutex<Vec<ObservedMaintenanceInvocation>>,
+    /// Optional residual-stage sink for SpawnDispatch in the gRPC harness.
+    read_stage_telemetry: Option<Arc<dyn riffdb_service::ServiceTelemetry>>,
 }
 
 struct PendingProbe {
@@ -126,6 +128,7 @@ impl ProjectionService {
             outcome_locators: Mutex::new(Vec::new()),
             shortened_deadline_observed: Mutex::new(false),
             pending_probe: Mutex::new(None),
+            read_stage_telemetry: None,
             current_authority: None,
             resource_cursors: Mutex::new(ResourceCursorState::default()),
             maintenance_invocations: Mutex::new(Vec::new()),
@@ -713,6 +716,35 @@ impl DiscoveryApplication for ProjectionService {
     }
 }
 
+impl ProjectionService {
+    /// Denies exactly like every other unimplemented operation unless this
+    /// harness was explicitly configured for residual-stage instrumentation.
+    ///
+    /// The default is denial so no other test's expectations change; only the
+    /// residual-stage test opts into the synthetic success needed to reach the
+    /// response-encoding stage.
+    fn residual_symbolic_query(
+        &self,
+    ) -> ServiceFuture<'_, riffdb_service::ExecuteSymbolicQueryResult> {
+        let Some(telemetry) = self.read_stage_telemetry.clone() else {
+            return denied();
+        };
+        // Production records SpawnDispatch as the first statement of the
+        // spawned task; this harness has no spawner, so it records the same
+        // stage at service-body entry.
+        let submitted = Instant::now();
+        Box::pin(async move {
+            telemetry.record(
+                riffdb_service::ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                    stage: riffdb_service::ReadPipelineStage::SpawnDispatch,
+                    elapsed: submitted.elapsed(),
+                },
+            );
+            Ok(riffdb_service::ExecuteSymbolicQueryResult::transport_residual_fixture())
+        })
+    }
+}
+
 impl SymbolicQueryApplication for ProjectionService {
     denied_operation!(
         describe_symbolic_contract,
@@ -732,12 +764,13 @@ impl SymbolicQueryApplication for ProjectionService {
         riffdb_service::CompileSymbolicQueryRequest,
         riffdb_service::ExplainSymbolicQueryResult
     );
-    denied_operation!(
-        execute_symbolic_query,
-        RequestContext,
-        riffdb_service::ExecuteSymbolicQueryRequest,
-        riffdb_service::ExecuteSymbolicQueryResult
-    );
+    fn execute_symbolic_query(
+        &self,
+        _context: RequestContext,
+        _request: riffdb_service::ExecuteSymbolicQueryRequest,
+    ) -> ServiceFuture<'_, riffdb_service::ExecuteSymbolicQueryResult> {
+        self.residual_symbolic_query()
+    }
     denied_operation!(
         deploy_query_module,
         RequestContext,
@@ -756,12 +789,13 @@ impl SymbolicQueryApplication for ProjectionService {
         riffdb_service::NamedSymbolicQueryRequest,
         riffdb_service::ExplainSymbolicQueryResult
     );
-    denied_operation!(
-        execute_named_symbolic_query,
-        RequestContext,
-        riffdb_service::NamedSymbolicQueryRequest,
-        riffdb_service::ExecuteSymbolicQueryResult
-    );
+    fn execute_named_symbolic_query(
+        &self,
+        _context: RequestContext,
+        _request: riffdb_service::NamedSymbolicQueryRequest,
+    ) -> ServiceFuture<'_, riffdb_service::ExecuteSymbolicQueryResult> {
+        self.residual_symbolic_query()
+    }
 }
 
 #[derive(Clone)]
@@ -943,6 +977,7 @@ impl GrpcLifecycleRoute for MaintenanceRoute {
 struct ActiveRoute {
     service: Arc<dyn ApplicationService>,
     security: CheckedGrpcSecurityContext,
+    read_stage_telemetry: Option<Arc<dyn riffdb_service::ServiceTelemetry>>,
 }
 
 impl GrpcLifecycleRoute for ActiveRoute {
@@ -961,6 +996,7 @@ impl GrpcLifecycleRoute for ActiveRoute {
                 | ServiceOperationV1::ListPendingOutboxDeliveries
                 | ServiceOperationV1::DiscoverCommandTools
                 | ServiceOperationV1::DiscoverResources
+                | ServiceOperationV1::ExecuteQuery
         )
         .then(|| Arc::clone(&self.service))
     }
@@ -1022,6 +1058,10 @@ impl GrpcLifecycleRoute for ActiveRoute {
     fn finish_bootstrap(&self, _completion: GrpcBootstrapCompletion) {}
 
     fn finish_deployment(&self, _completion: GrpcDeploymentCompletion) {}
+
+    fn read_stage_telemetry(&self) -> Option<Arc<dyn riffdb_service::ServiceTelemetry>> {
+        self.read_stage_telemetry.clone()
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1337,6 +1377,7 @@ async fn projection_variants_and_public_error_cross_real_grpc() {
     let route: Arc<dyn GrpcLifecycleRoute> = Arc::new(ActiveRoute {
         service: application_service,
         security,
+        read_stage_telemetry: None,
     });
     let application = GrpcApplication::new(
         route,
@@ -1455,6 +1496,7 @@ async fn grpc_failure_boundaries_remain_fail_closed_and_exact() {
     let route: Arc<dyn GrpcLifecycleRoute> = Arc::new(ActiveRoute {
         service: application_service,
         security,
+        read_stage_telemetry: None,
     });
     let application = GrpcApplication::new(
         route,
@@ -1644,6 +1686,7 @@ async fn wp137_unary_surface_crosses_authenticated_loopback_grpc() {
     let route: Arc<dyn GrpcLifecycleRoute> = Arc::new(ActiveRoute {
         service: application_service,
         security,
+        read_stage_telemetry: None,
     });
     let application = GrpcApplication::new(
         route,
@@ -2224,6 +2267,7 @@ async fn execute_batch_carries_per_item_results_over_authenticated_loopback() {
     let route: Arc<dyn GrpcLifecycleRoute> = Arc::new(ActiveRoute {
         service: application_service,
         security,
+        read_stage_telemetry: None,
     });
     let application = GrpcApplication::new(
         route,
@@ -2365,6 +2409,127 @@ async fn execute_batch_carries_per_item_results_over_authenticated_loopback() {
             .count()
             >= 7
     );
+
+    shutdown_sender.send(()).expect("server still running");
+    server
+        .await
+        .expect("server task did not panic")
+        .expect("server shut down cleanly");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn execute_query_records_five_residual_read_pipeline_stages() {
+    use riffdb_api_grpc::generated_app::application_query_service_client::ApplicationQueryServiceClient;
+    use riffdb_errors::IncidentIdSource;
+    use riffdb_observability::Observability;
+    use riffdb_proto::app::v1 as app_v1;
+    use riffdb_service::{ReadPipelineStage, ServiceTelemetry};
+    use riffdb_types::IncidentId;
+
+    struct FixedIncidents;
+    impl IncidentIdSource for FixedIncidents {
+        fn next_incident_id(&self) -> Result<IncidentId, riffdb_errors::IncidentIdSourceError> {
+            IncidentId::from_bytes([0xee; 16]).map_err(|_| riffdb_errors::IncidentIdSourceError)
+        }
+    }
+
+    let database_id =
+        DatabaseId::from_unix_milliseconds_and_random(77, [0x77; 10]).expect("valid database ID");
+    let environment = Environment::new("grpc-residual").expect("valid environment");
+    let audience = Audience::new("grpc-loopback").expect("valid audience");
+    let principal = authenticated_principal(database_id, environment.clone(), audience.clone());
+
+    let observability =
+        Arc::new(Observability::new(Arc::new(FixedIncidents), 32).expect("bounded observability"));
+    let telemetry: Arc<dyn ServiceTelemetry> = observability.clone();
+
+    let mut service = ProjectionService::new();
+    service.read_stage_telemetry = Some(Arc::clone(&telemetry));
+    let application_service: Arc<dyn ApplicationService> = Arc::new(service);
+    let authenticator: Arc<dyn CredentialAuthenticator> =
+        Arc::new(AcceptingAuthenticator { principal });
+    let capability_keys = Arc::new(
+        CapabilityDigestKeyProvider::parse_document(CAPABILITY_KEYS)
+            .expect("valid capability key fixture"),
+    );
+    let security = CheckedGrpcSecurityContext::new(
+        authenticator,
+        AuthenticationContext::new(database_id, environment, audience),
+        capability_keys,
+    );
+    let route: Arc<dyn GrpcLifecycleRoute> = Arc::new(ActiveRoute {
+        service: application_service,
+        security,
+        read_stage_telemetry: Some(telemetry),
+    });
+    let application = GrpcApplication::new(
+        route,
+        GrpcRequestLimits::new(Duration::from_secs(30)).expect("bounded request duration"),
+    );
+
+    let incoming = TcpIncoming::bind("127.0.0.1:0".parse().expect("loopback address"))
+        .expect("bind loopback listener");
+    let address = incoming.local_addr().expect("bound loopback address");
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(application.application_query_server())
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_receiver.await;
+            }),
+    );
+
+    let endpoint =
+        Endpoint::from_shared(format!("http://{address}")).expect("valid loopback endpoint");
+    let channel = endpoint.connect().await.expect("connect loopback client");
+    let mut client = ApplicationQueryServiceClient::new(channel);
+
+    let mut request = tonic::Request::new(app_v1::ExecuteQueryRequest {
+        contract: None,
+        module_hash: None,
+        parameters: Vec::new(),
+        cursor: None,
+        minimum_application_head: None,
+        request_id: request_id(1).into_bytes().to_vec(),
+        query: Some(app_v1::execute_query_request::Query::Source(
+            "query Q { return Ok { x: 1 } outcomes Ok }".to_owned(),
+        )),
+    });
+    request.metadata_mut().insert(
+        "authorization",
+        MetadataValue::try_from(format!("Bearer {CAPABILITY_TOKEN}"))
+            .expect("valid authorization metadata"),
+    );
+    let response = client
+        .execute_query(request)
+        .await
+        .expect("execute_query residual path succeeds");
+    assert_eq!(response.get_ref().outcome, "Ok");
+
+    for stage in [
+        ReadPipelineStage::TransportAdapt,
+        ReadPipelineStage::Authn,
+        ReadPipelineStage::AdmissionContext,
+        ReadPipelineStage::SpawnDispatch,
+        ReadPipelineStage::EncodeConvert,
+    ] {
+        let snapshot = observability.metrics().read_stage_duration(stage);
+        assert!(
+            snapshot.count >= 1,
+            "expected residual stage {stage:?} count >= 1, got {}",
+            snapshot.count
+        );
+    }
+
+    // Shutdown line inventory is 12 stages.
+    let line =
+        riffdb_observability::format_read_stages_v1_line(&observability.read_stage_snapshot());
+    assert!(line.starts_with("riffdb-read-stages-v1\t"));
+    let payload = line
+        .strip_prefix("riffdb-read-stages-v1\t")
+        .expect("prefix");
+    let parsed = riffdb_observability::parse_read_stages_v1_payload(payload).expect("parse");
+    assert_eq!(parsed.len(), 12);
 
     shutdown_sender.send(()).expect("server still running");
     server

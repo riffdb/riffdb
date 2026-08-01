@@ -11,6 +11,7 @@ EXPECTED_PACKAGES = %w[
   riffdb-api-grpc
   riffdb-api-mcp
   riffdb-auth
+  riffdb-bench-root
   riffdb-catalog
   riffdb-cli
   riffdb-client-python-native
