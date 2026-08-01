@@ -13,7 +13,7 @@ use riffdb_catalog::{ValidatedContractBundle, resolve_executable_plan, validate_
 use riffdb_commit::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
     ApplicationCommitNotificationError, ApplicationCommitNotificationSink,
-    CommandExecutionPreparation, CommandRequestControl, CoordinatorDurability,
+    CommandExecutionPreparation, CommandRequestControl, CommitTelemetry, CoordinatorDurability,
     CoordinatorWorkloadCapacity, ProvenanceIdSource, ProvenanceIdSourceError,
     RunningCommandCoordinator,
 };
@@ -876,6 +876,35 @@ where
         notifications,
     )
     .expect("start command coordinator")
+}
+
+pub(crate) fn start_group_coordinator_with_commit_telemetry<P>(
+    ports: RedbOperationalPorts,
+    admission_clock: Arc<FixedAdmissionClock>,
+    provenance_source: Arc<P>,
+    notifications: Arc<dyn ApplicationCommitNotificationSink>,
+    telemetry: Arc<dyn CommitTelemetry>,
+) -> RunningCommandCoordinator
+where
+    P: ProvenanceIdSource + 'static,
+{
+    let conflicts: Arc<dyn ConflictManager> = Arc::new(
+        ShardedConflictManager::new(ConflictManagerConfig::default())
+            .expect("start conflict manager"),
+    );
+    RunningCommandCoordinator::start_with_commit_telemetry(
+        CoordinatorWorkloadCapacity::new(8).expect("nonzero coordinator capacity"),
+        CoordinatorDurability::Group,
+        ports,
+        conflicts,
+        admission_clock,
+        Arc::new(FixedAdministrationClock(timestamp(1_700_000_002))),
+        Arc::new(FixedAuthorizationClock(timestamp(1_700_000_002))),
+        provenance_source,
+        notifications,
+        telemetry,
+    )
+    .expect("start group coordinator with commit telemetry")
 }
 
 struct DiscardApplicationCommitNotifications;
