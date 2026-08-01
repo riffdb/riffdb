@@ -655,6 +655,15 @@ impl StoredRetiredEntityRecordV1 {
     }
 }
 
+/// Closed external migration operation kind.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContractMigrationOperationKindV1 {
+    /// Complete read-only preflight only.
+    Check,
+    /// Complete staged migration and cutover.
+    Apply,
+}
+
 /// Closed external migration operation phase.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContractMigrationReceiptPhaseV1 {
@@ -825,6 +834,7 @@ impl ContractMigrationReceiptTransitionV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContractMigrationReceiptV1 {
     database_id: DatabaseId,
+    operation_kind: ContractMigrationOperationKindV1,
     operation_id: ContractMigrationOperationId,
     input_hash: ContractMigrationInputHash,
     artifacts: ContractMigrationArtifactsV1,
@@ -851,10 +861,42 @@ impl ContractMigrationReceiptV1 {
         stage_identity: Option<[u8; 32]>,
         transitions: Vec<ContractMigrationReceiptTransitionV1>,
     ) -> Result<Self, StorageValueError> {
+        Self::from_canonical_parts_for_operation(
+            ContractMigrationOperationKindV1::Apply,
+            database_id,
+            operation_id,
+            input_hash,
+            artifacts,
+            operation_artifacts,
+            admission,
+            backup_name,
+            backup_manifest,
+            stage_identity,
+            transitions,
+        )
+    }
+
+    /// Reconstructs a canonical receipt for one exact operation kind.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_canonical_parts_for_operation(
+        operation_kind: ContractMigrationOperationKindV1,
+        database_id: DatabaseId,
+        operation_id: ContractMigrationOperationId,
+        input_hash: ContractMigrationInputHash,
+        artifacts: ContractMigrationArtifactsV1,
+        operation_artifacts: ContractMigrationOperationArtifactsV1,
+        admission: ContractMigrationAdmissionV1,
+        backup_name: Option<riffdb_types::BackupNameV1>,
+        backup_manifest: Option<OfflineBackupManifestIdentityV1>,
+        stage_identity: Option<[u8; 32]>,
+        transitions: Vec<ContractMigrationReceiptTransitionV1>,
+    ) -> Result<Self, StorageValueError> {
         if transitions.is_empty()
             || transitions.len() > MAX_CONTRACT_MIGRATION_RECEIPT_TRANSITIONS_V1
             || transitions[0].receipt_phase() != ContractMigrationReceiptPhaseV1::Accepted
             || backup_name.is_some() != backup_manifest.is_some()
+            || operation_kind == ContractMigrationOperationKindV1::Check
+                && (backup_name.is_some() || stage_identity.is_some())
             || backup_manifest
                 .as_ref()
                 .is_some_and(|manifest| manifest.database_id() != database_id)
@@ -862,7 +904,11 @@ impl ContractMigrationReceiptV1 {
             return Err(StorageValueError::InvalidShape);
         }
         for pair in transitions.windows(2) {
-            if !valid_receipt_successor(pair[0].receipt_phase(), pair[1].receipt_phase()) {
+            if !valid_receipt_successor(
+                operation_kind,
+                pair[0].receipt_phase(),
+                pair[1].receipt_phase(),
+            ) {
                 return Err(StorageValueError::InvalidShape);
             }
         }
@@ -880,18 +926,20 @@ impl ContractMigrationReceiptV1 {
             .last()
             .expect("a canonical receipt is nonempty")
             .receipt_phase();
-        let after_backup = !matches!(
-            current,
-            ContractMigrationReceiptPhaseV1::Accepted
-                | ContractMigrationReceiptPhaseV1::Draining
-                | ContractMigrationReceiptPhaseV1::Preflight
-                | ContractMigrationReceiptPhaseV1::FailedClosed
-        );
+        let after_backup = operation_kind == ContractMigrationOperationKindV1::Apply
+            && !matches!(
+                current,
+                ContractMigrationReceiptPhaseV1::Accepted
+                    | ContractMigrationReceiptPhaseV1::Draining
+                    | ContractMigrationReceiptPhaseV1::Preflight
+                    | ContractMigrationReceiptPhaseV1::FailedClosed
+            );
         if after_backup && backup_name.is_none() {
             return Err(StorageValueError::InvalidShape);
         }
         Ok(Self {
             database_id,
+            operation_kind,
             operation_id,
             input_hash,
             artifacts,
@@ -908,6 +956,11 @@ impl ContractMigrationReceiptV1 {
     #[must_use]
     pub const fn database_id(&self) -> DatabaseId {
         self.database_id
+    }
+    /// Returns the exact operation kind.
+    #[must_use]
+    pub const fn operation_kind(&self) -> ContractMigrationOperationKindV1 {
+        self.operation_kind
     }
     /// Returns the caller-stable operation identity.
     #[must_use]
@@ -1032,7 +1085,8 @@ impl ContractMigrationReceiptV1 {
             || (self.backup_name.clone(), self.backup_manifest.clone()),
             |(name, manifest)| (Some(name), Some(manifest)),
         );
-        Self::from_canonical_parts(
+        Self::from_canonical_parts_for_operation(
+            self.operation_kind,
             self.database_id,
             self.operation_id,
             self.input_hash,
@@ -1048,28 +1102,65 @@ impl ContractMigrationReceiptV1 {
 }
 
 const fn valid_receipt_successor(
+    operation_kind: ContractMigrationOperationKindV1,
     current: ContractMigrationReceiptPhaseV1,
     next: ContractMigrationReceiptPhaseV1,
 ) -> bool {
     use ContractMigrationReceiptPhaseV1 as P;
-    matches!(
-        (current, next),
-        (P::Accepted, P::Draining | P::FailedClosed)
-            | (P::Draining, P::Preflight | P::FailedClosed)
-            | (P::Preflight, P::BackupPublished | P::FailedClosed)
-            | (P::BackupPublished, P::Staging | P::FailedClosed)
-            | (P::Staging, P::Transforming | P::FailedClosed)
-            | (
-                P::Transforming,
-                P::Transforming | P::RebuildingProjections | P::FailedClosed
-            )
-            | (
-                P::RebuildingProjections,
-                P::RebuildingProjections | P::ValidatingStage | P::FailedClosed
-            )
-            | (P::ValidatingStage, P::Publishing | P::FailedClosed)
-            | (P::Publishing, P::ValidatingPublished | P::RollingBack)
-            | (P::ValidatingPublished, P::Succeeded | P::RollingBack)
-            | (P::RollingBack, P::FailedRolledBack)
-    )
+    match operation_kind {
+        ContractMigrationOperationKindV1::Check => matches!(
+            (current, next),
+            (P::Accepted, P::Preflight | P::FailedClosed)
+                | (P::Preflight, P::Succeeded | P::FailedClosed)
+        ),
+        ContractMigrationOperationKindV1::Apply => matches!(
+            (current, next),
+            (P::Accepted, P::Draining | P::FailedClosed)
+                | (P::Draining, P::Preflight | P::FailedClosed)
+                | (P::Preflight, P::BackupPublished | P::FailedClosed)
+                | (P::BackupPublished, P::Staging | P::FailedClosed)
+                | (P::Staging, P::Transforming | P::FailedClosed)
+                | (
+                    P::Transforming,
+                    P::Transforming | P::RebuildingProjections | P::FailedClosed
+                )
+                | (
+                    P::RebuildingProjections,
+                    P::RebuildingProjections | P::ValidatingStage | P::FailedClosed
+                )
+                | (P::ValidatingStage, P::Publishing | P::FailedClosed)
+                | (P::Publishing, P::ValidatingPublished | P::RollingBack)
+                | (P::ValidatingPublished, P::Succeeded | P::RollingBack)
+                | (P::RollingBack, P::FailedRolledBack)
+        ),
+    }
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+
+    #[test]
+    fn check_and_apply_have_disjoint_success_paths() {
+        use ContractMigrationOperationKindV1::{Apply, Check};
+        use ContractMigrationReceiptPhaseV1 as P;
+
+        assert!(valid_receipt_successor(Check, P::Accepted, P::Preflight));
+        assert!(valid_receipt_successor(Check, P::Preflight, P::Succeeded));
+        assert!(!valid_receipt_successor(Check, P::Accepted, P::Draining));
+        assert!(!valid_receipt_successor(
+            Check,
+            P::Preflight,
+            P::BackupPublished
+        ));
+
+        assert!(valid_receipt_successor(Apply, P::Accepted, P::Draining));
+        assert!(valid_receipt_successor(
+            Apply,
+            P::Preflight,
+            P::BackupPublished
+        ));
+        assert!(!valid_receipt_successor(Apply, P::Accepted, P::Preflight));
+        assert!(!valid_receipt_successor(Apply, P::Preflight, P::Succeeded));
+    }
 }

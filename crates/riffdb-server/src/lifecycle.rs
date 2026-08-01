@@ -9,12 +9,14 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use riffdb_api_grpc::{
     CheckedGrpcRestoreRetrySecurityContext, CheckedGrpcSecurityContext, GrpcBootstrapCompletion,
-    GrpcDeploymentCompletion, GrpcLifecycleRoute, GrpcOfflineMaintenanceOperation,
+    GrpcContractMigrationOperation, GrpcDeploymentCompletion, GrpcLifecycleRoute,
+    GrpcOfflineMaintenanceOperation,
 };
 use riffdb_service::{
-    ApplicationService, HealthContext, HealthRequest, HealthResult, InitializingRiffDbService,
-    PreBootstrapHealthContextIssuer, PreBootstrapLifecycle, RecoveryOfflineMaintenanceApplication,
-    RestoreRetryOfflineMaintenanceApplication, ServiceFuture, ServiceTelemetry,
+    ApplicationService, ContractMigrationApplication, HealthContext, HealthRequest, HealthResult,
+    InitializingRiffDbService, PreBootstrapHealthContextIssuer, PreBootstrapLifecycle,
+    RecoveryOfflineMaintenanceApplication, RestoreRetryOfflineMaintenanceApplication,
+    ServiceFuture, ServiceTelemetry,
 };
 use riffdb_types::{OfflineMaintenanceOperationId, ServiceOperationV1};
 
@@ -27,6 +29,7 @@ use crate::startup::{ValidatedAllocatorCapacity, ValidatedStartupLifecycle};
 pub(crate) struct ProductionLifecycleRoute {
     initializing: InitializingRiffDbService,
     activated: OnceLock<Arc<dyn ApplicationService>>,
+    migration: OnceLock<Arc<dyn ContractMigrationApplication>>,
     security: OnceLock<CheckedGrpcSecurityContext>,
     server_generation: OnceLock<ServerGenerationV1>,
     history_incarnation: OnceLock<u64>,
@@ -64,6 +67,7 @@ impl ProductionLifecycleRoute {
         Self {
             initializing,
             activated: OnceLock::new(),
+            migration: OnceLock::new(),
             security: OnceLock::new(),
             server_generation: OnceLock::new(),
             history_incarnation: OnceLock::new(),
@@ -78,6 +82,16 @@ impl ProductionLifecycleRoute {
                 issuer: Some(issuer),
             }),
         }
+    }
+
+    /// Installs the disjoint migration surface owned by the same activated service.
+    pub(crate) fn install_contract_migration(
+        &self,
+        service: Arc<dyn ContractMigrationApplication>,
+    ) -> Result<(), LifecycleInstallError> {
+        self.migration
+            .set(service)
+            .map_err(|_| LifecycleInstallError::AlreadyInstalled)
     }
 
     /// Installs the sole activated service after the complete startup proof join.
@@ -266,6 +280,22 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
             .model
             .allows_offline_maintenance(runtime_ready)
             .then(|| self.activated_service())
+            .flatten()
+    }
+
+    fn admit_contract_migration(
+        &self,
+        _operation: GrpcContractMigrationOperation,
+    ) -> Option<Arc<dyn ContractMigrationApplication>> {
+        if !self.maintenance.ordinary_admission_available() {
+            return None;
+        }
+        let runtime_ready = self.runtime.is_routing_allowed();
+        let state = self.lock_state();
+        state
+            .model
+            .allows_offline_maintenance(runtime_ready)
+            .then(|| self.migration.get().cloned())
             .flatten()
     }
 

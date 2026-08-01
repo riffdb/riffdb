@@ -103,7 +103,10 @@ Inspects exact local contract migration artifacts
 Usage: riffdb migration [OPTIONS] <COMMAND>
 
 Commands:
-  plan  Prints the exact read-only migration plan for a locked application
+  plan       Prints the exact read-only migration plan for a locked application
+  check      Runs one read-only server preflight for the exact locked migration
+  apply      Applies one exact locked migration after explicit hash confirmation
+  operation  Observes one caller-stable migration operation after the database reopens
 
 Options:
       --config <PATH>
@@ -540,6 +543,68 @@ Options:
       --config <PATH>
       --endpoint <LOOPBACK_HTTP_ENDPOINT>
       --lock <APPLICATION_LOCK>            [default: riffdb.application.lock.json]
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb migration check`
+
+```text
+Runs one read-only server preflight for the exact locked migration
+
+Usage: riffdb migration check [OPTIONS] --operation-id <UUIDV7>
+
+Options:
+      --application <APPLICATION_SOURCE>        [default: riffdb.application.json]
+      --config <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --lock <APPLICATION_LOCK>                 [default: riffdb.application.lock.json]
+      --database <DATABASE>
+      --operation-id <UUIDV7>
+      --migration-hash <64_LOWERCASE_HEX_HASH>
+      --output <human|json>                     [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                                    Print help
+```
+
+#### `riffdb migration apply`
+
+```text
+Applies one exact locked migration after explicit hash confirmation
+
+Usage: riffdb migration apply [OPTIONS] --operation-id <UUIDV7> --confirm-apply <64_LOWERCASE_HEX_HASH>
+
+Options:
+      --application <APPLICATION_SOURCE>       [default: riffdb.application.json]
+      --config <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --lock <APPLICATION_LOCK>                [default: riffdb.application.lock.json]
+      --database <DATABASE>
+      --operation-id <UUIDV7>
+      --confirm-apply <64_LOWERCASE_HEX_HASH>
+      --output <human|json>                    [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                                   Print help
+```
+
+#### `riffdb migration operation`
+
+```text
+Observes one caller-stable migration operation after the database reopens
+
+Usage: riffdb migration operation [OPTIONS] <UUIDV7>
+
+Arguments:
+  <UUIDV7>
+
+Options:
+      --config <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>

@@ -10,11 +10,13 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use clap::Parser;
 use riffdb_client_rust::{
-    ApplicationError, ApplicationErrorContext, ApplicationOperation, AttemptBudget, BackupNameV1,
-    BootstrapCapabilityCreateTemplate, CallMetadata, ClientError, CreateOfflineBackup,
-    IdempotentCommand, NormalCapabilityCreateTemplate, OfflineMaintenanceOperationId,
-    OfflineMaintenanceReplacementConfirmation, RestoreOfflineBackup, RiffDbClient, app_v1,
-    generate_capability_id, generate_offline_maintenance_operation_id, generate_request_id, v1,
+    ApplicationError, ApplicationErrorContext, ApplicationOperation, ApplyContractMigration,
+    AttemptBudget, BackupNameV1, BootstrapCapabilityCreateTemplate, CallMetadata,
+    CheckContractMigration, ClientError, ContractMigrationOperationId, CreateOfflineBackup,
+    IdempotentCommand, MigrationBundleHash, NormalCapabilityCreateTemplate,
+    OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, RestoreOfflineBackup,
+    RiffDbClient, app_v1, generate_capability_id, generate_offline_maintenance_operation_id,
+    generate_request_id, v1,
 };
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_diagnostics::{AuthoringDiagnostics, AuthoringSourcePath};
@@ -47,11 +49,11 @@ use crate::input::{
 use crate::output::{
     CommandIdentity, NormalCreateDisposition, Terminal, authoring_error, client_error, local_error,
     local_error_with, maintenance_uncertain, render_bootstrap, render_commit,
-    render_compilation_diagnostics, render_contract_deploy, render_contract_validation,
-    render_create_maintenance_start, render_entity, render_execution, render_health,
-    render_maintenance_operation, render_normal_create, render_outcome, render_projection,
-    render_restore_maintenance_start, render_revoke, success, take_normal_create_disposition,
-    uncertain,
+    render_compilation_diagnostics, render_contract_deploy, render_contract_migration_operation,
+    render_contract_migration_start, render_contract_validation, render_create_maintenance_start,
+    render_entity, render_execution, render_health, render_maintenance_operation,
+    render_normal_create, render_outcome, render_projection, render_restore_maintenance_start,
+    render_revoke, success, take_normal_create_disposition, uncertain,
 };
 use crate::runner::{RunnerError, RunnerStream, run_budget};
 use crate::value::format_uuid;
@@ -171,8 +173,8 @@ fn interrupt_application_deployment_after(environment: &dyn Environment, stage: 
 use crate::scaffold::{
     ApplicationCheckStatus, PinnedLockRefresh, ScaffoldLanguage, application_contract_source,
     application_contract_version, check_application, check_application_lock, create_application,
-    generate_application, load_locked_application, migrate_application_source_v2,
-    plan_application_migrations, preview_application_lock,
+    generate_application, load_locked_application, load_locked_migration_submission,
+    migrate_application_source_v2, plan_application_migrations, preview_application_lock,
     refresh_application_lock_from_pinned_bundle, write_application_lock,
     write_application_lock_with_bundle,
 };
@@ -605,11 +607,7 @@ async fn dispatch(
         TopLevel::Application { command } => {
             application_command(command, config, environment, stdin).await
         }
-        TopLevel::Migration { .. } => local_error(
-            CommandIdentity::MigrationPlan,
-            "migration_plan_dispatch_invalid",
-            "migration plan dispatch is invalid",
-        ),
+        TopLevel::Migration { command } => migration_command(command, config, environment).await,
         TopLevel::New { .. } => local_error(
             CommandIdentity::ServerHealth,
             "new_dispatch_invalid",
@@ -637,6 +635,173 @@ async fn dispatch(
         TopLevel::Server { command } => server_command(command, config, environment).await,
         TopLevel::Backup { command } => backup_command(command, config, environment).await,
         TopLevel::Demo { command } => demo_command(command, config, environment),
+    }
+}
+
+async fn migration_command(
+    command: MigrationCommand,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+) -> Terminal {
+    let identity = match command {
+        MigrationCommand::Plan { .. } => CommandIdentity::MigrationPlan,
+        MigrationCommand::Check { .. } => CommandIdentity::MigrationCheck,
+        MigrationCommand::Apply { .. } => CommandIdentity::MigrationApply,
+        MigrationCommand::Operation { .. } => CommandIdentity::MigrationOperation,
+    };
+    let metadata = match required_metadata(identity, config, environment) {
+        Ok(metadata) => metadata,
+        Err(terminal) => return terminal,
+    };
+    let mut client = match connect(config).await {
+        Ok(client) => client,
+        Err(error) => return client_error(identity, &error),
+    };
+    match command {
+        MigrationCommand::Plan { .. } => local_error(
+            identity,
+            "migration_plan_dispatch_invalid",
+            "migration plan dispatch is invalid",
+        ),
+        MigrationCommand::Check {
+            application,
+            lock,
+            operation_id,
+            migration_hash,
+        } => {
+            let operation_id = match parse_contract_migration_operation_id(&operation_id) {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            let migration_hash = match migration_hash.as_deref().map(parse_lower_hash).transpose() {
+                Ok(value) => value.map(MigrationBundleHash::from_bytes),
+                Err(()) => return invalid_input(identity),
+            };
+            let submission = match load_locked_migration_submission(
+                Path::new(&application),
+                Some(Path::new(&lock)),
+                migration_hash,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    emit_scaffold_failure(
+                        "riffdb migration check failed",
+                        &error,
+                        Some(config.output),
+                    );
+                    return local_error(
+                        identity,
+                        "migration_application_invalid",
+                        "the locked migration application is invalid",
+                    );
+                }
+            };
+            let (candidate, migration, _) = submission.into_parts();
+            let check = match CheckContractMigration::new(operation_id, candidate, migration) {
+                Ok(value) => value,
+                Err(_) => return invalid_input(identity),
+            };
+            let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+            match client
+                .check_contract_migration_with_retry(&check, attempts, &metadata)
+                .await
+            {
+                Ok(response) => render_contract_migration_start(
+                    identity,
+                    response.disposition,
+                    response.operation.as_ref(),
+                ),
+                Err(ClientError::OutcomeUnknown(_)) => {
+                    crate::output::migration_uncertain(identity, operation_id)
+                }
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        MigrationCommand::Apply {
+            application,
+            lock,
+            operation_id,
+            confirm_apply,
+        } => {
+            let operation_id = match parse_contract_migration_operation_id(&operation_id) {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            let confirmed = match parse_lower_hash(&confirm_apply) {
+                Ok(value) => MigrationBundleHash::from_bytes(value),
+                Err(()) => return invalid_input(identity),
+            };
+            let submission = match load_locked_migration_submission(
+                Path::new(&application),
+                Some(Path::new(&lock)),
+                Some(confirmed),
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    emit_scaffold_failure(
+                        "riffdb migration apply failed",
+                        &error,
+                        Some(config.output),
+                    );
+                    return local_error(
+                        identity,
+                        "migration_application_invalid",
+                        "the locked migration application is invalid",
+                    );
+                }
+            };
+            let (candidate, migration, migration_hash) = submission.into_parts();
+            if confirmed != migration_hash {
+                return local_error(
+                    identity,
+                    "migration_confirmation_mismatch",
+                    "--confirm-apply must equal the exact locked migration hash",
+                );
+            }
+            let apply =
+                match ApplyContractMigration::new(operation_id, candidate, migration, confirmed) {
+                    Ok(value) => value,
+                    Err(_) => return invalid_input(identity),
+                };
+            let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+            match client
+                .apply_contract_migration_with_retry(&apply, attempts, &metadata)
+                .await
+            {
+                Ok(response) => render_contract_migration_start(
+                    identity,
+                    response.disposition,
+                    response.operation.as_ref(),
+                ),
+                Err(ClientError::OutcomeUnknown(_)) => {
+                    crate::output::migration_uncertain(identity, operation_id)
+                }
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        MigrationCommand::Operation { operation_id } => {
+            let operation_id = match parse_contract_migration_operation_id(&operation_id) {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            let request_id = match request_id() {
+                Ok(value) => value,
+                Err(error) => return client_error(identity, &error),
+            };
+            match client
+                .get_contract_migration_operation(
+                    v1::GetContractMigrationOperationRequest {
+                        request_id,
+                        operation_id: operation_id.into_bytes().to_vec(),
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => render_contract_migration_operation(&response),
+                Err(error) => client_error(identity, &error),
+            }
+        }
     }
 }
 
@@ -3427,6 +3592,9 @@ enum CapabilityPermissionInput {
         stable_id: u32,
     },
     DeployContract {},
+    MigrateContract {
+        contract_lineage: String,
+    },
     InvokeCommand {
         contract_lineage: String,
         stable_id: u32,
@@ -3499,6 +3667,7 @@ enum CapabilityPermissionKindInput {
     ExecuteAdHocQuery,
     ExplainNamedQuery,
     ExecuteNamedQuery,
+    MigrateContract,
 }
 
 #[derive(Deserialize)]
@@ -3804,6 +3973,12 @@ fn capability_permission(input: CapabilityPermissionInput) -> Result<v1::Capabil
             stable_id,
         } => Permission::ExplainCommand(scoped(contract_lineage, stable_id)?),
         CapabilityPermissionInput::DeployContract {} => Permission::DeployContract(v1::Unit {}),
+        CapabilityPermissionInput::MigrateContract { contract_lineage } => {
+            if contract_lineage.is_empty() || contract_lineage.len() > 256 {
+                return Err(());
+            }
+            Permission::MigrateContract(contract_lineage)
+        }
         CapabilityPermissionInput::InvokeCommand {
             contract_lineage,
             stable_id,
@@ -3938,6 +4113,9 @@ const fn permission_kind(input: CapabilityPermissionKindInput) -> i32 {
         }
         CapabilityPermissionKindInput::ExecuteNamedQuery => {
             v1::CapabilityPermissionKind::ExecuteNamedQuery as i32
+        }
+        CapabilityPermissionKindInput::MigrateContract => {
+            v1::CapabilityPermissionKind::MigrateContract as i32
         }
     }
 }
@@ -4765,6 +4943,21 @@ fn parse_uuid_v7(value: &str) -> Option<[u8; 16]> {
     ((bytes[6] >> 4 == 7) && (bytes[8] & 0xc0 == 0x80)).then_some(bytes)
 }
 
+fn parse_contract_migration_operation_id(value: &str) -> Result<ContractMigrationOperationId, ()> {
+    ContractMigrationOperationId::from_bytes(parse_uuid_v7(value).ok_or(())?).map_err(|_| ())
+}
+
+fn parse_lower_hash(value: &str) -> Result<[u8; 32], ()> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(());
+    }
+    parse_hash(value)?.try_into().map_err(|_| ())
+}
+
 const fn restore_confirmation(confirmed: bool) -> OfflineMaintenanceReplacementConfirmation {
     if confirmed {
         OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget
@@ -4785,7 +4978,18 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
             command: ApplicationCommand::BindDevRole { .. },
         } => CommandIdentity::ApplicationBindDevRole,
         TopLevel::Application { .. } => CommandIdentity::ServerHealth,
-        TopLevel::Migration { .. } => CommandIdentity::MigrationPlan,
+        TopLevel::Migration {
+            command: MigrationCommand::Plan { .. },
+        } => CommandIdentity::MigrationPlan,
+        TopLevel::Migration {
+            command: MigrationCommand::Check { .. },
+        } => CommandIdentity::MigrationCheck,
+        TopLevel::Migration {
+            command: MigrationCommand::Apply { .. },
+        } => CommandIdentity::MigrationApply,
+        TopLevel::Migration {
+            command: MigrationCommand::Operation { .. },
+        } => CommandIdentity::MigrationOperation,
         TopLevel::New { .. } => CommandIdentity::ServerHealth,
         TopLevel::Dev { .. } => CommandIdentity::ServerHealth,
         TopLevel::Contract {
@@ -4891,6 +5095,24 @@ mod tests {
             seed_checkpoint_path(root, 0, 2),
             seed_checkpoint_path(root, 0, 4)
         );
+    }
+
+    #[test]
+    fn migration_identifiers_and_confirmation_hashes_are_exact() {
+        let operation = "018f2f85-3c20-7a31-8f11-112233445566";
+        assert_eq!(
+            parse_contract_migration_operation_id(operation)
+                .expect("canonical UUIDv7")
+                .to_string(),
+            operation
+        );
+        assert!(parse_contract_migration_operation_id("not-a-uuid").is_err());
+
+        let lower = "ab".repeat(32);
+        assert_eq!(parse_lower_hash(&lower), Ok([0xab; 32]));
+        assert!(parse_lower_hash(&"AB".repeat(32)).is_err());
+        assert!(parse_lower_hash(&"ab".repeat(31)).is_err());
+        assert!(parse_lower_hash(&format!("{}g", "ab".repeat(31))).is_err());
     }
 
     #[derive(Default)]

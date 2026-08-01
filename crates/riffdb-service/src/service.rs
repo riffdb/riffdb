@@ -23,13 +23,14 @@ use crate::orchestration::{
     ContainedAuditFailure, OperationAuditLifecycle, with_operation_audit_lifecycle,
 };
 use crate::{
-    AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort, CurrentPolicyPort,
-    CursorMonotonicClock, CursorTokenGenerator, HealthRequest, HealthResult,
-    OfflineMaintenanceCoordinatorPort, OperationalStatusPort, OutboxStatusPort, PortDriverStopped,
-    PortReceipt, PreBootstrapHealthContext, PreBootstrapHealthContextIssuer,
-    PreBootstrapHealthReport, ProjectionQueryPort, QueryModuleReadPort, RequestDeadlineScheduler,
-    ServiceCursorRegistries, ServiceDiagnostics, ServiceFailure, ServiceFuture, ServiceHealthHooks,
-    ServiceJob, ServiceJobSpawner, ServiceResponseCharge, ServiceResult, ServiceTelemetry,
+    AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort,
+    ContractMigrationCoordinatorPort, CurrentPolicyPort, CursorMonotonicClock,
+    CursorTokenGenerator, HealthRequest, HealthResult, OfflineMaintenanceCoordinatorPort,
+    OperationalStatusPort, OutboxStatusPort, PortDriverStopped, PortReceipt,
+    PreBootstrapHealthContext, PreBootstrapHealthContextIssuer, PreBootstrapHealthReport,
+    ProjectionQueryPort, QueryModuleReadPort, RequestDeadlineScheduler, ServiceCursorRegistries,
+    ServiceDiagnostics, ServiceFailure, ServiceFuture, ServiceHealthHooks, ServiceJob,
+    ServiceJobSpawner, ServiceResponseCharge, ServiceResult, ServiceTelemetry,
     ServiceTelemetryEvent, ensure_response_budget, port_completion_channel,
 };
 
@@ -153,6 +154,7 @@ pub struct ServiceProviders {
     pub(crate) projection: Arc<dyn ProjectionQueryPort>,
     pub(crate) outbox: Option<Arc<dyn OutboxStatusPort>>,
     pub(crate) maintenance: Option<Arc<dyn OfflineMaintenanceCoordinatorPort>>,
+    pub(crate) migration: Option<Arc<dyn ContractMigrationCoordinatorPort>>,
     pub(crate) operational: Arc<dyn OperationalStatusPort>,
     pub(crate) token_issuer: Arc<dyn CapabilityTokenIssuer>,
     pub(crate) incident_ids: Arc<dyn IncidentIdSource>,
@@ -195,6 +197,7 @@ impl ServiceProviders {
             projection,
             outbox,
             maintenance: None,
+            migration: None,
             operational,
             token_issuer,
             incident_ids,
@@ -231,6 +234,16 @@ impl ServiceProviders {
         maintenance: Arc<dyn OfflineMaintenanceCoordinatorPort>,
     ) -> Self {
         self.maintenance = Some(maintenance);
+        self
+    }
+
+    /// Installs the server-private contract-migration lifecycle controller.
+    #[must_use]
+    pub fn with_contract_migration(
+        mut self,
+        migration: Arc<dyn ContractMigrationCoordinatorPort>,
+    ) -> Self {
+        self.migration = Some(migration);
         self
     }
 }

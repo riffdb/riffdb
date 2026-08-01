@@ -113,7 +113,7 @@ pub struct NamedQueryPermission {
 pub struct CapabilityPermission {
     #[prost(
         oneof = "capability_permission::Permission",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26"
     )]
     pub permission: ::core::option::Option<capability_permission::Permission>,
 }
@@ -171,6 +171,8 @@ pub mod capability_permission {
         ExecuteNamedQuery(super::NamedQueryPermission),
         #[prost(bytes, tag = "25")]
         ApplicationRoleIdentity(::prost::alloc::vec::Vec<u8>),
+        #[prost(string, tag = "26")]
+        MigrateContract(::prost::alloc::string::String),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -442,6 +444,95 @@ pub mod get_offline_maintenance_operation_response {
         Found(super::OfflineMaintenanceOperation),
     }
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ContractMigrationOperation {
+    #[prost(bytes = "vec", tag = "1")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(enumeration = "ContractMigrationOperationKind", tag = "2")]
+    pub kind: i32,
+    #[prost(string, tag = "3")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "4")]
+    pub input_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub parent_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "6")]
+    pub candidate_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub migration_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(enumeration = "ContractMigrationPhase", tag = "8")]
+    pub phase: i32,
+    #[prost(enumeration = "ContractMigrationFailureClass", tag = "9")]
+    pub failure: i32,
+    #[prost(string, tag = "10")]
+    pub backup_name: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "11")]
+    pub backup_manifest_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CheckContractMigrationRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub candidate_bundle: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub migration_bundle: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CheckContractMigrationResponse {
+    #[prost(enumeration = "ContractMigrationStartDisposition", tag = "1")]
+    pub disposition: i32,
+    #[prost(message, optional, tag = "2")]
+    pub operation: ::core::option::Option<ContractMigrationOperation>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplyContractMigrationRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub candidate_bundle: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub migration_bundle: ::prost::alloc::vec::Vec<u8>,
+    #[prost(enumeration = "ContractMigrationApplyConfirmation", tag = "5")]
+    pub confirmation: i32,
+    #[prost(bytes = "vec", tag = "6")]
+    pub confirmed_migration_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplyContractMigrationResponse {
+    #[prost(enumeration = "ContractMigrationStartDisposition", tag = "1")]
+    pub disposition: i32,
+    #[prost(message, optional, tag = "2")]
+    pub operation: ::core::option::Option<ContractMigrationOperation>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetContractMigrationOperationRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetContractMigrationOperationResponse {
+    #[prost(oneof = "get_contract_migration_operation_response::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<
+        get_contract_migration_operation_response::Result,
+    >,
+}
+/// Nested message and enum types in `GetContractMigrationOperationResponse`.
+pub mod get_contract_migration_operation_response {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        NotFound(super::Unit),
+        #[prost(message, tag = "2")]
+        Found(super::ContractMigrationOperation),
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum PreBootstrapLifecycle {
@@ -641,6 +732,7 @@ pub enum CapabilityPermissionKind {
     ExplainNamedQuery = 23,
     ExecuteNamedQuery = 24,
     ApplicationRoleIdentity = 25,
+    MigrateContract = 26,
 }
 impl CapabilityPermissionKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -681,6 +773,7 @@ impl CapabilityPermissionKind {
             Self::ApplicationRoleIdentity => {
                 "CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY"
             }
+            Self::MigrateContract => "CAPABILITY_PERMISSION_KIND_MIGRATE_CONTRACT",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -736,6 +829,7 @@ impl CapabilityPermissionKind {
             "CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY" => {
                 Some(Self::ApplicationRoleIdentity)
             }
+            "CAPABILITY_PERMISSION_KIND_MIGRATE_CONTRACT" => Some(Self::MigrateContract),
             _ => None,
         }
     }
@@ -1031,6 +1125,259 @@ impl OfflineMaintenanceFailureClass {
             }
             "OFFLINE_MAINTENANCE_FAILURE_CLASS_INTERNAL_FAILURE" => {
                 Some(Self::InternalFailure)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ContractMigrationOperationKind {
+    Unspecified = 0,
+    Check = 1,
+    Apply = 2,
+}
+impl ContractMigrationOperationKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CONTRACT_MIGRATION_OPERATION_KIND_UNSPECIFIED",
+            Self::Check => "CONTRACT_MIGRATION_OPERATION_KIND_CHECK",
+            Self::Apply => "CONTRACT_MIGRATION_OPERATION_KIND_APPLY",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CONTRACT_MIGRATION_OPERATION_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "CONTRACT_MIGRATION_OPERATION_KIND_CHECK" => Some(Self::Check),
+            "CONTRACT_MIGRATION_OPERATION_KIND_APPLY" => Some(Self::Apply),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ContractMigrationApplyConfirmation {
+    Unspecified = 0,
+    AllowApplyContractMigration = 1,
+}
+impl ContractMigrationApplyConfirmation {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CONTRACT_MIGRATION_APPLY_CONFIRMATION_UNSPECIFIED",
+            Self::AllowApplyContractMigration => {
+                "CONTRACT_MIGRATION_APPLY_CONFIRMATION_ALLOW_APPLY_CONTRACT_MIGRATION"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CONTRACT_MIGRATION_APPLY_CONFIRMATION_UNSPECIFIED" => {
+                Some(Self::Unspecified)
+            }
+            "CONTRACT_MIGRATION_APPLY_CONFIRMATION_ALLOW_APPLY_CONTRACT_MIGRATION" => {
+                Some(Self::AllowApplyContractMigration)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ContractMigrationStartDisposition {
+    Unspecified = 0,
+    Accepted = 1,
+    AlreadyAccepted = 2,
+    Terminal = 3,
+    AlreadyApplied = 4,
+}
+impl ContractMigrationStartDisposition {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CONTRACT_MIGRATION_START_DISPOSITION_UNSPECIFIED",
+            Self::Accepted => "CONTRACT_MIGRATION_START_DISPOSITION_ACCEPTED",
+            Self::AlreadyAccepted => {
+                "CONTRACT_MIGRATION_START_DISPOSITION_ALREADY_ACCEPTED"
+            }
+            Self::Terminal => "CONTRACT_MIGRATION_START_DISPOSITION_TERMINAL",
+            Self::AlreadyApplied => {
+                "CONTRACT_MIGRATION_START_DISPOSITION_ALREADY_APPLIED"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CONTRACT_MIGRATION_START_DISPOSITION_UNSPECIFIED" => Some(Self::Unspecified),
+            "CONTRACT_MIGRATION_START_DISPOSITION_ACCEPTED" => Some(Self::Accepted),
+            "CONTRACT_MIGRATION_START_DISPOSITION_ALREADY_ACCEPTED" => {
+                Some(Self::AlreadyAccepted)
+            }
+            "CONTRACT_MIGRATION_START_DISPOSITION_TERMINAL" => Some(Self::Terminal),
+            "CONTRACT_MIGRATION_START_DISPOSITION_ALREADY_APPLIED" => {
+                Some(Self::AlreadyApplied)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ContractMigrationPhase {
+    Unspecified = 0,
+    Accepted = 1,
+    Draining = 2,
+    Preflight = 3,
+    BackupPublished = 4,
+    Staging = 5,
+    Transforming = 6,
+    RebuildingProjections = 7,
+    ValidatingStage = 8,
+    Publishing = 9,
+    ValidatingPublished = 10,
+    RollingBack = 11,
+    Succeeded = 12,
+    FailedClosed = 13,
+    FailedRolledBack = 14,
+}
+impl ContractMigrationPhase {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CONTRACT_MIGRATION_PHASE_UNSPECIFIED",
+            Self::Accepted => "CONTRACT_MIGRATION_PHASE_ACCEPTED",
+            Self::Draining => "CONTRACT_MIGRATION_PHASE_DRAINING",
+            Self::Preflight => "CONTRACT_MIGRATION_PHASE_PREFLIGHT",
+            Self::BackupPublished => "CONTRACT_MIGRATION_PHASE_BACKUP_PUBLISHED",
+            Self::Staging => "CONTRACT_MIGRATION_PHASE_STAGING",
+            Self::Transforming => "CONTRACT_MIGRATION_PHASE_TRANSFORMING",
+            Self::RebuildingProjections => {
+                "CONTRACT_MIGRATION_PHASE_REBUILDING_PROJECTIONS"
+            }
+            Self::ValidatingStage => "CONTRACT_MIGRATION_PHASE_VALIDATING_STAGE",
+            Self::Publishing => "CONTRACT_MIGRATION_PHASE_PUBLISHING",
+            Self::ValidatingPublished => "CONTRACT_MIGRATION_PHASE_VALIDATING_PUBLISHED",
+            Self::RollingBack => "CONTRACT_MIGRATION_PHASE_ROLLING_BACK",
+            Self::Succeeded => "CONTRACT_MIGRATION_PHASE_SUCCEEDED",
+            Self::FailedClosed => "CONTRACT_MIGRATION_PHASE_FAILED_CLOSED",
+            Self::FailedRolledBack => "CONTRACT_MIGRATION_PHASE_FAILED_ROLLED_BACK",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CONTRACT_MIGRATION_PHASE_UNSPECIFIED" => Some(Self::Unspecified),
+            "CONTRACT_MIGRATION_PHASE_ACCEPTED" => Some(Self::Accepted),
+            "CONTRACT_MIGRATION_PHASE_DRAINING" => Some(Self::Draining),
+            "CONTRACT_MIGRATION_PHASE_PREFLIGHT" => Some(Self::Preflight),
+            "CONTRACT_MIGRATION_PHASE_BACKUP_PUBLISHED" => Some(Self::BackupPublished),
+            "CONTRACT_MIGRATION_PHASE_STAGING" => Some(Self::Staging),
+            "CONTRACT_MIGRATION_PHASE_TRANSFORMING" => Some(Self::Transforming),
+            "CONTRACT_MIGRATION_PHASE_REBUILDING_PROJECTIONS" => {
+                Some(Self::RebuildingProjections)
+            }
+            "CONTRACT_MIGRATION_PHASE_VALIDATING_STAGE" => Some(Self::ValidatingStage),
+            "CONTRACT_MIGRATION_PHASE_PUBLISHING" => Some(Self::Publishing),
+            "CONTRACT_MIGRATION_PHASE_VALIDATING_PUBLISHED" => {
+                Some(Self::ValidatingPublished)
+            }
+            "CONTRACT_MIGRATION_PHASE_ROLLING_BACK" => Some(Self::RollingBack),
+            "CONTRACT_MIGRATION_PHASE_SUCCEEDED" => Some(Self::Succeeded),
+            "CONTRACT_MIGRATION_PHASE_FAILED_CLOSED" => Some(Self::FailedClosed),
+            "CONTRACT_MIGRATION_PHASE_FAILED_ROLLED_BACK" => Some(Self::FailedRolledBack),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ContractMigrationFailureClass {
+    Unspecified = 0,
+    ArtifactMismatch = 1,
+    InvalidPredecessor = 2,
+    PendingAdmission = 3,
+    CapacityExhausted = 4,
+    DiskUnavailable = 5,
+    StageCorrupt = 6,
+    PublicationUncertain = 7,
+    PublishedValidationFailed = 8,
+    RollbackFailed = 9,
+}
+impl ContractMigrationFailureClass {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CONTRACT_MIGRATION_FAILURE_CLASS_UNSPECIFIED",
+            Self::ArtifactMismatch => {
+                "CONTRACT_MIGRATION_FAILURE_CLASS_ARTIFACT_MISMATCH"
+            }
+            Self::InvalidPredecessor => {
+                "CONTRACT_MIGRATION_FAILURE_CLASS_INVALID_PREDECESSOR"
+            }
+            Self::PendingAdmission => {
+                "CONTRACT_MIGRATION_FAILURE_CLASS_PENDING_ADMISSION"
+            }
+            Self::CapacityExhausted => {
+                "CONTRACT_MIGRATION_FAILURE_CLASS_CAPACITY_EXHAUSTED"
+            }
+            Self::DiskUnavailable => "CONTRACT_MIGRATION_FAILURE_CLASS_DISK_UNAVAILABLE",
+            Self::StageCorrupt => "CONTRACT_MIGRATION_FAILURE_CLASS_STAGE_CORRUPT",
+            Self::PublicationUncertain => {
+                "CONTRACT_MIGRATION_FAILURE_CLASS_PUBLICATION_UNCERTAIN"
+            }
+            Self::PublishedValidationFailed => {
+                "CONTRACT_MIGRATION_FAILURE_CLASS_PUBLISHED_VALIDATION_FAILED"
+            }
+            Self::RollbackFailed => "CONTRACT_MIGRATION_FAILURE_CLASS_ROLLBACK_FAILED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CONTRACT_MIGRATION_FAILURE_CLASS_UNSPECIFIED" => Some(Self::Unspecified),
+            "CONTRACT_MIGRATION_FAILURE_CLASS_ARTIFACT_MISMATCH" => {
+                Some(Self::ArtifactMismatch)
+            }
+            "CONTRACT_MIGRATION_FAILURE_CLASS_INVALID_PREDECESSOR" => {
+                Some(Self::InvalidPredecessor)
+            }
+            "CONTRACT_MIGRATION_FAILURE_CLASS_PENDING_ADMISSION" => {
+                Some(Self::PendingAdmission)
+            }
+            "CONTRACT_MIGRATION_FAILURE_CLASS_CAPACITY_EXHAUSTED" => {
+                Some(Self::CapacityExhausted)
+            }
+            "CONTRACT_MIGRATION_FAILURE_CLASS_DISK_UNAVAILABLE" => {
+                Some(Self::DiskUnavailable)
+            }
+            "CONTRACT_MIGRATION_FAILURE_CLASS_STAGE_CORRUPT" => Some(Self::StageCorrupt),
+            "CONTRACT_MIGRATION_FAILURE_CLASS_PUBLICATION_UNCERTAIN" => {
+                Some(Self::PublicationUncertain)
+            }
+            "CONTRACT_MIGRATION_FAILURE_CLASS_PUBLISHED_VALIDATION_FAILED" => {
+                Some(Self::PublishedValidationFailed)
+            }
+            "CONTRACT_MIGRATION_FAILURE_CLASS_ROLLBACK_FAILED" => {
+                Some(Self::RollbackFailed)
             }
             _ => None,
         }

@@ -11,9 +11,11 @@ use riffdb_api_grpc::generated::{
 };
 use riffdb_api_grpc::generated_app::application_query_service_client::ApplicationQueryServiceClient;
 use riffdb_proto::{
-    PublicMessage, validate_contract_validation_exchange, validate_create_capability_exchange,
-    validate_create_offline_backup_exchange, validate_discover_command_tools_exchange,
-    validate_discover_resources_exchange, validate_explain_command_exchange,
+    PublicMessage, validate_apply_contract_migration_exchange,
+    validate_check_contract_migration_exchange, validate_contract_validation_exchange,
+    validate_create_capability_exchange, validate_create_offline_backup_exchange,
+    validate_discover_command_tools_exchange, validate_discover_resources_exchange,
+    validate_explain_command_exchange, validate_get_contract_migration_operation_exchange,
     validate_get_contract_version_exchange, validate_get_offline_maintenance_operation_exchange,
     validate_get_outcome_exchange, validate_get_projection_status_exchange,
     validate_list_pending_outbox_deliveries_exchange, validate_public_message,
@@ -33,9 +35,9 @@ use crate::status::{
     ClientError, ProtocolFailure, ProtocolFailureKind, checked_application_status, checked_status,
 };
 use crate::{
-    AttemptBudget, BootstrapCallMetadata, BootstrapCapabilityCreateTemplate, CallMetadata,
-    CreateOfflineBackup, IdempotentCommand, NormalCapabilityCreateTemplate, RestoreOfflineBackup,
-    SystemIdSource,
+    ApplyContractMigration, AttemptBudget, BootstrapCallMetadata,
+    BootstrapCapabilityCreateTemplate, CallMetadata, CheckContractMigration, CreateOfflineBackup,
+    IdempotentCommand, NormalCapabilityCreateTemplate, RestoreOfflineBackup, SystemIdSource,
 };
 
 pub(crate) trait RetryRequestIdSource {
@@ -505,6 +507,30 @@ impl RiffDbClient {
         v1::GetOfflineMaintenanceOperationResponse,
         validate_get_offline_maintenance_operation_exchange
     );
+    unary_exchange!(
+        check_contract_migration,
+        admin,
+        check_contract_migration,
+        v1::CheckContractMigrationRequest,
+        v1::CheckContractMigrationResponse,
+        validate_check_contract_migration_exchange
+    );
+    unary_exchange!(
+        apply_contract_migration,
+        admin,
+        apply_contract_migration,
+        v1::ApplyContractMigrationRequest,
+        v1::ApplyContractMigrationResponse,
+        validate_apply_contract_migration_exchange
+    );
+    unary_exchange!(
+        get_contract_migration_operation,
+        admin,
+        get_contract_migration_operation,
+        v1::GetContractMigrationOperationRequest,
+        v1::GetContractMigrationOperationResponse,
+        validate_get_contract_migration_operation_exchange
+    );
 
     /// Performs normal authenticated capability creation.
     pub async fn create_capability(
@@ -682,6 +708,68 @@ impl RiffDbClient {
                     RetryDecision::RetryAfter(delay) => {
                         apply_overloaded_backoff(delay).await;
                     }
+                    RetryDecision::Return(error) => return Err(error),
+                },
+            }
+        }
+    }
+
+    /// Starts or resolves one immutable migration check with bounded retry.
+    pub async fn check_contract_migration_with_retry(
+        &mut self,
+        check: &CheckContractMigration,
+        attempt_budget: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<v1::CheckContractMigrationResponse, ClientError> {
+        let mut request_ids = SystemIdSource::new();
+        let mut retry = RetryState::new(attempt_budget);
+        loop {
+            if !retry.begin_submission() {
+                return Err(ClientError::OutcomeUnknown(crate::OutcomeUnknown));
+            }
+            let request_id = request_ids
+                .next_request_id()
+                .map_err(|error| retry.request_id_failure(error))?;
+            retry.note_request_id(&request_id);
+            match self
+                .check_contract_migration(check.request(request_id), metadata)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) => match retry.handle_failure(error) {
+                    RetryDecision::Retry => {}
+                    RetryDecision::RetryAfter(delay) => apply_overloaded_backoff(delay).await,
+                    RetryDecision::Return(error) => return Err(error),
+                },
+            }
+        }
+    }
+
+    /// Starts or resolves one immutable confirmed migration apply with bounded retry.
+    pub async fn apply_contract_migration_with_retry(
+        &mut self,
+        apply: &ApplyContractMigration,
+        attempt_budget: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<v1::ApplyContractMigrationResponse, ClientError> {
+        let mut request_ids = SystemIdSource::new();
+        let mut retry = RetryState::new(attempt_budget);
+        loop {
+            if !retry.begin_submission() {
+                return Err(ClientError::OutcomeUnknown(crate::OutcomeUnknown));
+            }
+            let request_id = request_ids
+                .next_request_id()
+                .map_err(|error| retry.request_id_failure(error))?;
+            retry.note_request_id(&request_id);
+            match self
+                .apply_contract_migration(apply.request(request_id), metadata)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) => match retry.handle_failure(error) {
+                    RetryDecision::Retry => {}
+                    RetryDecision::RetryAfter(delay) => apply_overloaded_backoff(delay).await,
                     RetryDecision::Return(error) => return Err(error),
                 },
             }

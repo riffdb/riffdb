@@ -30,6 +30,50 @@ fn payload<M: Message + Default>(envelope: &CanonicalStoredEnvelopeV1) -> M {
 }
 
 #[test]
+fn migration_authority_uses_additive_capability_v2_only() {
+    let (legacy, _, _, _) = sample::capability_records();
+    let legacy = encode_capability_record_v1(&legacy).expect("legacy capability encodes");
+    let legacy_envelope = riffdb_proto::durable::readable_record_registry()
+        .decode(legacy.as_bytes())
+        .expect("legacy capability envelope");
+    assert_eq!(
+        legacy_envelope.record_type(),
+        "riffdb.storage.v1.CapabilityRecordV1"
+    );
+
+    let capability = sample::capability_record_with_migration_authority();
+    let encoded = assert_round_trip(
+        capability,
+        encode_capability_record_v1,
+        decode_capability_record_v1,
+    );
+    let envelope = riffdb_proto::durable::readable_record_registry()
+        .decode(encoded.as_bytes())
+        .expect("migration capability envelope");
+    assert_eq!(
+        envelope.record_type(),
+        "riffdb.storage.v1.CapabilityRecordV2"
+    );
+    let record = wire::CapabilityRecordV2::decode(envelope.payload()).expect("capability V2");
+    let base_grant = record.base.expect("V2 base").grant.expect("V2 base grant");
+    assert!(
+        base_grant
+            .permissions
+            .expect("V2 base permissions")
+            .values
+            .iter()
+            .all(|permission| permission.kind != 26)
+    );
+    assert!(base_grant.approval_required.iter().all(|kind| *kind != 26));
+    let migration = record.migration.expect("V2 migration extension");
+    assert_eq!(
+        migration.contract_lineages,
+        ["accounts".to_owned(), "ticketdesk".to_owned()]
+    );
+    assert!(migration.approval_required);
+}
+
+#[test]
 fn allocator_variants_include_maximum_and_exhausted_states() {
     let maximum_commit = CommitSequence::new(u64::MAX).expect("maximum commit sequence");
     let maximum_administration =

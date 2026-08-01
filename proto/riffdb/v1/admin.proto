@@ -129,6 +129,7 @@ enum CapabilityPermissionKind {
   CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY = 23;
   CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY = 24;
   CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY = 25;
+  CAPABILITY_PERMISSION_KIND_MIGRATE_CONTRACT = 26;
 }
 
 message LineageScopedStableId {
@@ -169,6 +170,7 @@ message CapabilityPermission {
     NamedQueryPermission explain_named_query = 23;
     NamedQueryPermission execute_named_query = 24;
     bytes application_role_identity = 25;
+    string migrate_contract = 26;
   }
 }
 
@@ -385,5 +387,107 @@ message GetOfflineMaintenanceOperationResponse {
   oneof result {
     Unit not_found = 1;
     OfflineMaintenanceOperation found = 2;
+  }
+}
+
+enum ContractMigrationOperationKind {
+  CONTRACT_MIGRATION_OPERATION_KIND_UNSPECIFIED = 0;
+  CONTRACT_MIGRATION_OPERATION_KIND_CHECK = 1;
+  CONTRACT_MIGRATION_OPERATION_KIND_APPLY = 2;
+}
+
+enum ContractMigrationApplyConfirmation {
+  CONTRACT_MIGRATION_APPLY_CONFIRMATION_UNSPECIFIED = 0;
+  CONTRACT_MIGRATION_APPLY_CONFIRMATION_ALLOW_APPLY_CONTRACT_MIGRATION = 1;
+}
+
+enum ContractMigrationStartDisposition {
+  CONTRACT_MIGRATION_START_DISPOSITION_UNSPECIFIED = 0;
+  CONTRACT_MIGRATION_START_DISPOSITION_ACCEPTED = 1;
+  CONTRACT_MIGRATION_START_DISPOSITION_ALREADY_ACCEPTED = 2;
+  CONTRACT_MIGRATION_START_DISPOSITION_TERMINAL = 3;
+  CONTRACT_MIGRATION_START_DISPOSITION_ALREADY_APPLIED = 4;
+}
+
+enum ContractMigrationPhase {
+  CONTRACT_MIGRATION_PHASE_UNSPECIFIED = 0;
+  CONTRACT_MIGRATION_PHASE_ACCEPTED = 1;
+  CONTRACT_MIGRATION_PHASE_DRAINING = 2;
+  CONTRACT_MIGRATION_PHASE_PREFLIGHT = 3;
+  CONTRACT_MIGRATION_PHASE_BACKUP_PUBLISHED = 4;
+  CONTRACT_MIGRATION_PHASE_STAGING = 5;
+  CONTRACT_MIGRATION_PHASE_TRANSFORMING = 6;
+  CONTRACT_MIGRATION_PHASE_REBUILDING_PROJECTIONS = 7;
+  CONTRACT_MIGRATION_PHASE_VALIDATING_STAGE = 8;
+  CONTRACT_MIGRATION_PHASE_PUBLISHING = 9;
+  CONTRACT_MIGRATION_PHASE_VALIDATING_PUBLISHED = 10;
+  CONTRACT_MIGRATION_PHASE_ROLLING_BACK = 11;
+  CONTRACT_MIGRATION_PHASE_SUCCEEDED = 12;
+  CONTRACT_MIGRATION_PHASE_FAILED_CLOSED = 13;
+  CONTRACT_MIGRATION_PHASE_FAILED_ROLLED_BACK = 14;
+}
+
+enum ContractMigrationFailureClass {
+  CONTRACT_MIGRATION_FAILURE_CLASS_UNSPECIFIED = 0;
+  CONTRACT_MIGRATION_FAILURE_CLASS_ARTIFACT_MISMATCH = 1;
+  CONTRACT_MIGRATION_FAILURE_CLASS_INVALID_PREDECESSOR = 2;
+  CONTRACT_MIGRATION_FAILURE_CLASS_PENDING_ADMISSION = 3;
+  CONTRACT_MIGRATION_FAILURE_CLASS_CAPACITY_EXHAUSTED = 4;
+  CONTRACT_MIGRATION_FAILURE_CLASS_DISK_UNAVAILABLE = 5;
+  CONTRACT_MIGRATION_FAILURE_CLASS_STAGE_CORRUPT = 6;
+  CONTRACT_MIGRATION_FAILURE_CLASS_PUBLICATION_UNCERTAIN = 7;
+  CONTRACT_MIGRATION_FAILURE_CLASS_PUBLISHED_VALIDATION_FAILED = 8;
+  CONTRACT_MIGRATION_FAILURE_CLASS_ROLLBACK_FAILED = 9;
+}
+
+message ContractMigrationOperation {
+  bytes operation_id = 1;
+  ContractMigrationOperationKind kind = 2;
+  string contract_lineage = 3;
+  bytes input_hash = 4;
+  bytes parent_bundle_hash = 5;
+  bytes candidate_bundle_hash = 6;
+  bytes migration_bundle_hash = 7;
+  ContractMigrationPhase phase = 8;
+  ContractMigrationFailureClass failure = 9;
+  string backup_name = 10;
+  bytes backup_manifest_hash = 11;
+}
+
+message CheckContractMigrationRequest {
+  bytes request_id = 1;
+  bytes operation_id = 2;
+  bytes candidate_bundle = 3;
+  bytes migration_bundle = 4;
+}
+
+message CheckContractMigrationResponse {
+  ContractMigrationStartDisposition disposition = 1;
+  ContractMigrationOperation operation = 2;
+}
+
+message ApplyContractMigrationRequest {
+  bytes request_id = 1;
+  bytes operation_id = 2;
+  bytes candidate_bundle = 3;
+  bytes migration_bundle = 4;
+  ContractMigrationApplyConfirmation confirmation = 5;
+  bytes confirmed_migration_hash = 6;
+}
+
+message ApplyContractMigrationResponse {
+  ContractMigrationStartDisposition disposition = 1;
+  ContractMigrationOperation operation = 2;
+}
+
+message GetContractMigrationOperationRequest {
+  bytes request_id = 1;
+  bytes operation_id = 2;
+}
+
+message GetContractMigrationOperationResponse {
+  oneof result {
+    Unit not_found = 1;
+    ContractMigrationOperation found = 2;
   }
 }

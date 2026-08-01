@@ -17,21 +17,24 @@ use riffdb_catalog::{
 use riffdb_contract_ir::ContractBundle;
 use riffdb_errors::InternalError;
 use riffdb_policy::{
-    AuthorizationClock, AuthorizationError, AuthorizationTelemetry, AuthorizedOfflineMaintenance,
-    CapabilityViewCheckpoint, CurrentAuthorizer, Decision, OfflineMaintenanceAuthorizationRequest,
+    AuthorizationClock, AuthorizationError, AuthorizationTelemetry, AuthorizedContractMigration,
+    AuthorizedOfflineMaintenance, CapabilityViewCheckpoint, ContractMigrationAuthorizationRequest,
+    ContractMigrationDecision, CurrentAuthorizer, Decision, OfflineMaintenanceAuthorizationRequest,
     OfflineMaintenanceDecision, OperationRequest, ProvenanceSelector,
 };
 use riffdb_types::{
-    CapabilityId, CommandId, ContractBundleHash, ContractLineage, ContractVersion,
-    FrontierPosition, PlanHash, QueryModuleHash, RequestId,
+    CapabilityId, CommandId, ContractBundleHash, ContractLineage, ContractMigrationOperationId,
+    ContractVersion, FrontierPosition, PlanHash, QueryModuleHash, RequestId,
 };
 
 use crate::{
-    AuthoritativeCommitPage, AuthoritativeCommitScanRequest, AuthoritativeCommitSnapshot,
-    AuthoritativeCommitSubscriptionRequest, AuthoritativeEntityRequest,
-    AuthoritativeEntitySnapshot, AuthoritativeIndexPage, AuthoritativeIndexRequest,
-    AuthoritativeOutcomeRequest, AuthoritativeOutcomeSnapshot, AuthoritativeProvenanceSnapshot,
-    CapabilityRevokeTargetSnapshot, CreateOfflineBackupRequest,
+    ApplyContractMigrationRequest, AuthoritativeCommitPage, AuthoritativeCommitScanRequest,
+    AuthoritativeCommitSnapshot, AuthoritativeCommitSubscriptionRequest,
+    AuthoritativeEntityRequest, AuthoritativeEntitySnapshot, AuthoritativeIndexPage,
+    AuthoritativeIndexRequest, AuthoritativeOutcomeRequest, AuthoritativeOutcomeSnapshot,
+    AuthoritativeProvenanceSnapshot, CapabilityRevokeTargetSnapshot, CheckContractMigrationRequest,
+    ContractMigrationOperationObservation, ContractMigrationStartResult,
+    CreateOfflineBackupRequest, GetContractMigrationOperationRequest,
     GetOfflineMaintenanceOperationRequest, OfflineMaintenanceOperationObservation,
     OfflineMaintenanceStartResult, OperationalHealthSnapshot, OperationalStatisticsSnapshot,
     OutboxStatusRequest, OutboxStatusSnapshot, ProjectionPortRequest, ProjectionPortResult,
@@ -248,6 +251,15 @@ pub trait CurrentPolicyPort: Send + Sync {
         Err(AuthorizationError::CurrentCapabilityUnavailable)
     }
 
+    /// Reloads current capability state and decides one migration safe point.
+    fn authorize_contract_migration(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+        _request: ContractMigrationAuthorizationRequest,
+    ) -> Result<ContractMigrationDecision, AuthorizationError> {
+        Err(AuthorizationError::CurrentCapabilityUnavailable)
+    }
+
     /// Returns the live capability-view generation without sampling the clock.
     ///
     /// Captured immediately *before* a full evaluation so a publication racing
@@ -289,6 +301,14 @@ where
         request: OfflineMaintenanceAuthorizationRequest,
     ) -> Result<OfflineMaintenanceDecision, AuthorizationError> {
         CurrentAuthorizer::authorize_offline_maintenance(self, principal, request)
+    }
+
+    fn authorize_contract_migration(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: ContractMigrationAuthorizationRequest,
+    ) -> Result<ContractMigrationDecision, AuthorizationError> {
+        CurrentAuthorizer::authorize_contract_migration(self, principal, request)
     }
 }
 
@@ -827,6 +847,186 @@ pub trait OfflineMaintenanceCoordinatorPort: Send + Sync {
         &self,
         control: &RequestControl,
     ) -> PortFuture<'_, OfflineMaintenanceObservationPermit, PortAdmissionError>;
+}
+
+/// One exact migration start paired with a fresh move-only policy proof.
+pub enum AuthorizedContractMigrationStart {
+    /// Complete read-only preflight.
+    Check {
+        /// Original transport request identity retained in the receipt.
+        request_id: RequestId,
+        /// Trusted ingress classification retained in the receipt.
+        ingress: riffdb_types::ServiceIngressKindV1,
+        /// Exact checked semantic request.
+        request: CheckContractMigrationRequest,
+        /// Fresh current-policy proof.
+        authorization: Box<AuthorizedContractMigration>,
+    },
+    /// Complete offline staged migration.
+    Apply {
+        /// Original transport request identity retained in the receipt.
+        request_id: RequestId,
+        /// Trusted ingress classification retained in the receipt.
+        ingress: riffdb_types::ServiceIngressKindV1,
+        /// Exact checked semantic request.
+        request: ApplyContractMigrationRequest,
+        /// Fresh current-policy proof.
+        authorization: Box<AuthorizedContractMigration>,
+    },
+}
+
+impl AuthorizedContractMigrationStart {
+    /// Returns the exact checked operation identity.
+    #[must_use]
+    pub const fn operation_id(&self) -> ContractMigrationOperationId {
+        match self {
+            Self::Check { request, .. } => request.operation_id(),
+            Self::Apply { request, .. } => request.operation_id(),
+        }
+    }
+
+    /// Separates a check request from its proof.
+    #[must_use]
+    pub fn into_check(
+        self,
+    ) -> Option<(
+        RequestId,
+        riffdb_types::ServiceIngressKindV1,
+        CheckContractMigrationRequest,
+        Box<AuthorizedContractMigration>,
+    )> {
+        match self {
+            Self::Check {
+                request_id,
+                ingress,
+                request,
+                authorization,
+            } => Some((request_id, ingress, request, authorization)),
+            Self::Apply { .. } => None,
+        }
+    }
+
+    /// Separates an apply request from its proof.
+    #[must_use]
+    pub fn into_apply(
+        self,
+    ) -> Option<(
+        RequestId,
+        riffdb_types::ServiceIngressKindV1,
+        ApplyContractMigrationRequest,
+        Box<AuthorizedContractMigration>,
+    )> {
+        match self {
+            Self::Apply {
+                request_id,
+                ingress,
+                request,
+                authorization,
+            } => Some((request_id, ingress, request, authorization)),
+            Self::Check { .. } => None,
+        }
+    }
+}
+
+impl std::fmt::Debug for AuthorizedContractMigrationStart {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AuthorizedContractMigrationStart([REDACTED])")
+    }
+}
+
+/// One exact receipt observation paired with current lineage-scoped authority.
+pub struct AuthorizedContractMigrationObservation {
+    request: GetContractMigrationOperationRequest,
+    authorization: Box<AuthorizedContractMigration>,
+}
+
+impl AuthorizedContractMigrationObservation {
+    pub(crate) const fn new(
+        request: GetContractMigrationOperationRequest,
+        authorization: Box<AuthorizedContractMigration>,
+    ) -> Self {
+        Self {
+            request,
+            authorization,
+        }
+    }
+
+    /// Separates the exact selector from the fresh proof.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        GetContractMigrationOperationRequest,
+        Box<AuthorizedContractMigration>,
+    ) {
+        (self.request, self.authorization)
+    }
+}
+
+impl std::fmt::Debug for AuthorizedContractMigrationObservation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AuthorizedContractMigrationObservation([REDACTED])")
+    }
+}
+
+/// Closed failure after a migration start was submitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContractMigrationStartPortError {
+    /// The caller-stable operation ID names different semantic input.
+    InputMismatch,
+    /// The exact successor is already active with different durable evidence.
+    AlreadyAppliedMismatch,
+    /// The controller proved no durable receipt or work was admitted.
+    Unavailable,
+    /// The start may have been durably accepted but no result is known.
+    OutcomeUnknown,
+    /// Receipt-derived state violated a checked semantic invariant.
+    Integrity,
+}
+
+/// Closed failure while resolving or reading a migration receipt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContractMigrationObservationPortError {
+    /// Receipt state could not be accessed safely.
+    Unavailable,
+    /// Receipt-derived state violated a checked semantic invariant.
+    Integrity,
+}
+
+/// Permit to start or resolve one exact migration operation.
+pub type ContractMigrationStartPermit = BoxPortCapacityPermit<
+    AuthorizedContractMigrationStart,
+    ContractMigrationStartResult,
+    ContractMigrationStartPortError,
+>;
+
+/// Permit to read one exact receipt-backed migration observation.
+pub type ContractMigrationObservationPermit = BoxPortCapacityPermit<
+    AuthorizedContractMigrationObservation,
+    Option<ContractMigrationOperationObservation>,
+    ContractMigrationObservationPortError,
+>;
+
+/// Server-private migration receipt and selected-database lifecycle boundary.
+pub trait ContractMigrationCoordinatorPort: Send + Sync {
+    /// Resolves only the receipt lineage needed for exact observation policy.
+    fn resolve_operation_lineage(
+        &self,
+        operation_id: ContractMigrationOperationId,
+        control: &RequestControl,
+    ) -> PortFuture<'_, Option<ContractLineage>, ContractMigrationObservationPortError>;
+
+    /// Reserves bounded capacity for one authorized start or idempotent retry.
+    fn reserve_start(
+        &self,
+        control: &RequestControl,
+    ) -> PortFuture<'_, ContractMigrationStartPermit, PortAdmissionError>;
+
+    /// Reserves bounded capacity for one protected receipt observation.
+    fn reserve_observation(
+        &self,
+        control: &RequestControl,
+    ) -> PortFuture<'_, ContractMigrationObservationPermit, PortAdmissionError>;
 }
 
 /// One freshly authorized retry of an already-durable restore receipt.

@@ -416,6 +416,31 @@ impl RedbMaintenanceStorage {
         self.verify_path_ownership()
     }
 
+    /// Computes the exact concrete SHA-256 identities used by protected artifacts.
+    pub fn contract_migration_operation_artifacts(
+        candidate_bundle: &[u8],
+        migration_bundle: &[u8],
+    ) -> Result<riffdb_storage_api::ContractMigrationOperationArtifactsV1, StorageError> {
+        use riffdb_storage_api::{
+            ContractMigrationArtifactFileV1, ContractMigrationOperationArtifactsV1,
+        };
+        let candidate_length = u64::try_from(candidate_bundle.len()).map_err(|_| invariant())?;
+        let migration_length = u64::try_from(migration_bundle.len()).map_err(|_| invariant())?;
+        let candidate = ContractMigrationArtifactFileV1::new(
+            candidate_length,
+            <[u8; 32]>::from(Sha256::digest(candidate_bundle)),
+        )
+        .map_err(|_| invariant())?;
+        let migration = ContractMigrationArtifactFileV1::new(
+            migration_length,
+            <[u8; 32]>::from(Sha256::digest(migration_bundle)),
+        )
+        .map_err(|_| invariant())?;
+        Ok(ContractMigrationOperationArtifactsV1::new(
+            candidate, migration,
+        ))
+    }
+
     /// Reads one checksummed protected migration receipt.
     pub fn read_contract_migration_receipt(
         &self,

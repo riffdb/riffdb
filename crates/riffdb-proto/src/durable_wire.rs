@@ -394,6 +394,13 @@ shape!(CAPABILITY_RECORD [
     message(13, &CAPABILITY_GRANT),
     message(14, &CAPABILITY_LIFECYCLE),
 ]);
+shape!(CAPABILITY_MIGRATION_GRANT_EXTENSION [
+    repeated_string(1, 8_192, MAX_TEXT_ID_BYTES),
+]);
+shape!(CAPABILITY_RECORD_V2 [
+    message(1, &CAPABILITY_RECORD),
+    message(2, &CAPABILITY_MIGRATION_GRANT_EXTENSION),
+]);
 shape!(CAPABILITY_LOOKUP[fixed_bytes(1, 16)]);
 shape!(CAPABILITY_BOOTSTRAP [
     fixed_bytes(1, 16),
@@ -535,7 +542,7 @@ shape!(PROJECTION_CONTROL [
     message(7, &PROJECTION_FAILURE),
 ]);
 
-const ROOTS: [&Shape; 42] = [
+const ROOTS: [&Shape; 43] = [
     &Shape { rules: &[] },
     &Shape {
         rules: &[fixed_bytes(1, 16)],
@@ -588,6 +595,7 @@ const ROOTS: [&Shape; 42] = [
     &CONTRACT_MIGRATION_RECORD_V1,
     &CONTRACT_WRITE_RETIREMENT_V1,
     &RETIRED_ENTITY_RECORD_V1,
+    &CAPABILITY_RECORD_V2,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

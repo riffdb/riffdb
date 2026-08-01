@@ -3,7 +3,9 @@
 use std::fmt;
 use std::sync::{Mutex, MutexGuard};
 
-use riffdb_types::{OfflineMaintenanceInputHash, OfflineMaintenanceOperationId};
+use riffdb_types::{
+    ContractMigrationOperationId, OfflineMaintenanceInputHash, OfflineMaintenanceOperationId,
+};
 
 /// Closed server-private maintenance routing stage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,6 +32,7 @@ pub(crate) enum MaintenanceReceiptClaim {
 struct MaintenanceLifecycleState {
     stage: MaintenanceLifecycleStage,
     operation_id: Option<OfflineMaintenanceOperationId>,
+    migration_operation_id: Option<ContractMigrationOperationId>,
     input_hash: Option<OfflineMaintenanceInputHash>,
     exact_recovery_retry: bool,
 }
@@ -45,6 +48,7 @@ impl MaintenanceLifecycle {
             state: Mutex::new(MaintenanceLifecycleState {
                 stage: MaintenanceLifecycleStage::Ready,
                 operation_id: None,
+                migration_operation_id: None,
                 input_hash: None,
                 exact_recovery_retry: false,
             }),
@@ -57,6 +61,7 @@ impl MaintenanceLifecycle {
             state: Mutex::new(MaintenanceLifecycleState {
                 stage: MaintenanceLifecycleStage::FailedClosed,
                 operation_id: None,
+                migration_operation_id: None,
                 input_hash: None,
                 exact_recovery_retry: false,
             }),
@@ -167,6 +172,74 @@ impl MaintenanceLifecycle {
             MaintenanceLifecycleStage::Draining,
             true,
         )
+    }
+
+    /// Claims the process-wide exclusive lifecycle for one accepted migration apply.
+    pub(crate) fn begin_migration(
+        &self,
+        operation_id: ContractMigrationOperationId,
+    ) -> Result<(), MaintenanceLifecycleError> {
+        let mut state = self.lock();
+        if state.stage != MaintenanceLifecycleStage::Ready
+            || state.operation_id.is_some()
+            || state.migration_operation_id.is_some()
+        {
+            return Err(MaintenanceLifecycleError);
+        }
+        state.stage = MaintenanceLifecycleStage::Draining;
+        state.migration_operation_id = Some(operation_id);
+        Ok(())
+    }
+
+    /// Advances the exact migration driver into the offline interval.
+    pub(crate) fn mark_migration_offline(
+        &self,
+        operation_id: ContractMigrationOperationId,
+    ) -> Result<(), MaintenanceLifecycleError> {
+        self.transition_migration(
+            operation_id,
+            MaintenanceLifecycleStage::Draining,
+            MaintenanceLifecycleStage::Offline,
+        )
+    }
+
+    /// Advances the exact migration driver into fresh published validation.
+    pub(crate) fn mark_migration_validating(
+        &self,
+        operation_id: ContractMigrationOperationId,
+    ) -> Result<(), MaintenanceLifecycleError> {
+        self.transition_migration(
+            operation_id,
+            MaintenanceLifecycleStage::Offline,
+            MaintenanceLifecycleStage::Validating,
+        )
+    }
+
+    /// Reopens ordinary routing after exact migration terminal persistence.
+    pub(crate) fn finish_migration_ready(
+        &self,
+        operation_id: ContractMigrationOperationId,
+    ) -> Result<(), MaintenanceLifecycleError> {
+        let mut state = self.lock();
+        if state.stage != MaintenanceLifecycleStage::Validating
+            || state.migration_operation_id != Some(operation_id)
+            || state.operation_id.is_some()
+        {
+            state.stage = MaintenanceLifecycleStage::FailedClosed;
+            return Err(MaintenanceLifecycleError);
+        }
+        state.stage = MaintenanceLifecycleStage::Ready;
+        state.migration_operation_id = None;
+        Ok(())
+    }
+
+    /// Contains a migration lifecycle failure without admitting ordinary work.
+    pub(crate) fn fail_migration_closed(&self, operation_id: ContractMigrationOperationId) {
+        let mut state = self.lock();
+        state.stage = MaintenanceLifecycleStage::FailedClosed;
+        state.migration_operation_id = Some(operation_id);
+        state.input_hash = None;
+        state.exact_recovery_retry = false;
     }
 
     /// Claims an exact nonterminal receipt or observes its current local owner.
@@ -291,6 +364,7 @@ impl MaintenanceLifecycle {
         }
         state.stage = MaintenanceLifecycleStage::Ready;
         state.operation_id = None;
+        state.migration_operation_id = None;
         state.input_hash = None;
         state.exact_recovery_retry = false;
         Ok(())
@@ -354,6 +428,24 @@ impl MaintenanceLifecycle {
         Ok(())
     }
 
+    fn transition_migration(
+        &self,
+        operation_id: ContractMigrationOperationId,
+        expected: MaintenanceLifecycleStage,
+        next: MaintenanceLifecycleStage,
+    ) -> Result<(), MaintenanceLifecycleError> {
+        let mut state = self.lock();
+        if state.stage != expected
+            || state.migration_operation_id != Some(operation_id)
+            || state.operation_id.is_some()
+        {
+            state.stage = MaintenanceLifecycleStage::FailedClosed;
+            return Err(MaintenanceLifecycleError);
+        }
+        state.stage = next;
+        Ok(())
+    }
+
     fn lock(&self) -> MutexGuard<'_, MaintenanceLifecycleState> {
         match self.state.lock() {
             Ok(state) => state,
@@ -399,6 +491,11 @@ mod tests {
         OfflineMaintenanceInputHash::from_bytes([byte; 32])
     }
 
+    fn migration_operation_id(byte: u8) -> ContractMigrationOperationId {
+        ContractMigrationOperationId::from_unix_milliseconds_and_random(2, [byte; 10])
+            .expect("valid migration operation ID")
+    }
+
     #[test]
     fn ordinary_lifecycle_is_exact_and_exclusive() {
         let lifecycle = MaintenanceLifecycle::ready();
@@ -428,6 +525,46 @@ mod tests {
         assert_eq!(lifecycle.stage(), MaintenanceLifecycleStage::FailedClosed);
         assert!(!lifecycle.ordinary_admission_available());
         assert!(!lifecycle.recovery_restore_available());
+    }
+
+    #[test]
+    fn migration_lifecycle_drains_only_its_selected_database() {
+        let selected = MaintenanceLifecycle::ready();
+        let sibling = MaintenanceLifecycle::ready();
+        let operation = migration_operation_id(1);
+
+        selected
+            .begin_migration(operation)
+            .expect("begin migration");
+        assert_eq!(selected.stage(), MaintenanceLifecycleStage::Draining);
+        assert!(!selected.ordinary_admission_available());
+        assert!(sibling.ordinary_admission_available());
+
+        selected
+            .mark_migration_offline(operation)
+            .expect("migration offline");
+        selected
+            .mark_migration_validating(operation)
+            .expect("migration validating");
+        selected
+            .finish_migration_ready(operation)
+            .expect("migration ready");
+        assert!(selected.ordinary_admission_available());
+        assert!(sibling.ordinary_admission_available());
+    }
+
+    #[test]
+    fn mismatched_migration_transition_fails_closed() {
+        let lifecycle = MaintenanceLifecycle::ready();
+        lifecycle
+            .begin_migration(migration_operation_id(1))
+            .expect("begin migration");
+        assert_eq!(
+            lifecycle.mark_migration_offline(migration_operation_id(2)),
+            Err(MaintenanceLifecycleError)
+        );
+        assert_eq!(lifecycle.stage(), MaintenanceLifecycleStage::FailedClosed);
+        assert!(!lifecycle.ordinary_admission_available());
     }
 
     #[test]

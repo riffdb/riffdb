@@ -14,18 +14,18 @@ use futures_util::future::join_all;
 use riffdb_auth::{AuthenticationContext, CapabilityDigestKeyProvider, CredentialAuthenticator};
 use riffdb_errors::{ApplicationOperation, PublicErrorKind};
 use riffdb_proto::{
-    MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES, PublicWireError, app::v1 as app_v1,
-    application_error_to_proto, v1, validate_public_message,
+    MAX_CONTRACT_MIGRATION_REQUEST_BYTES, MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES,
+    PublicWireError, app::v1 as app_v1, application_error_to_proto, v1, validate_public_message,
 };
 use riffdb_service::{
     ApplicationErrorContextBuilder, ApplicationService, BootstrapCapabilityResult,
     BootstrapRequestContext, CommitSubscription, CommitSubscriptionEvent,
-    CreateCapabilityInvocation, CreateCapabilityResult, DeployContractResult, HealthContext,
-    HealthRequest, HealthResult, MAX_COMMIT_SUBSCRIPTION_LIFETIME, ReadPipelineStage,
-    RecoveryOfflineMaintenanceApplication, RecoveryRestoreOfflineBackupInvocation,
-    RequestCancellationHandle, RequestContext, RequestControl, RestoreOfflineBackupInvocation,
-    RestoreRetryOfflineMaintenanceApplication, ServiceFailure, ServiceFuture, ServiceResult,
-    ServiceTelemetry, ServiceTelemetryEvent,
+    ContractMigrationApplication, CreateCapabilityInvocation, CreateCapabilityResult,
+    DeployContractResult, HealthContext, HealthRequest, HealthResult,
+    MAX_COMMIT_SUBSCRIPTION_LIFETIME, ReadPipelineStage, RecoveryOfflineMaintenanceApplication,
+    RecoveryRestoreOfflineBackupInvocation, RequestCancellationHandle, RequestContext,
+    RequestControl, RestoreOfflineBackupInvocation, RestoreRetryOfflineMaintenanceApplication,
+    ServiceFailure, ServiceFuture, ServiceResult, ServiceTelemetry, ServiceTelemetryEvent,
 };
 use riffdb_types::{
     Audience, ContractLineage, ContractVersion, DatabaseAlias, MAX_DATABASES_PER_PROCESS,
@@ -110,6 +110,14 @@ pub trait GrpcLifecycleRoute: Send + Sync {
         &self,
         operation: GrpcOfflineMaintenanceOperation,
     ) -> Option<Arc<dyn ApplicationService>>;
+
+    /// Atomically admits one current-database contract-migration action.
+    fn admit_contract_migration(
+        &self,
+        _operation: GrpcContractMigrationOperation,
+    ) -> Option<Arc<dyn ContractMigrationApplication>> {
+        None
+    }
 
     /// Returns the sole current-database restore retry service for exact input.
     ///
@@ -291,6 +299,17 @@ pub enum GrpcOfflineMaintenanceOperation {
         /// Canonical operation kind, name, and replacement-confirmation identity.
         input_hash: OfflineMaintenanceInputHash,
     },
+    /// Observe one protected external receipt.
+    GetOperation,
+}
+
+/// Closed transport-local contract-migration admission registry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GrpcContractMigrationOperation {
+    /// Start or resolve one read-only preflight.
+    Check,
+    /// Start or resolve one staged apply.
+    Apply,
     /// Observe one protected external receipt.
     GetOperation,
 }
@@ -509,7 +528,7 @@ impl GrpcApplication {
     #[must_use]
     pub fn admin_server(&self) -> AdminServiceServer<Self> {
         AdminServiceServer::new(self.clone())
-            .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
+            .max_decoding_message_size(MAX_CONTRACT_MIGRATION_REQUEST_BYTES)
             .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
     }
 
@@ -636,6 +655,24 @@ impl GrpcApplication {
     ) -> Result<(Arc<dyn ApplicationService>, CheckedGrpcSecurityContext), Status> {
         let service = lifecycle
             .admit_offline_maintenance(operation)
+            .ok_or_else(service_not_ready)?;
+        let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
+        Ok((service, security))
+    }
+
+    fn ready_migration_admission(
+        &self,
+        lifecycle: &dyn GrpcLifecycleRoute,
+        operation: GrpcContractMigrationOperation,
+    ) -> Result<
+        (
+            Arc<dyn ContractMigrationApplication>,
+            CheckedGrpcSecurityContext,
+        ),
+        Status,
+    > {
+        let service = lifecycle
+            .admit_contract_migration(operation)
             .ok_or_else(service_not_ready)?;
         let security = lifecycle.security_context().ok_or_else(service_not_ready)?;
         Ok((service, security))
@@ -1842,6 +1879,64 @@ impl AdminService for GrpcApplication {
         )?;
         Ok(Response::new(
             get_offline_maintenance_operation_result_to_proto(&result),
+        ))
+    }
+
+    async fn check_contract_migration(
+        &self,
+        request: Request<v1::CheckContractMigrationRequest>,
+    ) -> Result<Response<v1::CheckContractMigrationResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, security) = self
+            .ready_migration_admission(lifecycle.as_ref(), GrpcContractMigrationOperation::Check)?;
+        let (request_id, request) = check_contract_migration_request_from_proto(message)?;
+        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let result = map_service(service.check_contract_migration(context, request).await)?;
+        let (disposition, operation) = contract_migration_start_result_to_proto(&result);
+        Ok(Response::new(v1::CheckContractMigrationResponse {
+            disposition,
+            operation,
+        }))
+    }
+
+    async fn apply_contract_migration(
+        &self,
+        request: Request<v1::ApplyContractMigrationRequest>,
+    ) -> Result<Response<v1::ApplyContractMigrationResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, security) = self
+            .ready_migration_admission(lifecycle.as_ref(), GrpcContractMigrationOperation::Apply)?;
+        let (request_id, request) = apply_contract_migration_request_from_proto(message)?;
+        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let result = map_service(service.apply_contract_migration(context, request).await)?;
+        let (disposition, operation) = contract_migration_start_result_to_proto(&result);
+        Ok(Response::new(v1::ApplyContractMigrationResponse {
+            disposition,
+            operation,
+        }))
+    }
+
+    async fn get_contract_migration_operation(
+        &self,
+        request: Request<v1::GetContractMigrationOperationRequest>,
+    ) -> Result<Response<v1::GetContractMigrationOperationResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let (service, security) = self.ready_migration_admission(
+            lifecycle.as_ref(),
+            GrpcContractMigrationOperation::GetOperation,
+        )?;
+        let (request_id, request) = get_contract_migration_operation_request_from_proto(message)?;
+        let (context, _cancellation) = self.normal_context(&metadata, request_id, &security)?;
+        let result = map_service(
+            service
+                .get_contract_migration_operation(context, request)
+                .await,
+        )?;
+        Ok(Response::new(
+            get_contract_migration_operation_result_to_proto(&result),
         ))
     }
 }

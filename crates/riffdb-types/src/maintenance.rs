@@ -3,7 +3,10 @@
 use std::error::Error;
 use std::fmt;
 
-use crate::{OfflineMaintenanceInputHash, hash_offline_maintenance_input};
+use crate::{
+    ContractBundleHash, ContractMigrationInputHash, MigrationBundleHash,
+    OfflineMaintenanceInputHash, hash_contract_migration_input, hash_offline_maintenance_input,
+};
 
 /// Maximum bytes in one public backup name.
 pub const MAX_BACKUP_NAME_V1_BYTES: usize = 64;
@@ -117,6 +120,61 @@ pub enum OfflineMaintenanceReplacementConfirmation {
     AllowReplaceNonemptyTarget,
 }
 
+/// The closed semantic kind of one public contract-migration operation.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ContractMigrationOperationKind {
+    /// Run the complete read-only preflight without draining or staging.
+    Check,
+    /// Run the complete offline staged migration lifecycle.
+    Apply,
+}
+
+impl ContractMigrationOperationKind {
+    const fn tag(self) -> u8 {
+        match self {
+            Self::Check => 1,
+            Self::Apply => 2,
+        }
+    }
+}
+
+/// The caller's exact destructive migration confirmation.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ContractMigrationApplyConfirmation {
+    /// No apply confirmation was supplied.
+    NotProvided,
+    /// The caller supplied `ALLOW_APPLY_CONTRACT_MIGRATION`.
+    AllowApplyContractMigration,
+}
+
+impl ContractMigrationApplyConfirmation {
+    const fn tag(self) -> u8 {
+        match self {
+            Self::NotProvided => 0,
+            Self::AllowApplyContractMigration => 1,
+        }
+    }
+}
+
+/// Computes the stable V1 semantic-input identity for one migration request.
+#[must_use]
+pub fn contract_migration_input_hash(
+    kind: ContractMigrationOperationKind,
+    parent: ContractBundleHash,
+    candidate: ContractBundleHash,
+    migration: MigrationBundleHash,
+    confirmation: ContractMigrationApplyConfirmation,
+) -> ContractMigrationInputHash {
+    let mut canonical = Vec::with_capacity(99);
+    canonical.push(1);
+    canonical.push(kind.tag());
+    canonical.extend_from_slice(parent.as_bytes());
+    canonical.extend_from_slice(candidate.as_bytes());
+    canonical.extend_from_slice(migration.as_bytes());
+    canonical.push(confirmation.tag());
+    hash_contract_migration_input(&canonical)
+}
+
 impl OfflineMaintenanceReplacementConfirmation {
     const fn tag(self) -> u8 {
         match self {
@@ -215,6 +273,40 @@ mod tests {
                 OfflineMaintenanceOperationKind::CreateBackup,
                 &name,
                 OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget,
+            )
+        );
+    }
+
+    #[test]
+    fn migration_input_hash_binds_every_semantic_identity() {
+        let parent = ContractBundleHash::from_bytes([1; 32]);
+        let candidate = ContractBundleHash::from_bytes([2; 32]);
+        let migration = MigrationBundleHash::from_bytes([3; 32]);
+        let baseline = contract_migration_input_hash(
+            ContractMigrationOperationKind::Check,
+            parent,
+            candidate,
+            migration,
+            ContractMigrationApplyConfirmation::NotProvided,
+        );
+        assert_eq!(
+            baseline,
+            contract_migration_input_hash(
+                ContractMigrationOperationKind::Check,
+                parent,
+                candidate,
+                migration,
+                ContractMigrationApplyConfirmation::NotProvided,
+            )
+        );
+        assert_ne!(
+            baseline,
+            contract_migration_input_hash(
+                ContractMigrationOperationKind::Apply,
+                parent,
+                candidate,
+                migration,
+                ContractMigrationApplyConfirmation::AllowApplyContractMigration,
             )
         );
     }

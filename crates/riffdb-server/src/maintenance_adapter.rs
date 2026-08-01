@@ -3,11 +3,24 @@
 use std::fmt;
 use std::sync::mpsc as sync_mpsc;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use riffdb_policy::{AuthorizedOfflineMaintenance, OfflineMaintenanceAuthorizationRequest};
+use riffdb_catalog::{ValidatedContractBundle, ValidatedMigrationPlan};
+use riffdb_commit::MigrationCoordinator;
+use riffdb_contract_ir::MigrationBundleV1;
+use riffdb_policy::{
+    AuthorizedOfflineMaintenance, ContractMigrationAuthorizationRequest,
+    OfflineMaintenanceAuthorizationRequest,
+};
 use riffdb_service::{
+    AuthorizedContractMigrationObservation, AuthorizedContractMigrationStart,
     AuthorizedOfflineMaintenanceObservation, AuthorizedOfflineMaintenanceStart,
-    AuthorizedRestoreRetryStart, CreateOfflineBackupRequest, OfflineMaintenanceCoordinatorPort,
+    AuthorizedRestoreRetryStart, ContractMigrationCoordinatorPort,
+    ContractMigrationObservationFailure, ContractMigrationObservationPermit,
+    ContractMigrationObservationPhase, ContractMigrationObservationPortError,
+    ContractMigrationOperationObservation, ContractMigrationStartDisposition,
+    ContractMigrationStartPermit, ContractMigrationStartPortError, ContractMigrationStartResult,
+    CreateOfflineBackupRequest, OfflineMaintenanceCoordinatorPort,
     OfflineMaintenanceObservationFailure, OfflineMaintenanceObservationPermit,
     OfflineMaintenanceObservationPhase, OfflineMaintenanceObservationPortError,
     OfflineMaintenanceOperationObservation, OfflineMaintenanceStartDisposition,
@@ -18,20 +31,27 @@ use riffdb_service::{
     RestoreRetryOfflineMaintenanceCoordinatorPort, RestoreRetryOfflineMaintenancePermit,
 };
 use riffdb_storage_api::{
-    OfflineMaintenanceAdmissionV1, OfflineMaintenanceReceiptCreateResultV1,
-    OfflineMaintenanceReceiptFailureV1, OfflineMaintenanceReceiptPersistencePort,
-    OfflineMaintenanceReceiptPhaseV1, OfflineMaintenanceReceiptTransitionV1,
-    OfflineMaintenanceReceiptV1, StorageError, StorageErrorKind,
+    AuditPrincipalV1, ContractMigrationAdmissionV1, ContractMigrationArtifactsV1,
+    ContractMigrationOperationKindV1, ContractMigrationReceiptFailureV1,
+    ContractMigrationReceiptPhaseV1, ContractMigrationReceiptTransitionV1,
+    ContractMigrationReceiptV1, OfflineMaintenanceAdmissionV1,
+    OfflineMaintenanceReceiptCreateResultV1, OfflineMaintenanceReceiptFailureV1,
+    OfflineMaintenanceReceiptPersistencePort, OfflineMaintenanceReceiptPhaseV1,
+    OfflineMaintenanceReceiptTransitionV1, OfflineMaintenanceReceiptV1, StorageError,
+    StorageErrorKind,
 };
 use riffdb_storage_redb::RedbMaintenanceStorage;
 use riffdb_types::{
-    OfflineMaintenanceInputHash, OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
-    OfflineMaintenanceReplacementConfirmation,
+    ContractMigrationInputHash, ContractMigrationOperationId, ContractMigrationOperationKind,
+    DatabaseId, OfflineMaintenanceInputHash, OfflineMaintenanceOperationId,
+    OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation, Timestamp,
 };
 use tokio::sync::{mpsc, oneshot};
 
 use crate::maintenance_lifecycle::{MaintenanceLifecycle, MaintenanceReceiptClaim};
+use crate::maintenance_migration::classify_preflight_finding;
 use crate::port_driver::{BlockingPortDriver, BlockingPortExecutor};
+use crate::storage::SharedRedbOperationalPorts;
 
 /// The single slot between receipt admission and the exclusive process driver.
 ///
@@ -42,6 +62,91 @@ pub(crate) const MAINTENANCE_TRIGGER_BUFFER: usize = 1;
 
 /// Process-wide ownership of the external receipt and artifact adapter.
 pub(crate) type SharedMaintenanceStorage = Arc<Mutex<RedbMaintenanceStorage>>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MigrationProcessOwner {
+    database_id: DatabaseId,
+    operation_id: ContractMigrationOperationId,
+}
+
+/// Exact process-wide exclusion shared by every hosted database controller.
+pub(crate) struct MigrationProcessExclusion {
+    owner: Mutex<Option<MigrationProcessOwner>>,
+}
+
+impl MigrationProcessExclusion {
+    /// Creates an unclaimed process migration gate.
+    pub(crate) const fn new() -> Self {
+        Self {
+            owner: Mutex::new(None),
+        }
+    }
+
+    fn claim(
+        self: &Arc<Self>,
+        database_id: DatabaseId,
+        operation_id: ContractMigrationOperationId,
+    ) -> Result<MigrationProcessLease, MigrationProcessExclusionError> {
+        let owner = MigrationProcessOwner {
+            database_id,
+            operation_id,
+        };
+        let mut current = self
+            .owner
+            .lock()
+            .map_err(|_| MigrationProcessExclusionError)?;
+        if current.is_some() {
+            return Err(MigrationProcessExclusionError);
+        }
+        *current = Some(owner);
+        Ok(MigrationProcessLease {
+            exclusion: Arc::clone(self),
+            owner,
+            retained: false,
+        })
+    }
+
+    fn release(&self, owner: MigrationProcessOwner) -> Result<(), MigrationProcessExclusionError> {
+        let mut current = self
+            .owner
+            .lock()
+            .map_err(|_| MigrationProcessExclusionError)?;
+        if *current != Some(owner) {
+            return Err(MigrationProcessExclusionError);
+        }
+        *current = None;
+        Ok(())
+    }
+}
+
+impl fmt::Debug for MigrationProcessExclusion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("MigrationProcessExclusion([PRIVATE_OWNER])")
+    }
+}
+
+struct MigrationProcessLease {
+    exclusion: Arc<MigrationProcessExclusion>,
+    owner: MigrationProcessOwner,
+    retained: bool,
+}
+
+impl MigrationProcessLease {
+    fn retain(mut self) {
+        self.retained = true;
+    }
+}
+
+impl Drop for MigrationProcessLease {
+    fn drop(&mut self) {
+        if !self.retained {
+            let _ = self.exclusion.release(self.owner);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MigrationProcessExclusionError;
 
 /// Creates the exact bounded handoff retained outside production graph generations.
 pub(crate) fn maintenance_trigger_channel() -> (
@@ -73,15 +178,30 @@ pub(crate) enum MaintenanceTrigger {
         restore: RecoveryOfflineMaintenanceRestore,
         completion: RecoveryMaintenanceCompletion,
     },
+    ContractMigrationApply {
+        operation_id: riffdb_types::ContractMigrationOperationId,
+        start_ready: oneshot::Receiver<()>,
+    },
 }
 
 impl MaintenanceTrigger {
     /// Returns the caller-stable operation identity.
-    pub(crate) const fn operation_id(&self) -> OfflineMaintenanceOperationId {
+    pub(crate) const fn offline_operation_id(&self) -> Option<OfflineMaintenanceOperationId> {
         match self {
-            Self::CreateBackup { request, .. } => request.operation_id(),
-            Self::RestoreBackup { request, .. } => request.operation_id(),
-            Self::RecoveryRestore { restore, .. } => restore.request().operation_id(),
+            Self::CreateBackup { request, .. } => Some(request.operation_id()),
+            Self::RestoreBackup { request, .. } => Some(request.operation_id()),
+            Self::RecoveryRestore { restore, .. } => Some(restore.request().operation_id()),
+            Self::ContractMigrationApply { .. } => None,
+        }
+    }
+
+    /// Returns the migration operation identity only for an apply trigger.
+    pub(crate) const fn migration_operation_id(
+        &self,
+    ) -> Option<riffdb_types::ContractMigrationOperationId> {
+        match self {
+            Self::ContractMigrationApply { operation_id, .. } => Some(*operation_id),
+            _ => None,
         }
     }
 
@@ -92,6 +212,7 @@ impl MaintenanceTrigger {
             Self::CreateBackup { start_ready, .. } | Self::RestoreBackup { start_ready, .. } => {
                 start_ready.await.map_err(|_| ())
             }
+            Self::ContractMigrationApply { start_ready, .. } => start_ready.await.map_err(|_| ()),
             Self::RecoveryRestore { .. } => Ok(()),
         }
     }
@@ -103,6 +224,9 @@ impl fmt::Debug for MaintenanceTrigger {
             Self::CreateBackup { .. } => "MaintenanceTrigger::CreateBackup([REDACTED])",
             Self::RestoreBackup { .. } => "MaintenanceTrigger::RestoreBackup([REDACTED])",
             Self::RecoveryRestore { .. } => "MaintenanceTrigger::RecoveryRestore([REDACTED])",
+            Self::ContractMigrationApply { .. } => {
+                "MaintenanceTrigger::ContractMigrationApply([REDACTED])"
+            }
         })
     }
 }
@@ -144,6 +268,7 @@ pub(crate) struct MaintenanceController {
     lifecycle: Arc<MaintenanceLifecycle>,
     triggers: mpsc::Sender<MaintenanceTrigger>,
     recovery_admission: Arc<Mutex<()>>,
+    migration_exclusion: Arc<MigrationProcessExclusion>,
 }
 
 impl MaintenanceController {
@@ -152,11 +277,27 @@ impl MaintenanceController {
         lifecycle: Arc<MaintenanceLifecycle>,
         triggers: mpsc::Sender<MaintenanceTrigger>,
     ) -> Self {
+        Self::new_with_migration_exclusion(
+            storage,
+            lifecycle,
+            triggers,
+            Arc::new(MigrationProcessExclusion::new()),
+        )
+    }
+
+    /// Creates a controller sharing migration exclusion with sibling databases.
+    pub(crate) fn new_with_migration_exclusion(
+        storage: SharedMaintenanceStorage,
+        lifecycle: Arc<MaintenanceLifecycle>,
+        triggers: mpsc::Sender<MaintenanceTrigger>,
+        migration_exclusion: Arc<MigrationProcessExclusion>,
+    ) -> Self {
         Self {
             storage,
             lifecycle,
             triggers,
             recovery_admission: Arc::new(Mutex::new(())),
+            migration_exclusion,
         }
     }
 
@@ -168,6 +309,21 @@ impl MaintenanceController {
         Arc::new(ServerOfflineMaintenanceCoordinator::new(
             self.clone(),
             driver,
+        ))
+    }
+
+    /// Creates one graph-generation migration port over current read authority.
+    pub(crate) fn migration_coordinator(
+        &self,
+        driver: &BlockingPortDriver,
+        storage: SharedRedbOperationalPorts,
+        active_lineage: Vec<ValidatedContractBundle>,
+    ) -> Arc<dyn ContractMigrationCoordinatorPort> {
+        Arc::new(ServerContractMigrationCoordinator::new(
+            self.clone(),
+            driver,
+            storage,
+            active_lineage,
         ))
     }
 
@@ -201,6 +357,27 @@ impl MaintenanceController {
     pub(crate) fn storage(&self) -> SharedMaintenanceStorage {
         Arc::clone(&self.storage)
     }
+
+    /// Releases the exact retained process lease after the database is ready.
+    pub(crate) fn finish_migration(
+        &self,
+        operation_id: ContractMigrationOperationId,
+    ) -> Result<(), ()> {
+        let maintenance = self.storage.lock().map_err(|_| ())?;
+        let receipt = maintenance
+            .read_contract_migration_receipt(operation_id)
+            .map_err(|_| ())?
+            .ok_or(())?;
+        if !receipt.current_phase().is_terminal() {
+            return Err(());
+        }
+        self.migration_exclusion
+            .release(MigrationProcessOwner {
+                database_id: receipt.database_id(),
+                operation_id,
+            })
+            .map_err(|_| ())
+    }
 }
 
 impl fmt::Debug for MaintenanceController {
@@ -219,6 +396,24 @@ struct ServerOfflineMaintenanceCoordinator {
         AuthorizedOfflineMaintenanceObservation,
         Option<OfflineMaintenanceOperationObservation>,
         OfflineMaintenanceObservationPortError,
+    >,
+}
+
+struct ServerContractMigrationCoordinator {
+    lineage: BlockingPortExecutor<
+        ContractMigrationOperationId,
+        Option<riffdb_types::ContractLineage>,
+        ContractMigrationObservationPortError,
+    >,
+    start: BlockingPortExecutor<
+        AuthorizedContractMigrationStart,
+        ContractMigrationStartResult,
+        ContractMigrationStartPortError,
+    >,
+    observation: BlockingPortExecutor<
+        AuthorizedContractMigrationObservation,
+        Option<ContractMigrationOperationObservation>,
+        ContractMigrationObservationPortError,
     >,
 }
 
@@ -325,6 +520,596 @@ impl fmt::Debug for ServerOfflineMaintenanceCoordinator {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ServerOfflineMaintenanceCoordinator([RECEIPT_BACKED])")
     }
+}
+
+impl ServerContractMigrationCoordinator {
+    fn new(
+        controller: MaintenanceController,
+        driver: &BlockingPortDriver,
+        storage: SharedRedbOperationalPorts,
+        active_lineage: Vec<ValidatedContractBundle>,
+    ) -> Self {
+        let lineage_controller = controller.clone();
+        let observation_controller = controller.clone();
+        let start = driver.executor(move |request| {
+            admit_contract_migration_start(&controller, &storage, &active_lineage, request)
+        });
+        let lineage = driver.executor(move |operation_id| {
+            resolve_contract_migration_lineage(&lineage_controller, operation_id)
+        });
+        let observation = driver
+            .executor(move |request| observe_contract_migration(&observation_controller, request));
+        Self {
+            lineage,
+            start,
+            observation,
+        }
+    }
+}
+
+impl ContractMigrationCoordinatorPort for ServerContractMigrationCoordinator {
+    fn resolve_operation_lineage(
+        &self,
+        operation_id: ContractMigrationOperationId,
+        control: &RequestControl,
+    ) -> PortFuture<'_, Option<riffdb_types::ContractLineage>, ContractMigrationObservationPortError>
+    {
+        let permit = self.lineage.reserve(control);
+        Box::pin(async move {
+            let permit = permit.map_err(|_| ContractMigrationObservationPortError::Unavailable)?;
+            let receipt = permit
+                .submit(operation_id)
+                .map_err(|_| ContractMigrationObservationPortError::Unavailable)?;
+            receipt
+                .completion()
+                .await
+                .map_err(|_| ContractMigrationObservationPortError::Unavailable)?
+        })
+    }
+
+    fn reserve_start(
+        &self,
+        control: &RequestControl,
+    ) -> PortFuture<'_, ContractMigrationStartPermit, PortAdmissionError> {
+        let reservation = self.start.reserve(control);
+        Box::pin(async move { reservation })
+    }
+
+    fn reserve_observation(
+        &self,
+        control: &RequestControl,
+    ) -> PortFuture<'_, ContractMigrationObservationPermit, PortAdmissionError> {
+        let reservation = self.observation.reserve(control);
+        Box::pin(async move { reservation })
+    }
+}
+
+impl fmt::Debug for ServerContractMigrationCoordinator {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ServerContractMigrationCoordinator([RECEIPT_BACKED])")
+    }
+}
+
+fn admit_contract_migration_start(
+    controller: &MaintenanceController,
+    storage: &SharedRedbOperationalPorts,
+    active_lineage: &[ValidatedContractBundle],
+    start: AuthorizedContractMigrationStart,
+) -> Result<ContractMigrationStartResult, ContractMigrationStartPortError> {
+    let (kind, request_id, ingress, operation_id, input_hash, artifacts, authorization) =
+        match start {
+            AuthorizedContractMigrationStart::Check {
+                request_id,
+                ingress,
+                request,
+                authorization,
+            } => (
+                ContractMigrationOperationKind::Check,
+                request_id,
+                ingress,
+                request.operation_id(),
+                request.input_hash(),
+                request.artifacts().clone(),
+                authorization,
+            ),
+            AuthorizedContractMigrationStart::Apply {
+                request_id,
+                ingress,
+                request,
+                authorization,
+            } => (
+                ContractMigrationOperationKind::Apply,
+                request_id,
+                ingress,
+                request.operation_id(),
+                request.input_hash(),
+                request.artifacts().clone(),
+                authorization,
+            ),
+        };
+    let expected_policy = ContractMigrationAuthorizationRequest::start(
+        operation_id,
+        match kind {
+            ContractMigrationOperationKind::Check => {
+                riffdb_policy::ContractMigrationPolicyOperation::Check
+            }
+            ContractMigrationOperationKind::Apply => {
+                riffdb_policy::ContractMigrationPolicyOperation::Apply
+            }
+        },
+        artifacts.lineage().clone(),
+        input_hash,
+    );
+    if authorization.request() != &expected_policy {
+        return Err(ContractMigrationStartPortError::Integrity);
+    }
+
+    let maintenance = controller
+        .storage
+        .lock()
+        .map_err(|_| ContractMigrationStartPortError::Integrity)?;
+    if let Some(existing) = maintenance
+        .read_contract_migration_receipt(operation_id)
+        .map_err(|_| ContractMigrationStartPortError::Unavailable)?
+    {
+        return resolve_existing_contract_migration(
+            &maintenance,
+            kind,
+            input_hash,
+            &artifacts,
+            existing,
+        );
+    }
+    let active_hash = active_lineage
+        .last()
+        .map(ValidatedContractBundle::bundle_hash)
+        .ok_or(ContractMigrationStartPortError::Integrity)?;
+    let operation_artifacts = RedbMaintenanceStorage::contract_migration_operation_artifacts(
+        artifacts.candidate_bundle(),
+        artifacts.migration_bundle(),
+    )
+    .map_err(|_| ContractMigrationStartPortError::Integrity)?;
+    if active_hash == artifacts.candidate_hash() {
+        if kind != ContractMigrationOperationKind::Apply {
+            return Err(ContractMigrationStartPortError::AlreadyAppliedMismatch);
+        }
+        return resolve_already_applied_contract_migration(
+            &maintenance,
+            storage,
+            authorization.database_id(),
+            input_hash,
+            &artifacts,
+            operation_artifacts,
+        );
+    }
+    if active_hash != artifacts.parent_hash() {
+        return Err(ContractMigrationStartPortError::AlreadyAppliedMismatch);
+    }
+    if !controller.lifecycle.ordinary_admission_available() {
+        return Err(ContractMigrationStartPortError::Unavailable);
+    }
+
+    let migration_lease = controller
+        .migration_exclusion
+        .claim(authorization.database_id(), operation_id)
+        .map_err(|_| ContractMigrationStartPortError::Unavailable)?;
+
+    let durable_artifacts = ContractMigrationArtifactsV1::new(
+        artifacts.parent_hash(),
+        artifacts.candidate_hash(),
+        artifacts.migration_hash(),
+    );
+    let principal = AuditPrincipalV1::new(
+        authorization.principal_id().clone(),
+        authorization.actor_kind(),
+        authorization.authorizing_capability_id(),
+        authorization.authorizing_capability_revision(),
+    );
+    let admission = ContractMigrationAdmissionV1::new(
+        principal,
+        authorization.obligations().validated_approval().cloned(),
+        request_id,
+        current_timestamp().ok_or(ContractMigrationStartPortError::Unavailable)?,
+        ingress,
+    );
+    let receipt = ContractMigrationReceiptV1::from_canonical_parts_for_operation(
+        match kind {
+            ContractMigrationOperationKind::Check => ContractMigrationOperationKindV1::Check,
+            ContractMigrationOperationKind::Apply => ContractMigrationOperationKindV1::Apply,
+        },
+        authorization.database_id(),
+        operation_id,
+        input_hash,
+        durable_artifacts,
+        operation_artifacts,
+        admission,
+        None,
+        None,
+        None,
+        vec![ContractMigrationReceiptTransitionV1::phase(
+            ContractMigrationReceiptPhaseV1::Accepted,
+        )],
+    )
+    .map_err(|_| ContractMigrationStartPortError::Integrity)?;
+    maintenance
+        .accept_contract_migration(
+            &receipt,
+            artifacts.candidate_bundle(),
+            artifacts.migration_bundle(),
+        )
+        .map_err(|_| ContractMigrationStartPortError::Unavailable)?;
+
+    match kind {
+        ContractMigrationOperationKind::Check => {
+            run_contract_migration_check(&maintenance, storage, active_lineage, artifacts, receipt)
+        }
+        ContractMigrationOperationKind::Apply => {
+            if controller.lifecycle.begin_migration(operation_id).is_err() {
+                controller.lifecycle.fail_migration_closed(operation_id);
+                return Err(ContractMigrationStartPortError::OutcomeUnknown);
+            }
+            let (start_ready, ready) = oneshot::channel();
+            let trigger = MaintenanceTrigger::ContractMigrationApply {
+                operation_id,
+                start_ready: ready,
+            };
+            if let Err(error) = controller.triggers.try_send(trigger) {
+                drop(error.into_inner());
+                controller.lifecycle.fail_migration_closed(operation_id);
+                return Err(ContractMigrationStartPortError::OutcomeUnknown);
+            }
+            let result = contract_migration_start_result(
+                ContractMigrationStartDisposition::Accepted,
+                &maintenance,
+                &receipt,
+            );
+            drop(maintenance);
+            let _ = start_ready.send(());
+            migration_lease.retain();
+            result
+        }
+    }
+}
+
+fn resolve_already_applied_contract_migration(
+    maintenance: &RedbMaintenanceStorage,
+    storage: &SharedRedbOperationalPorts,
+    database_id: DatabaseId,
+    input_hash: ContractMigrationInputHash,
+    artifacts: &riffdb_service::ContractMigrationArtifacts,
+    operation_artifacts: riffdb_storage_api::ContractMigrationOperationArtifactsV1,
+) -> Result<ContractMigrationStartResult, ContractMigrationStartPortError> {
+    let expected_artifacts = ContractMigrationArtifactsV1::new(
+        artifacts.parent_hash(),
+        artifacts.candidate_hash(),
+        artifacts.migration_hash(),
+    );
+    let edge = storage
+        .contract_migration_edge(artifacts.parent_hash())
+        .map_err(|_| ContractMigrationStartPortError::Unavailable)?
+        .ok_or(ContractMigrationStartPortError::AlreadyAppliedMismatch)?;
+    let record = edge.migration();
+    if record.database_id() != database_id
+        || record.input_hash() != input_hash
+        || record.artifacts() != expected_artifacts
+        || record.operation_artifacts() != operation_artifacts
+    {
+        return Err(ContractMigrationStartPortError::AlreadyAppliedMismatch);
+    }
+    let receipt = maintenance
+        .read_contract_migration_receipt(record.operation_id())
+        .map_err(|_| ContractMigrationStartPortError::Unavailable)?
+        .ok_or(ContractMigrationStartPortError::Integrity)?;
+    let backup_manifest_matches = receipt.backup_manifest().is_some_and(|manifest| {
+        manifest.manifest_checksum() == record.source_backup_manifest()
+            && manifest.database_id() == record.database_id()
+            && manifest.included_application_frontier() == record.predecessor_frontier()
+    });
+    if receipt.database_id() != database_id
+        || receipt.operation_kind() != ContractMigrationOperationKindV1::Apply
+        || receipt.input_hash() != input_hash
+        || receipt.artifacts() != expected_artifacts
+        || receipt.operation_artifacts() != operation_artifacts
+        || receipt.current_phase() != ContractMigrationReceiptPhaseV1::Succeeded
+        || receipt.backup_name() != Some(record.source_backup_name())
+        || !backup_manifest_matches
+    {
+        return Err(ContractMigrationStartPortError::Integrity);
+    }
+    contract_migration_start_result(
+        ContractMigrationStartDisposition::AlreadyApplied,
+        maintenance,
+        &receipt,
+    )
+}
+
+fn run_contract_migration_check(
+    maintenance: &RedbMaintenanceStorage,
+    storage: &SharedRedbOperationalPorts,
+    active_lineage: &[ValidatedContractBundle],
+    artifacts: riffdb_service::ContractMigrationArtifacts,
+    receipt: ContractMigrationReceiptV1,
+) -> Result<ContractMigrationStartResult, ContractMigrationStartPortError> {
+    let preflight_receipt = receipt
+        .advance(ContractMigrationReceiptPhaseV1::Preflight)
+        .map_err(|_| ContractMigrationStartPortError::Integrity)?;
+    maintenance
+        .replace_contract_migration_receipt(&receipt, &preflight_receipt)
+        .map_err(|_| ContractMigrationStartPortError::Unavailable)?;
+    let plan = ValidatedContractBundle::decode(artifacts.candidate_bundle())
+        .ok()
+        .and_then(|candidate| {
+            MigrationBundleV1::decode(artifacts.migration_bundle())
+                .ok()
+                .and_then(|migration| {
+                    ValidatedMigrationPlan::from_lineage_artifacts(
+                        active_lineage.to_vec(),
+                        candidate,
+                        migration,
+                    )
+                    .ok()
+                })
+        });
+    let terminal = if let Some(plan) = plan {
+        let active = active_lineage
+            .last()
+            .map(ValidatedContractBundle::bundle_hash)
+            .ok_or(ContractMigrationStartPortError::Integrity)?;
+        let preflight = storage
+            .migration_preflight(active)
+            .map_err(|_| ContractMigrationStartPortError::Unavailable)?;
+        match MigrationCoordinator::check(&plan, &preflight) {
+            Ok(_) => preflight_receipt
+                .advance(ContractMigrationReceiptPhaseV1::Succeeded)
+                .map_err(|_| ContractMigrationStartPortError::Integrity)?,
+            Err(finding) => preflight_receipt
+                .fail(
+                    ContractMigrationReceiptPhaseV1::FailedClosed,
+                    classify_preflight_finding(finding),
+                )
+                .map_err(|_| ContractMigrationStartPortError::Integrity)?,
+        }
+    } else {
+        preflight_receipt
+            .fail(
+                ContractMigrationReceiptPhaseV1::FailedClosed,
+                ContractMigrationReceiptFailureV1::ArtifactMismatch,
+            )
+            .map_err(|_| ContractMigrationStartPortError::Integrity)?
+    };
+    maintenance
+        .replace_contract_migration_receipt(&preflight_receipt, &terminal)
+        .map_err(|_| ContractMigrationStartPortError::Unavailable)?;
+    contract_migration_start_result(
+        ContractMigrationStartDisposition::Terminal,
+        maintenance,
+        &terminal,
+    )
+}
+
+fn resolve_existing_contract_migration(
+    maintenance: &RedbMaintenanceStorage,
+    kind: ContractMigrationOperationKind,
+    input_hash: ContractMigrationInputHash,
+    artifacts: &riffdb_service::ContractMigrationArtifacts,
+    receipt: ContractMigrationReceiptV1,
+) -> Result<ContractMigrationStartResult, ContractMigrationStartPortError> {
+    let expected_kind = match kind {
+        ContractMigrationOperationKind::Check => ContractMigrationOperationKindV1::Check,
+        ContractMigrationOperationKind::Apply => ContractMigrationOperationKindV1::Apply,
+    };
+    let expected_artifacts = ContractMigrationArtifactsV1::new(
+        artifacts.parent_hash(),
+        artifacts.candidate_hash(),
+        artifacts.migration_hash(),
+    );
+    if receipt.operation_kind() != expected_kind
+        || receipt.input_hash() != input_hash
+        || receipt.artifacts() != expected_artifacts
+    {
+        return Err(ContractMigrationStartPortError::InputMismatch);
+    }
+    let (candidate, migration) = maintenance
+        .read_contract_migration_artifacts(receipt.operation_id())
+        .map_err(|_| ContractMigrationStartPortError::Unavailable)?;
+    if candidate != artifacts.candidate_bundle() || migration != artifacts.migration_bundle() {
+        return Err(ContractMigrationStartPortError::InputMismatch);
+    }
+    let disposition = if receipt.current_phase().is_terminal() {
+        ContractMigrationStartDisposition::Terminal
+    } else {
+        ContractMigrationStartDisposition::AlreadyAccepted
+    };
+    contract_migration_start_result(disposition, maintenance, &receipt)
+}
+
+fn resolve_contract_migration_lineage(
+    controller: &MaintenanceController,
+    operation_id: ContractMigrationOperationId,
+) -> Result<Option<riffdb_types::ContractLineage>, ContractMigrationObservationPortError> {
+    let maintenance = controller
+        .storage
+        .lock()
+        .map_err(|_| ContractMigrationObservationPortError::Integrity)?;
+    let Some(receipt) = maintenance
+        .read_contract_migration_receipt(operation_id)
+        .map_err(|_| ContractMigrationObservationPortError::Unavailable)?
+    else {
+        return Ok(None);
+    };
+    receipt_lineage(&maintenance, &receipt).map(Some)
+}
+
+fn observe_contract_migration(
+    controller: &MaintenanceController,
+    observation: AuthorizedContractMigrationObservation,
+) -> Result<Option<ContractMigrationOperationObservation>, ContractMigrationObservationPortError> {
+    let (request, authorization) = observation.into_parts();
+    let maintenance = controller
+        .storage
+        .lock()
+        .map_err(|_| ContractMigrationObservationPortError::Integrity)?;
+    let Some(receipt) = maintenance
+        .read_contract_migration_receipt(request.operation_id())
+        .map_err(|_| ContractMigrationObservationPortError::Unavailable)?
+    else {
+        return Ok(None);
+    };
+    let lineage = receipt_lineage(&maintenance, &receipt)?;
+    let expected =
+        ContractMigrationAuthorizationRequest::get_operation(request.operation_id(), lineage);
+    if authorization.request() != &expected {
+        return Err(ContractMigrationObservationPortError::Integrity);
+    }
+    contract_migration_observation(&maintenance, &receipt).map(Some)
+}
+
+fn receipt_lineage(
+    maintenance: &RedbMaintenanceStorage,
+    receipt: &ContractMigrationReceiptV1,
+) -> Result<riffdb_types::ContractLineage, ContractMigrationObservationPortError> {
+    let (_, migration) = maintenance
+        .read_contract_migration_artifacts(receipt.operation_id())
+        .map_err(|_| ContractMigrationObservationPortError::Unavailable)?;
+    let migration = MigrationBundleV1::decode(&migration)
+        .map_err(|_| ContractMigrationObservationPortError::Integrity)?;
+    if migration.parent_bundle_hash() != receipt.artifacts().parent()
+        || migration.candidate_bundle_hash() != receipt.artifacts().candidate()
+        || migration.bundle_hash() != receipt.artifacts().migration()
+    {
+        return Err(ContractMigrationObservationPortError::Integrity);
+    }
+    Ok(migration.lineage().clone())
+}
+
+fn contract_migration_start_result(
+    disposition: ContractMigrationStartDisposition,
+    maintenance: &RedbMaintenanceStorage,
+    receipt: &ContractMigrationReceiptV1,
+) -> Result<ContractMigrationStartResult, ContractMigrationStartPortError> {
+    let observation = contract_migration_observation(maintenance, receipt)
+        .map_err(|_| ContractMigrationStartPortError::Integrity)?;
+    ContractMigrationStartResult::new(disposition, observation)
+        .map_err(|_| ContractMigrationStartPortError::Integrity)
+}
+
+fn contract_migration_observation(
+    maintenance: &RedbMaintenanceStorage,
+    receipt: &ContractMigrationReceiptV1,
+) -> Result<ContractMigrationOperationObservation, ContractMigrationObservationPortError> {
+    let kind = match receipt.operation_kind() {
+        ContractMigrationOperationKindV1::Check => ContractMigrationOperationKind::Check,
+        ContractMigrationOperationKindV1::Apply => ContractMigrationOperationKind::Apply,
+    };
+    let phase = migration_observation_phase(receipt.current_phase());
+    let failure = receipt
+        .transitions()
+        .last()
+        .and_then(|transition| transition.failure())
+        .map(migration_observation_failure);
+    let backup_manifest_hash = receipt
+        .backup_manifest()
+        .map(|manifest| {
+            manifest
+                .manifest_checksum()
+                .as_bytes()
+                .try_into()
+                .map_err(|_| ContractMigrationObservationPortError::Integrity)
+        })
+        .transpose()?;
+    ContractMigrationOperationObservation::new(
+        receipt.operation_id(),
+        kind,
+        receipt_lineage(maintenance, receipt)?,
+        receipt.input_hash(),
+        receipt.artifacts().parent(),
+        receipt.artifacts().candidate(),
+        receipt.artifacts().migration(),
+        phase,
+        failure,
+        receipt.backup_name().cloned(),
+        backup_manifest_hash,
+    )
+    .map_err(|_| ContractMigrationObservationPortError::Integrity)
+}
+
+const fn migration_observation_phase(
+    phase: ContractMigrationReceiptPhaseV1,
+) -> ContractMigrationObservationPhase {
+    match phase {
+        ContractMigrationReceiptPhaseV1::Accepted => ContractMigrationObservationPhase::Accepted,
+        ContractMigrationReceiptPhaseV1::Draining => ContractMigrationObservationPhase::Draining,
+        ContractMigrationReceiptPhaseV1::Preflight => ContractMigrationObservationPhase::Preflight,
+        ContractMigrationReceiptPhaseV1::BackupPublished => {
+            ContractMigrationObservationPhase::BackupPublished
+        }
+        ContractMigrationReceiptPhaseV1::Staging => ContractMigrationObservationPhase::Staging,
+        ContractMigrationReceiptPhaseV1::Transforming => {
+            ContractMigrationObservationPhase::Transforming
+        }
+        ContractMigrationReceiptPhaseV1::RebuildingProjections => {
+            ContractMigrationObservationPhase::RebuildingProjections
+        }
+        ContractMigrationReceiptPhaseV1::ValidatingStage => {
+            ContractMigrationObservationPhase::ValidatingStage
+        }
+        ContractMigrationReceiptPhaseV1::Publishing => {
+            ContractMigrationObservationPhase::Publishing
+        }
+        ContractMigrationReceiptPhaseV1::ValidatingPublished => {
+            ContractMigrationObservationPhase::ValidatingPublished
+        }
+        ContractMigrationReceiptPhaseV1::RollingBack => {
+            ContractMigrationObservationPhase::RollingBack
+        }
+        ContractMigrationReceiptPhaseV1::Succeeded => ContractMigrationObservationPhase::Succeeded,
+        ContractMigrationReceiptPhaseV1::FailedClosed => {
+            ContractMigrationObservationPhase::FailedClosed
+        }
+        ContractMigrationReceiptPhaseV1::FailedRolledBack => {
+            ContractMigrationObservationPhase::FailedRolledBack
+        }
+    }
+}
+
+const fn migration_observation_failure(
+    failure: ContractMigrationReceiptFailureV1,
+) -> ContractMigrationObservationFailure {
+    match failure {
+        ContractMigrationReceiptFailureV1::ArtifactMismatch => {
+            ContractMigrationObservationFailure::ArtifactMismatch
+        }
+        ContractMigrationReceiptFailureV1::InvalidPredecessor => {
+            ContractMigrationObservationFailure::InvalidPredecessor
+        }
+        ContractMigrationReceiptFailureV1::PendingAdmission => {
+            ContractMigrationObservationFailure::PendingAdmission
+        }
+        ContractMigrationReceiptFailureV1::CapacityExhausted => {
+            ContractMigrationObservationFailure::CapacityExhausted
+        }
+        ContractMigrationReceiptFailureV1::DiskUnavailable => {
+            ContractMigrationObservationFailure::DiskUnavailable
+        }
+        ContractMigrationReceiptFailureV1::StageCorrupt => {
+            ContractMigrationObservationFailure::StageCorrupt
+        }
+        ContractMigrationReceiptFailureV1::PublicationUncertain => {
+            ContractMigrationObservationFailure::PublicationUncertain
+        }
+        ContractMigrationReceiptFailureV1::PublishedValidationFailed => {
+            ContractMigrationObservationFailure::PublishedValidationFailed
+        }
+        ContractMigrationReceiptFailureV1::RollbackFailed => {
+            ContractMigrationObservationFailure::RollbackFailed
+        }
+    }
+}
+
+fn current_timestamp() -> Option<Timestamp> {
+    let duration = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+    let seconds = i64::try_from(duration.as_secs()).ok()?;
+    Timestamp::new(seconds, duration.subsec_nanos()).ok()
 }
 
 struct PreparedStart {
@@ -942,6 +1727,11 @@ mod tests {
         DatabaseId::from_unix_milliseconds_and_random(2, [seed; 10]).expect("database ID")
     }
 
+    fn migration_operation_id(seed: u8) -> ContractMigrationOperationId {
+        ContractMigrationOperationId::from_unix_milliseconds_and_random(4, [seed; 10])
+            .expect("migration operation ID")
+    }
+
     fn prepared_create(seed: u8) -> PreparedStart {
         let operation_id = operation_id(seed);
         let backup_name = BackupNameV1::new("snapshot").expect("backup name");
@@ -1109,8 +1899,8 @@ mod tests {
             receiver
                 .try_recv()
                 .expect("reacquired trigger")
-                .operation_id(),
-            operation_id
+                .offline_operation_id(),
+            Some(operation_id)
         );
         assert!(matches!(
             receiver.try_recv(),
@@ -1181,6 +1971,66 @@ mod tests {
         assert_eq!(
             receiver.recv().expect("driver result"),
             Err(RecoveryOfflineMaintenancePortError::AuthorizationDenied)
+        );
+    }
+
+    #[test]
+    fn migration_process_exclusion_is_shared_across_sibling_databases() {
+        let exclusion = Arc::new(MigrationProcessExclusion::new());
+        let first_database = database_id(1);
+        let first_operation = migration_operation_id(1);
+        let first = exclusion
+            .claim(first_database, first_operation)
+            .expect("first migration owns process gate");
+
+        assert!(
+            exclusion
+                .claim(database_id(2), migration_operation_id(2))
+                .is_err(),
+            "a sibling database cannot start a concurrent migration"
+        );
+        drop(first);
+        assert!(
+            exclusion
+                .claim(database_id(2), migration_operation_id(2))
+                .is_ok(),
+            "failed or completed admission releases the process gate"
+        );
+    }
+
+    #[test]
+    fn retained_migration_process_lease_requires_exact_terminal_release() {
+        let exclusion = Arc::new(MigrationProcessExclusion::new());
+        let database = database_id(3);
+        let operation = migration_operation_id(3);
+        exclusion
+            .claim(database, operation)
+            .expect("claim migration gate")
+            .retain();
+
+        assert!(
+            exclusion
+                .release(MigrationProcessOwner {
+                    database_id: database,
+                    operation_id: migration_operation_id(4),
+                })
+                .is_err()
+        );
+        assert!(
+            exclusion
+                .claim(database_id(4), migration_operation_id(4))
+                .is_err()
+        );
+        exclusion
+            .release(MigrationProcessOwner {
+                database_id: database,
+                operation_id: operation,
+            })
+            .expect("exact migration owner releases gate");
+        assert!(
+            exclusion
+                .claim(database_id(4), migration_operation_id(4))
+                .is_ok()
         );
     }
 }

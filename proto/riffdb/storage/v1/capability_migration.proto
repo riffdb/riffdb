@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/capability.proto";
+
+// Additive migration authority kept outside the frozen V1 capability schema.
+message CapabilityMigrationGrantExtensionV1 {
+  repeated string contract_lineages = 1;
+  bool approval_required = 2;
+}
+
+// One atomic capability value whose legacy portion remains an exact V1 record.
+message CapabilityRecordV2 {
+  CapabilityRecordV1 base = 1;
+  CapabilityMigrationGrantExtensionV1 migration = 2;
+}

@@ -14,16 +14,17 @@ use crate::{
     CommandToolDiscoveryItem, CommitScanFence, CommitSubscriptionEvent, CommitView,
     CompactCommandToolDescriptor, CompactCommandToolDiscoveryItem, CompactNamedQueryToolDescriptor,
     CompactResourceDescriptor, CompactResourceDescriptorRef, ContractDescriptor,
-    ContractValidationResult, CreateCapabilityResult, CursorToken, DeclaredOutcomeView,
-    DeployContractResult, DeployQueryModuleResult, DescribeSymbolicContractResult,
-    DiscoverCommandToolsResult, DiscoverCommandToolsResultRef, DiscoverResourcesResult,
-    DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryCatalogStateRef, DurableEventView,
-    EntityView, ExecuteCommandResult, ExecuteSymbolicQueryResult, ExplainCommandResult,
+    ContractMigrationOperationObservation, ContractMigrationStartResult, ContractValidationResult,
+    CreateCapabilityResult, CursorToken, DeclaredOutcomeView, DeployContractResult,
+    DeployQueryModuleResult, DescribeSymbolicContractResult, DiscoverCommandToolsResult,
+    DiscoverCommandToolsResultRef, DiscoverResourcesResult, DiscoverResourcesResultRef,
+    DiscoveryCatalogFence, DiscoveryCatalogStateRef, DurableEventView, EntityView,
+    ExecuteCommandResult, ExecuteSymbolicQueryResult, ExplainCommandResult,
     ExplainSymbolicQueryResult, GeneratedSchemaIdentity, GetActiveContractResult, GetCommitResult,
-    GetContractVersionResult, GetEntityResult, GetOfflineMaintenanceOperationResult,
-    GetProjectionStatusResult, HealthReport, HealthResult, IndexRowView, IndexScanFence,
-    JournaledCommandResult, ListPendingOutboxDeliveriesResult, NamedQueryToolDescriptor,
-    NamedQueryToolSchemaArtifact, NormalCreateCapabilityResult,
+    GetContractMigrationOperationResult, GetContractVersionResult, GetEntityResult,
+    GetOfflineMaintenanceOperationResult, GetProjectionStatusResult, HealthReport, HealthResult,
+    IndexRowView, IndexScanFence, JournaledCommandResult, ListPendingOutboxDeliveriesResult,
+    NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact, NormalCreateCapabilityResult,
     OfflineMaintenanceOperationObservation, OfflineMaintenanceStartResult, OperationSchemaArtifact,
     OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
     OutboxDeliverySummary, Page, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
@@ -1263,6 +1264,58 @@ impl ServiceResponseCharge for GetOfflineMaintenanceOperationResult {
     }
 }
 
+impl ServiceResponseCharge for ContractMigrationOperationObservation {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.bytes(self.operation_id().as_bytes().len())?;
+        charge.fields(2)?;
+        charge.bytes(self.lineage().as_bytes().len())?;
+        charge.bytes(self.input_hash().as_bytes().len())?;
+        charge.bytes(self.parent_hash().as_bytes().len())?;
+        charge.bytes(self.candidate_hash().as_bytes().len())?;
+        charge.bytes(self.migration_hash().as_bytes().len())?;
+        charge.fields(1)?;
+        if self.failure().is_some() {
+            charge.fields(1)?;
+        }
+        if let Some(name) = self.backup_name() {
+            charge.bytes(name.as_bytes().len())?;
+            charge.bytes(
+                self.backup_manifest_hash()
+                    .expect("checked backup pair")
+                    .len(),
+            )?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceResponseCharge for ContractMigrationStartResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(1)?;
+        charge.nested(self.operation())?;
+        Ok(charge.finish())
+    }
+}
+
+impl ServiceResponseCharge for GetContractMigrationOperationResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(1)?;
+        if let Self::Found(operation) = self {
+            charge.nested(operation.as_ref())?;
+        }
+        Ok(charge.finish())
+    }
+}
+
 impl ServiceResponseCharge for OutboxDeliverySummary {
     fn service_response_charge_v1(
         &self,
@@ -1694,6 +1747,9 @@ seal_response_types!(
     OfflineMaintenanceOperationObservation,
     OfflineMaintenanceStartResult,
     GetOfflineMaintenanceOperationResult,
+    ContractMigrationOperationObservation,
+    ContractMigrationStartResult,
+    GetContractMigrationOperationResult,
     OutboxDeliverySummary,
     ListPendingOutboxDeliveriesResult,
     CommandToolDescriptor,

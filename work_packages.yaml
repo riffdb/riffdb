@@ -6476,16 +6476,18 @@ work_packages:
     administration over the shared service and database lifecycle.
   requirements: [MIG-006, MIG-007, MIG-008, MIG-009, MIG-010, MIG-016, MIG-017, MIG-018]
   required_adrs: [ADR-0007, ADR-0009, ADR-0026, ADR-0027, ADR-0028, ADR-0034, ADR-0037, ADR-0040, ADR-0041,
-    ADR-0050, ADR-0055, ADR-0062, ADR-0063, ADR-0064, ADR-0079]
-  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/riffdb/v1/**, crates/riffdb-types/**,
+    ADR-0050, ADR-0055, ADR-0062, ADR-0063, ADR-0064, ADR-0079, ADR-0088, ADR-0089]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/riffdb/v1/**, proto/riffdb/storage/**,
+    crates/riffdb-types/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
     crates/riffdb-auth/**, crates/riffdb-policy/**, crates/riffdb-service/**, crates/riffdb-proto/**,
     crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**, crates/riffdb-server/**, crates/riffdb-cli/**,
-    crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**, fixtures/proto/**, fixtures/migrations/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**, fixtures/proto/**, fixtures/storage/**,
+    fixtures/migrations/**,
     tests/grpc/**, tests/mcp/**, tests/migrations/**, scripts/**, docs/**]
   deliverables:
   - Dedicated scoped MigrateContract permission and exact check/apply/poll policy proofs
   - Three additive AdminService RPCs, API-neutral DTOs/service methods, Rust SDK retries, top-level CLI, exact hash
-    confirmation, and 28-RPC descriptor inventory
+    confirmation, and 29-RPC descriptor inventory
   - Accepted-then-reconnect cancellation/uncertainty behavior and resumable application-deploy handoff
   - Complete authorization/redaction/response-budget matrix and negative MCP/application-driver inventory
   acceptance_commands:

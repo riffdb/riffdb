@@ -70,6 +70,8 @@ artifacts=(
     fixtures/proto/durable-entity-reference-v3-record-bound.bin
     fixtures/proto/durable-migration-v1-record-bounds.bin
     fixtures/proto/durable-migration-v1-schema-hashes.bin
+    fixtures/proto/durable-capability-v2-record-bound.bin
+    fixtures/proto/durable-capability-v2-schema-hash.bin
     fixtures/proto/durable-event-reference-v2-record-bounds.bin
     fixtures/proto/durable-event-reference-v2-schema-hashes.bin
     fixtures/proto/durable-event-reference-v2-wire-vectors.txt

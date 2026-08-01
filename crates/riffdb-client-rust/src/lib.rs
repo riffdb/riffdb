@@ -45,9 +45,13 @@ pub use command::{AttemptBudget, CommandShapeError, IdempotentCommand};
 pub use credential_file::{BearerCredentialFileError, load_protected_bearer_credential};
 pub use ids::{
     IdentifierGenerationError, SystemIdSource, generate_agent_session_id, generate_capability_id,
-    generate_offline_maintenance_operation_id, generate_request_id,
+    generate_contract_migration_operation_id, generate_offline_maintenance_operation_id,
+    generate_request_id,
 };
-pub use maintenance::{CreateOfflineBackup, RestoreOfflineBackup};
+pub use maintenance::{
+    ApplyContractMigration, CheckContractMigration, ContractMigrationSubmissionError,
+    CreateOfflineBackup, RestoreOfflineBackup,
+};
 pub use metadata::{
     BearerCredential, BootstrapCallMetadata, BootstrapCredential, CallMetadata, MetadataError,
     TraceParent,
@@ -63,6 +67,7 @@ pub use riffdb_errors::{
     ValidationIssue, ValidationIssues, ValidationPath, ValidationPathSegment,
 };
 pub use riffdb_types::{
-    BackupNameV1, BackupNameV1Error, DEFAULT_DATABASE_ALIAS, DatabaseAlias,
-    OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, RequestId,
+    BackupNameV1, BackupNameV1Error, ContractMigrationOperationId, DEFAULT_DATABASE_ALIAS,
+    DatabaseAlias, MigrationBundleHash, OfflineMaintenanceOperationId,
+    OfflineMaintenanceReplacementConfirmation, RequestId,
 };

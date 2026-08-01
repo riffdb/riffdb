@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 43;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 44;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 37;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 38;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -98,6 +98,14 @@ const MIGRATION_V1_SCHEMA_HASH_BYTES: &[u8; 128] = include_bytes!(concat!(
 const MIGRATION_V1_RECORD_BOUND_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-migration-v1-record-bounds.bin"
+));
+const CAPABILITY_V2_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-capability-v2-schema-hash.bin"
+));
+const CAPABILITY_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-capability-v2-record-bound.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
@@ -513,6 +521,26 @@ const RETIRED_ENTITY_RECORD_V1_RECORD_SCHEMA: RecordSchema<'static> = migration_
     37
 );
 
+const CAPABILITY_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.CapabilityRecordV2",
+    SchemaHash::from_bytes(*CAPABILITY_V2_SCHEMA_HASH_BYTES),
+    u32::from_be_bytes([
+        CAPABILITY_V2_RECORD_BOUND_BYTES[0],
+        CAPABILITY_V2_RECORD_BOUND_BYTES[1],
+        CAPABILITY_V2_RECORD_BOUND_BYTES[2],
+        CAPABILITY_V2_RECORD_BOUND_BYTES[3],
+    ]) as usize,
+    u32::from_be_bytes([
+        CAPABILITY_V2_RECORD_BOUND_BYTES[4],
+        CAPABILITY_V2_RECORD_BOUND_BYTES[5],
+        CAPABILITY_V2_RECORD_BOUND_BYTES[6],
+        CAPABILITY_V2_RECORD_BOUND_BYTES[7],
+    ]) as usize,
+    preflight_payload::<42>,
+    validate_payload::<42, v1::CapabilityRecordV2>,
+)
+.with_compact_identity(18, 3);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -635,6 +663,7 @@ readable_message!(
     v1::StoredRetiredEntityRecordV1,
     RETIRED_ENTITY_RECORD_V1_RECORD_SCHEMA
 );
+readable_message!(v1::CapabilityRecordV2, CAPABILITY_V2_RECORD_SCHEMA);
 
 writable_message!(v1::StoredStorageFormatVersionV1);
 writable_message!(v1::StoredDatabaseIdentityV1);
@@ -673,6 +702,7 @@ writable_message!(v1::StoredContractMigrationJournalV1);
 writable_message!(v1::StoredContractMigrationRecordV1);
 writable_message!(v1::StoredContractWriteRetirementV1);
 writable_message!(v1::StoredRetiredEntityRecordV1);
+writable_message!(v1::CapabilityRecordV2);
 
 /// Encodes one sealed generated message after the same allocation-free shape preflight.
 pub fn encode_current_message<M: WritableRecordMessage>(
@@ -735,6 +765,7 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     CONTRACT_MIGRATION_RECORD_V1_RECORD_SCHEMA,
     CONTRACT_WRITE_RETIREMENT_V1_RECORD_SCHEMA,
     RETIRED_ENTITY_RECORD_V1_RECORD_SCHEMA,
+    CAPABILITY_V2_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
 ];
 
@@ -776,6 +807,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     CONTRACT_MIGRATION_RECORD_V1_RECORD_SCHEMA,
     CONTRACT_WRITE_RETIREMENT_V1_RECORD_SCHEMA,
     RETIRED_ENTITY_RECORD_V1_RECORD_SCHEMA,
+    CAPABILITY_V2_RECORD_SCHEMA,
     REGISTRY_V2_RECORD_SCHEMA,
 ];
 

@@ -14,6 +14,7 @@ mod cursor;
 mod dto;
 mod failure;
 mod maintenance_operations;
+mod migration_operations;
 mod orchestration;
 mod ports;
 mod query_discovery_operations;

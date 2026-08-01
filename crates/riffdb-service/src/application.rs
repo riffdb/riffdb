@@ -4,13 +4,15 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::{
+    ApplyContractMigrationRequest, CheckContractMigrationRequest, ContractMigrationStartResult,
     ContractValidationResult, CreateCapabilityInvocation, CreateCapabilityResult,
     CreateOfflineBackupRequest, DeployContractRequest, DeployContractResult,
     DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverResourcesRequest,
     DiscoverResourcesResult, ExecuteCommandRequest, ExecuteCommandResult, ExplainCommandRequest,
     ExplainCommandResult, GetActiveContractRequest, GetActiveContractResult, GetCommitRequest,
-    GetCommitResult, GetContractVersionRequest, GetContractVersionResult, GetEntityRequest,
-    GetEntityResult, GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
+    GetCommitResult, GetContractMigrationOperationRequest, GetContractMigrationOperationResult,
+    GetContractVersionRequest, GetContractVersionResult, GetEntityRequest, GetEntityResult,
+    GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
     GetProjectionStatusRequest, GetProjectionStatusResult, HealthContext, HealthRequest,
     HealthResult, ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
     OfflineMaintenanceStartResult, QueryProjectionRequest, QueryProjectionResult,
@@ -204,6 +206,30 @@ pub trait OfflineMaintenanceApplication: Send + Sync {
         context: RequestContext,
         request: GetOfflineMaintenanceOperationRequest,
     ) -> ServiceFuture<'_, GetOfflineMaintenanceOperationResult>;
+}
+
+/// Policy-filtered contract migration with receipt-backed uncertainty recovery.
+pub trait ContractMigrationApplication: Send + Sync {
+    /// Starts or resolves one complete read-only migration preflight.
+    fn check_contract_migration(
+        &self,
+        context: RequestContext,
+        request: CheckContractMigrationRequest,
+    ) -> ServiceFuture<'_, ContractMigrationStartResult>;
+
+    /// Starts or resolves one exactly confirmed staged migration.
+    fn apply_contract_migration(
+        &self,
+        context: RequestContext,
+        request: ApplyContractMigrationRequest,
+    ) -> ServiceFuture<'_, ContractMigrationStartResult>;
+
+    /// Observes one caller-stable receipt after the selected database is ready.
+    fn get_contract_migration_operation(
+        &self,
+        context: RequestContext,
+        request: GetContractMigrationOperationRequest,
+    ) -> ServiceFuture<'_, GetContractMigrationOperationResult>;
 }
 
 /// Recovery-only restore capability exposed while no current database is trusted.

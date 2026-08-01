@@ -1229,6 +1229,20 @@ impl CapabilityAdministrationOperationV1 {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CapabilityMigrationGrantExtensionV1 {
+    #[prost(string, repeated, tag = "1")]
+    pub contract_lineages: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(bool, tag = "2")]
+    pub approval_required: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CapabilityRecordV2 {
+    #[prost(message, optional, tag = "1")]
+    pub base: ::core::option::Option<CapabilityRecordV1>,
+    #[prost(message, optional, tag = "2")]
+    pub migration: ::core::option::Option<CapabilityMigrationGrantExtensionV1>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredContractBundleV1 {
     #[prost(string, tag = "1")]
     pub contract_lineage: ::prost::alloc::string::String,
