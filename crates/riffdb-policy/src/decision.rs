@@ -484,7 +484,7 @@ impl fmt::Debug for AuthorizedApplicationQuery {
     }
 }
 
-#[derive(Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) struct CurrentAuthorizationIdentity {
     capability_id: CapabilityId,
     capability_revision: NonZeroU64,
@@ -572,6 +572,25 @@ impl AuthorizedOperation {
     #[must_use]
     pub const fn operation(&self) -> ServiceOperationV1 {
         self.request.operation()
+    }
+
+    /// Re-issues the same allow proof when the capability-view generation is
+    /// unchanged and the operation target is identical to the begin evaluation.
+    ///
+    /// This does not replace a current-policy safe point. Callers must have
+    /// consulted the live generation (or fallen through to a full evaluation).
+    /// The proof is deliberately not `Clone` for general use; this reissue is
+    /// restricted to the generation-checked reauthorization path.
+    #[must_use]
+    pub fn reissue_for_unchanged_view(&self) -> Self {
+        Self {
+            database_id: self.database_id,
+            environment: self.environment.clone(),
+            request: self.request.clone(),
+            obligations: self.obligations.clone(),
+            identity: self.identity.clone(),
+            discovery_authority: self.discovery_authority.clone(),
+        }
     }
 
     /// Consumes this fresh allow proof into one exact application-query proof.

@@ -915,6 +915,30 @@ pub struct ExecuteSymbolicQueryResult {
 }
 
 impl ExecuteSymbolicQueryResult {
+    /// Minimal success result for transport residual-stage harnesses.
+    ///
+    /// Not a semantic query outcome; fields are empty and identity is fixed
+    /// fixture material used only by protocol residual instrumentation tests.
+    #[doc(hidden)]
+    pub fn transport_residual_fixture() -> Self {
+        Self {
+            identity: SymbolicQueryIdentity {
+                lineage: ContractLineage::new("transport-residual")
+                    .expect("fixture lineage is valid"),
+                version: ContractVersion::new(1).expect("fixture version is valid"),
+                bundle_hash: ContractBundleHash::from_bytes([0x11; 32]),
+                name: Some("ResidualFixture".to_owned()),
+                plan_hash: riffdb_types::QueryPlanHash::from_bytes([0x22; 32]),
+                module_hash: None,
+            },
+            outcome: "Ok".to_owned(),
+            application_head: 0,
+            fields: BTreeMap::new(),
+            enum_variant_names: BTreeMap::new(),
+            next_cursor: None,
+        }
+    }
+
     fn from_snapshot(
         program: &QueryAccessProgramV1,
         snapshot: &QueryOwnedSnapshot,
