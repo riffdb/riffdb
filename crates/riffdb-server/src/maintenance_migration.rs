@@ -8,8 +8,9 @@ use riffdb_catalog::{
 use riffdb_commit::MigrationCoordinator;
 use riffdb_contract_ir::MigrationBundleV1;
 use riffdb_storage_api::{
-    BackupBuildMetadataV1, ContractMigrationReceiptFailureV1, ContractMigrationReceiptPhaseV1,
-    ContractMigrationReceiptV1, StartupValidationInputs, StorageErrorKind,
+    BackupBuildMetadataV1, ContractMigrationOperationKindV1, ContractMigrationReceiptFailureV1,
+    ContractMigrationReceiptPhaseV1, ContractMigrationReceiptV1, StartupValidationInputs,
+    StorageErrorKind,
 };
 use riffdb_storage_redb::{
     RedbCommitProfile, RedbContractMigrationContext, RedbContractMigrationPreflight,
@@ -36,6 +37,9 @@ pub(crate) fn drive_contract_migration(
 ) -> Result<(ContractMigrationReceiptV1, CheckedRedbStartup), MigrationDriverError> {
     if receipt.current_phase().is_terminal() {
         return Err(MigrationDriverError);
+    }
+    if receipt.operation_kind() == ContractMigrationOperationKindV1::Check {
+        return drive_contract_migration_check(storage, receipt, inputs);
     }
     if receipt.current_phase() == ContractMigrationReceiptPhaseV1::RollingBack {
         return finish_rollback(storage, receipt, inputs);
@@ -254,6 +258,60 @@ pub(crate) fn drive_contract_migration(
     finish_publication(storage, receipt, inputs)
 }
 
+fn drive_contract_migration_check(
+    storage: &RedbMaintenanceStorage,
+    mut receipt: ContractMigrationReceiptV1,
+    inputs: &MigrationDriverInputs<'_>,
+) -> Result<(ContractMigrationReceiptV1, CheckedRedbStartup), MigrationDriverError> {
+    let (candidate_bytes, migration_bytes) = storage
+        .read_contract_migration_artifacts(receipt.operation_id())
+        .map_err(|_| MigrationDriverError)?;
+    let parent = open_database(storage, inputs)?;
+    let plan = match reconstruct_plan(&parent, &candidate_bytes, &migration_bytes, &receipt) {
+        Ok(plan) => plan,
+        Err(_) => {
+            return finish_failed_closed(
+                storage,
+                receipt,
+                ContractMigrationReceiptFailureV1::ArtifactMismatch,
+                parent,
+            );
+        }
+    };
+    if receipt.current_phase() == ContractMigrationReceiptPhaseV1::Accepted {
+        receipt = persist_advance(
+            storage,
+            &receipt,
+            ContractMigrationReceiptPhaseV1::Preflight,
+        )?;
+    }
+    if receipt.current_phase() != ContractMigrationReceiptPhaseV1::Preflight {
+        return Err(MigrationDriverError);
+    }
+    let (_, _, history, _, _, ports) = parent.into_parts();
+    let active = history.active().ok_or(MigrationDriverError)?.bundle_hash();
+    let preflight =
+        RedbContractMigrationPreflight::new(ports, active).map_err(|_| MigrationDriverError)?;
+    let result = MigrationCoordinator::check(&plan, &preflight);
+    drop(preflight.into_ports());
+    match result {
+        Ok(_) => {
+            let succeeded = persist_advance(
+                storage,
+                &receipt,
+                ContractMigrationReceiptPhaseV1::Succeeded,
+            )?;
+            Ok((succeeded, open_database(storage, inputs)?))
+        }
+        Err(finding) => fail_closed_and_reopen(
+            storage,
+            receipt,
+            classify_preflight_finding(finding),
+            inputs,
+        ),
+    }
+}
+
 fn apply_stage(
     plan: &ValidatedMigrationPlan,
     mut stage: RedbContractMigrationStage,
@@ -392,7 +450,9 @@ fn finish_failed_closed(
     Ok((failed, predecessor))
 }
 
-fn classify_preflight_finding(finding: MigrationFinding) -> ContractMigrationReceiptFailureV1 {
+pub(crate) fn classify_preflight_finding(
+    finding: MigrationFinding,
+) -> ContractMigrationReceiptFailureV1 {
     match finding.code() {
         migration_finding_code::ARTIFACT_MISMATCH | migration_finding_code::UNSUPPORTED_STEP => {
             ContractMigrationReceiptFailureV1::ArtifactMismatch

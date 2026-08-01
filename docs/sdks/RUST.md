@@ -48,6 +48,43 @@ the outcome is known. The stable client may retry only according to its bounded
 attempt policy. `OutcomeUnknown` means the server result could not be resolved;
 it does not mean the command failed.
 
+## Migration administration
+
+Contract migration is a kernel administration surface, not generated
+application API. The stable facade exposes `CheckContractMigration`,
+`ApplyContractMigration`, `generate_contract_migration_operation_id`, and the
+three migration client methods. Construct one immutable submission and reuse it
+across bounded retries; only the outer request ID changes.
+
+```rust,ignore
+let check_id = generate_contract_migration_operation_id()?;
+let check = CheckContractMigration::new(
+    check_id,
+    candidate_bundle.clone(),
+    migration_bundle.clone(),
+)?;
+let checked = client
+    .check_contract_migration_with_retry(&check, attempts, &metadata)
+    .await?;
+
+let apply_id = generate_contract_migration_operation_id()?;
+let apply = ApplyContractMigration::new(
+    apply_id,
+    candidate_bundle,
+    migration_bundle,
+    reviewed_migration_hash,
+)?;
+let accepted = client
+    .apply_contract_migration_with_retry(&apply, attempts, &metadata)
+    .await?;
+```
+
+Check and apply require different operation IDs because their canonical input
+identities differ. After an uncertain apply, retain the apply ID and call
+`get_contract_migration_operation` after the selected database reopens. The
+current TypeScript and Python facades intentionally do not expose this
+administrative surface.
+
 ## Public API
 
 The built handbook publishes Rustdoc only for `riffdb-client-rust`. See the

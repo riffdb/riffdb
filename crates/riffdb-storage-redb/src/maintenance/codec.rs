@@ -1,13 +1,14 @@
 use riffdb_storage_api::{
     BackupIntegrityChecksumV1, ContractMigrationAdmissionV1, ContractMigrationArtifactFileV1,
     ContractMigrationArtifactsV1, ContractMigrationOperationArtifactsV1,
-    ContractMigrationReceiptFailureV1, ContractMigrationReceiptPhaseV1,
-    ContractMigrationReceiptTransitionV1, ContractMigrationReceiptV1,
-    MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES, MAX_CONTRACT_MIGRATION_RECEIPT_TRANSITIONS_V1,
-    MAX_OFFLINE_MAINTENANCE_RECEIPT_TRANSITIONS_V1, OfflineBackupManifestIdentityV1,
-    OfflineMaintenanceAdmissionV1, OfflineMaintenanceReceiptFailureV1,
-    OfflineMaintenanceReceiptPhaseV1, OfflineMaintenanceReceiptTransitionV1,
-    OfflineMaintenanceReceiptV1, StorageError, StorageErrorKind, StorageValueError,
+    ContractMigrationOperationKindV1, ContractMigrationReceiptFailureV1,
+    ContractMigrationReceiptPhaseV1, ContractMigrationReceiptTransitionV1,
+    ContractMigrationReceiptV1, MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES,
+    MAX_CONTRACT_MIGRATION_RECEIPT_TRANSITIONS_V1, MAX_OFFLINE_MAINTENANCE_RECEIPT_TRANSITIONS_V1,
+    OfflineBackupManifestIdentityV1, OfflineMaintenanceAdmissionV1,
+    OfflineMaintenanceReceiptFailureV1, OfflineMaintenanceReceiptPhaseV1,
+    OfflineMaintenanceReceiptTransitionV1, OfflineMaintenanceReceiptV1, StorageError,
+    StorageErrorKind, StorageValueError,
 };
 use riffdb_types::{
     ActorId, ActorKind, ApprovalId, BackupNameV1, CapabilityId, CommitSequence, ContractBundleHash,
@@ -28,6 +29,7 @@ const RECEIPT_MAGIC: &[u8] = b"RIFFDB-MAINT-RECEIPT\0";
 const RECEIPT_FORMAT_VERSION: u32 = 1;
 const SHA256_BYTES: usize = 32;
 const MIGRATION_RECEIPT_MAGIC: &[u8] = b"RIFFDB-MIGRATION-RECEIPT\0";
+const MIGRATION_RECEIPT_CHECK_FORMAT_VERSION: u32 = 2;
 pub(super) const MAX_MIGRATION_RECEIPT_BYTES: usize = 8 * 1024;
 
 pub(super) fn encode_receipt(
@@ -297,7 +299,13 @@ pub(super) fn encode_migration_receipt(
 ) -> Result<Vec<u8>, StorageError> {
     let mut output = Encoder::new_with_limit(MAX_MIGRATION_RECEIPT_BYTES);
     output.bytes(MIGRATION_RECEIPT_MAGIC)?;
-    output.u32(RECEIPT_FORMAT_VERSION)?;
+    match receipt.operation_kind() {
+        ContractMigrationOperationKindV1::Apply => output.u32(RECEIPT_FORMAT_VERSION)?,
+        ContractMigrationOperationKindV1::Check => {
+            output.u32(MIGRATION_RECEIPT_CHECK_FORMAT_VERSION)?;
+            output.u8(1)?;
+        }
+    }
     output.bytes(receipt.database_id().as_bytes())?;
     output.bytes(receipt.operation_id().as_bytes())?;
     output.bytes(receipt.input_hash().as_bytes())?;
@@ -367,9 +375,14 @@ pub(super) fn decode_migration_receipt(
     if input.bytes(MIGRATION_RECEIPT_MAGIC.len())? != MIGRATION_RECEIPT_MAGIC {
         return Err(incompatible());
     }
-    if input.u32()? != RECEIPT_FORMAT_VERSION {
-        return Err(incompatible());
-    }
+    let operation_kind = match input.u32()? {
+        RECEIPT_FORMAT_VERSION => ContractMigrationOperationKindV1::Apply,
+        MIGRATION_RECEIPT_CHECK_FORMAT_VERSION => match input.u8()? {
+            1 => ContractMigrationOperationKindV1::Check,
+            _ => return Err(incompatible()),
+        },
+        _ => return Err(incompatible()),
+    };
     let database_id = DatabaseId::from_bytes(input.array()?).map_err(|_| corrupt())?;
     let operation_id =
         ContractMigrationOperationId::from_bytes(input.array()?).map_err(|_| corrupt())?;
@@ -440,7 +453,8 @@ pub(super) fn decode_migration_receipt(
         });
     }
     input.finish()?;
-    let receipt = ContractMigrationReceiptV1::from_canonical_parts(
+    let receipt = ContractMigrationReceiptV1::from_canonical_parts_for_operation(
+        operation_kind,
         database_id,
         operation_id,
         input_hash,
@@ -813,8 +827,8 @@ mod tests {
     use riffdb_storage_api::{
         AuditPrincipalV1, ContractMigrationAdmissionV1, ContractMigrationArtifactFileV1,
         ContractMigrationArtifactsV1, ContractMigrationOperationArtifactsV1,
-        ContractMigrationReceiptPhaseV1, ContractMigrationReceiptTransitionV1,
-        ContractMigrationReceiptV1,
+        ContractMigrationOperationKindV1, ContractMigrationReceiptPhaseV1,
+        ContractMigrationReceiptTransitionV1, ContractMigrationReceiptV1,
     };
     use riffdb_types::{
         ActorId, ActorKind, ApprovalId, CapabilityId, ContractBundleHash,
@@ -822,7 +836,11 @@ mod tests {
         RequestId, ServiceIngressKindV1, Timestamp,
     };
 
-    use super::{decode_migration_receipt, encode_migration_receipt};
+    use sha2::{Digest, Sha256};
+
+    use super::{
+        MIGRATION_RECEIPT_MAGIC, SHA256_BYTES, decode_migration_receipt, encode_migration_receipt,
+    };
 
     fn uuid_v7(seed: u8) -> [u8; 16] {
         let mut bytes = [seed; 16];
@@ -832,7 +850,14 @@ mod tests {
     }
 
     fn accepted_receipt() -> ContractMigrationReceiptV1 {
-        ContractMigrationReceiptV1::from_canonical_parts(
+        accepted_receipt_for(ContractMigrationOperationKindV1::Apply)
+    }
+
+    fn accepted_receipt_for(
+        operation_kind: ContractMigrationOperationKindV1,
+    ) -> ContractMigrationReceiptV1 {
+        ContractMigrationReceiptV1::from_canonical_parts_for_operation(
+            operation_kind,
             DatabaseId::from_bytes(uuid_v7(1)).expect("database"),
             ContractMigrationOperationId::from_bytes(uuid_v7(2)).expect("operation"),
             ContractMigrationInputHash::from_bytes([3; 32]),
@@ -880,5 +905,30 @@ mod tests {
         let mut corrupt = encoded;
         corrupt[40] ^= 0x01;
         assert!(decode_migration_receipt(&corrupt).is_err());
+    }
+
+    #[test]
+    fn check_receipt_uses_the_read_only_graph_and_rejects_unknown_kind() {
+        let receipt = accepted_receipt_for(ContractMigrationOperationKindV1::Check)
+            .advance(ContractMigrationReceiptPhaseV1::Preflight)
+            .expect("preflight")
+            .advance(ContractMigrationReceiptPhaseV1::Succeeded)
+            .expect("checked");
+        let encoded = encode_migration_receipt(&receipt).expect("encode");
+        assert_eq!(decode_migration_receipt(&encoded).expect("decode"), receipt);
+        assert_eq!(
+            decode_migration_receipt(&encoded)
+                .expect("decode")
+                .operation_kind(),
+            ContractMigrationOperationKindV1::Check
+        );
+
+        let kind_offset = MIGRATION_RECEIPT_MAGIC.len() + std::mem::size_of::<u32>();
+        let mut unknown = encoded;
+        unknown[kind_offset] = 0xff;
+        let body_len = unknown.len() - SHA256_BYTES;
+        let checksum = Sha256::digest(&unknown[..body_len]);
+        unknown[body_len..].copy_from_slice(&checksum);
+        assert!(decode_migration_receipt(&unknown).is_err());
     }
 }

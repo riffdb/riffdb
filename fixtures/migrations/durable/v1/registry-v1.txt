@@ -1,5 +1,6 @@
 format=riffdb-migration-durable-registry-v1
-external=ContractMigrationReceiptV1
+external=ContractMigrationReceiptV1:apply-format-v1
+external=ContractMigrationReceiptV1:check-format-v2
 table=contract_migration_journal:StoredContractMigrationJournalV1
 table=contract_migrations:StoredContractMigrationRecordV1
 table=contract_write_retirements:StoredContractWriteRetirementV1

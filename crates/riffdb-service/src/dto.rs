@@ -6,6 +6,7 @@ use std::fmt;
 use std::future::Future;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -15,8 +16,9 @@ use riffdb_catalog::ValidatedContractBundle;
 use riffdb_contract_compiler::CompilationError;
 use riffdb_contract_ir::{
     CommandExplain, CompatibilityClass, ContractBundle, ExecutionClass, GeneratedSchemaArtifact,
-    IndexScanPrefix, McpCommandToolNameV2, OutcomeSchema, RecordSchema, RecordTypeRef,
-    SchemaArtifactKey, SchemaIr, ValueType,
+    IndexScanPrefix, MAX_BUNDLE_BYTES, MAX_MIGRATION_BUNDLE_BYTES_V1, McpCommandToolNameV2,
+    MigrationBundleV1, OutcomeSchema, RecordSchema, RecordTypeRef, SchemaArtifactKey, SchemaIr,
+    ValueType,
 };
 use riffdb_policy::{
     CapabilityActivity, FixedToolCandidate, NormalizedCapabilityCreateRecord, PartitionConstraint,
@@ -25,16 +27,18 @@ use riffdb_types::{
     ActorId, ActorKind, AdministrationSequence, AdmittedActorContext, ApprovalId, Audience,
     BackupNameV1, CanonicalInputHash, CanonicalRecord, CanonicalValue, CapabilityGrantV1,
     CapabilityId, CommandId, CommitSequence, ConflictKeyHash, ContractBundleHash, ContractLineage,
-    ContractPlanRootHash, ContractVersion, DIGEST_SCHEME_V1, DatabaseId, DigestKeyId, EntityKey,
-    EntityTypeId, EntityVersion, EnumTypeId, EnumVariantId, Environment, EventId, EventTypeId,
-    FieldId, FrontierPosition, IdempotencyKey, IndexEntryKey, IndexEpochPosition, IndexId,
-    LogicalTime, OfflineMaintenanceInputHash, OfflineMaintenanceOperationId,
-    OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation, OutcomeId,
-    PartitionKey, PartitionKeyHash, PlanHash, ProjectionGeneration, ProjectionGroupKey,
-    ProjectionGroupKeyBuilder, ProjectionGroupPrefix, ProjectionId, ProjectionIdentity,
-    ProvenanceId, QueryModuleHash, QueryModuleName, QueryModuleVersion, QueryOperationName,
-    RequestId, RevocationReasonCodeV1, SchemaHash, SourceCommit, SourceHash, SourceRepository,
-    TenantScope, Timestamp, hash_schema, offline_maintenance_input_hash,
+    ContractMigrationApplyConfirmation, ContractMigrationInputHash, ContractMigrationOperationId,
+    ContractMigrationOperationKind, ContractPlanRootHash, ContractVersion, DIGEST_SCHEME_V1,
+    DatabaseId, DigestKeyId, EntityKey, EntityTypeId, EntityVersion, EnumTypeId, EnumVariantId,
+    Environment, EventId, EventTypeId, FieldId, FrontierPosition, IdempotencyKey, IndexEntryKey,
+    IndexEpochPosition, IndexId, LogicalTime, MigrationBundleHash, OfflineMaintenanceInputHash,
+    OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
+    OfflineMaintenanceReplacementConfirmation, OutcomeId, PartitionKey, PartitionKeyHash, PlanHash,
+    ProjectionGeneration, ProjectionGroupKey, ProjectionGroupKeyBuilder, ProjectionGroupPrefix,
+    ProjectionId, ProjectionIdentity, ProvenanceId, QueryModuleHash, QueryModuleName,
+    QueryModuleVersion, QueryOperationName, RequestId, RevocationReasonCodeV1, SchemaHash,
+    SourceCommit, SourceHash, SourceRepository, TenantScope, Timestamp,
+    contract_migration_input_hash, hash_schema, offline_maintenance_input_hash,
 };
 
 use crate::{
@@ -6054,6 +6058,534 @@ pub enum GetOfflineMaintenanceOperationResult {
     NotFound,
     /// One bounded validated receipt observation exists.
     Found(OfflineMaintenanceOperationObservation),
+}
+
+/// Maximum combined canonical artifact bytes in one migration start request.
+pub const MAX_CONTRACT_MIGRATION_ARTIFACT_BYTES: usize =
+    MAX_BUNDLE_BYTES + MAX_MIGRATION_BUNDLE_BYTES_V1;
+
+/// Checked canonical successor and parent-specific migration artifacts.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ContractMigrationArtifacts {
+    lineage: ContractLineage,
+    parent_hash: ContractBundleHash,
+    candidate_hash: ContractBundleHash,
+    migration_hash: MigrationBundleHash,
+    candidate_bundle: Arc<[u8]>,
+    migration_bundle: Arc<[u8]>,
+}
+
+impl ContractMigrationArtifacts {
+    /// Strictly decodes both canonical artifacts and checks their exact binding.
+    pub fn decode(
+        candidate_bundle: Arc<[u8]>,
+        migration_bundle: Arc<[u8]>,
+    ) -> Result<Self, ServiceDtoError> {
+        if candidate_bundle.len() > MAX_BUNDLE_BYTES
+            || migration_bundle.len() > MAX_MIGRATION_BUNDLE_BYTES_V1
+            || candidate_bundle
+                .len()
+                .checked_add(migration_bundle.len())
+                .is_none_or(|bytes| bytes > MAX_CONTRACT_MIGRATION_ARTIFACT_BYTES)
+        {
+            return Err(ServiceDtoError::TooLong);
+        }
+        let candidate =
+            ContractBundle::decode(&candidate_bundle).map_err(|_| ServiceDtoError::InvalidShape)?;
+        let migration = MigrationBundleV1::decode(&migration_bundle)
+            .map_err(|_| ServiceDtoError::InvalidShape)?;
+        if candidate.lineage() != migration.lineage()
+            || candidate.bundle_hash() != migration.candidate_bundle_hash()
+            || candidate.contract_version() != migration.candidate_version()
+        {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        Ok(Self {
+            lineage: candidate.lineage().clone(),
+            parent_hash: migration.parent_bundle_hash(),
+            candidate_hash: candidate.bundle_hash(),
+            migration_hash: migration.bundle_hash(),
+            candidate_bundle,
+            migration_bundle,
+        })
+    }
+
+    /// Borrows the exact contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Returns the exact predecessor bundle identity.
+    #[must_use]
+    pub const fn parent_hash(&self) -> ContractBundleHash {
+        self.parent_hash
+    }
+
+    /// Returns the exact successor bundle identity.
+    #[must_use]
+    pub const fn candidate_hash(&self) -> ContractBundleHash {
+        self.candidate_hash
+    }
+
+    /// Returns the exact migration artifact identity.
+    #[must_use]
+    pub const fn migration_hash(&self) -> MigrationBundleHash {
+        self.migration_hash
+    }
+
+    /// Borrows the exact canonical successor bytes.
+    #[must_use]
+    pub fn candidate_bundle(&self) -> &[u8] {
+        &self.candidate_bundle
+    }
+
+    /// Borrows the exact canonical migration bytes.
+    #[must_use]
+    pub fn migration_bundle(&self) -> &[u8] {
+        &self.migration_bundle
+    }
+}
+
+impl fmt::Debug for ContractMigrationArtifacts {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ContractMigrationArtifacts")
+            .field("lineage", &self.lineage)
+            .field("parent_hash", &self.parent_hash)
+            .field("candidate_hash", &self.candidate_hash)
+            .field("migration_hash", &self.migration_hash)
+            .field("candidate_bytes", &self.candidate_bundle.len())
+            .field("migration_bytes", &self.migration_bundle.len())
+            .finish()
+    }
+}
+
+/// Checked read-only migration preflight request.
+#[derive(Clone, Eq, PartialEq)]
+pub struct CheckContractMigrationRequest {
+    operation_id: ContractMigrationOperationId,
+    artifacts: ContractMigrationArtifacts,
+    input_hash: ContractMigrationInputHash,
+}
+
+impl CheckContractMigrationRequest {
+    /// Constructs one immutable caller-stable check request.
+    #[must_use]
+    pub fn new(
+        operation_id: ContractMigrationOperationId,
+        artifacts: ContractMigrationArtifacts,
+    ) -> Self {
+        let input_hash = contract_migration_input_hash(
+            ContractMigrationOperationKind::Check,
+            artifacts.parent_hash(),
+            artifacts.candidate_hash(),
+            artifacts.migration_hash(),
+            ContractMigrationApplyConfirmation::NotProvided,
+        );
+        Self {
+            operation_id,
+            artifacts,
+            input_hash,
+        }
+    }
+
+    /// Returns the caller-stable operation identity.
+    #[must_use]
+    pub const fn operation_id(&self) -> ContractMigrationOperationId {
+        self.operation_id
+    }
+
+    /// Borrows the exact canonical artifacts.
+    #[must_use]
+    pub const fn artifacts(&self) -> &ContractMigrationArtifacts {
+        &self.artifacts
+    }
+
+    /// Returns the canonical semantic-input identity.
+    #[must_use]
+    pub const fn input_hash(&self) -> ContractMigrationInputHash {
+        self.input_hash
+    }
+}
+
+impl fmt::Debug for CheckContractMigrationRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CheckContractMigrationRequest([REDACTED])")
+    }
+}
+
+/// Checked, exactly confirmed staged migration request.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ApplyContractMigrationRequest {
+    operation_id: ContractMigrationOperationId,
+    artifacts: ContractMigrationArtifacts,
+    input_hash: ContractMigrationInputHash,
+}
+
+impl ApplyContractMigrationRequest {
+    /// Checks the wire confirmation and complete migration hash before admission.
+    pub fn new(
+        operation_id: ContractMigrationOperationId,
+        artifacts: ContractMigrationArtifacts,
+        confirmation: ContractMigrationApplyConfirmation,
+        confirmed_migration_hash: MigrationBundleHash,
+    ) -> Result<Self, ServiceDtoError> {
+        if confirmation != ContractMigrationApplyConfirmation::AllowApplyContractMigration
+            || confirmed_migration_hash != artifacts.migration_hash()
+        {
+            return Err(ServiceDtoError::IdentityMismatch);
+        }
+        let input_hash = contract_migration_input_hash(
+            ContractMigrationOperationKind::Apply,
+            artifacts.parent_hash(),
+            artifacts.candidate_hash(),
+            artifacts.migration_hash(),
+            confirmation,
+        );
+        Ok(Self {
+            operation_id,
+            artifacts,
+            input_hash,
+        })
+    }
+
+    /// Returns the caller-stable operation identity.
+    #[must_use]
+    pub const fn operation_id(&self) -> ContractMigrationOperationId {
+        self.operation_id
+    }
+
+    /// Borrows the exact canonical artifacts.
+    #[must_use]
+    pub const fn artifacts(&self) -> &ContractMigrationArtifacts {
+        &self.artifacts
+    }
+
+    /// Returns the canonical semantic-input identity.
+    #[must_use]
+    pub const fn input_hash(&self) -> ContractMigrationInputHash {
+        self.input_hash
+    }
+}
+
+impl fmt::Debug for ApplyContractMigrationRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ApplyContractMigrationRequest([REDACTED])")
+    }
+}
+
+/// Checked selector for one caller-stable migration operation.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct GetContractMigrationOperationRequest {
+    operation_id: ContractMigrationOperationId,
+}
+
+impl GetContractMigrationOperationRequest {
+    /// Constructs one exact operation lookup.
+    #[must_use]
+    pub const fn new(operation_id: ContractMigrationOperationId) -> Self {
+        Self { operation_id }
+    }
+
+    /// Returns the caller-stable operation identity.
+    #[must_use]
+    pub const fn operation_id(self) -> ContractMigrationOperationId {
+        self.operation_id
+    }
+}
+
+impl fmt::Debug for GetContractMigrationOperationRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("GetContractMigrationOperationRequest([REDACTED])")
+    }
+}
+
+/// Non-durable public view of the external migration receipt phase.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ContractMigrationObservationPhase {
+    /// The durable request exists but execution has not started.
+    Accepted,
+    /// Ordinary traffic is being drained before an apply.
+    Draining,
+    /// The candidate and environment are being checked.
+    Preflight,
+    /// The rollback backup has been published durably.
+    BackupPublished,
+    /// A private candidate database is being prepared.
+    Staging,
+    /// Migration transforms are running against the private stage.
+    Transforming,
+    /// Derived projections are being rebuilt in the private stage.
+    RebuildingProjections,
+    /// The private stage is undergoing final validation.
+    ValidatingStage,
+    /// The validated candidate is being published atomically.
+    Publishing,
+    /// The published database is undergoing post-publication validation.
+    ValidatingPublished,
+    /// The published database is being replaced with its retained backup.
+    RollingBack,
+    /// The operation completed successfully.
+    Succeeded,
+    /// The operation failed without publishing an invalid database.
+    FailedClosed,
+    /// The operation failed after publication and rollback succeeded.
+    FailedRolledBack,
+}
+
+impl ContractMigrationObservationPhase {
+    /// Returns whether no further receipt transition is permitted.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded | Self::FailedClosed | Self::FailedRolledBack
+        )
+    }
+}
+
+/// Value-free public migration failure classification.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ContractMigrationObservationFailure {
+    /// Persisted artifacts do not match their declared identities.
+    ArtifactMismatch,
+    /// The requested predecessor is not the active contract.
+    InvalidPredecessor,
+    /// Another maintenance operation prevents admission.
+    PendingAdmission,
+    /// A configured bounded resource limit would be exceeded.
+    CapacityExhausted,
+    /// Required durable storage or backup capacity is unavailable.
+    DiskUnavailable,
+    /// The private staged database failed an integrity check.
+    StageCorrupt,
+    /// Publication may have occurred but cannot be established safely.
+    PublicationUncertain,
+    /// Validation of the published candidate failed.
+    PublishedValidationFailed,
+    /// Recovery of the retained backup failed.
+    RollbackFailed,
+}
+
+/// One bounded API-neutral migration receipt observation.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ContractMigrationOperationObservation {
+    operation_id: ContractMigrationOperationId,
+    kind: ContractMigrationOperationKind,
+    lineage: ContractLineage,
+    input_hash: ContractMigrationInputHash,
+    parent_hash: ContractBundleHash,
+    candidate_hash: ContractBundleHash,
+    migration_hash: MigrationBundleHash,
+    phase: ContractMigrationObservationPhase,
+    failure: Option<ContractMigrationObservationFailure>,
+    backup_name: Option<BackupNameV1>,
+    backup_manifest_hash: Option<[u8; 32]>,
+}
+
+impl ContractMigrationOperationObservation {
+    /// Checks the closed public phase, failure, and retained-backup shape.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        operation_id: ContractMigrationOperationId,
+        kind: ContractMigrationOperationKind,
+        lineage: ContractLineage,
+        input_hash: ContractMigrationInputHash,
+        parent_hash: ContractBundleHash,
+        candidate_hash: ContractBundleHash,
+        migration_hash: MigrationBundleHash,
+        phase: ContractMigrationObservationPhase,
+        failure: Option<ContractMigrationObservationFailure>,
+        backup_name: Option<BackupNameV1>,
+        backup_manifest_hash: Option<[u8; 32]>,
+    ) -> Result<Self, ServiceDtoError> {
+        let failed = matches!(
+            phase,
+            ContractMigrationObservationPhase::FailedClosed
+                | ContractMigrationObservationPhase::FailedRolledBack
+        );
+        if failed != failure.is_some()
+            || backup_name.is_some() != backup_manifest_hash.is_some()
+            || kind == ContractMigrationOperationKind::Check
+                && (backup_name.is_some()
+                    || !matches!(
+                        phase,
+                        ContractMigrationObservationPhase::Accepted
+                            | ContractMigrationObservationPhase::Preflight
+                            | ContractMigrationObservationPhase::Succeeded
+                            | ContractMigrationObservationPhase::FailedClosed
+                    ))
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
+            operation_id,
+            kind,
+            lineage,
+            input_hash,
+            parent_hash,
+            candidate_hash,
+            migration_hash,
+            phase,
+            failure,
+            backup_name,
+            backup_manifest_hash,
+        })
+    }
+
+    /// Returns the caller-stable operation identity.
+    #[must_use]
+    pub const fn operation_id(&self) -> ContractMigrationOperationId {
+        self.operation_id
+    }
+
+    /// Returns whether this receipt describes a check or apply operation.
+    #[must_use]
+    pub const fn kind(&self) -> ContractMigrationOperationKind {
+        self.kind
+    }
+
+    /// Borrows the protected contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Returns the canonical semantic-input identity.
+    #[must_use]
+    pub const fn input_hash(&self) -> ContractMigrationInputHash {
+        self.input_hash
+    }
+
+    /// Returns the expected predecessor bundle identity.
+    #[must_use]
+    pub const fn parent_hash(&self) -> ContractBundleHash {
+        self.parent_hash
+    }
+
+    /// Returns the candidate bundle identity.
+    #[must_use]
+    pub const fn candidate_hash(&self) -> ContractBundleHash {
+        self.candidate_hash
+    }
+
+    /// Returns the migration-plan identity.
+    #[must_use]
+    pub const fn migration_hash(&self) -> MigrationBundleHash {
+        self.migration_hash
+    }
+
+    /// Returns the closed durable phase.
+    #[must_use]
+    pub const fn phase(&self) -> ContractMigrationObservationPhase {
+        self.phase
+    }
+
+    /// Returns the value-free terminal failure classification, when present.
+    #[must_use]
+    pub const fn failure(&self) -> Option<ContractMigrationObservationFailure> {
+        self.failure
+    }
+
+    /// Borrows the retained backup name, when an apply published one.
+    #[must_use]
+    pub const fn backup_name(&self) -> Option<&BackupNameV1> {
+        self.backup_name.as_ref()
+    }
+
+    /// Returns the retained backup manifest identity, when present.
+    #[must_use]
+    pub const fn backup_manifest_hash(&self) -> Option<[u8; 32]> {
+        self.backup_manifest_hash
+    }
+}
+
+impl fmt::Debug for ContractMigrationOperationObservation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ContractMigrationOperationObservation([REDACTED])")
+    }
+}
+
+/// Closed result of one migration start or idempotent recovery request.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ContractMigrationStartDisposition {
+    /// A new operation was durably accepted.
+    Accepted,
+    /// The same operation and input had already been accepted.
+    AlreadyAccepted,
+    /// The same operation had already reached a terminal phase.
+    Terminal,
+    /// Permanent catalog evidence proves the exact successor was applied.
+    AlreadyApplied,
+}
+
+/// Receipt-derived result of starting or resolving migration work.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ContractMigrationStartResult {
+    disposition: ContractMigrationStartDisposition,
+    operation: ContractMigrationOperationObservation,
+}
+
+impl ContractMigrationStartResult {
+    /// Checks the disposition against the receipt-derived terminal phase.
+    pub fn new(
+        disposition: ContractMigrationStartDisposition,
+        operation: ContractMigrationOperationObservation,
+    ) -> Result<Self, ServiceDtoError> {
+        let terminal = operation.phase().is_terminal();
+        if matches!(
+            disposition,
+            ContractMigrationStartDisposition::Terminal
+                | ContractMigrationStartDisposition::AlreadyApplied
+        ) != terminal
+            || disposition == ContractMigrationStartDisposition::AlreadyApplied
+                && (operation.kind() != ContractMigrationOperationKind::Apply
+                    || operation.phase() != ContractMigrationObservationPhase::Succeeded)
+        {
+            return Err(ServiceDtoError::InvalidShape);
+        }
+        Ok(Self {
+            disposition,
+            operation,
+        })
+    }
+
+    /// Returns how the start request resolved.
+    #[must_use]
+    pub const fn disposition(&self) -> ContractMigrationStartDisposition {
+        self.disposition
+    }
+
+    /// Borrows the receipt-derived operation observation.
+    #[must_use]
+    pub const fn operation(&self) -> &ContractMigrationOperationObservation {
+        &self.operation
+    }
+}
+
+impl fmt::Debug for ContractMigrationStartResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ContractMigrationStartResult([REDACTED])")
+    }
+}
+
+/// Closed result of one protected migration operation lookup.
+#[derive(Clone, Eq, PartialEq)]
+pub enum GetContractMigrationOperationResult {
+    /// No receipt exists for the requested operation identity.
+    NotFound,
+    /// The protected receipt exists and passed authorization.
+    Found(Box<ContractMigrationOperationObservation>),
+}
+
+impl fmt::Debug for GetContractMigrationOperationResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::NotFound => "GetContractMigrationOperationResult::NotFound",
+            Self::Found(_) => "GetContractMigrationOperationResult::Found([REDACTED])",
+        })
+    }
 }
 
 impl fmt::Debug for GetOfflineMaintenanceOperationResult {

@@ -14,11 +14,12 @@ use crate::decision::{PermissionCheck, check_permission, derive_field_mask};
 use crate::operation::PartitionRequirement;
 use crate::{
     AuthorizationClock, AuthorizationDefect, AuthorizationTelemetry, AuthorizationTelemetryEvent,
-    AuthorizedCapabilityMutationPreparation, AuthorizedOfflineMaintenance, AuthorizedOperation,
-    CapabilityActivity, CapabilityMutationRequest, CheckedCapabilityValidity,
-    CurrentAuthorizationIdentity, Decision, Obligations, OfflineMaintenanceAuthorizationRequest,
-    OfflineMaintenanceDecision, OperationRequest, OutputClassification, PolicyCode,
-    TransactionCurrentCapabilityFacts, TrustedAudienceCatalog,
+    AuthorizedCapabilityMutationPreparation, AuthorizedContractMigration,
+    AuthorizedOfflineMaintenance, AuthorizedOperation, CapabilityActivity,
+    CapabilityMutationRequest, CheckedCapabilityValidity, ContractMigrationAuthorizationRequest,
+    ContractMigrationDecision, CurrentAuthorizationIdentity, Decision, Obligations,
+    OfflineMaintenanceAuthorizationRequest, OfflineMaintenanceDecision, OperationRequest,
+    OutputClassification, PolicyCode, TransactionCurrentCapabilityFacts, TrustedAudienceCatalog,
 };
 
 /// A redaction-safe internal failure before policy could decide.
@@ -142,6 +143,52 @@ where
                 self.telemetry
                     .record(AuthorizationTelemetryEvent::Denied(code));
                 Ok(OfflineMaintenanceDecision::Deny(code))
+            }
+        }
+    }
+
+    /// Reloads current state and evaluates one exact contract-migration safe point.
+    pub fn authorize_contract_migration(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: ContractMigrationAuthorizationRequest,
+    ) -> Result<ContractMigrationDecision, AuthorizationError> {
+        let current = self.resolver.resolve_current(principal).map_err(|_| {
+            self.telemetry.record(AuthorizationTelemetryEvent::Defect(
+                AuthorizationDefect::CurrentCapabilityUnavailable,
+            ));
+            AuthorizationError::CurrentCapabilityUnavailable
+        })?;
+        let now = self
+            .clock
+            .now()
+            .map_err(|_| AuthorizationError::ClockUnavailable)?;
+        let principal_facts = PrincipalFacts::from(principal);
+        let current_facts = CurrentFacts::from(&current);
+        match evaluate_contract_migration(
+            &principal_facts,
+            &current_facts,
+            self.expected_database_id,
+            &self.expected_environment,
+            now,
+            request.lineage(),
+        ) {
+            Ok(obligations) => Ok(ContractMigrationDecision::Allow(Box::new(
+                AuthorizedContractMigration::new(
+                    self.expected_database_id,
+                    self.expected_environment.clone(),
+                    request,
+                    obligations,
+                    current_facts.capability_id,
+                    current_facts.revision,
+                    principal_facts.principal_id,
+                    principal_facts.actor_kind,
+                ),
+            ))),
+            Err(code) => {
+                self.telemetry
+                    .record(AuthorizationTelemetryEvent::Denied(code));
+                Ok(ContractMigrationDecision::Deny(code))
             }
         }
     }
@@ -321,6 +368,47 @@ fn evaluate_offline_maintenance(
         PermissionCheck::Allowed => {}
     }
 
+    Ok(Obligations::new(
+        TenantScope::Global,
+        None,
+        None,
+        None,
+        None,
+        None,
+        OutputClassification::AdministrativeRedactedData,
+    ))
+}
+
+fn evaluate_contract_migration(
+    principal: &PrincipalFacts,
+    current: &CurrentFacts,
+    expected_database_id: DatabaseId,
+    expected_environment: &Environment,
+    now: Timestamp,
+    lineage: &riffdb_types::ContractLineage,
+) -> Result<Obligations, PolicyCode> {
+    validate_current(
+        principal,
+        current,
+        expected_database_id,
+        expected_environment,
+        now,
+    )?;
+    if current.grant.tenant_scope() != &TenantScope::Global {
+        return Err(PolicyCode::TenantScopeMismatch);
+    }
+    if !current.grant.permissions().as_slice().iter().any(|permission| {
+        matches!(permission, riffdb_types::CapabilityPermissionV1::MigrateContract(candidate) if candidate == lineage)
+    }) {
+        return Err(PolicyCode::MissingPermission);
+    }
+    if current
+        .grant
+        .approval_required()
+        .contains(&CapabilityPermissionKindV1::MigrateContract)
+    {
+        return Err(PolicyCode::ApprovalRequired);
+    }
     Ok(Obligations::new(
         TenantScope::Global,
         None,
@@ -589,7 +677,7 @@ mod tests {
     use super::*;
     use crate::{
         ApplicationQueryAccessRequirement, ApplicationQueryTarget, CommandExecutionClass,
-        OperationTenantScope, PartitionConstraint,
+        ContractMigrationPolicyOperation, OperationTenantScope, PartitionConstraint,
     };
 
     struct FixedAuthorizationClock(Timestamp);
@@ -619,6 +707,15 @@ mod tests {
 
     fn maintenance_input_hash() -> riffdb_types::OfflineMaintenanceInputHash {
         riffdb_types::OfflineMaintenanceInputHash::from_bytes([4; 32])
+    }
+
+    fn migration_operation_id() -> riffdb_types::ContractMigrationOperationId {
+        riffdb_types::ContractMigrationOperationId::from_unix_milliseconds_and_random(4, [4; 10])
+            .expect("valid UUIDv7")
+    }
+
+    fn migration_input_hash() -> riffdb_types::ContractMigrationInputHash {
+        riffdb_types::ContractMigrationInputHash::from_bytes([5; 32])
     }
 
     fn lineage() -> ContractLineage {
@@ -1794,6 +1891,153 @@ mod tests {
             ),
             Err(PolicyCode::InactiveOrStaleCapability)
         );
+    }
+
+    #[test]
+    fn contract_migration_proofs_bind_all_three_actions_and_exact_lineage() {
+        let database_id = database_id();
+        let environment = Environment::new("dev").expect("valid environment");
+        let audience = Audience::new("grpc").expect("valid audience");
+        let fixture = AuthorizationFixture::new(AuthorizationFixtureConfig::new(
+            database_id,
+            environment.clone(),
+            ActorId::new("migration-principal").expect("valid actor"),
+            ActorKind::Human,
+            audience,
+            AuthorizationFixtureTimes::new(timestamp(100), timestamp(1_000), timestamp(150)),
+            grant(
+                TenantScope::Global,
+                PartitionScopeV1::All,
+                vec![CapabilityPermissionV1::MigrateContract(lineage())],
+                Vec::new(),
+                5,
+                Vec::new(),
+            ),
+        ))
+        .expect("valid fixture");
+        let resolver = fixture.current_capability_resolver();
+        let clock = FixedAuthorizationClock(timestamp(200));
+        let authorizer = CurrentAuthorizer::new(
+            &resolver,
+            &clock,
+            &crate::NoopAuthorizationTelemetry,
+            database_id,
+            environment.clone(),
+        );
+
+        for request in [
+            ContractMigrationAuthorizationRequest::start(
+                migration_operation_id(),
+                ContractMigrationPolicyOperation::Check,
+                lineage(),
+                migration_input_hash(),
+            ),
+            ContractMigrationAuthorizationRequest::start(
+                migration_operation_id(),
+                ContractMigrationPolicyOperation::Apply,
+                lineage(),
+                migration_input_hash(),
+            ),
+            ContractMigrationAuthorizationRequest::get_operation(
+                migration_operation_id(),
+                lineage(),
+            ),
+        ] {
+            let expected_operation = request.operation();
+            let expected_input_hash = request.input_hash();
+            let decision = authorizer
+                .authorize_contract_migration(fixture.authenticated_principal(), request)
+                .expect("policy decision");
+            let ContractMigrationDecision::Allow(proof) = decision else {
+                panic!("expected migration allow proof");
+            };
+            assert_eq!(proof.database_id(), database_id);
+            assert_eq!(proof.environment(), &environment);
+            assert_eq!(proof.request().operation_id(), migration_operation_id());
+            assert_eq!(proof.request().operation(), expected_operation);
+            assert_eq!(proof.request().lineage(), &lineage());
+            assert_eq!(proof.request().input_hash(), expected_input_hash);
+            assert_eq!(
+                proof.obligations().output_classification(),
+                OutputClassification::AdministrativeRedactedData
+            );
+            assert!(format!("{proof:?}").contains("[REDACTED]"));
+        }
+    }
+
+    #[test]
+    fn contract_migration_denies_implied_sibling_scoped_and_approval_authority() {
+        let deploy =
+            CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::DeployContract)
+                .expect("deploy permission");
+        let migration = CapabilityPermissionV1::MigrateContract(lineage());
+        let other_lineage = ContractLineage::new("other.contract").expect("other lineage");
+        let tenant = TenantScope::Tenant(TenantId::new("tenant-a").expect("valid tenant"));
+        let cases = [
+            (
+                grant(
+                    TenantScope::Global,
+                    PartitionScopeV1::All,
+                    vec![deploy],
+                    Vec::new(),
+                    5,
+                    Vec::new(),
+                ),
+                lineage(),
+                PolicyCode::MissingPermission,
+            ),
+            (
+                grant(
+                    TenantScope::Global,
+                    PartitionScopeV1::All,
+                    vec![migration.clone()],
+                    Vec::new(),
+                    5,
+                    Vec::new(),
+                ),
+                other_lineage,
+                PolicyCode::MissingPermission,
+            ),
+            (
+                grant(
+                    tenant,
+                    PartitionScopeV1::All,
+                    vec![migration.clone()],
+                    Vec::new(),
+                    5,
+                    Vec::new(),
+                ),
+                lineage(),
+                PolicyCode::TenantScopeMismatch,
+            ),
+            (
+                grant(
+                    TenantScope::Global,
+                    PartitionScopeV1::All,
+                    vec![migration],
+                    Vec::new(),
+                    5,
+                    vec![CapabilityPermissionKindV1::MigrateContract],
+                ),
+                lineage(),
+                PolicyCode::ApprovalRequired,
+            ),
+        ];
+
+        for (grant, requested_lineage, expected) in cases {
+            let (principal, current, environment) = facts(grant);
+            assert_eq!(
+                evaluate_contract_migration(
+                    &principal,
+                    &current,
+                    current.database_id,
+                    &environment,
+                    timestamp(15),
+                    &requested_lineage,
+                ),
+                Err(expected)
+            );
+        }
     }
 
     #[test]

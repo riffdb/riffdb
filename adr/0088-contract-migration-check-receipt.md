@@ -1,4 +1,4 @@
-# ADR-0085: Contract Migration Check Receipt
+# ADR-0088: Contract Migration Check Receipt
 
 - **Status:** Accepted
 - **Date:** 2026-08-01

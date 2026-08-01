@@ -41,8 +41,8 @@ use crate::hosted_mcp::{HostedMcp, HostedMcpStartError, HostedMcpStopError};
 use crate::identifiers::ProductionIdentifierSources;
 use crate::lifecycle::ProductionLifecycleRoute;
 use crate::maintenance_adapter::{
-    MaintenanceController, MaintenanceTrigger, maintenance_trigger_channel,
-    shared_maintenance_storage, start_result,
+    MaintenanceController, MaintenanceTrigger, MigrationProcessExclusion,
+    maintenance_trigger_channel, shared_maintenance_storage, start_result,
 };
 use crate::maintenance_driver::{
     MaintenanceDriverDependencies, MaintenanceDriverFailure, MaintenanceDriverRequest,
@@ -893,6 +893,7 @@ async fn run_multi_database_server(
         .now()
         .map_err(DaemonError::StartupClock)?;
     let startup_inputs = startup_validation_inputs(&digest_keys, authorization_time)?;
+    let migration_exclusion = Arc::new(MigrationProcessExclusion::new());
 
     struct PendingDatabase {
         alias: riffdb_types::DatabaseAlias,
@@ -987,10 +988,11 @@ async fn run_multi_database_server(
         };
         let initial_action = initial_database_action(&reconciliation, target_requires_recovery)?;
         let (maintenance_triggers, mut maintenance_receiver) = maintenance_trigger_channel();
-        let maintenance = MaintenanceController::new(
+        let maintenance = MaintenanceController::new_with_migration_exclusion(
             shared_maintenance_storage(maintenance_storage),
             Arc::clone(&pending.maintenance_lifecycle),
             maintenance_triggers,
+            Arc::clone(&migration_exclusion),
         );
         let mut completed_initial_operation = None;
         let startup = if let Some(startup) = migration_startup {
@@ -1666,7 +1668,7 @@ async fn await_multi_restore_retry(
     routes
         .replace(database.alias(), offline_route)
         .map_err(|_| DaemonError::GrpcConfiguration)?;
-    if trigger.operation_id() != operation_id {
+    if trigger.offline_operation_id() != Some(operation_id) {
         maintenance_lifecycle.fail_closed(operation_id);
         return Err(DaemonError::MaintenanceDriver);
     }
@@ -1900,7 +1902,11 @@ async fn replace_multi_database_generation(
         .wait_for_start_ready()
         .await
         .map_err(|()| DaemonError::MaintenanceDriver)?;
-    let operation_id = trigger.operation_id();
+    let offline_operation_id = trigger.offline_operation_id();
+    let migration_operation_id = trigger.migration_operation_id();
+    if offline_operation_id.is_some() == migration_operation_id.is_some() {
+        return Err(DaemonError::MaintenanceDriver);
+    }
     generation.generation = generation
         .generation
         .checked_add(1)
@@ -1943,36 +1949,65 @@ async fn replace_multi_database_generation(
     recovery.reached(MaintenanceRecoveryBoundary::DatabaseClosed);
 
     let prepared = GenerationInputs::load(config)?;
-    let request = normal_driver_request(trigger)?;
-    let success = {
+    let startup = {
         let storage = generation.maintenance.storage();
         let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
-        mark_offline(
-            &mut storage,
-            &generation.maintenance_lifecycle,
-            operation_id,
-        )
-        .map_err(|_| DaemonError::MaintenanceDriver)?;
-        let dependencies = maintenance_driver_dependencies(
-            config,
-            database.environment(),
-            &prepared.startup_inputs,
-            &prepared.digest_keys,
-            &prepared.identifiers,
-            &prepared.clocks,
-            recovery,
-            retained_target_history_incarnation,
-            retained_metrics,
-        )?;
-        run_offline_maintenance(
-            &mut storage,
-            &generation.maintenance_lifecycle,
-            &dependencies,
-            request,
-        )
-        .map_err(|_| DaemonError::MaintenanceDriver)?
+        if let Some(operation_id) = migration_operation_id {
+            generation
+                .maintenance_lifecycle
+                .mark_migration_offline(operation_id)
+                .map_err(|_| DaemonError::MaintenanceDriver)?;
+            let receipt = storage
+                .read_contract_migration_receipt(operation_id)
+                .map_err(DaemonError::MaintenanceStorage)?
+                .ok_or(DaemonError::MaintenanceDriver)?;
+            let build = contract_migration_backup_build_metadata()
+                .map_err(|_| DaemonError::MaintenanceDriver)?;
+            let database_ids = prepared.identifiers.database_ids();
+            let inputs = MigrationDriverInputs {
+                startup: prepared.startup_inputs.clone(),
+                database_ids: &database_ids,
+                commit_profile: config.redb_commit_profile(),
+                build: &build,
+            };
+            let (_, startup) = drive_contract_migration(&storage, receipt, &inputs)
+                .map_err(|_| DaemonError::MaintenanceDriver)?;
+            generation
+                .maintenance_lifecycle
+                .mark_migration_validating(operation_id)
+                .map_err(|_| DaemonError::MaintenanceDriver)?;
+            startup
+        } else {
+            let operation_id = offline_operation_id.ok_or(DaemonError::MaintenanceDriver)?;
+            let request = normal_driver_request(trigger)?;
+            mark_offline(
+                &mut storage,
+                &generation.maintenance_lifecycle,
+                operation_id,
+            )
+            .map_err(|_| DaemonError::MaintenanceDriver)?;
+            let dependencies = maintenance_driver_dependencies(
+                config,
+                database.environment(),
+                &prepared.startup_inputs,
+                &prepared.digest_keys,
+                &prepared.identifiers,
+                &prepared.clocks,
+                recovery,
+                retained_target_history_incarnation,
+                retained_metrics,
+            )?;
+            run_offline_maintenance(
+                &mut storage,
+                &generation.maintenance_lifecycle,
+                &dependencies,
+                request,
+            )
+            .map_err(|_| DaemonError::MaintenanceDriver)?
+            .into_parts()
+            .1
+        }
     };
-    let (_receipt, startup) = success.into_parts();
 
     let (initializing, activator, issuer) = RiffDbService::begin_initialization();
     let routing = RuntimeRoutingState::new();
@@ -2010,10 +2045,21 @@ async fn replace_multi_database_generation(
     routes
         .replace(&generation.alias, route)
         .map_err(|_| DaemonError::GrpcConfiguration)?;
-    generation
-        .maintenance_lifecycle
-        .finish_ready(operation_id)
-        .map_err(|_| DaemonError::MaintenanceDriver)?;
+    if let Some(operation_id) = migration_operation_id {
+        generation
+            .maintenance_lifecycle
+            .finish_migration_ready(operation_id)
+            .map_err(|_| DaemonError::MaintenanceDriver)?;
+        generation
+            .maintenance
+            .finish_migration(operation_id)
+            .map_err(|()| DaemonError::MaintenanceDriver)?;
+    } else {
+        generation
+            .maintenance_lifecycle
+            .finish_ready(offline_operation_id.ok_or(DaemonError::MaintenanceDriver)?)
+            .map_err(|_| DaemonError::MaintenanceDriver)?;
+    }
     generation.graph = Some(graph);
     generation.lifecycle = lifecycle;
     generation.routing = routing;
@@ -2108,29 +2154,65 @@ async fn run_ready_generations(
         let ReadyProcessCompletion::Maintenance(trigger) = completion else {
             return Ok(());
         };
-        let operation_id = trigger.operation_id();
+        let offline_operation_id = trigger.offline_operation_id();
+        let migration_operation_id = trigger.migration_operation_id();
+        if offline_operation_id.is_some() == migration_operation_id.is_some() {
+            return Err(DaemonError::MaintenanceDriver);
+        }
         let prepared = GenerationInputs::load(config)?;
-        let request = normal_driver_request(trigger)?;
-        let driver_result = {
+        let startup = {
             let storage = maintenance.storage();
             let mut storage = storage.lock().map_err(|_| DaemonError::MaintenanceDriver)?;
-            mark_offline(&mut storage, &maintenance_lifecycle, operation_id)
-                .map_err(|_| DaemonError::MaintenanceDriver)?;
-            let dependencies = maintenance_driver_dependencies(
-                config,
-                config.environment(),
-                &prepared.startup_inputs,
-                &prepared.digest_keys,
-                &prepared.identifiers,
-                &prepared.clocks,
-                recovery,
-                retained_target_history_incarnation,
-                retained_metrics,
-            )?;
-            run_offline_maintenance(&mut storage, &maintenance_lifecycle, &dependencies, request)
+            if let Some(operation_id) = migration_operation_id {
+                maintenance_lifecycle
+                    .mark_migration_offline(operation_id)
+                    .map_err(|_| DaemonError::MaintenanceDriver)?;
+                let receipt = storage
+                    .read_contract_migration_receipt(operation_id)
+                    .map_err(DaemonError::MaintenanceStorage)?
+                    .ok_or(DaemonError::MaintenanceDriver)?;
+                let build = contract_migration_backup_build_metadata()
+                    .map_err(|_| DaemonError::MaintenanceDriver)?;
+                let database_ids = prepared.identifiers.database_ids();
+                let inputs = MigrationDriverInputs {
+                    startup: prepared.startup_inputs.clone(),
+                    database_ids: &database_ids,
+                    commit_profile: config.redb_commit_profile(),
+                    build: &build,
+                };
+                let (_, startup) = drive_contract_migration(&storage, receipt, &inputs)
+                    .map_err(|_| DaemonError::MaintenanceDriver)?;
+                maintenance_lifecycle
+                    .mark_migration_validating(operation_id)
+                    .map_err(|_| DaemonError::MaintenanceDriver)?;
+                startup
+            } else {
+                let operation_id = offline_operation_id.ok_or(DaemonError::MaintenanceDriver)?;
+                let request = normal_driver_request(trigger)?;
+                mark_offline(&mut storage, &maintenance_lifecycle, operation_id)
+                    .map_err(|_| DaemonError::MaintenanceDriver)?;
+                let dependencies = maintenance_driver_dependencies(
+                    config,
+                    config.environment(),
+                    &prepared.startup_inputs,
+                    &prepared.digest_keys,
+                    &prepared.identifiers,
+                    &prepared.clocks,
+                    recovery,
+                    retained_target_history_incarnation,
+                    retained_metrics,
+                )?;
+                run_offline_maintenance(
+                    &mut storage,
+                    &maintenance_lifecycle,
+                    &dependencies,
+                    request,
+                )
                 .map_err(|_| DaemonError::MaintenanceDriver)?
+                .into_parts()
+                .1
+            }
         };
-        let (_receipt, startup) = driver_result.into_parts();
         generation = start_generation(
             config,
             listen_address,
@@ -2154,9 +2236,18 @@ async fn run_ready_generations(
             .await?;
             return Ok(());
         }
-        maintenance_lifecycle
-            .finish_ready(operation_id)
-            .map_err(|_| DaemonError::MaintenanceDriver)?;
+        if let Some(operation_id) = migration_operation_id {
+            maintenance_lifecycle
+                .finish_migration_ready(operation_id)
+                .map_err(|_| DaemonError::MaintenanceDriver)?;
+            maintenance
+                .finish_migration(operation_id)
+                .map_err(|()| DaemonError::MaintenanceDriver)?;
+        } else {
+            maintenance_lifecycle
+                .finish_ready(offline_operation_id.ok_or(DaemonError::MaintenanceDriver)?)
+                .map_err(|_| DaemonError::MaintenanceDriver)?;
+        }
         if let Err(source) = publish_readiness(generation.transport.local_address()) {
             shutdown_before_ready(
                 generation.graph,
@@ -2184,7 +2275,8 @@ fn normal_driver_request(
             request.operation_id(),
             credential,
         )),
-        MaintenanceTrigger::RecoveryRestore { .. } => Err(DaemonError::MaintenanceDriver),
+        MaintenanceTrigger::RecoveryRestore { .. }
+        | MaintenanceTrigger::ContractMigrationApply { .. } => Err(DaemonError::MaintenanceDriver),
     }
 }
 
@@ -2331,7 +2423,7 @@ async fn run_restore_retry_until_ready(
         };
     };
 
-    if trigger.operation_id() != operation_id {
+    if trigger.offline_operation_id() != Some(operation_id) {
         retry_host.begin_transport_shutdown();
         transport.drain_after_signal().await?;
         retry_host

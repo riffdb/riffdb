@@ -1,4 +1,4 @@
-# ADR-0086: Additive Migration Capability Record
+# ADR-0089: Additive Migration Capability Record
 
 - **Status:** Accepted
 - **Direction approved:** 2026-08-01

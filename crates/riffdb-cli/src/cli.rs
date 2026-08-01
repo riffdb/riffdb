@@ -129,6 +129,49 @@ pub(crate) enum MigrationCommand {
         )]
         lock: OsString,
     },
+    /// Runs one read-only server preflight for the exact locked migration.
+    Check {
+        #[arg(
+            long,
+            default_value = "riffdb.application.json",
+            value_name = "APPLICATION_SOURCE"
+        )]
+        application: OsString,
+        #[arg(
+            long,
+            default_value = "riffdb.application.lock.json",
+            value_name = "APPLICATION_LOCK"
+        )]
+        lock: OsString,
+        #[arg(long, value_name = "UUIDV7")]
+        operation_id: String,
+        #[arg(long, value_name = "64_LOWERCASE_HEX_HASH")]
+        migration_hash: Option<String>,
+    },
+    /// Applies one exact locked migration after explicit hash confirmation.
+    Apply {
+        #[arg(
+            long,
+            default_value = "riffdb.application.json",
+            value_name = "APPLICATION_SOURCE"
+        )]
+        application: OsString,
+        #[arg(
+            long,
+            default_value = "riffdb.application.lock.json",
+            value_name = "APPLICATION_LOCK"
+        )]
+        lock: OsString,
+        #[arg(long, value_name = "UUIDV7")]
+        operation_id: String,
+        #[arg(long, value_name = "64_LOWERCASE_HEX_HASH")]
+        confirm_apply: String,
+    },
+    /// Observes one caller-stable migration operation after the database reopens.
+    Operation {
+        #[arg(value_name = "UUIDV7")]
+        operation_id: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -800,6 +843,56 @@ mod tests {
                 command: ApplicationCommand::BindDevRole { role, tenant: Some(tenant), .. }
             } if role == "TicketDeskAgent" && tenant == "organization_acme"
         ));
+    }
+
+    #[test]
+    fn migration_administration_commands_require_explicit_identity_and_confirmation() {
+        let operation = "018f2f85-3c20-7a31-8f11-112233445566";
+        assert!(matches!(
+            Cli::try_parse_from([
+                "riffdb",
+                "migration",
+                "check",
+                "--operation-id",
+                operation,
+                "--migration-hash",
+                &"ab".repeat(32),
+            ])
+            .expect("migration check")
+            .command,
+            TopLevel::Migration {
+                command: MigrationCommand::Check { operation_id, migration_hash, .. }
+            } if operation_id == operation && migration_hash == Some("ab".repeat(32))
+        ));
+        assert!(matches!(
+            Cli::try_parse_from([
+                "riffdb",
+                "migration",
+                "apply",
+                "--operation-id",
+                operation,
+                "--confirm-apply",
+                &"ab".repeat(32),
+            ])
+            .expect("migration apply")
+            .command,
+            TopLevel::Migration {
+                command: MigrationCommand::Apply { operation_id, confirm_apply, .. }
+            } if operation_id == operation && confirm_apply == "ab".repeat(32)
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["riffdb", "migration", "operation", operation])
+                .expect("migration operation")
+                .command,
+            TopLevel::Migration {
+                command: MigrationCommand::Operation { operation_id }
+            } if operation_id == operation
+        ));
+        assert!(Cli::try_parse_from(["riffdb", "migration", "check"]).is_err());
+        assert!(
+            Cli::try_parse_from(["riffdb", "migration", "apply", "--operation-id", operation,])
+                .is_err()
+        );
     }
 
     #[test]

@@ -115,6 +115,25 @@ impl SharedRedbOperationalPorts {
         )
     }
 
+    /// Creates exact read-only migration-preflight authority for the active predecessor.
+    pub(crate) fn migration_preflight(
+        &self,
+        active_bundle: ContractBundleHash,
+    ) -> Result<riffdb_storage_redb::RedbContractMigrationPreflight, StorageError> {
+        riffdb_storage_redb::RedbContractMigrationPreflight::from_shared(
+            self.shared.clone(),
+            active_bundle,
+        )
+    }
+
+    /// Reads permanent evidence for one predecessor migration edge.
+    pub(crate) fn contract_migration_edge(
+        &self,
+        predecessor: ContractBundleHash,
+    ) -> Result<Option<StoredContractMigrationEdgeV1>, StorageError> {
+        CatalogRepository::read_contract_migration_edge(&self.shared, predecessor)
+    }
+
     fn current_view_failure(&self, error: StorageError) -> StorageError {
         if let Some(health) = &self.health {
             health.fail_authoritative_readiness(AuthoritativeReadinessFailure::Integrity);

@@ -150,6 +150,14 @@ pub struct RedbContractMigrationImmutableWitness {
 }
 
 impl RedbContractMigrationPreflight {
+    /// Binds read-only preflight to a cloneable activated read handle.
+    pub fn from_shared(
+        ports: crate::RedbSharedPorts,
+        active_bundle: riffdb_types::ContractBundleHash,
+    ) -> Result<Self, StorageError> {
+        Self::new(ports.operational(), active_bundle)
+    }
+
     /// Binds preflight to the transaction-current active predecessor.
     pub fn new(
         ports: RedbOperationalPorts,

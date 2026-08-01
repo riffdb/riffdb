@@ -98,6 +98,8 @@ pub enum CapabilityPermissionKindV1 {
     ExecuteNamedQuery,
     /// Non-authorizing identity of the compiled application role that produced the grant.
     ApplicationRoleIdentity,
+    /// Migrate one exact contract lineage.
+    MigrateContract,
 }
 
 impl CapabilityPermissionKindV1 {
@@ -130,6 +132,7 @@ impl CapabilityPermissionKindV1 {
             Self::ExplainNamedQuery => 0x17,
             Self::ExecuteNamedQuery => 0x18,
             Self::ApplicationRoleIdentity => 0x19,
+            Self::MigrateContract => 0x1a,
         }
     }
 
@@ -162,6 +165,7 @@ impl CapabilityPermissionKindV1 {
             0x17 => Some(Self::ExplainNamedQuery),
             0x18 => Some(Self::ExecuteNamedQuery),
             0x19 => Some(Self::ApplicationRoleIdentity),
+            0x1a => Some(Self::MigrateContract),
             _ => None,
         }
     }
@@ -178,6 +182,7 @@ impl CapabilityPermissionKindV1 {
                 | Self::ExplainNamedQuery
                 | Self::ExecuteNamedQuery
                 | Self::ApplicationRoleIdentity
+                | Self::MigrateContract
         )
     }
 }
@@ -205,6 +210,8 @@ pub enum CapabilityPermissionV1 {
     ExecuteNamedQuery(ContractLineage, QueryModuleHash, QueryOperationName),
     /// Audit-only identity of the exact compiled application role.
     ApplicationRoleIdentity(ApplicationRoleHash),
+    /// Migrate one exact contract lineage.
+    MigrateContract(ContractLineage),
 }
 
 impl CapabilityPermissionV1 {
@@ -232,6 +239,7 @@ impl CapabilityPermissionV1 {
             Self::ApplicationRoleIdentity(..) => {
                 CapabilityPermissionKindV1::ApplicationRoleIdentity
             }
+            Self::MigrateContract(..) => CapabilityPermissionKindV1::MigrateContract,
         }
     }
 
@@ -266,6 +274,7 @@ impl CapabilityPermissionV1 {
             Self::ApplicationRoleIdentity(role_hash) => {
                 bytes.extend_from_slice(role_hash.as_bytes());
             }
+            Self::MigrateContract(lineage) => append_lineage(&mut bytes, lineage),
         }
         bytes
     }
@@ -476,7 +485,7 @@ impl CapabilityGrantV1 {
     ) -> Result<Self, CapabilityGrantError> {
         if usize::from(max_scan_rows.get()) > 500
             || field_visibility.len() > MAX_CAPABILITY_FIELD_VISIBILITY
-            || approval_required.len() > 24
+            || approval_required.len() > 25
         {
             return Err(CapabilityGrantError::LimitExceeded);
         }
@@ -595,6 +604,7 @@ fn capability_permission_semantic_bytes(permission: &CapabilityPermissionV1) -> 
             1 + 4 + lineage.as_bytes().len() + 32 + 4 + name.as_str().len()
         }
         CapabilityPermissionV1::ApplicationRoleIdentity(_) => 1 + 32,
+        CapabilityPermissionV1::MigrateContract(lineage) => 1 + 4 + lineage.as_bytes().len(),
     }
 }
 
@@ -697,12 +707,12 @@ mod tests {
 
     #[test]
     fn permission_tags_are_closed_and_stable() {
-        for tag in 1..=25 {
+        for tag in 1..=26 {
             let kind = CapabilityPermissionKindV1::from_tag(tag).expect("known tag");
             assert_eq!(kind.tag(), tag);
         }
         assert_eq!(CapabilityPermissionKindV1::from_tag(0), None);
-        assert_eq!(CapabilityPermissionKindV1::from_tag(26), None);
+        assert_eq!(CapabilityPermissionKindV1::from_tag(27), None);
     }
 
     #[test]
@@ -718,10 +728,24 @@ mod tests {
             CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ExecuteNamedQuery),
             Err(CapabilityGrantError::InvalidShape)
         );
+        assert_eq!(
+            CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::MigrateContract),
+            Err(CapabilityGrantError::InvalidShape)
+        );
         assert!(
             CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ExecuteAdHocQuery)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn migration_permission_binds_the_exact_lineage() {
+        let permission = CapabilityPermissionV1::MigrateContract(
+            ContractLineage::new("ticketdesk").expect("lineage"),
+        );
+        let mut expected = vec![0x1a, 0, 0, 0, 10];
+        expected.extend_from_slice(b"ticketdesk");
+        assert_eq!(permission.canonical_key(), expected);
     }
 
     #[test]

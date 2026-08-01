@@ -5,11 +5,11 @@ use std::num::NonZeroU64;
 use riffdb_storage_api::{
     AuditPrincipalV1, BackupIntegrityChecksumV1, ContractMigrationAdmissionV1,
     ContractMigrationArtifactFileV1, ContractMigrationArtifactsV1, ContractMigrationJournalStepV1,
-    ContractMigrationOperationArtifactsV1, ContractMigrationReceiptPhaseV1,
-    ContractMigrationReceiptTransitionV1, ContractMigrationReceiptV1, DurableKeySchemaBindingV1,
-    EntityTarget, MigrationScanCursor, StoredContractMigrationJournalV1,
-    StoredContractMigrationRecordV1, StoredContractWriteRetirementV1, StoredEntityRecordV1,
-    StoredRetiredEntityRecordV1,
+    ContractMigrationOperationArtifactsV1, ContractMigrationOperationKindV1,
+    ContractMigrationReceiptPhaseV1, ContractMigrationReceiptTransitionV1,
+    ContractMigrationReceiptV1, DurableKeySchemaBindingV1, EntityTarget, MigrationScanCursor,
+    StoredContractMigrationJournalV1, StoredContractMigrationRecordV1,
+    StoredContractWriteRetirementV1, StoredEntityRecordV1, StoredRetiredEntityRecordV1,
 };
 use riffdb_types::{
     ActorId, ActorKind, AdministrationSequence, ApprovalId, CanonicalRecord, CapabilityId,
@@ -89,13 +89,32 @@ pub fn migration_durable_fixture_set() -> Result<Vec<MigrationDurableFixture>, S
         input_hash,
         artifacts,
         operation_artifacts,
-        admission,
+        admission.clone(),
         None,
         None,
         None,
         vec![ContractMigrationReceiptTransitionV1::phase(
             ContractMigrationReceiptPhaseV1::Accepted,
         )],
+    )
+    .map_err(display)?;
+    let check_receipt = ContractMigrationReceiptV1::from_canonical_parts_for_operation(
+        ContractMigrationOperationKindV1::Check,
+        database_id,
+        ContractMigrationOperationId::from_unix_milliseconds_and_random(5, [0x25; 10])
+            .map_err(display)?,
+        ContractMigrationInputHash::from_bytes([0x56; 32]),
+        artifacts,
+        operation_artifacts,
+        admission.clone(),
+        None,
+        None,
+        None,
+        vec![
+            ContractMigrationReceiptTransitionV1::phase(ContractMigrationReceiptPhaseV1::Accepted),
+            ContractMigrationReceiptTransitionV1::phase(ContractMigrationReceiptPhaseV1::Preflight),
+            ContractMigrationReceiptTransitionV1::phase(ContractMigrationReceiptPhaseV1::Succeeded),
+        ],
     )
     .map_err(display)?;
 
@@ -172,6 +191,10 @@ pub fn migration_durable_fixture_set() -> Result<Vec<MigrationDurableFixture>, S
             encode_migration_receipt_fixture(&receipt).map_err(display)?,
         ),
         fixture(
+            "receipt-check-succeeded-v2.bin",
+            encode_migration_receipt_fixture(&check_receipt).map_err(display)?,
+        ),
+        fixture(
             "journal-transforming-v1.bin",
             riffdb_storage_api::proto_codec::encode_contract_migration_journal_v1(&journal)
                 .map_err(display)?
@@ -210,7 +233,7 @@ pub fn migration_durable_fixture_set() -> Result<Vec<MigrationDurableFixture>, S
         ),
         fixture(
             "registry-v1.txt",
-            b"format=riffdb-migration-durable-registry-v1\nexternal=ContractMigrationReceiptV1\ntable=contract_migration_journal:StoredContractMigrationJournalV1\ntable=contract_migrations:StoredContractMigrationRecordV1\ntable=contract_write_retirements:StoredContractWriteRetirementV1\ntable=retired_entities:StoredRetiredEntityRecordV1\n".to_vec(),
+            b"format=riffdb-migration-durable-registry-v1\nexternal=ContractMigrationReceiptV1:apply-format-v1\nexternal=ContractMigrationReceiptV1:check-format-v2\ntable=contract_migration_journal:StoredContractMigrationJournalV1\ntable=contract_migrations:StoredContractMigrationRecordV1\ntable=contract_write_retirements:StoredContractWriteRetirementV1\ntable=retired_entities:StoredRetiredEntityRecordV1\n".to_vec(),
         ),
         fixture(
             "impossible-pairs-v1.txt",

@@ -1,5 +1,7 @@
 use std::num::{NonZeroU16, NonZeroU64};
 
+use prost::Message;
+use riffdb_proto::durable::readable_record_registry;
 use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{
     ActorId, AdministrationSequence, ApplicationRoleHash, ApprovalId, Audience,
@@ -24,6 +26,7 @@ use super::{
 };
 
 const RECORD: &str = "riffdb.storage.v1.CapabilityRecordV1";
+const RECORD_V2: &str = "riffdb.storage.v1.CapabilityRecordV2";
 const LOOKUP: &str = "riffdb.storage.v1.CapabilityTokenLookupV1";
 const BOOTSTRAP: &str = "riffdb.storage.v1.CapabilityBootstrapMarkerV1";
 const ADMINISTRATION: &str = "riffdb.storage.v1.CapabilityAdministrationAuditV1";
@@ -80,6 +83,9 @@ fn permission_to_proto(value: &CapabilityPermissionV1) -> wire::CapabilityPermis
             CapabilityPermissionV1::ApplicationRoleIdentity(hash) => {
                 (None, None, None, None, Some(hash.as_bytes().to_vec()))
             }
+            CapabilityPermissionV1::MigrateContract(lineage) => {
+                (Some(lineage.as_str().to_owned()), None, None, None, None)
+            }
         };
     wire::CapabilityPermissionV1 {
         kind: i32::from(value.kind().tag()),
@@ -106,6 +112,10 @@ fn permission_from_proto(
         value.application_role_hash,
     ) {
         (None, None, None, None, None) => PermissionParameter::None,
+        (Some(lineage), None, None, None, None) => {
+            ContractLineage::new(lineage).map_err(|_| DurableCodecError::corrupt())?;
+            PermissionParameter::Lineage
+        }
         (Some(lineage), Some(id), None, None, None) => PermissionParameter::StableId(
             ContractLineage::new(lineage).map_err(|_| DurableCodecError::corrupt())?,
             id,
@@ -180,12 +190,18 @@ fn permission_from_proto(
             CapabilityPermissionKindV1::ApplicationRoleIdentity,
             PermissionParameter::ApplicationRole(hash),
         ) => Ok(CapabilityPermissionV1::ApplicationRoleIdentity(hash)),
+        // Migration authority is durable only in CapabilityRecordV2's required
+        // extension. The frozen V1 base rejects the otherwise-decodable tag.
+        (CapabilityPermissionKindV1::MigrateContract, PermissionParameter::Lineage) => {
+            Err(DurableCodecError::corrupt())
+        }
         (kind, PermissionParameter::None) => {
             grant_result(CapabilityPermissionV1::unparameterized(kind))
         }
         (
             _,
             PermissionParameter::StableId(..)
+            | PermissionParameter::Lineage
             | PermissionParameter::NamedQuery(..)
             | PermissionParameter::ApplicationRole(..),
         ) => Err(DurableCodecError::corrupt()),
@@ -194,6 +210,7 @@ fn permission_from_proto(
 
 enum PermissionParameter {
     None,
+    Lineage,
     StableId(ContractLineage, u32),
     NamedQuery(ContractLineage, QueryModuleHash, QueryOperationName),
     ApplicationRole(ApplicationRoleHash),
@@ -314,6 +331,40 @@ fn grant_to_proto(value: &CapabilityGrantV1) -> wire::CapabilityGrantV1 {
     }
 }
 
+fn grant_to_proto_with_migration_extension(
+    value: &CapabilityGrantV1,
+) -> (
+    wire::CapabilityGrantV1,
+    Option<wire::CapabilityMigrationGrantExtensionV1>,
+) {
+    let mut legacy = grant_to_proto(value);
+    let lineages = value
+        .permissions()
+        .as_slice()
+        .iter()
+        .filter_map(|permission| match permission {
+            CapabilityPermissionV1::MigrateContract(lineage) => Some(lineage.as_str().to_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if let Some(permissions) = legacy.permissions.as_mut() {
+        permissions.values.retain(|permission| {
+            permission.kind != i32::from(CapabilityPermissionKindV1::MigrateContract.tag())
+        });
+    }
+    let approval_required = value
+        .approval_required()
+        .contains(&CapabilityPermissionKindV1::MigrateContract);
+    legacy
+        .approval_required
+        .retain(|kind| *kind != i32::from(CapabilityPermissionKindV1::MigrateContract.tag()));
+    let extension = (!lineages.is_empty()).then_some(wire::CapabilityMigrationGrantExtensionV1 {
+        contract_lineages: lineages,
+        approval_required,
+    });
+    (legacy, extension)
+}
+
 fn grant_from_proto(
     value: wire::CapabilityGrantV1,
 ) -> Result<CapabilityGrantV1, DurableCodecError> {
@@ -347,6 +398,43 @@ fn grant_from_proto(
         return Err(DurableCodecError::corrupt());
     }
     Ok(checked)
+}
+
+fn grant_from_proto_with_migration_extension(
+    value: wire::CapabilityGrantV1,
+    extension: wire::CapabilityMigrationGrantExtensionV1,
+) -> Result<CapabilityGrantV1, DurableCodecError> {
+    if extension.contract_lineages.is_empty() {
+        return Err(DurableCodecError::corrupt());
+    }
+    let base = grant_from_proto(value)?;
+    let mut lineages = extension
+        .contract_lineages
+        .into_iter()
+        .map(|lineage| ContractLineage::new(lineage).map_err(|_| DurableCodecError::corrupt()))
+        .collect::<Result<Vec<_>, _>>()?;
+    if !lineages.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Err(DurableCodecError::corrupt());
+    }
+    let mut permissions = base.permissions().as_slice().to_vec();
+    permissions.extend(
+        lineages
+            .drain(..)
+            .map(CapabilityPermissionV1::MigrateContract),
+    );
+    let permissions = grant_result(CapabilityPermissionsV1::new(permissions))?;
+    let mut approval_required = base.approval_required().to_vec();
+    if extension.approval_required {
+        approval_required.push(CapabilityPermissionKindV1::MigrateContract);
+    }
+    grant_result(CapabilityGrantV1::new(
+        base.tenant_scope().clone(),
+        base.partition_scope().clone(),
+        permissions,
+        base.field_visibility().to_vec(),
+        base.max_scan_rows(),
+        approval_required,
+    ))
 }
 
 fn digest_to_proto(value: CapabilityTokenDigest) -> wire::CapabilityTokenDigestV1 {
@@ -408,62 +496,103 @@ fn lifecycle_from_proto(
 pub fn encode_capability_record_v1(
     value: &StoredCapabilityRecordV1,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
-    encode_message(
-        RECORD,
-        &wire::CapabilityRecordV1 {
-            capability_id: value.capability_id().as_bytes().to_vec(),
-            revision: value.revision().get(),
-            token_digest: Some(digest_to_proto(value.token_digest())),
-            database_id: value.database_id().as_bytes().to_vec(),
-            environment: value.environment().as_str().to_owned(),
-            principal_id: value.principal_id().as_str().to_owned(),
-            actor_kind: actor_kind_to_proto(value.actor_kind()),
-            audiences: value
-                .audiences()
-                .iter()
-                .map(|value| value.as_str().to_owned())
-                .collect(),
-            issued_at: Some(timestamp_to_proto(value.issued_at())),
-            expires_at: Some(timestamp_to_proto(value.expires_at())),
-            creation_sequence: value.creation_sequence().get(),
-            creation_request_id: value.creation_request_id().as_bytes().to_vec(),
-            grant: Some(grant_to_proto(value.grant())),
-            lifecycle: Some(lifecycle_to_proto(value.lifecycle())),
-        },
-    )
+    let (grant, migration) = grant_to_proto_with_migration_extension(value.grant());
+    let base = wire::CapabilityRecordV1 {
+        capability_id: value.capability_id().as_bytes().to_vec(),
+        revision: value.revision().get(),
+        token_digest: Some(digest_to_proto(value.token_digest())),
+        database_id: value.database_id().as_bytes().to_vec(),
+        environment: value.environment().as_str().to_owned(),
+        principal_id: value.principal_id().as_str().to_owned(),
+        actor_kind: actor_kind_to_proto(value.actor_kind()),
+        audiences: value
+            .audiences()
+            .iter()
+            .map(|value| value.as_str().to_owned())
+            .collect(),
+        issued_at: Some(timestamp_to_proto(value.issued_at())),
+        expires_at: Some(timestamp_to_proto(value.expires_at())),
+        creation_sequence: value.creation_sequence().get(),
+        creation_request_id: value.creation_request_id().as_bytes().to_vec(),
+        grant: Some(grant),
+        lifecycle: Some(lifecycle_to_proto(value.lifecycle())),
+    };
+    match migration {
+        None => encode_message(RECORD, &base),
+        Some(migration) => encode_message(
+            RECORD_V2,
+            &wire::CapabilityRecordV2 {
+                base: Some(base),
+                migration: Some(migration),
+            },
+        ),
+    }
 }
 
 /// Decodes one complete durable capability record.
 pub fn decode_capability_record_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredCapabilityRecordV1>, DurableCodecError> {
-    decode_message::<wire::CapabilityRecordV1, _, _>(RECORD, encoded, |value| {
-        storage_result(StoredCapabilityRecordV1::from_stored_parts(
-            CapabilityId::from_bytes(fixed(value.capability_id)?)
-                .map_err(|_| DurableCodecError::corrupt())?,
-            NonZeroU64::new(value.revision).ok_or_else(DurableCodecError::corrupt)?,
-            digest_from_proto(require(value.token_digest)?)?,
-            DatabaseId::from_bytes(fixed(value.database_id)?)
-                .map_err(|_| DurableCodecError::corrupt())?,
-            Environment::new(value.environment).map_err(|_| DurableCodecError::corrupt())?,
-            ActorId::new(value.principal_id).map_err(|_| DurableCodecError::corrupt())?,
-            actor_kind_from_proto(value.actor_kind)?,
-            value
-                .audiences
-                .into_iter()
-                .map(Audience::new)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| DurableCodecError::corrupt())?,
-            timestamp_from_proto(require(value.issued_at)?)?,
-            timestamp_from_proto(require(value.expires_at)?)?,
-            AdministrationSequence::new(value.creation_sequence)
-                .ok_or_else(DurableCodecError::corrupt)?,
-            RequestId::from_bytes(fixed(value.creation_request_id)?)
-                .map_err(|_| DurableCodecError::corrupt())?,
-            grant_from_proto(require(value.grant)?)?,
-            lifecycle_from_proto(require(value.lifecycle)?)?,
-        ))
-    })
+    let decoded = readable_record_registry()
+        .decode(encoded)
+        .map_err(DurableCodecError::from_decode_envelope)?;
+    let record = match decoded.record_type() {
+        RECORD => {
+            let value = wire::CapabilityRecordV1::decode(decoded.payload())
+                .map_err(|_| DurableCodecError::corrupt())?;
+            record_from_proto(value, None)?
+        }
+        RECORD_V2 => {
+            let value = wire::CapabilityRecordV2::decode(decoded.payload())
+                .map_err(|_| DurableCodecError::corrupt())?;
+            record_from_proto(require(value.base)?, Some(require(value.migration)?))?
+        }
+        _ => {
+            return Err(DurableCodecError::new(
+                super::DurableCodecErrorKind::UnexpectedRecordType,
+            ));
+        }
+    };
+    let charge =
+        crate::EncodedContentCharge::new(encoded.len()).ok_or_else(DurableCodecError::corrupt)?;
+    Ok(EncodedPageItem::new(record, charge))
+}
+
+fn record_from_proto(
+    value: wire::CapabilityRecordV1,
+    migration: Option<wire::CapabilityMigrationGrantExtensionV1>,
+) -> Result<StoredCapabilityRecordV1, DurableCodecError> {
+    let grant = match migration {
+        None => grant_from_proto(require(value.grant.clone())?)?,
+        Some(extension) => {
+            grant_from_proto_with_migration_extension(require(value.grant.clone())?, extension)?
+        }
+    };
+    storage_result(StoredCapabilityRecordV1::from_stored_parts(
+        CapabilityId::from_bytes(fixed(value.capability_id)?)
+            .map_err(|_| DurableCodecError::corrupt())?,
+        NonZeroU64::new(value.revision).ok_or_else(DurableCodecError::corrupt)?,
+        digest_from_proto(require(value.token_digest)?)?,
+        DatabaseId::from_bytes(fixed(value.database_id)?)
+            .map_err(|_| DurableCodecError::corrupt())?,
+        Environment::new(value.environment).map_err(|_| DurableCodecError::corrupt())?,
+        ActorId::new(value.principal_id).map_err(|_| DurableCodecError::corrupt())?,
+        actor_kind_from_proto(value.actor_kind)?,
+        value
+            .audiences
+            .into_iter()
+            .map(Audience::new)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| DurableCodecError::corrupt())?,
+        timestamp_from_proto(require(value.issued_at)?)?,
+        timestamp_from_proto(require(value.expires_at)?)?,
+        AdministrationSequence::new(value.creation_sequence)
+            .ok_or_else(DurableCodecError::corrupt)?,
+        RequestId::from_bytes(fixed(value.creation_request_id)?)
+            .map_err(|_| DurableCodecError::corrupt())?,
+        grant,
+        lifecycle_from_proto(require(value.lifecycle)?)?,
+    ))
 }
 
 /// Encodes the reciprocal token-digest lookup value.

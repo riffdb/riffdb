@@ -48,4 +48,7 @@ service AdminService {
   rpc CreateOfflineBackup(CreateOfflineBackupRequest) returns (CreateOfflineBackupResponse);
   rpc RestoreOfflineBackup(RestoreOfflineBackupRequest) returns (RestoreOfflineBackupResponse);
   rpc GetOfflineMaintenanceOperation(GetOfflineMaintenanceOperationRequest) returns (GetOfflineMaintenanceOperationResponse);
+  rpc CheckContractMigration(CheckContractMigrationRequest) returns (CheckContractMigrationResponse);
+  rpc ApplyContractMigration(ApplyContractMigrationRequest) returns (ApplyContractMigrationResponse);
+  rpc GetContractMigrationOperation(GetContractMigrationOperationRequest) returns (GetContractMigrationOperationResponse);
 }

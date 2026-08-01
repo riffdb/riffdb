@@ -87,7 +87,13 @@ fn generated_servers_are_wrapped_with_exact_public_message_limits() {
         source
             .matches(".max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)")
             .count(),
-        6
+        5
+    );
+    assert_eq!(
+        source
+            .matches(".max_decoding_message_size(MAX_CONTRACT_MIGRATION_REQUEST_BYTES)")
+            .count(),
+        1
     );
     assert_eq!(
         source
@@ -197,7 +203,7 @@ fn capability_cancellation_guard_outlives_invocation_construction() {
 }
 
 #[test]
-fn maintenance_is_exactly_three_additive_rpcs_and_never_an_mcp_surface() {
+fn maintenance_and_migration_are_additive_and_never_an_mcp_surface() {
     let services = include_str!("../../../proto/riffdb/v1/services.proto");
     assert_eq!(
         services
@@ -211,13 +217,16 @@ fn maintenance_is_exactly_three_additive_rpcs_and_never_an_mcp_surface() {
             .lines()
             .filter(|line| line.trim_start().starts_with("rpc "))
             .count(),
-        26
+        29
     );
     assert_eq!(services.matches("rpc ExecuteBatch(").count(), 1);
     for rpc in [
         "rpc CreateOfflineBackup(",
         "rpc RestoreOfflineBackup(",
         "rpc GetOfflineMaintenanceOperation(",
+        "rpc CheckContractMigration(",
+        "rpc ApplyContractMigration(",
+        "rpc GetContractMigrationOperation(",
     ] {
         assert_eq!(services.matches(rpc).count(), 1, "missing exact {rpc}");
     }
@@ -226,12 +235,45 @@ fn maintenance_is_exactly_three_additive_rpcs_and_never_an_mcp_surface() {
     let normalized = mcp_registry.to_ascii_lowercase();
     assert!(!normalized.contains("backup"));
     assert!(!normalized.contains("maintenance"));
+    assert!(!normalized.contains("migration"));
+
+    for (surface, source) in [
+        (
+            "generated Rust application client",
+            include_str!("../../riffdb-client-rust/src/generated/legal_spend.rs"),
+        ),
+        (
+            "TypeScript application runtime",
+            include_str!("../../../clients/typescript/runtime/src/index.ts"),
+        ),
+        (
+            "generated TypeScript application client",
+            include_str!("../../../clients/typescript/ticketdesk/client.ts"),
+        ),
+        (
+            "Python application runtime",
+            include_str!("../../../clients/python/runtime/src/riffdb_application/_binding.py"),
+        ),
+        (
+            "generated Python application client",
+            include_str!("../../../clients/python/ticketdesk/generated.py"),
+        ),
+        (
+            "native Python application boundary",
+            include_str!("../../riffdb-client-python-native/src/lib.rs"),
+        ),
+    ] {
+        let normalized = source.to_ascii_lowercase();
+        assert!(!normalized.contains("migratecontract"), "{surface}");
+        assert!(!normalized.contains("contractmigration"), "{surface}");
+        assert!(!normalized.contains("contract_migration"), "{surface}");
+    }
 
     let server = include_str!("../src/server.rs");
     let registry = server
         .split("pub enum GrpcOfflineMaintenanceOperation")
         .nth(1)
-        .and_then(|tail| tail.split("pub enum GrpcBootstrapCompletion").next())
+        .and_then(|tail| tail.split("pub enum GrpcContractMigrationOperation").next())
         .expect("closed process-local maintenance registry");
     assert_eq!(registry.matches("CreateBackup").count(), 1);
     assert_eq!(registry.matches("RestoreBackup").count(), 1);
@@ -240,6 +282,16 @@ fn maintenance_is_exactly_three_additive_rpcs_and_never_an_mcp_surface() {
     assert!(registry.contains("operation_id: OfflineMaintenanceOperationId"));
     assert!(registry.contains("input_hash: OfflineMaintenanceInputHash"));
     assert!(!registry.contains("ServiceOperationV1::"));
+
+    let migration_registry = server
+        .split("pub enum GrpcContractMigrationOperation")
+        .nth(1)
+        .and_then(|tail| tail.split("pub enum GrpcBootstrapCompletion").next())
+        .expect("closed process-local migration registry");
+    assert_eq!(migration_registry.matches("Check").count(), 1);
+    assert_eq!(migration_registry.matches("Apply").count(), 1);
+    assert_eq!(migration_registry.matches("GetOperation").count(), 1);
+    assert!(!migration_registry.contains("ServiceOperationV1::"));
 }
 
 #[test]

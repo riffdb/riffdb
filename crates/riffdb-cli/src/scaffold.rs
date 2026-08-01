@@ -508,6 +508,87 @@ pub(crate) fn plan_application_migrations(
     }))
 }
 
+pub(crate) struct LockedMigrationSubmission {
+    candidate_bundle: Vec<u8>,
+    migration_bundle: Vec<u8>,
+    migration_hash: riffdb_types::MigrationBundleHash,
+}
+
+impl LockedMigrationSubmission {
+    pub(crate) fn into_parts(self) -> (Vec<u8>, Vec<u8>, riffdb_types::MigrationBundleHash) {
+        (
+            self.candidate_bundle,
+            self.migration_bundle,
+            self.migration_hash,
+        )
+    }
+}
+
+/// Loads the exact candidate and sole direct-parent migration from a checked lock.
+pub(crate) fn load_locked_migration_submission(
+    source_path: &Path,
+    lock_path: Option<&Path>,
+    selected_migration_hash: Option<riffdb_types::MigrationBundleHash>,
+) -> Result<LockedMigrationSubmission, ScaffoldError> {
+    check_application_lock(source_path, lock_path)?;
+    let root = source_parent(source_path);
+    let lock_path = workspace_lock_path(root, lock_path)?;
+    let lock = ApplicationLock::decode_canonical(&read_bounded(
+        &lock_path,
+        riffdb_query_module::MAX_APPLICATION_LOCK_BYTES,
+    )?)
+    .map_err(|error| lock_diagnostic(&lock_path, error.kind()))?;
+    let candidate_artifact = lock
+        .contract_bundle_artifact()
+        .ok_or(ScaffoldError::ApplicationLock)?;
+    let candidate_bundle = read_workspace_file(
+        root,
+        candidate_artifact.path(),
+        riffdb_contract_ir::MAX_BUNDLE_BYTES,
+    )?;
+    let candidate =
+        ContractBundle::decode(&candidate_bundle).map_err(|_| ScaffoldError::ApplicationLock)?;
+    let mut matches = lock.migrations().iter().filter(|entry| {
+        selected_migration_hash.is_none_or(|hash| entry.migration_bundle_hash() == hash)
+    });
+    let entry = matches.next().ok_or(ScaffoldError::IdentityMismatch)?;
+    if matches.next().is_some() {
+        return Err(ScaffoldError::IdentityMismatch);
+    }
+    let parent_bundle = read_workspace_file(
+        root,
+        entry.parent_artifact_path(),
+        riffdb_contract_ir::MAX_BUNDLE_BYTES,
+    )?;
+    let parent =
+        ContractBundle::decode(&parent_bundle).map_err(|_| ScaffoldError::ApplicationLock)?;
+    if parent.bundle_hash() != entry.parent_bundle_hash()
+        || parent.contract_version() != entry.parent_version()
+        || parent.lineage() != candidate.lineage()
+        || parent.contract_version() >= candidate.contract_version()
+    {
+        return Err(ScaffoldError::IdentityMismatch);
+    }
+    let migration_bundle = read_workspace_file(
+        root,
+        entry.migration_artifact_path(),
+        riffdb_contract_ir::MAX_MIGRATION_BUNDLE_BYTES_V1,
+    )?;
+    let migration = riffdb_contract_ir::MigrationBundleV1::decode(&migration_bundle)
+        .map_err(|_| ScaffoldError::ApplicationLock)?;
+    if migration.bundle_hash() != entry.migration_bundle_hash()
+        || migration.parent_bundle_hash() != parent.bundle_hash()
+        || migration.candidate_bundle_hash() != candidate.bundle_hash()
+    {
+        return Err(ScaffoldError::IdentityMismatch);
+    }
+    Ok(LockedMigrationSubmission {
+        candidate_bundle,
+        migration_bundle,
+        migration_hash: migration.bundle_hash(),
+    })
+}
+
 fn migration_step_category(kind: &riffdb_contract_ir::MigrationStepKindV1) -> &'static str {
     use riffdb_contract_ir::MigrationStepKindV1 as Step;
     match kind {

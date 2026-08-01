@@ -7,8 +7,8 @@ use std::fmt;
 use prost::Message;
 use riffdb_errors::ApplicationOperation;
 use riffdb_types::{
-    AgentSessionId, Audience, BackupNameV1, CapabilityId, EntityKey, IndexEntryKey,
-    MAX_ACTOR_ID_BYTES, MAX_CAPABILITY_AUDIENCES, MAX_CAPABILITY_FIELD_VISIBILITY,
+    AgentSessionId, Audience, BackupNameV1, CapabilityId, ContractMigrationOperationId, EntityKey,
+    IndexEntryKey, MAX_ACTOR_ID_BYTES, MAX_CAPABILITY_AUDIENCES, MAX_CAPABILITY_FIELD_VISIBILITY,
     MAX_CAPABILITY_LIFETIME_SECONDS, MAX_CAPABILITY_PARTITIONS, MAX_CAPABILITY_PAYLOAD_BYTES,
     MAX_CAPABILITY_PERMISSIONS, MAX_COMMAND_CONFLICT_KEYS_V1, MAX_CONTRACT_LINEAGE_BYTES,
     MAX_IDEMPOTENCY_KEY_BYTES, MAX_KEY_BYTES, MAX_PROJECTION_GROUP_COMPONENTS, MAX_TENANT_ID_BYTES,
@@ -23,6 +23,8 @@ use crate::wire::{self, Cursor, PreflightError};
 
 /// Exact maximum encoded size of one public request.
 pub const MAX_PUBLIC_REQUEST_BYTES: usize = 1_048_576;
+/// Exact maximum encoded size of one artifact-carrying migration request.
+pub const MAX_CONTRACT_MIGRATION_REQUEST_BYTES: usize = 32 * 1_024 * 1_024;
 /// Exact maximum encoded size of one public unary response or stream item.
 pub const MAX_PUBLIC_RESPONSE_BYTES: usize = 4_194_304;
 
@@ -258,6 +260,64 @@ pub fn validate_get_offline_maintenance_operation_exchange(
     validate_public_message(request)?;
     validate_public_message(response)?;
     if let Some(v1::get_offline_maintenance_operation_response::Result::Found(operation)) =
+        &response.result
+        && operation.operation_id != request.operation_id
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+/// Validates migration-check request/response identity and operation kind.
+pub fn validate_check_contract_migration_exchange(
+    request: &v1::CheckContractMigrationRequest,
+    response: &v1::CheckContractMigrationResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    let operation = response
+        .operation
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?;
+    if operation.operation_id != request.operation_id
+        || operation.kind != v1::ContractMigrationOperationKind::Check as i32
+        || response.disposition == v1::ContractMigrationStartDisposition::AlreadyApplied as i32
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+/// Validates migration-apply request/response identity and confirmed hash.
+pub fn validate_apply_contract_migration_exchange(
+    request: &v1::ApplyContractMigrationRequest,
+    response: &v1::ApplyContractMigrationResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    let operation = response
+        .operation
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?;
+    let already_applied =
+        response.disposition == v1::ContractMigrationStartDisposition::AlreadyApplied as i32;
+    if operation.kind != v1::ContractMigrationOperationKind::Apply as i32
+        || operation.migration_bundle_hash != request.confirmed_migration_hash
+        || (!already_applied && operation.operation_id != request.operation_id)
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+/// Validates migration-operation polling without disclosing absent identities.
+pub fn validate_get_contract_migration_operation_exchange(
+    request: &v1::GetContractMigrationOperationRequest,
+    response: &v1::GetContractMigrationOperationResponse,
+) -> Result<(), PublicWireError> {
+    validate_public_message(request)?;
+    validate_public_message(response)?;
+    if let Some(v1::get_contract_migration_operation_response::Result::Found(operation)) =
         &response.result
         && operation.operation_id != request.operation_id
     {
@@ -2456,6 +2516,9 @@ fn permission_key(
         v1::capability_permission::Permission::ApplicationRoleIdentity(value) => {
             (25, "", 0, value.as_slice(), "")
         }
+        v1::capability_permission::Permission::MigrateContract(lineage) => {
+            (26, lineage.as_str(), 0, &[], "")
+        }
     };
     if key.0 >= 3
         && matches!(key.0, 3 | 5 | 6 | 7 | 8 | 9)
@@ -2471,6 +2534,9 @@ fn permission_key(
         return Err(PublicWireError::InvalidIdentity);
     }
     if key.0 == 25 && key.3.len() != 32 {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    if key.0 == 26 && !valid_bounded_text(key.1, MAX_CONTRACT_LINEAGE_BYTES) {
         return Err(PublicWireError::InvalidIdentity);
     }
     Ok(key)
@@ -2563,6 +2629,8 @@ fn capability_grant_semantic_bytes(grant: &v1::CapabilityGrant) -> Result<usize,
                     framed_capability_bytes(module_hash.len())?,
                     framed_capability_bytes(query_name.len())?,
                 ])?
+            } else if tag == 26 {
+                checked_capability_sum([1, framed_capability_bytes(lineage.len())?])?
             } else {
                 1
             };
@@ -2635,7 +2703,7 @@ fn validate_capability_grant(grant: Option<&v1::CapabilityGrant>) -> Result<(), 
     }
     if grant.permissions.len() > MAX_CAPABILITY_PERMISSIONS
         || grant.field_visibility.len() > MAX_CAPABILITY_FIELD_VISIBILITY
-        || grant.approval_required.len() > 24
+        || grant.approval_required.len() > 25
         || !(1..=500).contains(&grant.max_scan_rows)
     {
         return Err(PublicWireError::TooManyItems);
@@ -3185,6 +3253,175 @@ fn validate_get_offline_maintenance_operation_response(
         v1::get_offline_maintenance_operation_response::Result::NotFound(_) => Ok(()),
         v1::get_offline_maintenance_operation_response::Result::Found(operation) => {
             validate_offline_maintenance_operation(operation)
+        }
+    }
+}
+
+fn contract_migration_operation_id(bytes: &[u8]) -> Result<(), PublicWireError> {
+    let bytes: [u8; 16] = bytes
+        .try_into()
+        .map_err(|_| PublicWireError::InvalidIdentity)?;
+    ContractMigrationOperationId::from_bytes(bytes)
+        .map(|_| ())
+        .map_err(|_| PublicWireError::InvalidIdentity)
+}
+
+fn validate_contract_migration_operation(
+    operation: &v1::ContractMigrationOperation,
+) -> Result<(), PublicWireError> {
+    contract_migration_operation_id(&operation.operation_id)?;
+    if !matches!(
+        v1::ContractMigrationOperationKind::try_from(operation.kind),
+        Ok(v1::ContractMigrationOperationKind::Check | v1::ContractMigrationOperationKind::Apply)
+    ) || !valid_bounded_text(&operation.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+    {
+        return Err(PublicWireError::InvalidEnum);
+    }
+    for identity in [
+        &operation.input_hash,
+        &operation.parent_bundle_hash,
+        &operation.candidate_bundle_hash,
+        &operation.migration_bundle_hash,
+    ] {
+        hash(identity)?;
+    }
+    let phase = v1::ContractMigrationPhase::try_from(operation.phase)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    if phase == v1::ContractMigrationPhase::Unspecified {
+        return Err(PublicWireError::InvalidEnum);
+    }
+    let failure = v1::ContractMigrationFailureClass::try_from(operation.failure)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    let failed = matches!(
+        phase,
+        v1::ContractMigrationPhase::FailedClosed | v1::ContractMigrationPhase::FailedRolledBack
+    );
+    let backup_valid = if operation.backup_name.is_empty() {
+        operation.backup_manifest_hash.is_empty()
+    } else {
+        validate_backup_name_v1(&operation.backup_name).is_ok()
+            && operation.backup_manifest_hash.len() == 32
+    };
+    if failed != (failure != v1::ContractMigrationFailureClass::Unspecified) || !backup_valid {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+fn validate_contract_migration_start(
+    disposition: i32,
+    operation: Option<&v1::ContractMigrationOperation>,
+) -> Result<(), PublicWireError> {
+    let operation = operation.ok_or(PublicWireError::MissingRequiredField)?;
+    validate_contract_migration_operation(operation)?;
+    let disposition = v1::ContractMigrationStartDisposition::try_from(disposition)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    let terminal = matches!(
+        v1::ContractMigrationPhase::try_from(operation.phase),
+        Ok(v1::ContractMigrationPhase::Succeeded
+            | v1::ContractMigrationPhase::FailedClosed
+            | v1::ContractMigrationPhase::FailedRolledBack)
+    );
+    match disposition {
+        v1::ContractMigrationStartDisposition::Accepted
+        | v1::ContractMigrationStartDisposition::AlreadyAccepted
+            if !terminal =>
+        {
+            Ok(())
+        }
+        v1::ContractMigrationStartDisposition::Terminal
+        | v1::ContractMigrationStartDisposition::AlreadyApplied
+            if terminal =>
+        {
+            if disposition == v1::ContractMigrationStartDisposition::AlreadyApplied
+                && (operation.kind != v1::ContractMigrationOperationKind::Apply as i32
+                    || operation.phase != v1::ContractMigrationPhase::Succeeded as i32)
+            {
+                Err(PublicWireError::InconsistentFields)
+            } else {
+                Ok(())
+            }
+        }
+        _ => Err(PublicWireError::InconsistentFields),
+    }
+}
+
+fn validate_contract_migration_artifact_request(
+    request_id_bytes: &[u8],
+    operation_id: &[u8],
+    candidate: &[u8],
+    migration: &[u8],
+) -> Result<(), PublicWireError> {
+    request_id(request_id_bytes)?;
+    contract_migration_operation_id(operation_id)?;
+    if candidate.is_empty()
+        || candidate.len() > 15 * 1_024 * 1_024
+        || migration.is_empty()
+        || migration.len() > 16 * 1_024 * 1_024
+    {
+        return Err(PublicWireError::InvalidBytes);
+    }
+    Ok(())
+}
+
+fn validate_check_contract_migration_request(
+    message: &v1::CheckContractMigrationRequest,
+) -> Result<(), PublicWireError> {
+    validate_contract_migration_artifact_request(
+        &message.request_id,
+        &message.operation_id,
+        &message.candidate_bundle,
+        &message.migration_bundle,
+    )
+}
+
+fn validate_check_contract_migration_response(
+    message: &v1::CheckContractMigrationResponse,
+) -> Result<(), PublicWireError> {
+    validate_contract_migration_start(message.disposition, message.operation.as_ref())
+}
+
+fn validate_apply_contract_migration_request(
+    message: &v1::ApplyContractMigrationRequest,
+) -> Result<(), PublicWireError> {
+    validate_contract_migration_artifact_request(
+        &message.request_id,
+        &message.operation_id,
+        &message.candidate_bundle,
+        &message.migration_bundle,
+    )?;
+    if message.confirmation
+        != v1::ContractMigrationApplyConfirmation::AllowApplyContractMigration as i32
+    {
+        return Err(PublicWireError::InvalidEnum);
+    }
+    hash(&message.confirmed_migration_hash)
+}
+
+fn validate_apply_contract_migration_response(
+    message: &v1::ApplyContractMigrationResponse,
+) -> Result<(), PublicWireError> {
+    validate_contract_migration_start(message.disposition, message.operation.as_ref())
+}
+
+fn validate_get_contract_migration_operation_request(
+    message: &v1::GetContractMigrationOperationRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    contract_migration_operation_id(&message.operation_id)
+}
+
+fn validate_get_contract_migration_operation_response(
+    message: &v1::GetContractMigrationOperationResponse,
+) -> Result<(), PublicWireError> {
+    match message
+        .result
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::get_contract_migration_operation_response::Result::NotFound(_) => Ok(()),
+        v1::get_contract_migration_operation_response::Result::Found(operation) => {
+            validate_contract_migration_operation(operation)
         }
     }
 }
@@ -6083,6 +6320,46 @@ fn preflight_get_offline_maintenance_operation_response(
     )
 }
 
+fn preflight_contract_migration_operation(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 11, &[], &[], &[], &[])
+}
+
+fn preflight_contract_migration_start_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[],
+        &[NestedRule {
+            field: 2,
+            preflight: preflight_contract_migration_operation,
+        }],
+        &[],
+    )
+}
+
+fn preflight_get_contract_migration_operation_response(
+    input: &[u8],
+) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        2,
+        &[],
+        &[&[1, 2]],
+        &[
+            NestedRule {
+                field: 1,
+                preflight: preflight_unit,
+            },
+            NestedRule {
+                field: 2,
+                preflight: preflight_contract_migration_operation,
+            },
+        ],
+        &[],
+    )
+}
+
 fn preflight_generated_schema_identity(input: &[u8]) -> Result<(), PublicWireError> {
     preflight_nested_message(
         input,
@@ -7082,6 +7359,60 @@ impl_public_message!(
     &[&[1, 2]],
     preflight_get_offline_maintenance_operation_response,
     validate_get_offline_maintenance_operation_response
+);
+impl_public_message!(
+    v1::CheckContractMigrationRequest,
+    MAX_CONTRACT_MIGRATION_REQUEST_BYTES,
+    4,
+    &[],
+    &[],
+    preflight_noop,
+    validate_check_contract_migration_request
+);
+impl_public_message!(
+    v1::CheckContractMigrationResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_contract_migration_start_response,
+    validate_check_contract_migration_response
+);
+impl_public_message!(
+    v1::ApplyContractMigrationRequest,
+    MAX_CONTRACT_MIGRATION_REQUEST_BYTES,
+    6,
+    &[],
+    &[],
+    preflight_noop,
+    validate_apply_contract_migration_request
+);
+impl_public_message!(
+    v1::ApplyContractMigrationResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_contract_migration_start_response,
+    validate_apply_contract_migration_response
+);
+impl_public_message!(
+    v1::GetContractMigrationOperationRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_noop,
+    validate_get_contract_migration_operation_request
+);
+impl_public_message!(
+    v1::GetContractMigrationOperationResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[&[1, 2]],
+    preflight_get_contract_migration_operation_response,
+    validate_get_contract_migration_operation_response
 );
 
 impl PublicMessage for v1::ExecuteCommandRequest {

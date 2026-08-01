@@ -499,6 +499,48 @@ pub(super) fn capability_records() -> (
     (record, lookup, marker, administration)
 }
 
+pub(super) fn capability_record_with_migration_authority() -> StoredCapabilityRecordV1 {
+    let (base, _, _, _) = capability_records();
+    let mut permissions = base.grant().permissions().as_slice().to_vec();
+    permissions.extend([
+        CapabilityPermissionV1::MigrateContract(
+            ContractLineage::new("accounts").expect("migration lineage"),
+        ),
+        CapabilityPermissionV1::MigrateContract(
+            ContractLineage::new("ticketdesk").expect("migration lineage"),
+        ),
+    ]);
+    let permissions = CapabilityPermissionsV1::new(permissions).expect("migration permissions");
+    let mut approval_required = base.grant().approval_required().to_vec();
+    approval_required.push(CapabilityPermissionKindV1::MigrateContract);
+    let grant = CapabilityGrantV1::new(
+        base.grant().tenant_scope().clone(),
+        base.grant().partition_scope().clone(),
+        permissions,
+        base.grant().field_visibility().to_vec(),
+        base.grant().max_scan_rows(),
+        approval_required,
+    )
+    .expect("migration grant");
+    StoredCapabilityRecordV1::from_stored_parts(
+        base.capability_id(),
+        base.revision(),
+        base.token_digest(),
+        base.database_id(),
+        base.environment().clone(),
+        base.principal_id().clone(),
+        base.actor_kind(),
+        base.audiences().to_vec(),
+        base.issued_at(),
+        base.expires_at(),
+        base.creation_sequence(),
+        base.creation_request_id(),
+        grant,
+        base.lifecycle().clone(),
+    )
+    .expect("migration capability")
+}
+
 pub(super) fn service_audit_record() -> StoredServiceAuditRecordV1 {
     let targets = ServiceAuditTargetsV1::new([
         ServiceAuditTargetV1::ContractLineage(lineage()),

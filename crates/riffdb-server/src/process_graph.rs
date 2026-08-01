@@ -35,10 +35,10 @@ use riffdb_policy::{
 use riffdb_projection::{ProjectionNotifier, ProjectionSchemaRegistry};
 use riffdb_service::{
     ApplicationService, AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort,
-    CurrentPolicyPort, CursorMonotonicClock, CursorTokenGenerator, OperationalStatusPort,
-    ProjectionQueryPort, QueryModuleReadPort, RequestDeadlineScheduler, RiffDbServiceActivator,
-    ServiceDiagnostics, ServiceExecutors, ServiceHealthHooks, ServiceIdentity, ServiceJobSpawner,
-    ServiceProcessMetadata, ServiceProviders, ServiceTelemetry,
+    ContractMigrationApplication, CurrentPolicyPort, CursorMonotonicClock, CursorTokenGenerator,
+    OperationalStatusPort, ProjectionQueryPort, QueryModuleReadPort, RequestDeadlineScheduler,
+    RiffDbServiceActivator, ServiceDiagnostics, ServiceExecutors, ServiceHealthHooks,
+    ServiceIdentity, ServiceJobSpawner, ServiceProcessMetadata, ServiceProviders, ServiceTelemetry,
 };
 use riffdb_storage_api::{
     OutboxDestinationIdV1, OutboxPageLimit, ReadableDigestKey, ReadableIdempotencyDigestInventory,
@@ -230,7 +230,7 @@ impl ProductionGraphBuilder {
         let (
             database_id,
             retained_metadata,
-            _validated_catalog_history,
+            validated_catalog_history,
             startup_lifecycle,
             allocator_capacity,
             operational_ports,
@@ -252,6 +252,9 @@ impl ProductionGraphBuilder {
         let health: Arc<dyn ServiceHealthHooks> = Arc::new(runtime.clone());
         let storage = SharedRedbOperationalPorts::new(operational_ports, Some(health))
             .map_err(|_| ProductionGraphBuildError::CurrentView)?;
+        let active_lineage = validated_catalog_history
+            .active_lineage_bundles()
+            .unwrap_or_default();
         let outbox_recovery = recover_outbox(storage.clone(), clocks.outbox());
         let outbox_health = NoDestinationOutboxHealth::new(outbox_recovery);
         outbox_health.refresh(&storage);
@@ -428,7 +431,9 @@ impl ProductionGraphBuilder {
             Arc::new(ProductionCursorTokenGenerator::new());
         let cursor_clock: Arc<dyn CursorMonotonicClock> =
             Arc::new(ProductionCursorMonotonicClock::new());
-        let maintenance = maintenance.coordinator(&blocking);
+        let migration =
+            maintenance.migration_coordinator(&blocking, storage.clone(), active_lineage);
+        let offline_maintenance = maintenance.coordinator(&blocking);
         let providers = ServiceProviders::new(
             catalog,
             policy,
@@ -448,18 +453,20 @@ impl ProductionGraphBuilder {
         )
         .with_query_executor(Arc::new(storage))
         .with_query_modules(query_modules)
-        .with_offline_maintenance(maintenance);
+        .with_offline_maintenance(offline_maintenance)
+        .with_contract_migration(migration);
         let identity = ServiceIdentity::new(
             database_id,
             environment,
             AgentSessionAdmissionPolicy::Discard,
             retained_metadata.history_incarnation(),
         );
-        let service: Arc<dyn ApplicationService> =
-            Arc::new(activator.activate(identity, process, executors, providers));
+        let service = Arc::new(activator.activate(identity, process, executors, providers));
+        let application_service: Arc<dyn ApplicationService> = service.clone();
+        let migration_service: Arc<dyn ContractMigrationApplication> = service;
 
         if let Err(source) = lifecycle.install_activated_with_telemetry(
-            service,
+            application_service,
             security,
             server_generation,
             retained_metadata.history_incarnation(),
@@ -467,6 +474,12 @@ impl ProductionGraphBuilder {
             allocator_capacity,
             Some(observability.clone() as Arc<dyn ServiceTelemetry>),
         ) {
+            lifecycle.stop();
+            let cleanup =
+                cleanup_unpublished_graph(projection_worker, coordinator, blocking, &notifications);
+            return Err(ProductionGraphBuildError::Activation { source, cleanup });
+        }
+        if let Err(source) = lifecycle.install_contract_migration(migration_service) {
             lifecycle.stop();
             let cleanup =
                 cleanup_unpublished_graph(projection_worker, coordinator, blocking, &notifications);

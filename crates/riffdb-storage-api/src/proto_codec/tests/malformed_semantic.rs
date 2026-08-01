@@ -148,6 +148,56 @@ fn capability_parameter_presence_and_canonical_order_fail_closed() {
 }
 
 #[test]
+fn capability_v2_migration_extension_is_required_and_canonical() {
+    const CAPABILITY_V2: &str = "riffdb.storage.v1.CapabilityRecordV2";
+    let value = sample::capability_record_with_migration_authority();
+    let canonical = encode_capability_record_v1(&value).expect("migration capability encodes");
+    let message = payload_message::<wire::CapabilityRecordV2>(canonical.as_bytes());
+
+    let mut missing = message.clone();
+    missing.migration = None;
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V2,
+        &missing,
+    )));
+
+    let mut empty = message.clone();
+    empty
+        .migration
+        .as_mut()
+        .expect("migration extension")
+        .contract_lineages
+        .clear();
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V2,
+        &empty,
+    )));
+
+    let mut duplicate = message.clone();
+    duplicate
+        .migration
+        .as_mut()
+        .expect("migration extension")
+        .contract_lineages[1] = "accounts".to_owned();
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V2,
+        &duplicate,
+    )));
+
+    let mut unordered = message;
+    unordered
+        .migration
+        .as_mut()
+        .expect("migration extension")
+        .contract_lineages
+        .reverse();
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V2,
+        &unordered,
+    )));
+}
+
+#[test]
 fn canonical_keys_records_and_event_hashes_are_revalidated() {
     const INDEX_ENTRY: &str = "riffdb.storage.v1.StoredIndexEntryV1";
     let entry = sample::legacy_index_record();

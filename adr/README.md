@@ -106,6 +106,8 @@ direction, merged draft, or implementation choice.
 | [0085](0085-history-retention-and-startup-scaling.md) | History Retention and Startup Scaling | Accepted |
 | [0086](0086-columnar-projection-and-read-freshness-classes.md) | Columnar Projection, Read Sources, and Freshness Policies | Accepted |
 | [0087](0087-projected-ad-hoc-query-surface.md) | Projected Ad-Hoc Query Surface and Resource Governance | Accepted |
+| [0088](0088-contract-migration-check-receipt.md) | Contract Migration Check Receipt | Accepted |
+| [0089](0089-additive-migration-capability-record.md) | Additive Migration Capability Record | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

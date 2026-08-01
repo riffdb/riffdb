@@ -2,8 +2,9 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use riffdb_client_rust::{
-    ApplicationError, ClientError, DetailsFreeStatus, OfflineMaintenanceOperationId, PublicError,
-    PublicErrorDetails, RecoveryAction, ValidationPathSegment, v1,
+    ApplicationError, ClientError, ContractMigrationOperationId, DetailsFreeStatus,
+    OfflineMaintenanceOperationId, PublicError, PublicErrorDetails, RecoveryAction,
+    ValidationPathSegment, v1,
 };
 use riffdb_diagnostics::AuthoringDiagnostics;
 use serde::de::{MapAccess, SeqAccess, Visitor};
@@ -28,6 +29,9 @@ pub(crate) enum CommandIdentity {
     ApplicationDeploy,
     ApplicationBindDevRole,
     MigrationPlan,
+    MigrationCheck,
+    MigrationApply,
+    MigrationOperation,
     ContractValidate,
     ContractDeploy,
     CommandExecute,
@@ -66,6 +70,9 @@ impl CommandIdentity {
             Self::ApplicationDeploy => "application.deploy",
             Self::ApplicationBindDevRole => "application.bind_dev_role",
             Self::MigrationPlan => "migration.plan",
+            Self::MigrationCheck => "migration.check",
+            Self::MigrationApply => "migration.apply",
+            Self::MigrationOperation => "migration.operation",
             Self::ContractValidate => "contract.validate",
             Self::ContractDeploy => "contract.deploy",
             Self::CommandExecute => "command.execute",
@@ -197,6 +204,25 @@ pub(crate) fn maintenance_uncertain(
         },
         "outcome_unknown",
         "the maintenance operation outcome remains unknown",
+        3,
+    )
+}
+
+pub(crate) fn migration_uncertain(
+    command: CommandIdentity,
+    operation_id: ContractMigrationOperationId,
+) -> Terminal {
+    let operation_id = operation_id.to_string();
+    error_with_exit(
+        command,
+        &MaintenanceUncertainError {
+            code: "outcome_unknown",
+            message: "the migration operation outcome remains unknown",
+            recovery_action: "poll_migration_operation_after_database_reopens",
+            operation_id: &operation_id,
+        },
+        "outcome_unknown",
+        "the migration operation outcome remains unknown",
         3,
     )
 }
@@ -751,6 +777,48 @@ pub(crate) fn render_maintenance_operation(
             success(CommandIdentity::BackupOperation, "found", &operation)
         }
         None => rendering_failure(CommandIdentity::BackupOperation),
+    }
+}
+
+pub(crate) fn render_contract_migration_start(
+    command: CommandIdentity,
+    disposition: i32,
+    operation: Option<&v1::ContractMigrationOperation>,
+) -> Terminal {
+    let status = match v1::ContractMigrationStartDisposition::try_from(disposition) {
+        Ok(v1::ContractMigrationStartDisposition::Accepted) => "accepted",
+        Ok(v1::ContractMigrationStartDisposition::AlreadyAccepted) => "already_accepted",
+        Ok(v1::ContractMigrationStartDisposition::Terminal) => "terminal",
+        Ok(v1::ContractMigrationStartDisposition::AlreadyApplied) => "already_applied",
+        _ => return rendering_failure(command),
+    };
+    let Some(operation) =
+        operation.and_then(|operation| MigrationOperationDto::new(status, operation))
+    else {
+        return rendering_failure(command);
+    };
+    success(command, status, &operation)
+}
+
+pub(crate) fn render_contract_migration_operation(
+    response: &v1::GetContractMigrationOperationResponse,
+) -> Terminal {
+    use v1::get_contract_migration_operation_response::Result;
+    match response.result.as_ref() {
+        Some(Result::NotFound(_)) => success(
+            CommandIdentity::MigrationOperation,
+            "not_found",
+            &StatusResult {
+                status: "not_found",
+            },
+        ),
+        Some(Result::Found(operation)) => {
+            let Some(operation) = MigrationOperationDto::new("found", operation) else {
+                return rendering_failure(CommandIdentity::MigrationOperation);
+            };
+            success(CommandIdentity::MigrationOperation, "found", &operation)
+        }
+        None => rendering_failure(CommandIdentity::MigrationOperation),
     }
 }
 
@@ -2219,6 +2287,96 @@ impl<'a> MaintenanceOperationDto<'a> {
 }
 
 #[derive(Serialize)]
+struct MigrationOperationDto<'a> {
+    status: &'a str,
+    migration_operation_id: String,
+    kind: &'static str,
+    contract_lineage: &'a str,
+    input_hash: LowerHex<'a>,
+    parent_bundle_hash: LowerHex<'a>,
+    candidate_bundle_hash: LowerHex<'a>,
+    migration_bundle_hash: LowerHex<'a>,
+    phase: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure: Option<&'static str>,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    backup_name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backup_manifest_hash: Option<LowerHex<'a>>,
+}
+
+impl<'a> MigrationOperationDto<'a> {
+    fn new(status: &'a str, operation: &'a v1::ContractMigrationOperation) -> Option<Self> {
+        let kind = match v1::ContractMigrationOperationKind::try_from(operation.kind).ok()? {
+            v1::ContractMigrationOperationKind::Check => "check",
+            v1::ContractMigrationOperationKind::Apply => "apply",
+            v1::ContractMigrationOperationKind::Unspecified => return None,
+        };
+        let phase = match v1::ContractMigrationPhase::try_from(operation.phase).ok()? {
+            v1::ContractMigrationPhase::Accepted => "accepted",
+            v1::ContractMigrationPhase::Draining => "draining",
+            v1::ContractMigrationPhase::Preflight => "preflight",
+            v1::ContractMigrationPhase::BackupPublished => "backup_published",
+            v1::ContractMigrationPhase::Staging => "staging",
+            v1::ContractMigrationPhase::Transforming => "transforming",
+            v1::ContractMigrationPhase::RebuildingProjections => "rebuilding_projections",
+            v1::ContractMigrationPhase::ValidatingStage => "validating_stage",
+            v1::ContractMigrationPhase::Publishing => "publishing",
+            v1::ContractMigrationPhase::ValidatingPublished => "validating_published",
+            v1::ContractMigrationPhase::RollingBack => "rolling_back",
+            v1::ContractMigrationPhase::Succeeded => "succeeded",
+            v1::ContractMigrationPhase::FailedClosed => "failed_closed",
+            v1::ContractMigrationPhase::FailedRolledBack => "failed_rolled_back",
+            v1::ContractMigrationPhase::Unspecified => return None,
+        };
+        let failure = match v1::ContractMigrationFailureClass::try_from(operation.failure).ok()? {
+            v1::ContractMigrationFailureClass::Unspecified => None,
+            v1::ContractMigrationFailureClass::ArtifactMismatch => Some("artifact_mismatch"),
+            v1::ContractMigrationFailureClass::InvalidPredecessor => Some("invalid_predecessor"),
+            v1::ContractMigrationFailureClass::PendingAdmission => Some("pending_admission"),
+            v1::ContractMigrationFailureClass::CapacityExhausted => Some("capacity_exhausted"),
+            v1::ContractMigrationFailureClass::DiskUnavailable => Some("disk_unavailable"),
+            v1::ContractMigrationFailureClass::StageCorrupt => Some("stage_corrupt"),
+            v1::ContractMigrationFailureClass::PublicationUncertain => {
+                Some("publication_uncertain")
+            }
+            v1::ContractMigrationFailureClass::PublishedValidationFailed => {
+                Some("published_validation_failed")
+            }
+            v1::ContractMigrationFailureClass::RollbackFailed => Some("rollback_failed"),
+        };
+        let failed = matches!(phase, "failed_closed" | "failed_rolled_back");
+        let hashes = [
+            &operation.input_hash,
+            &operation.parent_bundle_hash,
+            &operation.candidate_bundle_hash,
+            &operation.migration_bundle_hash,
+        ];
+        if hashes.iter().any(|hash| hash.len() != 32)
+            || failed != failure.is_some()
+            || operation.backup_name.is_empty() != operation.backup_manifest_hash.is_empty()
+        {
+            return None;
+        }
+        Some(Self {
+            status,
+            migration_operation_id: format_uuid(&operation.operation_id)?,
+            kind,
+            contract_lineage: &operation.contract_lineage,
+            input_hash: LowerHex(&operation.input_hash),
+            parent_bundle_hash: LowerHex(&operation.parent_bundle_hash),
+            candidate_bundle_hash: LowerHex(&operation.candidate_bundle_hash),
+            migration_bundle_hash: LowerHex(&operation.migration_bundle_hash),
+            phase,
+            failure,
+            backup_name: &operation.backup_name,
+            backup_manifest_hash: (!operation.backup_manifest_hash.is_empty())
+                .then_some(LowerHex(&operation.backup_manifest_hash)),
+        })
+    }
+}
+
+#[derive(Serialize)]
 struct PreBootstrapHealth<'a> {
     status: &'a str,
     database: &'a str,
@@ -2440,6 +2598,42 @@ mod tests {
         ))
         .expect("fixture");
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn migration_operation_output_is_bounded_structured_and_value_free() {
+        let operation_id =
+            ContractMigrationOperationId::from_unix_milliseconds_and_random(1, [7; 10])
+                .expect("operation ID");
+        let operation = v1::ContractMigrationOperation {
+            operation_id: operation_id.into_bytes().to_vec(),
+            kind: v1::ContractMigrationOperationKind::Apply as i32,
+            contract_lineage: "TicketDesk".to_owned(),
+            input_hash: vec![1; 32],
+            parent_bundle_hash: vec![2; 32],
+            candidate_bundle_hash: vec![3; 32],
+            migration_bundle_hash: vec![4; 32],
+            phase: v1::ContractMigrationPhase::Succeeded as i32,
+            failure: v1::ContractMigrationFailureClass::Unspecified as i32,
+            backup_name: "pre-migration-operation".to_owned(),
+            backup_manifest_hash: vec![5; 32],
+        };
+        let dto = MigrationOperationDto::new("found", &operation).expect("checked operation");
+        let json = serde_json::to_value(dto).expect("migration JSON");
+        assert_eq!(json["status"], "found");
+        assert_eq!(json["kind"], "apply");
+        assert_eq!(json["phase"], "succeeded");
+        assert_eq!(json["contract_lineage"], "TicketDesk");
+        assert_eq!(json["migration_bundle_hash"], "04".repeat(32));
+        assert!(json.get("failure").is_none());
+        let encoded = serde_json::to_string(&json).expect("migration JSON text");
+        assert!(!encoded.contains('/'));
+        assert!(!encoded.contains("row"));
+        assert!(!encoded.contains("credential"));
+
+        let mut malformed = operation;
+        malformed.failure = v1::ContractMigrationFailureClass::StageCorrupt as i32;
+        assert!(MigrationOperationDto::new("found", &malformed).is_none());
     }
 
     const RESULT_FIXTURES: &[&str] = &[

@@ -455,7 +455,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 32);
+    assert_eq!(methods.len(), 35);
     let descriptor_order = descriptors
         .file
         .iter()
@@ -527,6 +527,9 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "CreateOfflineBackup",
             "RestoreOfflineBackup",
             "GetOfflineMaintenanceOperation",
+            "CheckContractMigration",
+            "ApplyContractMigration",
+            "GetContractMigrationOperation",
         ]
     );
     assert_eq!(
@@ -602,6 +605,13 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         "RestoreOfflineBackupResponse",
         "GetOfflineMaintenanceOperationRequest",
         "GetOfflineMaintenanceOperationResponse",
+        "ContractMigrationOperation",
+        "CheckContractMigrationRequest",
+        "CheckContractMigrationResponse",
+        "ApplyContractMigrationRequest",
+        "ApplyContractMigrationResponse",
+        "GetContractMigrationOperationRequest",
+        "GetContractMigrationOperationResponse",
         "ValidateContractRequest",
         "ValidateContractResponse",
     ];
@@ -615,7 +625,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        167
+        174
     );
     assert_eq!(
         messages

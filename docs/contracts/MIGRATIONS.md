@@ -5,14 +5,14 @@ existing authoritative rows or derived state to be checked or transformed.
 The latter is `RequiresMigration`: the candidate is valid, but deployment does
 not activate it without an exact migration artifact for the active parent.
 
-The current implementation compiles and locks Gate A migration artifacts and
-can inspect them locally. It also contains the internal redb execution and
-startup-recovery path: complete preflight, an immutable automatic backup,
-bounded staged transforms, projection rebuild, complete validation, atomic
-publication, and automatic post-publication rollback. `riffdb migration plan`
-remains read-only. Public authorization, check/apply/status RPCs, SDK methods,
-and CLI commands are not available until WP-409; WP-410 proves the installed
-Gate-A workflow end to end.
+The current implementation compiles and locks Gate A migration artifacts,
+checks them through the public administration service, and can apply them
+through the internal redb execution and startup-recovery path: complete
+preflight, an immutable automatic backup, bounded staged transforms, projection
+rebuild, complete validation, atomic publication, and automatic
+post-publication rollback. `riffdb migration plan` remains a local read-only
+inspection. WP-410 supplies the populated installed-application proof for the
+complete Gate-A workflow; that gate is not yet complete.
 
 ## Semantic execution boundary
 
@@ -93,8 +93,10 @@ inconsistent evidence.
 
 Migration maintenance owns only the selected database files. Database identity
 checks and path confinement prevent a stage, backup, or receipt from being
-rebound to a sibling database. The public lifecycle needed to drain one live
-database while continuing to serve siblings is part of WP-409.
+rebound to a sibling database. Apply drains only the database selected by the
+client's `--database` or client configuration. Other configured databases keep
+serving, while one process-wide migration exclusion prevents a second check or
+apply from starting concurrently.
 
 The durable V1 compatibility vectors live under
 `fixtures/migrations/durable/v1`. Protobuf schema hashes and record bounds live
@@ -213,7 +215,99 @@ identities by hand.
 Contract migrations are operator-only. They are not generated as application
 commands, application-role permissions, MCP tools, or MCP resources.
 
-There is intentionally no supported storage-level invocation or manual file
-procedure for starting a migration. Until WP-409 supplies the authorized public
-administration path, application authors can lock and inspect artifacts but
-cannot request redb migration execution through a supported interface.
+## Authorize a migration operator
+
+Migration authority is a dedicated global, database/environment-bound, exact
+lineage permission. Deploy, backup, restore, capability administration, MCP,
+and application-role authority do not imply it. Create a separate short-lived
+operator capability through an existing capability administrator:
+
+```json
+{
+  "principal_id": "migration-operator",
+  "actor_kind": "human",
+  "requested_lifetime_seconds": 3600,
+  "audiences": ["riffdb-grpc-loopback"],
+  "grant": {
+    "tenant_scope": { "type": "global" },
+    "partition_scope": { "type": "all" },
+    "permissions": [
+      { "type": "migrate_contract", "contract_lineage": "TicketDesk" }
+    ],
+    "field_visibility": [],
+    "max_scan_rows": 1,
+    "approval_required": []
+  }
+}
+```
+
+```bash
+riffdb --database ticketdesk \
+  --credential-file "$HOME/.config/riffdb/operator.credential" \
+  capability create \
+  --request migration-operator.json \
+  --credential-output "$HOME/.config/riffdb/migration.credential"
+```
+
+Adding `"migrate_contract"` to `approval_required` denies migration until an
+approval integration can satisfy that obligation. The POC does not provide
+such an integration, so leave it absent for an intentionally authorized local
+operator. Retain the returned capability ID so it can be revoked.
+
+## Check, apply, and observe
+
+First inspect the lock and retain the exact lowercase migration hash:
+
+```bash
+riffdb migration plan \
+  --application riffdb.application.json \
+  --lock riffdb.application.lock.json
+```
+
+Use a fresh canonical UUIDv7 for check. A lock with multiple retained parents
+also requires `--migration-hash`; omitting it is accepted only when exactly one
+migration is locked.
+
+```bash
+riffdb --database ticketdesk \
+  --credential-file "$HOME/.config/riffdb/migration.credential" \
+  migration check \
+  --operation-id "$check_operation_uuidv7" \
+  --migration-hash "$migration_hash"
+```
+
+Check is durable and read-only. Retry an uncertain check with the same
+operation ID, artifacts, and migration hash. Apply is a different semantic
+operation and therefore requires a different UUIDv7. Its confirmation is both
+the exact selector and the destructive confirmation:
+
+```bash
+riffdb --database ticketdesk \
+  --credential-file "$HOME/.config/riffdb/migration.credential" \
+  migration apply \
+  --operation-id "$apply_operation_uuidv7" \
+  --confirm-apply "$migration_hash"
+```
+
+After durable acceptance, client cancellation does not cancel apply. The
+selected database rejects ordinary traffic while draining, offline, staging,
+publishing, and validating; configured siblings remain available. Poll after
+the selected database reopens:
+
+```bash
+riffdb --database ticketdesk \
+  --credential-file "$HOME/.config/riffdb/migration.credential" \
+  migration operation "$apply_operation_uuidv7"
+```
+
+Responses contain only the closed phase/failure classes, exact artifact hashes,
+and protected backup identity. They never contain row values,
+credentials, absolute paths, or internal error sources. Same operation ID with
+different input fails before drain. A successful repeat apply can resolve as
+`already_applied` only when the permanent migration edge and retained terminal
+receipt match exactly.
+
+There remains no supported storage-level or manual file procedure for starting
+a migration. TypeScript, Python, generated application clients, and MCP expose
+no migration authority or operation; use the CLI, public gRPC administration
+API, or the stable Rust client facade.

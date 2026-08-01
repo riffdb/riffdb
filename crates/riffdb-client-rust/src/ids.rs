@@ -5,7 +5,8 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use riffdb_types::{
-    AgentSessionId, CapabilityId, OfflineMaintenanceOperationId, RequestId, UuidV7ConstructionError,
+    AgentSessionId, CapabilityId, ContractMigrationOperationId, OfflineMaintenanceOperationId,
+    RequestId, UuidV7ConstructionError,
 };
 
 const MAX_UUID_V7_UNIX_MILLISECONDS: u128 = 0xffff_ffff_ffff;
@@ -84,6 +85,17 @@ impl SystemIdSource {
             OfflineMaintenanceOperationId::from_unix_milliseconds_and_random,
         )
     }
+
+    /// Generates one caller-stable contract-migration operation identifier.
+    pub fn contract_migration_operation_id(
+        self,
+    ) -> Result<ContractMigrationOperationId, IdentifierGenerationError> {
+        generate_with(
+            SystemTime::now,
+            fill_system_random,
+            ContractMigrationOperationId::from_unix_milliseconds_and_random,
+        )
+    }
 }
 
 /// Generates one fresh outer transport request identifier.
@@ -105,6 +117,12 @@ pub fn generate_agent_session_id() -> Result<AgentSessionId, IdentifierGeneratio
 pub fn generate_offline_maintenance_operation_id()
 -> Result<OfflineMaintenanceOperationId, IdentifierGenerationError> {
     SystemIdSource::new().offline_maintenance_operation_id()
+}
+
+/// Generates one caller-stable contract-migration operation identifier.
+pub fn generate_contract_migration_operation_id()
+-> Result<ContractMigrationOperationId, IdentifierGenerationError> {
+    SystemIdSource::new().contract_migration_operation_id()
 }
 
 fn fill_system_random(output: &mut [u8; 10]) -> Result<(), IdentifierGenerationError> {

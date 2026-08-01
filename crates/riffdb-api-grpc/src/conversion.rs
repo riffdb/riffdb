@@ -1,6 +1,7 @@
 //! Total mechanical conversion between public wire messages and service DTOs.
 
 use std::num::{NonZeroU16, NonZeroU32};
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -8,23 +9,28 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use riffdb_auth::AuthenticationContext;
 use riffdb_proto::{app::v1 as app_v1, canonical_value_to_proto, v1};
 use riffdb_service::{
-    BootstrapCapabilityRequest, BootstrapCapabilityResult, CapabilityIdentityView,
-    CapabilityTransitionView, CheckSymbolicQueryResult, CommandDurability, CommandToolDescriptor,
-    CommandToolDiscoveryItem, CommitSubscriptionEndReason, CommitSubscriptionEvent, CommitView,
-    CompactCommandToolDescriptor, CompactCommandToolDiscoveryItem, CompactNamedQueryToolDescriptor,
-    CompactResourceDescriptor, CompactResourceDescriptorRef, CompileSymbolicQueryRequest,
-    ContractCompatibilityClass, ContractDescriptor, ContractSelection, ContractSource,
-    ContractValidationResult, CreateCapabilityResult, CreateOfflineBackupRequest, CursorToken,
-    DeclaredOutcomeView, DeployContractRequest, DeployContractResult, DeployQueryModuleRequest,
-    DeployQueryModuleResult, DescribeSymbolicContractResult, DiscoverCommandToolsRequest,
-    DiscoverCommandToolsResult, DiscoverCommandToolsResultRef, DiscoverResourcesRequest,
-    DiscoverResourcesResult, DiscoverResourcesResultRef, DiscoveryCatalogFence,
-    DiscoveryCatalogStateRef, DiscoveryRepresentation, ExecuteCommandRequest, ExecuteCommandResult,
-    ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult, ExplainCommandRequest,
-    ExplainCommandResult, ExplainSymbolicQueryResult, FieldSelection, FixedToolKind,
-    GeneratedSchemaIdentity, GetActiveContractRequest, GetActiveContractResult, GetCommitRequest,
-    GetCommitResult, GetContractVersionRequest, GetContractVersionResult, GetEntityRequest,
-    GetEntityResult, GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
+    ApplyContractMigrationRequest, BootstrapCapabilityRequest, BootstrapCapabilityResult,
+    CapabilityIdentityView, CapabilityTransitionView, CheckContractMigrationRequest,
+    CheckSymbolicQueryResult, CommandDurability, CommandToolDescriptor, CommandToolDiscoveryItem,
+    CommitSubscriptionEndReason, CommitSubscriptionEvent, CommitView, CompactCommandToolDescriptor,
+    CompactCommandToolDiscoveryItem, CompactNamedQueryToolDescriptor, CompactResourceDescriptor,
+    CompactResourceDescriptorRef, CompileSymbolicQueryRequest, ContractCompatibilityClass,
+    ContractDescriptor, ContractMigrationArtifacts, ContractMigrationObservationFailure,
+    ContractMigrationObservationPhase, ContractMigrationOperationObservation,
+    ContractMigrationStartDisposition, ContractMigrationStartResult, ContractSelection,
+    ContractSource, ContractValidationResult, CreateCapabilityResult, CreateOfflineBackupRequest,
+    CursorToken, DeclaredOutcomeView, DeployContractRequest, DeployContractResult,
+    DeployQueryModuleRequest, DeployQueryModuleResult, DescribeSymbolicContractResult,
+    DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverCommandToolsResultRef,
+    DiscoverResourcesRequest, DiscoverResourcesResult, DiscoverResourcesResultRef,
+    DiscoveryCatalogFence, DiscoveryCatalogStateRef, DiscoveryRepresentation,
+    ExecuteCommandRequest, ExecuteCommandResult, ExecuteSymbolicQueryRequest,
+    ExecuteSymbolicQueryResult, ExplainCommandRequest, ExplainCommandResult,
+    ExplainSymbolicQueryResult, FieldSelection, FixedToolKind, GeneratedSchemaIdentity,
+    GetActiveContractRequest, GetActiveContractResult, GetCommitRequest, GetCommitResult,
+    GetContractMigrationOperationRequest, GetContractMigrationOperationResult,
+    GetContractVersionRequest, GetContractVersionResult, GetEntityRequest, GetEntityResult,
+    GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
     GetProjectionStatusRequest, GetProjectionStatusResult, GetQueryModuleRequest,
     HealthComponentKind, HealthComponentStatus, HealthRequest, HealthResult, HealthStatus,
     JournaledCommandResult, JournaledCompletion, ListPendingOutboxDeliveriesRequest,
@@ -52,12 +58,13 @@ use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, ApplicationRoleHash, Audience, BackupNameV1,
     CapabilityGrantV1, CapabilityId, CapabilityPermissionKindV1, CapabilityPermissionV1,
     CapabilityPermissionsV1, CommandId, CommitSequence, ContractBundleHash, ContractLineage,
-    ContractVersion, CurrencyCode, Date, EntityFieldVisibilityV1, EntityKey, EntityTypeId,
-    EnumTypeId, EnumVariantId, FieldId, FrontierPosition, IdempotencyKey, IndexEpochPosition,
-    IndexId, OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
-    OfflineMaintenanceReplacementConfirmation, PartitionKey, PartitionScopeV1, ProjectionId,
-    ProvenanceId, QueryModuleHash, QueryOperationName, RequestId, RevocationReasonCodeV1,
-    SchemaHash, ScopedPartitionV1, TenantId, TenantScope, Timestamp,
+    ContractMigrationApplyConfirmation, ContractMigrationOperationId,
+    ContractMigrationOperationKind, ContractVersion, CurrencyCode, Date, EntityFieldVisibilityV1,
+    EntityKey, EntityTypeId, EnumTypeId, EnumVariantId, FieldId, FrontierPosition, IdempotencyKey,
+    IndexEpochPosition, IndexId, MigrationBundleHash, OfflineMaintenanceOperationId,
+    OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation, PartitionKey,
+    PartitionScopeV1, ProjectionId, ProvenanceId, QueryModuleHash, QueryOperationName, RequestId,
+    RevocationReasonCodeV1, SchemaHash, ScopedPartitionV1, TenantId, TenantScope, Timestamp,
 };
 use tonic::Status;
 
@@ -2261,6 +2268,77 @@ fn offline_maintenance_operation_id_from_bytes(
     OfflineMaintenanceOperationId::from_bytes(bytes).map_err(|_| invalid_request())
 }
 
+/// Converts one canonical migration-check start request.
+pub fn check_contract_migration_request_from_proto(
+    request: v1::CheckContractMigrationRequest,
+) -> Result<(RequestId, CheckContractMigrationRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let operation_id = contract_migration_operation_id_from_bytes(&request.operation_id)?;
+    let artifacts = ContractMigrationArtifacts::decode(
+        Arc::from(request.candidate_bundle),
+        Arc::from(request.migration_bundle),
+    )
+    .map_err(|_| invalid_request())?;
+    Ok((
+        request_id,
+        CheckContractMigrationRequest::new(operation_id, artifacts),
+    ))
+}
+
+/// Converts one exactly confirmed migration-apply start request.
+pub fn apply_contract_migration_request_from_proto(
+    request: v1::ApplyContractMigrationRequest,
+) -> Result<(RequestId, ApplyContractMigrationRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let operation_id = contract_migration_operation_id_from_bytes(&request.operation_id)?;
+    let artifacts = ContractMigrationArtifacts::decode(
+        Arc::from(request.candidate_bundle),
+        Arc::from(request.migration_bundle),
+    )
+    .map_err(|_| invalid_request())?;
+    let confirmation = match v1::ContractMigrationApplyConfirmation::try_from(request.confirmation)
+        .map_err(|_| invalid_request())?
+    {
+        v1::ContractMigrationApplyConfirmation::AllowApplyContractMigration => {
+            ContractMigrationApplyConfirmation::AllowApplyContractMigration
+        }
+        v1::ContractMigrationApplyConfirmation::Unspecified => {
+            ContractMigrationApplyConfirmation::NotProvided
+        }
+    };
+    let confirmed: [u8; 32] = request
+        .confirmed_migration_hash
+        .try_into()
+        .map_err(|_| invalid_request())?;
+    let request = ApplyContractMigrationRequest::new(
+        operation_id,
+        artifacts,
+        confirmation,
+        MigrationBundleHash::from_bytes(confirmed),
+    )
+    .map_err(|_| invalid_request())?;
+    Ok((request_id, request))
+}
+
+/// Converts one protected migration receipt selector.
+pub fn get_contract_migration_operation_request_from_proto(
+    request: v1::GetContractMigrationOperationRequest,
+) -> Result<(RequestId, GetContractMigrationOperationRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let operation_id = contract_migration_operation_id_from_bytes(&request.operation_id)?;
+    Ok((
+        request_id,
+        GetContractMigrationOperationRequest::new(operation_id),
+    ))
+}
+
+fn contract_migration_operation_id_from_bytes(
+    bytes: &[u8],
+) -> Result<ContractMigrationOperationId, Status> {
+    let bytes: [u8; 16] = bytes.try_into().map_err(|_| invalid_request())?;
+    ContractMigrationOperationId::from_bytes(bytes).map_err(|_| invalid_request())
+}
+
 /// Converts the restricted or authenticated Health result without widening it.
 #[must_use]
 pub fn health_result_to_proto(
@@ -2503,6 +2581,133 @@ fn offline_maintenance_operation_to_proto(
         input_hash: operation.input_hash().into_bytes().to_vec(),
         phase: phase as i32,
         failure: failure as i32,
+    }
+}
+
+/// Converts one migration start result without semantic reinterpretation.
+#[must_use]
+pub fn contract_migration_start_result_to_proto(
+    result: &ContractMigrationStartResult,
+) -> (i32, Option<v1::ContractMigrationOperation>) {
+    let disposition = match result.disposition() {
+        ContractMigrationStartDisposition::Accepted => {
+            v1::ContractMigrationStartDisposition::Accepted
+        }
+        ContractMigrationStartDisposition::AlreadyAccepted => {
+            v1::ContractMigrationStartDisposition::AlreadyAccepted
+        }
+        ContractMigrationStartDisposition::Terminal => {
+            v1::ContractMigrationStartDisposition::Terminal
+        }
+        ContractMigrationStartDisposition::AlreadyApplied => {
+            v1::ContractMigrationStartDisposition::AlreadyApplied
+        }
+    };
+    (
+        disposition as i32,
+        Some(contract_migration_operation_to_proto(result.operation())),
+    )
+}
+
+/// Converts one protected migration receipt lookup.
+#[must_use]
+pub fn get_contract_migration_operation_result_to_proto(
+    result: &GetContractMigrationOperationResult,
+) -> v1::GetContractMigrationOperationResponse {
+    let result = match result {
+        GetContractMigrationOperationResult::NotFound => {
+            v1::get_contract_migration_operation_response::Result::NotFound(v1::Unit {})
+        }
+        GetContractMigrationOperationResult::Found(operation) => {
+            v1::get_contract_migration_operation_response::Result::Found(
+                contract_migration_operation_to_proto(operation),
+            )
+        }
+    };
+    v1::GetContractMigrationOperationResponse {
+        result: Some(result),
+    }
+}
+
+fn contract_migration_operation_to_proto(
+    operation: &ContractMigrationOperationObservation,
+) -> v1::ContractMigrationOperation {
+    let kind = match operation.kind() {
+        ContractMigrationOperationKind::Check => v1::ContractMigrationOperationKind::Check,
+        ContractMigrationOperationKind::Apply => v1::ContractMigrationOperationKind::Apply,
+    };
+    let phase = match operation.phase() {
+        ContractMigrationObservationPhase::Accepted => v1::ContractMigrationPhase::Accepted,
+        ContractMigrationObservationPhase::Draining => v1::ContractMigrationPhase::Draining,
+        ContractMigrationObservationPhase::Preflight => v1::ContractMigrationPhase::Preflight,
+        ContractMigrationObservationPhase::BackupPublished => {
+            v1::ContractMigrationPhase::BackupPublished
+        }
+        ContractMigrationObservationPhase::Staging => v1::ContractMigrationPhase::Staging,
+        ContractMigrationObservationPhase::Transforming => v1::ContractMigrationPhase::Transforming,
+        ContractMigrationObservationPhase::RebuildingProjections => {
+            v1::ContractMigrationPhase::RebuildingProjections
+        }
+        ContractMigrationObservationPhase::ValidatingStage => {
+            v1::ContractMigrationPhase::ValidatingStage
+        }
+        ContractMigrationObservationPhase::Publishing => v1::ContractMigrationPhase::Publishing,
+        ContractMigrationObservationPhase::ValidatingPublished => {
+            v1::ContractMigrationPhase::ValidatingPublished
+        }
+        ContractMigrationObservationPhase::RollingBack => v1::ContractMigrationPhase::RollingBack,
+        ContractMigrationObservationPhase::Succeeded => v1::ContractMigrationPhase::Succeeded,
+        ContractMigrationObservationPhase::FailedClosed => v1::ContractMigrationPhase::FailedClosed,
+        ContractMigrationObservationPhase::FailedRolledBack => {
+            v1::ContractMigrationPhase::FailedRolledBack
+        }
+    };
+    let failure = match operation.failure() {
+        None => v1::ContractMigrationFailureClass::Unspecified,
+        Some(ContractMigrationObservationFailure::ArtifactMismatch) => {
+            v1::ContractMigrationFailureClass::ArtifactMismatch
+        }
+        Some(ContractMigrationObservationFailure::InvalidPredecessor) => {
+            v1::ContractMigrationFailureClass::InvalidPredecessor
+        }
+        Some(ContractMigrationObservationFailure::PendingAdmission) => {
+            v1::ContractMigrationFailureClass::PendingAdmission
+        }
+        Some(ContractMigrationObservationFailure::CapacityExhausted) => {
+            v1::ContractMigrationFailureClass::CapacityExhausted
+        }
+        Some(ContractMigrationObservationFailure::DiskUnavailable) => {
+            v1::ContractMigrationFailureClass::DiskUnavailable
+        }
+        Some(ContractMigrationObservationFailure::StageCorrupt) => {
+            v1::ContractMigrationFailureClass::StageCorrupt
+        }
+        Some(ContractMigrationObservationFailure::PublicationUncertain) => {
+            v1::ContractMigrationFailureClass::PublicationUncertain
+        }
+        Some(ContractMigrationObservationFailure::PublishedValidationFailed) => {
+            v1::ContractMigrationFailureClass::PublishedValidationFailed
+        }
+        Some(ContractMigrationObservationFailure::RollbackFailed) => {
+            v1::ContractMigrationFailureClass::RollbackFailed
+        }
+    };
+    v1::ContractMigrationOperation {
+        operation_id: operation.operation_id().into_bytes().to_vec(),
+        kind: kind as i32,
+        contract_lineage: operation.lineage().as_str().to_owned(),
+        input_hash: operation.input_hash().into_bytes().to_vec(),
+        parent_bundle_hash: operation.parent_hash().into_bytes().to_vec(),
+        candidate_bundle_hash: operation.candidate_hash().into_bytes().to_vec(),
+        migration_bundle_hash: operation.migration_hash().into_bytes().to_vec(),
+        phase: phase as i32,
+        failure: failure as i32,
+        backup_name: operation
+            .backup_name()
+            .map_or_else(String::new, |name| name.as_str().to_owned()),
+        backup_manifest_hash: operation
+            .backup_manifest_hash()
+            .map_or_else(Vec::new, |hash| hash.to_vec()),
     }
 }
 
@@ -3255,6 +3460,9 @@ fn capability_permission_from_proto(
         Permission::DeployContract(_) => {
             unparameterized(CapabilityPermissionKindV1::DeployContract)
         }
+        Permission::MigrateContract(lineage) => Ok(CapabilityPermissionV1::MigrateContract(
+            ContractLineage::new(lineage).map_err(|_| invalid_request())?,
+        )),
         Permission::InvokeCommand(value) => {
             let (lineage, id) = lineage_scoped_id(value)?;
             Ok(CapabilityPermissionV1::InvokeCommand(
@@ -3428,6 +3636,9 @@ fn capability_permission_kind_from_proto(value: i32) -> Result<CapabilityPermiss
         v1::CapabilityPermissionKind::ApplicationRoleIdentity => {
             Ok(CapabilityPermissionKindV1::ApplicationRoleIdentity)
         }
+        v1::CapabilityPermissionKind::MigrateContract => {
+            Ok(CapabilityPermissionKindV1::MigrateContract)
+        }
         v1::CapabilityPermissionKind::Unspecified => Err(invalid_request()),
     }
 }
@@ -3515,6 +3726,74 @@ mod tests {
 
     fn request_id() -> RequestId {
         RequestId::from_unix_milliseconds_and_random(1, [7; 10]).expect("valid request ID")
+    }
+
+    fn migration_operation_id() -> ContractMigrationOperationId {
+        ContractMigrationOperationId::from_unix_milliseconds_and_random(2, [8; 10])
+            .expect("valid migration operation ID")
+    }
+
+    #[test]
+    fn migration_requests_require_canonical_artifacts_identity_and_exact_apply_confirmation() {
+        const CANDIDATE: &[u8] =
+            include_bytes!("../../../fixtures/migrations/bundle/v1/candidate.contract.bundle");
+        const MIGRATION: &[u8] = include_bytes!(
+            "../../../fixtures/migrations/bundle/v1/required-field.migration.bundle"
+        );
+        let operation_id = migration_operation_id();
+        let (_, check) =
+            check_contract_migration_request_from_proto(v1::CheckContractMigrationRequest {
+                request_id: request_id().into_bytes().to_vec(),
+                operation_id: operation_id.into_bytes().to_vec(),
+                candidate_bundle: CANDIDATE.to_vec(),
+                migration_bundle: MIGRATION.to_vec(),
+            })
+            .expect("canonical check request");
+        assert_eq!(check.operation_id(), operation_id);
+        let migration_hash = check.artifacts().migration_hash();
+
+        let apply = v1::ApplyContractMigrationRequest {
+            request_id: request_id().into_bytes().to_vec(),
+            operation_id: operation_id.into_bytes().to_vec(),
+            candidate_bundle: CANDIDATE.to_vec(),
+            migration_bundle: MIGRATION.to_vec(),
+            confirmation: v1::ContractMigrationApplyConfirmation::AllowApplyContractMigration
+                as i32,
+            confirmed_migration_hash: migration_hash.into_bytes().to_vec(),
+        };
+        let (_, checked_apply) = apply_contract_migration_request_from_proto(apply.clone())
+            .expect("exactly confirmed apply request");
+        assert_eq!(checked_apply.operation_id(), operation_id);
+
+        let mut missing_confirmation = apply.clone();
+        missing_confirmation.confirmation =
+            v1::ContractMigrationApplyConfirmation::Unspecified as i32;
+        assert!(apply_contract_migration_request_from_proto(missing_confirmation).is_err());
+        let mut wrong_hash = apply.clone();
+        wrong_hash.confirmed_migration_hash = vec![0xff; 32];
+        assert!(apply_contract_migration_request_from_proto(wrong_hash).is_err());
+        let mut bad_operation = apply;
+        bad_operation.operation_id = vec![0; 16];
+        assert!(apply_contract_migration_request_from_proto(bad_operation).is_err());
+
+        assert!(
+            check_contract_migration_request_from_proto(v1::CheckContractMigrationRequest {
+                request_id: request_id().into_bytes().to_vec(),
+                operation_id: operation_id.into_bytes().to_vec(),
+                candidate_bundle: Vec::new(),
+                migration_bundle: MIGRATION.to_vec(),
+            })
+            .is_err()
+        );
+        assert!(
+            get_contract_migration_operation_request_from_proto(
+                v1::GetContractMigrationOperationRequest {
+                    request_id: request_id().into_bytes().to_vec(),
+                    operation_id: vec![0; 15],
+                }
+            )
+            .is_err()
+        );
     }
 
     fn active_contract() -> v1::ContractSelection {
