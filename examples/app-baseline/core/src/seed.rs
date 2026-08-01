@@ -170,15 +170,27 @@ impl SeedDataset {
                     });
                 }
 
-                for ticket_i in 0..scale.tickets_per_project {
+                // Board-scale density: org-0/project-0 gets a large open cell so
+                // board_page_450 is a real 450-row page under the full profile (scan ceiling).
+                let is_board_project = org_i == 0 && project_i == 0 && scale.board_dense_open > 0;
+                let ticket_count = if is_board_project {
+                    scale.board_dense_open.max(scale.tickets_per_project)
+                } else {
+                    scale.tickets_per_project
+                };
+                for ticket_i in 0..ticket_count {
                     let ticket_ordinal = project_ordinal * 1_000 + u64::from(ticket_i);
                     let ticket_id = uuid_from_ordinal(NS_TICKET, ticket_ordinal);
                     let reporter = &org_users[ticket_i as usize % org_users.len()];
                     let assignee = &org_users[(ticket_i as usize + 1) % org_users.len()];
-                    let status = match ticket_i % 3 {
-                        0 => TicketStatus::Open,
-                        1 => TicketStatus::InProgress,
-                        _ => TicketStatus::Closed,
+                    let status = if is_board_project {
+                        TicketStatus::Open
+                    } else {
+                        match ticket_i % 3 {
+                            0 => TicketStatus::Open,
+                            1 => TicketStatus::InProgress,
+                            _ => TicketStatus::Closed,
+                        }
                     };
                     tickets.push(TicketRow {
                         organization_id,
@@ -230,13 +242,72 @@ impl SeedDataset {
         }
     }
 
+    /// Organization + project that hold the dense board cell (org-0/project-0).
+    ///
+    /// When `board_dense_open == 0` this is still the first project; density
+    /// may be too small for large board pages.
+    #[must_use]
+    pub fn board_cell(&self) -> (crate::UuidBytes, crate::UuidBytes) {
+        let project = self.projects.first().expect("seed has projects");
+        (project.organization_id, project.project_id)
+    }
+
+    /// Count of open tickets in the board cell `(org-0/project-0, status=open)`.
+    #[must_use]
+    pub fn board_dense_open_count(&self) -> usize {
+        let (organization_id, project_id) = self.board_cell();
+        self.tickets
+            .iter()
+            .filter(|ticket| {
+                ticket.organization_id == organization_id
+                    && ticket.project_id == project_id
+                    && ticket.status == TicketStatus::Open
+            })
+            .count()
+    }
+
+    /// Deterministic board page: open tickets in the board cell, ordered by
+    /// `ticket_id` ascending, truncated to `limit`.
+    ///
+    /// Matches static RiffQL `BoardPage50`/`200`/`450` and PostgreSQL board SQL
+    /// (`ORDER BY ticket_id ASC LIMIT n`).
+    #[must_use]
+    pub fn board_page_ticket_ids(&self, limit: u32) -> Vec<crate::UuidBytes> {
+        let (organization_id, project_id) = self.board_cell();
+        let mut ids = self
+            .tickets
+            .iter()
+            .filter(|ticket| {
+                ticket.organization_id == organization_id
+                    && ticket.project_id == project_id
+                    && ticket.status == TicketStatus::Open
+            })
+            .map(|ticket| ticket.ticket_id)
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.truncate(limit as usize);
+        ids
+    }
+
     /// Stable probe keys used by timed scenarios after seed.
     #[must_use]
     pub fn probes(&self) -> ScenarioProbes {
+        // Prefer a non-board open ticket for ordinary list/read probes so the
+        // dense board cell stays a pure read curve (write scenarios already
+        // target a disjoint write ticket). Fall back to any open ticket.
+        let (board_org, board_project) = self.board_cell();
         let ticket = self
             .tickets
             .iter()
-            .find(|ticket| ticket.status == TicketStatus::Open)
+            .find(|ticket| {
+                ticket.status == TicketStatus::Open
+                    && !(ticket.organization_id == board_org && ticket.project_id == board_project)
+            })
+            .or_else(|| {
+                self.tickets
+                    .iter()
+                    .find(|ticket| ticket.status == TicketStatus::Open)
+            })
             .or_else(|| self.tickets.first())
             .expect("seed has tickets")
             .clone();
@@ -249,13 +320,15 @@ impl SeedDataset {
         let project_id = ticket.project_id;
         let organization_id = ticket.organization_id;
         let assignee_id = ticket.assignee_id;
-        // The close-with-comment target must be invisible to every read probe:
-        // a different open ticket (so the read ticket stays open and its comment
-        // list stays fixed), in a different project (so
-        // `list_tickets_by_project_status` keeps its row count), and with a
-        // different assignee (so `list_open_tickets_for_assignee` keeps its row
-        // count when the ticket is closed). Weaker fallbacks keep `probes()`
-        // working at scales that cannot satisfy the full predicate.
+        // The close-with-comment target must be invisible to every read probe
+        // AND to the board-scale cell:
+        // - different open ticket (read ticket stays open; comment list fixed)
+        // - different project from the ordinary list-probe project
+        // - different project from the board cell (closing must not shrink
+        //   board_page_* result sets mid-rep)
+        // - different assignee (list_open_tickets_for_assignee row count fixed)
+        // Weaker fallbacks keep `probes()` working at tiny scales, but full/smoke
+        // always satisfy the full predicate.
         let other_open_ticket = |row: &&TicketRow| {
             row.organization_id == organization_id
                 && row.ticket_id != ticket.ticket_id
@@ -267,7 +340,20 @@ impl SeedDataset {
             .find(|row| {
                 other_open_ticket(row)
                     && row.project_id != project_id
+                    && row.project_id != board_project
                     && row.assignee_id != assignee_id
+            })
+            .or_else(|| {
+                self.tickets.iter().find(|row| {
+                    other_open_ticket(row)
+                        && row.project_id != project_id
+                        && row.project_id != board_project
+                })
+            })
+            .or_else(|| {
+                self.tickets
+                    .iter()
+                    .find(|row| other_open_ticket(row) && row.project_id != board_project)
             })
             .or_else(|| self.tickets.iter().find(other_open_ticket))
             .cloned()
@@ -296,11 +382,21 @@ impl SeedDataset {
             .collect::<Vec<_>>();
         let label_a = labels.first().expect("seed has labels").label_id;
         let label_b = labels.get(1).map(|label| label.label_id).unwrap_or(label_a);
+        // Open-ticket writes must also land outside the board cell so
+        // board_page_* cardinality stays fixed across samples.
         let write_project_id = self
             .projects
             .iter()
             .find(|project| {
-                project.organization_id == organization_id && project.project_id != project_id
+                project.organization_id == organization_id
+                    && project.project_id != project_id
+                    && project.project_id != board_project
+            })
+            .or_else(|| {
+                self.projects.iter().find(|project| {
+                    project.organization_id == organization_id
+                        && project.project_id != board_project
+                })
             })
             .map(|project| project.project_id)
             .unwrap_or(project_id);
@@ -319,6 +415,8 @@ impl SeedDataset {
             user_id: user.user_id,
             assignee_id,
             open_status: TicketStatus::Open,
+            board_organization_id: board_org,
+            board_project_id: board_project,
             write_ticket_id: close_ticket.ticket_id,
             write_author_id: user.user_id,
             write_project_id,
@@ -333,12 +431,12 @@ impl SeedDataset {
 
 /// Fixed keys exercised by timed scenarios.
 ///
-/// Read probes (`ticket_id`, `project_id`, `assignee_id`, ...) are never
-/// mutated by write scenarios, so every measured sample of a read scenario
-/// sees identical data. Write scenarios derive a distinct idempotency key
-/// and distinct created-entity IDs per sample so both backends execute one
-/// genuinely new durable write per sample (no idempotent replays and no
-/// conflict-suppressed inserts).
+/// Read probes (`ticket_id`, `project_id`, `assignee_id`, board cell, ...) are
+/// never mutated by write scenarios, so every measured sample of a read
+/// scenario — including board_page_* — sees identical data. Write scenarios
+/// derive a distinct idempotency key and distinct created-entity IDs per
+/// sample so both backends execute one genuinely new durable write per sample
+/// (no idempotent replays and no conflict-suppressed inserts).
 #[derive(Clone, Debug)]
 pub struct ScenarioProbes {
     /// Organization under test.
@@ -353,6 +451,10 @@ pub struct ScenarioProbes {
     pub assignee_id: [u8; 16],
     /// Open status constant.
     pub open_status: TicketStatus,
+    /// Organization of the dense board cell.
+    pub board_organization_id: [u8; 16],
+    /// Project of the dense board cell (board_page_* scenarios).
+    pub board_project_id: [u8; 16],
     /// Ticket receiving write-scenario comments and closes.
     pub write_ticket_id: [u8; 16],
     /// Author of write-scenario comments.
@@ -448,7 +550,48 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::SeedDataset;
-    use crate::Scale;
+    use crate::{Scale, TicketStatus};
+
+    #[test]
+    fn full_seed_has_dense_board_cell_of_at_least_500_open() {
+        let dataset = SeedDataset::generate(Scale::full());
+        let dense = dataset.board_dense_open_count();
+        assert!(
+            dense >= 500,
+            "full seed board cell must hold >=500 open tickets, got {dense}"
+        );
+        assert_eq!(dense, Scale::full().board_dense_open as usize);
+        for limit in [50_u32, 200, 450] {
+            let page = dataset.board_page_ticket_ids(limit);
+            assert_eq!(page.len(), limit as usize, "board page limit={limit}");
+            // Order-sensitive: strictly ascending ticket_id.
+            assert!(page.windows(2).all(|pair| pair[0] < pair[1]));
+        }
+    }
+
+    #[test]
+    fn smoke_seed_skips_board_density() {
+        let dataset = SeedDataset::generate(Scale::smoke());
+        assert_eq!(dataset.scale.board_dense_open, 0);
+        assert!(dataset.board_dense_open_count() < 50);
+    }
+
+    #[test]
+    fn dense_cell_assertion_fails_when_board_density_is_broken() {
+        // Falsifiability transcript: zero board density under a "full-shaped"
+        // scale fails the >=500 gate used by harness unit tests.
+        let mut scale = Scale::full();
+        scale.board_dense_open = 0;
+        let dataset = SeedDataset::generate(scale);
+        let dense = dataset.board_dense_open_count();
+        assert!(
+            dense < 500,
+            "broken density must leave the cell under 500 open tickets, got {dense}"
+        );
+        // Restore path: Scale::full() recovers the dense cell.
+        let restored = SeedDataset::generate(Scale::full());
+        assert!(restored.board_dense_open_count() >= 500);
+    }
 
     #[test]
     fn write_probes_are_disjoint_from_read_probes() {
@@ -473,7 +616,66 @@ mod tests {
                 .expect("write ticket exists in the dataset");
             assert_ne!(write_ticket.project_id, probes.project_id);
             assert_ne!(write_ticket.assignee_id, probes.assignee_id);
+            // Board cell: write project AND write ticket must be disjoint from
+            // the dense board project so board_page_* cardinality is fixed.
+            assert_ne!(
+                probes.write_project_id, probes.board_project_id,
+                "write_project_id must not be the board cell project"
+            );
+            assert_ne!(
+                write_ticket.project_id, probes.board_project_id,
+                "write_ticket must not live in the board cell"
+            );
+            // Board cell stays out of ordinary list probes when density is on.
+            if scale.board_dense_open > 0 {
+                assert_ne!(probes.project_id, probes.board_project_id);
+                assert_eq!(
+                    dataset
+                        .tickets
+                        .iter()
+                        .find(|ticket| ticket.ticket_id == probes.ticket_id)
+                        .map(|ticket| ticket.status),
+                    Some(TicketStatus::Open)
+                );
+            }
         }
+    }
+
+    #[test]
+    fn write_probe_board_disjointness_fails_when_write_lands_on_board() {
+        // Falsifiability: if write probes point at the board project, the
+        // board-disjointness assertion must fire.
+        let dataset = SeedDataset::generate(Scale::full());
+        let mut probes = dataset.probes();
+        probes.write_project_id = probes.board_project_id;
+        // Also place the write ticket on the board (as the broken selection did).
+        let board_ticket = dataset
+            .tickets
+            .iter()
+            .find(|ticket| ticket.project_id == probes.board_project_id)
+            .expect("board has tickets");
+        probes.write_ticket_id = board_ticket.ticket_id;
+
+        let write_ticket = dataset
+            .tickets
+            .iter()
+            .find(|ticket| ticket.ticket_id == probes.write_ticket_id)
+            .expect("write ticket exists");
+        let board_project_ok = probes.write_project_id != probes.board_project_id;
+        let board_ticket_ok = write_ticket.project_id != probes.board_project_id;
+        assert!(
+            !board_project_ok || !board_ticket_ok,
+            "broken write probe must fail board-disjointness"
+        );
+        // Restore: regenerated probes satisfy the invariant.
+        let restored = dataset.probes();
+        let restored_write = dataset
+            .tickets
+            .iter()
+            .find(|ticket| ticket.ticket_id == restored.write_ticket_id)
+            .expect("restored write ticket");
+        assert_ne!(restored.write_project_id, restored.board_project_id);
+        assert_ne!(restored_write.project_id, restored.board_project_id);
     }
 
     #[test]
