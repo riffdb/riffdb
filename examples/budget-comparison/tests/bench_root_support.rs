@@ -63,34 +63,70 @@ mod tests {
 
     #[test]
     fn root_env_alone_does_not_allow_tmpfs() {
-        // Resolve a path under the process temp dir without ALLOW env → hard error when tmpfs.
+        // Construct options that mirror the conflation bug shape: a path under
+        // process temp (tmpfs on this host) with allow_tmpfs=false. Setting
+        // ROOT env is not required for resolve when cli_override is set; the
+        // contract under test is that allow is NEVER implied by a path choice.
         let under_tmp = std::env::temp_dir().join(format!(
             "budget-bench-root-gate-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = std::fs::remove_dir_all(&under_tmp);
-        // Do not set ALLOW; only set what resolve would treat as CLI override path.
+
+        // Verify host temp is RAM-backed; otherwise skip with an explicit message
+        // so disk-backed CI still documents the contract.
+        let probe = BenchRoot::resolve(BenchRootOptions {
+            harness: "budget-comparison-probe",
+            cli_override: Some(under_tmp.clone()),
+            default_root: under_tmp.clone(),
+            allow_tmpfs: true,
+            min_free_bytes: 0,
+        });
+        let is_tmpfs = match &probe {
+            Ok(root) => root.medium().is_ram_backed(),
+            Err(BenchRootError::RamBacked { .. }) => true,
+            Err(_) => false,
+        };
+        if let Ok(root) = probe {
+            let _ = std::fs::remove_dir_all(root.path());
+        }
+        if !is_tmpfs {
+            eprintln!(
+                "root_env_alone_does_not_allow_tmpfs: skip — host temp_dir is not RAM-backed"
+            );
+            let _ = std::fs::remove_dir_all(&under_tmp);
+            return;
+        }
+
+        // ROOT env may be set by wrappers; ALLOW must remain absent.
+        assert!(
+            std::env::var_os("RIFFDB_BENCH_ALLOW_TMPFS").is_none(),
+            "test assumes ALLOW is unset"
+        );
+        let _ = BENCH_DB_ROOT_ENV; // document the env name under test
+
         let err = BenchRoot::resolve(BenchRootOptions {
             harness: "budget-comparison-test",
             cli_override: Some(under_tmp.clone()),
             default_root: under_tmp.clone(),
             allow_tmpfs: false,
             min_free_bytes: 0,
-        });
+        })
+        .expect_err("tmpfs path without allow_tmpfs must refuse");
+        let text = err.to_string();
         match err {
-            Err(BenchRootError::RamBacked { .. }) => {}
-            Ok(root) => {
-                // Host temp is not tmpfs; still assert allow_tmpfs is not implied by env name.
-                let _ = std::fs::remove_dir_all(root.path());
+            BenchRootError::RamBacked { fstype, .. } => {
                 assert!(
-                    std::env::var_os(BENCH_DB_ROOT_ENV).is_none()
-                        || std::env::var_os("RIFFDB_BENCH_ALLOW_TMPFS").is_none()
-                        || true,
-                    "ROOT env must not be the allow switch"
+                    fstype == "tmpfs" || fstype == "ramfs",
+                    "unexpected fstype {fstype}"
+                );
+                assert!(
+                    text.contains("RAM-backed") || text.contains("tmpfs") || text.contains("allow"),
+                    "refusal message must name the policy: {text}"
                 );
             }
-            Err(other) => panic!("unexpected: {other}"),
+            other => panic!("expected RamBacked refusal, got {other}"),
         }
         let _ = std::fs::remove_dir_all(&under_tmp);
     }

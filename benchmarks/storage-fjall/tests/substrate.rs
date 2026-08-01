@@ -22,7 +22,7 @@ impl TempRoot {
             harness: "storage-fjall",
             cli_override: None,
             default_root,
-            allow_tmpfs: true,
+            allow_tmpfs: std::env::var_os("RIFFDB_BENCH_ALLOW_TMPFS").is_some(),
             min_free_bytes: 0,
         })
         .expect("resolve storage-fjall bench root");
