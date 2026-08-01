@@ -1,7 +1,7 @@
 //! Shared authorization and durable service-audit orchestration.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -55,8 +55,29 @@ pub(crate) struct BegunInvocation {
     started: bool,
     deferred_start: AtomicBool,
     initial_authorization: Box<AuthorizedOperation>,
+    /// Capability-view generation observed immediately after the begin evaluation.
+    ///
+    /// Used by revision-checked reauthorization: when the generation is still
+    /// equal and the request target is identical, the begin decision stands
+    /// without a full storage-backed re-evaluation. The safe point still runs
+    /// — it consults current state via the generation.
+    policy_generation_at_begin: u64,
     lifecycle: Arc<OperationAuditLifecycle>,
 }
+
+/// Test hook: when true, generation comparison always reports equal so the
+/// cheap reauth path is taken even after a real view mutation. Used solely by
+/// the security falsifiability transcript (neuter → test fails → restore).
+#[doc(hidden)]
+pub static FORCE_GENERATION_ALWAYS_EQUAL: AtomicBool = AtomicBool::new(false);
+
+/// Test counter of full (non-cheap) reauthorization evaluations.
+#[doc(hidden)]
+pub static FULL_REAUTHORIZE_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Test counter of generation-checked cheap reauthorization hits.
+#[doc(hidden)]
+pub static CHEAP_REAUTHORIZE_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Retained audit authority after a one-use initial policy proof is consumed.
 pub(crate) struct BegunInvocationCompletion {
@@ -796,6 +817,33 @@ impl BegunInvocation {
             return Err(ServiceFailure::DeadlineExceeded);
         }
 
+        // Generation-checked reauthorization (unchanged-world cheap path).
+        // The safe point still executes: it loads the current generation and
+        // compares it to the begin evaluation. When equal and the operation
+        // target is identical, the prior decision stands. When the generation
+        // moved (create/update/revoke/bootstrap published) or the target
+        // differs, fall through to full re-evaluation — byte-identical to the
+        // historical path.
+        //
+        // Race window is no wider than today: a concurrent revoke either has
+        // not yet published (old generation → same as reading the view before
+        // publish) or has published (new generation → full re-eval fails
+        // closed). Do not cache across requests; generation is per-invocation.
+        if request == self.request {
+            let mut current_generation = service.providers.policy.capability_view_generation();
+            if FORCE_GENERATION_ALWAYS_EQUAL.load(Ordering::Relaxed) {
+                current_generation = self.policy_generation_at_begin;
+            }
+            if current_generation == self.policy_generation_at_begin {
+                CHEAP_REAUTHORIZE_COUNT.fetch_add(1, Ordering::Relaxed);
+                return Ok(Box::new(
+                    self.initial_authorization.reissue_for_unchanged_view(),
+                ));
+            }
+        }
+
+        FULL_REAUTHORIZE_COUNT.fetch_add(1, Ordering::Relaxed);
+
         match service
             .providers
             .policy
@@ -1210,6 +1258,17 @@ impl RiffDbServiceInner {
             return Err(ServiceFailure::DeadlineExceeded);
         }
 
+        // Capture generation *before* the begin evaluation. A concurrent
+        // publish (create/update/revoke/bootstrap) that races the evaluation
+        // either:
+        //   - is already visible to authorize (decision reflects it), or
+        //   - lands after this load so recheck sees a moved generation and
+        //     falls through to full re-evaluation.
+        // Capturing after authorize would allow a revoke between the decision
+        // and the generation load to stamp a post-revoke generation onto an
+        // Allow decision, wrongly enabling the cheap reissue path.
+        let policy_generation_at_begin = self.providers.policy.capability_view_generation();
+
         let authorization = match self
             .providers
             .policy
@@ -1322,6 +1381,7 @@ impl RiffDbServiceInner {
             started,
             deferred_start: AtomicBool::new(defer_command_start && started),
             initial_authorization: authorization,
+            policy_generation_at_begin,
             lifecycle,
         })
     }

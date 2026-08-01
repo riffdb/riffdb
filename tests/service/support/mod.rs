@@ -2163,6 +2163,12 @@ pub(crate) struct HarnessPolicy {
     panic_next: AtomicBool,
     capability_order: Arc<Mutex<Vec<&'static str>>>,
     discovery_order: Arc<Mutex<Vec<&'static str>>>,
+    /// Monotonic generation for revision-checked reauthorization tests.
+    capability_view_generation: AtomicU64,
+    /// When false (default), each generation observation is unique so existing
+    /// harness call-count tests exercise the full reauth path. Security and
+    /// cheap-path tests enable stable generation explicitly.
+    stable_capability_view_generation: AtomicBool,
 }
 
 impl HarnessPolicy {
@@ -2348,6 +2354,8 @@ impl HarnessPolicy {
             panic_next: AtomicBool::new(false),
             capability_order,
             discovery_order,
+            capability_view_generation: AtomicU64::new(0),
+            stable_capability_view_generation: AtomicBool::new(false),
         }
     }
 
@@ -2356,12 +2364,34 @@ impl HarnessPolicy {
     }
 
     fn revoke(&self) {
+        // Bump generation before/with the fixture revoke so revision-checked
+        // reauthorization falls through to a full evaluation against the
+        // revoked capability — same publication ordering as production view
+        // publish under the capability write lock.
+        self.capability_view_generation
+            .fetch_add(1, Ordering::Release);
         self.fixture
             .revoke_current(timestamp(BASE_SECONDS + 15))
             .expect("revoke current harness capability");
         self.narrowed_fixture
             .revoke_current(timestamp(BASE_SECONDS + 15))
             .expect("revoke narrowed harness capability");
+    }
+
+    /// Enables stable capability-view generation for revision-checked reauth tests.
+    pub(crate) fn enable_stable_capability_view_generation(&self) {
+        self.stable_capability_view_generation
+            .store(true, Ordering::Release);
+    }
+
+    /// Bumps the capability-view generation without revoking (shape-divergence tests).
+    pub(crate) fn bump_capability_view_generation(&self) {
+        self.capability_view_generation
+            .fetch_add(1, Ordering::Release);
+    }
+
+    pub(crate) fn capability_view_generation_value(&self) -> u64 {
+        self.capability_view_generation.load(Ordering::Acquire)
     }
 
     fn use_narrowed_for_next_allow(&self) {
@@ -2493,6 +2523,21 @@ impl riffdb_service::CurrentPolicyPort for HarnessPolicy {
             }
         }
         Ok(decision)
+    }
+
+    fn capability_view_generation(&self) -> u64 {
+        if self
+            .stable_capability_view_generation
+            .load(Ordering::Acquire)
+        {
+            self.capability_view_generation.load(Ordering::Acquire)
+        } else {
+            // Unstable mode: every observation is unique so reauthorization
+            // always falls through to full evaluation (preserves legacy
+            // harness call-count semantics).
+            self.capability_view_generation
+                .fetch_add(1, Ordering::AcqRel)
+        }
     }
 }
 

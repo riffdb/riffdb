@@ -34,6 +34,9 @@ pub use failure::*;
 pub use maintenance_operations::{
     RecoveryOfflineMaintenanceService, RestoreRetryOfflineMaintenanceService,
 };
+pub use orchestration::{
+    CHEAP_REAUTHORIZE_COUNT, FORCE_GENERATION_ALWAYS_EQUAL, FULL_REAUTHORIZE_COUNT,
+};
 pub use ports::*;
 pub use response::*;
 pub use riffdb_query_executor::QueryParameters;

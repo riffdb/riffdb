@@ -247,6 +247,17 @@ pub trait CurrentPolicyPort: Send + Sync {
     ) -> Result<OfflineMaintenanceDecision, AuthorizationError> {
         Err(AuthorizationError::CurrentCapabilityUnavailable)
     }
+
+    /// Returns the current capability-view generation for revision-checked reauthorization.
+    ///
+    /// Default implementation returns a unique value on every call so ports that
+    /// do not publish a monotonic generation always fall through to full
+    /// re-evaluation (fail closed on cost, never on outcomes).
+    fn capability_view_generation(&self) -> u64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static FALLBACK: AtomicU64 = AtomicU64::new(1);
+        FALLBACK.fetch_add(1, Ordering::Relaxed)
+    }
 }
 
 impl<R, C, T> CurrentPolicyPort for CurrentAuthorizer<'_, R, C, T>
@@ -1011,12 +1022,24 @@ impl CapacityRejectionStage {
     pub const ALL: [Self; 2] = [Self::QueueDepth, Self::RetainedBytes];
 }
 
-/// Closed stages of the service-side symbolic read pipeline.
+/// Closed stages of the end-to-end symbolic read pipeline.
 ///
 /// Stage identities are redaction-safe metric labels only. They never carry
 /// application values, plan hashes, or request parameters.
+///
+/// Transport residual stages (`TransportAdapt`, `Authn`, `AdmissionContext`,
+/// `SpawnDispatch`, `EncodeConvert`) decompose the client-visible gap outside
+/// the original seven service-side stages. Codec internals stay uninstrumented.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ReadPipelineStage {
+    /// gRPC request split and protobuf → domain conversion.
+    TransportAdapt,
+    /// Credential authentication for a normal request.
+    Authn,
+    /// Lifecycle admission and request-context assembly excluding authentication.
+    AdmissionContext,
+    /// Service spawn submission until the job body first runs.
+    SpawnDispatch,
     /// Named-query contract selection and module/query plan lookup.
     PlanLookup,
     /// Parameter materialization and cursor-lookup identity construction.
@@ -1031,11 +1054,17 @@ pub enum ReadPipelineStage {
     AuthorizePost,
     /// Snapshot-to-response projection assembly.
     ResponseBuild,
+    /// Domain result → protobuf response conversion.
+    EncodeConvert,
 }
 
 impl ReadPipelineStage {
     /// Every read-pipeline stage in stable metric and shutdown-line order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 12] = [
+        Self::TransportAdapt,
+        Self::Authn,
+        Self::AdmissionContext,
+        Self::SpawnDispatch,
         Self::PlanLookup,
         Self::ParamMaterialize,
         Self::AuthorizeBegin,
@@ -1043,12 +1072,17 @@ impl ReadPipelineStage {
         Self::Execute,
         Self::AuthorizePost,
         Self::ResponseBuild,
+        Self::EncodeConvert,
     ];
 
     /// Stable snake_case label value for the `{stage}` metric dimension.
     #[must_use]
     pub const fn metric_label(self) -> &'static str {
         match self {
+            Self::TransportAdapt => "transport_adapt",
+            Self::Authn => "authn",
+            Self::AdmissionContext => "admission_context",
+            Self::SpawnDispatch => "spawn_dispatch",
             Self::PlanLookup => "plan_lookup",
             Self::ParamMaterialize => "param_materialize",
             Self::AuthorizeBegin => "authorize_begin",
@@ -1056,6 +1090,7 @@ impl ReadPipelineStage {
             Self::Execute => "execute",
             Self::AuthorizePost => "authorize_post",
             Self::ResponseBuild => "response_build",
+            Self::EncodeConvert => "encode_convert",
         }
     }
 }
