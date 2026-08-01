@@ -1,0 +1,25 @@
+query BoardPage450(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $status: TicketStatus,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == $status
+        order by ticket_id asc
+        take 450
+
+    return Found {
+        tickets: tickets {
+            ticket_id
+            project_id
+            title
+            status
+            reporter_id
+            assignee_id
+        }
+    }
+
+    outcomes Found
+}

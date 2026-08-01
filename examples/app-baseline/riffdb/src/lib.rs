@@ -25,13 +25,14 @@ use riffdb_client_rust::{
     GeneratedBatchOptions, GeneratedBatchResult, StableApplicationClient,
 };
 use riffdb_ticketdesk::{
-    AddProjectMemberInput, AttachLabelInput, CloseTicketWithCommentInput, CreateCommentInput,
-    CreateLabelInput, CreateOrganizationInput, CreateProjectInput, CreateTicketInput,
-    CreateUserInput, GetTicketParams, GetTicketResult, GetUserParams, GetUserResult,
-    ListCommentsParams, ListCommentsResult, ListTicketsByAssigneeParams,
-    ListTicketsByAssigneeResult, ListTicketsParams, ListTicketsResult, OpenTicketWithLabelsInput,
-    ProjectMembersParams, ProjectMembersResult, SwapMemberRolesInput, TicketDeskClient,
-    TicketPageParams, TicketPageResult,
+    AddProjectMemberInput, AttachLabelInput, BoardPage50Params, BoardPage50Result,
+    BoardPage200Params, BoardPage200Result, BoardPage450Params, BoardPage450Result,
+    CloseTicketWithCommentInput, CreateCommentInput, CreateLabelInput, CreateOrganizationInput,
+    CreateProjectInput, CreateTicketInput, CreateUserInput, GetTicketParams, GetTicketResult,
+    GetUserParams, GetUserResult, ListCommentsParams, ListCommentsResult,
+    ListTicketsByAssigneeParams, ListTicketsByAssigneeResult, ListTicketsParams, ListTicketsResult,
+    OpenTicketWithLabelsInput, ProjectMembersParams, ProjectMembersResult, SwapMemberRolesInput,
+    TicketDeskClient, TicketPageParams, TicketPageResult,
 };
 use tonic::transport::Endpoint;
 
@@ -423,6 +424,112 @@ impl AppBackend for RiffDbPublicBackend {
                     })
                 })
                 .collect()
+        })
+    }
+
+    fn board_page(
+        &mut self,
+        organization_id: UuidBytes,
+        project_id: UuidBytes,
+        status: TicketStatus,
+        limit: u32,
+    ) -> Result<Vec<TicketRow>, Self::Error> {
+        // Static BoardPage50/200/450 only. take 500 (static or runtime Limit)
+        // trips MAX_QUERY_SCANNED_ROWS=500 via continuation probe (scan 501 →
+        // RDB-INTERNAL-0001; incident 019fbf5b-1a64-7877-94c3-47d7a0763539).
+        self.block_on(async {
+            let org = uuid_text(organization_id);
+            let project = uuid_text(project_id);
+            let status_s = status_name(status).to_owned();
+            // Each static query has a distinct generated row type; decode to
+            // TicketRow inside each arm so the match unifies.
+            match limit {
+                50 => {
+                    let BoardPage50Result::Found(found) = self
+                        .ticketdesk()
+                        .board_page50(BoardPage50Params {
+                            organization_id: org,
+                            project_id: project,
+                            status: status_s,
+                        })
+                        .await
+                        .map_err(map_app)?;
+                    found
+                        .tickets
+                        .into_iter()
+                        .map(|ticket| {
+                            Ok(TicketRow {
+                                organization_id,
+                                ticket_id: parse_uuid(&ticket.ticket_id)?,
+                                project_id: parse_uuid(&ticket.project_id)?,
+                                reporter_id: parse_uuid(&ticket.reporter_id)?,
+                                assignee_id: parse_uuid(&ticket.assignee_id)?,
+                                status: parse_status(&ticket.status)?,
+                                title: ticket.title,
+                            })
+                        })
+                        .collect()
+                }
+                200 => {
+                    let BoardPage200Result::Found(found) = self
+                        .ticketdesk()
+                        .board_page200(BoardPage200Params {
+                            organization_id: org,
+                            project_id: project,
+                            status: status_s,
+                        })
+                        .await
+                        .map_err(map_app)?;
+                    found
+                        .tickets
+                        .into_iter()
+                        .map(|ticket| {
+                            Ok(TicketRow {
+                                organization_id,
+                                ticket_id: parse_uuid(&ticket.ticket_id)?,
+                                project_id: parse_uuid(&ticket.project_id)?,
+                                reporter_id: parse_uuid(&ticket.reporter_id)?,
+                                assignee_id: parse_uuid(&ticket.assignee_id)?,
+                                status: parse_status(&ticket.status)?,
+                                title: ticket.title,
+                            })
+                        })
+                        .collect()
+                }
+                450 => {
+                    let BoardPage450Result::Found(found) = self
+                        .ticketdesk()
+                        .board_page450(BoardPage450Params {
+                            organization_id: org,
+                            project_id: project,
+                            status: status_s,
+                        })
+                        .await
+                        .map_err(map_app)?;
+                    found
+                        .tickets
+                        .into_iter()
+                        .map(|ticket| {
+                            Ok(TicketRow {
+                                organization_id,
+                                ticket_id: parse_uuid(&ticket.ticket_id)?,
+                                project_id: parse_uuid(&ticket.project_id)?,
+                                reporter_id: parse_uuid(&ticket.reporter_id)?,
+                                assignee_id: parse_uuid(&ticket.assignee_id)?,
+                                status: parse_status(&ticket.status)?,
+                                title: ticket.title,
+                            })
+                        })
+                        .collect()
+                }
+                other => Err(RiffDbError::Application {
+                    code: "RDB-INTERNAL-0001".to_owned(),
+                    detail: format!(
+                        "board_page limit {other} has no static BoardPage query \
+                         (only 50/200/450; take 500 trips MAX_QUERY_SCANNED_ROWS via continuation probe)"
+                    ),
+                }),
+            }
         })
     }
 

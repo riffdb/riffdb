@@ -55,6 +55,18 @@ const MODULE_NAME: &str = "ticketdesk";
 const MODULE_VERSION: u64 = 1;
 const QUERY_SOURCES: &[(&str, &str)] = &[
     (
+        "BoardPage200",
+        include_str!("../../../../queries/ticketdesk/board_page_200.riffq"),
+    ),
+    (
+        "BoardPage450",
+        include_str!("../../../../queries/ticketdesk/board_page_450.riffq"),
+    ),
+    (
+        "BoardPage50",
+        include_str!("../../../../queries/ticketdesk/board_page_50.riffq"),
+    ),
+    (
         "GetTicket",
         include_str!("../../../../queries/ticketdesk/get_ticket.riffq"),
     ),

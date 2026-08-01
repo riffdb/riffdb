@@ -7,7 +7,7 @@ export TZ=UTC
 usage() {
     printf '%s\n' \
         'usage: benchmarks/run-app-baseline [--self-test]' \
-        '         | [--smoke|--full] [--samples N] [--warmup N]' \
+        '         | [--smoke|--full] [--samples N] [--warmup N] [--board-density N]' \
         '         [--concurrent-clients N] [--concurrent-operations N]' \
         '         [--load interactive|agent|membership_contention] [--load-clients N] [--load-duration-secs N]' \
         '         [--load-warmup-secs N] [--load-zipf-s F] [--load-contended]' \
@@ -47,6 +47,7 @@ fi
 mode=smoke
 samples=
 warmup=
+board_density=
 skip_postgres=0
 skip_riffdb=0
 assert_write_parity=0
@@ -81,6 +82,11 @@ while (($#)); do
         --warmup)
             (($# >= 2)) || usage
             warmup="$2"
+            shift 2
+            ;;
+        --board-density)
+            (($# >= 2)) || usage
+            board_density="$2"
             shift 2
             ;;
         --concurrent-clients)
@@ -198,6 +204,7 @@ else
 fi
 [[ -n "$samples" ]] && extra_args+=(--samples "$samples")
 [[ -n "$warmup" ]] && extra_args+=(--warmup "$warmup")
+[[ -n "$board_density" ]] && extra_args+=(--board-density "$board_density")
 [[ -n "$concurrent_clients" ]] && extra_args+=(--concurrent-clients "$concurrent_clients")
 [[ -n "$concurrent_operations" ]] && extra_args+=(--concurrent-operations "$concurrent_operations")
 [[ -n "$load_profile" ]] && extra_args+=(--load "$load_profile")

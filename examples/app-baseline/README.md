@@ -38,6 +38,7 @@ Contract source: `contracts/ticketdesk.riff` (deployed to `riffdbd` at runtime).
 | `list_comments_for_ticket` | filtered `SELECT` | named `ListComments` |
 | `list_project_members` | filtered `SELECT` | named `ProjectMembers` |
 | `ticket_detail_page` | multi-table `JOIN` | named `TicketPage` (dependent key batches) |
+| `board_page_50` / `_200` / `_450` | wide `SELECT` + `ORDER BY ticket_id` + `LIMIT n` | static named `BoardPage50`/`200`/`450` (literal `take N`; take 500 trips scan ceiling+probe) |
 | `create_comment` | plain `INSERT` of a distinct new row per sample | symbolic `CreateComment` |
 | `close_ticket_with_comment` | SQL txn: validate + `UPDATE` ticket + `INSERT` comment | one symbolic `CloseTicketWithComment` (mutate + create) |
 | `swap_member_roles` | SQL txn: two `UPDATE` memberships | one symbolic `SwapMemberRoles` (two mutates) |
@@ -51,8 +52,19 @@ From the repository root:
 # smoke (small dataset, few samples)
 ./benchmarks/run-app-baseline --smoke
 
-# larger baseline (thousands of rows)
+# larger baseline (thousands of rows; densifies org-0/project-0 with 600 open tickets
+# so board_page_50/200/450 are real size curves; reports board_marginal_ns_per_row)
 ./benchmarks/run-app-baseline --full
+
+# optional: override board cell density (default full=600, smoke=0 / board skipped)
+./benchmarks/run-app-baseline --full --board-density 800
+
+## Seed generation
+
+`seed_generation: 2` (board-density layout) is recorded in every report. Full
+profile ticket count and probe keys changed vs pre-B1 generation 1 (~2000
+tickets / ~15160 rows → densified board cell). **Pre-B1 `--full` baselines are
+superseded and not comparable.**
 
 # fail unless the same-run seed and every write p50 are within 2x PostgreSQL
 ./benchmarks/run-app-baseline --full --assert-write-parity

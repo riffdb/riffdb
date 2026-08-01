@@ -4,7 +4,7 @@ use riffdb_client_rust::generated::{GeneratedCommand, GeneratedCommandError, Gen
 use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, ApplicationContract, ApplicationUuid, ApplicationRecord, ApplicationValue, AttemptBudget, CallMetadata, GeneratedBatchError, GeneratedBatchOptions, GeneratedBatchProgress, GeneratedBatchResult, IdempotentCommand, NamedQuery, NamedQueryResult, QueryOptions, StableApplicationClient, TypedCommandResult, TypedQueryResult, v1};
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0x05, 0x79, 0xff, 0xc8, 0xef, 0x99, 0x70, 0x23, 0xa2, 0x47, 0x2e, 0xf8, 0x4b, 0xc5, 0xea, 0x1a, 0x41, 0xa1, 0xaa, 0xff, 0x64, 0xca, 0x96, 0x3a, 0xab, 0xb3, 0xbe, 0x04, 0x8f, 0x44, 0xf1, 0x5a];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0xb3, 0x0a, 0x87, 0x1c, 0x77, 0x17, 0x42, 0xb0, 0xc5, 0x54, 0xb8, 0x55, 0xdf, 0x35, 0x18, 0x26, 0x62, 0x52, 0x94, 0xe6, 0x84, 0x71, 0x6a, 0x08, 0x6f, 0xa5, 0x86, 0xc2, 0x49, 0x78, 0x58, 0x43];
 pub const CONTRACT_LINEAGE: &str = "TicketDesk";
 pub const CONTRACT_VERSION: u64 = 1;
 
@@ -25,6 +25,243 @@ pub struct MoneyValue {
 pub struct TimestampValue {
     pub seconds: i64,
     pub nanos: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoardPage200Params {
+    pub organization_id: String,
+    pub project_id: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoardPage200FoundTickets {
+    pub ticket_id: String,
+    pub project_id: String,
+    pub title: String,
+    pub status: String,
+    pub reporter_id: String,
+    pub assignee_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoardPage200Found {
+    pub tickets: Vec<BoardPage200FoundTickets>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BoardPage200Result {
+    Found(Box<BoardPage200Found>),
+}
+
+pub const BOARD_PAGE200_QUERY_PLAN_HASH: [u8; 32] = [0x0a, 0x1a, 0xe6, 0x18, 0x49, 0x06, 0x25, 0xe0, 0x84, 0x7b, 0x4e, 0xb7, 0xef, 0x01, 0x58, 0x7d, 0xa1, 0x3d, 0xbb, 0xcc, 0x29, 0xbb, 0xa0, 0x77, 0xcd, 0x12, 0x95, 0x42, 0x11, 0xb5, 0xdb, 0xf3];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoardPage200Query(pub BoardPage200Params);
+impl GeneratedQuery for BoardPage200Query {
+    type Output = BoardPage200Result;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("project_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.project_id)?));
+        parameters.insert("status".to_owned(), ApplicationValue::Enum(self.0.status));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "BoardPage200",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(BOARD_PAGE200_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = BoardPage200Found {
+                    tickets: many_result_records(take_result_field(&mut response.fields, "tickets")?)?.into_iter().map(decode_board_page200_found_tickets_record).collect::<Result<Vec<_>, _>>()?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(BoardPage200Result::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_board_page200_found_tickets_record(mut record: ApplicationRecord) -> Result<BoardPage200FoundTickets, ApplicationClientError> {
+    let value = BoardPage200FoundTickets {
+        ticket_id: application_uuid(take_application_value(&mut record.fields, "ticket_id")?)?,
+        project_id: application_uuid(take_application_value(&mut record.fields, "project_id")?)?,
+        title: application_string(take_application_value(&mut record.fields, "title")?)?,
+        status: application_enum(take_application_value(&mut record.fields, "status")?)?,
+        reporter_id: application_uuid(take_application_value(&mut record.fields, "reporter_id")?)?,
+        assignee_id: application_uuid(take_application_value(&mut record.fields, "assignee_id")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoardPage450Params {
+    pub organization_id: String,
+    pub project_id: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoardPage450FoundTickets {
+    pub ticket_id: String,
+    pub project_id: String,
+    pub title: String,
+    pub status: String,
+    pub reporter_id: String,
+    pub assignee_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoardPage450Found {
+    pub tickets: Vec<BoardPage450FoundTickets>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BoardPage450Result {
+    Found(Box<BoardPage450Found>),
+}
+
+pub const BOARD_PAGE450_QUERY_PLAN_HASH: [u8; 32] = [0xad, 0xa0, 0x7f, 0xe7, 0xeb, 0x69, 0xa1, 0xaf, 0xec, 0x54, 0x7f, 0xc8, 0x08, 0xde, 0x84, 0x80, 0x3e, 0x57, 0x70, 0xff, 0xfe, 0x02, 0x4c, 0x52, 0xa0, 0x24, 0x3d, 0x1b, 0x09, 0x48, 0x3b, 0x02];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoardPage450Query(pub BoardPage450Params);
+impl GeneratedQuery for BoardPage450Query {
+    type Output = BoardPage450Result;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("project_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.project_id)?));
+        parameters.insert("status".to_owned(), ApplicationValue::Enum(self.0.status));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "BoardPage450",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(BOARD_PAGE450_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = BoardPage450Found {
+                    tickets: many_result_records(take_result_field(&mut response.fields, "tickets")?)?.into_iter().map(decode_board_page450_found_tickets_record).collect::<Result<Vec<_>, _>>()?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(BoardPage450Result::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_board_page450_found_tickets_record(mut record: ApplicationRecord) -> Result<BoardPage450FoundTickets, ApplicationClientError> {
+    let value = BoardPage450FoundTickets {
+        ticket_id: application_uuid(take_application_value(&mut record.fields, "ticket_id")?)?,
+        project_id: application_uuid(take_application_value(&mut record.fields, "project_id")?)?,
+        title: application_string(take_application_value(&mut record.fields, "title")?)?,
+        status: application_enum(take_application_value(&mut record.fields, "status")?)?,
+        reporter_id: application_uuid(take_application_value(&mut record.fields, "reporter_id")?)?,
+        assignee_id: application_uuid(take_application_value(&mut record.fields, "assignee_id")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoardPage50Params {
+    pub organization_id: String,
+    pub project_id: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoardPage50FoundTickets {
+    pub ticket_id: String,
+    pub project_id: String,
+    pub title: String,
+    pub status: String,
+    pub reporter_id: String,
+    pub assignee_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoardPage50Found {
+    pub tickets: Vec<BoardPage50FoundTickets>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BoardPage50Result {
+    Found(Box<BoardPage50Found>),
+}
+
+pub const BOARD_PAGE50_QUERY_PLAN_HASH: [u8; 32] = [0x56, 0x88, 0xca, 0x0c, 0x7f, 0xc2, 0x93, 0xfb, 0xe5, 0x61, 0x45, 0x37, 0x61, 0x05, 0xa7, 0x9f, 0x70, 0x87, 0x3b, 0x34, 0xf8, 0x47, 0xf5, 0x75, 0x0a, 0xb8, 0xce, 0x36, 0xed, 0x9a, 0xb2, 0x92];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoardPage50Query(pub BoardPage50Params);
+impl GeneratedQuery for BoardPage50Query {
+    type Output = BoardPage50Result;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("project_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.project_id)?));
+        parameters.insert("status".to_owned(), ApplicationValue::Enum(self.0.status));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "BoardPage50",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(BOARD_PAGE50_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = BoardPage50Found {
+                    tickets: many_result_records(take_result_field(&mut response.fields, "tickets")?)?.into_iter().map(decode_board_page50_found_tickets_record).collect::<Result<Vec<_>, _>>()?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(BoardPage50Result::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_board_page50_found_tickets_record(mut record: ApplicationRecord) -> Result<BoardPage50FoundTickets, ApplicationClientError> {
+    let value = BoardPage50FoundTickets {
+        ticket_id: application_uuid(take_application_value(&mut record.fields, "ticket_id")?)?,
+        project_id: application_uuid(take_application_value(&mut record.fields, "project_id")?)?,
+        title: application_string(take_application_value(&mut record.fields, "title")?)?,
+        status: application_enum(take_application_value(&mut record.fields, "status")?)?,
+        reporter_id: application_uuid(take_application_value(&mut record.fields, "reporter_id")?)?,
+        assignee_id: application_uuid(take_application_value(&mut record.fields, "assignee_id")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2014,6 +2251,27 @@ pub struct TicketDeskClient {
 impl TicketDeskClient {
     pub const fn new(client: StableApplicationClient, metadata: CallMetadata, command_attempts: AttemptBudget) -> Self {
         Self { client, metadata, command_attempts }
+    }
+
+    pub async fn board_page200(&mut self, parameters: BoardPage200Params) -> Result<BoardPage200Result, ApplicationClientError> {
+        Ok(self.board_page200_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    pub async fn board_page200_with_options(&mut self, parameters: BoardPage200Params, options: QueryOptions) -> Result<TypedQueryResult<BoardPage200Result>, ApplicationClientError> {
+        self.client.execute_generated_query(BoardPage200Query(parameters), options, &self.metadata).await
+    }
+
+    pub async fn board_page450(&mut self, parameters: BoardPage450Params) -> Result<BoardPage450Result, ApplicationClientError> {
+        Ok(self.board_page450_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    pub async fn board_page450_with_options(&mut self, parameters: BoardPage450Params, options: QueryOptions) -> Result<TypedQueryResult<BoardPage450Result>, ApplicationClientError> {
+        self.client.execute_generated_query(BoardPage450Query(parameters), options, &self.metadata).await
+    }
+
+    pub async fn board_page50(&mut self, parameters: BoardPage50Params) -> Result<BoardPage50Result, ApplicationClientError> {
+        Ok(self.board_page50_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    pub async fn board_page50_with_options(&mut self, parameters: BoardPage50Params, options: QueryOptions) -> Result<TypedQueryResult<BoardPage50Result>, ApplicationClientError> {
+        self.client.execute_generated_query(BoardPage50Query(parameters), options, &self.metadata).await
     }
 
     pub async fn get_ticket(&mut self, parameters: GetTicketParams) -> Result<GetTicketResult, ApplicationClientError> {
