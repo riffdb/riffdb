@@ -540,6 +540,23 @@ fn the_revision_checked_reauthorization_shortcut_is_reachable_only_from_the_read
         "the reissue rule must have exactly one call site in service orchestration"
     );
 
+    // The pin covers the whole crate, not just orchestration: a reissue call
+    // appearing in any other service source would bypass the read-entry scoping.
+    let mut crate_wide_uses = 0;
+    for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))
+        .expect("service src dir")
+    {
+        let path = entry.expect("src entry").path();
+        if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            let source = std::fs::read_to_string(&path).expect("service source");
+            crate_wide_uses += source.matches("reissue_for_unchanged_view(").count();
+        }
+    }
+    assert_eq!(
+        crate_wide_uses, 1,
+        "the reissue rule must have exactly one call site across the whole service crate"
+    );
+
     let invocation = ORCHESTRATION_SOURCE
         .split_once("impl BegunInvocation {")
         .expect("the begun-invocation impl exists")
