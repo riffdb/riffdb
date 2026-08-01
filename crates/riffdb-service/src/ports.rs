@@ -1011,6 +1011,55 @@ impl CapacityRejectionStage {
     pub const ALL: [Self; 2] = [Self::QueueDepth, Self::RetainedBytes];
 }
 
+/// Closed stages of the service-side symbolic read pipeline.
+///
+/// Stage identities are redaction-safe metric labels only. They never carry
+/// application values, plan hashes, or request parameters.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ReadPipelineStage {
+    /// Named-query contract selection and module/query plan lookup.
+    PlanLookup,
+    /// Parameter materialization and cursor-lookup identity construction.
+    ParamMaterialize,
+    /// Audit begin for the symbolic query invocation.
+    AuthorizeBegin,
+    /// Pre-execution current-policy reauthorization.
+    AuthorizePre,
+    /// Authorized page execution (fence + snapshot + execute).
+    Execute,
+    /// Post-execution current-policy reauthorization.
+    AuthorizePost,
+    /// Snapshot-to-response projection assembly.
+    ResponseBuild,
+}
+
+impl ReadPipelineStage {
+    /// Every read-pipeline stage in stable metric and shutdown-line order.
+    pub const ALL: [Self; 7] = [
+        Self::PlanLookup,
+        Self::ParamMaterialize,
+        Self::AuthorizeBegin,
+        Self::AuthorizePre,
+        Self::Execute,
+        Self::AuthorizePost,
+        Self::ResponseBuild,
+    ];
+
+    /// Stable snake_case label value for the `{stage}` metric dimension.
+    #[must_use]
+    pub const fn metric_label(self) -> &'static str {
+        match self {
+            Self::PlanLookup => "plan_lookup",
+            Self::ParamMaterialize => "param_materialize",
+            Self::AuthorizeBegin => "authorize_begin",
+            Self::AuthorizePre => "authorize_pre",
+            Self::Execute => "execute",
+            Self::AuthorizePost => "authorize_post",
+            Self::ResponseBuild => "response_build",
+        }
+    }
+}
+
 /// Redaction-safe service orchestration telemetry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceTelemetryEvent {
@@ -1061,6 +1110,13 @@ pub enum ServiceTelemetryEvent {
         ingress: riffdb_types::ServiceIngressKindV1,
         /// Closed capacity stage that rejected the request.
         stage: CapacityRejectionStage,
+    },
+    /// One bounded service-side read pipeline stage completed.
+    ReadPipelineStageCompleted {
+        /// Closed stage identity; no application values are retained.
+        stage: ReadPipelineStage,
+        /// Wall duration of this service stage.
+        elapsed: std::time::Duration,
     },
 }
 

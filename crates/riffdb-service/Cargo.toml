@@ -30,7 +30,10 @@ riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features =
 [dev-dependencies]
 riffdb-conflict = { version = "0.1.0", path = "../riffdb-conflict", default-features = false }
 riffdb-idempotency = { version = "0.1.0", path = "../riffdb-idempotency", default-features = false }
+riffdb-observability = { version = "0.1.0", path = "../riffdb-observability", default-features = false }
 riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features = false, features = ["test-fixtures"] }
+riffdb-query-ir = { version = "0.1.0", path = "../riffdb-query-ir", default-features = false }
+riffdb-query-module = { version = "0.1.0", path = "../riffdb-query-module", default-features = false }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
 riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", default-features = false }
 riffdb-testkit = { version = "0.1.0", path = "../riffdb-testkit", default-features = false }
