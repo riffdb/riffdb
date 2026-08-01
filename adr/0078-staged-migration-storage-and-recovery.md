@@ -7,6 +7,10 @@
   implementation session on 2026-07-31
 - **Operation-artifact clarification accepted:** 2026-07-31, human maintainer
   confirmation in the WP-408 implementation session
+- **Migrated-lineage evidence clarification accepted:** 2026-07-31, human
+  maintainer confirmation in the WP-408 implementation session
+- **Restart-audit evidence clarification accepted:** 2026-08-01, human
+  maintainer confirmation in the WP-408 implementation session
 - **Decision deadline:** Before WP-407 freezes migration storage semantics
 - **Depends on:** ADR-0076, ADR-0077
 - **Amends:** ADR-0003, ADR-0004, ADR-0006, ADR-0010, ADR-0019, ADR-0022,
@@ -73,9 +77,13 @@ bounded receipt because their combined accepted maximum exceeds 30 MiB.
 
 `ContractMigrationReceiptV1` is a versioned checksummed canonically encoded
 external operation state. It binds the database identity, operation ID/kind,
-semantic input hash, exact artifacts, source backup name/manifest hash, stage
-identity, monotonic phase, result or bounded safe failure, and at most 32 phase
-transitions. It contains no credential or row value.
+semantic input hash, exact artifacts, the authenticated audit principal and
+capability revision, optional approval ID, original request ID, acceptance
+timestamp, ingress, source backup name/manifest hash, stage identity, monotonic
+phase, result or bounded safe failure, and at most 32 phase transitions. This
+restart-stable admission evidence is required to create the exact terminal
+migration record and service audit after process death. It contains no
+credential, capability token, or row value.
 
 `StoredContractMigrationJournalV1` is a versioned in-database stage record. It
 binds the same operation/artifacts and carries the current typed step, canonical
@@ -118,6 +126,16 @@ and audit evidence. Retired data requiring separation from active key/index
 namespaces uses versioned `StoredRetiredEntityRecordV1` keyed by migration and
 original canonical target; it is not publicly writable or physically reclaimed
 by this feature.
+
+An active-lineage edge whose compiler compatibility class is
+`RequiresMigration` is valid only when the catalog repository resolves the
+predecessor hash to an exact write-retirement record and its corresponding
+permanent migration record. The records must agree on operation, artifact
+triple, and administration sequence, and the artifact triple must name the
+loaded predecessor and successor hashes. Missing or inconsistent evidence is
+catalog corruption. Before cutover, the catalog may resolve successor
+projection plans only through the process-local `ValidatedMigrationPlan`; this
+authority neither changes nor synthesizes an active pointer.
 
 Crash reconciliation uses external receipt, protected stage, backup manifest,
 published migration record, and target filesystem evidence. Before publication,

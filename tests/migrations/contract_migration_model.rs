@@ -3,19 +3,24 @@
 //! Gate-A contract migration reference-model and generated-history evidence.
 
 use riffdb_catalog::ValidatedMigrationPlan;
-use riffdb_commit::MigrationCoordinator;
+use riffdb_commit::{
+    MigrationCoordinator, MigrationProjectionBuildObservation, MigrationProjectionBuildPort,
+    MigrationProjectionError,
+};
 use riffdb_contract_compiler::{
     compile_contract_source, compile_contract_successor, compile_migration_source,
 };
 use riffdb_contract_ir::{ContractBundle, MigrationBundleV1};
 use riffdb_storage_api::{
     ApplicationSequenceAllocator, DurableKeySchemaBindingV1, EntityTarget, MigrationBatch,
-    MigrationRowEvidence, MigrationRowMutation, MigrationScanCursor, MigrationStageError,
+    MigrationCutover, MigrationCutoverApplied, MigrationJournalState, MigrationRowEvidence,
+    MigrationRowMutation, MigrationScanCursor, MigrationScanPage, MigrationStageError,
     MigrationStagePort, StoredEntityRecordV1,
 };
 use riffdb_storage_memory::{MemoryMigrationHistoryWitness, MemoryMigrationStage};
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, EntityKeyBuilder, EntityTypeId, EntityVersion, FieldId,
+    ProjectionGeneration, ProjectionId,
 };
 
 const PARENT: &[u8] = include_bytes!(concat!(
@@ -90,6 +95,38 @@ fn required_field_matches_reference_model_across_page_and_batch_boundaries() {
             (FieldId::new(3).unwrap(), CanonicalValue::I64(value + 1))
         );
     }
+}
+
+#[test]
+fn coordinator_resumes_from_the_atomically_committed_journal_cursor() {
+    let (plan, parent) = plan();
+    let rows = (0..130).map(|value| row(&parent, value)).collect();
+    let history = MemoryMigrationHistoryWitness::new(
+        ApplicationSequenceAllocator::initial(),
+        b"restartable-history".to_vec(),
+    )
+    .expect("history");
+    let mut stage = MemoryMigrationStage::new(parent.to_stored().expect("parent"), rows, history)
+        .expect("stage");
+    let mut interrupted = InterruptAfterFirstCommittedBatch {
+        inner: &mut stage,
+        fired: false,
+    };
+    assert!(MigrationCoordinator::apply(&plan, &mut interrupted).is_err());
+    assert_eq!(
+        stage.journal().expect("durable progress").checked_rows(),
+        64
+    );
+
+    let resumed = MigrationCoordinator::apply(&plan, &mut stage).expect("resume exact cursor");
+    assert_eq!(resumed.checked_rows(), 130);
+    assert_eq!(resumed.changed_rows(), 130);
+    assert_eq!(resumed.batch_count(), 3);
+    assert!(
+        stage
+            .journal()
+            .is_some_and(MigrationJournalState::is_complete)
+    );
 }
 
 #[test]
@@ -241,19 +278,116 @@ fn combined_gate_a_constraints_indexes_and_projection_pass_together() {
     let checked = MigrationCoordinator::check(&plan, &stage).expect("combined preflight");
     assert_eq!(checked.checked_rows(), 3);
     assert_eq!(checked.changed_rows(), 0);
-    let applied = MigrationCoordinator::apply(&plan, &mut stage).expect("combined apply");
+    let mut projection_builder = RecordingProjectionBuilder::default();
+    let applied = MigrationCoordinator::apply_with_projection_builder(
+        &plan,
+        &mut stage,
+        &mut projection_builder,
+    )
+    .expect("combined apply");
     assert_eq!(applied.changed_rows(), 0);
     assert_eq!(stage.index_entries().len(), 4);
     assert!(
         plan.rebuilt_projections()
             .iter()
-            .all(|projection| stage.projection_candidate_ready(*projection))
+            .copied()
+            .eq(projection_builder.requested.iter().copied())
     );
     assert!(
         stage
             .entities()
             .all(|row| row.entity_version() == EntityVersion::first())
     );
+}
+
+#[derive(Default)]
+struct RecordingProjectionBuilder {
+    requested: Vec<ProjectionId>,
+}
+
+impl MigrationProjectionBuildPort for RecordingProjectionBuilder {
+    fn rebuild_projection(
+        &mut self,
+        projection: ProjectionId,
+        frontier: Option<riffdb_types::CommitSequence>,
+    ) -> Result<MigrationProjectionBuildObservation, MigrationProjectionError> {
+        self.requested.push(projection);
+        Ok(MigrationProjectionBuildObservation::ready(
+            projection,
+            ProjectionGeneration::first(),
+            frontier,
+        ))
+    }
+}
+
+struct InterruptAfterFirstCommittedBatch<'a> {
+    inner: &'a mut MemoryMigrationStage,
+    fired: bool,
+}
+
+impl MigrationStagePort for InterruptAfterFirstCommittedBatch<'_> {
+    fn active_bundle_hash(&self) -> riffdb_types::ContractBundleHash {
+        self.inner.active_bundle_hash()
+    }
+
+    fn scan_migration_rows(
+        &self,
+        cursor: &MigrationScanCursor,
+    ) -> Result<MigrationScanPage, MigrationStageError> {
+        self.inner.scan_migration_rows(cursor)
+    }
+
+    fn migration_target_exists(&self, target: &EntityTarget) -> Result<bool, MigrationStageError> {
+        self.inner.migration_target_exists(target)
+    }
+
+    fn has_unresolved_retiring_admissions(&self) -> Result<bool, MigrationStageError> {
+        self.inner.has_unresolved_retiring_admissions()
+    }
+
+    fn migration_journal_state(
+        &self,
+        migration: riffdb_types::MigrationBundleHash,
+    ) -> Result<Option<MigrationJournalState>, MigrationStageError> {
+        self.inner.migration_journal_state(migration)
+    }
+
+    fn apply_migration_batch(&mut self, batch: MigrationBatch) -> Result<(), MigrationStageError> {
+        self.inner.apply_migration_batch(batch)?;
+        if !self.fired {
+            self.fired = true;
+            return Err(MigrationStageError::Integrity);
+        }
+        Ok(())
+    }
+
+    fn build_migration_projection_candidates(
+        &mut self,
+        projections: &[ProjectionId],
+    ) -> Result<(), MigrationStageError> {
+        self.inner
+            .build_migration_projection_candidates(projections)
+    }
+
+    fn validate_migration_stage(
+        &self,
+        candidate: riffdb_types::ContractBundleHash,
+        retained_parent_lineage: &[riffdb_types::ContractBundleHash],
+    ) -> Result<(), MigrationStageError> {
+        self.inner
+            .validate_migration_stage(candidate, retained_parent_lineage)
+    }
+
+    fn validate_migration_stage_structure(&self) -> Result<(), MigrationStageError> {
+        self.inner.validate_migration_stage_structure()
+    }
+
+    fn finalize_migration(
+        &mut self,
+        cutover: MigrationCutover,
+    ) -> Result<MigrationCutoverApplied, MigrationStageError> {
+        self.inner.finalize_migration(cutover)
+    }
 }
 
 #[test]

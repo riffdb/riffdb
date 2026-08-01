@@ -1,0 +1,6 @@
+format=riffdb-migration-impossible-pairs-v1
+receipt=Succeeded,target=predecessor
+receipt=FailedRolledBack,target=successor
+receipt=Publishing,target=neither-predecessor-nor-successor
+retirement-without-matching-migration-record
+migration-record-without-matching-retirement

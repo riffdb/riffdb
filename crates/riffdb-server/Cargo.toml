@@ -42,6 +42,7 @@ tower-service = { version = "=0.3.3", default-features = false }
 riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
 riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }
 riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", default-features = false, features = ["test-fixtures"] }
+riffdb-testkit = { version = "0.1.0", path = "../riffdb-testkit", default-features = false }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "sync", "test-util", "time"] }
 
 [[test]]
@@ -51,6 +52,10 @@ path = "../../tests/grpc/p1_riffdbd_restart.rs"
 [[test]]
 name = "offline_maintenance_recovery"
 path = "../../tests/maintenance/offline_maintenance_recovery.rs"
+
+[[test]]
+name = "contract_migration_recovery"
+path = "../../tests/recovery/contract_migration_recovery.rs"
 
 [[test]]
 name = "server_composition"

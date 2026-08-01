@@ -117,8 +117,9 @@ reusing stable IDs or editing the active database file.
 A valid successor that needs existing state to be checked or transformed
 returns `migration_required`. Use Application Source V3, a parent-specific
 `.riffm` proof, Application Lock V4, and the read-only plan described in
-[Contract Migrations](MIGRATIONS.md). Planning is implemented before runtime
-migration and therefore cannot activate that successor yet.
+[Contract Migrations](MIGRATIONS.md). Internal redb execution and crash recovery
+are implemented, but no supported public check/apply/status interface can
+activate that successor until WP-409.
 
 `contract deploy` is a mutating operator command, not a compatibility probe.
 There is no contract rollback RPC. Use `contract validate` for source-only

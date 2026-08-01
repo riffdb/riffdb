@@ -8,7 +8,12 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use riffdb_catalog::{ActiveCatalogSnapshot, CatalogError, ResolvedProjectionPlan};
+use riffdb_catalog::{
+    ActiveCatalogSnapshot, CatalogError, ResolvedProjectionPlan, ValidatedMigrationPlan,
+};
+use riffdb_commit::{
+    MigrationProjectionBuildObservation, MigrationProjectionBuildPort, MigrationProjectionError,
+};
 use riffdb_projection::{
     ProjectionController, ProjectionCoreError, ProjectionEvaluationError,
     ProjectionInitializationResult, ProjectionNotifier, ProjectionRecoveryError,
@@ -21,6 +26,7 @@ use riffdb_storage_api::{
     ProjectionGenerationPosition, ProjectionLifecycleV1, ProjectionQueryReader,
     ProjectionRecoveryPageLimit, StorageError, StorageScanLimit, StoredProjectionControlV1,
 };
+use riffdb_storage_redb::RedbMigrationProjectionPorts;
 use riffdb_types::{CommitSequence, FrontierPosition, ProjectionGeneration, ProjectionIdentity};
 
 use crate::storage::SharedRedbOperationalPorts;
@@ -29,6 +35,55 @@ const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const COMMIT_SCAN_ROWS: u16 = 500;
 const RECOVERY_PAGE_ROWS: u16 = 500;
 const MAX_CONTROL_TRANSITIONS_PER_PASS: usize = 32;
+
+/// Projection-owned fresh-generation builder for one private migration stage.
+pub(crate) struct MigrationProjectionBuilder<'plan> {
+    plan: &'plan ValidatedMigrationPlan,
+    ports: Option<RedbMigrationProjectionPorts>,
+}
+
+impl<'plan> MigrationProjectionBuilder<'plan> {
+    pub(crate) fn new(
+        plan: &'plan ValidatedMigrationPlan,
+        ports: RedbMigrationProjectionPorts,
+    ) -> Self {
+        Self {
+            plan,
+            ports: Some(ports),
+        }
+    }
+}
+
+impl MigrationProjectionBuildPort for MigrationProjectionBuilder<'_> {
+    fn rebuild_projection(
+        &mut self,
+        projection: riffdb_types::ProjectionId,
+        frontier: Option<CommitSequence>,
+    ) -> Result<MigrationProjectionBuildObservation, MigrationProjectionError> {
+        let resolved = self
+            .plan
+            .resolve_candidate_projection(projection)
+            .map_err(|_| MigrationProjectionError::BuildFailed)?;
+        let schema = self
+            .plan
+            .candidate()
+            .bundle()
+            .bound_projection_group_schema(projection)
+            .map(CheckedProjectionSchema::new)
+            .ok_or(MigrationProjectionError::BuildFailed)?;
+        let ports = self
+            .ports
+            .take()
+            .ok_or(MigrationProjectionError::BuildFailed)?;
+        let registry = ProjectionSchemaRegistry::new(vec![schema.clone()])
+            .map_err(|_| MigrationProjectionError::BuildFailed)?;
+        let notifier = ProjectionNotifier::from_registry(&registry);
+        let mut controller = ProjectionController::new(ports, notifier);
+        let result = rebuild_migration_projection(&mut controller, &resolved, &schema, frontier);
+        self.ports = Some(controller.into_parts().0);
+        result
+    }
+}
 
 /// Closed process-local worker state used by aggregate health.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -409,6 +464,193 @@ fn control_from_status(
 enum ApplyProgress {
     CaughtUp,
     StateChanged,
+}
+
+fn rebuild_migration_projection(
+    controller: &mut ProjectionController<RedbMigrationProjectionPorts>,
+    resolved: &ResolvedProjectionPlan,
+    schema: &CheckedProjectionSchema,
+    frontier: Option<CommitSequence>,
+) -> Result<MigrationProjectionBuildObservation, MigrationProjectionError> {
+    let expected = frontier.map_or(
+        FrontierPosition::BeforeFirst,
+        FrontierPosition::AppliedThrough,
+    );
+    let identity = schema.identity();
+    let mut target_generation = None;
+    for _ in 0..MAX_CONTROL_TRANSITIONS_PER_PASS {
+        let status = controller
+            .repository()
+            .read_projection_status(identity)
+            .map_err(|_| MigrationProjectionError::BuildFailed)?;
+        if status.authoritative_head() != expected {
+            return Err(MigrationProjectionError::EvidenceMismatch);
+        }
+        if status.published().is_none() && status.candidate().is_none() {
+            match controller
+                .initialize(schema.clone())
+                .map_err(|_| MigrationProjectionError::BuildFailed)?
+            {
+                ProjectionInitializationResult::Initialized(control)
+                | ProjectionInitializationResult::Existing(control) => {
+                    target_generation = control
+                        .candidate()
+                        .map(ProjectionGenerationPosition::generation);
+                }
+                ProjectionInitializationResult::StateChanged => {}
+            }
+            continue;
+        }
+        match status.lifecycle() {
+            ProjectionLifecycleV1::Ready if target_generation.is_none() => {
+                match controller
+                    .allocate_rebuild(identity)
+                    .map_err(|_| MigrationProjectionError::BuildFailed)?
+                {
+                    ProjectionControlResult::Updated(control)
+                    | ProjectionControlResult::AlreadyInitialized(control) => {
+                        target_generation = control
+                            .candidate()
+                            .map(ProjectionGenerationPosition::generation);
+                    }
+                    ProjectionControlResult::StateChanged => {}
+                    ProjectionControlResult::GenerationExhausted => {
+                        return Err(MigrationProjectionError::BuildFailed);
+                    }
+                }
+            }
+            ProjectionLifecycleV1::Ready => {
+                let published = status
+                    .published()
+                    .ok_or(MigrationProjectionError::EvidenceMismatch)?;
+                if Some(published.generation()) == target_generation
+                    && published.frontier() == expected
+                {
+                    return Ok(MigrationProjectionBuildObservation::ready(
+                        projection_id(identity),
+                        published.generation(),
+                        frontier,
+                    ));
+                }
+                return Err(MigrationProjectionError::EvidenceMismatch);
+            }
+            ProjectionLifecycleV1::Building => {
+                target_generation = status
+                    .candidate()
+                    .map(ProjectionGenerationPosition::generation);
+                let _ = controller
+                    .start_initial_catch_up(identity)
+                    .map_err(|_| MigrationProjectionError::BuildFailed)?;
+            }
+            ProjectionLifecycleV1::CatchingUp | ProjectionLifecycleV1::Rebuilding => {
+                let generation = status
+                    .candidate()
+                    .map(ProjectionGenerationPosition::generation)
+                    .ok_or(MigrationProjectionError::EvidenceMismatch)?;
+                target_generation = Some(generation);
+                if apply_migration_generation(controller, resolved, schema, generation, expected)?
+                    == ApplyProgress::CaughtUp
+                {
+                    let _ = controller
+                        .publish_candidate(identity)
+                        .map_err(|_| MigrationProjectionError::BuildFailed)?;
+                }
+            }
+            ProjectionLifecycleV1::Degraded | ProjectionLifecycleV1::Invalid => {
+                return Err(MigrationProjectionError::BuildFailed);
+            }
+        }
+    }
+    Err(MigrationProjectionError::BuildFailed)
+}
+
+fn projection_id(identity: &ProjectionIdentity) -> riffdb_types::ProjectionId {
+    identity.projection_id()
+}
+
+fn apply_migration_generation(
+    controller: &mut ProjectionController<RedbMigrationProjectionPorts>,
+    resolved: &ResolvedProjectionPlan,
+    schema: &CheckedProjectionSchema,
+    generation: ProjectionGeneration,
+    expected_head: FrontierPosition,
+) -> Result<ApplyProgress, MigrationProjectionError> {
+    let status = controller
+        .repository()
+        .read_projection_status(schema.identity())
+        .map_err(|_| MigrationProjectionError::BuildFailed)?;
+    if status.authoritative_head() != expected_head {
+        return Err(MigrationProjectionError::EvidenceMismatch);
+    }
+    let mut frontier = status
+        .candidate()
+        .filter(|position| position.generation() == generation)
+        .map(ProjectionGenerationPosition::frontier)
+        .ok_or(MigrationProjectionError::EvidenceMismatch)?;
+    let limit =
+        StorageScanLimit::new(COMMIT_SCAN_ROWS).ok_or(MigrationProjectionError::BuildFailed)?;
+    let mut scan = match frontier {
+        FrontierPosition::BeforeFirst => CommitScanRequest::initial(limit),
+        FrontierPosition::AppliedThrough(sequence) => {
+            CommitScanRequest::initial_after(sequence, limit)
+        }
+    };
+    loop {
+        let page = controller
+            .repository()
+            .scan_commits(scan)
+            .map_err(|_| MigrationProjectionError::BuildFailed)?;
+        if page.inclusive_upper() != expected_head || page.inclusive_upper() < frontier {
+            return Err(MigrationProjectionError::EvidenceMismatch);
+        }
+        for charged in page.records() {
+            let commit = charged.value();
+            if FrontierPosition::AppliedThrough(commit.commit_sequence()) <= frontier {
+                continue;
+            }
+            if !is_exact_successor(frontier, commit.commit_sequence()) {
+                return Err(MigrationProjectionError::EvidenceMismatch);
+            }
+            let request = evaluate_and_prepare_projection_commit(
+                resolved,
+                schema.clone(),
+                generation,
+                commit,
+                controller.repository(),
+            )
+            .map_err(|_| MigrationProjectionError::BuildFailed)?;
+            match controller
+                .apply(&request)
+                .map_err(|_| MigrationProjectionError::BuildFailed)?
+            {
+                ProjectionApplyResult::Applied { .. }
+                | ProjectionApplyResult::AlreadyApplied(_) => {
+                    frontier = FrontierPosition::AppliedThrough(commit.commit_sequence());
+                }
+                ProjectionApplyResult::StateChanged => return Ok(ApplyProgress::StateChanged),
+            }
+        }
+        match page {
+            CommitScanPageV1::Page {
+                next_after,
+                inclusive_upper,
+                ..
+            } => {
+                let FrontierPosition::AppliedThrough(upper) = inclusive_upper else {
+                    return Err(MigrationProjectionError::EvidenceMismatch);
+                };
+                scan = CommitScanRequest::continuing(next_after, upper, limit)
+                    .map_err(|_| MigrationProjectionError::BuildFailed)?;
+            }
+            CommitScanPageV1::ExactEnd { .. } => {
+                return if frontier == expected_head {
+                    Ok(ApplyProgress::CaughtUp)
+                } else {
+                    Err(MigrationProjectionError::EvidenceMismatch)
+                };
+            }
+        }
+    }
 }
 
 fn apply_generation(

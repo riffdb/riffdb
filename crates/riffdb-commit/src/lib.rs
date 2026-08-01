@@ -74,7 +74,10 @@ pub use initialization::{
     DatabaseInitializationCompletion, DatabaseInitializationDecision,
     DatabaseInitializationExecutor, DatabaseInitializationPermit, InitializedDatabase,
 };
-pub use migration::{MigrationApplyReport, MigrationCheckReport, MigrationCoordinator};
+pub use migration::{
+    MigrationApplyReport, MigrationCheckReport, MigrationCoordinator,
+    MigrationProjectionBuildObservation, MigrationProjectionBuildPort, MigrationProjectionError,
+};
 pub use notification::{ApplicationCommitNotificationError, ApplicationCommitNotificationSink};
 pub use outcome::{CommittedOutcome, CommittedOutcomeDisposition, CommittedOutcomeDurabilityError};
 pub use provenance::{ProvenanceIdSource, ProvenanceIdSourceError};

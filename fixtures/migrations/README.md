@@ -40,7 +40,9 @@ WP-406 creates:
 WP-407 creates `model/gate-a/` generated boundary histories and pure expected
 states. `scripts/generate-migration-model-fixtures` owns that subtree.
 WP-408 creates `durable/v1/` receipt, journal, permanent record, archive, table-
-key, registry, impossible-pair, and recovery fixtures. WP-409 creates `public/v1/`
+key, registry, and impossible-pair fixtures. The redb-owned generator is
+`scripts/generate-migration-durable-fixtures`; the process recovery matrix lives
+under `tests/recovery/`. WP-409 creates `public/v1/`
 descriptor, wire, SDK, CLI JSONL, authorization, redaction, and negative MCP
 fixtures. WP-411 and WP-412 add Gate-B and Gate-C cases without changing an
 existing V1 tag or fixture meaning. WP-413 freezes the installed upgrade matrix.

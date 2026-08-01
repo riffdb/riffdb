@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
@@ -5,20 +6,22 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use riffdb_storage_api::{
-    MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1, OfflineBackupManifestIdentityV1, OfflineBackupManifestV1,
-    OfflineBackupPersistencePort, OfflineMaintenanceReceiptCreateResultV1,
-    OfflineMaintenanceReceiptInventoryV1, OfflineMaintenanceReceiptPersistencePort,
-    OfflineMaintenanceReceiptPhaseV1, OfflineMaintenanceReceiptReplaceResultV1,
-    OfflineMaintenanceReceiptV1, OfflineRestoreOverwritePolicyV1, OfflineRestoreResultV1,
-    StorageError, StorageErrorKind, StorageValueError,
+    ContractMigrationReceiptV1, MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1,
+    OfflineBackupManifestIdentityV1, OfflineBackupManifestV1, OfflineBackupPersistencePort,
+    OfflineMaintenanceReceiptCreateResultV1, OfflineMaintenanceReceiptInventoryV1,
+    OfflineMaintenanceReceiptPersistencePort, OfflineMaintenanceReceiptPhaseV1,
+    OfflineMaintenanceReceiptReplaceResultV1, OfflineMaintenanceReceiptV1,
+    OfflineRestoreOverwritePolicyV1, OfflineRestoreResultV1, StorageError, StorageErrorKind,
+    StorageValueError,
 };
 use riffdb_types::{
-    BackupNameV1, OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
-    OfflineMaintenanceReplacementConfirmation,
+    BackupNameV1, ContractMigrationOperationId, OfflineMaintenanceOperationId,
+    OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation,
 };
 
 use super::codec::{
-    MAX_RECEIPT_BYTES, RECEIPT_FILE_SUFFIX, RECEIPT_TEMP_SUFFIX, decode_receipt, encode_receipt,
+    MAX_MIGRATION_RECEIPT_BYTES, MAX_RECEIPT_BYTES, RECEIPT_FILE_SUFFIX, RECEIPT_TEMP_SUFFIX,
+    decode_migration_receipt, decode_receipt, encode_migration_receipt, encode_receipt,
 };
 use super::failpoint::{RedbMaintenanceFailpoint, RedbMaintenanceTestController};
 use super::path_guard::{PinnedDirectory, verify_regular_file_path};
@@ -32,7 +35,53 @@ const MAINTENANCE_DIRECTORY_NAME: &str = ".maintenance";
 const OWNERSHIP_LOCK_FILE_NAME: &str = "owner.lock";
 const RECEIPTS_DIRECTORY_NAME: &str = "receipts";
 const STAGED_DIRECTORY_NAME: &str = "staged";
+const MIGRATIONS_DIRECTORY_NAME: &str = "migrations";
+const MIGRATION_CANDIDATE_FILE_NAME: &str = "candidate.bundle";
+const MIGRATION_BUNDLE_FILE_NAME: &str = "migration.bundle";
+const MIGRATION_RECEIPT_FILE_NAME: &str = "receipt-v1";
+const MIGRATION_RECEIPT_TEMP_FILE_NAME: &str = ".receipt-v1.tmp";
+const MIGRATION_RESERVATION_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_UNPUBLISHED_RECEIPT_TEMPS: usize = 256;
+
+/// Move-only conservative disk reservation retained through backup and stage creation.
+#[must_use = "dropping the reservation releases its conservative disk allocation"]
+pub struct RedbMigrationDiskReservation {
+    operation_id: ContractMigrationOperationId,
+    target: Option<ReservedDiskFile>,
+    backup: Option<ReservedDiskFile>,
+}
+
+impl RedbMigrationDiskReservation {
+    /// Returns the exact accepted operation bound to this reservation.
+    #[must_use]
+    pub const fn operation_id(&self) -> ContractMigrationOperationId {
+        self.operation_id
+    }
+
+    /// Releases both allocations after their real artifacts are durable.
+    pub fn release(mut self) -> Result<(), StorageError> {
+        release_reserved_file(&mut self.target)?;
+        release_reserved_file(&mut self.backup)
+    }
+}
+
+impl std::fmt::Debug for RedbMigrationDiskReservation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RedbMigrationDiskReservation([ALLOCATED])")
+    }
+}
+
+struct ReservedDiskFile {
+    path: PathBuf,
+    file: File,
+}
+
+impl Drop for RedbMigrationDiskReservation {
+    fn drop(&mut self) {
+        let _ = release_reserved_file(&mut self.target);
+        let _ = release_reserved_file(&mut self.backup);
+    }
+}
 
 /// Filesystem evidence for one checked external maintenance receipt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,6 +124,7 @@ impl RedbMaintenanceOperationEvidence {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RedbMaintenanceReconciliation {
     receipts: OfflineMaintenanceReceiptInventoryV1,
+    migration_receipts: Vec<ContractMigrationReceiptV1>,
     operations: Vec<RedbMaintenanceOperationEvidence>,
     removed_unpublished_receipt_temps: usize,
     removed_unpublished_target_temps: usize,
@@ -83,10 +133,41 @@ pub struct RedbMaintenanceReconciliation {
 }
 
 impl RedbMaintenanceReconciliation {
+    fn with_migration_receipts(
+        mut self,
+        migration_receipts: Vec<ContractMigrationReceiptV1>,
+    ) -> Result<Self, StorageError> {
+        let ordinary_incomplete = self
+            .receipts
+            .receipts()
+            .iter()
+            .filter(|receipt| !receipt.current_phase().is_terminal())
+            .count();
+        let migration_incomplete = migration_receipts
+            .iter()
+            .filter(|receipt| !receipt.current_phase().is_terminal())
+            .count();
+        if ordinary_incomplete
+            .checked_add(migration_incomplete)
+            .ok_or_else(limit_exceeded)?
+            > 1
+        {
+            return Err(invariant());
+        }
+        self.migration_receipts = migration_receipts;
+        Ok(self)
+    }
+
     /// Borrows every checksum-validated receipt in canonical operation order.
     #[must_use]
     pub const fn receipts(&self) -> &OfflineMaintenanceReceiptInventoryV1 {
         &self.receipts
+    }
+
+    /// Borrows every checksum-validated migration receipt in operation order.
+    #[must_use]
+    pub fn migration_receipts(&self) -> &[ContractMigrationReceiptV1] {
+        &self.migration_receipts
     }
 
     /// Borrows exact artifact evidence in the same canonical operation order.
@@ -129,11 +210,13 @@ pub struct RedbMaintenanceStorage {
     backup_root: PathBuf,
     receipts_directory: PathBuf,
     staged_directory: PathBuf,
+    migrations_directory: PathBuf,
     database_parent_guard: PinnedDirectory,
     backup_root_guard: PinnedDirectory,
     maintenance_directory_guard: PinnedDirectory,
     receipts_directory_guard: PinnedDirectory,
     staged_directory_guard: PinnedDirectory,
+    migrations_directory_guard: PinnedDirectory,
     ownership_lock_path: PathBuf,
     ownership_lock: File,
     test_controller: Option<RedbMaintenanceTestController>,
@@ -227,11 +310,14 @@ impl RedbMaintenanceStorage {
 
         let receipts_directory = maintenance_directory.join(RECEIPTS_DIRECTORY_NAME);
         let staged_directory = maintenance_directory.join(STAGED_DIRECTORY_NAME);
+        let migrations_directory = maintenance_directory.join(MIGRATIONS_DIRECTORY_NAME);
         create_checked_directory(&receipts_directory)?;
         create_checked_directory(&staged_directory)?;
+        create_checked_directory(&migrations_directory)?;
         maintenance_directory_guard.verify()?;
         let receipts_directory_guard = PinnedDirectory::open(&receipts_directory)?;
         let staged_directory_guard = PinnedDirectory::open(&staged_directory)?;
+        let migrations_directory_guard = PinnedDirectory::open(&migrations_directory)?;
         validate_reserved_inventory(&maintenance_directory)?;
 
         let mut storage = Self {
@@ -239,17 +325,21 @@ impl RedbMaintenanceStorage {
             backup_root: backup_root.to_path_buf(),
             receipts_directory,
             staged_directory,
+            migrations_directory,
             database_parent_guard,
             backup_root_guard,
             maintenance_directory_guard,
             receipts_directory_guard,
             staged_directory_guard,
+            migrations_directory_guard,
             ownership_lock_path,
             ownership_lock,
             test_controller,
         };
         storage.verify_path_ownership()?;
+        let migration_receipts = storage.validate_migration_inventory()?;
         let reconciliation = storage.reconcile()?;
+        let reconciliation = reconciliation.with_migration_receipts(migration_receipts)?;
         Ok((storage, reconciliation))
     }
 
@@ -259,6 +349,7 @@ impl RedbMaintenanceStorage {
         self.maintenance_directory_guard.verify()?;
         self.receipts_directory_guard.verify()?;
         self.staged_directory_guard.verify()?;
+        self.migrations_directory_guard.verify()?;
         verify_regular_file_path(&self.ownership_lock, &self.ownership_lock_path)
     }
 
@@ -266,6 +357,366 @@ impl RedbMaintenanceStorage {
     #[must_use]
     pub fn configured_database_file(&self) -> &Path {
         &self.database_file
+    }
+
+    /// Durably accepts immutable canonical artifacts before database drain.
+    pub fn accept_contract_migration(
+        &self,
+        receipt: &ContractMigrationReceiptV1,
+        candidate_bundle: &[u8],
+        migration_bundle: &[u8],
+    ) -> Result<(), StorageError> {
+        self.verify_path_ownership()?;
+        if receipt.current_phase() != riffdb_storage_api::ContractMigrationReceiptPhaseV1::Accepted
+            || !artifact_matches(receipt.operation_artifacts().candidate(), candidate_bundle)
+            || !artifact_matches(receipt.operation_artifacts().migration(), migration_bundle)
+        {
+            return Err(invariant());
+        }
+        let directory = self.migration_operation_directory(receipt.operation_id());
+        match fs::symlink_metadata(&directory) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                create_checked_directory(&directory)?;
+                write_new_synced(
+                    &directory.join(MIGRATION_CANDIDATE_FILE_NAME),
+                    candidate_bundle,
+                )?;
+                write_new_synced(
+                    &directory.join(MIGRATION_BUNDLE_FILE_NAME),
+                    migration_bundle,
+                )?;
+                write_new_synced(
+                    &directory.join(MIGRATION_RECEIPT_FILE_NAME),
+                    &encode_migration_receipt(receipt)?,
+                )?;
+                crate::backup::sync_directory(&directory)?;
+                crate::backup::sync_directory(&self.migrations_directory)?;
+            }
+            Err(error) => return Err(io_unavailable(error)),
+            Ok(metadata) if metadata.file_type().is_dir() => {
+                let existing =
+                    read_migration_receipt_file(&directory.join(MIGRATION_RECEIPT_FILE_NAME))?;
+                let candidate = read_bounded_file(
+                    &directory.join(MIGRATION_CANDIDATE_FILE_NAME),
+                    receipt.operation_artifacts().candidate().length(),
+                )?;
+                let migration = read_bounded_file(
+                    &directory.join(MIGRATION_BUNDLE_FILE_NAME),
+                    receipt.operation_artifacts().migration().length(),
+                )?;
+                if existing != *receipt
+                    || candidate != candidate_bundle
+                    || migration != migration_bundle
+                {
+                    return Err(corrupt());
+                }
+            }
+            Ok(_) => return Err(corrupt()),
+        }
+        self.verify_path_ownership()
+    }
+
+    /// Reads one checksummed protected migration receipt.
+    pub fn read_contract_migration_receipt(
+        &self,
+        operation_id: ContractMigrationOperationId,
+    ) -> Result<Option<ContractMigrationReceiptV1>, StorageError> {
+        self.verify_path_ownership()?;
+        let path = self
+            .migration_operation_directory(operation_id)
+            .join(MIGRATION_RECEIPT_FILE_NAME);
+        let result = match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(io_unavailable(error)),
+            Ok(metadata)
+                if metadata.file_type().is_file() && !metadata.file_type().is_symlink() =>
+            {
+                read_migration_receipt_file(&path).map(Some)
+            }
+            Ok(_) => Err(corrupt()),
+        }?;
+        self.verify_path_ownership()?;
+        Ok(result)
+    }
+
+    /// Atomically advances a receipt from an exact current prefix.
+    pub fn replace_contract_migration_receipt(
+        &self,
+        expected: &ContractMigrationReceiptV1,
+        replacement: &ContractMigrationReceiptV1,
+    ) -> Result<(), StorageError> {
+        self.verify_path_ownership()?;
+        if !migration_receipt_extends(replacement, expected) {
+            return Err(invariant());
+        }
+        let directory = self.migration_operation_directory(expected.operation_id());
+        let destination = directory.join(MIGRATION_RECEIPT_FILE_NAME);
+        if read_migration_receipt_file(&destination)? != *expected {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        let temporary = directory.join(MIGRATION_RECEIPT_TEMP_FILE_NAME);
+        let mut temporary_file = TemporaryReceiptFile::create(&temporary)?;
+        temporary_file.write_all(&encode_migration_receipt(replacement)?)?;
+        self.hit(RedbMaintenanceFailpoint::BeforeReceiptFileSync, false)?;
+        temporary_file.sync_all()?;
+        self.hit(RedbMaintenanceFailpoint::AfterReceiptFileSync, false)?;
+        self.hit(RedbMaintenanceFailpoint::BeforeReceiptRename, false)?;
+        fs::rename(&temporary, &destination).map_err(io_unavailable)?;
+        temporary_file.published = true;
+        self.hit(RedbMaintenanceFailpoint::AfterReceiptRename, true)?;
+        crate::backup::sync_directory(&directory)?;
+        self.hit(RedbMaintenanceFailpoint::AfterReceiptParentSync, true)?;
+        self.verify_path_ownership()
+    }
+
+    /// Reads and rechecks the canonical artifact pair used by restart recovery.
+    pub fn read_contract_migration_artifacts(
+        &self,
+        operation_id: ContractMigrationOperationId,
+    ) -> Result<(Vec<u8>, Vec<u8>), StorageError> {
+        let receipt = self
+            .read_contract_migration_receipt(operation_id)?
+            .ok_or_else(corrupt)?;
+        let directory = self.migration_operation_directory(operation_id);
+        let candidate = read_bounded_file(
+            &directory.join(MIGRATION_CANDIDATE_FILE_NAME),
+            receipt.operation_artifacts().candidate().length(),
+        )?;
+        let migration = read_bounded_file(
+            &directory.join(MIGRATION_BUNDLE_FILE_NAME),
+            receipt.operation_artifacts().migration().length(),
+        )?;
+        if !artifact_matches(receipt.operation_artifacts().candidate(), &candidate)
+            || !artifact_matches(receipt.operation_artifacts().migration(), &migration)
+        {
+            return Err(corrupt());
+        }
+        Ok((candidate, migration))
+    }
+
+    /// Conservatively allocates backup, stage-growth, and scratch capacity.
+    pub fn reserve_contract_migration_disk(
+        &self,
+        operation_id: ContractMigrationOperationId,
+        semantic_write_bytes: u64,
+    ) -> Result<RedbMigrationDiskReservation, StorageError> {
+        self.verify_path_ownership()?;
+        let receipt = self
+            .read_contract_migration_receipt(operation_id)?
+            .ok_or_else(corrupt)?;
+        if receipt.current_phase() != riffdb_storage_api::ContractMigrationReceiptPhaseV1::Preflight
+        {
+            return Err(invariant());
+        }
+        let database = fs::symlink_metadata(&self.database_file).map_err(io_unavailable)?;
+        if !database.file_type().is_file() || database.file_type().is_symlink() {
+            return Err(corrupt());
+        }
+        let artifact_bytes = receipt
+            .operation_artifacts()
+            .candidate()
+            .length()
+            .checked_add(receipt.operation_artifacts().migration().length())
+            .ok_or_else(limit_exceeded)?;
+        let duplicated_semantic_bytes = semantic_write_bytes
+            .checked_mul(2)
+            .ok_or_else(limit_exceeded)?;
+        let target_bytes = database
+            .len()
+            .checked_add(duplicated_semantic_bytes)
+            .and_then(|bytes| bytes.checked_add(artifact_bytes))
+            .ok_or_else(limit_exceeded)?;
+        let target_path = self.contract_migration_reservation_path(operation_id)?;
+        let backup_path = self
+            .migrations_directory
+            .join(format!(".{operation_id}.backup-reservation"));
+        let target = reserve_disk_file(&target_path, target_bytes)?;
+        let backup = match reserve_disk_file(&backup_path, database.len()) {
+            Ok(file) => file,
+            Err(error) => {
+                let mut target = Some(target);
+                let _ = release_reserved_file(&mut target);
+                return Err(error);
+            }
+        };
+        self.verify_path_ownership()?;
+        Ok(RedbMigrationDiskReservation {
+            operation_id,
+            target: Some(target),
+            backup: Some(backup),
+        })
+    }
+
+    /// Creates or revalidates the deterministic immutable pre-migration backup.
+    pub fn create_contract_migration_backup(
+        &self,
+        operation_id: ContractMigrationOperationId,
+        build: &riffdb_storage_api::BackupBuildMetadataV1,
+    ) -> Result<
+        (
+            BackupNameV1,
+            OfflineBackupManifestV1,
+            OfflineBackupManifestIdentityV1,
+        ),
+        StorageError,
+    > {
+        self.verify_path_ownership()?;
+        let receipt = self
+            .read_contract_migration_receipt(operation_id)?
+            .ok_or_else(corrupt)?;
+        if receipt.current_phase() != riffdb_storage_api::ContractMigrationReceiptPhaseV1::Preflight
+        {
+            return Err(invariant());
+        }
+        let name =
+            BackupNameV1::new(format!("pre-migration-{operation_id}")).map_err(|_| invariant())?;
+        let directory = self.named_backup_directory(&name);
+        let (manifest, published_now) = match fs::symlink_metadata(&directory) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (
+                RedbOfflineBackup::bind(&self.database_file, &directory)
+                    .create_offline_backup(build)?,
+                true,
+            ),
+            Err(error) => return Err(io_unavailable(error)),
+            Ok(metadata) if metadata.file_type().is_dir() => {
+                (validate_immutable_backup(&directory)?.0, false)
+            }
+            Ok(_) => return Err(corrupt()),
+        };
+        let (validated, identity) = validate_immutable_backup(&directory)?;
+        if manifest != validated || identity.database_id() != receipt.database_id() {
+            return Err(corrupt());
+        }
+        if published_now {
+            self.hit(RedbMaintenanceFailpoint::AfterNamedBackupPublication, true)?;
+        }
+        self.verify_path_ownership()?;
+        Ok((name, manifest, identity))
+    }
+
+    /// Materializes the immutable operation backup into a protected sibling stage.
+    pub fn materialize_contract_migration_stage(
+        &self,
+        operation_id: ContractMigrationOperationId,
+    ) -> Result<(PathBuf, [u8; 32]), StorageError> {
+        self.verify_path_ownership()?;
+        let receipt = self
+            .read_contract_migration_receipt(operation_id)?
+            .ok_or_else(corrupt)?;
+        if !matches!(
+            receipt.current_phase(),
+            riffdb_storage_api::ContractMigrationReceiptPhaseV1::Staging
+                | riffdb_storage_api::ContractMigrationReceiptPhaseV1::Transforming
+                | riffdb_storage_api::ContractMigrationReceiptPhaseV1::RebuildingProjections
+                | riffdb_storage_api::ContractMigrationReceiptPhaseV1::ValidatingStage
+                | riffdb_storage_api::ContractMigrationReceiptPhaseV1::Publishing
+        ) {
+            return Err(invariant());
+        }
+        let backup_name = receipt.backup_name().ok_or_else(corrupt)?;
+        let expected_manifest = receipt.backup_manifest().ok_or_else(corrupt)?;
+        let (manifest, identity) =
+            validate_immutable_backup(&self.named_backup_directory(backup_name))?;
+        if &identity != expected_manifest {
+            return Err(corrupt());
+        }
+        let source = self
+            .named_backup_directory(backup_name)
+            .join(crate::backup::DATABASE_ARTIFACT_FILE_NAME);
+        let stage = self.contract_migration_stage_path(operation_id)?;
+        let materialized_now = match fs::symlink_metadata(&stage) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                copy_new_synced(&source, &stage)?;
+                self.database_parent_guard.sync()?;
+                true
+            }
+            Err(error) => return Err(io_unavailable(error)),
+            Ok(metadata)
+                if metadata.file_type().is_file() && !metadata.file_type().is_symlink() =>
+            {
+                false
+            }
+            Ok(_) => return Err(corrupt()),
+        };
+        let stage_identity = migration_stage_identity(operation_id, expected_manifest)?;
+        if receipt
+            .stage_identity()
+            .is_some_and(|expected| expected != stage_identity)
+        {
+            return Err(corrupt());
+        }
+        drop(manifest);
+        if materialized_now {
+            self.hit(RedbMaintenanceFailpoint::AfterStagedMaterialization, false)?;
+        }
+        self.verify_path_ownership()?;
+        Ok((stage, stage_identity))
+    }
+
+    /// Atomically publishes a closed, fully validated sibling stage.
+    pub fn publish_contract_migration_stage(
+        &self,
+        operation_id: ContractMigrationOperationId,
+    ) -> Result<(), StorageError> {
+        self.verify_path_ownership()?;
+        let receipt = self
+            .read_contract_migration_receipt(operation_id)?
+            .ok_or_else(corrupt)?;
+        if receipt.current_phase()
+            != riffdb_storage_api::ContractMigrationReceiptPhaseV1::Publishing
+            || receipt.stage_identity().is_none()
+        {
+            return Err(invariant());
+        }
+        let stage = self.contract_migration_stage_path(operation_id)?;
+        let metadata = fs::symlink_metadata(&stage).map_err(io_unavailable)?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(corrupt());
+        }
+        self.hit(RedbMaintenanceFailpoint::BeforeTargetPublication, false)?;
+        fs::rename(&stage, &self.database_file).map_err(io_unavailable)?;
+        self.hit(RedbMaintenanceFailpoint::AfterTargetPublication, true)?;
+        self.database_parent_guard.sync()?;
+        self.hit(RedbMaintenanceFailpoint::AfterTargetParentSync, true)?;
+        self.verify_path_ownership()
+    }
+
+    /// Restores the exact operation backup and advances restore-rewind incarnation.
+    pub fn rollback_contract_migration(
+        &self,
+        operation_id: ContractMigrationOperationId,
+    ) -> Result<(), StorageError> {
+        self.verify_path_ownership()?;
+        let receipt = self
+            .read_contract_migration_receipt(operation_id)?
+            .ok_or_else(corrupt)?;
+        if receipt.current_phase()
+            != riffdb_storage_api::ContractMigrationReceiptPhaseV1::RollingBack
+        {
+            return Err(invariant());
+        }
+        let backup_name = receipt.backup_name().ok_or_else(corrupt)?;
+        let expected_manifest = receipt.backup_manifest().ok_or_else(corrupt)?;
+        let (manifest, identity) =
+            validate_immutable_backup(&self.named_backup_directory(backup_name))?;
+        if &identity != expected_manifest {
+            return Err(corrupt());
+        }
+        let new_history_incarnation = manifest
+            .history_incarnation()
+            .unwrap_or(1)
+            .checked_add(1)
+            .ok_or_else(limit_exceeded)?;
+        let source = self
+            .named_backup_directory(backup_name)
+            .join(crate::backup::DATABASE_ARTIFACT_FILE_NAME);
+        let rollback = self.contract_migration_rollback_path(operation_id)?;
+        remove_regular_file_if_present(&rollback)?;
+        copy_new_synced(&source, &rollback)?;
+        crate::backup::stamp_history_incarnation(&rollback, new_history_incarnation)?;
+        fs::rename(&rollback, &self.database_file).map_err(io_unavailable)?;
+        self.database_parent_guard.sync()?;
+        self.verify_path_ownership()
     }
 
     /// Creates one immutable named WP-070 backup of the configured database file.
@@ -590,6 +1041,7 @@ impl RedbMaintenanceStorage {
         }
         let reconciliation = RedbMaintenanceReconciliation {
             receipts: inventory,
+            migration_receipts: Vec::new(),
             operations,
             removed_unpublished_receipt_temps: removed_temps,
             removed_unpublished_target_temps,
@@ -694,6 +1146,121 @@ impl RedbMaintenanceStorage {
     fn receipt_path(&self, operation_id: OfflineMaintenanceOperationId) -> PathBuf {
         self.receipts_directory
             .join(receipt_file_name(operation_id))
+    }
+
+    fn migration_operation_directory(&self, operation_id: ContractMigrationOperationId) -> PathBuf {
+        self.migrations_directory.join(operation_id.to_string())
+    }
+
+    fn contract_migration_stage_path(
+        &self,
+        operation_id: ContractMigrationOperationId,
+    ) -> Result<PathBuf, StorageError> {
+        let target = self
+            .database_file
+            .file_name()
+            .and_then(OsStr::to_str)
+            .ok_or_else(invariant)?;
+        Ok(self
+            .database_file
+            .with_file_name(format!(".{target}.migration-{operation_id}.stage")))
+    }
+
+    fn contract_migration_rollback_path(
+        &self,
+        operation_id: ContractMigrationOperationId,
+    ) -> Result<PathBuf, StorageError> {
+        let target = self
+            .database_file
+            .file_name()
+            .and_then(OsStr::to_str)
+            .ok_or_else(invariant)?;
+        Ok(self
+            .database_file
+            .with_file_name(format!(".{target}.migration-{operation_id}.rollback")))
+    }
+
+    fn contract_migration_reservation_path(
+        &self,
+        operation_id: ContractMigrationOperationId,
+    ) -> Result<PathBuf, StorageError> {
+        let target = self
+            .database_file
+            .file_name()
+            .and_then(OsStr::to_str)
+            .ok_or_else(invariant)?;
+        Ok(self
+            .database_file
+            .with_file_name(format!(".{target}.migration-{operation_id}.reservation")))
+    }
+
+    fn validate_migration_inventory(
+        &self,
+    ) -> Result<Vec<ContractMigrationReceiptV1>, StorageError> {
+        let mut count = 0usize;
+        let mut reservation_count = 0usize;
+        let mut receipts = Vec::new();
+        for entry in fs::read_dir(&self.migrations_directory).map_err(io_unavailable)? {
+            let entry = entry.map_err(io_unavailable)?;
+            let name = entry.file_name().into_string().map_err(|_| corrupt())?;
+            if let Some(operation) = parse_migration_backup_reservation_name(&name) {
+                reservation_count = reservation_count
+                    .checked_add(1)
+                    .ok_or_else(limit_exceeded)?;
+                if reservation_count > MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1
+                    || self.read_contract_migration_receipt(operation)?.is_none()
+                {
+                    return Err(corrupt());
+                }
+                remove_regular_file_if_present(&entry.path())?;
+                continue;
+            }
+            count = count.checked_add(1).ok_or_else(limit_exceeded)?;
+            if count > MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1 {
+                return Err(limit_exceeded());
+            }
+            if !entry.file_type().map_err(io_unavailable)?.is_dir() {
+                return Err(corrupt());
+            }
+            let operation = parse_contract_migration_operation_id(&name).ok_or_else(corrupt)?;
+            let receipt =
+                read_migration_receipt_file(&entry.path().join(MIGRATION_RECEIPT_FILE_NAME))?;
+            if receipt.operation_id() != operation {
+                return Err(corrupt());
+            }
+            let candidate = read_bounded_file(
+                &entry.path().join(MIGRATION_CANDIDATE_FILE_NAME),
+                receipt.operation_artifacts().candidate().length(),
+            )?;
+            let migration = read_bounded_file(
+                &entry.path().join(MIGRATION_BUNDLE_FILE_NAME),
+                receipt.operation_artifacts().migration().length(),
+            )?;
+            if !artifact_matches(receipt.operation_artifacts().candidate(), &candidate)
+                || !artifact_matches(receipt.operation_artifacts().migration(), &migration)
+            {
+                return Err(corrupt());
+            }
+            receipts.push(receipt);
+        }
+        for receipt in &receipts {
+            remove_regular_file_if_present(
+                &self.contract_migration_reservation_path(receipt.operation_id())?,
+            )?;
+        }
+        receipts.sort_unstable_by_key(ContractMigrationReceiptV1::operation_id);
+        if receipts
+            .windows(2)
+            .any(|pair| pair[0].operation_id() == pair[1].operation_id())
+            || receipts
+                .iter()
+                .filter(|receipt| !receipt.current_phase().is_terminal())
+                .count()
+                > 1
+        {
+            return Err(invariant());
+        }
+        Ok(receipts)
     }
 
     fn write_receipt(&self, receipt: &OfflineMaintenanceReceiptV1) -> Result<(), StorageError> {
@@ -969,7 +1536,7 @@ fn validate_reserved_inventory(maintenance_directory: &Path) -> Result<(), Stora
             file_type.is_file() && !file_type.is_symlink()
         } else if matches!(
             name.to_str(),
-            Some(RECEIPTS_DIRECTORY_NAME | STAGED_DIRECTORY_NAME)
+            Some(RECEIPTS_DIRECTORY_NAME | STAGED_DIRECTORY_NAME | MIGRATIONS_DIRECTORY_NAME)
         ) {
             file_type.is_dir()
         } else {
@@ -984,6 +1551,7 @@ fn validate_reserved_inventory(maintenance_directory: &Path) -> Result<(), Stora
         OsStr::new(OWNERSHIP_LOCK_FILE_NAME).to_os_string(),
         OsStr::new(RECEIPTS_DIRECTORY_NAME).to_os_string(),
         OsStr::new(STAGED_DIRECTORY_NAME).to_os_string(),
+        OsStr::new(MIGRATIONS_DIRECTORY_NAME).to_os_string(),
     ]);
     if names != expected {
         return Err(corrupt());
@@ -1076,6 +1644,164 @@ fn read_receipt_file(path: &Path) -> Result<OfflineMaintenanceReceiptV1, Storage
     decode_receipt(&bytes)
 }
 
+fn read_migration_receipt_file(path: &Path) -> Result<ContractMigrationReceiptV1, StorageError> {
+    let metadata = fs::symlink_metadata(path).map_err(io_unavailable)?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err(corrupt());
+    }
+    let mut file = File::open(path).map_err(io_unavailable)?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(u64::try_from(MAX_MIGRATION_RECEIPT_BYTES + 1).map_err(|_| limit_exceeded())?)
+        .read_to_end(&mut bytes)
+        .map_err(io_unavailable)?;
+    decode_migration_receipt(&bytes)
+}
+
+fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(io_unavailable)?;
+    file.write_all(bytes).map_err(io_unavailable)?;
+    file.sync_all().map_err(io_unavailable)
+}
+
+fn copy_new_synced(source: &Path, destination: &Path) -> Result<(), StorageError> {
+    let mut source_file = File::open(source).map_err(io_unavailable)?;
+    let mut destination_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(io_unavailable)?;
+    std::io::copy(&mut source_file, &mut destination_file).map_err(io_unavailable)?;
+    destination_file.sync_all().map_err(io_unavailable)
+}
+
+fn remove_regular_file_if_present(path: &Path) -> Result<(), StorageError> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io_unavailable(error)),
+        Ok(metadata) if metadata.file_type().is_file() && !metadata.file_type().is_symlink() => {
+            fs::remove_file(path).map_err(io_unavailable)?;
+            crate::backup::sync_parent(path)
+        }
+        Ok(_) => Err(corrupt()),
+    }
+}
+
+fn reserve_disk_file(path: &Path, bytes: u64) -> Result<ReservedDiskFile, StorageError> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(io_unavailable)?;
+    let zeros = [0_u8; MIGRATION_RESERVATION_CHUNK_BYTES];
+    let mut remaining = bytes;
+    while remaining != 0 {
+        let chunk = usize::try_from(remaining.min(MIGRATION_RESERVATION_CHUNK_BYTES as u64))
+            .map_err(|_| limit_exceeded())?;
+        if let Err(error) = file.write_all(&zeros[..chunk]) {
+            drop(file);
+            let _ = fs::remove_file(path);
+            return Err(io_unavailable(error));
+        }
+        remaining -= u64::try_from(chunk).map_err(|_| limit_exceeded())?;
+    }
+    if let Err(error) = file.sync_all() {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(io_unavailable(error));
+    }
+    crate::backup::sync_parent(path)?;
+    Ok(ReservedDiskFile {
+        path: path.to_path_buf(),
+        file,
+    })
+}
+
+fn release_reserved_file(file: &mut Option<ReservedDiskFile>) -> Result<(), StorageError> {
+    let Some(reserved) = file.take() else {
+        return Ok(());
+    };
+    let ReservedDiskFile { path, file } = reserved;
+    drop(file);
+    fs::remove_file(&path).map_err(io_unavailable)?;
+    crate::backup::sync_parent(&path)
+}
+
+fn read_bounded_file(path: &Path, exact_length: u64) -> Result<Vec<u8>, StorageError> {
+    let metadata = fs::symlink_metadata(path).map_err(io_unavailable)?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() != exact_length
+    {
+        return Err(corrupt());
+    }
+    let mut file = File::open(path).map_err(io_unavailable)?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(exact_length.checked_add(1).ok_or_else(limit_exceeded)?)
+        .read_to_end(&mut bytes)
+        .map_err(io_unavailable)?;
+    if u64::try_from(bytes.len()).map_err(|_| limit_exceeded())? != exact_length {
+        return Err(corrupt());
+    }
+    Ok(bytes)
+}
+
+fn artifact_matches(
+    expected: riffdb_storage_api::ContractMigrationArtifactFileV1,
+    bytes: &[u8],
+) -> bool {
+    u64::try_from(bytes.len()).ok() == Some(expected.length())
+        && <[u8; 32]>::from(Sha256::digest(bytes)) == expected.sha256()
+}
+
+fn migration_stage_identity(
+    operation_id: ContractMigrationOperationId,
+    manifest: &OfflineBackupManifestIdentityV1,
+) -> Result<[u8; 32], StorageError> {
+    let mut digest = Sha256::new();
+    digest.update(b"riffdb.contract-migration-stage/v1\0");
+    digest.update(operation_id.as_bytes());
+    digest.update(manifest.database_id().as_bytes());
+    let checksum = manifest.manifest_checksum().as_bytes();
+    digest.update(
+        u32::try_from(checksum.len())
+            .map_err(|_| limit_exceeded())?
+            .to_be_bytes(),
+    );
+    digest.update(checksum);
+    Ok(digest.finalize().into())
+}
+
+fn migration_receipt_extends(
+    replacement: &ContractMigrationReceiptV1,
+    expected: &ContractMigrationReceiptV1,
+) -> bool {
+    replacement.database_id() == expected.database_id()
+        && replacement.operation_id() == expected.operation_id()
+        && replacement.input_hash() == expected.input_hash()
+        && replacement.artifacts() == expected.artifacts()
+        && replacement.operation_artifacts() == expected.operation_artifacts()
+        && replacement.admission() == expected.admission()
+        && expected
+            .backup_name()
+            .is_none_or(|value| replacement.backup_name() == Some(value))
+        && expected
+            .backup_manifest()
+            .is_none_or(|value| replacement.backup_manifest() == Some(value))
+        && expected
+            .stage_identity()
+            .is_none_or(|value| replacement.stage_identity() == Some(value))
+        && replacement
+            .transitions()
+            .starts_with(expected.transitions())
+        && replacement.transitions().len() >= expected.transitions().len()
+}
+
 fn receipt_file_name(operation_id: OfflineMaintenanceOperationId) -> String {
     format!("{operation_id}{RECEIPT_FILE_SUFFIX}")
 }
@@ -1108,6 +1834,44 @@ fn parse_operation_id(value: &str) -> Option<OfflineMaintenanceOperationId> {
     }
     let operation_id = OfflineMaintenanceOperationId::from_bytes(decoded).ok()?;
     (operation_id.to_string() == value).then_some(operation_id)
+}
+
+fn parse_contract_migration_operation_id(value: &str) -> Option<ContractMigrationOperationId> {
+    if value.len() != 36 {
+        return None;
+    }
+    let bytes = value.as_bytes();
+    if bytes.get(8) != Some(&b'-')
+        || bytes.get(13) != Some(&b'-')
+        || bytes.get(18) != Some(&b'-')
+        || bytes.get(23) != Some(&b'-')
+    {
+        return None;
+    }
+    let mut decoded = [0_u8; 16];
+    let mut output = 0usize;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if matches!(index, 8 | 13 | 18 | 23) {
+            index += 1;
+            continue;
+        }
+        let high = decode_lower_hex(*bytes.get(index)?)?;
+        let low = decode_lower_hex(*bytes.get(index + 1)?)?;
+        *decoded.get_mut(output)? = (high << 4) | low;
+        output += 1;
+        index += 2;
+    }
+    let operation_id = ContractMigrationOperationId::from_bytes(decoded).ok()?;
+    (operation_id.to_string() == value).then_some(operation_id)
+}
+
+fn parse_migration_backup_reservation_name(value: &str) -> Option<ContractMigrationOperationId> {
+    parse_contract_migration_operation_id(
+        value
+            .strip_prefix('.')?
+            .strip_suffix(".backup-reservation")?,
+    )
 }
 
 const fn decode_lower_hex(value: u8) -> Option<u8> {

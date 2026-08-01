@@ -1238,6 +1238,11 @@ fn overwrite_policy(
 }
 
 fn production_backup_build_metadata() -> Result<BackupBuildMetadataV1, DriverFault> {
+    contract_migration_backup_build_metadata().map_err(|_| DriverFault::ReceiptValue)
+}
+
+pub(crate) fn contract_migration_backup_build_metadata()
+-> Result<BackupBuildMetadataV1, StorageValueError> {
     BackupBuildMetadataV1::new(
         env!("CARGO_PKG_VERSION"),
         option_env!("RIFFDB_GIT_REVISION").unwrap_or("development-unversioned"),
@@ -1245,7 +1250,6 @@ fn production_backup_build_metadata() -> Result<BackupBuildMetadataV1, DriverFau
         EXECUTABLE_IR_VERSION_V1,
         Vec::new(),
     )
-    .map_err(|_| DriverFault::ReceiptValue)
 }
 
 /// Floor for the restore bump rule `max(target, staged) + 1`.

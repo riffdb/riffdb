@@ -1183,6 +1183,24 @@ fn plan_bundle_exists(
     transaction: &redb::WriteTransaction,
     plan: &riffdb_storage_api::ExecutablePlanRef,
 ) -> Result<bool, StorageError> {
+    let retirement_key =
+        crate::keys::encode_contract_write_retirement_key(plan.contract_bundle_hash());
+    let retirements = transaction
+        .open_table(crate::layout::CONTRACT_WRITE_RETIREMENTS)
+        .map_err(table_error)?;
+    if let Some(value) = retirements
+        .get(retirement_key.as_slice())
+        .map_err(precommit_storage_error)?
+    {
+        let retirement =
+            riffdb_storage_api::proto_codec::decode_contract_write_retirement_v1(value.value())
+                .map_err(crate::error::codec_error)?;
+        if retirement.value().artifacts().parent() != plan.contract_bundle_hash() {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        return Ok(false);
+    }
+    drop(retirements);
     let key = encode_contract_bundle_key(plan.contract_lineage(), plan.contract_version())
         .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
     let table = transaction

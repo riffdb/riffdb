@@ -1331,6 +1331,7 @@ const fn operation_name(operation: ServiceOperationV1) -> &'static str {
         ServiceOperationV1::ExplainQuery => "explain_query",
         ServiceOperationV1::ExecuteQuery => "execute_query",
         ServiceOperationV1::DeployQueryModule => "deploy_query_module",
+        ServiceOperationV1::ApplyContractMigration => "apply_contract_migration",
     }
 }
 

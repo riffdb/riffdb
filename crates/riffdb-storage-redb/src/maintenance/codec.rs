@@ -1,15 +1,20 @@
 use riffdb_storage_api::{
-    BackupIntegrityChecksumV1, MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES,
+    BackupIntegrityChecksumV1, ContractMigrationAdmissionV1, ContractMigrationArtifactFileV1,
+    ContractMigrationArtifactsV1, ContractMigrationOperationArtifactsV1,
+    ContractMigrationReceiptFailureV1, ContractMigrationReceiptPhaseV1,
+    ContractMigrationReceiptTransitionV1, ContractMigrationReceiptV1,
+    MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES, MAX_CONTRACT_MIGRATION_RECEIPT_TRANSITIONS_V1,
     MAX_OFFLINE_MAINTENANCE_RECEIPT_TRANSITIONS_V1, OfflineBackupManifestIdentityV1,
     OfflineMaintenanceAdmissionV1, OfflineMaintenanceReceiptFailureV1,
     OfflineMaintenanceReceiptPhaseV1, OfflineMaintenanceReceiptTransitionV1,
     OfflineMaintenanceReceiptV1, StorageError, StorageErrorKind, StorageValueError,
 };
 use riffdb_types::{
-    ActorId, ActorKind, ApprovalId, BackupNameV1, CapabilityId, CommitSequence, DatabaseId,
-    MAX_ACTOR_ID_BYTES, MAX_APPROVAL_ID_BYTES, OfflineMaintenanceInputHash,
+    ActorId, ActorKind, ApprovalId, BackupNameV1, CapabilityId, CommitSequence, ContractBundleHash,
+    ContractMigrationInputHash, ContractMigrationOperationId, DatabaseId, MAX_ACTOR_ID_BYTES,
+    MAX_APPROVAL_ID_BYTES, MigrationBundleHash, OfflineMaintenanceInputHash,
     OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
-    OfflineMaintenanceReplacementConfirmation,
+    OfflineMaintenanceReplacementConfirmation, RequestId, ServiceIngressKindV1, Timestamp,
 };
 use sha2::{Digest, Sha256};
 
@@ -22,6 +27,8 @@ pub(super) const MAX_RECEIPT_BYTES: usize = 4 * 1024;
 const RECEIPT_MAGIC: &[u8] = b"RIFFDB-MAINT-RECEIPT\0";
 const RECEIPT_FORMAT_VERSION: u32 = 1;
 const SHA256_BYTES: usize = 32;
+const MIGRATION_RECEIPT_MAGIC: &[u8] = b"RIFFDB-MIGRATION-RECEIPT\0";
+pub(super) const MAX_MIGRATION_RECEIPT_BYTES: usize = 8 * 1024;
 
 pub(super) fn encode_receipt(
     receipt: &OfflineMaintenanceReceiptV1,
@@ -285,6 +292,309 @@ fn encode_receipt_pre_fence(
     Ok(bytes)
 }
 
+pub(super) fn encode_migration_receipt(
+    receipt: &ContractMigrationReceiptV1,
+) -> Result<Vec<u8>, StorageError> {
+    let mut output = Encoder::new_with_limit(MAX_MIGRATION_RECEIPT_BYTES);
+    output.bytes(MIGRATION_RECEIPT_MAGIC)?;
+    output.u32(RECEIPT_FORMAT_VERSION)?;
+    output.bytes(receipt.database_id().as_bytes())?;
+    output.bytes(receipt.operation_id().as_bytes())?;
+    output.bytes(receipt.input_hash().as_bytes())?;
+    output.bytes(receipt.artifacts().parent().as_bytes())?;
+    output.bytes(receipt.artifacts().candidate().as_bytes())?;
+    output.bytes(receipt.artifacts().migration().as_bytes())?;
+    encode_artifact_file(&mut output, receipt.operation_artifacts().candidate())?;
+    encode_artifact_file(&mut output, receipt.operation_artifacts().migration())?;
+    encode_migration_admission(&mut output, receipt.admission())?;
+    match (receipt.backup_name(), receipt.backup_manifest()) {
+        (None, None) => output.u8(0)?,
+        (Some(name), Some(manifest)) => {
+            output.u8(1)?;
+            output.framed_u16(name.as_bytes())?;
+            output.framed_u16(manifest.manifest_checksum().as_bytes())?;
+            output.bytes(manifest.database_id().as_bytes())?;
+            match manifest.included_application_frontier() {
+                None => output.u8(0)?,
+                Some(frontier) => {
+                    output.u8(1)?;
+                    output.u64(frontier.get())?;
+                }
+            }
+        }
+        _ => return Err(corrupt()),
+    }
+    match receipt.stage_identity() {
+        None => output.u8(0)?,
+        Some(identity) => {
+            output.u8(1)?;
+            output.bytes(&identity)?;
+        }
+    }
+    output.u8(u8::try_from(receipt.transitions().len()).map_err(|_| limit_exceeded())?)?;
+    for transition in receipt.transitions() {
+        output.u8(migration_phase_tag(transition.receipt_phase()))?;
+        output.u8(transition.failure().map_or(0, migration_failure_tag))?;
+    }
+    let mut bytes = output.finish();
+    let checksum = Sha256::digest(&bytes);
+    if bytes
+        .len()
+        .checked_add(checksum.len())
+        .is_none_or(|len| len > MAX_MIGRATION_RECEIPT_BYTES)
+    {
+        return Err(limit_exceeded());
+    }
+    bytes.extend_from_slice(&checksum);
+    Ok(bytes)
+}
+
+pub(super) fn decode_migration_receipt(
+    encoded: &[u8],
+) -> Result<ContractMigrationReceiptV1, StorageError> {
+    if encoded.len() > MAX_MIGRATION_RECEIPT_BYTES {
+        return Err(limit_exceeded());
+    }
+    let body_len = encoded
+        .len()
+        .checked_sub(SHA256_BYTES)
+        .ok_or_else(corrupt)?;
+    let (body, checksum) = encoded.split_at(body_len);
+    if Sha256::digest(body).as_slice() != checksum {
+        return Err(corrupt());
+    }
+    let mut input = Decoder::new(body);
+    if input.bytes(MIGRATION_RECEIPT_MAGIC.len())? != MIGRATION_RECEIPT_MAGIC {
+        return Err(incompatible());
+    }
+    if input.u32()? != RECEIPT_FORMAT_VERSION {
+        return Err(incompatible());
+    }
+    let database_id = DatabaseId::from_bytes(input.array()?).map_err(|_| corrupt())?;
+    let operation_id =
+        ContractMigrationOperationId::from_bytes(input.array()?).map_err(|_| corrupt())?;
+    let input_hash = ContractMigrationInputHash::from_bytes(input.array()?);
+    let artifacts = ContractMigrationArtifactsV1::new(
+        ContractBundleHash::from_bytes(input.array()?),
+        ContractBundleHash::from_bytes(input.array()?),
+        MigrationBundleHash::from_bytes(input.array()?),
+    );
+    let operation_artifacts = ContractMigrationOperationArtifactsV1::new(
+        decode_artifact_file(&mut input)?,
+        decode_artifact_file(&mut input)?,
+    );
+    let admission = decode_migration_admission(&mut input)?;
+    let (backup_name, backup_manifest) = match input.u8()? {
+        0 => (None, None),
+        1 => {
+            let name = BackupNameV1::new(input.text_u16(riffdb_types::MAX_BACKUP_NAME_V1_BYTES)?)
+                .map_err(|_| corrupt())?;
+            let checksum = BackupIntegrityChecksumV1::new(
+                input
+                    .framed_u16(MAX_BACKUP_INTEGRITY_CHECKSUM_BYTES)?
+                    .to_vec(),
+            )
+            .map_err(value_error)?;
+            let manifest_database =
+                DatabaseId::from_bytes(input.array()?).map_err(|_| corrupt())?;
+            let frontier = match input.u8()? {
+                0 => None,
+                1 => Some(CommitSequence::new(input.u64()?).ok_or_else(corrupt)?),
+                _ => return Err(corrupt()),
+            };
+            (
+                Some(name),
+                Some(OfflineBackupManifestIdentityV1::new(
+                    checksum,
+                    manifest_database,
+                    frontier,
+                )),
+            )
+        }
+        _ => return Err(corrupt()),
+    };
+    let stage_identity = match input.u8()? {
+        0 => None,
+        1 => Some(input.array()?),
+        _ => return Err(corrupt()),
+    };
+    let count = usize::from(input.u8()?);
+    if count == 0 || count > MAX_CONTRACT_MIGRATION_RECEIPT_TRANSITIONS_V1 {
+        return Err(corrupt());
+    }
+    let mut transitions = Vec::with_capacity(count);
+    for _ in 0..count {
+        let phase = migration_phase_from_tag(input.u8()?).ok_or_else(corrupt)?;
+        let failure = input.u8()?;
+        transitions.push(match (phase, failure) {
+            (
+                ContractMigrationReceiptPhaseV1::FailedClosed
+                | ContractMigrationReceiptPhaseV1::FailedRolledBack,
+                tag,
+            ) => ContractMigrationReceiptTransitionV1::failed(
+                phase,
+                migration_failure_from_tag(tag).ok_or_else(corrupt)?,
+            ),
+            (_, 0) => ContractMigrationReceiptTransitionV1::phase(phase),
+            _ => return Err(corrupt()),
+        });
+    }
+    input.finish()?;
+    let receipt = ContractMigrationReceiptV1::from_canonical_parts(
+        database_id,
+        operation_id,
+        input_hash,
+        artifacts,
+        operation_artifacts,
+        admission,
+        backup_name,
+        backup_manifest,
+        stage_identity,
+        transitions,
+    )
+    .map_err(value_error)?;
+    if encode_migration_receipt(&receipt)? != encoded {
+        return Err(corrupt());
+    }
+    Ok(receipt)
+}
+
+fn encode_migration_admission(
+    output: &mut Encoder,
+    admission: &ContractMigrationAdmissionV1,
+) -> Result<(), StorageError> {
+    output.u8(admission.principal().actor_kind().tag())?;
+    output.framed_u16(admission.principal().principal_id().as_str().as_bytes())?;
+    output.bytes(admission.principal().capability_id().as_bytes())?;
+    output.u64(admission.principal().capability_revision().get())?;
+    match admission.approval_id() {
+        None => output.u8(0)?,
+        Some(approval) => {
+            output.u8(1)?;
+            output.framed_u16(approval.as_bytes())?;
+        }
+    }
+    output.bytes(admission.request_id().as_bytes())?;
+    output.i64(admission.accepted_at().seconds())?;
+    output.u32(admission.accepted_at().nanoseconds())?;
+    output.u8(admission.ingress().tag())
+}
+
+fn decode_migration_admission(
+    input: &mut Decoder<'_>,
+) -> Result<ContractMigrationAdmissionV1, StorageError> {
+    let actor_kind = ActorKind::from_tag(input.u8()?).ok_or_else(corrupt)?;
+    let principal_id = ActorId::new(input.text_u16(MAX_ACTOR_ID_BYTES)?).map_err(|_| corrupt())?;
+    let capability_id = CapabilityId::from_bytes(input.array()?).map_err(|_| corrupt())?;
+    let capability_revision = std::num::NonZeroU64::new(input.u64()?).ok_or_else(corrupt)?;
+    let approval_id = match input.u8()? {
+        0 => None,
+        1 => Some(ApprovalId::new(input.text_u16(MAX_APPROVAL_ID_BYTES)?).map_err(|_| corrupt())?),
+        _ => return Err(corrupt()),
+    };
+    let request_id = RequestId::from_bytes(input.array()?).map_err(|_| corrupt())?;
+    let accepted_at = Timestamp::new(input.i64()?, input.u32()?).map_err(|_| corrupt())?;
+    let ingress = ServiceIngressKindV1::from_tag(input.u8()?).ok_or_else(corrupt)?;
+    Ok(ContractMigrationAdmissionV1::new(
+        riffdb_storage_api::AuditPrincipalV1::new(
+            principal_id,
+            actor_kind,
+            capability_id,
+            capability_revision,
+        ),
+        approval_id,
+        request_id,
+        accepted_at,
+        ingress,
+    ))
+}
+
+fn encode_artifact_file(
+    output: &mut Encoder,
+    artifact: ContractMigrationArtifactFileV1,
+) -> Result<(), StorageError> {
+    output.u64(artifact.length())?;
+    output.bytes(&artifact.sha256())
+}
+
+fn decode_artifact_file(
+    input: &mut Decoder<'_>,
+) -> Result<ContractMigrationArtifactFileV1, StorageError> {
+    ContractMigrationArtifactFileV1::new(input.u64()?, input.array()?).map_err(value_error)
+}
+
+const fn migration_phase_tag(phase: ContractMigrationReceiptPhaseV1) -> u8 {
+    use ContractMigrationReceiptPhaseV1 as P;
+    match phase {
+        P::Accepted => 1,
+        P::Draining => 2,
+        P::Preflight => 3,
+        P::BackupPublished => 4,
+        P::Staging => 5,
+        P::Transforming => 6,
+        P::RebuildingProjections => 7,
+        P::ValidatingStage => 8,
+        P::Publishing => 9,
+        P::ValidatingPublished => 10,
+        P::RollingBack => 11,
+        P::Succeeded => 12,
+        P::FailedClosed => 13,
+        P::FailedRolledBack => 14,
+    }
+}
+
+const fn migration_phase_from_tag(tag: u8) -> Option<ContractMigrationReceiptPhaseV1> {
+    use ContractMigrationReceiptPhaseV1 as P;
+    match tag {
+        1 => Some(P::Accepted),
+        2 => Some(P::Draining),
+        3 => Some(P::Preflight),
+        4 => Some(P::BackupPublished),
+        5 => Some(P::Staging),
+        6 => Some(P::Transforming),
+        7 => Some(P::RebuildingProjections),
+        8 => Some(P::ValidatingStage),
+        9 => Some(P::Publishing),
+        10 => Some(P::ValidatingPublished),
+        11 => Some(P::RollingBack),
+        12 => Some(P::Succeeded),
+        13 => Some(P::FailedClosed),
+        14 => Some(P::FailedRolledBack),
+        _ => None,
+    }
+}
+
+const fn migration_failure_tag(failure: ContractMigrationReceiptFailureV1) -> u8 {
+    use ContractMigrationReceiptFailureV1 as F;
+    match failure {
+        F::ArtifactMismatch => 1,
+        F::InvalidPredecessor => 2,
+        F::PendingAdmission => 3,
+        F::CapacityExhausted => 4,
+        F::DiskUnavailable => 5,
+        F::StageCorrupt => 6,
+        F::PublicationUncertain => 7,
+        F::PublishedValidationFailed => 8,
+        F::RollbackFailed => 9,
+    }
+}
+
+const fn migration_failure_from_tag(tag: u8) -> Option<ContractMigrationReceiptFailureV1> {
+    use ContractMigrationReceiptFailureV1 as F;
+    match tag {
+        1 => Some(F::ArtifactMismatch),
+        2 => Some(F::InvalidPredecessor),
+        3 => Some(F::PendingAdmission),
+        4 => Some(F::CapacityExhausted),
+        5 => Some(F::DiskUnavailable),
+        6 => Some(F::StageCorrupt),
+        7 => Some(F::PublicationUncertain),
+        8 => Some(F::PublishedValidationFailed),
+        9 => Some(F::RollbackFailed),
+        _ => None,
+    }
+}
+
 const fn operation_kind_tag(kind: OfflineMaintenanceOperationKind) -> u8 {
     match kind {
         OfflineMaintenanceOperationKind::CreateBackup => 0x01,
@@ -317,11 +627,19 @@ const fn confirmation_from_tag(tag: u8) -> Option<OfflineMaintenanceReplacementC
 
 struct Encoder {
     bytes: Vec<u8>,
+    limit: usize,
 }
 
 impl Encoder {
     fn new() -> Self {
-        Self { bytes: Vec::new() }
+        Self::new_with_limit(MAX_RECEIPT_BYTES)
+    }
+
+    fn new_with_limit(limit: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            limit,
+        }
     }
 
     fn finish(self) -> Vec<u8> {
@@ -329,7 +647,7 @@ impl Encoder {
     }
 
     fn bytes(&mut self, value: &[u8]) -> Result<(), StorageError> {
-        reserve_bytes(&self.bytes, value.len())?;
+        reserve_bytes_with_limit(&self.bytes, value.len(), self.limit)?;
         self.bytes.extend_from_slice(value);
         Ok(())
     }
@@ -347,6 +665,10 @@ impl Encoder {
     }
 
     fn u64(&mut self, value: u64) -> Result<(), StorageError> {
+        self.bytes(&value.to_be_bytes())
+    }
+
+    fn i64(&mut self, value: i64) -> Result<(), StorageError> {
         self.bytes(&value.to_be_bytes())
     }
 
@@ -414,6 +736,10 @@ impl<'a> Decoder<'a> {
         Ok(u64::from_be_bytes(self.array()?))
     }
 
+    fn i64(&mut self) -> Result<i64, StorageError> {
+        Ok(i64::from_be_bytes(self.array()?))
+    }
+
     fn framed_u16(&mut self, maximum: usize) -> Result<&'a [u8], StorageError> {
         let length = usize::from(self.u16()?);
         if length > maximum {
@@ -441,10 +767,18 @@ impl<'a> Decoder<'a> {
 }
 
 fn reserve_bytes(bytes: &[u8], additional: usize) -> Result<(), StorageError> {
+    reserve_bytes_with_limit(bytes, additional, MAX_RECEIPT_BYTES)
+}
+
+fn reserve_bytes_with_limit(
+    bytes: &[u8],
+    additional: usize,
+    limit: usize,
+) -> Result<(), StorageError> {
     if bytes
         .len()
         .checked_add(additional)
-        .is_none_or(|length| length > MAX_RECEIPT_BYTES)
+        .is_none_or(|length| length > limit)
     {
         return Err(limit_exceeded());
     }
@@ -472,4 +806,79 @@ fn incompatible() -> StorageError {
 
 fn limit_exceeded() -> StorageError {
     storage_error(StorageErrorKind::LimitExceeded)
+}
+
+#[cfg(test)]
+mod tests {
+    use riffdb_storage_api::{
+        AuditPrincipalV1, ContractMigrationAdmissionV1, ContractMigrationArtifactFileV1,
+        ContractMigrationArtifactsV1, ContractMigrationOperationArtifactsV1,
+        ContractMigrationReceiptPhaseV1, ContractMigrationReceiptTransitionV1,
+        ContractMigrationReceiptV1,
+    };
+    use riffdb_types::{
+        ActorId, ActorKind, ApprovalId, CapabilityId, ContractBundleHash,
+        ContractMigrationInputHash, ContractMigrationOperationId, DatabaseId, MigrationBundleHash,
+        RequestId, ServiceIngressKindV1, Timestamp,
+    };
+
+    use super::{decode_migration_receipt, encode_migration_receipt};
+
+    fn uuid_v7(seed: u8) -> [u8; 16] {
+        let mut bytes = [seed; 16];
+        bytes[6] = 0x70 | (seed & 0x0f);
+        bytes[8] = 0x80 | (seed & 0x3f);
+        bytes
+    }
+
+    fn accepted_receipt() -> ContractMigrationReceiptV1 {
+        ContractMigrationReceiptV1::from_canonical_parts(
+            DatabaseId::from_bytes(uuid_v7(1)).expect("database"),
+            ContractMigrationOperationId::from_bytes(uuid_v7(2)).expect("operation"),
+            ContractMigrationInputHash::from_bytes([3; 32]),
+            ContractMigrationArtifactsV1::new(
+                ContractBundleHash::from_bytes([4; 32]),
+                ContractBundleHash::from_bytes([5; 32]),
+                MigrationBundleHash::from_bytes([6; 32]),
+            ),
+            ContractMigrationOperationArtifactsV1::new(
+                ContractMigrationArtifactFileV1::new(101, [7; 32]).expect("candidate file"),
+                ContractMigrationArtifactFileV1::new(202, [8; 32]).expect("migration file"),
+            ),
+            ContractMigrationAdmissionV1::new(
+                AuditPrincipalV1::new(
+                    ActorId::new("operator").expect("actor"),
+                    ActorKind::Human,
+                    CapabilityId::from_bytes(uuid_v7(9)).expect("capability"),
+                    std::num::NonZeroU64::new(7).expect("revision"),
+                ),
+                Some(ApprovalId::new("approval").expect("approval")),
+                RequestId::from_bytes(uuid_v7(10)).expect("request"),
+                Timestamp::new(1_700_000_000, 123).expect("timestamp"),
+                ServiceIngressKindV1::Grpc,
+            ),
+            None,
+            None,
+            None,
+            vec![ContractMigrationReceiptTransitionV1::phase(
+                ContractMigrationReceiptPhaseV1::Accepted,
+            )],
+        )
+        .expect("receipt")
+    }
+
+    #[test]
+    fn migration_receipt_round_trips_canonically_and_rejects_checksum_damage() {
+        let receipt = accepted_receipt();
+        let encoded = encode_migration_receipt(&receipt).expect("encode");
+        assert_eq!(decode_migration_receipt(&encoded).expect("decode"), receipt);
+        assert_eq!(
+            encode_migration_receipt(&decode_migration_receipt(&encoded).expect("decode"))
+                .expect("reencode"),
+            encoded
+        );
+        let mut corrupt = encoded;
+        corrupt[40] ^= 0x01;
+        assert!(decode_migration_receipt(&corrupt).is_err());
+    }
 }

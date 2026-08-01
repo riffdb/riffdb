@@ -1,6 +1,6 @@
 //! Same-session exact-end historical catalog validation.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::marker::PhantomData;
@@ -27,7 +27,6 @@ use riffdb_types::{
 use crate::lineage::{LineageBudget, LineageMaterializationProof};
 use crate::{
     CatalogError, CatalogErrorKind, ValidatedContractBundle, validate_capability_partition,
-    validate_successor_compatibility,
 };
 
 /// Process-local proof that every catalog history item was IR-validated to exact end.
@@ -59,6 +58,13 @@ impl ValidatedCatalogHistory {
     #[must_use]
     pub const fn active(&self) -> Option<&ValidatedContractBundle> {
         self.active.as_ref()
+    }
+
+    /// Clones the completely validated active lineage for migration planning.
+    pub fn active_lineage_bundles(&self) -> Option<Vec<ValidatedContractBundle>> {
+        self.lineage_proof
+            .as_ref()
+            .map(|proof| proof.bundles().to_vec())
     }
 
     /// Number of bounded evidence items consumed before exact end.
@@ -870,6 +876,7 @@ struct HistoricalValidationState {
     active: Option<ValidatedContractBundle>,
     terminal_bundle: Option<ValidatedContractBundle>,
     lineage_bundles: Vec<ValidatedContractBundle>,
+    migration_edges: BTreeSet<(ContractBundleHash, ContractBundleHash)>,
     lineage_budget: LineageBudget,
     lineage_proof: Option<Arc<LineageMaterializationProof>>,
     saw_v1_index: bool,
@@ -1013,12 +1020,30 @@ fn validate_historical_item<S: StructuralEvidenceSession>(
                 .push_bundle(evidence.bytes().as_bytes().len())
                 .map_err(map_history_lineage_error)?;
             let bundle = validate_bundle_evidence(&evidence)?;
-            validate_historical_bundle_parent(&bundle, state.terminal_bundle.as_ref())?;
+            validate_historical_bundle_link(&bundle, state.terminal_bundle.as_ref())?;
             state.lineage_bundles.push(bundle.clone());
             state.terminal_bundle = Some(bundle);
         }
+        HistoricalSemanticEvidence::ContractMigrationEdge(edge) => {
+            if state.lineage_proof.is_some() {
+                return Err(CatalogError::new(
+                    CatalogErrorKind::InvalidHistoricalEvidence,
+                ));
+            }
+            let artifacts = edge.retirement().artifacts();
+            let pair = (artifacts.parent(), artifacts.candidate());
+            if edge.migration().artifacts() != artifacts || !state.migration_edges.insert(pair) {
+                return Err(CatalogError::new(
+                    CatalogErrorKind::InvalidHistoricalEvidence,
+                ));
+            }
+        }
         HistoricalSemanticEvidence::PlanReference(reference) => {
-            let proof = ensure_lineage_proof(&state.lineage_bundles, &mut state.lineage_proof)?;
+            let proof = ensure_lineage_proof(
+                &state.lineage_bundles,
+                &state.migration_edges,
+                &mut state.lineage_proof,
+            )?;
             let (ordinal, bundle) = proof
                 .exact_member(
                     reference.contract_version(),
@@ -1042,8 +1067,11 @@ fn validate_historical_item<S: StructuralEvidenceSession>(
                         pointer.version(),
                         pointer.bundle_hash(),
                     )?;
-                    let proof =
-                        ensure_lineage_proof(&state.lineage_bundles, &mut state.lineage_proof)?;
+                    let proof = ensure_lineage_proof(
+                        &state.lineage_bundles,
+                        &state.migration_edges,
+                        &mut state.lineage_proof,
+                    )?;
                     if proof
                         .exact_member(pointer.version(), pointer.bundle_hash())
                         .is_none()
@@ -1058,11 +1086,19 @@ fn validate_historical_item<S: StructuralEvidenceSession>(
             };
         }
         HistoricalSemanticEvidence::PersistedKey(evidence) => {
-            let proof = ensure_lineage_proof(&state.lineage_bundles, &mut state.lineage_proof)?;
+            let proof = ensure_lineage_proof(
+                &state.lineage_bundles,
+                &state.migration_edges,
+                &mut state.lineage_proof,
+            )?;
             validate_persisted_key(session, proof, &evidence)?;
         }
         HistoricalSemanticEvidence::IndexMigrationRow(evidence) => {
-            let proof = ensure_lineage_proof(&state.lineage_bundles, &mut state.lineage_proof)?;
+            let proof = ensure_lineage_proof(
+                &state.lineage_bundles,
+                &state.migration_edges,
+                &mut state.lineage_proof,
+            )?;
             state.saw_v1_index |= validate_index_migration_row(session, proof, &evidence)?;
         }
         HistoricalSemanticEvidence::CapabilityPartition(evidence) => {
@@ -1202,7 +1238,7 @@ impl ExpressionValueSource for HistoricalRootKeyValues<'_> {
     }
 }
 
-fn validate_historical_bundle_parent(
+fn validate_historical_bundle_link(
     candidate: &ValidatedContractBundle,
     prior: Option<&ValidatedContractBundle>,
 ) -> Result<(), CatalogError> {
@@ -1231,7 +1267,7 @@ fn validate_historical_bundle_parent(
             CatalogErrorKind::InvalidHistoricalEvidence,
         ));
     }
-    validate_successor_compatibility(candidate, prior).map_err(map_history_lineage_error)
+    Ok(())
 }
 
 fn active_matches_terminal(
@@ -1430,11 +1466,13 @@ fn push_unique_prefix_component(
 
 fn ensure_lineage_proof<'a>(
     bundles: &[ValidatedContractBundle],
+    migration_edges: &BTreeSet<(ContractBundleHash, ContractBundleHash)>,
     proof: &'a mut Option<Arc<LineageMaterializationProof>>,
 ) -> Result<&'a Arc<LineageMaterializationProof>, CatalogError> {
     if proof.is_none() {
-        let checked = LineageMaterializationProof::from_forward_bundles(bundles.to_vec())
-            .map_err(map_history_lineage_error)?;
+        let checked =
+            LineageMaterializationProof::from_historical_bundles(bundles.to_vec(), migration_edges)
+                .map_err(map_history_lineage_error)?;
         *proof = Some(checked);
     }
     proof
@@ -1508,6 +1546,13 @@ fn historical_order_key(item: &HistoricalSemanticEvidence) -> Vec<u8> {
             push_lineage(&mut key, bundle.lineage());
             key.extend_from_slice(&bundle.version().to_be_bytes());
             key.extend_from_slice(bundle.bundle_hash().as_bytes());
+        }
+        HistoricalSemanticEvidence::ContractMigrationEdge(edge) => {
+            key.extend_from_slice(&[0x01, 0xff]);
+            let artifacts = edge.retirement().artifacts();
+            key.extend_from_slice(artifacts.parent().as_bytes());
+            key.extend_from_slice(artifacts.candidate().as_bytes());
+            key.extend_from_slice(edge.retirement().operation_id().as_bytes());
         }
         HistoricalSemanticEvidence::PlanReference(plan) => {
             key.push(0x02);

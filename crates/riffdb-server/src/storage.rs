@@ -38,9 +38,10 @@ use riffdb_storage_api::{
     QueryModuleAdministrationRepository, QueryModuleRepository, ReadSnapshot,
     ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
     SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind, StorageScanLimit,
-    StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1, StoredDurableEventV1,
-    StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1, StoredQueryModuleV1,
-    UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1,
+    StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1,
+    StoredContractMigrationEdgeV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
+    StoredProvenanceRecordV1, StoredQueryModuleV1, UndeliveredOutboxStatusScanRequestV1,
+    UndeliveredOutboxStatusScanV1,
 };
 use riffdb_storage_redb::{RedbOperationalPorts, RedbSharedPorts};
 use riffdb_types::{
@@ -1003,6 +1004,13 @@ impl CatalogRepository for SharedRedbOperationalPorts {
             return Ok(Some(bundle));
         }
         CatalogRepository::read_contract_bundle(&self.shared, lineage, contract_version)
+    }
+
+    fn read_contract_migration_edge(
+        &self,
+        predecessor: ContractBundleHash,
+    ) -> Result<Option<StoredContractMigrationEdgeV1>, StorageError> {
+        CatalogRepository::read_contract_migration_edge(&self.shared, predecessor)
     }
 }
 

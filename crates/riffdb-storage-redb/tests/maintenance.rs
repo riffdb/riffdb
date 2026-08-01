@@ -6,24 +6,29 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use riffdb_storage_api::{
-    BackupBuildMetadataV1, DatabaseIdentityProbe, DatabaseIdentityProbePort,
-    DatabaseInitializationPort, DatabaseInitializationResult, EvidencePageLimit,
-    HistoricalEvidenceCursor, HistoricalEvidencePage, OfflineMaintenanceAdmissionV1,
-    OfflineMaintenanceReceiptCreateResultV1, OfflineMaintenanceReceiptFailureV1,
-    OfflineMaintenanceReceiptPersistencePort, OfflineMaintenanceReceiptPhaseV1,
-    OfflineMaintenanceReceiptTransitionV1, OfflineMaintenanceReceiptV1,
-    OfflineRestoreOverwritePolicyV1, ReadableCapabilityDigestInventory, ReadableDigestKey,
-    ReadableIdempotencyDigestInventory, StartupValidationInputs, StorageErrorKind,
-    StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
-    StructuralEvidenceSession, StructuralOpenOutcome,
+    AuditPrincipalV1, BackupBuildMetadataV1, ContractMigrationAdmissionV1,
+    ContractMigrationArtifactFileV1, ContractMigrationArtifactsV1,
+    ContractMigrationOperationArtifactsV1, ContractMigrationReceiptPhaseV1,
+    ContractMigrationReceiptTransitionV1, ContractMigrationReceiptV1, DatabaseIdentityProbe,
+    DatabaseIdentityProbePort, DatabaseInitializationPort, DatabaseInitializationResult,
+    EvidencePageLimit, HistoricalEvidenceCursor, HistoricalEvidencePage,
+    OfflineMaintenanceAdmissionV1, OfflineMaintenanceReceiptCreateResultV1,
+    OfflineMaintenanceReceiptFailureV1, OfflineMaintenanceReceiptPersistencePort,
+    OfflineMaintenanceReceiptPhaseV1, OfflineMaintenanceReceiptTransitionV1,
+    OfflineMaintenanceReceiptV1, OfflineRestoreOverwritePolicyV1,
+    ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+    StartupValidationInputs, StorageErrorKind, StructuralEvidenceCursor, StructuralEvidenceOpen,
+    StructuralEvidencePage, StructuralEvidenceSession, StructuralOpenOutcome,
 };
 use riffdb_storage_redb::{
     RedbMaintenanceFailpoint, RedbMaintenanceStorage, RedbMaintenanceTestController, RedbStore,
 };
 use riffdb_types::{
-    ActorId, ActorKind, ApprovalId, BackupNameV1, CapabilityId, DatabaseId, DigestKeyId,
-    OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
-    OfflineMaintenanceReplacementConfirmation, Timestamp, offline_maintenance_input_hash,
+    ActorId, ActorKind, ApprovalId, BackupNameV1, CapabilityId, ContractBundleHash,
+    ContractMigrationInputHash, ContractMigrationOperationId, DatabaseId, DigestKeyId,
+    MigrationBundleHash, OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
+    OfflineMaintenanceReplacementConfirmation, RequestId, ServiceIngressKindV1, Timestamp,
+    offline_maintenance_input_hash,
 };
 use sha2::{Digest, Sha256};
 
@@ -61,6 +66,11 @@ fn operation_id(seed: u8) -> OfflineMaintenanceOperationId {
 
 fn database_id() -> DatabaseId {
     DatabaseId::from_unix_milliseconds_and_random(2, [0x22; 10]).expect("database ID")
+}
+
+fn migration_operation_id(seed: u8) -> ContractMigrationOperationId {
+    ContractMigrationOperationId::from_unix_milliseconds_and_random(4, [seed; 10])
+        .expect("migration operation ID")
 }
 
 fn backup_name() -> BackupNameV1 {
@@ -179,6 +189,371 @@ fn initialize(path: &Path) {
             .expect("initialize database"),
         DatabaseInitializationResult::Installed(database_id())
     );
+}
+
+fn accepted_migration_receipt(
+    seed: u8,
+    candidate: &[u8],
+    migration: &[u8],
+) -> ContractMigrationReceiptV1 {
+    let file = |bytes: &[u8]| {
+        ContractMigrationArtifactFileV1::new(
+            u64::try_from(bytes.len()).expect("length"),
+            Sha256::digest(bytes).into(),
+        )
+        .expect("artifact")
+    };
+    ContractMigrationReceiptV1::from_canonical_parts(
+        database_id(),
+        migration_operation_id(seed),
+        ContractMigrationInputHash::from_bytes([1; 32]),
+        ContractMigrationArtifactsV1::new(
+            ContractBundleHash::from_bytes([2; 32]),
+            ContractBundleHash::from_bytes([3; 32]),
+            MigrationBundleHash::from_bytes([4; 32]),
+        ),
+        ContractMigrationOperationArtifactsV1::new(file(candidate), file(migration)),
+        ContractMigrationAdmissionV1::new(
+            AuditPrincipalV1::new(
+                ActorId::new("migration-operator").expect("actor"),
+                ActorKind::Human,
+                CapabilityId::from_unix_milliseconds_and_random(5, [0x55; 10]).expect("capability"),
+                std::num::NonZeroU64::new(1).expect("revision"),
+            ),
+            Some(ApprovalId::new("migration-approval").expect("approval")),
+            RequestId::from_unix_milliseconds_and_random(6, [0x66; 10]).expect("request"),
+            Timestamp::new(1_700_000_000, 123).expect("timestamp"),
+            ServiceIngressKindV1::Grpc,
+        ),
+        None,
+        None,
+        None,
+        vec![ContractMigrationReceiptTransitionV1::phase(
+            ContractMigrationReceiptPhaseV1::Accepted,
+        )],
+    )
+    .expect("accepted receipt")
+}
+
+#[test]
+fn migration_artifacts_and_receipt_are_immutable_restart_evidence() {
+    let root = TestRoot::new("migration-artifacts");
+    let database = root.join("database.redb");
+    let backup_root = root.join("backups");
+    let candidate = b"canonical-candidate";
+    let migration = b"canonical-migration";
+    let operation = migration_operation_id(0x44);
+    let accepted = accepted_migration_receipt(0x44, candidate, migration);
+
+    let (storage, _) = RedbMaintenanceStorage::open(&database, &backup_root).expect("maintenance");
+    storage
+        .accept_contract_migration(&accepted, candidate, migration)
+        .expect("durable acceptance");
+    storage
+        .accept_contract_migration(&accepted, candidate, migration)
+        .expect("same input replay");
+    assert!(
+        storage
+            .accept_contract_migration(&accepted, b"different", migration)
+            .is_err()
+    );
+    let draining = accepted
+        .advance(ContractMigrationReceiptPhaseV1::Draining)
+        .expect("draining receipt");
+    storage
+        .replace_contract_migration_receipt(&accepted, &draining)
+        .expect("advance receipt");
+    drop(storage);
+
+    let (storage, _) =
+        RedbMaintenanceStorage::open(&database, &backup_root).expect("restart reconcile");
+    assert_eq!(
+        storage
+            .read_contract_migration_receipt(operation)
+            .expect("read")
+            .expect("receipt"),
+        draining
+    );
+    assert_eq!(
+        storage
+            .read_contract_migration_artifacts(operation)
+            .expect("artifacts"),
+        (candidate.to_vec(), migration.to_vec())
+    );
+}
+
+#[test]
+fn migration_preflight_reserves_disk_and_restart_recovers_exact_stage() {
+    let root = TestRoot::new("migration-stage-restart");
+    let database = root.join("database.redb");
+    let backup_root = root.join("backups");
+    initialize(&database);
+    let candidate = b"canonical-candidate";
+    let migration = b"canonical-migration";
+    let accepted = accepted_migration_receipt(0x45, candidate, migration);
+    let operation = accepted.operation_id();
+    let (storage, _) = RedbMaintenanceStorage::open(&database, &backup_root).expect("maintenance");
+    storage
+        .accept_contract_migration(&accepted, candidate, migration)
+        .expect("accept");
+    let draining = accepted
+        .advance(ContractMigrationReceiptPhaseV1::Draining)
+        .expect("draining");
+    storage
+        .replace_contract_migration_receipt(&accepted, &draining)
+        .expect("persist draining");
+    let preflight = draining
+        .advance(ContractMigrationReceiptPhaseV1::Preflight)
+        .expect("preflight");
+    storage
+        .replace_contract_migration_receipt(&draining, &preflight)
+        .expect("persist preflight");
+
+    let reservation = storage
+        .reserve_contract_migration_disk(operation, 4_096)
+        .expect("reserve both filesystems");
+    assert_eq!(reservation.operation_id(), operation);
+    let (name, _manifest, identity) = storage
+        .create_contract_migration_backup(operation, &build_metadata())
+        .expect("automatic immutable backup");
+    let backed_up = preflight
+        .publish_backup(name, identity.clone())
+        .expect("bind backup");
+    storage
+        .replace_contract_migration_receipt(&preflight, &backed_up)
+        .expect("persist backup");
+    let staging = backed_up
+        .advance(ContractMigrationReceiptPhaseV1::Staging)
+        .expect("staging");
+    storage
+        .replace_contract_migration_receipt(&backed_up, &staging)
+        .expect("persist staging");
+    let (stage, stage_identity) = storage
+        .materialize_contract_migration_stage(operation)
+        .expect("materialize sibling stage");
+    assert_eq!(complete_structural_validation(&stage), database_id());
+    let transforming = staging
+        .begin_transforming(stage_identity)
+        .expect("bind stage");
+    storage
+        .replace_contract_migration_receipt(&staging, &transforming)
+        .expect("persist stage");
+    reservation.release().expect("release reservation");
+    drop(storage);
+
+    let (storage, reconciliation) =
+        RedbMaintenanceStorage::open(&database, &backup_root).expect("restart reconcile");
+    assert_eq!(reconciliation.migration_receipts(), [transforming]);
+    assert_eq!(
+        storage
+            .materialize_contract_migration_stage(operation)
+            .expect("resume exact stage")
+            .0,
+        stage
+    );
+}
+
+fn migration_at_preflight(
+    label: &str,
+    controller: RedbMaintenanceTestController,
+) -> (TestRoot, RedbMaintenanceStorage, ContractMigrationReceiptV1) {
+    let root = TestRoot::new(label);
+    let database = root.join("database.redb");
+    let backup_root = root.join("backups");
+    initialize(&database);
+    let candidate = b"canonical-candidate";
+    let migration = b"canonical-migration";
+    let accepted = accepted_migration_receipt(0x46, candidate, migration);
+    let (storage, _) =
+        RedbMaintenanceStorage::open_with_test_controller(&database, &backup_root, controller)
+            .expect("maintenance");
+    storage
+        .accept_contract_migration(&accepted, candidate, migration)
+        .expect("accept");
+    let draining = accepted
+        .advance(ContractMigrationReceiptPhaseV1::Draining)
+        .expect("draining");
+    storage
+        .replace_contract_migration_receipt(&accepted, &draining)
+        .expect("persist draining");
+    let preflight = draining
+        .advance(ContractMigrationReceiptPhaseV1::Preflight)
+        .expect("preflight");
+    storage
+        .replace_contract_migration_receipt(&draining, &preflight)
+        .expect("persist preflight");
+    (root, storage, preflight)
+}
+
+fn migration_publish_backup(
+    storage: &RedbMaintenanceStorage,
+    preflight: &ContractMigrationReceiptV1,
+) -> ContractMigrationReceiptV1 {
+    let (name, _, identity) = storage
+        .create_contract_migration_backup(preflight.operation_id(), &build_metadata())
+        .expect("migration backup");
+    let backed_up = preflight
+        .publish_backup(name, identity)
+        .expect("bind backup");
+    storage
+        .replace_contract_migration_receipt(preflight, &backed_up)
+        .expect("persist backup");
+    backed_up
+}
+
+#[test]
+fn migration_external_failpoints_recover_exact_receipt_stage_and_target_state() {
+    for (index, failpoint, published) in [
+        (0x70, RedbMaintenanceFailpoint::BeforeReceiptFileSync, false),
+        (0x71, RedbMaintenanceFailpoint::AfterReceiptFileSync, false),
+        (0x72, RedbMaintenanceFailpoint::BeforeReceiptRename, false),
+        (0x73, RedbMaintenanceFailpoint::AfterReceiptRename, true),
+        (0x74, RedbMaintenanceFailpoint::AfterReceiptParentSync, true),
+    ] {
+        let root = TestRoot::new("migration-receipt-failpoint");
+        let database = root.join("database.redb");
+        let backup_root = root.join("backups");
+        let accepted = accepted_migration_receipt(index, b"candidate", b"migration");
+        let operation = accepted.operation_id();
+        let controller = RedbMaintenanceTestController::return_at(failpoint);
+        let (storage, _) =
+            RedbMaintenanceStorage::open_with_test_controller(&database, &backup_root, controller)
+                .expect("maintenance");
+        storage
+            .accept_contract_migration(&accepted, b"candidate", b"migration")
+            .expect("accept");
+        let draining = accepted
+            .advance(ContractMigrationReceiptPhaseV1::Draining)
+            .expect("draining");
+        let error = storage
+            .replace_contract_migration_receipt(&accepted, &draining)
+            .expect_err("armed receipt boundary");
+        assert_eq!(
+            error.kind(),
+            if published {
+                StorageErrorKind::CommitStatusUnknown
+            } else {
+                StorageErrorKind::Unavailable
+            }
+        );
+        drop(storage);
+        let (storage, reconciliation) =
+            RedbMaintenanceStorage::open(&database, &backup_root).expect("reconcile receipt");
+        let expected = if published { &draining } else { &accepted };
+        assert_eq!(
+            storage
+                .read_contract_migration_receipt(operation)
+                .expect("read receipt")
+                .as_ref(),
+            Some(expected)
+        );
+        assert_eq!(
+            reconciliation.migration_receipts(),
+            std::slice::from_ref(expected)
+        );
+    }
+
+    let backup_controller = RedbMaintenanceTestController::return_at(
+        RedbMaintenanceFailpoint::AfterNamedBackupPublication,
+    );
+    let (_root, storage, preflight) =
+        migration_at_preflight("migration-backup-failpoint", backup_controller);
+    assert_eq!(
+        storage
+            .create_contract_migration_backup(preflight.operation_id(), &build_metadata())
+            .expect_err("armed backup boundary")
+            .kind(),
+        StorageErrorKind::CommitStatusUnknown
+    );
+    migration_publish_backup(&storage, &preflight);
+
+    let stage_controller = RedbMaintenanceTestController::return_at(
+        RedbMaintenanceFailpoint::AfterStagedMaterialization,
+    );
+    let (_root, storage, preflight) =
+        migration_at_preflight("migration-stage-failpoint", stage_controller);
+    let backed_up = migration_publish_backup(&storage, &preflight);
+    let staging = backed_up
+        .advance(ContractMigrationReceiptPhaseV1::Staging)
+        .expect("staging");
+    storage
+        .replace_contract_migration_receipt(&backed_up, &staging)
+        .expect("persist staging");
+    assert_eq!(
+        storage
+            .materialize_contract_migration_stage(staging.operation_id())
+            .expect_err("armed stage boundary")
+            .kind(),
+        StorageErrorKind::Unavailable
+    );
+    assert!(
+        storage
+            .materialize_contract_migration_stage(staging.operation_id())
+            .expect("resume materialized stage")
+            .0
+            .is_file()
+    );
+
+    for (failpoint, published) in [
+        (RedbMaintenanceFailpoint::BeforeTargetPublication, false),
+        (RedbMaintenanceFailpoint::AfterTargetPublication, true),
+        (RedbMaintenanceFailpoint::AfterTargetParentSync, true),
+    ] {
+        let controller = RedbMaintenanceTestController::return_at(failpoint);
+        let (root, storage, preflight) =
+            migration_at_preflight("migration-publication-failpoint", controller);
+        let target = root.join("database.redb");
+        let backed_up = migration_publish_backup(&storage, &preflight);
+        let staging = backed_up
+            .advance(ContractMigrationReceiptPhaseV1::Staging)
+            .expect("staging");
+        storage
+            .replace_contract_migration_receipt(&backed_up, &staging)
+            .expect("persist staging");
+        let (stage, identity) = storage
+            .materialize_contract_migration_stage(staging.operation_id())
+            .expect("stage");
+        let transforming = staging.begin_transforming(identity).expect("transforming");
+        storage
+            .replace_contract_migration_receipt(&staging, &transforming)
+            .expect("persist transforming");
+        let rebuilding = transforming
+            .advance(ContractMigrationReceiptPhaseV1::RebuildingProjections)
+            .expect("rebuilding");
+        storage
+            .replace_contract_migration_receipt(&transforming, &rebuilding)
+            .expect("persist rebuilding");
+        let validating = rebuilding
+            .advance(ContractMigrationReceiptPhaseV1::ValidatingStage)
+            .expect("validating");
+        storage
+            .replace_contract_migration_receipt(&rebuilding, &validating)
+            .expect("persist validating");
+        let publishing = validating
+            .advance(ContractMigrationReceiptPhaseV1::Publishing)
+            .expect("publishing");
+        storage
+            .replace_contract_migration_receipt(&validating, &publishing)
+            .expect("persist publishing");
+        let before = Sha256::digest(fs::read(&target).expect("target before"));
+        let staged = Sha256::digest(fs::read(&stage).expect("stage before"));
+        let error = storage
+            .publish_contract_migration_stage(publishing.operation_id())
+            .expect_err("armed publication boundary");
+        assert_eq!(
+            error.kind(),
+            if published {
+                StorageErrorKind::CommitStatusUnknown
+            } else {
+                StorageErrorKind::Unavailable
+            }
+        );
+        assert_eq!(
+            Sha256::digest(fs::read(&target).expect("target after")),
+            if published { staged } else { before }
+        );
+        assert_eq!(stage.exists(), !published);
+    }
 }
 
 fn complete_structural_validation(path: &Path) -> DatabaseId {

@@ -10,7 +10,10 @@ use riffdb_types::{CanonicalRecord, CanonicalValue, ProjectionIdentity, encode_c
 
 use crate::lineage::{LineageMaterializationProof, RecordOwnerV1, WriterRelation};
 use crate::materialization::validate_static_value;
-use crate::{ActiveCatalogSnapshot, CatalogError, CatalogErrorKind, ValidatedContractBundle};
+use crate::{
+    ActiveCatalogSnapshot, CatalogError, CatalogErrorKind, MigrationFinding,
+    ValidatedContractBundle, ValidatedMigrationPlan,
+};
 
 /// Stable classification for projection event-materialization failures.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -286,6 +289,45 @@ impl ActiveCatalogSnapshot {
             bundle: bundle.clone(),
             lineage_proof: Arc::clone(self.lineage_proof()),
             projection_ordinal,
+        })
+    }
+}
+
+impl ValidatedMigrationPlan {
+    /// Resolves one required successor projection without activating its catalog.
+    pub fn resolve_candidate_projection(
+        &self,
+        projection_id: riffdb_types::ProjectionId,
+    ) -> Result<ResolvedProjectionPlan, MigrationFinding> {
+        if !self.rebuilt_projections().contains(&projection_id) {
+            return Err(MigrationFinding::from_stage_error(
+                riffdb_storage_api::MigrationStageError::Integrity,
+            ));
+        }
+        let proof = self.candidate_lineage_proof()?;
+        let ordinal = u16::try_from(proof.bundle_count().saturating_sub(1)).map_err(|_| {
+            MigrationFinding::from_stage_error(riffdb_storage_api::MigrationStageError::Integrity)
+        })?;
+        let bundle = proof.terminal().clone();
+        let plan = bundle
+            .bundle()
+            .projection(projection_id)
+            .ok_or_else(|| {
+                MigrationFinding::from_stage_error(
+                    riffdb_storage_api::MigrationStageError::Integrity,
+                )
+            })?
+            .clone();
+        Ok(ResolvedProjectionPlan {
+            identity: ProjectionIdentity::new(
+                bundle.lineage().clone(),
+                projection_id,
+                plan.plan_hash(),
+            ),
+            plan,
+            bundle,
+            lineage_proof: proof,
+            projection_ordinal: ordinal,
         })
     }
 }

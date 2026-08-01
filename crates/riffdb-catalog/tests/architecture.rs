@@ -228,7 +228,7 @@ fn historical_partition_derivation_uses_only_the_pure_invariant_evaluator() {
         .split_once("fn derive_historical_partition(")
         .expect("historical partition evaluator")
         .1
-        .split_once("fn validate_historical_bundle_parent(")
+        .split_once("fn validate_historical_bundle_link(")
         .expect("historical evaluator boundary")
         .0;
     assert_eq!(evaluator.matches("evaluate_expression(").count(), 1);

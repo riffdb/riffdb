@@ -1812,12 +1812,17 @@ mod tests {
     fn request_inventory_covers_every_shared_operation() {
         let requests = requests();
         assert_eq!(requests.len(), 29);
+        // WP-408 needs the durable audit tag; WP-409 owns its public policy request.
+        let policy_operations = ServiceOperationV1::ALL
+            .into_iter()
+            .filter(|operation| *operation != ServiceOperationV1::ApplyContractMigration)
+            .collect::<BTreeSet<_>>();
         assert_eq!(
             requests
                 .iter()
                 .map(OperationRequest::operation)
                 .collect::<BTreeSet<_>>(),
-            ServiceOperationV1::ALL.into_iter().collect::<BTreeSet<_>>()
+            policy_operations
         );
     }
 

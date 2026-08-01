@@ -444,6 +444,49 @@ shape!(EVENT_ROUTE_V1 [
     message(1, &EVENT_ID),
     fixed_bytes(3, 32),
 ]);
+shape!(CONTRACT_MIGRATION_ARTIFACTS_V1 [
+    fixed_bytes(1, 32),
+    fixed_bytes(2, 32),
+    fixed_bytes(3, 32),
+]);
+shape!(CONTRACT_MIGRATION_OPERATION_ARTIFACTS_V1 [
+    fixed_bytes(2, 32),
+    fixed_bytes(4, 32),
+]);
+shape!(CONTRACT_MIGRATION_JOURNAL_V1 [
+    fixed_bytes(1, 16),
+    fixed_bytes(2, 16),
+    fixed_bytes(3, 32),
+    message(4, &CONTRACT_MIGRATION_ARTIFACTS_V1),
+    message(6, &ENTITY_TARGET),
+    packed_varints(11, 4_096),
+    fixed_bytes(12, 32),
+    fixed_bytes(13, 32),
+]);
+shape!(CONTRACT_MIGRATION_RECORD_V1 [
+    fixed_bytes(1, 16),
+    fixed_bytes(2, 16),
+    fixed_bytes(3, 32),
+    message(4, &CONTRACT_MIGRATION_ARTIFACTS_V1),
+    message(5, &CONTRACT_MIGRATION_OPERATION_ARTIFACTS_V1),
+    string(6, MAX_TEXT_ID_BYTES),
+    fixed_bytes(7, 32),
+    message(8, &AUDIT_PRINCIPAL),
+    string(9, MAX_TEXT_ID_BYTES),
+    fixed_bytes(15, 32),
+]);
+shape!(CONTRACT_WRITE_RETIREMENT_V1 [
+    fixed_bytes(1, 32),
+    fixed_bytes(2, 32),
+    fixed_bytes(3, 32),
+    fixed_bytes(4, 16),
+]);
+shape!(RETIRED_ENTITY_RECORD_V1 [
+    fixed_bytes(1, 16),
+    fixed_bytes(2, 32),
+    message(3, &ENTITY_TARGET),
+    nonempty_bytes(4, MAX_DOCUMENT_BYTES),
+]);
 shape!(OUTBOX_RETRY [
     message(2, &TIMESTAMP),
     message(3, &TIMESTAMP),
@@ -492,7 +535,7 @@ shape!(PROJECTION_CONTROL [
     message(7, &PROJECTION_FAILURE),
 ]);
 
-const ROOTS: [&Shape; 38] = [
+const ROOTS: [&Shape; 42] = [
     &Shape { rules: &[] },
     &Shape {
         rules: &[fixed_bytes(1, 16)],
@@ -541,6 +584,10 @@ const ROOTS: [&Shape; 38] = [
     },
     &EVENT_ROUTE_V1,
     &COMMIT_V3,
+    &CONTRACT_MIGRATION_JOURNAL_V1,
+    &CONTRACT_MIGRATION_RECORD_V1,
+    &CONTRACT_WRITE_RETIREMENT_V1,
+    &RETIRED_ENTITY_RECORD_V1,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {
@@ -653,4 +700,90 @@ fn preflight(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use prost::Message;
+
+    use super::*;
+    use crate::storage::v1;
+
+    #[test]
+    fn every_migration_v1_record_has_a_real_structural_preflight_shape() {
+        let artifacts = v1::ContractMigrationArtifactIdentityV1 {
+            parent_bundle_hash: vec![1; 32],
+            candidate_bundle_hash: vec![2; 32],
+            migration_bundle_hash: vec![3; 32],
+        };
+        let operation_artifacts = v1::ContractMigrationOperationArtifactsV1 {
+            candidate_bundle_length: 1,
+            candidate_bundle_sha256: vec![4; 32],
+            migration_bundle_length: 1,
+            migration_bundle_sha256: vec![5; 32],
+        };
+        let journal = v1::StoredContractMigrationJournalV1 {
+            database_id: vec![6; 16],
+            operation_id: vec![7; 16],
+            semantic_input_hash: vec![8; 32],
+            artifacts: Some(artifacts.clone()),
+            step: 1,
+            exclusive_cursor: None,
+            checked_rows: 0,
+            changed_rows: 0,
+            batch_count: 1,
+            frozen_application_frontier: None,
+            required_projection_ids: Vec::new(),
+            previous_journal_hash: None,
+            journal_hash: vec![9; 32],
+        };
+        let record = v1::StoredContractMigrationRecordV1 {
+            database_id: vec![6; 16],
+            operation_id: vec![7; 16],
+            semantic_input_hash: vec![8; 32],
+            artifacts: Some(artifacts),
+            operation_artifacts: Some(operation_artifacts),
+            source_backup_name: "pre-migration-fixture".to_owned(),
+            source_backup_manifest_checksum: vec![10; 32],
+            principal: Some(v1::AuditPrincipalV1 {
+                principal_id: "operator".to_owned(),
+                actor_kind: 1,
+                capability_id: vec![11; 16],
+                capability_revision: 1,
+            }),
+            approval_id: None,
+            predecessor_application_frontier: None,
+            successor_application_frontier: None,
+            checked_rows: 0,
+            changed_rows: 0,
+            batch_count: 1,
+            terminal_validation_digest: vec![12; 32],
+            administration_sequence: 1,
+        };
+        let retirement = v1::StoredContractWriteRetirementV1 {
+            parent_bundle_hash: vec![1; 32],
+            candidate_bundle_hash: vec![2; 32],
+            migration_bundle_hash: vec![3; 32],
+            operation_id: vec![7; 16],
+            administration_sequence: 1,
+        };
+        let retired = v1::StoredRetiredEntityRecordV1 {
+            operation_id: vec![7; 16],
+            migration_bundle_hash: vec![3; 32],
+            original_target: Some(v1::EntityTargetV1 {
+                entity_type_id: 1,
+                entity_key: vec![1],
+            }),
+            original_entity_envelope: vec![1],
+        };
+
+        for (index, bytes) in [
+            (38, journal.encode_to_vec()),
+            (39, record.encode_to_vec()),
+            (40, retirement.encode_to_vec()),
+            (41, retired.encode_to_vec()),
+        ] {
+            assert_eq!(payload(index, &bytes), Ok(()));
+        }
+    }
 }
