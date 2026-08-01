@@ -38,7 +38,7 @@ Contract source: `contracts/ticketdesk.riff` (deployed to `riffdbd` at runtime).
 | `list_comments_for_ticket` | filtered `SELECT` | named `ListComments` |
 | `list_project_members` | filtered `SELECT` | named `ProjectMembers` |
 | `ticket_detail_page` | multi-table `JOIN` | named `TicketPage` (dependent key batches) |
-| `board_page_50` / `_200` / `_500` | wide `SELECT` + `ORDER BY ticket_id` + `LIMIT n` | named `BoardPage` (same predicate/order/limit) |
+| `board_page_50` / `_200` / `_500` | wide `SELECT` + `ORDER BY ticket_id` + `LIMIT n` | static named `BoardPage50`/`200`/`500` (literal `take N`; parameterized take blocked by engine RDB-INTERNAL-0001) |
 | `create_comment` | plain `INSERT` of a distinct new row per sample | symbolic `CreateComment` |
 | `close_ticket_with_comment` | SQL txn: validate + `UPDATE` ticket + `INSERT` comment | one symbolic `CloseTicketWithComment` (mutate + create) |
 | `swap_member_roles` | SQL txn: two `UPDATE` memberships | one symbolic `SwapMemberRoles` (two mutates) |

@@ -102,14 +102,14 @@ fn run() -> Result<(), String> {
     let mut rd_rep_seed_ns: Vec<u64> = Vec::new();
     let mut rd_rep_scenarios: Vec<Vec<riffdb_app_baseline_core::ScenarioResult>> = Vec::new();
     let mut rd_write_groups: Option<Vec<u64>> = None;
-    // Live order-sensitive board page cross-check (rep 0, once both backends seed).
-    let mut board_crosscheck_pg_ids: Option<Vec<[u8; 16]>> = None;
+    // Live order-sensitive board page cross-check (rep 0): all static sizes
+    // the dense cell can fill (50/200/500 → BoardPage50/200/500 on RiffDB).
+    let board_crosscheck_limits: Vec<u32> = [50_u32, 200, 500]
+        .into_iter()
+        .filter(|&limit| dataset.board_dense_open_count() >= limit as usize)
+        .collect();
+    let mut board_crosscheck_pg_pages: Option<Vec<(u32, Vec<[u8; 16]>)>> = None;
     let mut board_crosscheck_done = false;
-    let board_crosscheck_limit = if dataset.board_dense_open_count() >= 500 {
-        Some(500_u32)
-    } else {
-        None
-    };
 
     for rep in 0..args.reps {
         if !args.skip_postgres {
@@ -135,25 +135,27 @@ fn run() -> Result<(), String> {
             let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
             let scenarios = run_scenarios(&mut postgres, &dataset, args.warmups, args.samples)
                 .map_err(|error| error.to_string())?;
-            if rep == 0
-                && let Some(limit) = board_crosscheck_limit
-            {
+            if rep == 0 && !board_crosscheck_limits.is_empty() {
                 let probes = dataset.probes();
-                let rows = postgres
-                    .board_page(
-                        probes.board_organization_id,
-                        probes.board_project_id,
-                        probes.open_status,
-                        limit,
-                    )
-                    .map_err(|error| error.to_string())?;
-                if rows.len() != limit as usize {
-                    return Err(format!(
-                        "measurement-integrity: postgres board_page({limit}) returned {} rows",
-                        rows.len()
-                    ));
+                let mut pages = Vec::with_capacity(board_crosscheck_limits.len());
+                for &limit in &board_crosscheck_limits {
+                    let rows = postgres
+                        .board_page(
+                            probes.board_organization_id,
+                            probes.board_project_id,
+                            probes.open_status,
+                            limit,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    if rows.len() != limit as usize {
+                        return Err(format!(
+                            "measurement-integrity: postgres board_page({limit}) returned {} rows",
+                            rows.len()
+                        ));
+                    }
+                    pages.push((limit, rows.into_iter().map(|row| row.ticket_id).collect()));
                 }
-                board_crosscheck_pg_ids = Some(rows.into_iter().map(|row| row.ticket_id).collect());
+                board_crosscheck_pg_pages = Some(pages);
             }
             if rep == 0
                 && let Some(clients) = args.concurrent_clients
@@ -235,25 +237,26 @@ fn run() -> Result<(), String> {
                 }
             };
             if rep == 0
-                && let (Some(limit), Some(pg_ids)) =
-                    (board_crosscheck_limit, board_crosscheck_pg_ids.as_ref())
+                && let Some(pg_pages) = board_crosscheck_pg_pages.as_ref()
             {
                 let probes = dataset.probes();
-                let rows = session
-                    .backend
-                    .board_page(
-                        probes.board_organization_id,
-                        probes.board_project_id,
-                        probes.open_status,
-                        limit,
-                    )
-                    .map_err(|error| error.to_string())?;
-                let rd_ids: Vec<[u8; 16]> = rows.into_iter().map(|row| row.ticket_id).collect();
-                assert_board_ticket_sequences_equal(pg_ids, &rd_ids, limit)?;
+                for (limit, pg_ids) in pg_pages {
+                    let rows = session
+                        .backend
+                        .board_page(
+                            probes.board_organization_id,
+                            probes.board_project_id,
+                            probes.open_status,
+                            *limit,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let rd_ids: Vec<[u8; 16]> = rows.into_iter().map(|row| row.ticket_id).collect();
+                    assert_board_ticket_sequences_equal(pg_ids, &rd_ids, *limit)?;
+                }
                 board_crosscheck_done = true;
                 eprintln!(
                     "board-page cross-check ok: live PG and RiffDB returned identical \
-                     ticket_id sequences for board_page({limit})"
+                     ticket_id sequences for static board sizes {board_crosscheck_limits:?}"
                 );
             }
             if rep == 0
@@ -275,7 +278,7 @@ fn run() -> Result<(), String> {
         }
     }
 
-    if board_crosscheck_limit.is_some()
+    if !board_crosscheck_limits.is_empty()
         && !args.skip_postgres
         && !args.skip_riffdb
         && !board_crosscheck_done
@@ -357,7 +360,8 @@ fn run() -> Result<(), String> {
     if board_crosscheck_done {
         report["board_page_live_crosscheck"] = json!({
             "status": "ok",
-            "limit": board_crosscheck_limit,
+            "limits": board_crosscheck_limits,
+            "limit_mode": "static_compiled",
             "order_sensitive": true,
         });
     }

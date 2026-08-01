@@ -6,13 +6,28 @@ use crate::{
     SEED_GENERATION, SampleSummary, Scale, ScenarioId, ScenarioResult, board_marginal_from_results,
 };
 
-/// Side-by-side board query sources (identical predicate/order/limit semantics).
-pub const BOARD_PAGE_RIFFQ: &str = include_str!("../../../../queries/ticketdesk/board_page.riffq");
+/// RiffDB board queries use static-compiled `take N` (BoardPage50/200/500).
+///
+/// Runtime `take $limit` compiles but fails at execute with RDB-INTERNAL-0001
+/// (incident 019fbf5b-1a64-7877-94c3-47d7a0763539); the harness does not use it.
+pub const BOARD_PAGE_RIFFQ_50: &str =
+    include_str!("../../../../queries/ticketdesk/board_page_50.riffq");
+/// Static 200-row board page.
+pub const BOARD_PAGE_RIFFQ_200: &str =
+    include_str!("../../../../queries/ticketdesk/board_page_200.riffq");
+/// Static 500-row board page.
+pub const BOARD_PAGE_RIFFQ_500: &str =
+    include_str!("../../../../queries/ticketdesk/board_page_500.riffq");
+
+/// Incident id for the parameterized-take execute failure (engine out of scope).
+pub const BOARD_LIMIT_ENGINE_INCIDENT: &str = "019fbf5b-1a64-7877-94c3-47d7a0763539";
 
 /// Canonical PostgreSQL SQL executed for board pages (and cited in the report).
 ///
 /// Six result columns only — `organization_id` is taken from the bind parameter
 /// `$1`, matching the RiffDB adapter (which never re-encodes org from the row).
+/// PG keeps a parameterized `LIMIT $4` (works). RiffDB uses static-compiled
+/// BoardPage50/200/500 by design constraint pending the engine fix above.
 /// The Ticket entity has eight fields; `created_at` / `updated_at` are omitted
 /// on both sides by design for this result-size curve.
 pub const BOARD_PAGE_SQL: &str = "SELECT ticket_id::text, project_id::text,\n\
@@ -90,11 +105,24 @@ pub fn build_report(
             "board_scenarios_in_smoke": "skipped (board_dense_open=0)",
             "seed_generation": SEED_GENERATION,
             "baseline_note": "seed_generation 2 supersedes pre-B1 full baselines (ticket count and probe keys changed)",
+            "board_limit_mode": "static_compiled",
+            "board_limit_engine_incident": BOARD_LIMIT_ENGINE_INCIDENT,
+            "board_limit_note": "RiffDB BoardPage50/200/500 use static take N; runtime take $limit fails at execute (RDB-INTERNAL-0001). PostgreSQL keeps LIMIT $4.",
         },
         "board_page_query": {
-            "riffql_source": "queries/ticketdesk/board_page.riffq",
-            "riffql": BOARD_PAGE_RIFFQ,
+            "riffql_sources": [
+                "queries/ticketdesk/board_page_50.riffq",
+                "queries/ticketdesk/board_page_200.riffq",
+                "queries/ticketdesk/board_page_500.riffq"
+            ],
+            "riffql": {
+                "50": BOARD_PAGE_RIFFQ_50,
+                "200": BOARD_PAGE_RIFFQ_200,
+                "500": BOARD_PAGE_RIFFQ_500,
+            },
             "sql": BOARD_PAGE_SQL,
+            "limit_asymmetry": "RiffDB static-compiled take 50/200/500 (engine parameterized-take broken); PG parameterized LIMIT $4 (works)",
+            "engine_incident": BOARD_LIMIT_ENGINE_INCIDENT,
             "predicate": "organization_id + project_id + status",
             "order_by": "ticket_id ASC",
             "field_set": "6-field wide row (ticket_id, project_id, title, status, reporter_id, assignee_id); Ticket entity has 8 fields — created_at/updated_at omitted on both backends by design",
@@ -119,6 +147,7 @@ pub fn build_report(
             "PostgreSQL runs behind a Docker userland port proxy; RiffDB listens directly on loopback.",
             "Board scenarios skip under --smoke (board_dense_open=0); full profile densifies org-0/project-0 open tickets.",
             "seed_generation 2 (board-density layout) supersedes pre-B1 full baselines; do not compare ticket counts or probe keys across generations.",
+            "RiffDB board pages use static-compiled take 50/200/500 (BoardPage50/200/500); runtime take $limit fails at execute (RDB-INTERNAL-0001 incident 019fbf5b-1a64-7877-94c3-47d7a0763539). PostgreSQL uses parameterized LIMIT $4.",
         ],
     })
 }
