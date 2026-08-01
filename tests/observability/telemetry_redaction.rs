@@ -22,15 +22,16 @@ use riffdb_observability::{
     CommandWorkCountError, CommandWorkCounts, DerivedComponent, DerivedCondition, DerivedFinding,
     HISTOGRAM_UPPER_BOUNDS, HealthClassification, HealthRegistry, IncidentClass,
     IncidentReportError, MAX_COMMAND_METRIC_SERIES, MAX_DERIVED_FINDINGS_PER_COMPONENT,
-    MAX_METRIC_SERIES, MAX_TRACE_RECORDS, MAX_WRITE_GROUP_SIZE, MetricKey, MetricSemantics,
-    Observability, PrincipalIdTelemetryHash, REQUIRED_COMMAND_SPAN_FIELDS,
-    REQUIRED_METRIC_INVENTORY, RequiredCounter, RequiredGauge, RequiredHistogram, SafeTraceLayer,
-    TraceKind, request_span,
+    MAX_METRIC_SERIES, MAX_TRACE_RECORDS, MAX_WRITE_GROUP_SIZE, MetricKey, MetricRegistry,
+    MetricSemantics, Observability, PrincipalIdTelemetryHash, READ_PIPELINE_STAGE_COUNT,
+    REQUIRED_COMMAND_SPAN_FIELDS, REQUIRED_METRIC_INVENTORY, RequiredCounter, RequiredGauge,
+    RequiredHistogram, SafeTraceLayer, TraceKind, format_read_stages_v1_line,
+    parse_read_stages_v1_payload, read_pipeline_stage_index, request_span,
 };
 use riffdb_policy::{AuthorizationTelemetry, AuthorizationTelemetryEvent, PolicyCode};
 use riffdb_service::{
-    AuthoritativeReadinessFailure, ServiceDiagnostics, ServiceHealthHooks, ServiceTelemetry,
-    ServiceTelemetryEvent, ServiceTerminalClass,
+    AuthoritativeReadinessFailure, ReadPipelineStage, ServiceDiagnostics, ServiceHealthHooks,
+    ServiceTelemetry, ServiceTelemetryEvent, ServiceTerminalClass,
 };
 use riffdb_types::{
     CommandId, CommitSequence, ContractVersion, IncidentId, MAX_COMMAND_CONFLICT_KEYS_V1,
@@ -900,5 +901,108 @@ fn command_group_dispatch_reasons_are_labeled_in_registry() {
             .metrics()
             .required_counter(RequiredCounter::CommandGroupDeferred),
         1
+    );
+}
+
+#[test]
+fn read_pipeline_stage_index_and_label_are_bijective_and_inventory_is_40() {
+    assert_eq!(REQUIRED_METRIC_INVENTORY.len(), 40);
+    assert_eq!(ReadPipelineStage::ALL.len(), READ_PIPELINE_STAGE_COUNT);
+    assert!(REQUIRED_METRIC_INVENTORY.iter().any(|descriptor| {
+        descriptor.name == "riffdb_read_stage_duration_microseconds"
+            && descriptor.label_keys == ["stage"]
+            && descriptor.semantics == MetricSemantics::Histogram
+    }));
+    let mut seen_indices = HashSet::new();
+    let mut seen_labels = HashSet::new();
+    for (position, stage) in ReadPipelineStage::ALL.iter().copied().enumerate() {
+        let index = read_pipeline_stage_index(stage);
+        assert_eq!(index, position);
+        assert!(seen_indices.insert(index));
+        assert!(seen_labels.insert(stage.metric_label()));
+        assert!(
+            stage
+                .metric_label()
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch == '_'),
+            "stage labels are snake_case"
+        );
+    }
+    assert_eq!(seen_indices.len(), READ_PIPELINE_STAGE_COUNT);
+    assert_eq!(seen_labels.len(), READ_PIPELINE_STAGE_COUNT);
+}
+
+#[test]
+fn read_stage_registry_observe_and_snapshot_round_trip() {
+    let registry = MetricRegistry::new();
+    for (offset, stage) in ReadPipelineStage::ALL.iter().copied().enumerate() {
+        let value = 10 + u64::try_from(offset).expect("stage offset");
+        registry.observe_read_stage_duration(stage, value);
+        registry.observe_read_stage_duration(stage, value + 1);
+        let snapshot = registry.read_stage_duration(stage);
+        assert_eq!(snapshot.count, 2);
+        assert_eq!(snapshot.sum, value + value + 1);
+        assert_eq!(
+            snapshot.cumulative_buckets[HISTOGRAM_UPPER_BOUNDS.len() - 1],
+            2
+        );
+    }
+    let aggregate = registry.required_histogram(RequiredHistogram::ReadStageDurationMicroseconds);
+    assert_eq!(aggregate.count, 14);
+}
+
+#[test]
+fn read_stage_shutdown_line_round_trips_through_parser() {
+    let mut snapshot =
+        [(0_u64, 0_u64, [0_u64; HISTOGRAM_UPPER_BOUNDS.len()]); READ_PIPELINE_STAGE_COUNT];
+    for (index, stage) in ReadPipelineStage::ALL.iter().copied().enumerate() {
+        let count = u64::try_from(index + 1).expect("index");
+        let sum = count * 11;
+        let mut buckets = [0_u64; HISTOGRAM_UPPER_BOUNDS.len()];
+        buckets[3] = count;
+        buckets[HISTOGRAM_UPPER_BOUNDS.len() - 1] = count;
+        snapshot[index] = (count, sum, buckets);
+        let _ = stage;
+    }
+    let line = format_read_stages_v1_line(&snapshot);
+    assert!(line.starts_with("riffdb-read-stages-v1\t"));
+    let payload = line
+        .strip_prefix("riffdb-read-stages-v1\t")
+        .expect("prefix");
+    let parsed = parse_read_stages_v1_payload(payload).expect("parse");
+    assert_eq!(parsed.len(), 7);
+    for (index, stage) in parsed.into_iter().enumerate() {
+        assert_eq!(stage.name, ReadPipelineStage::ALL[index].metric_label());
+        assert_eq!(stage.count, snapshot[index].0);
+        assert_eq!(stage.sum_us, snapshot[index].1);
+        assert_eq!(stage.buckets.len(), 16);
+        assert_eq!(stage.buckets.as_slice(), snapshot[index].2.as_slice());
+    }
+}
+
+#[test]
+fn service_telemetry_maps_read_pipeline_stage_to_registry() {
+    let source = Arc::new(ScriptedIncidentIds::new([]));
+    let observability = Observability::new(source, 8).expect("bounded");
+    ServiceTelemetry::record(
+        &observability,
+        ServiceTelemetryEvent::ReadPipelineStageCompleted {
+            stage: ReadPipelineStage::Execute,
+            elapsed: Duration::from_micros(17),
+        },
+    );
+    let snapshot = observability
+        .metrics()
+        .read_stage_duration(ReadPipelineStage::Execute);
+    assert_eq!(snapshot.count, 1);
+    assert_eq!(snapshot.sum, 17);
+    let stages = observability.read_stage_snapshot();
+    assert_eq!(
+        stages[read_pipeline_stage_index(ReadPipelineStage::Execute)].0,
+        1
+    );
+    assert_eq!(
+        stages[read_pipeline_stage_index(ReadPipelineStage::Execute)].1,
+        17
     );
 }

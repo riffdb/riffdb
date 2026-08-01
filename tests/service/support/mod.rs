@@ -15,7 +15,8 @@ use riffdb_auth::{
 use riffdb_catalog::{
     ActiveCatalogSnapshot, CatalogError, CatalogErrorKind, CatalogHistoryOutcome,
     CatalogPreparationResult, ResolvedExecutablePlan, ValidatedContractBundle,
-    prepare_catalog_activation, resolve_executable_plan, validate_catalog_history,
+    ValidatedQueryModule, prepare_catalog_activation, resolve_executable_plan,
+    validate_catalog_history,
 };
 use riffdb_commit::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
@@ -59,12 +60,13 @@ use riffdb_service::{
     PortAdmissionError, PortCapacityPermit, PortCompletionSender, PortFuture, PortReceipt,
     PreBootstrapHealthContextIssuer, PreBootstrapLifecycle, ProjectionPageFence,
     ProjectionPortError, ProjectionPortReady, ProjectionPortRequest, ProjectionPortResult,
-    ProjectionQueryPort, ProjectionStatusSnapshot, ProvenanceClaimsView, QueryProjectionRequest,
-    RequestCancellationHandle, RequestContext, RequestControl, RequestDeadlineFuture,
-    RequestDeadlineScheduler, ResolveCommandOutcomeRequest, RevokeCapabilityRequest, RiffDbService,
-    ScanCommitsRequest, ScanIndexRequest, ServiceDiagnostics, ServiceExecutors, ServiceHealthHooks,
-    ServiceIdentity, ServiceJob, ServiceJobSpawner, ServiceProcessMetadata, ServiceProviders,
-    ServiceTelemetry, ServiceTelemetryEvent, SourceName, SubmittedRecord, TraceProvenanceRequest,
+    ProjectionQueryPort, ProjectionStatusSnapshot, ProvenanceClaimsView, QueryModuleReadError,
+    QueryModuleReadPort, QueryProjectionRequest, RequestCancellationHandle, RequestContext,
+    RequestControl, RequestDeadlineFuture, RequestDeadlineScheduler, ResolveCommandOutcomeRequest,
+    RevokeCapabilityRequest, RiffDbService, ScanCommitsRequest, ScanIndexRequest,
+    ServiceDiagnostics, ServiceExecutors, ServiceHealthHooks, ServiceIdentity, ServiceJob,
+    ServiceJobSpawner, ServiceProcessMetadata, ServiceProviders, ServiceTelemetry,
+    ServiceTelemetryEvent, SourceName, SubmittedRecord, TraceProvenanceRequest,
     ValidateContractRequest, port_completion_channel,
 };
 use riffdb_storage_api::{
@@ -196,6 +198,10 @@ impl ServiceHarness {
             0,
             workload_capacity.max(1),
             true,
+            None,
+            None,
+            None,
+            Vec::new(),
         )
     }
 
@@ -211,6 +217,34 @@ impl ServiceHarness {
             1,
             workload_capacity.max(1),
             true,
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+    }
+
+    /// Operations harness with Observability telemetry plus named-query ports.
+    pub(crate) fn operations_with_read_stage_telemetry(
+        telemetry: Arc<dyn ServiceTelemetry>,
+        query_executor: Arc<dyn riffdb_query_executor::QueryExecutionPort>,
+        query_modules: Arc<dyn QueryModuleReadPort>,
+        named_permissions: Vec<CapabilityPermissionV1>,
+    ) -> Self {
+        Self::compose_with_additional_commands_and_capacity(
+            ReadCommitMode::ImmediateNotFound,
+            true,
+            false,
+            false,
+            true,
+            false,
+            0,
+            8,
+            false,
+            Some(telemetry),
+            Some(query_executor),
+            Some(query_modules),
+            named_permissions,
         )
     }
 
@@ -309,6 +343,10 @@ impl ServiceHarness {
             additional_commands,
             8,
             false,
+            None,
+            None,
+            None,
+            Vec::new(),
         )
     }
 
@@ -323,6 +361,10 @@ impl ServiceHarness {
         additional_commands: usize,
         workload_capacity: u16,
         direct_empty_idempotency: bool,
+        telemetry_override: Option<Arc<dyn ServiceTelemetry>>,
+        query_executor: Option<Arc<dyn riffdb_query_executor::QueryExecutionPort>>,
+        query_modules: Option<Arc<dyn QueryModuleReadPort>>,
+        extra_permissions: Vec<CapabilityPermissionV1>,
     ) -> Self {
         let database = if pre_bootstrap {
             AuditDatabase::create_pre_bootstrap(broad_operations)
@@ -359,6 +401,7 @@ impl ServiceHarness {
             additional_commands != 0,
             Arc::clone(&capability_order),
             Arc::clone(&discovery_order),
+            extra_permissions,
         ));
         let ports = Arc::new(HarnessPorts::new(
             read_mode,
@@ -381,10 +424,12 @@ impl ServiceHarness {
             inspector,
         );
         let telemetry = Arc::new(HarnessTelemetry::default());
+        let service_telemetry = telemetry_override
+            .unwrap_or_else(|| Arc::clone(&telemetry) as Arc<dyn ServiceTelemetry>);
         let health = Arc::new(HarnessHealth::default());
         let deadline_scheduler = Arc::new(HarnessDeadlineScheduler::default());
         let cursor_tokens = Arc::new(SequentialCursorTokens::default());
-        let providers = ServiceProviders::new(
+        let mut providers = ServiceProviders::new(
             Arc::clone(&ports) as Arc<dyn CatalogReadPort>,
             Arc::clone(&policy) as Arc<dyn riffdb_service::CurrentPolicyPort>,
             Arc::clone(&ports) as Arc<dyn AuthoritativeReadPort>,
@@ -394,13 +439,18 @@ impl ServiceHarness {
             Arc::clone(&ports) as Arc<dyn CapabilityTokenIssuer>,
             Arc::new(HarnessIncidentIds::new(fail_incident_source)),
             Arc::new(HarnessDiagnostics),
-            Arc::clone(&telemetry) as Arc<dyn ServiceTelemetry>,
+            service_telemetry,
             Arc::clone(&health) as Arc<dyn ServiceHealthHooks>,
             Arc::new(TokioSpawner),
             Arc::clone(&deadline_scheduler) as Arc<dyn RequestDeadlineScheduler>,
             Arc::clone(&cursor_tokens) as Arc<dyn CursorTokenGenerator>,
             Arc::new(FixedCursorClock),
         );
+        if let (Some(executor), Some(modules)) = (query_executor, query_modules) {
+            providers = providers
+                .with_query_executor(executor)
+                .with_query_modules(modules);
+        }
         let identity = ServiceIdentity::new(
             database_id(),
             environment(),
@@ -1438,6 +1488,11 @@ impl ServiceHarness {
         AuthoritativeOutcomeSnapshot::journaled(facts, stored)
     }
 
+    /// Active validated contract retained by the harness catalog.
+    pub(crate) fn active_validated_bundle(&self) -> ValidatedContractBundle {
+        self.database.active_catalog.bundle().clone()
+    }
+
     pub(crate) fn stop_coordinator(&mut self) {
         self.coordinator
             .take()
@@ -2123,6 +2178,7 @@ impl HarnessPolicy {
         authorize_all_commands: bool,
         capability_order: Arc<Mutex<Vec<&'static str>>>,
         discovery_order: Arc<Mutex<Vec<&'static str>>>,
+        extra_permissions: Vec<CapabilityPermissionV1>,
     ) -> Self {
         let mut permissions = vec![
             CapabilityPermissionV1::InvokeCommand(
@@ -2198,16 +2254,39 @@ impl HarnessPolicy {
                 ));
             }
         }
+        permissions.extend(extra_permissions);
         permissions.push(
             CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::DeployContract)
                 .expect("unparameterized deploy-contract permission"),
         );
         let permissions = CapabilityPermissionsV1::new(permissions).expect("canonical permissions");
+        let field_visibility = if broad_operations {
+            contract
+                .schema()
+                .entities()
+                .iter()
+                .map(|entity| {
+                    riffdb_types::EntityFieldVisibilityV1::new(
+                        contract.lineage().clone(),
+                        entity.id(),
+                        entity
+                            .record()
+                            .fields()
+                            .iter()
+                            .map(riffdb_contract_ir::FieldSchema::id)
+                            .collect(),
+                    )
+                    .expect("entity field visibility")
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let grant = CapabilityGrantV1::new(
             TenantScope::Global,
             partition_scope,
             permissions.clone(),
-            Vec::new(),
+            field_visibility.clone(),
             NonZeroU16::new(100).expect("nonzero row limit"),
             Vec::new(),
         )
@@ -2220,7 +2299,7 @@ impl HarnessPolicy {
             )])
             .expect("one narrow harness partition"),
             permissions,
-            Vec::new(),
+            field_visibility,
             NonZeroU16::new(100).expect("nonzero row limit"),
             Vec::new(),
         )
@@ -4222,6 +4301,94 @@ impl HarnessTelemetry {
 impl ServiceTelemetry for HarnessTelemetry {
     fn record(&self, event: ServiceTelemetryEvent) {
         self.0.lock().expect("telemetry mutex").push(event);
+    }
+}
+
+/// Fixed active module for named symbolic-query harness tests.
+pub(crate) struct FixedQueryModulePort {
+    module: ValidatedQueryModule,
+}
+
+impl FixedQueryModulePort {
+    pub(crate) fn new(module: ValidatedQueryModule) -> Self {
+        Self { module }
+    }
+}
+
+impl QueryModuleReadPort for FixedQueryModulePort {
+    fn prepare_active_query_module<'a>(
+        &'a self,
+        _control: &'a RequestControl,
+        _contract: ValidatedContractBundle,
+    ) -> PortFuture<'a, Option<ValidatedQueryModule>, QueryModuleReadError> {
+        let module = self.module.clone();
+        Box::pin(async move { Ok(Some(module)) })
+    }
+
+    fn prepare_query_module<'a>(
+        &'a self,
+        _control: &'a RequestControl,
+        _contract: ValidatedContractBundle,
+        module_hash: riffdb_types::QueryModuleHash,
+    ) -> PortFuture<'a, Option<ValidatedQueryModule>, QueryModuleReadError> {
+        let module = (self.module.identity() == module_hash).then(|| self.module.clone());
+        Box::pin(async move { Ok(module) })
+    }
+}
+
+/// Empty read view that returns absence for every point/scan access.
+pub(crate) struct EmptyQueryExecutor;
+
+impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
+    fn execute_query_page(
+        &self,
+        program: &riffdb_query_ir::QueryAccessProgramV1,
+        parameters: &riffdb_query_executor::QueryParameters,
+        prior: Option<&riffdb_query_executor::QueryContinuation>,
+    ) -> Result<riffdb_query_executor::QueryOwnedSnapshot, riffdb_query_executor::QueryExecutionError>
+    {
+        struct EmptyView;
+        impl riffdb_query_executor::QueryReadView for EmptyView {
+            type Error = ();
+
+            fn fault(&self, _error: &Self::Error) -> riffdb_query_executor::QueryBackendFault {
+                riffdb_query_executor::QueryBackendFault::Unavailable
+            }
+
+            fn application_head(&self) -> u64 {
+                0
+            }
+
+            fn point(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                _predicates: &[riffdb_query_executor::BoundPredicate],
+            ) -> Result<Option<riffdb_query_executor::QueryRow>, Self::Error> {
+                Ok(None)
+            }
+
+            fn dependent_point_batch(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                predicates: &[Vec<riffdb_query_executor::BoundPredicate>],
+            ) -> Result<Vec<Option<riffdb_query_executor::QueryRow>>, Self::Error> {
+                Ok(vec![None; predicates.len()])
+            }
+
+            fn scan(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                _predicates: &[riffdb_query_executor::BoundPredicate],
+                _limit: u64,
+                _after: Option<&[u8]>,
+            ) -> Result<riffdb_query_executor::QueryScanPage, Self::Error> {
+                Ok(riffdb_query_executor::QueryScanPage::exact_end(
+                    Vec::new(),
+                    0,
+                ))
+            }
+        }
+        riffdb_query_executor::execute_page_in_snapshot(program, parameters, prior, &mut EmptyView)
     }
 }
 
