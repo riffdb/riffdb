@@ -57,4 +57,4 @@ a hardening item.
 ## Acceptance
 
 Accepted by the maintainer on 2026-08-01.
-evidence.
+Implementation follows ADR-0086's prototype evidence.
