@@ -640,6 +640,22 @@ pub trait ServiceAuditAppendRepository {
             .map(|intent| self.append_service_audit(intent))
             .collect()
     }
+
+    /// Appends one Started+terminal pair in a single durable transition.
+    ///
+    /// Default conformance shells may return unsupported. Production redb uses
+    /// the fused in-write staging path so the pair is atomic (pair-or-absent).
+    fn append_service_audit_fused_pair(
+        &mut self,
+        started: &ServiceAuditAppendIntentV1,
+        terminal: &ServiceAuditAppendIntentV1,
+    ) -> Result<(), StorageError> {
+        let _ = (started, terminal);
+        // Call-scoped unsupported: LimitExceeded does not fence or stop the
+        // coordinator (mapped to PhaseConflict on the fused path). InvariantViolation
+        // would stop the coordinator.
+        Err(StorageError::new(StorageErrorKind::LimitExceeded, None))
+    }
 }
 
 /// Least-authority ordered administration-audit read port.

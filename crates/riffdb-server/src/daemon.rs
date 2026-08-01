@@ -2900,6 +2900,8 @@ async fn supervise_ready_process(
         hosted_mcp.begin_shutdown();
     }
     let write_completion_groups = graph.write_completion_group_snapshot();
+    let dispatch_reasons = graph.command_group_dispatch_snapshot();
+    let read_stages = graph.read_stage_snapshot();
     let notification_stop_failed = graph.begin_transport_shutdown().is_err();
     let transport_result = match &trigger {
         ReadyProcessTrigger::Transport(completion) => classify_transport_completion(completion),
@@ -2935,9 +2937,19 @@ async fn supervise_ready_process(
             .map(u64::to_string)
             .collect::<Vec<_>>()
             .join(",");
+        let reasons = dispatch_reasons
+            .0
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
         let stdout = io::stdout();
         let mut stdout = stdout.lock();
+        // BYTE-IDENTICAL with prior releases: Tier 2 harness depends on this line.
         let _ = writeln!(stdout, "riffdb-write-completion-groups-v1\t{counts}");
+        let _ = writeln!(stdout, "riffdb-dispatch-reasons-v1\t{reasons}");
+        let read_stages_line = riffdb_observability::format_read_stages_v1_line(&read_stages);
+        let _ = writeln!(stdout, "{read_stages_line}");
         let _ = stdout.flush();
     }
     if maintenance_shutdown {
@@ -3358,6 +3370,50 @@ mod tests {
                 Err(ShutdownCommandError)
             );
         }
+    }
+
+    #[test]
+    fn write_completion_and_dispatch_shutdown_lines_remain_byte_identical() {
+        let groups = [0_u64; riffdb_observability::MAX_WRITE_GROUP_SIZE];
+        let counts = groups
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let write_line = format!("riffdb-write-completion-groups-v1\t{counts}");
+        assert_eq!(
+            write_line,
+            format!(
+                "riffdb-write-completion-groups-v1\t{}",
+                vec!["0"; riffdb_observability::MAX_WRITE_GROUP_SIZE].join(",")
+            )
+        );
+
+        let reasons = [0_u64; riffdb_observability::COMMAND_GROUP_DISPATCH_REASON_COUNT];
+        let reasons = reasons
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let dispatch_line = format!("riffdb-dispatch-reasons-v1\t{reasons}");
+        assert_eq!(dispatch_line, "riffdb-dispatch-reasons-v1\t0,0,0,0");
+
+        let source = include_str!("daemon.rs");
+        assert!(
+            source.contains(
+                "let _ = writeln!(stdout, \"riffdb-write-completion-groups-v1\\t{counts}\");"
+            ),
+            "write-completion groups line format is frozen"
+        );
+        assert!(
+            source
+                .contains("let _ = writeln!(stdout, \"riffdb-dispatch-reasons-v1\\t{reasons}\");"),
+            "dispatch-reasons line format is frozen"
+        );
+        assert!(
+            source.contains("riffdb_observability::format_read_stages_v1_line(&read_stages)"),
+            "read stages line is emitted beside the frozen write/dispatch lines"
+        );
     }
 
     #[test]

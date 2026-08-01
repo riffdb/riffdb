@@ -41,8 +41,6 @@ pub const MAX_SCAN_PAGE_ENTRIES: usize = 500;
 pub const MAX_STAGED_COMMANDS: usize = 64;
 /// Maximum independently acknowledged transitions selected for one production group.
 pub const MAX_GROUPED_WRITE_TRANSITIONS: usize = MAX_STAGED_COMMANDS;
-/// Maximum time the production writer may wait to form a compatible group.
-pub const MAX_GROUP_WAIT_MICROSECONDS: u64 = 200;
 /// Maximum bytes staged in one authoritative transaction.
 pub const MAX_STAGED_WRITE_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum findings materialized in one integrity report.

@@ -117,7 +117,9 @@ fn summary_json(summary: &SampleSummary) -> Value {
 }
 
 fn build_comparisons(backends: &[BackendReport]) -> Value {
-    let postgres = backends.iter().find(|backend| backend.backend_id == "postgres_sql");
+    let postgres = backends
+        .iter()
+        .find(|backend| backend.backend_id == "postgres_sql");
     let riffdb = backends
         .iter()
         .find(|backend| backend.backend_id == "riffdb_public_grpc");
@@ -137,11 +139,7 @@ fn build_comparisons(backends: &[BackendReport]) -> Value {
         else {
             continue;
         };
-        let Some(rd) = riffdb
-            .scenarios
-            .iter()
-            .find(|row| row.scenario == scenario)
-        else {
+        let Some(rd) = riffdb.scenarios.iter().find(|row| row.scenario == scenario) else {
             continue;
         };
         let pg_p50 = pg.samples.summary().p50_ns;

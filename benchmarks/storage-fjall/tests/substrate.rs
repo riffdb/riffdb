@@ -2,38 +2,36 @@
 
 //! Executable Fjall engine-substrate evidence for WP-075.
 
-use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 
+use riffdb_bench_root::{BenchDir, BenchRoot, BenchRootOptions, default_perf_db_root};
 use riffdb_storage_fjall_comparison::{
     ComparisonDurability, ComparisonMutation, FjallComparisonStore, RiffdbTable,
 };
 
-static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
-
-struct TempRoot(PathBuf);
+struct TempRoot {
+    _root: BenchRoot,
+    dir: BenchDir,
+}
 
 impl TempRoot {
     fn new() -> Self {
-        let path = env::temp_dir().join(format!(
-            "riffdb-wp075-substrate-{}-{}",
-            std::process::id(),
-            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&path).expect("create isolated WP-075 test directory");
-        Self(path)
+        let default_root =
+            default_perf_db_root(Path::new(env!("CARGO_MANIFEST_DIR")), "storage-fjall");
+        let root = BenchRoot::resolve(BenchRootOptions {
+            harness: "storage-fjall",
+            cli_override: None,
+            default_root,
+            allow_tmpfs: std::env::var_os("RIFFDB_BENCH_ALLOW_TMPFS").is_some(),
+            min_free_bytes: 0,
+        })
+        .expect("resolve storage-fjall bench root");
+        let dir = BenchDir::create(&root, "substrate").expect("create substrate dir");
+        Self { _root: root, dir }
     }
 
     fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempRoot {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        self.dir.path()
     }
 }
 

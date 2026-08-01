@@ -319,14 +319,17 @@ impl LoadConfig {
         }
     }
 
-    /// Fuller defaults for iterative optimization.
+    /// Fuller defaults for iterative optimization / evidentiary windows.
+    ///
+    /// Measure 90 s with 15 s warmup so published numbers are not noise from a
+    /// short burst. Smoke profiles stay short via [`Self::smoke`].
     #[must_use]
     pub fn standard(profile: WorkloadProfile, clients: usize) -> Self {
         Self {
             profile,
             clients: clients.clamp(1, 128),
-            duration: Duration::from_secs(30),
-            warmup: Duration::from_secs(5),
+            duration: Duration::from_secs(90),
+            warmup: Duration::from_secs(15),
             zipf_s: 1.0,
             rng_seed: 0x000A_11CE_BEEF,
             contended: false,
@@ -577,6 +580,37 @@ where
     B::Error: Send + 'static,
     Factory: Fn() -> Result<B, String> + Send + Sync + 'static,
 {
+    run_closed_loop_load_with_abort(
+        backend_id,
+        config,
+        execution_shape,
+        dataset,
+        seed_ns,
+        factory,
+        None,
+    )
+}
+
+/// Like [`run_closed_loop_load`] with an optional mid-load abort hook.
+///
+/// The coordinator sleeps in ≤250 ms slices and polls `abort`. When the hook
+/// returns `Some(reason)`, workers are stopped and the function returns
+/// `Err("backend died mid-load: {reason}")` so a dead peer cannot burn the
+/// full measurement window.
+pub fn run_closed_loop_load_with_abort<B, Factory>(
+    backend_id: &'static str,
+    config: LoadConfig,
+    execution_shape: LoadExecutionShape,
+    dataset: &SeedDataset,
+    seed_ns: u64,
+    factory: Factory,
+    abort: Option<std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+) -> Result<LoadReport, String>
+where
+    B: AppBackend + Send + 'static,
+    B::Error: Send + 'static,
+    Factory: Fn() -> Result<B, String> + Send + Sync + 'static,
+{
     let client_ceiling = if config.saturate {
         RIFFDB_SATURATE_LOAD_CLIENTS
     } else {
@@ -778,11 +812,20 @@ where
     ready.wait();
     go.wait();
     // Shared warmup: all workers already issuing discarded traffic.
-    if !config.warmup.is_zero() {
-        thread::sleep(config.warmup);
+    // On abort: store the reason, always signal stop, join every worker, then
+    // return the error — never drop JoinHandles while workers still loop.
+    let mut abort_reason: Option<String> = None;
+    if !config.warmup.is_zero()
+        && let Err(reason) = sleep_with_abort(config.warmup, abort.as_ref())
+    {
+        abort_reason = Some(reason);
     }
-    measuring.store(true, Ordering::Release);
-    thread::sleep(config.duration);
+    if abort_reason.is_none() {
+        measuring.store(true, Ordering::Release);
+        if let Err(reason) = sleep_with_abort(config.duration, abort.as_ref()) {
+            abort_reason = Some(reason);
+        }
+    }
     stop.store(true, Ordering::Release);
 
     let mut merged: Vec<(LoadOp, OpStats)> = LoadOp::all()
@@ -792,30 +835,50 @@ where
     let mut worker_measure_intervals = Vec::with_capacity(worker_count);
     let mut global_start: Option<Instant> = None;
     let mut global_end: Option<Instant> = None;
+    let mut join_error: Option<String> = None;
     for worker in workers {
-        let worker_result = worker
-            .join()
-            .map_err(|_| "load worker panicked".to_owned())??;
-        let interval = match (worker_result.measure_start, worker_result.measure_end) {
-            (Some(start), Some(end)) => {
-                global_start = Some(match global_start {
-                    Some(existing) => existing.min(start),
-                    None => start,
-                });
-                global_end = Some(match global_end {
-                    Some(existing) => existing.max(end),
-                    None => end,
-                });
-                end.saturating_duration_since(start)
+        match worker.join() {
+            Ok(Ok(worker_result)) => {
+                let interval = match (worker_result.measure_start, worker_result.measure_end) {
+                    (Some(start), Some(end)) => {
+                        global_start = Some(match global_start {
+                            Some(existing) => existing.min(start),
+                            None => start,
+                        });
+                        global_end = Some(match global_end {
+                            Some(existing) => existing.max(end),
+                            None => end,
+                        });
+                        end.saturating_duration_since(start)
+                    }
+                    _ => Duration::ZERO,
+                };
+                worker_measure_intervals.push(interval);
+                for (op, stats) in worker_result.by_op {
+                    if let Some((_, dst)) =
+                        merged.iter_mut().find(|(candidate, _)| *candidate == op)
+                    {
+                        dst.merge(&stats);
+                    }
+                }
             }
-            _ => Duration::ZERO,
-        };
-        worker_measure_intervals.push(interval);
-        for (op, stats) in worker_result.by_op {
-            if let Some((_, dst)) = merged.iter_mut().find(|(candidate, _)| *candidate == op) {
-                dst.merge(&stats);
+            Ok(Err(error)) => {
+                if join_error.is_none() {
+                    join_error = Some(error);
+                }
+            }
+            Err(_) => {
+                if join_error.is_none() {
+                    join_error = Some("load worker panicked".to_owned());
+                }
             }
         }
+    }
+    if let Some(reason) = abort_reason {
+        return Err(reason);
+    }
+    if let Some(error) = join_error {
+        return Err(error);
     }
     // Exact shared window covering every measured sample across all workers.
     let measured_elapsed = match (global_start, global_end) {
@@ -1202,11 +1265,10 @@ pub fn print_load_summary(report: &LoadReport) {
 pub fn concurrency_curve_point(report: &LoadReport) -> serde_json::Value {
     let elapsed_ns = u64::try_from(report.measured_elapsed.as_nanos()).unwrap_or(u64::MAX);
     let logical_ops = report.aggregate.total_operations();
-    let throughput = if elapsed_ns == 0 {
-        0
-    } else {
-        logical_ops.saturating_mul(1_000_000_000) / elapsed_ns
-    };
+    let throughput = logical_ops
+        .saturating_mul(1_000_000_000)
+        .checked_div(elapsed_ns.max(1))
+        .unwrap_or(0);
     let write_p50 = |op: LoadOp| -> Option<u64> {
         report
             .by_op
@@ -1236,27 +1298,110 @@ pub fn concurrency_curve_point(report: &LoadReport) -> serde_json::Value {
     })
 }
 
+/// Coordinator sleep sliced at 250 ms so a dead peer aborts mid-window.
+fn sleep_with_abort(
+    total: Duration,
+    abort: Option<&std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+) -> Result<(), String> {
+    const SLICE: Duration = Duration::from_millis(250);
+    let deadline = Instant::now() + total;
+    loop {
+        if let Some(hook) = abort
+            && let Some(reason) = hook()
+        {
+            return Err(format!("backend died mid-load: {reason}"));
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(());
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        thread::sleep(remaining.min(SLICE));
+    }
+}
+
+/// Modal group size and share of commands in groups larger than one.
+#[must_use]
+pub fn write_group_summary(groups: &[u64]) -> (Option<usize>, f64) {
+    let mut total = 0_u64;
+    let mut multi = 0_u64;
+    let mut modal_size = None;
+    let mut modal_count = 0_u64;
+    for (index, count) in groups.iter().enumerate() {
+        let size = index + 1;
+        total = total.saturating_add(*count);
+        if size > 1 {
+            multi = multi.saturating_add(*count);
+        }
+        if *count > modal_count {
+            modal_count = *count;
+            modal_size = Some(size);
+        }
+    }
+    let grouped_fraction = if total == 0 {
+        0.0
+    } else {
+        multi as f64 / total as f64
+    };
+    (modal_size, grouped_fraction)
+}
+
 /// Prints a concurrency-sweep table (throughput and p50 vs client count).
 pub fn print_concurrency_sweep_summary(points: &[serde_json::Value]) {
     if points.is_empty() {
         return;
     }
     println!("\n== concurrency sweep curve ==");
-    println!(
-        "{:<22} {:>8} {:>12} {:>10} {:>10} {:>12}",
-        "backend", "clients", "ops/s", "p50_ms", "p99_ms", "write_p50_ms"
-    );
+    let has_groups = points.iter().any(|p| {
+        p.get("write_completion_groups_by_size")
+            .and_then(|v| v.as_array())
+            .is_some()
+    });
+    if has_groups {
+        println!(
+            "{:<22} {:>8} {:>12} {:>10} {:>10} {:>12} {:>8} {:>10}",
+            "backend",
+            "clients",
+            "ops/s",
+            "p50_ms",
+            "p99_ms",
+            "write_p50_ms",
+            "modal_g",
+            "grp_frac"
+        );
+    } else {
+        println!(
+            "{:<22} {:>8} {:>12} {:>10} {:>10} {:>12}",
+            "backend", "clients", "ops/s", "p50_ms", "p99_ms", "write_p50_ms"
+        );
+    }
     for point in points {
         let backend = point["backend_id"].as_str().unwrap_or("?");
         let clients = point["clients"].as_u64().unwrap_or(0);
         let thr = point["throughput_ops_s"].as_u64().unwrap_or(0);
         let p50 = point["aggregate_p50_ns"].as_u64().unwrap_or(0) as f64 / 1e6;
         let p99 = point["aggregate_p99_ns"].as_u64().unwrap_or(0) as f64 / 1e6;
-        let write_p50 = point["create_comment_p50_ns"]
-            .as_u64()
-            .unwrap_or(0) as f64
-            / 1e6;
-        println!("{backend:<22} {clients:>8} {thr:>12} {p50:>10.3} {p99:>10.3} {write_p50:>12.3}");
+        let write_p50 = point["create_comment_p50_ns"].as_u64().unwrap_or(0) as f64 / 1e6;
+        if has_groups {
+            let (modal, frac) = point
+                .get("write_completion_groups_by_size")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    let groups: Vec<u64> = arr.iter().filter_map(|x| x.as_u64()).collect();
+                    write_group_summary(&groups)
+                })
+                .unwrap_or((None, 0.0));
+            let modal_s = modal
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| "-".to_owned());
+            println!(
+                "{backend:<22} {clients:>8} {thr:>12} {p50:>10.3} {p99:>10.3} {write_p50:>12.3} {modal_s:>8} {frac:>10.3}"
+            );
+        } else {
+            println!(
+                "{backend:<22} {clients:>8} {thr:>12} {p50:>10.3} {p99:>10.3} {write_p50:>12.3}"
+            );
+        }
     }
     // Relative thr vs each backend's 1-client point when present.
     for backend in ["postgres_sql", "riffdb_public_grpc"] {
@@ -1370,5 +1515,214 @@ mod tests {
         let (replay, replayed) = select_comment_input(&probes, ticket, 43, true, Some(&input));
         assert!(replayed);
         assert_eq!(replay, input);
+    }
+
+    #[test]
+    fn abort_hook_interrupts_sliced_sleep_within_two_seconds() {
+        let started = Instant::now();
+        let abort: std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync> =
+            std::sync::Arc::new({
+                let start = Instant::now();
+                move || {
+                    if start.elapsed() >= Duration::from_millis(100) {
+                        Some("unit-test-kill".to_owned())
+                    } else {
+                        None
+                    }
+                }
+            });
+        let result = sleep_with_abort(Duration::from_secs(30), Some(&abort));
+        assert!(result.is_err(), "expected abort error, got {result:?}");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("backend died mid-load"),
+            "unexpected message: {err}"
+        );
+        assert!(
+            started.elapsed() <= Duration::from_secs(2),
+            "abort took too long: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Stub backend that succeeds instantly so workers spin until `stop`.
+    struct CountingBackend {
+        ops: Arc<AtomicU64>,
+    }
+
+    impl AppBackend for CountingBackend {
+        type Error = String;
+
+        fn reset(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn seed(&mut self, _: &SeedDataset) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn load_error_class(_: &Self::Error) -> LoadErrorClass {
+            LoadErrorClass::Other
+        }
+        fn load_error_code(_: &Self::Error) -> Option<&str> {
+            None
+        }
+        fn point_get_ticket(
+            &mut self,
+            _: crate::UuidBytes,
+            _: crate::UuidBytes,
+        ) -> Result<Option<crate::TicketRow>, Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(None)
+        }
+        fn point_get_user(
+            &mut self,
+            _: crate::UuidBytes,
+            _: crate::UuidBytes,
+        ) -> Result<Option<crate::UserRow>, Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(None)
+        }
+        fn list_tickets_by_project_status(
+            &mut self,
+            _: crate::UuidBytes,
+            _: crate::UuidBytes,
+            _: crate::TicketStatus,
+            _: u32,
+        ) -> Result<Vec<crate::TicketRow>, Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(Vec::new())
+        }
+        fn list_open_tickets_for_assignee(
+            &mut self,
+            _: crate::UuidBytes,
+            _: crate::UuidBytes,
+            _: u32,
+        ) -> Result<Vec<crate::TicketRow>, Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(Vec::new())
+        }
+        fn list_comments_for_ticket(
+            &mut self,
+            _: crate::UuidBytes,
+            _: crate::UuidBytes,
+            _: u32,
+        ) -> Result<Vec<crate::CommentRow>, Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(Vec::new())
+        }
+        fn list_project_members(
+            &mut self,
+            _: crate::UuidBytes,
+            _: crate::UuidBytes,
+            _: u32,
+        ) -> Result<Vec<crate::ProjectMemberRow>, Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(Vec::new())
+        }
+        fn ticket_detail_page(
+            &mut self,
+            _: crate::UuidBytes,
+            _: crate::UuidBytes,
+            _: u32,
+        ) -> Result<Option<crate::TicketDetailPage>, Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(None)
+        }
+        fn create_comment(&mut self, _: &crate::CommentSeed) -> Result<(), Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn replay_comment(&mut self, _: &crate::CommentSeed) -> Result<(), Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn close_ticket_with_comment(
+            &mut self,
+            _: &crate::CloseTicketWithCommentSeed,
+        ) -> Result<(), Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn swap_member_roles(&mut self, _: &crate::SwapMemberRolesSeed) -> Result<(), Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn open_ticket_with_labels(
+            &mut self,
+            _: &crate::OpenTicketWithLabelsSeed,
+        ) -> Result<(), Self::Error> {
+            self.ops.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn abort_joins_workers_before_returning() {
+        let ops = Arc::new(AtomicU64::new(0));
+        let started = Instant::now();
+        let abort: std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync> =
+            std::sync::Arc::new({
+                let start = Instant::now();
+                move || {
+                    if start.elapsed() >= Duration::from_millis(150) {
+                        Some("unit-test-abort".to_owned())
+                    } else {
+                        None
+                    }
+                }
+            });
+        let dataset = SeedDataset::generate(crate::Scale::smoke());
+        let mut config = LoadConfig::smoke(WorkloadProfile::Interactive);
+        config.clients = 4;
+        config.duration = Duration::from_secs(30);
+        config.warmup = Duration::ZERO;
+        let ops_factory = Arc::clone(&ops);
+        let result = run_closed_loop_load_with_abort(
+            "stub",
+            config,
+            LoadExecutionShape {
+                transport_topology: "test",
+                command_attempt_budget: 1,
+            },
+            &dataset,
+            0,
+            move || {
+                Ok(CountingBackend {
+                    ops: Arc::clone(&ops_factory),
+                })
+            },
+            Some(abort),
+        );
+        assert!(result.is_err(), "expected abort, got {result:?}");
+        assert!(
+            started.elapsed() <= Duration::from_secs(2),
+            "abort+join took {:?}",
+            started.elapsed()
+        );
+        let after_return = ops.load(Ordering::Relaxed);
+        thread::sleep(Duration::from_millis(80));
+        let later = ops.load(Ordering::Relaxed);
+        assert_eq!(
+            after_return, later,
+            "workers kept issuing ops after abort returned (detach bug)"
+        );
+        assert!(after_return > 0, "workers should have done some work");
+    }
+
+    #[test]
+    fn standard_load_window_is_evidentiary() {
+        let config = LoadConfig::standard(WorkloadProfile::Interactive, 8);
+        assert_eq!(config.duration, Duration::from_secs(90));
+        assert_eq!(config.warmup, Duration::from_secs(15));
+    }
+
+    #[test]
+    fn write_group_summary_reports_modal_and_grouped_fraction() {
+        let mut groups = [0_u64; 64];
+        groups[0] = 10; // size 1
+        groups[3] = 30; // size 4 modal
+        groups[7] = 10; // size 8
+        let (modal, frac) = write_group_summary(&groups);
+        assert_eq!(modal, Some(4));
+        assert!((frac - 0.8).abs() < 1e-9);
     }
 }

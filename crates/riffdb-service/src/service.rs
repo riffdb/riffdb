@@ -404,7 +404,22 @@ impl RiffDbService {
         let (sender, receipt) = port_completion_channel();
         let job_inner = Arc::clone(&self.inner);
         let lifecycle = Arc::new(OperationAuditLifecycle::new(operation));
+        let spawn_submitted_at = Instant::now();
         let job = Box::pin(async move {
+            // First statement of the spawned task: measure submission → run gap.
+            // SpawnDispatch belongs to the read pipeline, so it is recorded only
+            // for the query operation class. Recording it for every operation
+            // would pollute the read-stage family with command, contract, and
+            // administration dispatch latencies that no read-stage consumer
+            // attributes to a read.
+            if operation == ServiceOperationV1::ExecuteQuery {
+                job_inner.providers.telemetry.record(
+                    crate::ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                        stage: crate::ReadPipelineStage::SpawnDispatch,
+                        elapsed: spawn_submitted_at.elapsed(),
+                    },
+                );
+            }
             let started_at = Instant::now();
             let observed = catch_future_panic(future, &lifecycle).await;
             let result = match observed {

@@ -5,7 +5,8 @@ use std::future::Future;
 use std::num::NonZeroU16;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::time::Duration;
 use std::time::Instant;
 use std::{error::Error, fmt, panic, thread};
 
@@ -217,6 +218,19 @@ fn append_prepared_administration_audit(
     }
 }
 
+fn append_administration_audit_fused_pair(
+    repository: &mut dyn ServiceAuditAppendRepository,
+    clock: &dyn AdministrationClock,
+    started: &dyn AdministrationAuditInputView,
+    terminal: &dyn AdministrationAuditInputView,
+) -> Result<(), AdministrationAuditExecutionError> {
+    let started_intent = prepare_administration_audit(clock, started)?;
+    let terminal_intent = prepare_administration_audit(clock, terminal)?;
+    repository
+        .append_service_audit_fused_pair(&started_intent, &terminal_intent)
+        .map_err(AdministrationAuditExecutionError::Storage)
+}
+
 fn append_administration_audit_group(
     repository: &mut dyn ServiceAuditAppendRepository,
     clock: &dyn AdministrationClock,
@@ -288,6 +302,20 @@ const LIFECYCLE_ACCEPTING: u8 = 0;
 const LIFECYCLE_DRAINING: u8 = 1;
 const LIFECYCLE_FENCED: u8 = 2;
 const LIFECYCLE_STOPPED: u8 = 3;
+
+/// Test-only: non-null points at the lifecycle Arc of the coordinator whose
+/// intake actor should panic after the next dispatch (drop-order test).
+#[cfg(test)]
+static TEST_PANIC_LIFECYCLE: std::sync::atomic::AtomicPtr<AtomicU8> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// Monotonic drop-order counters (atomics only; no blocking locks here).
+#[cfg(test)]
+static TEST_DROP_SEQ: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static TEST_WRITER_HANDLE_DROP_END_SEQ: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static TEST_STOPPED_LIFECYCLE_DROP_SEQ: AtomicU64 = AtomicU64::new(0);
 const SUBMISSION_GATE_CLOSED: usize = 1 << (usize::BITS - 1);
 const SUBMISSION_COUNT_MASK: usize = !SUBMISSION_GATE_CLOSED;
 const MAX_QUEUED_COMMAND_BYTES: usize = 32 * 1_024 * 1_024;
@@ -402,6 +430,8 @@ pub struct AdministrationAuditExecutor {
     sender: mpsc::Sender<CoordinatorMessage>,
     lifecycle: Arc<AtomicU8>,
     submission_gate: Arc<SubmissionGate>,
+    /// Counts accepted Single and FusedPair submissions (each counts as one message).
+    accepted_submissions: Arc<AtomicU64>,
 }
 
 impl AdministrationAuditExecutor {
@@ -438,6 +468,7 @@ impl AdministrationAuditExecutor {
             permit: Some(permit),
             lifecycle: Arc::clone(&self.lifecycle),
             submission_gate: Arc::clone(&self.submission_gate),
+            accepted_submissions: Arc::clone(&self.accepted_submissions),
         })
     }
 
@@ -454,6 +485,16 @@ impl AdministrationAuditExecutor {
     #[must_use]
     pub fn lifecycle_state(&self) -> CoordinatorLifecycleState {
         lifecycle_state(&self.lifecycle)
+    }
+
+    /// Number of accepted administration-audit submissions (Single or FusedPair).
+    ///
+    /// Each `submit` / `submit_fused_pair` success increments by one. Used by
+    /// service tests that prove fused replay is one coordinator message.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn accepted_submission_count(&self) -> u64 {
+        self.accepted_submissions.load(Ordering::Relaxed)
     }
 }
 
@@ -478,6 +519,7 @@ pub struct AdministrationAuditCapacityPermit {
     permit: Option<mpsc::OwnedPermit<CoordinatorMessage>>,
     lifecycle: Arc<AtomicU8>,
     submission_gate: Arc<SubmissionGate>,
+    accepted_submissions: Arc<AtomicU64>,
 }
 
 impl AdministrationAuditCapacityPermit {
@@ -489,12 +531,24 @@ impl AdministrationAuditCapacityPermit {
         self,
         input: Box<dyn AdministrationAuditInputView>,
     ) -> Result<AdministrationAuditReceipt, AdministrationAuditAdmissionError> {
-        self.submit_after_admission(input, || {})
+        self.submit_after_admission(AdministrationAuditSubmission::Single(input), || {})
+    }
+
+    /// Submits one Started+terminal pair that shares a single durable transition.
+    pub fn submit_fused_pair(
+        self,
+        started: Box<dyn AdministrationAuditInputView>,
+        terminal: Box<dyn AdministrationAuditInputView>,
+    ) -> Result<AdministrationAuditReceipt, AdministrationAuditAdmissionError> {
+        self.submit_after_admission(
+            AdministrationAuditSubmission::FusedPair { started, terminal },
+            || {},
+        )
     }
 
     fn submit_after_admission(
         mut self,
-        input: Box<dyn AdministrationAuditInputView>,
+        submission_payload: AdministrationAuditSubmission,
         after_admission: impl FnOnce(),
     ) -> Result<AdministrationAuditReceipt, AdministrationAuditAdmissionError> {
         let submission = self
@@ -508,7 +562,11 @@ impl AdministrationAuditCapacityPermit {
             .permit
             .take()
             .expect("move-only audit capacity permit is consumed once");
-        let _sender = permit.send(CoordinatorMessage::AdministrationAudit { input, completion });
+        let _sender = permit.send(CoordinatorMessage::AdministrationAudit {
+            submission: submission_payload,
+            completion,
+        });
+        self.accepted_submissions.fetch_add(1, Ordering::Relaxed);
         drop(submission);
         Ok(AdministrationAuditReceipt { receiver })
     }
@@ -519,7 +577,10 @@ impl AdministrationAuditCapacityPermit {
         input: Box<dyn AdministrationAuditInputView>,
         after_admission: impl FnOnce(),
     ) -> Result<AdministrationAuditReceipt, AdministrationAuditAdmissionError> {
-        self.submit_after_admission(input, after_admission)
+        self.submit_after_admission(
+            AdministrationAuditSubmission::Single(input),
+            after_admission,
+        )
     }
 }
 
@@ -827,6 +888,8 @@ pub struct CommandExecutor {
     lifecycle: Arc<AtomicU8>,
     submission_gate: Arc<SubmissionGate>,
     retained_byte_capacity: Arc<Semaphore>,
+    /// Writer-published EWMA of enqueue→start + service time, in microseconds.
+    queue_delay_estimate_micros: Arc<AtomicU64>,
 }
 
 impl CommandExecutor {
@@ -936,6 +999,22 @@ impl CommandExecutor {
     #[must_use]
     pub fn lifecycle_state(&self) -> CoordinatorLifecycleState {
         lifecycle_state(&self.lifecycle)
+    }
+
+    /// Latest writer EWMA of queue delay (enqueue→start + service), in microseconds.
+    ///
+    /// Zero until the writer has completed at least one unit. Callers use this as a
+    /// pre-admission shed signal; a stale zero never rejects (estimate must be > 0).
+    #[must_use]
+    pub fn estimated_queue_delay_micros(&self) -> u64 {
+        self.queue_delay_estimate_micros.load(Ordering::Relaxed)
+    }
+
+    /// Test-only: force the EWMA queue-delay estimate used by pre-admission shed.
+    #[doc(hidden)]
+    pub fn force_queue_delay_estimate_micros_for_tests(&self, micros: u64) {
+        self.queue_delay_estimate_micros
+            .store(micros, Ordering::Relaxed);
     }
 }
 
@@ -1270,8 +1349,8 @@ impl fmt::Debug for CommandIdempotencyInspector {
 /// Owning lifecycle guard for the one extensible sole-writer coordinator actor.
 ///
 /// Call [`Self::shutdown`] to close admission, drain already accepted work, and
-/// join the actor. Dropping this guard initiates the same drain but deliberately
-/// detaches the join so `Drop` never blocks or risks joining the current thread.
+/// join the actor. Dropping this guard initiates the same drain and joins the
+/// intake actor (so `WriterHandle` joins the writer before drop returns).
 pub struct RunningCommandCoordinator {
     executor: AdministrationAuditExecutor,
     command_executor: CommandExecutor,
@@ -1279,6 +1358,11 @@ pub struct RunningCommandCoordinator {
     shutdown_permit: Option<mpsc::OwnedPermit<CoordinatorMessage>>,
     actor_thread: Option<thread::JoinHandle<()>>,
     actor_thread_id: thread::ThreadId,
+    writer_panicked: Arc<AtomicU8>,
+    /// One-shot hooks run on the intake actor after a unit is dispatched.
+    /// Used only by SelfJoin coverage tests (safe test path onto the actor thread).
+    #[cfg(test)]
+    post_dispatch_hook_tx: Option<std::sync::mpsc::SyncSender<Box<dyn FnOnce() + Send>>>,
 }
 
 impl RunningCommandCoordinator {
@@ -1327,6 +1411,10 @@ impl RunningCommandCoordinator {
     }
 
     /// Starts the coordinator with one least-authority semantic telemetry sink.
+    ///
+    /// Requires [`Clone`] on the repository so an evaluation worker pool can be
+    /// installed. Prefer [`Self::start_with_commit_telemetry`] when the
+    /// repository is move-only (e.g. redb operational ports).
     #[allow(clippy::too_many_arguments)]
     #[allow(private_bounds)] // Sealed blanket proof; callers supply ordinary storage ports.
     pub fn start_with_telemetry<Repository>(
@@ -1372,6 +1460,55 @@ impl RunningCommandCoordinator {
             notifications,
             telemetry,
             Some(evaluation_pool),
+        )
+    }
+
+    /// Supported pool-less entry point: starts the coordinator with telemetry
+    /// and no evaluation worker pool (same bound set as [`Self::start`], no
+    /// [`Clone`] on the repository). Use when storage ports are move-only
+    /// (e.g. redb operational ports) but a real commit telemetry sink is needed.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    #[allow(private_bounds)]
+    pub fn start_with_commit_telemetry<Repository>(
+        workload_capacity: CoordinatorWorkloadCapacity,
+        durability: CoordinatorDurability,
+        repository: Repository,
+        conflicts: Arc<dyn ConflictManager>,
+        admission_clock: Arc<dyn AdmissionClock>,
+        administration_clock: Arc<dyn AdministrationClock>,
+        authorization_clock: Arc<dyn AuthorizationClock>,
+        provenance_source: Arc<dyn ProvenanceIdSource>,
+        notifications: Arc<dyn ApplicationCommitNotificationSink>,
+        telemetry: Arc<dyn CommitTelemetry>,
+    ) -> Result<Self, CoordinatorStartError>
+    where
+        Repository: AdmissionRepository
+            + AuditedAdmissionRepository
+            + SnapshotReader
+            + ApplicationCommandTransactionPort
+            + RepeatableCommandBatchPort
+            + ExecutionFailureTransitionPort
+            + ServiceAuditAppendRepository
+            + CatalogAdministrationRepository
+            + QueryModuleAdministrationRepository
+            + CapabilityAdministrationTransactionPort
+            + CapabilityBootstrapAdministrationRepository
+            + Send
+            + 'static,
+    {
+        Self::start_with_evaluation_pool(
+            workload_capacity,
+            durability,
+            repository,
+            conflicts,
+            admission_clock,
+            administration_clock,
+            authorization_clock,
+            provenance_source,
+            notifications,
+            telemetry,
+            None,
         )
     }
 
@@ -1446,41 +1583,89 @@ impl RunningCommandCoordinator {
         let retained_byte_capacity = Arc::new(Semaphore::new(
             MAX_QUEUED_COMMAND_BYTES / QUEUED_COMMAND_BYTE_UNIT,
         ));
+        let queue_delay_estimate_micros = Arc::new(AtomicU64::new(0));
         let actor_lifecycle = Arc::clone(&lifecycle);
         let actor_submission_gate = Arc::clone(&submission_gate);
         let lifecycle_publisher = ActorLifecyclePublisher {
             lifecycle: Arc::clone(&lifecycle),
             submission_gate: Arc::clone(&submission_gate),
         };
+        let writer_lifecycle = lifecycle_publisher.clone();
+        let writer_operations = operations(lifecycle_publisher.clone());
+        let writer_notifications = Arc::clone(&notifications);
+        let writer_telemetry = Arc::clone(&telemetry);
+        let writer_queue_delay = Arc::clone(&queue_delay_estimate_micros);
+        // Work channel is a std mpsc so the writer can block_recv without a
+        // Tokio runtime context; capacity is enforced by the intake actor only
+        // sending when the writer is idle (at most one in-flight unit).
+        let (work_tx, work_rx) = std::sync::mpsc::sync_channel::<WorkUnit>(1);
+        let (feedback_tx, feedback_rx) = mpsc::channel::<UnitCompleted>(2);
+        let writer_panicked = Arc::new(AtomicU8::new(0));
+        let writer_panic_flag = Arc::clone(&writer_panicked);
+        #[cfg(test)]
+        let (post_dispatch_hook_tx, post_dispatch_hook_rx) =
+            std::sync::mpsc::sync_channel::<Box<dyn FnOnce() + Send>>(4);
+        let writer_thread = thread::Builder::new()
+            .name("riffdb-command-writer".to_owned())
+            .spawn(move || {
+                let writer_runtime = runtime::Builder::new_current_thread()
+                    .build()
+                    .expect("writer runtime");
+                let writer = CommandWriter {
+                    operations: writer_operations,
+                    notifications: writer_notifications,
+                    telemetry: writer_telemetry,
+                    lifecycle: writer_lifecycle,
+                    queue_delay_estimate_micros: writer_queue_delay,
+                    service_ewma_micros: 0,
+                    enqueue_ewma_micros: 0,
+                    ewma_initialized: false,
+                };
+                writer.run(work_rx, feedback_tx, &writer_runtime);
+            })
+            .map_err(|_| CoordinatorStartError::ThreadUnavailable)?;
         let actor = CommandCoordinatorActor {
             receiver,
-            operations: operations(lifecycle_publisher.clone()),
-            notifications,
             telemetry,
             lifecycle: lifecycle_publisher,
+            feedback: feedback_rx,
+            #[cfg(test)]
+            post_dispatch_hooks: Some(post_dispatch_hook_rx),
         };
         let actor_thread = thread::Builder::new()
             .name("riffdb-command-coordinator".to_owned())
             .spawn(move || {
+                // Drop order is reverse of declaration: WriterHandle joins the
+                // writer first; only then does StoppedLifecycle publish stop so
+                // a panicking actor never advertises Stopped while a write txn
+                // may still be open on the writer thread.
                 let _stopped = StoppedLifecycle {
                     lifecycle: actor_lifecycle,
                     submission_gate: actor_submission_gate,
                 };
-                runtime.block_on(actor.run());
+                let _writer = WriterHandle {
+                    work_tx: Some(work_tx.clone()),
+                    join: Some(writer_thread),
+                    panicked: writer_panic_flag,
+                };
+                runtime.block_on(actor.run(work_tx, usize::from(workload_capacity.get())));
             })
             .map_err(|_| CoordinatorStartError::ThreadUnavailable)?;
         let actor_thread_id = actor_thread.thread().id();
+        let accepted_submissions = Arc::new(AtomicU64::new(0));
         Ok(Self {
             executor: AdministrationAuditExecutor {
                 sender: sender.clone(),
                 lifecycle: Arc::clone(&lifecycle),
                 submission_gate: Arc::clone(&submission_gate),
+                accepted_submissions,
             },
             command_executor: CommandExecutor {
                 sender: sender.clone(),
                 lifecycle: Arc::clone(&lifecycle),
                 submission_gate: Arc::clone(&submission_gate),
                 retained_byte_capacity,
+                queue_delay_estimate_micros,
             },
             control_plane_executor: ControlPlaneExecutor {
                 sender: sender.clone(),
@@ -1490,7 +1675,23 @@ impl RunningCommandCoordinator {
             shutdown_permit: Some(shutdown_permit),
             actor_thread: Some(actor_thread),
             actor_thread_id,
+            writer_panicked,
+            #[cfg(test)]
+            post_dispatch_hook_tx: Some(post_dispatch_hook_tx),
         })
+    }
+
+    /// Queues a closure to run on the intake actor after the next unit dispatch.
+    ///
+    /// Used to drive SelfJoin/Drop-on-actor-thread coverage without deadlocking
+    /// the test harness.
+    #[cfg(test)]
+    fn queue_post_dispatch_hook(&self, hook: Box<dyn FnOnce() + Send>) {
+        self.post_dispatch_hook_tx
+            .as_ref()
+            .expect("test hook channel")
+            .send(hook)
+            .expect("actor accepts post-dispatch hook");
     }
 
     #[cfg(test)]
@@ -1507,6 +1708,25 @@ impl RunningCommandCoordinator {
             workload_capacity,
             Arc::new(DiscardApplicationCommitNotifications),
             Arc::new(NoopCommitTelemetry),
+            move |_| Box::new(AuditOnlyCoordinatorOperations { repository, clock }),
+        )
+    }
+
+    #[cfg(test)]
+    fn start_audit_with_telemetry<Repository, Clock>(
+        workload_capacity: CoordinatorWorkloadCapacity,
+        repository: Repository,
+        clock: Clock,
+        telemetry: Arc<dyn CommitTelemetry>,
+    ) -> Result<Self, CoordinatorStartError>
+    where
+        Repository: ServiceAuditAppendRepository + Send + 'static,
+        Clock: AdministrationClock + 'static,
+    {
+        Self::spawn_with_operations(
+            workload_capacity,
+            Arc::new(DiscardApplicationCommitNotifications),
+            telemetry,
             move |_| Box::new(AuditOnlyCoordinatorOperations { repository, clock }),
         )
     }
@@ -1558,9 +1778,12 @@ impl RunningCommandCoordinator {
             .actor_thread
             .take()
             .expect("running coordinator owns one actor thread");
-        actor_thread
-            .join()
-            .map_err(|_| CoordinatorShutdownError::ActorPanicked)
+        let actor_join = actor_thread.join();
+        let writer_panicked = self.writer_panicked.load(Ordering::Acquire) != 0;
+        match (actor_join, writer_panicked) {
+            (Ok(()), false) => Ok(()),
+            _ => Err(CoordinatorShutdownError::ActorPanicked),
+        }
     }
 
     fn initiate_shutdown(&mut self) {
@@ -1591,13 +1814,36 @@ impl fmt::Debug for RunningCommandCoordinator {
 impl Drop for RunningCommandCoordinator {
     fn drop(&mut self) {
         self.initiate_shutdown();
-        self.actor_thread.take();
+        // Off-thread: join the intake actor so WriterHandle Drop joins the
+        // writer before this Drop returns (blocking is acceptable — Drop is
+        // rare outside tests/shutdown and must not leave a write txn open).
+        // On the actor thread, joining would deadlock (same SelfJoin case
+        // shutdown() already refuses); detach instead.
+        if let Some(actor_thread) = self.actor_thread.take() {
+            if thread::current().id() == self.actor_thread_id {
+                // Detach: drop JoinHandle without join (SelfJoin path).
+                // No unconditional library eprintln — detach is silent by design;
+                // tests assert via post-dispatch hooks that this branch runs.
+                let _ = actor_thread;
+                return;
+            }
+            let _ = actor_thread.join();
+        }
     }
+}
+
+/// One accepted administration-audit submission payload.
+enum AdministrationAuditSubmission {
+    Single(Box<dyn AdministrationAuditInputView>),
+    FusedPair {
+        started: Box<dyn AdministrationAuditInputView>,
+        terminal: Box<dyn AdministrationAuditInputView>,
+    },
 }
 
 enum CoordinatorMessage {
     AdministrationAudit {
-        input: Box<dyn AdministrationAuditInputView>,
+        submission: AdministrationAuditSubmission,
         completion: oneshot::Sender<Result<(), AdministrationAuditExecutionError>>,
     },
     Command {
@@ -1657,7 +1903,7 @@ type LocalCommandFuture<'a> =
 type LocalCommandGroupFuture<'a> =
     Pin<Box<dyn Future<Output = Vec<Result<CommandExecutionResult, CommandExecutionError>>> + 'a>>;
 type AuditGroupItem = (
-    Box<dyn AdministrationAuditInputView>,
+    AdministrationAuditSubmission,
     oneshot::Sender<Result<(), AdministrationAuditExecutionError>>,
 );
 type CommandGroupItem = (
@@ -1682,6 +1928,16 @@ trait CoordinatorActorOperations: Send {
             .iter()
             .map(|input| self.append_audit(input.as_ref()))
             .collect()
+    }
+
+    fn append_audit_fused_pair(
+        &mut self,
+        started: &dyn AdministrationAuditInputView,
+        terminal: &dyn AdministrationAuditInputView,
+    ) -> Result<(), AdministrationAuditExecutionError> {
+        // Default: sequential prepare+append is not atomic; production overrides.
+        self.append_audit(started)?;
+        self.append_audit(terminal)
     }
 
     fn drive_command(&mut self, preparation: CommandExecutionPreparation)
@@ -1788,6 +2044,19 @@ where
             &mut self.repository,
             self.administration_clock.as_ref(),
             inputs,
+        )
+    }
+
+    fn append_audit_fused_pair(
+        &mut self,
+        started: &dyn AdministrationAuditInputView,
+        terminal: &dyn AdministrationAuditInputView,
+    ) -> Result<(), AdministrationAuditExecutionError> {
+        append_administration_audit_fused_pair(
+            &mut self.repository,
+            self.administration_clock.as_ref(),
+            started,
+            terminal,
         )
     }
 
@@ -2053,311 +2322,429 @@ impl ApplicationCommitNotificationSink for DiscardApplicationCommitNotifications
     }
 }
 
+/// ADR-0060 MAY-window is subsumed by the event-driven in-flight-commit formation
+/// window: while the writer fsyncs unit N, the intake actor accumulates arrivals and
+/// forms unit N+1 only at the completion edge (no timer-based group wait).
+enum WorkUnit {
+    CommandGroup(Vec<CommandGroupItem>),
+    AuditGroup(Vec<AuditGroupItem>),
+    Single(CoordinatorMessage),
+    Shutdown,
+}
+
+struct UnitCompleted;
+
+struct WriterHandle {
+    work_tx: Option<std::sync::mpsc::SyncSender<WorkUnit>>,
+    join: Option<thread::JoinHandle<()>>,
+    panicked: Arc<AtomicU8>,
+}
+
+impl Drop for WriterHandle {
+    fn drop(&mut self) {
+        drop(self.work_tx.take());
+        if let Some(join) = self.join.take()
+            && join.join().is_err()
+        {
+            self.panicked.store(1, Ordering::Release);
+        }
+        #[cfg(test)]
+        {
+            let seq = TEST_DROP_SEQ.fetch_add(1, Ordering::AcqRel) + 1;
+            TEST_WRITER_HANDLE_DROP_END_SEQ.store(seq, Ordering::Release);
+        }
+    }
+}
+
 struct CommandCoordinatorActor {
     receiver: mpsc::Receiver<CoordinatorMessage>,
-    operations: Box<dyn CoordinatorActorOperations>,
-    notifications: Arc<dyn ApplicationCommitNotificationSink>,
     telemetry: Arc<dyn CommitTelemetry>,
     lifecycle: ActorLifecyclePublisher,
+    feedback: mpsc::Receiver<UnitCompleted>,
+    #[cfg(test)]
+    post_dispatch_hooks: Option<std::sync::mpsc::Receiver<Box<dyn FnOnce() + Send>>>,
 }
 
 impl CommandCoordinatorActor {
-    async fn run(mut self) {
+    async fn run(
+        mut self,
+        work_tx: std::sync::mpsc::SyncSender<WorkUnit>,
+        workload_capacity: usize,
+    ) {
         let mut pending = VecDeque::new();
+        let mut writer_busy = false;
+        let mut shutting_down = false;
+        let mut formation_anchor = Instant::now();
         loop {
-            let message = match pending.pop_front() {
-                Some(message) => message,
-                None => match self.receiver.recv().await {
-                    Some(message) => message,
-                    None => break,
-                },
-            };
-            // This local must drop before `message` so a panic publishes the
-            // terminal lifecycle before any completion sender wakes its caller.
-            let _panic_guard = ActorMessagePanicGuard::new(self.lifecycle.clone());
-            match message {
-                CoordinatorMessage::AdministrationAudit { input, completion } => {
-                    let mut group = vec![(input, completion)];
-                    while group.len() < riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
-                        match self.receiver.try_recv() {
-                            Ok(CoordinatorMessage::AdministrationAudit { input, completion }) => {
-                                if group
-                                    .iter()
-                                    .any(|(grouped, _)| grouped.request_id() == input.request_id())
-                                {
-                                    pending.push_front(CoordinatorMessage::AdministrationAudit {
-                                        input,
-                                        completion,
-                                    });
-                                    break;
-                                }
-                                group.push((input, completion));
+            if !writer_busy {
+                // Formation edge: drain ready channel messages into pending while
+                // under admission capacity (concurrent equal-key groups form here),
+                // then form. Concurrent intake while the writer is busy also fills
+                // pending via the select arm below.
+                //
+                // Accepted backlog under a *blocked* writer is 2C+1: pending ≤ C
+                // is enforced by the busy-path select arm (`pending.len() <
+                // workload_capacity`), plus channel capacity C+1. This idle
+                // try_recv bound is defense-in-depth for an idle burst larger
+                // than C already sitting in the channel (also keeps pending ≤ C
+                // after feedback when the channel was full).
+                //
+                // Pipelining-removal neuter (pre-split): disable the busy-path
+                // select arm *and* this multi-message drain — arm-only is not
+                // enough because this drain would re-batch at the completion edge.
+                let pending_was_empty = pending.is_empty();
+                let receiver_closed = loop {
+                    // Defense-in-depth: cap pending on idle drain sweeps too.
+                    if pending.len() >= workload_capacity {
+                        break false;
+                    }
+                    match self.receiver.try_recv() {
+                        Ok(message) => pending.push_back(message),
+                        Err(mpsc::error::TryRecvError::Empty) => break false,
+                        Err(mpsc::error::TryRecvError::Disconnected) => break true,
+                    }
+                };
+                if receiver_closed {
+                    shutting_down = true;
+                }
+                // Collection-time semantics: reset formation anchor on the first
+                // arrival after an idle park (not only on writer feedback).
+                if pending_was_empty && !pending.is_empty() {
+                    formation_anchor = Instant::now();
+                }
+
+                if let Some((unit, reason)) = form_next_unit(&mut pending) {
+                    let reason = if matches!(reason, CommitGroupDispatchReason::QueueDrained)
+                        && shutting_down
+                    {
+                        CommitGroupDispatchReason::ReceiverClosed
+                    } else {
+                        reason
+                    };
+                    let elapsed = formation_anchor.elapsed();
+                    match &unit {
+                        WorkUnit::Shutdown => {
+                            self.receiver.close();
+                            while let Some(message) = self.receiver.recv().await {
+                                pending.push_back(message);
                             }
-                            Ok(message) => {
-                                pending.push_front(message);
-                                break;
+                            shutting_down = true;
+                            continue;
+                        }
+                        WorkUnit::CommandGroup(group) => {
+                            self.telemetry
+                                .record(CommitTelemetryEvent::CommandGroupDispatched {
+                                    reason,
+                                    selected: u16::try_from(group.len()).unwrap_or(u16::MAX),
+                                    deferred: u16::try_from(pending.len()).unwrap_or(u16::MAX),
+                                    elapsed,
+                                });
+                        }
+                        WorkUnit::AuditGroup(group) => {
+                            self.telemetry
+                                .record(CommitTelemetryEvent::CommandGroupDispatched {
+                                    reason,
+                                    selected: u16::try_from(group.len()).unwrap_or(u16::MAX),
+                                    deferred: u16::try_from(pending.len()).unwrap_or(u16::MAX),
+                                    elapsed,
+                                });
+                        }
+                        WorkUnit::Single(_) => {}
+                    }
+                    work_tx
+                        .try_send(unit)
+                        .expect("writer idle: work channel must accept the formed unit");
+                    writer_busy = true;
+                    #[cfg(test)]
+                    {
+                        let target = TEST_PANIC_LIFECYCLE.load(Ordering::Acquire);
+                        if !target.is_null()
+                            && std::ptr::eq(Arc::as_ptr(&self.lifecycle.lifecycle), target)
+                        {
+                            TEST_PANIC_LIFECYCLE.store(std::ptr::null_mut(), Ordering::Release);
+                            panic!("test: intentional actor panic after dispatch");
+                        }
+                        if let Some(hooks) = self.post_dispatch_hooks.as_ref() {
+                            while let Ok(hook) = hooks.try_recv() {
+                                hook();
                             }
-                            Err(_) => break,
                         }
                     }
-                    self.execute_audit_group(group);
-                    if self.reject_after_published_terminal_state().await {
-                        break;
-                    }
+                    continue;
                 }
-                CoordinatorMessage::Command {
-                    preparation,
-                    command_id,
-                    ingress,
-                    enqueued_at,
-                    completion,
-                    ..
-                } => {
-                    let mut group =
-                        vec![(*preparation, command_id, ingress, enqueued_at, completion)];
-                    let collection_started = Instant::now();
-                    let reason = self.collect_command_group(&mut group, &mut pending);
-                    self.telemetry
-                        .record(CommitTelemetryEvent::CommandGroupDispatched {
-                            reason,
-                            selected: u16::try_from(group.len()).unwrap_or(u16::MAX),
-                            deferred: u16::try_from(pending.len()).unwrap_or(u16::MAX),
-                            elapsed: collection_started.elapsed(),
-                        });
-                    self.execute_command_group(group).await;
-                    if self.reject_after_published_terminal_state().await {
-                        break;
-                    }
+                if shutting_down && pending.is_empty() {
+                    // Return so `work_tx` drops; WriterHandle then drops its
+                    // clone and joins the writer.
+                    return;
                 }
-                CoordinatorMessage::ReadOnlyCommand {
-                    preparation,
-                    command_id,
-                    ingress,
-                    enqueued_at,
-                    completion,
-                    ..
-                } => {
-                    self.execute_read_only(
-                        *preparation,
-                        command_id,
-                        ingress,
-                        enqueued_at,
-                        completion,
-                    );
-                    if self.reject_after_published_terminal_state().await {
-                        break;
+            }
+
+            if writer_busy {
+                // While the writer holds unit N, accept at most one message when
+                // pending is under capacity — further arrivals remain in the
+                // bounded channel so reserve_capacity parks. Formation of the
+                // next group uses the pending collected during this window at
+                // the completion edge (see `if !writer_busy` above).
+                tokio::select! {
+                    biased;
+                    completed = self.feedback.recv() => {
+                        match completed {
+                            Some(UnitCompleted) => {
+                                writer_busy = false;
+                                formation_anchor = Instant::now();
+                                if matches!(
+                                    lifecycle_state(&self.lifecycle.lifecycle),
+                                    CoordinatorLifecycleState::Fenced
+                                        | CoordinatorLifecycleState::Stopped
+                                ) {
+                                    // Older deferred work first, then channel.
+                                    self.reject_pending(&mut pending);
+                                    if lifecycle_state(&self.lifecycle.lifecycle)
+                                        == CoordinatorLifecycleState::Fenced
+                                    {
+                                        self.reject_remaining_after_fence().await;
+                                    } else {
+                                        self.reject_remaining_after_stop().await;
+                                    }
+                                    return;
+                                }
+                            }
+                            None => {
+                                self.lifecycle.stop();
+                                self.reject_pending(&mut pending);
+                                self.reject_remaining_after_stop().await;
+                                return;
+                            }
+                        }
                     }
-                }
-                CoordinatorMessage::IdempotencyInspection {
-                    preparation,
-                    completion,
-                } => {
-                    self.execute_idempotency_inspection(*preparation, completion);
-                    if self.reject_after_published_terminal_state().await {
-                        break;
-                    }
-                }
-                CoordinatorMessage::CatalogDeployment {
-                    preparation,
-                    completion,
-                } => {
-                    self.execute_catalog_deployment(*preparation, completion);
-                    if self.reject_after_published_terminal_state().await {
-                        break;
-                    }
-                }
-                CoordinatorMessage::QueryModuleDeployment {
-                    preparation,
-                    completion,
-                } => {
-                    self.execute_query_module_deployment(*preparation, completion);
-                    if self.reject_after_published_terminal_state().await {
-                        break;
-                    }
-                }
-                CoordinatorMessage::CapabilityCreate {
-                    preparation,
-                    completion,
-                } => {
-                    self.execute_capability_create(*preparation, completion);
-                    if self.reject_after_published_terminal_state().await {
-                        break;
-                    }
-                }
-                CoordinatorMessage::CapabilityRevoke {
-                    preparation,
-                    completion,
-                } => {
-                    self.execute_capability_revoke(*preparation, completion);
-                    if self.reject_after_published_terminal_state().await {
-                        break;
-                    }
-                }
-                CoordinatorMessage::CapabilityBootstrap {
-                    preparation,
-                    completion,
-                } => {
-                    self.execute_capability_bootstrap(*preparation, completion);
-                    if self.reject_after_published_terminal_state().await {
-                        break;
-                    }
-                }
-                CoordinatorMessage::CapabilityBootstrapTerminal {
-                    preparation,
-                    completion,
-                } => {
-                    self.execute_capability_bootstrap_terminal(*preparation, completion);
-                    if self.reject_after_published_terminal_state().await {
-                        break;
-                    }
-                }
-                CoordinatorMessage::Shutdown => {
-                    self.receiver.close();
-                    while let Some(message) = self.receiver.recv().await {
-                        // Preserve the same ordering while draining accepted work.
-                        let _panic_guard = ActorMessagePanicGuard::new(self.lifecycle.clone());
+                    message = self.receiver.recv(), if !shutting_down
+                        && pending.len() < workload_capacity =>
+                    {
                         match message {
-                            CoordinatorMessage::AdministrationAudit { input, completion } => {
-                                self.execute_audit(input, completion);
-                                if self.reject_after_published_terminal_state().await {
-                                    return;
+                            Some(message) => {
+                                // First message of a new collection after idle.
+                                if pending.is_empty() {
+                                    formation_anchor = Instant::now();
                                 }
+                                pending.push_back(message);
                             }
-                            CoordinatorMessage::Command {
-                                preparation,
-                                command_id,
-                                ingress,
-                                enqueued_at,
-                                completion,
-                                ..
-                            } => {
-                                self.execute_command(
-                                    *preparation,
-                                    command_id,
-                                    ingress,
-                                    enqueued_at,
-                                    completion,
-                                )
-                                .await;
-                                if self.reject_after_published_terminal_state().await {
-                                    return;
-                                }
-                            }
-                            CoordinatorMessage::ReadOnlyCommand {
-                                preparation,
-                                command_id,
-                                ingress,
-                                enqueued_at,
-                                completion,
-                                ..
-                            } => {
-                                self.execute_read_only(
-                                    *preparation,
-                                    command_id,
-                                    ingress,
-                                    enqueued_at,
-                                    completion,
-                                );
-                                if self.reject_after_published_terminal_state().await {
-                                    return;
-                                }
-                            }
-                            CoordinatorMessage::IdempotencyInspection {
-                                preparation,
-                                completion,
-                            } => {
-                                self.execute_idempotency_inspection(*preparation, completion);
-                                if self.reject_after_published_terminal_state().await {
-                                    return;
-                                }
-                            }
-                            CoordinatorMessage::CatalogDeployment {
-                                preparation,
-                                completion,
-                            } => {
-                                self.execute_catalog_deployment(*preparation, completion);
-                                if self.reject_after_published_terminal_state().await {
-                                    return;
-                                }
-                            }
-                            CoordinatorMessage::QueryModuleDeployment {
-                                preparation,
-                                completion,
-                            } => {
-                                self.execute_query_module_deployment(*preparation, completion);
-                                if self.reject_after_published_terminal_state().await {
-                                    return;
-                                }
-                            }
-                            CoordinatorMessage::CapabilityCreate {
-                                preparation,
-                                completion,
-                            } => {
-                                self.execute_capability_create(*preparation, completion);
-                                if self.reject_after_published_terminal_state().await {
-                                    return;
-                                }
-                            }
-                            CoordinatorMessage::CapabilityRevoke {
-                                preparation,
-                                completion,
-                            } => {
-                                self.execute_capability_revoke(*preparation, completion);
-                                if self.reject_after_published_terminal_state().await {
-                                    return;
-                                }
-                            }
-                            CoordinatorMessage::CapabilityBootstrap {
-                                preparation,
-                                completion,
-                            } => {
-                                self.execute_capability_bootstrap(*preparation, completion);
-                                if self.reject_after_published_terminal_state().await {
-                                    return;
-                                }
-                            }
-                            CoordinatorMessage::CapabilityBootstrapTerminal {
-                                preparation,
-                                completion,
-                            } => {
-                                self.execute_capability_bootstrap_terminal(
-                                    *preparation,
-                                    completion,
-                                );
-                                if self.reject_after_published_terminal_state().await {
-                                    return;
-                                }
-                            }
-                            CoordinatorMessage::Shutdown => {}
+                            None => shutting_down = true,
                         }
                     }
-                    break;
                 }
+            } else if !shutting_down {
+                match self.receiver.recv().await {
+                    Some(message) => pending.push_back(message),
+                    None => shutting_down = true,
+                }
+            } else {
+                return;
             }
         }
     }
 
-    fn collect_command_group(
-        &mut self,
-        group: &mut Vec<CommandGroupItem>,
-        pending: &mut VecDeque<CoordinatorMessage>,
-    ) -> CommitGroupDispatchReason {
-        let receiver_closed = loop {
+    fn reject_pending(&self, pending: &mut VecDeque<CoordinatorMessage>) {
+        while let Some(message) = pending.pop_front() {
+            reject_message_stopped_or_fenced(message, &self.lifecycle);
+        }
+    }
+
+    async fn reject_remaining_after_fence(&mut self) {
+        self.drain_reject(reject_message_fenced).await;
+    }
+
+    async fn reject_remaining_after_stop(&mut self) {
+        self.drain_reject(reject_message_stopped).await;
+    }
+
+    async fn drain_reject(&mut self, reject: fn(CoordinatorMessage)) {
+        // Close first so recv terminates after draining residual accepted work.
+        self.receiver.close();
+        loop {
             match self.receiver.try_recv() {
-                Ok(message) => pending.push_back(message),
-                Err(mpsc::error::TryRecvError::Empty) => break false,
-                Err(mpsc::error::TryRecvError::Disconnected) => break true,
+                Ok(message) => reject(message),
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    // May still race with a concurrent send; park once more.
+                    match self.receiver.recv().await {
+                        Some(message) => reject(message),
+                        None => return,
+                    }
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => return,
             }
-        };
-        let barrier = select_pending_commands(group, pending);
-        if barrier {
-            CommitGroupDispatchReason::Barrier
-        } else if group.len() == riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
-            CommitGroupDispatchReason::Full
-        } else if receiver_closed {
-            CommitGroupDispatchReason::ReceiverClosed
+        }
+    }
+}
+
+struct CommandWriter {
+    operations: Box<dyn CoordinatorActorOperations>,
+    notifications: Arc<dyn ApplicationCommitNotificationSink>,
+    telemetry: Arc<dyn CommitTelemetry>,
+    lifecycle: ActorLifecyclePublisher,
+    queue_delay_estimate_micros: Arc<AtomicU64>,
+    service_ewma_micros: u64,
+    enqueue_ewma_micros: u64,
+    ewma_initialized: bool,
+}
+
+impl CommandWriter {
+    fn run(
+        mut self,
+        work_rx: std::sync::mpsc::Receiver<WorkUnit>,
+        feedback_tx: mpsc::Sender<UnitCompleted>,
+        runtime: &runtime::Runtime,
+    ) {
+        let mut last_edge = Instant::now();
+        while let Ok(unit) = work_rx.recv() {
+            let idle = last_edge.elapsed();
+            let busy_started = Instant::now();
+            let unit_enqueued_hint = unit_enqueue_hint(&unit);
+            // Fence/stop takes effect between units: reject without storage access.
+            if matches!(
+                lifecycle_state(&self.lifecycle.lifecycle),
+                CoordinatorLifecycleState::Fenced | CoordinatorLifecycleState::Stopped
+            ) {
+                reject_work_unit(unit, &self.lifecycle);
+            } else {
+                let _panic_guard = ActorMessagePanicGuard::new(self.lifecycle.clone());
+                match unit {
+                    WorkUnit::CommandGroup(group) => {
+                        runtime.block_on(self.execute_command_group(group));
+                    }
+                    WorkUnit::AuditGroup(group) => self.execute_audit_group(group),
+                    WorkUnit::Single(message) => {
+                        runtime.block_on(self.execute_single(message));
+                    }
+                    WorkUnit::Shutdown => {}
+                }
+            }
+            let busy = busy_started.elapsed();
+            let queue_delay_estimate_micros = self.observe_ewma(unit_enqueued_hint, busy);
+            self.telemetry
+                .record(CommitTelemetryEvent::WriterUnitCompleted {
+                    busy,
+                    idle,
+                    queue_delay_estimate_micros,
+                });
+            // Capacity 2 with ≤1 outstanding unit: send always succeeds while
+            // the intake actor is alive. During actor-panic unwind, avoid a
+            // second panic from expect on a closed channel.
+            if !std::thread::panicking() {
+                feedback_tx
+                    .try_send(UnitCompleted)
+                    .expect("intake actor must accept writer feedback");
+            } else {
+                let _ = feedback_tx.try_send(UnitCompleted);
+            }
+            last_edge = Instant::now();
+        }
+    }
+
+    fn observe_ewma(&mut self, enqueue_hint: Option<Instant>, service: Duration) -> u64 {
+        let service_us = duration_micros(service);
+        let enqueue_us = enqueue_hint
+            .map(|started| duration_micros(started.elapsed().saturating_sub(service)))
+            .unwrap_or(0);
+        const ALPHA_NUM: u64 = 1;
+        const ALPHA_DEN: u64 = 5; // α ≈ 0.2
+        if !self.ewma_initialized {
+            self.service_ewma_micros = service_us;
+            self.enqueue_ewma_micros = enqueue_us;
+            self.ewma_initialized = true;
         } else {
-            CommitGroupDispatchReason::QueueDrained
+            self.service_ewma_micros =
+                ewma(self.service_ewma_micros, service_us, ALPHA_NUM, ALPHA_DEN);
+            self.enqueue_ewma_micros =
+                ewma(self.enqueue_ewma_micros, enqueue_us, ALPHA_NUM, ALPHA_DEN);
+        }
+        let estimate = self
+            .service_ewma_micros
+            .saturating_add(self.enqueue_ewma_micros);
+        self.queue_delay_estimate_micros
+            .store(estimate, Ordering::Relaxed);
+        estimate
+    }
+
+    async fn execute_single(&mut self, message: CoordinatorMessage) {
+        match message {
+            CoordinatorMessage::AdministrationAudit {
+                submission,
+                completion,
+            } => match submission {
+                AdministrationAuditSubmission::Single(input) => {
+                    self.execute_audit(input, completion);
+                }
+                AdministrationAuditSubmission::FusedPair { started, terminal } => {
+                    self.execute_audit_group(vec![(
+                        AdministrationAuditSubmission::FusedPair { started, terminal },
+                        completion,
+                    )]);
+                }
+            },
+            CoordinatorMessage::Command {
+                preparation,
+                command_id,
+                ingress,
+                enqueued_at,
+                completion,
+                ..
+            } => {
+                self.execute_command(*preparation, command_id, ingress, enqueued_at, completion)
+                    .await;
+            }
+            CoordinatorMessage::ReadOnlyCommand {
+                preparation,
+                command_id,
+                ingress,
+                enqueued_at,
+                completion,
+                ..
+            } => {
+                self.execute_read_only(*preparation, command_id, ingress, enqueued_at, completion);
+            }
+            CoordinatorMessage::IdempotencyInspection {
+                preparation,
+                completion,
+            } => {
+                self.execute_idempotency_inspection(*preparation, completion);
+            }
+            CoordinatorMessage::CatalogDeployment {
+                preparation,
+                completion,
+            } => {
+                self.execute_catalog_deployment(*preparation, completion);
+            }
+            CoordinatorMessage::QueryModuleDeployment {
+                preparation,
+                completion,
+            } => {
+                self.execute_query_module_deployment(*preparation, completion);
+            }
+            CoordinatorMessage::CapabilityCreate {
+                preparation,
+                completion,
+            } => {
+                self.execute_capability_create(*preparation, completion);
+            }
+            CoordinatorMessage::CapabilityRevoke {
+                preparation,
+                completion,
+            } => {
+                self.execute_capability_revoke(*preparation, completion);
+            }
+            CoordinatorMessage::CapabilityBootstrap {
+                preparation,
+                completion,
+            } => {
+                self.execute_capability_bootstrap(*preparation, completion);
+            }
+            CoordinatorMessage::CapabilityBootstrapTerminal {
+                preparation,
+                completion,
+            } => {
+                self.execute_capability_bootstrap_terminal(*preparation, completion);
+            }
+            CoordinatorMessage::Shutdown => {}
         }
     }
 
@@ -2380,7 +2767,62 @@ impl CommandCoordinatorActor {
     }
 
     fn execute_audit_group(&mut self, group: Vec<AuditGroupItem>) {
-        let (inputs, completions): (Vec<_>, Vec<_>) = group.into_iter().unzip();
+        // Fused pairs always form a singleton group and use the fused storage path.
+        if group.len() == 1 && matches!(group[0].0, AdministrationAuditSubmission::FusedPair { .. })
+        {
+            let (submission, completion) = group.into_iter().next().expect("len 1");
+            let AdministrationAuditSubmission::FusedPair { started, terminal } = submission else {
+                unreachable!("matched FusedPair");
+            };
+            let result = self
+                .operations
+                .append_audit_fused_pair(started.as_ref(), terminal.as_ref());
+            // LimitExceeded is the call-scoped "unsupported fused pair" signal
+            // from conformance shells — fail the call without stopping.
+            let result = match result {
+                Err(AdministrationAuditExecutionError::Storage(error))
+                    if error.kind() == riffdb_storage_api::StorageErrorKind::LimitExceeded =>
+                {
+                    Err(AdministrationAuditExecutionError::PhaseConflict)
+                }
+                other => other,
+            };
+            match &result {
+                Ok(()) => {}
+                Err(AdministrationAuditExecutionError::PhaseConflict) => {}
+                Err(AdministrationAuditExecutionError::Storage(error))
+                    if error.kind()
+                        == riffdb_storage_api::StorageErrorKind::CommitStatusUnknown =>
+                {
+                    self.lifecycle.fence();
+                }
+                Err(_) => self.lifecycle.stop(),
+            }
+            let _ = completion.send(result);
+            return;
+        }
+        let mut inputs = Vec::with_capacity(group.len());
+        let mut completions = Vec::with_capacity(group.len());
+        for (submission, completion) in group {
+            match submission {
+                AdministrationAuditSubmission::Single(input) => {
+                    inputs.push(input);
+                    completions.push(completion);
+                }
+                AdministrationAuditSubmission::FusedPair { started, terminal } => {
+                    // Mixed groups are fail-closed: fused pairs must be alone.
+                    self.lifecycle.stop();
+                    let _ =
+                        completion.send(Err(AdministrationAuditExecutionError::CoordinatorStopped));
+                    for completion in completions {
+                        let _ = completion
+                            .send(Err(AdministrationAuditExecutionError::CoordinatorStopped));
+                    }
+                    let _ = (started, terminal);
+                    return;
+                }
+            }
+        }
         let results = self.operations.append_audit_group(&inputs);
         if results.len() != completions.len() {
             self.lifecycle.stop();
@@ -2619,153 +3061,292 @@ impl CommandCoordinatorActor {
         let result = self.operations.append_bootstrap_terminal(preparation);
         let _receiver_may_be_dropped = completion.send(result);
     }
+}
 
-    async fn reject_after_published_terminal_state(&mut self) -> bool {
-        match lifecycle_state(&self.lifecycle.lifecycle) {
-            CoordinatorLifecycleState::Fenced => {
-                self.receiver.close();
-                self.reject_remaining_after_fence().await;
-                true
+/// Pure selection kernel: form the next ordered work unit from the deque front.
+///
+/// Front-only consumption preserves ADR-0058 anti-starvation and ADR-0060's
+/// deferred-before-new / barrier-overtaking prohibitions. The ADR-0060 MAY
+/// wait window is subsumed by the event-driven in-flight-commit formation
+/// window of the pipelined writer (timer-based group waits are forbidden).
+fn form_next_unit(
+    pending: &mut VecDeque<CoordinatorMessage>,
+) -> Option<(WorkUnit, CommitGroupDispatchReason)> {
+    let head_class = command_grouping_class(pending.front()?);
+    match head_class {
+        CommandGroupingClass::Command => {
+            let mut group = Vec::new();
+            let mut deferred_obs = VecDeque::new();
+            let mut reason = CommitGroupDispatchReason::QueueDrained;
+            while let Some(class) = pending.front().map(command_grouping_class) {
+                match class {
+                    CommandGroupingClass::Command => {
+                        if group.len() >= riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
+                            reason = CommitGroupDispatchReason::Full;
+                            break;
+                        }
+                        let Some(CoordinatorMessage::Command {
+                            preparation,
+                            command_id,
+                            ingress,
+                            enqueued_at,
+                            completion,
+                            ..
+                        }) = pending.pop_front()
+                        else {
+                            unreachable!("command class must be Command");
+                        };
+                        group.push((*preparation, command_id, ingress, enqueued_at, completion));
+                    }
+                    CommandGroupingClass::DeferrableObservation => {
+                        deferred_obs.push_back(
+                            pending
+                                .pop_front()
+                                .expect("front present for deferrable observation"),
+                        );
+                    }
+                    CommandGroupingClass::Barrier => {
+                        reason = CommitGroupDispatchReason::Barrier;
+                        break;
+                    }
+                }
             }
-            CoordinatorLifecycleState::Stopped => {
-                self.receiver.close();
-                self.reject_remaining_after_stop().await;
-                true
+            while let Some(message) = deferred_obs.pop_back() {
+                pending.push_front(message);
             }
-            CoordinatorLifecycleState::Accepting | CoordinatorLifecycleState::Draining => false,
+            // Head was Command, so the group is non-empty.
+            debug_assert!(!group.is_empty());
+            Some((WorkUnit::CommandGroup(group), reason))
         }
-    }
-
-    async fn reject_remaining_after_fence(&mut self) {
-        while let Some(message) = self.receiver.recv().await {
-            match message {
-                CoordinatorMessage::AdministrationAudit { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(AdministrationAuditExecutionError::CoordinatorFenced));
-                }
-                CoordinatorMessage::Command { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(CommandExecutionError::coordinator_fenced()));
-                }
-                CoordinatorMessage::ReadOnlyCommand { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(CommandExecutionError::coordinator_fenced()));
-                }
-                CoordinatorMessage::IdempotencyInspection { completion, .. } => {
-                    let _receiver_may_be_dropped = completion
-                        .send(Err(CommandIdempotencyInspectionError::coordinator_fenced()));
-                }
-                CoordinatorMessage::CatalogDeployment { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
-                }
-                CoordinatorMessage::QueryModuleDeployment { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
-                }
-                CoordinatorMessage::CapabilityCreate { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
-                }
-                CoordinatorMessage::CapabilityRevoke { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
-                }
-                CoordinatorMessage::CapabilityBootstrap { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
-                }
-                CoordinatorMessage::CapabilityBootstrapTerminal { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
-                }
-                CoordinatorMessage::Shutdown => {}
+        CommandGroupingClass::Barrier
+            if matches!(
+                pending.front(),
+                Some(CoordinatorMessage::AdministrationAudit { .. })
+            ) =>
+        {
+            // Fused pairs are their own unit; do not co-group with other audits.
+            if matches!(
+                pending.front(),
+                Some(CoordinatorMessage::AdministrationAudit {
+                    submission: AdministrationAuditSubmission::FusedPair { .. },
+                    ..
+                })
+            ) {
+                let Some(CoordinatorMessage::AdministrationAudit {
+                    submission,
+                    completion,
+                }) = pending.pop_front()
+                else {
+                    unreachable!("front was AdministrationAudit");
+                };
+                // Next non-audit (if any) is a barrier for subsequent formation.
+                let reason = if pending
+                    .front()
+                    .is_some_and(|m| !matches!(m, CoordinatorMessage::AdministrationAudit { .. }))
+                {
+                    CommitGroupDispatchReason::Barrier
+                } else {
+                    CommitGroupDispatchReason::QueueDrained
+                };
+                return Some((WorkUnit::AuditGroup(vec![(submission, completion)]), reason));
             }
+            let mut group = Vec::new();
+            let mut seen = std::collections::BTreeSet::new();
+            let mut reason = CommitGroupDispatchReason::QueueDrained;
+            while let Some(CoordinatorMessage::AdministrationAudit {
+                submission: AdministrationAuditSubmission::Single(_),
+                ..
+            }) = pending.front()
+            {
+                if group.len() >= riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
+                    reason = CommitGroupDispatchReason::Full;
+                    break;
+                }
+                let Some(CoordinatorMessage::AdministrationAudit {
+                    submission,
+                    completion,
+                }) = pending.pop_front()
+                else {
+                    unreachable!("front was AdministrationAudit");
+                };
+                let AdministrationAuditSubmission::Single(input) = submission else {
+                    unreachable!("while matched Single");
+                };
+                let request = *input.request_id();
+                if !seen.insert(request) {
+                    pending.push_front(CoordinatorMessage::AdministrationAudit {
+                        submission: AdministrationAuditSubmission::Single(input),
+                        completion,
+                    });
+                    // Duplicate request_id is a formation boundary (like Full).
+                    reason = CommitGroupDispatchReason::Full;
+                    break;
+                }
+                group.push((AdministrationAuditSubmission::Single(input), completion));
+            }
+            if reason == CommitGroupDispatchReason::QueueDrained
+                && pending
+                    .front()
+                    .is_some_and(|m| !matches!(m, CoordinatorMessage::AdministrationAudit { .. }))
+            {
+                reason = CommitGroupDispatchReason::Barrier;
+            }
+            Some((WorkUnit::AuditGroup(group), reason))
         }
-    }
-
-    async fn reject_remaining_after_stop(&mut self) {
-        while let Some(message) = self.receiver.recv().await {
-            match message {
-                CoordinatorMessage::AdministrationAudit { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(AdministrationAuditExecutionError::CoordinatorStopped));
-                }
-                CoordinatorMessage::Command { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(CommandExecutionError::coordinator_stopped()));
-                }
-                CoordinatorMessage::ReadOnlyCommand { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(CommandExecutionError::coordinator_stopped()));
-                }
-                CoordinatorMessage::IdempotencyInspection { completion, .. } => {
-                    let _receiver_may_be_dropped = completion
-                        .send(Err(CommandIdempotencyInspectionError::coordinator_stopped()));
-                }
-                CoordinatorMessage::CatalogDeployment { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
-                }
-                CoordinatorMessage::QueryModuleDeployment { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
-                }
-                CoordinatorMessage::CapabilityCreate { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
-                }
-                CoordinatorMessage::CapabilityRevoke { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
-                }
-                CoordinatorMessage::CapabilityBootstrap { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
-                }
-                CoordinatorMessage::CapabilityBootstrapTerminal { completion, .. } => {
-                    let _receiver_may_be_dropped =
-                        completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
-                }
-                CoordinatorMessage::Shutdown => {}
+        CommandGroupingClass::DeferrableObservation => {
+            let message = pending.pop_front()?;
+            Some((
+                WorkUnit::Single(message),
+                CommitGroupDispatchReason::QueueDrained,
+            ))
+        }
+        CommandGroupingClass::Barrier => {
+            let message = pending.pop_front()?;
+            if matches!(message, CoordinatorMessage::Shutdown) {
+                Some((WorkUnit::Shutdown, CommitGroupDispatchReason::QueueDrained))
+            } else {
+                Some((
+                    WorkUnit::Single(message),
+                    CommitGroupDispatchReason::Barrier,
+                ))
             }
         }
     }
 }
 
-fn select_pending_commands(
-    group: &mut Vec<CommandGroupItem>,
-    pending: &mut VecDeque<CoordinatorMessage>,
-) -> bool {
-    let available = riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS.saturating_sub(group.len());
-    let classes = pending
-        .iter()
-        .map(command_grouping_class)
-        .collect::<Vec<_>>();
-    let selection = select_command_positions(&classes, available);
-    let mut deferred = VecDeque::with_capacity(pending.len());
-    let mut position = 0usize;
-    while let Some(message) = pending.pop_front() {
-        if selection.selected[position] {
-            let CoordinatorMessage::Command {
-                preparation,
-                command_id,
-                ingress,
-                enqueued_at,
-                completion,
-                ..
-            } = message
-            else {
-                unreachable!("only command positions are selected");
-            };
-            group.push((*preparation, command_id, ingress, enqueued_at, completion));
-        } else {
-            deferred.push_back(message);
+fn duration_micros(duration: Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
+fn ewma(prior: u64, sample: u64, alpha_num: u64, alpha_den: u64) -> u64 {
+    // prior*(1-α) + sample*α with α = alpha_num/alpha_den
+    let keep = alpha_den.saturating_sub(alpha_num);
+    prior
+        .saturating_mul(keep)
+        .saturating_add(sample.saturating_mul(alpha_num))
+        / alpha_den.max(1)
+}
+
+fn unit_enqueue_hint(unit: &WorkUnit) -> Option<Instant> {
+    match unit {
+        WorkUnit::CommandGroup(group) => group.first().map(|item| item.3),
+        WorkUnit::Single(CoordinatorMessage::Command { enqueued_at, .. })
+        | WorkUnit::Single(CoordinatorMessage::ReadOnlyCommand { enqueued_at, .. }) => {
+            Some(*enqueued_at)
         }
-        position += 1;
+        WorkUnit::AuditGroup(_) | WorkUnit::Single(_) | WorkUnit::Shutdown => None,
     }
-    *pending = deferred;
-    selection.encountered_barrier
+}
+
+fn reject_work_unit(unit: WorkUnit, lifecycle: &ActorLifecyclePublisher) {
+    let fenced = lifecycle_state(&lifecycle.lifecycle) == CoordinatorLifecycleState::Fenced;
+    match unit {
+        WorkUnit::CommandGroup(group) => {
+            for (_, _, _, _, completion) in group {
+                if fenced {
+                    let _ = completion.send(Err(CommandExecutionError::coordinator_fenced()));
+                } else {
+                    let _ = completion.send(Err(CommandExecutionError::coordinator_stopped()));
+                }
+            }
+        }
+        WorkUnit::AuditGroup(group) => {
+            for (_, completion) in group {
+                if fenced {
+                    let _ =
+                        completion.send(Err(AdministrationAuditExecutionError::CoordinatorFenced));
+                } else {
+                    let _ =
+                        completion.send(Err(AdministrationAuditExecutionError::CoordinatorStopped));
+                }
+            }
+        }
+        WorkUnit::Single(message) => reject_message_stopped_or_fenced(message, lifecycle),
+        WorkUnit::Shutdown => {}
+    }
+}
+
+fn reject_message_stopped_or_fenced(
+    message: CoordinatorMessage,
+    lifecycle: &ActorLifecyclePublisher,
+) {
+    if lifecycle_state(&lifecycle.lifecycle) == CoordinatorLifecycleState::Fenced {
+        reject_message_fenced(message);
+    } else {
+        reject_message_stopped(message);
+    }
+}
+
+fn reject_message_fenced(message: CoordinatorMessage) {
+    match message {
+        CoordinatorMessage::AdministrationAudit { completion, .. } => {
+            let _ = completion.send(Err(AdministrationAuditExecutionError::CoordinatorFenced));
+        }
+        CoordinatorMessage::Command { completion, .. } => {
+            let _ = completion.send(Err(CommandExecutionError::coordinator_fenced()));
+        }
+        CoordinatorMessage::ReadOnlyCommand { completion, .. } => {
+            let _ = completion.send(Err(CommandExecutionError::coordinator_fenced()));
+        }
+        CoordinatorMessage::IdempotencyInspection { completion, .. } => {
+            let _ = completion.send(Err(CommandIdempotencyInspectionError::coordinator_fenced()));
+        }
+        CoordinatorMessage::CatalogDeployment { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
+        }
+        CoordinatorMessage::QueryModuleDeployment { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
+        }
+        CoordinatorMessage::CapabilityCreate { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
+        }
+        CoordinatorMessage::CapabilityRevoke { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
+        }
+        CoordinatorMessage::CapabilityBootstrap { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
+        }
+        CoordinatorMessage::CapabilityBootstrapTerminal { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
+        }
+        CoordinatorMessage::Shutdown => {}
+    }
+}
+
+fn reject_message_stopped(message: CoordinatorMessage) {
+    match message {
+        CoordinatorMessage::AdministrationAudit { completion, .. } => {
+            let _ = completion.send(Err(AdministrationAuditExecutionError::CoordinatorStopped));
+        }
+        CoordinatorMessage::Command { completion, .. } => {
+            let _ = completion.send(Err(CommandExecutionError::coordinator_stopped()));
+        }
+        CoordinatorMessage::ReadOnlyCommand { completion, .. } => {
+            let _ = completion.send(Err(CommandExecutionError::coordinator_stopped()));
+        }
+        CoordinatorMessage::IdempotencyInspection { completion, .. } => {
+            let _ = completion.send(Err(CommandIdempotencyInspectionError::coordinator_stopped()));
+        }
+        CoordinatorMessage::CatalogDeployment { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
+        }
+        CoordinatorMessage::QueryModuleDeployment { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
+        }
+        CoordinatorMessage::CapabilityCreate { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
+        }
+        CoordinatorMessage::CapabilityRevoke { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
+        }
+        CoordinatorMessage::CapabilityBootstrap { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
+        }
+        CoordinatorMessage::CapabilityBootstrapTerminal { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
+        }
+        CoordinatorMessage::Shutdown => {}
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2794,11 +3375,14 @@ fn command_grouping_class(message: &CoordinatorMessage) -> CommandGroupingClass 
 }
 
 #[derive(Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
 struct CommandPositionSelection {
     selected: Vec<bool>,
     encountered_barrier: bool,
 }
 
+/// Retained for equivalence tests against the pre-pipeline selection model.
+#[cfg_attr(not(test), allow(dead_code))]
 fn select_command_positions(
     classes: &[CommandGroupingClass],
     available: usize,
@@ -2919,6 +3503,11 @@ impl Drop for StoppedLifecycle {
             }
         }
         self.submission_gate.close();
+        #[cfg(test)]
+        {
+            let seq = TEST_DROP_SEQ.fetch_add(1, Ordering::AcqRel) + 1;
+            TEST_STOPPED_LIFECYCLE_DROP_SEQ.store(seq, Ordering::Release);
+        }
     }
 }
 
@@ -3352,6 +3941,10 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "audit_executor/form_next_unit_tests.rs"]
+mod form_next_unit_tests;
 
 #[cfg(test)]
 #[path = "audit_executor/actor_tests.rs"]

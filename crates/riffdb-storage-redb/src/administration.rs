@@ -1342,6 +1342,18 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
     }
 
+    fn append_service_audit_fused_pair(
+        &mut self,
+        started: &ServiceAuditAppendIntentV1,
+        terminal: &ServiceAuditAppendIntentV1,
+    ) -> Result<(), StorageError> {
+        let access = self.begin_write()?;
+        let _records =
+            stage_service_audit_group_in_write(&access, &[started.clone(), terminal.clone()])?;
+        access.commit_for(RedbTestOperation::ServiceAudit)?;
+        Ok(())
+    }
+
     fn append_service_audit_group(
         &mut self,
         intents: &[ServiceAuditAppendIntentV1],
@@ -1360,11 +1372,19 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
         let access = self.begin_write()?;
         let transaction = access.transaction()?;
         let allocator = validate_administration_tail(transaction)?;
+        let distinct_requests = intents
+            .iter()
+            .map(ServiceAuditAppendIntentV1::request_id)
+            .collect::<BTreeSet<_>>();
+        let sequences_by_request = access.service_audit_sequences_for(&distinct_requests)?;
         let mut allowed = Vec::with_capacity(intents.len());
         for intent in intents {
             let audit = transaction.open_table(AUDIT).map_err(table_error)?;
-            let sequences = access.service_audit_sequences(intent.request_id())?;
-            let lifecycle = service_lifecycle(&audit, intent.request_id(), &sequences)?;
+            let sequences = sequences_by_request
+                .get(&intent.request_id())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let lifecycle = service_lifecycle(&audit, intent.request_id(), sequences)?;
             drop(audit);
             let phase_allowed = match lifecycle {
                 None => match intent.phase() {
@@ -1512,25 +1532,28 @@ pub(crate) fn stage_service_audit_group_in_write(
     let maximum_rows = riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
         .checked_mul(2)
         .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+    let distinct_requests = intents
+        .iter()
+        .map(ServiceAuditAppendIntentV1::request_id)
+        .collect::<BTreeSet<_>>();
     if intents.is_empty()
         || intents.len() > maximum_rows
-        || intents
-            .iter()
-            .map(ServiceAuditAppendIntentV1::request_id)
-            .collect::<BTreeSet<_>>()
-            .len()
-            > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+        || distinct_requests.len() > riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
     {
         return Err(storage_error(StorageErrorKind::LimitExceeded));
     }
+    let sequences_by_request = access.service_audit_sequences_for(&distinct_requests)?;
     let transaction = access.transaction()?;
     let allocator = validate_administration_tail(transaction)?;
     let mut audit = transaction.open_table(AUDIT).map_err(table_error)?;
     let mut fused_starts: BTreeMap<riffdb_types::RequestId, ServiceAuditAppendIntentV1> =
         BTreeMap::new();
     for intent in intents {
-        let sequences = access.service_audit_sequences(intent.request_id())?;
-        let lifecycle = service_lifecycle(&audit, intent.request_id(), &sequences)?;
+        let sequences = sequences_by_request
+            .get(&intent.request_id())
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let lifecycle = service_lifecycle(&audit, intent.request_id(), sequences)?;
         let had_fused_start = fused_starts.contains_key(&intent.request_id());
         let allowed = if let Some(started) = fused_starts.get(&intent.request_id()) {
             intent.phase() != ServiceAuditPhaseV1::Started
@@ -2517,6 +2540,101 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(sequences, vec![1, 2, 3]);
         assert_eq!(audit_count(&ports), 3);
+    }
+
+    #[test]
+    fn staged_audit_group_uses_exactly_one_begin_read_for_sequence_lookup() {
+        let path = TestPath::new("audit-group-one-begin-read");
+        let controller = crate::hooks::RedbTestController::count_audit_sequence_begin_reads();
+        let mut store = RedbStore::open_with_test_controller(&path.0, controller.clone())
+            .expect("open controlled database");
+        store
+            .initialize_database(database_id())
+            .expect("initialize");
+        let dormant = crate::store::RedbDormantPorts {
+            shared: store.shared,
+        };
+        let ports = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate");
+        let intents = [
+            command_audit(1, ServiceAuditPhaseV1::Started, 1),
+            command_audit(1, ServiceAuditPhaseV1::Failed, 2),
+            command_audit(2, ServiceAuditPhaseV1::Started, 3),
+            command_audit(2, ServiceAuditPhaseV1::Failed, 4),
+            command_audit(3, ServiceAuditPhaseV1::Started, 5),
+            command_audit(3, ServiceAuditPhaseV1::Failed, 6),
+        ];
+        let before = controller.audit_sequence_begin_reads();
+        let access = ports.begin_write().expect("begin write");
+        let records =
+            stage_service_audit_group_in_write(&access, &intents).expect("stage fused group");
+        assert_eq!(records.len(), 6);
+        assert_eq!(
+            controller
+                .audit_sequence_begin_reads()
+                .saturating_sub(before),
+            1,
+            "grouped sequence lookup must open exactly one read snapshot"
+        );
+        access.abort().expect("abort uncommitted staging");
+    }
+
+    #[test]
+    fn service_audit_group_uses_exactly_one_begin_read_for_sequence_lookup() {
+        let path = TestPath::new("audit-group-append-one-begin-read");
+        let controller = crate::hooks::RedbTestController::count_audit_sequence_begin_reads();
+        let mut store = RedbStore::open_with_test_controller(&path.0, controller.clone())
+            .expect("open controlled database");
+        store
+            .initialize_database(database_id())
+            .expect("initialize");
+        let dormant = crate::store::RedbDormantPorts {
+            shared: store.shared,
+        };
+        let mut ports = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate");
+        let intents = [denied_audit(20), denied_audit(21), denied_audit(22)];
+        let before = controller.audit_sequence_begin_reads();
+        ports
+            .append_service_audit_group(&intents)
+            .expect("append group");
+        assert_eq!(
+            controller
+                .audit_sequence_begin_reads()
+                .saturating_sub(before),
+            1,
+            "group append must open exactly one sequence-lookup snapshot"
+        );
+    }
+
+    #[test]
+    fn fused_pair_appends_both_rows_in_one_transaction() {
+        let (_path, mut ports) = initialized_ports("fused-pair-happy");
+        let started = command_audit(1, ServiceAuditPhaseV1::Started, 1);
+        let terminal = command_audit(1, ServiceAuditPhaseV1::Failed, 2);
+        ports
+            .append_service_audit_fused_pair(&started, &terminal)
+            .expect("fused pair");
+        assert_eq!(audit_count(&ports), 2);
+    }
+
+    #[test]
+    fn fused_pair_against_an_existing_started_fails_closed_and_writes_nothing() {
+        let (_path, mut ports) = initialized_ports("fused-pair-conflict");
+        let started = command_audit(2, ServiceAuditPhaseV1::Started, 1);
+        ports
+            .append_service_audit(&started)
+            .expect("standalone started");
+        let before = audit_count(&ports);
+        let again_started = command_audit(2, ServiceAuditPhaseV1::Started, 3);
+        let terminal = command_audit(2, ServiceAuditPhaseV1::Failed, 4);
+        let err = ports
+            .append_service_audit_fused_pair(&again_started, &terminal)
+            .expect_err("pair against existing Started must fail closed");
+        assert_eq!(err.kind(), StorageErrorKind::InvariantViolation);
+        assert_eq!(audit_count(&ports), before);
     }
 
     #[test]

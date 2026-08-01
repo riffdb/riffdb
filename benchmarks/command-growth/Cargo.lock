@@ -303,9 +303,9 @@ dependencies = [
 
 [[package]]
 name = "hybrid-array"
-version = "0.4.13"
+version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "818356c5132c1fede50f837ca96afbe78ff42413047f4abb886217845e1b6c8c"
+checksum = "707114b52a152fa7bdb290cd7cd5912d9467273b6d74e21b8d81aca1f8533f6b"
 dependencies = [
  "typenum",
 ]
@@ -620,6 +620,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "riffdb-bench-root"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+]
+
+[[package]]
 name = "riffdb-catalog"
 version = "0.1.0"
 dependencies = [
@@ -634,6 +641,7 @@ dependencies = [
 name = "riffdb-command-growth"
 version = "0.1.0"
 dependencies = [
+ "riffdb-bench-root",
  "riffdb-storage-redb",
 ]
 

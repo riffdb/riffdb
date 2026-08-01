@@ -12,12 +12,12 @@ use riffdb_idempotency::{
     IdempotencyDigestCandidatesV1, IdempotencyDigestError, IdempotencyDigestProvider,
 };
 use riffdb_policy::{
-    AuthorizationError, AuthorizationTelemetry, CurrentAuthorizer, Decision,
-    OfflineMaintenanceAuthorizationRequest, OfflineMaintenanceDecision, OperationRequest,
-    TrustedAudienceCatalog,
+    AuthorizationClock, AuthorizationError, AuthorizationTelemetry, CapabilityViewCheckpoint,
+    CurrentAuthorizer, Decision, OfflineMaintenanceAuthorizationRequest,
+    OfflineMaintenanceDecision, OperationRequest, TrustedAudienceCatalog,
 };
 use riffdb_service::{CapabilityTokenIssueError, CapabilityTokenIssuer, CurrentPolicyPort};
-use riffdb_storage_api::IdempotencyKeyDigest;
+use riffdb_storage_api::{CapabilityReader, IdempotencyKeyDigest};
 use riffdb_types::{DatabaseId, Environment, IdempotencyKey};
 
 use crate::clocks::{ServerAuthenticationClock, ServerAuthorizationClock};
@@ -140,6 +140,21 @@ impl CurrentPolicyPort for ServerCurrentPolicyPort {
         )
         .with_trusted_audience_catalog(&self.trusted_audiences);
         authorizer.authorize_offline_maintenance(principal, request)
+    }
+
+    fn capability_view_generation(&self) -> Option<u64> {
+        CapabilityReader::capability_view_generation(&self.storage)
+    }
+
+    fn capability_view_checkpoint(&self) -> Option<CapabilityViewCheckpoint> {
+        // Sampled from the same authorization clock `authorize` hands to
+        // `CurrentAuthorizer`, so the validity-window clause a revision-checked
+        // reauthorization applies is exactly the clause a full evaluation would
+        // have applied. Either source failing yields `None`, which forces the
+        // caller into a full evaluation.
+        let generation = CapabilityReader::capability_view_generation(&self.storage)?;
+        let now = AuthorizationClock::now(&self.clock).ok()?;
+        Some(CapabilityViewCheckpoint::new(generation, now))
     }
 }
 
@@ -318,5 +333,265 @@ mod tests {
         assert_send_sync::<ServerCurrentPolicyPort>();
         assert_send_sync::<ServerCapabilityTokenIssuer>();
         assert_send_sync::<ServerIdempotencyDigestProvider>();
+    }
+
+    /// The production revision-checked reauthorization chain, end to end.
+    ///
+    /// Real redb database → real `SharedRedbOperationalPorts` current
+    /// capability view → real `CurrentCapabilityViewState::publish` under the
+    /// view write lock → real `CapabilityReader::capability_view_generation` →
+    /// real `ServerCurrentPolicyPort::capability_view_checkpoint` → real
+    /// `AuthorizedOperation::reissue_for_unchanged_view`.
+    ///
+    /// Both dimensions of the reissue rule are exercised against that chain:
+    /// a real revocation moves the generation, and a real clock advance past
+    /// the capability's expiry invalidates the retained validity window even
+    /// though nothing was published.
+    #[test]
+    fn production_capability_view_chain_refuses_reissue_after_revoke_and_after_expiry() {
+        use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicI64, Ordering};
+
+        use riffdb_auth::{
+            CapabilityAuthenticator, CapabilityDigestKeyProvider, CredentialAuthenticator,
+            NoopAuthenticationTelemetry, OpaqueCredential,
+        };
+        use riffdb_policy::{Decision, NoopAuthorizationTelemetry, OperationRequest};
+        use riffdb_service::CurrentPolicyPort;
+        use riffdb_storage_api::{
+            AuditPrincipalV1, BootstrapDigestCandidatesV1, BootstrapServiceAuditStartV1,
+            CapabilityAdministrationTransactionPort, CapabilityBootstrapAdministrationRepository,
+            CapabilityBootstrapIntentV1, CapabilityBootstrapResult, CapabilityGrantV1,
+            CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityRequestedRecordV1,
+            CapabilityRevokeAwaitingDecision, CapabilityRevokeCandidateTransaction,
+            CapabilityRevokeCandidateV1, CapabilityRevokeIntentV1, CapabilityRevokeResult,
+            PartitionScopeV1,
+        };
+        use riffdb_types::{
+            ActorId, ActorKind, Audience, CapabilityId, CapabilityPermissionKindV1,
+            RevocationReasonCodeV1, ServiceAuditTargetV1, ServiceAuditTargetsV1,
+            ServiceIngressKindV1, TenantScope, Timestamp,
+        };
+
+        use crate::clocks::ProductionWallClocks;
+        use crate::real_storage_support::RealStorage;
+
+        const ISSUED_SECONDS: i64 = 1_700_000_000;
+        const LIFETIME_SECONDS: u32 = 3_600;
+
+        let real = RealStorage::open("capability-view-chain");
+        let mut storage = real.storage.clone();
+        let environment = Environment::new("capability-view-chain").expect("environment");
+        let audience = Audience::new("riffdb-test").expect("audience");
+
+        // A real digest-key document and a real issued capability token, so the
+        // record authenticates through the production authenticator.
+        let keys = Arc::new(
+            CapabilityDigestKeyProvider::parse_document(
+                b"riffdb-capability-digest-keys-v1\n1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n",
+            )
+            .expect("digest key document"),
+        );
+        let issued = riffdb_auth::issue_capability_token(&SystemEntropy, keys.as_ref())
+            .expect("issue capability token");
+        let token_text = issued.text().expose_secret().to_owned();
+        let token_digest = issued.digest();
+
+        let capability_id = CapabilityId::from_unix_milliseconds_and_random(9, [0x9c; 10])
+            .expect("capability UUIDv7");
+        let request_id = riffdb_types::RequestId::from_unix_milliseconds_and_random(9, [0x9d; 10])
+            .expect("request UUIDv7");
+        let grant = CapabilityGrantV1::new(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            CapabilityPermissionsV1::new(vec![
+                CapabilityPermissionV1::unparameterized(
+                    CapabilityPermissionKindV1::AdministerCapabilities,
+                )
+                .expect("administer permission"),
+                CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ReadContract)
+                    .expect("read-contract permission"),
+            ])
+            .expect("canonical permissions"),
+            Vec::new(),
+            NonZeroU16::new(10).expect("row limit"),
+            Vec::new(),
+        )
+        .expect("bounded grant");
+        let issued_at = Timestamp::new(ISSUED_SECONDS, 0).expect("issued at");
+        let expires_at =
+            Timestamp::new(ISSUED_SECONDS + i64::from(LIFETIME_SECONDS), 0).expect("expires at");
+        let bootstrap = CapabilityBootstrapIntentV1::new(
+            capability_id,
+            CapabilityRequestedRecordV1::new(
+                real.database_id,
+                environment.clone(),
+                ActorId::new("view-chain-operator").expect("principal"),
+                ActorKind::Human,
+                NonZeroU32::new(LIFETIME_SECONDS).expect("lifetime"),
+                vec![audience.clone()],
+                grant,
+            )
+            .expect("requested record"),
+            BootstrapDigestCandidatesV1::new(vec![token_digest], token_digest)
+                .expect("digest candidates"),
+            issued_at,
+            expires_at,
+            BootstrapServiceAuditStartV1::new(
+                request_id,
+                issued_at,
+                ServiceIngressKindV1::Grpc,
+                ServiceAuditTargetsV1::new([ServiceAuditTargetV1::Capability(capability_id)])
+                    .expect("audit targets"),
+                None,
+            )
+            .expect("bootstrap start"),
+        )
+        .expect("bootstrap intent");
+
+        // Production bootstrap publishes the record under the view write lock.
+        let generation_before_bootstrap =
+            CapabilityReader::capability_view_generation(&storage).expect("published generation");
+        let created = storage
+            .bootstrap_capability(&bootstrap)
+            .expect("bootstrap the capability in real storage");
+        assert!(matches!(
+            created,
+            CapabilityBootstrapResult::BootstrapCreated { .. }
+        ));
+        let generation_after_bootstrap =
+            CapabilityReader::capability_view_generation(&storage).expect("published generation");
+        assert_ne!(
+            generation_before_bootstrap, generation_after_bootstrap,
+            "a real bootstrap publish must move the capability-view generation"
+        );
+
+        let clock_seconds = Arc::new(AtomicI64::new(ISSUED_SECONDS + 10));
+        let clocks = ProductionWallClocks::settable(Arc::clone(&clock_seconds));
+        let principal = CapabilityAuthenticator::new(
+            &storage,
+            keys.as_ref(),
+            &clocks.authentication(),
+            &NoopAuthenticationTelemetry,
+        )
+        .authenticate(
+            OpaqueCredential::new(&token_text),
+            &AuthenticationContext::new(real.database_id, environment.clone(), audience.clone()),
+        )
+        .expect("the issued token authenticates against real storage");
+
+        let port = ServerCurrentPolicyPort::new(
+            real.storage.clone(),
+            clocks.authorization(),
+            real.database_id,
+            environment,
+            TrustedAudienceCatalog::new(vec![audience]).expect("trusted audience"),
+            Arc::new(NoopAuthorizationTelemetry),
+        );
+
+        // Baseline: capture the generation before evaluating, exactly as
+        // `begin_invocation` does, then take the full evaluation.
+        let baseline = port
+            .capability_view_generation()
+            .expect("real port publishes a generation");
+        let request = OperationRequest::get_active_contract();
+        let Ok(Decision::Allow(proof)) = port.authorize(&principal, request.clone()) else {
+            panic!("the bootstrapped capability must be allowed to read the active contract");
+        };
+
+        // Unchanged world, unchanged clock: the reissue rule accepts.
+        let unchanged = port.capability_view_checkpoint().expect("live checkpoint");
+        assert_eq!(unchanged.generation(), baseline);
+        assert!(
+            proof
+                .reissue_for_unchanged_view(baseline, unchanged, &request)
+                .is_some(),
+            "an unchanged view inside the validity window must reissue"
+        );
+
+        // Time dimension: nothing is published, so the generation is unchanged,
+        // but the retained validity window no longer admits the clock.
+        clock_seconds.store(
+            ISSUED_SECONDS + i64::from(LIFETIME_SECONDS) + 1,
+            Ordering::Release,
+        );
+        let expired = port.capability_view_checkpoint().expect("live checkpoint");
+        assert_eq!(
+            expired.generation(),
+            baseline,
+            "no publish happened, so the generation must not move"
+        );
+        assert!(
+            proof
+                .reissue_for_unchanged_view(baseline, expired, &request)
+                .is_none(),
+            "an expired capability must never be reissued on an unchanged generation"
+        );
+        assert!(
+            matches!(
+                port.authorize(&principal, request.clone()),
+                Ok(Decision::Deny(_))
+            ),
+            "full evaluation must also deny the expired capability"
+        );
+        clock_seconds.store(ISSUED_SECONDS + 10, Ordering::Release);
+
+        // Generation dimension: revoke through the production revoke
+        // transaction, which publishes the revoked record under the view write
+        // lock inside `commit_revoke`.
+        let (awaiting, current) = storage
+            .begin_capability_revoke(CapabilityRevokeCandidateV1::new(
+                capability_id,
+                request_id,
+                AuditPrincipalV1::new(
+                    ActorId::new("view-chain-operator").expect("principal"),
+                    ActorKind::Human,
+                    capability_id,
+                    NonZeroU64::MIN,
+                ),
+                None,
+                RevocationReasonCodeV1::Requested,
+            ))
+            .expect("begin the real revoke transaction")
+            .read_transaction_current()
+            .expect("read transaction-current capability state");
+        let revoked = awaiting
+            .commit_revoke(CapabilityRevokeIntentV1::new(
+                capability_id,
+                current
+                    .target()
+                    .expect("the bootstrapped target is transaction-current")
+                    .revision(),
+                request_id,
+                Timestamp::new(ISSUED_SECONDS + 20, 0).expect("revoked at"),
+                AuditPrincipalV1::new(
+                    ActorId::new("view-chain-operator").expect("principal"),
+                    ActorKind::Human,
+                    capability_id,
+                    NonZeroU64::MIN,
+                ),
+                None,
+                RevocationReasonCodeV1::Requested,
+            ))
+            .expect("commit the real revoke");
+        assert!(matches!(revoked, CapabilityRevokeResult::Revoked { .. }));
+
+        let after_revoke = port.capability_view_checkpoint().expect("live checkpoint");
+        assert_ne!(
+            after_revoke.generation(),
+            baseline,
+            "the production revoke publish must move the capability-view generation"
+        );
+        assert!(
+            proof
+                .reissue_for_unchanged_view(baseline, after_revoke, &request)
+                .is_none(),
+            "a moved generation must never reissue"
+        );
+        assert!(
+            matches!(port.authorize(&principal, request), Ok(Decision::Deny(_))),
+            "the mandatory full re-evaluation must fail closed after revocation"
+        );
     }
 }

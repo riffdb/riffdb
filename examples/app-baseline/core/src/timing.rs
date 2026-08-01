@@ -9,6 +9,12 @@ pub struct SampleSet {
 }
 
 impl SampleSet {
+    /// Builds a sample set from explicit nanosecond samples (median reconstruction).
+    #[must_use]
+    pub fn from_nanos(samples_ns: Vec<u64>) -> Self {
+        Self { samples_ns }
+    }
+
     /// Records one sample.
     pub fn record(&mut self, elapsed: Duration) {
         let nanos = u64::try_from(elapsed.as_nanos()).expect("sample fits u64");

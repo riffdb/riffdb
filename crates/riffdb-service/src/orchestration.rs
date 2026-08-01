@@ -55,6 +55,12 @@ pub(crate) struct BegunInvocation {
     started: bool,
     deferred_start: AtomicBool,
     initial_authorization: Box<AuthorizedOperation>,
+    /// Capability-view generation observed immediately *before* the begin evaluation.
+    ///
+    /// Only [`BegunInvocation::reauthorize_read`] consumes it. `None` when the
+    /// policy port publishes no generation, which permanently disables the
+    /// revision-checked path for this invocation.
+    policy_generation_at_begin: Option<u64>,
     lifecycle: Arc<OperationAuditLifecycle>,
 }
 
@@ -758,13 +764,62 @@ impl BegunInvocation {
             .await
     }
 
+    /// Performs the read pipeline's revision-checked reauthorization safe point.
+    ///
+    /// This is deliberately a *separate* entry point from
+    /// [`BegunInvocation::reauthorize`]: the revision-checked shortcut is
+    /// available only to the symbolic read pipeline. Commit, command,
+    /// contract, discovery, and administration reauthorization keep
+    /// unconditional full evaluation, including the mandatory recheck after a
+    /// capacity wait.
+    ///
+    /// The safe point still executes. It observes live current state through
+    /// [`CurrentPolicyPort::capability_view_checkpoint`] and reissues the begin
+    /// proof only when [`AuthorizedOperation::reissue_for_unchanged_view`]
+    /// proves the world (generation), the clock (validity window), and the
+    /// request are all still what the full evaluation decided against.
+    /// Anything else falls through to a byte-identical full re-evaluation.
+    pub(crate) async fn reauthorize_read(
+        &self,
+        service: &RiffDbServiceInner,
+        context: &RequestContext,
+    ) -> ServiceResult<Box<AuthorizedOperation>> {
+        let request = self.request.clone();
+        self.check_reauthorization_preconditions(service, context, &request)
+            .await?;
+        if let Some(baseline) = self.policy_generation_at_begin
+            && let Some(observed) = service.providers.policy.capability_view_checkpoint()
+            && let Some(proof) = self
+                .initial_authorization
+                .reissue_for_unchanged_view(baseline, observed, &request)
+        {
+            return Ok(Box::new(proof));
+        }
+        self.full_reauthorize(service, context, request).await
+    }
+
     /// Reauthorizes newly loaded exact facts for the same audited operation.
+    ///
+    /// Always a full evaluation; no revision-checked shortcut applies here.
     pub(crate) async fn reauthorize_request(
         &self,
         service: &RiffDbServiceInner,
         context: &RequestContext,
         request: OperationRequest,
     ) -> ServiceResult<Box<AuthorizedOperation>> {
+        self.check_reauthorization_preconditions(service, context, &request)
+            .await?;
+        self.full_reauthorize(service, context, request).await
+    }
+
+    /// Applies the proof-shape, cancellation, and deadline gates shared by
+    /// every reauthorization entry point.
+    async fn check_reauthorization_preconditions(
+        &self,
+        service: &RiffDbServiceInner,
+        context: &RequestContext,
+        request: &OperationRequest,
+    ) -> ServiceResult<()> {
         if request.operation() != self.operation {
             if self
                 .finish_reauthorization_phase(service, context, ServiceAuditPhaseV1::Failed)
@@ -795,7 +850,16 @@ impl BegunInvocation {
             }
             return Err(ServiceFailure::DeadlineExceeded);
         }
+        Ok(())
+    }
 
+    /// Reloads exact current facts and re-decides — the historical safe point.
+    async fn full_reauthorize(
+        &self,
+        service: &RiffDbServiceInner,
+        context: &RequestContext,
+        request: OperationRequest,
+    ) -> ServiceResult<Box<AuthorizedOperation>> {
         match service
             .providers
             .policy
@@ -871,9 +935,43 @@ impl BegunInvocation {
         phase: ServiceAuditPhaseV1,
         link: ServiceAuditLinkV1,
     ) -> Result<(), AuditAppendFailure> {
-        self.ensure_deferred_start(service, context).await?;
         if !self.started {
             return Ok(());
+        }
+        // When a deferred Started is still pending, fuse Started+terminal into
+        // one coordinator message and one durable transition (PERF-006 replay).
+        if self.deferred_start.load(Ordering::Acquire) {
+            let started_input = ServiceAuditInput::new(
+                context,
+                self.operation,
+                ServiceAuditPhaseV1::Started,
+                self.targets.clone(),
+                self.approval_id.clone(),
+                ServiceAuditLinkV1::None,
+            )
+            .map_err(|_| AuditAppendFailure::subsystem())?;
+            let terminal_input = ServiceAuditInput::new(
+                context,
+                self.operation,
+                phase,
+                self.targets.clone(),
+                self.approval_id.clone(),
+                link,
+            )
+            .map_err(|_| AuditAppendFailure::subsystem())?;
+            self.lifecycle
+                .begin_terminal(phase, link)
+                .map_err(|_| AuditAppendFailure::subsystem())?;
+            let control = terminal_audit_control(context.control());
+            let result = service
+                .append_prepared_audit_pair(&control, started_input, terminal_input)
+                .await;
+            if result.is_ok() {
+                self.lifecycle.mark_durable_start();
+                self.deferred_start.store(false, Ordering::Release);
+            }
+            self.lifecycle.finish_terminal(result.is_ok());
+            return result;
         }
         let input = ServiceAuditInput::new(
             context,
@@ -891,30 +989,6 @@ impl BegunInvocation {
         let result = service.append_prepared_audit(&control, input).await;
         self.lifecycle.finish_terminal(result.is_ok());
         result
-    }
-
-    async fn ensure_deferred_start(
-        &self,
-        service: &RiffDbServiceInner,
-        context: &RequestContext,
-    ) -> Result<(), AuditAppendFailure> {
-        if !self.started || !self.deferred_start.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        service
-            .append_audit(
-                context,
-                self.operation,
-                ServiceAuditPhaseV1::Started,
-                self.targets.clone(),
-                self.approval_id.clone(),
-                ServiceAuditLinkV1::None,
-                AuditAppendControl::Terminal,
-            )
-            .await?;
-        self.lifecycle.mark_durable_start();
-        self.deferred_start.store(false, Ordering::Release);
-        Ok(())
     }
 
     async fn finish_reauthorization_phase(
@@ -1200,6 +1274,17 @@ impl RiffDbServiceInner {
             return Err(ServiceFailure::DeadlineExceeded);
         }
 
+        // Capture generation *before* the begin evaluation. A concurrent
+        // publish (create/update/revoke/bootstrap) that races the evaluation
+        // either:
+        //   - is already visible to authorize (decision reflects it), or
+        //   - lands after this load so recheck sees a moved generation and
+        //     falls through to full re-evaluation.
+        // Capturing after authorize would allow a revoke between the decision
+        // and the generation load to stamp a post-revoke generation onto an
+        // Allow decision, wrongly enabling the cheap reissue path.
+        let policy_generation_at_begin = self.providers.policy.capability_view_generation();
+
         let authorization = match self
             .providers
             .policy
@@ -1312,6 +1397,7 @@ impl RiffDbServiceInner {
             started,
             deferred_start: AtomicBool::new(defer_command_start && started),
             initial_authorization: authorization,
+            policy_generation_at_begin,
             lifecycle,
         })
     }
@@ -1394,6 +1480,37 @@ impl RiffDbServiceInner {
         let receipt = permit
             .submit(Box::new(input))
             .map_err(|_| AuditAppendFailure::subsystem())?;
+        self.await_audit_receipt(receipt).await
+    }
+
+    async fn append_prepared_audit_pair(
+        &self,
+        control: &RequestControl,
+        started: ServiceAuditInput,
+        terminal: ServiceAuditInput,
+    ) -> Result<(), AuditAppendFailure> {
+        let permit = wait_with_control(
+            control,
+            self.providers.deadline_scheduler.as_ref(),
+            self.executors.audit.reserve_capacity(),
+        )
+        .await
+        .map_err(|error: ControlledWaitError| match error {
+            ControlledWaitError::Cancelled | ControlledWaitError::DeadlineExceeded => {
+                AuditAppendFailure::request_scoped()
+            }
+        })?
+        .map_err(|_| AuditAppendFailure::subsystem())?;
+        let receipt = permit
+            .submit_fused_pair(Box::new(started), Box::new(terminal))
+            .map_err(|_| AuditAppendFailure::subsystem())?;
+        self.await_audit_receipt(receipt).await
+    }
+
+    async fn await_audit_receipt(
+        &self,
+        receipt: riffdb_commit::AdministrationAuditReceipt,
+    ) -> Result<(), AuditAppendFailure> {
         match receipt.completion().await {
             Ok(()) => {
                 self.audit_failures.reset();
@@ -1402,9 +1519,6 @@ impl RiffDbServiceInner {
             Err(error) => {
                 let fenced = matches!(error, AdministrationAuditExecutionError::CoordinatorFenced)
                     || self.executors.audit.lifecycle_state() == CoordinatorLifecycleState::Fenced;
-                // All coordinator-fenced / stopped / draining / durable-transition
-                // failures are subsystem-level; request-scoped causes never reach
-                // this arm (they map earlier via ControlledWaitError).
                 if fenced {
                     self.providers.health.fail_authoritative_readiness(
                         crate::AuthoritativeReadinessFailure::CoordinatorFenced,

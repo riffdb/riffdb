@@ -3,6 +3,8 @@
 
 //! Required-live process evidence for the WP-139 budget safety report.
 
+mod bench_root_support;
+
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
@@ -700,24 +702,11 @@ struct TemporaryDirectory {
 
 impl TemporaryDirectory {
     fn new() -> io::Result<Self> {
-        static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-
-        for _ in 0..1_024 {
-            let ordinal = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "riffdb-wp139-safety-{}-{ordinal}",
-                std::process::id()
-            ));
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "could not allocate a unique WP-139 test directory",
-        ))
+        let dir = bench_root_support::unique_bench_dir("wp139-safety");
+        let path = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        fs::create_dir_all(&path)?;
+        Ok(Self { path })
     }
 
     fn path(&self) -> &Path {

@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use riffdb_catalog::{
@@ -57,26 +59,49 @@ const MAX_HOT_HISTORICAL_CONTRACTS: usize = 4_096;
 const MAX_HOT_QUERY_MODULES: usize = 4_096;
 const MAX_HOT_EXECUTABLE_PLANS: usize = 4_096;
 
+/// Counts blocking-pool dispatches for query-module lookup.
+///
+/// Test-only observation of whether the inline path served a request. Compiled
+/// out of normal builds so no shipped configuration carries the counter.
+#[cfg(test)]
+static QUERY_MODULE_POOL_DISPATCHES: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+fn note_query_module_pool_dispatch() {
+    QUERY_MODULE_POOL_DISPATCHES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+const fn note_query_module_pool_dispatch() {}
+
+/// Returns the number of query-module blocking-pool dispatches observed.
+#[cfg(test)]
+fn query_module_pool_dispatch_count() -> u64 {
+    QUERY_MODULE_POOL_DISPATCHES.load(Ordering::Relaxed)
+}
+
 #[derive(Default)]
 struct ActiveCatalogView {
-    snapshot: Option<ActiveCatalogSnapshot>,
+    /// Published snapshot is immutable; publication replaces the Arc.
+    /// Cache hits hand out `Arc::clone` instead of cloning catalog contents.
+    snapshot: Option<Arc<ActiveCatalogSnapshot>>,
 }
 
 impl ActiveCatalogView {
     fn get(
         &self,
         pointer: Option<&ActiveCatalogPointerV1>,
-    ) -> Option<Option<ActiveCatalogSnapshot>> {
+    ) -> Option<Option<Arc<ActiveCatalogSnapshot>>> {
         match (pointer, self.snapshot.as_ref()) {
             (None, None) => Some(None),
             (Some(pointer), Some(snapshot)) if snapshot.pointer() == pointer => {
-                Some(Some(snapshot.clone()))
+                Some(Some(Arc::clone(snapshot)))
             }
             _ => None,
         }
     }
 
-    fn replace(&mut self, snapshot: Option<ActiveCatalogSnapshot>) {
+    fn replace(&mut self, snapshot: Option<Arc<ActiveCatalogSnapshot>>) {
         self.snapshot = snapshot;
     }
 }
@@ -91,7 +116,8 @@ fn read_active_catalog_cached<R: CatalogRepository>(
         .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?
         .get(durable_pointer.as_ref())
     {
-        return Ok(snapshot);
+        // Arc clone only — consumers receive a shared published snapshot.
+        return Ok(snapshot.map(|shared| ActiveCatalogSnapshot::clone(shared.as_ref())));
     }
 
     // A cache miss always takes the complete catalog validation path. The
@@ -99,10 +125,11 @@ fn read_active_catalog_cached<R: CatalogRepository>(
     // activation yields either the prior or successor complete snapshot,
     // never a pointer/bundle mixture.
     let snapshot = ActiveCatalogSnapshot::read(repository)?;
+    let published = snapshot.as_ref().map(|value| Arc::new(value.clone()));
     cache
         .lock()
         .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?
-        .replace(snapshot.clone());
+        .replace(published);
     Ok(snapshot)
 }
 
@@ -216,6 +243,9 @@ pub(crate) struct ServerCatalogReadPort {
         Option<ValidatedQueryModule>,
         QueryModuleReadError,
     >,
+    /// Shared with the blocking executor for non-blocking cache-hit inline lookup.
+    module_storage: SharedRedbOperationalPorts,
+    module_cache: Arc<Mutex<QueryModulePlanCache>>,
 }
 
 impl ServerCatalogReadPort {
@@ -291,42 +321,15 @@ impl ServerCatalogReadPort {
 
         let module_storage = storage.clone();
         let module_cache = Arc::new(Mutex::new(QueryModulePlanCache::default()));
+        let pool_module_storage = module_storage.clone();
+        let pool_module_cache = Arc::clone(&module_cache);
         let query_module = driver.executor(move |(contract, selected): QueryModuleReadRequest| {
-            let selected = match selected {
-                Some(module_hash) => Some(module_hash),
-                None => QueryModuleRepository::read_active_query_module(
-                    &module_storage,
-                    contract.lineage(),
-                    contract.contract_version(),
-                    contract.bundle_hash(),
-                )
-                .map_err(map_query_module_storage)?
-                .map(|pointer| pointer.module_hash()),
-            };
-            let Some(module_hash) = selected else {
-                return Ok(None);
-            };
-            if let Some(module) = module_cache
-                .lock()
-                .map_err(|_| QueryModuleReadError::Integrity)?
-                .get(module_hash, &contract)
-            {
-                return Ok(Some(module));
-            }
-            let module = QueryModuleRepository::read_query_module(&module_storage, module_hash)
-                .map_err(map_query_module_storage)?
-                .map(|stored| {
-                    ValidatedQueryModule::from_stored(&stored, &contract)
-                        .map_err(map_query_module_catalog)
-                })
-                .transpose()?;
-            if let Some(module) = module.as_ref() {
-                module_cache
-                    .lock()
-                    .map_err(|_| QueryModuleReadError::Integrity)?
-                    .insert(module.clone());
-            }
-            Ok(module)
+            resolve_query_module_on_pool(
+                &pool_module_storage,
+                &pool_module_cache,
+                contract,
+                selected,
+            )
         });
 
         let deployment = driver.executor(
@@ -344,6 +347,8 @@ impl ServerCatalogReadPort {
             executable_plan,
             deployment,
             query_module,
+            module_storage,
+            module_cache,
         }
     }
 }
@@ -414,6 +419,17 @@ impl QueryModuleReadPort for ServerCatalogReadPort {
         control: &'a RequestControl,
         contract: ValidatedContractBundle,
     ) -> PortFuture<'a, Option<ValidatedQueryModule>, QueryModuleReadError> {
+        // Inline fast path. Admission control runs first (a draining, stopping,
+        // cancelled, or deadline-exceeded request must not be served from
+        // cache), then process-local state only. Anything else — including
+        // every error — goes to the blocking pool unchanged.
+        if self.query_module.precheck(control).is_ok()
+            && let Some(module) =
+                try_cached_query_module(&self.module_storage, &self.module_cache, &contract, None)
+        {
+            return Box::pin(async move { Ok(module) });
+        }
+        note_query_module_pool_dispatch();
         submit_query_module(self.query_module.reserve_async(control), (contract, None))
     }
 
@@ -423,11 +439,99 @@ impl QueryModuleReadPort for ServerCatalogReadPort {
         contract: ValidatedContractBundle,
         module_hash: QueryModuleHash,
     ) -> PortFuture<'a, Option<ValidatedQueryModule>, QueryModuleReadError> {
+        if self.query_module.precheck(control).is_ok()
+            && let Some(module) = try_cached_query_module(
+                &self.module_storage,
+                &self.module_cache,
+                &contract,
+                Some(module_hash),
+            )
+        {
+            return Box::pin(async move { Ok(module) });
+        }
+        note_query_module_pool_dispatch();
         submit_query_module(
             self.query_module.reserve_async(control),
             (contract, Some(module_hash)),
         )
     }
+}
+
+/// Answers a query-module lookup from process-local state, or declines.
+///
+/// This is the inline fast path and it is deliberately incapable of failing.
+/// It performs no storage I/O, acquires no write lock, and never blocks: it
+/// reads the already-resident active-module pointer with `try_read` and the
+/// compiled-plan cache with `try_lock`.
+///
+/// `Some(answer)` is a complete successful result — a cached compiled module,
+/// or `None` for an identity the view already knows has no active module.
+/// `None` means "not answerable here": the identity is not resident, the plan
+/// cache misses, a lock is contended or poisoned, or any other would-block
+/// condition. The caller then dispatches to the blocking pool, which owns
+/// every cold read, every compile, and therefore the entire error taxonomy.
+fn try_cached_query_module(
+    storage: &SharedRedbOperationalPorts,
+    cache: &Mutex<QueryModulePlanCache>,
+    contract: &ValidatedContractBundle,
+    selected: Option<QueryModuleHash>,
+) -> Option<Option<ValidatedQueryModule>> {
+    let module_hash = match selected {
+        Some(module_hash) => module_hash,
+        None => match storage.cached_active_query_module(
+            contract.lineage(),
+            contract.contract_version(),
+            contract.bundle_hash(),
+        )? {
+            Some(pointer) => pointer.module_hash(),
+            None => return Some(None),
+        },
+    };
+    let module = cache.try_lock().ok()?.get(module_hash, contract)?;
+    Some(Some(module))
+}
+
+/// Full query-module resolution for the blocking pool (unchanged semantics).
+fn resolve_query_module_on_pool(
+    storage: &SharedRedbOperationalPorts,
+    cache: &Mutex<QueryModulePlanCache>,
+    contract: ValidatedContractBundle,
+    selected: Option<QueryModuleHash>,
+) -> Result<Option<ValidatedQueryModule>, QueryModuleReadError> {
+    let selected = match selected {
+        Some(module_hash) => Some(module_hash),
+        None => QueryModuleRepository::read_active_query_module(
+            storage,
+            contract.lineage(),
+            contract.contract_version(),
+            contract.bundle_hash(),
+        )
+        .map_err(map_query_module_storage)?
+        .map(|pointer| pointer.module_hash()),
+    };
+    let Some(module_hash) = selected else {
+        return Ok(None);
+    };
+    if let Some(module) = cache
+        .lock()
+        .map_err(|_| QueryModuleReadError::Integrity)?
+        .get(module_hash, &contract)
+    {
+        return Ok(Some(module));
+    }
+    let module = QueryModuleRepository::read_query_module(storage, module_hash)
+        .map_err(map_query_module_storage)?
+        .map(|stored| {
+            ValidatedQueryModule::from_stored(&stored, &contract).map_err(map_query_module_catalog)
+        })
+        .transpose()?;
+    if let Some(module) = module.as_ref() {
+        cache
+            .lock()
+            .map_err(|_| QueryModuleReadError::Integrity)?
+            .insert(module.clone());
+    }
+    Ok(module)
 }
 
 impl fmt::Debug for ServerCatalogReadPort {
@@ -1999,5 +2103,363 @@ mod tests {
 
         assert_catalog::<ServerCatalogReadPort>();
         assert_authoritative::<ServerAuthoritativeReadPort>();
+    }
+
+    /// Cache hits share one published snapshot. Load-bearing assertion is
+    /// [`ActiveCatalogSnapshot::same_publication_as`] (Arc publication identity).
+    /// Outer `Arc::ptr_eq` on the view's hand-out is supporting evidence only.
+    #[test]
+    fn active_catalog_view_hands_out_the_same_arc_without_republish() {
+        use riffdb_contract_compiler::compile_contract_source;
+        use std::num::NonZeroU64;
+
+        use riffdb_storage_api::{
+            AuditPrincipalV1, CatalogActivationIntentV1, CatalogActivationResult,
+            CatalogAdministrationRepository, CatalogRepository,
+        };
+        use riffdb_types::{ActorId, ActorKind, CapabilityId, RequestId, Timestamp};
+
+        use crate::real_storage_support::RealStorage;
+
+        const CONTRACT: &str =
+            include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
+
+        let real = RealStorage::open("catalog-arc");
+        let mut storage = real.storage.clone();
+        let bundle = ValidatedContractBundle::from_compiler_bundle(
+            compile_contract_source(CONTRACT).expect("ticketdesk contract compiles"),
+        )
+        .expect("compiled bundle is catalog-valid");
+        let activated = CatalogAdministrationRepository::activate_catalog(
+            &mut storage,
+            &CatalogActivationIntentV1::new(
+                None,
+                bundle.to_stored().expect("encode contract bundle"),
+                RequestId::from_unix_milliseconds_and_random(1, [0x41; 10]).expect("request"),
+                AuditPrincipalV1::new(
+                    ActorId::new("catalog-arc").expect("actor"),
+                    ActorKind::Human,
+                    CapabilityId::from_unix_milliseconds_and_random(3, [0x3c; 10])
+                        .expect("capability"),
+                    NonZeroU64::MIN,
+                ),
+                Timestamp::new(1_000, 0).expect("timestamp"),
+                None,
+            ),
+        )
+        .expect("activate");
+        assert!(matches!(
+            activated,
+            CatalogActivationResult::Activated { .. }
+        ));
+
+        let cache = Mutex::new(ActiveCatalogView::default());
+        let first = read_active_catalog_cached(&storage, &cache)
+            .expect("first read")
+            .expect("active catalog present");
+        let second = read_active_catalog_cached(&storage, &cache)
+            .expect("warm hit")
+            .expect("active catalog present");
+        assert!(
+            first.same_publication_as(&second),
+            "two gets without republish must share one publication (same_publication_as)"
+        );
+        let pointer = storage
+            .read_active_catalog()
+            .expect("pointer")
+            .expect("active pointer");
+        let a = cache
+            .lock()
+            .expect("cache")
+            .get(Some(&pointer))
+            .expect("hit")
+            .expect("present");
+        let b = cache
+            .lock()
+            .expect("cache")
+            .get(Some(&pointer))
+            .expect("hit")
+            .expect("present");
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "view hand-out is Arc::clone (supporting identity evidence)"
+        );
+    }
+
+    /// Publication replaces the Arc: activate v1 → warm → activate v2 → reader
+    /// observes v2 under a different publication identity.
+    #[test]
+    fn active_catalog_cache_republish_makes_successor_visible() {
+        use riffdb_contract_compiler::{compile_contract_source, compile_contract_successor};
+        use std::num::NonZeroU64;
+
+        use riffdb_storage_api::{
+            AuditPrincipalV1, CatalogActivationIntentV1, CatalogActivationResult,
+            CatalogAdministrationRepository,
+        };
+        use riffdb_types::{ActorId, ActorKind, CapabilityId, RequestId, Timestamp};
+
+        use crate::real_storage_support::RealStorage;
+
+        const CONTRACT: &str =
+            include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
+
+        fn principal() -> AuditPrincipalV1 {
+            AuditPrincipalV1::new(
+                ActorId::new("catalog-republish").expect("actor"),
+                ActorKind::Human,
+                CapabilityId::from_unix_milliseconds_and_random(3, [0x3d; 10]).expect("capability"),
+                NonZeroU64::MIN,
+            )
+        }
+
+        let real = RealStorage::open("catalog-republish");
+        let mut storage = real.storage.clone();
+        let v1 = ValidatedContractBundle::from_compiler_bundle(
+            compile_contract_source(CONTRACT).expect("v1 compiles"),
+        )
+        .expect("v1 catalog-valid");
+        let activated = CatalogAdministrationRepository::activate_catalog(
+            &mut storage,
+            &CatalogActivationIntentV1::new(
+                None,
+                v1.to_stored().expect("encode v1"),
+                RequestId::from_unix_milliseconds_and_random(1, [0x51; 10]).expect("request"),
+                principal(),
+                Timestamp::new(1_000, 0).expect("timestamp"),
+                None,
+            ),
+        )
+        .expect("activate v1");
+        assert!(matches!(
+            activated,
+            CatalogActivationResult::Activated { .. }
+        ));
+
+        let cache = Mutex::new(ActiveCatalogView::default());
+        let warm_v1 = read_active_catalog_cached(&storage, &cache)
+            .expect("warm v1")
+            .expect("present");
+        assert_eq!(warm_v1.pointer().contract_version().get(), 1);
+
+        let successor_source = CONTRACT.replacen("version 1", "version 2", 1);
+        let v2 = ValidatedContractBundle::from_compiler_bundle(
+            compile_contract_successor(&successor_source, v1.bundle())
+                .expect("compatible successor"),
+        )
+        .expect("v2 catalog-valid");
+        let activated = CatalogAdministrationRepository::activate_catalog(
+            &mut storage,
+            &CatalogActivationIntentV1::new(
+                Some(v1.contract_version()),
+                v2.to_stored().expect("encode v2"),
+                RequestId::from_unix_milliseconds_and_random(2, [0x52; 10]).expect("request"),
+                principal(),
+                Timestamp::new(1_001, 0).expect("timestamp"),
+                None,
+            ),
+        )
+        .expect("activate v2");
+        assert!(matches!(
+            activated,
+            CatalogActivationResult::Activated { .. }
+        ));
+
+        let after = read_active_catalog_cached(&storage, &cache)
+            .expect("post-republish read")
+            .expect("present");
+        assert_eq!(after.pointer().contract_version().get(), 2);
+        assert!(
+            !warm_v1.same_publication_as(&after),
+            "successor publication must not share Arc identity with the prior active snapshot"
+        );
+    }
+
+    /// Real `ServerCatalogReadPort` over a real on-disk redb database with a
+    /// deployed query module.
+    ///
+    /// This is the only construction of the production catalog read port
+    /// outside `process_graph`, so it is the seam that makes the inline
+    /// plan-lookup path falsifiable: deleting the fast path makes the
+    /// "cache hit does not enter the pool" assertions fail, and serving the
+    /// fast path without admission control makes the drained-routing
+    /// assertion fail.
+    #[test]
+    fn real_catalog_read_port_serves_warm_plan_lookups_inline_and_pools_everything_else() {
+        use std::time::{Duration, Instant};
+
+        use riffdb_contract_compiler::compile_contract_source;
+        use riffdb_query_module::{
+            NamedQuerySource, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+        };
+        use std::num::NonZeroU64;
+
+        use riffdb_service::{
+            AuthoritativeReadinessFailure, QueryModuleReadPort, ServiceHealthHooks,
+        };
+        use riffdb_storage_api::{
+            AuditPrincipalV1, CatalogActivationIntentV1, CatalogActivationResult,
+            CatalogAdministrationRepository, QueryModuleActivationIntentV1,
+            QueryModuleActivationResult, QueryModuleActiveExpectationV1,
+            QueryModuleAdministrationRepository,
+        };
+        use riffdb_types::{ActorId, ActorKind, CapabilityId, RequestId, Timestamp};
+
+        use crate::port_driver::BlockingPortDriver;
+        use crate::real_storage_support::RealStorage;
+        use crate::runtime_support::RuntimeRoutingState;
+
+        const CONTRACT: &str =
+            include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
+        const LIST_TICKETS: &str = include_str!("../../../queries/ticketdesk/list_tickets.riffq");
+
+        fn principal() -> AuditPrincipalV1 {
+            AuditPrincipalV1::new(
+                ActorId::new("plan-lookup-operator").expect("bounded principal"),
+                ActorKind::Human,
+                CapabilityId::from_unix_milliseconds_and_random(3, [0x3c; 10])
+                    .expect("capability UUIDv7"),
+                NonZeroU64::MIN,
+            )
+        }
+
+        fn request_id(seed: u8) -> RequestId {
+            RequestId::from_unix_milliseconds_and_random(u64::from(seed), [seed; 10])
+                .expect("request UUIDv7")
+        }
+
+        let real = RealStorage::open("plan-lookup");
+        let mut storage = real.storage.clone();
+
+        let bundle = ValidatedContractBundle::from_compiler_bundle(
+            compile_contract_source(CONTRACT).expect("ticketdesk contract compiles"),
+        )
+        .expect("compiled bundle is catalog-valid");
+        let activated = CatalogAdministrationRepository::activate_catalog(
+            &mut storage,
+            &CatalogActivationIntentV1::new(
+                None,
+                bundle.to_stored().expect("encode contract bundle"),
+                request_id(0x41),
+                principal(),
+                Timestamp::new(1_000, 0).expect("activation timestamp"),
+                None,
+            ),
+        )
+        .expect("activate the contract in real storage");
+        assert!(matches!(
+            activated,
+            CatalogActivationResult::Activated { .. }
+        ));
+
+        let module = ValidatedQueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("ticketdesk").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![NamedQuerySource::new("ListTickets", LIST_TICKETS).expect("query source")],
+            )
+            .expect("module candidate"),
+            &bundle,
+        )
+        .expect("query module compiles against the activated contract");
+        let module_hash = module.identity();
+        let deployed = QueryModuleAdministrationRepository::activate_query_module(
+            &mut storage,
+            &QueryModuleActivationIntentV1::new(
+                QueryModuleActiveExpectationV1::Absent,
+                module.to_stored().expect("encode query module"),
+                request_id(0x42),
+                principal(),
+                Timestamp::new(1_001, 0).expect("deployment timestamp"),
+                None,
+            ),
+        )
+        .expect("deploy the query module into real storage");
+        assert!(matches!(
+            deployed,
+            QueryModuleActivationResult::Activated { .. }
+        ));
+
+        let routing = RuntimeRoutingState::new();
+        let driver = BlockingPortDriver::new(routing.clone()).expect("blocking port driver starts");
+        let port = ServerCatalogReadPort::new(real.storage.clone(), &driver);
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let (control, _cancellation) =
+            RequestControl::new(Instant::now() + Duration::from_secs(30));
+
+        let baseline = query_module_pool_dispatch_count();
+        runtime.block_on(async {
+            // Cold: the plan cache is empty, so compilation must happen on the
+            // blocking pool.
+            let cold = port
+                .prepare_query_module(&control, bundle.clone(), module_hash)
+                .await
+                .expect("cold query-module lookup succeeds");
+            assert_eq!(
+                cold.expect("deployed module resolves").identity(),
+                module_hash
+            );
+            assert_eq!(
+                query_module_pool_dispatch_count(),
+                baseline + 1,
+                "a cold plan lookup must enter the blocking pool"
+            );
+
+            // Warm: identical result, served inline.
+            let warm = port
+                .prepare_query_module(&control, bundle.clone(), module_hash)
+                .await
+                .expect("warm query-module lookup succeeds");
+            assert_eq!(
+                warm.expect("deployed module resolves").identity(),
+                module_hash
+            );
+            assert_eq!(
+                query_module_pool_dispatch_count(),
+                baseline + 1,
+                "a plan-cache hit must not enter the blocking pool"
+            );
+
+            // The active-pointer entry point resolves the same module inline:
+            // the pointer is resident from the startup view rebuild plus the
+            // deployment publish, and the plan cache is now warm.
+            let active = port
+                .prepare_active_query_module(&control, bundle.clone())
+                .await
+                .expect("active query-module lookup succeeds");
+            assert_eq!(
+                active.expect("active module resolves").identity(),
+                module_hash
+            );
+            assert_eq!(
+                query_module_pool_dispatch_count(),
+                baseline + 1,
+                "an active-pointer cache hit must not enter the blocking pool"
+            );
+        });
+
+        // Admission control: once routing stops, a warm cache must not be a
+        // bypass. The request has to reach the pool and be refused there.
+        routing.fail_authoritative_readiness(AuthoritativeReadinessFailure::Integrity);
+        runtime.block_on(async {
+            let refused = port
+                .prepare_query_module(&control, bundle.clone(), module_hash)
+                .await;
+            assert!(
+                matches!(refused, Err(QueryModuleReadError::Unavailable)),
+                "a request refused by port admission must not be served from cache"
+            );
+            assert_eq!(
+                query_module_pool_dispatch_count(),
+                baseline + 2,
+                "a refused request must be routed to the pool, not answered inline"
+            );
+        });
+
+        driver.shutdown_and_drain().expect("driver drains cleanly");
     }
 }

@@ -7,7 +7,6 @@ use std::net::SocketAddr;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -26,9 +25,7 @@ use riffdb_query_module::{
     ApplicationManifest, CompiledApplicationRole, NamedQuerySource, QueryModule,
     QueryModuleCandidate, QueryModuleName, QueryModuleVersion, compile_application_role,
 };
-use riffdb_types::{
-    CapabilityGrantV1, CapabilityPermissionV1, PartitionScopeV1, TenantScope,
-};
+use riffdb_types::{CapabilityGrantV1, CapabilityPermissionV1, PartitionScopeV1, TenantScope};
 use tokio::time::timeout;
 use tonic::transport::Endpoint;
 
@@ -41,7 +38,9 @@ const WRITE_GROUP_PREFIX: &str = "riffdb-write-completion-groups-v1\t";
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(30);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(15);
 /// Keep the last N stderr lines for crash diagnosis (panic / OOM messages).
-const STDERR_RING_LINES: usize = 80;
+const STDERR_RING_LINES: usize = 200;
+/// Soft byte cap for the retained stderr ring (in addition to the line cap).
+const STDERR_RING_BYTES: usize = 64 * 1024;
 const STDERR_DETAIL_CHARS: usize = 4_000;
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const BOOTSTRAP_UNIX_MILLISECONDS: u64 = 1_700_000_000_000;
@@ -93,13 +92,29 @@ const CAPABILITY_KEY_DOCUMENT: &[u8] =
 const IDEMPOTENCY_KEY_DOCUMENT: &[u8] =
     b"riffdb-idempotency-digest-keys-v1\n9:202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f\n";
 
-static NEXT_DIR: AtomicU64 = AtomicU64::new(1);
-
 /// Env override for the on-disk app-baseline database root (not `/tmp`).
+///
+/// Prefer [`riffdb_bench_root::BENCH_DB_ROOT_ENV`] (`RIFFDB_BENCH_DB_ROOT`); this
+/// legacy name remains as a secondary fallback for one transition release.
 pub const DATABASE_ROOT_ENV: &str = "RIFFDB_APP_BASELINE_DB_ROOT";
 /// Default database root under the repo (real disk; gitignored via `/target/`).
-pub const DEFAULT_DATABASE_ROOT: &str = "target/app-baseline/db";
-const SESSION_DIR_PREFIX: &str = "riffdb-app-baseline-";
+pub const DEFAULT_DATABASE_ROOT: &str = "target/perf-db/app-baseline";
+/// Minimum free bytes required before spawning `riffdbd` in smoke mode (256 MiB).
+pub const MIN_FREE_BYTES_SMOKE: u64 = 256 * 1024 * 1024;
+/// Minimum free bytes required for evidentiary `--full` runs (8 GiB).
+pub const MIN_FREE_BYTES_FULL: u64 = 8 * 1024 * 1024 * 1024;
+/// Backward-compatible alias for smoke floor.
+pub const MIN_FREE_BYTES: u64 = MIN_FREE_BYTES_SMOKE;
+
+/// Free-space floor for a harness mode.
+#[must_use]
+pub const fn min_free_bytes_for_full(full: bool) -> u64 {
+    if full {
+        MIN_FREE_BYTES_FULL
+    } else {
+        MIN_FREE_BYTES_SMOKE
+    }
+}
 
 /// Optional process overrides for a baseline `riffdbd` session.
 #[derive(Clone, Debug, Default)]
@@ -111,16 +126,24 @@ pub struct ServerStartOptions {
     pub coordinator_workload_capacity: Option<u16>,
     /// Root directory for per-run database/session dirs (real disk by default).
     ///
-    /// Defaults to [`DEFAULT_DATABASE_ROOT`], or `RIFFDB_APP_BASELINE_DB_ROOT` when set.
-    /// Does **not** use `/tmp` (often a small ramdisk); full-scale load writes
-    /// enough durable state to exhaust a tmpfs.
+    /// Resolution order: this field → `RIFFDB_BENCH_DB_ROOT` →
+    /// `RIFFDB_APP_BASELINE_DB_ROOT` → [`DEFAULT_DATABASE_ROOT`].
+    /// Does **not** use `/tmp` (often a small ramdisk) unless `allow_tmpfs`.
     pub database_root: Option<PathBuf>,
+    /// Permit resolving onto tmpfs/ramfs (tests only; never for published numbers).
+    pub allow_tmpfs: bool,
+    /// Free-space floor before spawn (smoke 256 MiB / full 8 GiB).
+    ///
+    /// `0` means use [`MIN_FREE_BYTES_SMOKE`].
+    pub min_free_bytes: u64,
 }
 
 /// Owns one live `riffdbd` process and a ready public client backend.
 pub struct RiffDbServerSession {
-    _temporary: TemporaryDirectory,
+    _temporary: riffdb_bench_root::BenchDir,
     process: ServerProcess,
+    /// Resolved real-disk root used for this session.
+    pub bench_root: riffdb_bench_root::BenchRoot,
     /// Public application backend.
     pub backend: RiffDbPublicBackend,
 }
@@ -136,9 +159,16 @@ impl RiffDbServerSession {
         riffdbd_bin: &Path,
         options: ServerStartOptions,
     ) -> Result<Self, RiffDbError> {
-        let database_root = resolve_database_root(options.database_root.as_deref());
+        let bench_root = resolve_bench_root(&options).map_err(|error| RiffDbError::Server {
+            detail: error.to_string(),
+        })?;
+        let _ = riffdb_bench_root::sweep_stale(&bench_root);
         let temporary =
-            TemporaryDirectory::create_under(&database_root).map_err(|_| RiffDbError::Io)?;
+            riffdb_bench_root::BenchDir::create(&bench_root, "app-baseline").map_err(|error| {
+                RiffDbError::Server {
+                    detail: error.to_string(),
+                }
+            })?;
         let database_path = temporary.path().join("riffdb.redb");
         let backup_root = temporary.path().join("backups");
         let capability_keys_path = temporary.path().join("capability.keys");
@@ -179,21 +209,63 @@ impl RiffDbServerSession {
         Ok(Self {
             _temporary: temporary,
             process,
+            bench_root,
             backend,
         })
     }
 
     /// Stops the server cleanly.
     pub fn shutdown(mut self) -> Result<[u64; 64], RiffDbError> {
-        self.process.shutdown_cleanly().map_err(|error| RiffDbError::Server {
-            detail: error.to_string(),
-        })
+        self.process
+            .shutdown_cleanly()
+            .map_err(|error| RiffDbError::Server {
+                detail: error.to_string(),
+            })
     }
 
     /// Last stderr lines captured from `riffdbd` (for crash diagnosis).
     #[must_use]
     pub fn stderr_tail(&self) -> String {
         self.process.stderr_tail()
+    }
+
+    /// Non-blocking liveness check: `Ok` while the child is still running.
+    pub fn server_alive(&mut self) -> Result<(), String> {
+        match self.process.poll_exit() {
+            None => Ok(()),
+            Some(Ok(status)) => {
+                let mut detail = format!("riffdbd exited mid-load: {status}");
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::ExitStatusExt;
+                    if let Some(signal) = status.signal() {
+                        detail.push_str(&format!(" signal={signal}"));
+                    }
+                }
+                let tail = self.process.stderr_tail();
+                if !tail.is_empty() {
+                    detail.push_str("; stderr_tail=\n");
+                    detail.push_str(&tail);
+                }
+                detail.push_str(&format!(
+                    "; database_root={} free_bytes_at_start={}",
+                    self.bench_root.path().display(),
+                    self.bench_root.free_bytes_at_start()
+                ));
+                Err(detail)
+            }
+            Some(Err(error)) => Err(format!(
+                "riffdbd wait error mid-load: {error}; database_root={} free_bytes_at_start={}",
+                self.bench_root.path().display(),
+                self.bench_root.free_bytes_at_start()
+            )),
+        }
+    }
+
+    /// OS process id of the `riffdbd` child (for integration kill tests).
+    #[must_use]
+    pub fn child_pid(&self) -> u32 {
+        self.process.child_id
     }
 }
 
@@ -317,9 +389,7 @@ async fn bootstrap_deploy_and_issue(
         ));
     };
     let Some(v1::normal_create_capability_result::Result::Created(created)) = result.result else {
-        return Err(RiffDbError::Rpc(
-            "runner capability was not created".into(),
-        ));
+        return Err(RiffDbError::Rpc("runner capability was not created".into()));
     };
     Ok(created.token)
 }
@@ -366,8 +436,7 @@ fn bootstrap_request(
 fn compile_ticketdesk_application_role() -> Result<CompiledApplicationRole, RiffDbError> {
     let manifest = ApplicationManifest::decode_canonical(TICKETDESK_MANIFEST.as_bytes())
         .map_err(|_| RiffDbError::Deploy)?;
-    let contract =
-        compile_contract_source(TICKETDESK_CONTRACT).map_err(|_| RiffDbError::Deploy)?;
+    let contract = compile_contract_source(TICKETDESK_CONTRACT).map_err(|_| RiffDbError::Deploy)?;
     let queries = QUERY_SOURCES
         .iter()
         .map(|(name, source)| {
@@ -381,14 +450,8 @@ fn compile_ticketdesk_application_role() -> Result<CompiledApplicationRole, Riff
     )
     .map_err(|_| RiffDbError::Deploy)?;
     let module = QueryModule::compile(candidate, &contract).map_err(|_| RiffDbError::Deploy)?;
-    compile_application_role(
-        &manifest,
-        APPLICATION_ROLE_NAME,
-        None,
-        &contract,
-        &[module],
-    )
-    .map_err(|_| RiffDbError::Deploy)
+    compile_application_role(&manifest, APPLICATION_ROLE_NAME, None, &contract, &[module])
+        .map_err(|_| RiffDbError::Deploy)
 }
 
 /// Lowers a compiler-private role grant into the public create-capability request.
@@ -534,26 +597,67 @@ fn write_protected_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 /// Resolves the on-disk root for app-baseline `riffdbd` session directories.
 ///
-/// Order: explicit `override_root` → `RIFFDB_APP_BASELINE_DB_ROOT` →
-/// [`DEFAULT_DATABASE_ROOT`]. Never falls back to `std::env::temp_dir()`.
+/// Order: explicit `override_root` → `RIFFDB_BENCH_DB_ROOT` →
+/// `RIFFDB_APP_BASELINE_DB_ROOT` → [`DEFAULT_DATABASE_ROOT`].
+/// Never falls back to `std::env::temp_dir()`.
 #[must_use]
 pub fn resolve_database_root(override_root: Option<&Path>) -> PathBuf {
     if let Some(path) = override_root {
         return path.to_path_buf();
     }
-    if let Some(from_env) = std::env::var_os(DATABASE_ROOT_ENV) {
-        if !from_env.is_empty() {
-            return PathBuf::from(from_env);
-        }
+    if let Some(from_env) = std::env::var_os(riffdb_bench_root::BENCH_DB_ROOT_ENV)
+        && !from_env.is_empty()
+    {
+        return PathBuf::from(from_env);
+    }
+    if let Some(from_env) = std::env::var_os(DATABASE_ROOT_ENV)
+        && !from_env.is_empty()
+    {
+        return PathBuf::from(from_env);
     }
     PathBuf::from(DEFAULT_DATABASE_ROOT)
 }
 
+/// Resolves a classified [`riffdb_bench_root::BenchRoot`] for session dirs.
+#[allow(clippy::result_large_err)]
+pub fn resolve_bench_root(
+    options: &ServerStartOptions,
+) -> Result<riffdb_bench_root::BenchRoot, riffdb_bench_root::BenchRootError> {
+    let default_root = if let Some(legacy) = std::env::var_os(DATABASE_ROOT_ENV) {
+        if !legacy.is_empty() && options.database_root.is_none() {
+            // Legacy env only fills default when unified env/cli absent; BenchRoot
+            // still prefers RIFFDB_BENCH_DB_ROOT over this default.
+            PathBuf::from(legacy)
+        } else {
+            PathBuf::from(DEFAULT_DATABASE_ROOT)
+        }
+    } else {
+        PathBuf::from(DEFAULT_DATABASE_ROOT)
+    };
+    let min_free_bytes = if options.min_free_bytes == 0 {
+        MIN_FREE_BYTES_SMOKE
+    } else {
+        options.min_free_bytes
+    };
+    riffdb_bench_root::BenchRoot::resolve(riffdb_bench_root::BenchRootOptions {
+        harness: "app-baseline",
+        cli_override: options.database_root.clone(),
+        default_root,
+        allow_tmpfs: options.allow_tmpfs,
+        min_free_bytes,
+    })
+}
+
 /// Removes orphaned session dirs left by killed/hung harness runs.
 ///
-/// Only deletes children of `root` whose names start with
-/// `riffdb-app-baseline-`. Best-effort; errors are ignored.
+/// Prefers [`riffdb_bench_root::sweep_stale_path`] when the root contains
+/// `perf-db`; otherwise best-effort removes legacy `riffdb-app-baseline-*`
+/// children only (no broad recursive wipe).
 pub fn sweep_stale_session_dirs(root: &Path) {
+    if riffdb_bench_root::path_has_perf_db_component(root) {
+        let _ = riffdb_bench_root::sweep_stale_path(root);
+        return;
+    }
     let Ok(entries) = fs::read_dir(root) else {
         return;
     };
@@ -562,7 +666,7 @@ pub fn sweep_stale_session_dirs(root: &Path) {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if !name.starts_with(SESSION_DIR_PREFIX) {
+        if !(name.starts_with("riffdb-app-baseline-") || name.starts_with("riffdb-bench-")) {
             continue;
         }
         if path.is_dir() {
@@ -571,53 +675,12 @@ pub fn sweep_stale_session_dirs(root: &Path) {
     }
 }
 
-struct TemporaryDirectory {
-    path: PathBuf,
-}
-
-impl TemporaryDirectory {
-    /// Creates a unique session dir under `root` (real disk by default).
-    ///
-    /// The returned path is **absolute**: `riffdbd` rejects relative configured
-    /// paths (`InvalidPath`). Relative roots are resolved against `cwd` then
-    /// canonicalized after creation.
-    fn create_under(root: &Path) -> io::Result<Self> {
-        let absolute_root = if root.is_absolute() {
-            root.to_path_buf()
-        } else {
-            std::env::current_dir()?.join(root)
-        };
-        fs::create_dir_all(&absolute_root)?;
-        let absolute_root = fs::canonicalize(&absolute_root)?;
-        // Drop leftovers from prior crashes/kills so successive full loads do
-        // not accumulate multi‑GB redb files on the harness disk.
-        sweep_stale_session_dirs(&absolute_root);
-        let path = absolute_root.join(format!(
-            "{SESSION_DIR_PREFIX}{}-{}",
-            std::process::id(),
-            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&path)?;
-        let path = fs::canonicalize(&path)?;
-        Ok(Self { path })
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TemporaryDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
 enum ReaperCommand {
     Kill,
 }
 
 struct ServerProcess {
+    child_id: u32,
     stdin: Option<std::process::ChildStdin>,
     ready: Receiver<io::Result<String>>,
     write_groups: Receiver<io::Result<[u64; 64]>>,
@@ -628,6 +691,8 @@ struct ServerProcess {
     stderr: Option<JoinHandle<usize>>,
     stderr_ring: Arc<Mutex<VecDeque<String>>>,
     exit_observed: bool,
+    /// Cached exit once observed; subsequent [`poll_exit`] returns this.
+    cached_exit: Option<Result<ExitStatus, String>>,
 }
 
 impl ServerProcess {
@@ -667,14 +732,23 @@ impl ServerProcess {
             );
         }
         let mut child = command.spawn()?;
-        let stdin = child.stdin.take().ok_or_else(|| io::Error::other("stdin"))?;
-        let stdout = child.stdout.take().ok_or_else(|| io::Error::other("stdout"))?;
-        let stderr = child.stderr.take().ok_or_else(|| io::Error::other("stderr"))?;
+        let child_id = child.id();
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("stdout"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| io::Error::other("stderr"))?;
         let (ready_sender, ready) = mpsc::sync_channel(1);
         let (write_group_sender, write_groups) = mpsc::sync_channel(1);
-        let stdout = thread::spawn(move || {
-            read_server_stdout(stdout, ready_sender, write_group_sender)
-        });
+        let stdout =
+            thread::spawn(move || read_server_stdout(stdout, ready_sender, write_group_sender));
         let stderr_ring = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_RING_LINES)));
         let stderr_ring_worker = Arc::clone(&stderr_ring);
         let stderr = thread::spawn(move || drain_server_stderr(stderr, stderr_ring_worker));
@@ -682,6 +756,7 @@ impl ServerProcess {
         let (exit_sender, exited) = mpsc::sync_channel(1);
         let reaper = thread::spawn(move || reap_child(child, commands, exit_sender));
         Ok(Self {
+            child_id,
             stdin: Some(stdin),
             ready,
             write_groups,
@@ -692,6 +767,7 @@ impl ServerProcess {
             stderr: Some(stderr),
             stderr_ring,
             exit_observed: false,
+            cached_exit: None,
         })
     }
 
@@ -699,10 +775,15 @@ impl ServerProcess {
         let line = match self.ready.recv_timeout(PROCESS_START_TIMEOUT) {
             Ok(result) => result?,
             Err(RecvTimeoutError::Timeout) => {
-                return Err(io::Error::new(io::ErrorKind::TimedOut, "ready timeout"));
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    self.diagnostic_detail("ready timeout"),
+                ));
             }
             Err(RecvTimeoutError::Disconnected) => {
-                return Err(io::Error::other("ready disconnected"));
+                return Err(io::Error::other(
+                    self.diagnostic_detail("ready disconnected"),
+                ));
             }
         };
         let address = line
@@ -718,6 +799,37 @@ impl ServerProcess {
             .lock()
             .map(|ring| ring.iter().cloned().collect::<Vec<_>>().join(""))
             .unwrap_or_default()
+    }
+
+    /// Non-blocking poll of the child exit channel (caches observed status).
+    ///
+    /// Once an exit is observed, subsequent calls return the **same** cached
+    /// status so [`RiffDbServerSession::server_alive`] stays truthful.
+    fn poll_exit(&mut self) -> Option<io::Result<ExitStatus>> {
+        if let Some(cached) = &self.cached_exit {
+            return Some(match cached {
+                Ok(status) => Ok(*status),
+                Err(message) => Err(io::Error::other(message.clone())),
+            });
+        }
+        match self.exited.try_recv() {
+            Ok(status) => {
+                self.exit_observed = true;
+                let cached = status
+                    .as_ref()
+                    .map(|s| *s)
+                    .map_err(|error| error.to_string());
+                self.cached_exit = Some(cached);
+                Some(status)
+            }
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.exit_observed = true;
+                let message = "riffdbd reaper disconnected".to_owned();
+                self.cached_exit = Some(Err(message.clone()));
+                Some(Err(io::Error::other(message)))
+            }
+        }
     }
 
     fn diagnostic_detail(&self, headline: &str) -> String {
@@ -741,13 +853,16 @@ impl ServerProcess {
             Ok(status) => {
                 self.exit_observed = true;
                 let status = status?;
+                self.cached_exit = Some(Ok(status));
                 if status.success() {
                     self.write_groups
                         .recv_timeout(PROCESS_STOP_TIMEOUT)
                         .map_err(|_| {
-                            io::Error::other(self.diagnostic_detail(
-                                "write-group report missing after clean exit",
-                            ))
+                            io::Error::other(
+                                self.diagnostic_detail(
+                                    "write-group report missing after clean exit",
+                                ),
+                            )
                         })?
                 } else {
                     let code = status
@@ -808,7 +923,9 @@ fn read_server_stdout(
 ) -> usize {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    let ready = reader.read_line(&mut line).map(|_| line.trim_end().to_owned());
+    let ready = reader
+        .read_line(&mut line)
+        .map(|_| line.trim_end().to_owned());
     let _ = ready_sender.send(ready);
     let mut total = line.len();
     loop {
@@ -845,6 +962,7 @@ fn parse_write_groups(encoded: &str) -> io::Result<[u64; 64]> {
 fn drain_server_stderr(stream: impl Read, ring: Arc<Mutex<VecDeque<String>>>) -> usize {
     let mut reader = BufReader::new(stream);
     let mut total = 0_usize;
+    let mut ring_bytes = 0_usize;
     let mut line = String::new();
     loop {
         line.clear();
@@ -857,14 +975,23 @@ fn drain_server_stderr(stream: impl Read, ring: Arc<Mutex<VecDeque<String>>>) ->
         // Mirror to parent stderr so panics are visible during a hung load.
         eprint!("[riffdbd-stderr] {line}");
         if let Ok(mut guard) = ring.lock() {
-            if guard.len() >= STDERR_RING_LINES {
-                let _ = guard.pop_front();
-            }
-            guard.push_back(line.clone());
+            push_stderr_line(&mut guard, &mut ring_bytes, line.clone());
         }
         total = total.saturating_add(read);
     }
     total
+}
+
+fn push_stderr_line(ring: &mut VecDeque<String>, ring_bytes: &mut usize, line: String) {
+    *ring_bytes = ring_bytes.saturating_add(line.len());
+    ring.push_back(line);
+    while ring.len() > STDERR_RING_LINES || (*ring_bytes > STDERR_RING_BYTES && ring.len() > 1) {
+        if let Some(front) = ring.pop_front() {
+            *ring_bytes = ring_bytes.saturating_sub(front.len());
+        } else {
+            break;
+        }
+    }
 }
 
 fn reap_child(
@@ -916,28 +1043,25 @@ mod tests {
     fn default_database_root_constant_is_not_tmp() {
         let root = PathBuf::from(DEFAULT_DATABASE_ROOT);
         assert!(
-            !root.starts_with("/tmp") && root != std::env::temp_dir(),
-            "default root must not be temp_dir: {}",
+            !root.starts_with("/tmp"),
+            "default root must not be under /tmp: {}",
             root.display()
         );
-        assert_eq!(root.as_os_str(), "target/app-baseline/db");
+        assert_eq!(root.as_os_str(), "target/perf-db/app-baseline");
         // Explicit override always wins over env/default.
-        let forced = PathBuf::from("target/app-baseline/forced-db");
-        assert_eq!(
-            resolve_database_root(Some(forced.as_path())),
-            forced
-        );
+        let forced = PathBuf::from("target/perf-db/app-baseline/forced-db");
+        assert_eq!(resolve_database_root(Some(forced.as_path())), forced);
     }
 
     #[test]
     fn sweep_removes_only_session_prefix_dirs() {
-        let root = std::env::temp_dir().join(format!(
-            "riffdb-baseline-sweep-test-{}",
-            std::process::id()
-        ));
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("perf-db")
+            .join(format!("riffdb-baseline-sweep-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("root");
-        let stale = root.join(format!("{SESSION_DIR_PREFIX}stale"));
+        let stale = root.join("riffdb-app-baseline-999999-1");
         let keep = root.join("keep-me");
         fs::create_dir_all(&stale).expect("stale");
         fs::create_dir_all(&keep).expect("keep");
@@ -945,5 +1069,38 @@ mod tests {
         assert!(!stale.exists());
         assert!(keep.exists());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn min_free_bytes_scales_with_mode() {
+        assert_eq!(min_free_bytes_for_full(false), MIN_FREE_BYTES_SMOKE);
+        assert_eq!(min_free_bytes_for_full(true), MIN_FREE_BYTES_FULL);
+        const {
+            assert!(MIN_FREE_BYTES_FULL > MIN_FREE_BYTES_SMOKE);
+        }
+    }
+
+    #[test]
+    fn stderr_ring_keeps_last_200_within_byte_cap() {
+        let mut ring = VecDeque::new();
+        let mut ring_bytes = 0_usize;
+        for i in 0..10_000 {
+            // Short lines so the line cap (200) binds before the byte cap.
+            push_stderr_line(&mut ring, &mut ring_bytes, format!("line-{i}\n"));
+        }
+        assert_eq!(ring.len(), STDERR_RING_LINES);
+        assert!(ring.front().unwrap().starts_with("line-9800"));
+        assert!(ring.back().unwrap().starts_with("line-9999"));
+        assert!(ring_bytes <= STDERR_RING_BYTES + 64);
+
+        // Byte-cap eviction: huge lines shrink the ring below the line cap.
+        let mut ring = VecDeque::new();
+        let mut ring_bytes = 0_usize;
+        let huge = "x".repeat(8_000) + "\n";
+        for _ in 0..20 {
+            push_stderr_line(&mut ring, &mut ring_bytes, huge.clone());
+        }
+        assert!(ring.len() < STDERR_RING_LINES);
+        assert!(ring_bytes <= STDERR_RING_BYTES + huge.len());
     }
 }

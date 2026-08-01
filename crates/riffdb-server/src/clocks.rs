@@ -160,6 +160,35 @@ impl fmt::Display for ServerProcessClockError {
 
 impl std::error::Error for ServerProcessClockError {}
 
+/// A settable wall-time source used only by this crate's tests.
+///
+/// Production composition never reaches this: `ProductionWallClocks::new` is
+/// the sole constructor outside `cfg(test)`, and the whole type is compiled out
+/// of normal builds.
+#[cfg(test)]
+struct SettableWallTime(Arc<std::sync::atomic::AtomicI64>);
+
+#[cfg(test)]
+impl WallTimeSource for SettableWallTime {
+    fn now(&self) -> Result<SystemTime, CanonicalWallClockError> {
+        let seconds = self.0.load(std::sync::atomic::Ordering::Acquire);
+        let seconds = u64::try_from(seconds).map_err(|_| CanonicalWallClockError)?;
+        Ok(UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+    }
+}
+
+#[cfg(test)]
+impl ProductionWallClocks {
+    /// Builds clocks whose every consumer reads one settable second counter.
+    pub(crate) fn settable(seconds: Arc<std::sync::atomic::AtomicI64>) -> Self {
+        Self {
+            shared: Arc::new(CanonicalWallClock {
+                source: Arc::new(SettableWallTime(seconds)),
+            }),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ServerAuthenticationClock(Arc<CanonicalWallClock>);
 

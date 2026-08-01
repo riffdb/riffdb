@@ -334,6 +334,67 @@ impl PostgresAppBackend {
             .map_err(|_| PostgresError::Decode)?;
         Ok(max_connections.saturating_sub(reserved).saturating_sub(2))
     }
+
+    /// Queries durability-relevant GUC values for fairness reporting and gates.
+    pub fn durability_settings(&mut self) -> Result<PostgresDurabilitySettings, PostgresError> {
+        let row = self
+            .client()?
+            .query_one(
+                "SELECT current_setting('server_version_num'), \
+                        current_setting('synchronous_commit'), \
+                        current_setting('fsync'), \
+                        current_setting('full_page_writes'), \
+                        current_setting('wal_sync_method'), \
+                        current_setting('data_directory')",
+                &[],
+            )
+            .map_err(db_err)?;
+        Ok(PostgresDurabilitySettings {
+            server_version_num: row.get(0),
+            synchronous_commit: row.get(1),
+            fsync: row.get(2),
+            full_page_writes: row.get(3),
+            wal_sync_method: row.get(4),
+            data_directory: row.get(5),
+        })
+    }
+}
+
+/// Durability-relevant PostgreSQL settings observed from a live connection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PostgresDurabilitySettings {
+    /// `server_version_num` GUC.
+    pub server_version_num: String,
+    /// `synchronous_commit` GUC (must be `on` for parity).
+    pub synchronous_commit: String,
+    /// `fsync` GUC (must be `on` for parity).
+    pub fsync: String,
+    /// `full_page_writes` GUC (must be `on` for parity).
+    pub full_page_writes: String,
+    /// `wal_sync_method` GUC.
+    pub wal_sync_method: String,
+    /// `data_directory` GUC (for same-device reporting).
+    pub data_directory: String,
+}
+
+impl PostgresDurabilitySettings {
+    /// Refuses comparison when durability GUCs are not fully on.
+    pub fn assert_durable_for_parity(&self) -> Result<(), String> {
+        for (name, value) in [
+            ("synchronous_commit", self.synchronous_commit.as_str()),
+            ("fsync", self.fsync.as_str()),
+            ("full_page_writes", self.full_page_writes.as_str()),
+        ] {
+            if value != "on" {
+                return Err(format!(
+                    "PostgreSQL durability gate refused: {name}={value:?} (must be on); \
+                     server_version_num={} data_directory={}",
+                    self.server_version_num, self.data_directory
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl AppBackend for PostgresAppBackend {
@@ -1013,5 +1074,22 @@ mod tests {
             PostgresAppBackend::load_error_code(&database_error("23505")),
             Some("23505")
         );
+    }
+
+    #[test]
+    fn durability_assert_requires_on_settings() {
+        use super::PostgresDurabilitySettings;
+        let ok = PostgresDurabilitySettings {
+            server_version_num: "180004".to_owned(),
+            synchronous_commit: "on".to_owned(),
+            fsync: "on".to_owned(),
+            full_page_writes: "on".to_owned(),
+            wal_sync_method: "fdatasync".to_owned(),
+            data_directory: "/var/lib/postgresql/data".to_owned(),
+        };
+        assert!(ok.assert_durable_for_parity().is_ok());
+        let mut bad = ok.clone();
+        bad.synchronous_commit = "off".to_owned();
+        assert!(bad.assert_durable_for_parity().is_err());
     }
 }

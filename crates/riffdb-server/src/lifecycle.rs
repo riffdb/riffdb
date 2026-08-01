@@ -14,7 +14,7 @@ use riffdb_api_grpc::{
 use riffdb_service::{
     ApplicationService, HealthContext, HealthRequest, HealthResult, InitializingRiffDbService,
     PreBootstrapHealthContextIssuer, PreBootstrapLifecycle, RecoveryOfflineMaintenanceApplication,
-    RestoreRetryOfflineMaintenanceApplication, ServiceFuture,
+    RestoreRetryOfflineMaintenanceApplication, ServiceFuture, ServiceTelemetry,
 };
 use riffdb_types::{OfflineMaintenanceOperationId, ServiceOperationV1};
 
@@ -33,6 +33,7 @@ pub(crate) struct ProductionLifecycleRoute {
     recovery: OnceLock<Arc<dyn RecoveryOfflineMaintenanceApplication>>,
     restore_retry: OnceLock<Arc<dyn RestoreRetryOfflineMaintenanceApplication>>,
     restore_retry_security: OnceLock<CheckedGrpcRestoreRetrySecurityContext>,
+    read_stage_telemetry: OnceLock<Arc<dyn ServiceTelemetry>>,
     runtime: RuntimeRoutingState,
     maintenance: Arc<MaintenanceLifecycle>,
     state: Mutex<RouteState>,
@@ -69,6 +70,7 @@ impl ProductionLifecycleRoute {
             recovery: OnceLock::new(),
             restore_retry: OnceLock::new(),
             restore_retry_security: OnceLock::new(),
+            read_stage_telemetry: OnceLock::new(),
             runtime,
             maintenance,
             state: Mutex::new(RouteState {
@@ -87,6 +89,29 @@ impl ProductionLifecycleRoute {
         history_incarnation: u64,
         lifecycle: ValidatedStartupLifecycle,
         capacity: ValidatedAllocatorCapacity,
+    ) -> Result<(), LifecycleInstallError> {
+        self.install_activated_with_telemetry(
+            service,
+            security,
+            server_generation,
+            history_incarnation,
+            lifecycle,
+            capacity,
+            None,
+        )
+    }
+
+    /// Installs the activated service and optional read-stage telemetry sink.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn install_activated_with_telemetry(
+        &self,
+        service: Arc<dyn ApplicationService>,
+        security: CheckedGrpcSecurityContext,
+        server_generation: ServerGenerationV1,
+        history_incarnation: u64,
+        lifecycle: ValidatedStartupLifecycle,
+        capacity: ValidatedAllocatorCapacity,
+        read_stage_telemetry: Option<Arc<dyn ServiceTelemetry>>,
     ) -> Result<(), LifecycleInstallError> {
         let installed = LifecycleModel::from_startup(lifecycle, capacity)?;
         let mut state = self.lock_state();
@@ -112,6 +137,11 @@ impl ProductionLifecycleRoute {
         self.history_incarnation
             .set(history_incarnation)
             .map_err(|_| LifecycleInstallError::AlreadyInstalled)?;
+        if let Some(telemetry) = read_stage_telemetry {
+            self.read_stage_telemetry
+                .set(telemetry)
+                .map_err(|_| LifecycleInstallError::AlreadyInstalled)?;
+        }
 
         if lifecycle != ValidatedStartupLifecycle::BootstrapRequired {
             close_issuer(&mut state.issuer);
@@ -308,6 +338,10 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
             return None;
         }
         self.history_incarnation.get().copied()
+    }
+
+    fn read_stage_telemetry(&self) -> Option<Arc<dyn ServiceTelemetry>> {
+        self.read_stage_telemetry.get().cloned()
     }
 
     fn restricted_health(&self, request: HealthRequest) -> Option<ServiceFuture<'_, HealthResult>> {
@@ -1203,6 +1237,76 @@ mod tests {
                 ValidatedAllocatorCapacity::Available,
             ),
             Err(LifecycleInstallError::AlreadyInstalled)
+        );
+    }
+
+    #[test]
+    fn read_stage_telemetry_is_published_only_when_activation_supplies_a_sink() {
+        use std::sync::Mutex as StdMutex;
+
+        use riffdb_service::{ServiceTelemetry, ServiceTelemetryEvent};
+
+        #[derive(Default)]
+        struct RecordingTelemetry {
+            stages: StdMutex<Vec<riffdb_service::ReadPipelineStage>>,
+        }
+
+        impl ServiceTelemetry for RecordingTelemetry {
+            fn record(&self, event: ServiceTelemetryEvent) {
+                if let ServiceTelemetryEvent::ReadPipelineStageCompleted { stage, .. } = event {
+                    self.stages.lock().expect("stage mutex").push(stage);
+                }
+            }
+        }
+
+        // Activation without a sink: the route publishes nothing and the gRPC
+        // layer simply does not record residual stages.
+        let (initializing, _activator, issuer) =
+            riffdb_service::RiffDbService::begin_initialization();
+        let without =
+            ProductionLifecycleRoute::new(initializing, issuer, RuntimeRoutingState::new());
+        assert!(without.read_stage_telemetry().is_none());
+        without
+            .install_activated(
+                Arc::new(ClosedApplicationService),
+                test_security_context(),
+                test_server_generation(),
+                1,
+                ValidatedStartupLifecycle::ActiveContract,
+                ValidatedAllocatorCapacity::Available,
+            )
+            .expect("activation installs once");
+        assert!(
+            without.read_stage_telemetry().is_none(),
+            "an activation without a telemetry sink must publish none"
+        );
+
+        // Activation with a sink: the published sink is the one composition
+        // supplied, and recording through it reaches that exact sink.
+        let (initializing, _activator, issuer) =
+            riffdb_service::RiffDbService::begin_initialization();
+        let with = ProductionLifecycleRoute::new(initializing, issuer, RuntimeRoutingState::new());
+        let sink = Arc::new(RecordingTelemetry::default());
+        with.install_activated_with_telemetry(
+            Arc::new(ClosedApplicationService),
+            test_security_context(),
+            test_server_generation(),
+            1,
+            ValidatedStartupLifecycle::ActiveContract,
+            ValidatedAllocatorCapacity::Available,
+            Some(Arc::clone(&sink) as Arc<dyn ServiceTelemetry>),
+        )
+        .expect("activation installs once");
+        let published = with
+            .read_stage_telemetry()
+            .expect("an activation with a telemetry sink must publish it");
+        published.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+            stage: riffdb_service::ReadPipelineStage::TransportAdapt,
+            elapsed: std::time::Duration::from_micros(3),
+        });
+        assert_eq!(
+            sink.stages.lock().expect("stage mutex").as_slice(),
+            [riffdb_service::ReadPipelineStage::TransportAdapt]
         );
     }
 

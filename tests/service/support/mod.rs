@@ -15,7 +15,8 @@ use riffdb_auth::{
 use riffdb_catalog::{
     ActiveCatalogSnapshot, CatalogError, CatalogErrorKind, CatalogHistoryOutcome,
     CatalogPreparationResult, ResolvedExecutablePlan, ValidatedContractBundle,
-    prepare_catalog_activation, resolve_executable_plan, validate_catalog_history,
+    ValidatedQueryModule, prepare_catalog_activation, resolve_executable_plan,
+    validate_catalog_history,
 };
 use riffdb_commit::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
@@ -33,9 +34,9 @@ use riffdb_idempotency::{
 use riffdb_invariant::derive_input_command_facts;
 use riffdb_policy::{
     AgentSessionAdmissionPolicy, AuthorizationClock, AuthorizationClockError, AuthorizationError,
-    CurrentAuthorizer, Decision, NoopAuthorizationTelemetry, NormalizedCapabilityCreateRecord,
-    OperationRequest, PartitionConstraint, ProvenanceSelector, TrustedAudienceCatalog,
-    UntrustedInvocationClaims,
+    CapabilityViewCheckpoint, CurrentAuthorizer, Decision, NoopAuthorizationTelemetry,
+    NormalizedCapabilityCreateRecord, OperationRequest, PartitionConstraint, ProvenanceSelector,
+    TrustedAudienceCatalog, UntrustedInvocationClaims,
 };
 use riffdb_service::{
     AbsentCapabilityRevokeTargetSnapshot, AffectedEntityView, AuthoritativeCommitNotification,
@@ -59,12 +60,13 @@ use riffdb_service::{
     PortAdmissionError, PortCapacityPermit, PortCompletionSender, PortFuture, PortReceipt,
     PreBootstrapHealthContextIssuer, PreBootstrapLifecycle, ProjectionPageFence,
     ProjectionPortError, ProjectionPortReady, ProjectionPortRequest, ProjectionPortResult,
-    ProjectionQueryPort, ProjectionStatusSnapshot, ProvenanceClaimsView, QueryProjectionRequest,
-    RequestCancellationHandle, RequestContext, RequestControl, RequestDeadlineFuture,
-    RequestDeadlineScheduler, ResolveCommandOutcomeRequest, RevokeCapabilityRequest, RiffDbService,
-    ScanCommitsRequest, ScanIndexRequest, ServiceDiagnostics, ServiceExecutors, ServiceHealthHooks,
-    ServiceIdentity, ServiceJob, ServiceJobSpawner, ServiceProcessMetadata, ServiceProviders,
-    ServiceTelemetry, ServiceTelemetryEvent, SourceName, SubmittedRecord, TraceProvenanceRequest,
+    ProjectionQueryPort, ProjectionStatusSnapshot, ProvenanceClaimsView, QueryModuleReadError,
+    QueryModuleReadPort, QueryProjectionRequest, RequestCancellationHandle, RequestContext,
+    RequestControl, RequestDeadlineFuture, RequestDeadlineScheduler, ResolveCommandOutcomeRequest,
+    RevokeCapabilityRequest, RiffDbService, ScanCommitsRequest, ScanIndexRequest,
+    ServiceDiagnostics, ServiceExecutors, ServiceHealthHooks, ServiceIdentity, ServiceJob,
+    ServiceJobSpawner, ServiceProcessMetadata, ServiceProviders, ServiceTelemetry,
+    ServiceTelemetryEvent, SourceName, SubmittedRecord, TraceProvenanceRequest,
     ValidateContractRequest, port_completion_channel,
 };
 use riffdb_storage_api::{
@@ -96,7 +98,7 @@ use riffdb_types::{
 };
 use tokio::sync::Notify;
 
-const BASE_SECONDS: i64 = 1_700_200_000;
+pub(crate) const BASE_SECONDS: i64 = 1_700_200_000;
 const BUDGET_SOURCE: &str = include_str!("../../../contracts/examples/budget.riff");
 const COMMAND_NAME: &str = "CreateBudget";
 const COMMAND_CALLER_KEY: &str = "service-harness-command-key";
@@ -196,6 +198,10 @@ impl ServiceHarness {
             0,
             workload_capacity.max(1),
             true,
+            None,
+            None,
+            None,
+            Vec::new(),
         )
     }
 
@@ -211,6 +217,34 @@ impl ServiceHarness {
             1,
             workload_capacity.max(1),
             true,
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+    }
+
+    /// Operations harness with Observability telemetry plus named-query ports.
+    pub(crate) fn operations_with_read_stage_telemetry(
+        telemetry: Arc<dyn ServiceTelemetry>,
+        query_executor: Arc<dyn riffdb_query_executor::QueryExecutionPort>,
+        query_modules: Arc<dyn QueryModuleReadPort>,
+        named_permissions: Vec<CapabilityPermissionV1>,
+    ) -> Self {
+        Self::compose_with_additional_commands_and_capacity(
+            ReadCommitMode::ImmediateNotFound,
+            true,
+            false,
+            false,
+            true,
+            false,
+            0,
+            8,
+            false,
+            Some(telemetry),
+            Some(query_executor),
+            Some(query_modules),
+            named_permissions,
         )
     }
 
@@ -309,6 +343,10 @@ impl ServiceHarness {
             additional_commands,
             8,
             false,
+            None,
+            None,
+            None,
+            Vec::new(),
         )
     }
 
@@ -323,6 +361,10 @@ impl ServiceHarness {
         additional_commands: usize,
         workload_capacity: u16,
         direct_empty_idempotency: bool,
+        telemetry_override: Option<Arc<dyn ServiceTelemetry>>,
+        query_executor: Option<Arc<dyn riffdb_query_executor::QueryExecutionPort>>,
+        query_modules: Option<Arc<dyn QueryModuleReadPort>>,
+        extra_permissions: Vec<CapabilityPermissionV1>,
     ) -> Self {
         let database = if pre_bootstrap {
             AuditDatabase::create_pre_bootstrap(broad_operations)
@@ -359,6 +401,7 @@ impl ServiceHarness {
             additional_commands != 0,
             Arc::clone(&capability_order),
             Arc::clone(&discovery_order),
+            extra_permissions,
         ));
         let ports = Arc::new(HarnessPorts::new(
             read_mode,
@@ -381,10 +424,12 @@ impl ServiceHarness {
             inspector,
         );
         let telemetry = Arc::new(HarnessTelemetry::default());
+        let service_telemetry = telemetry_override
+            .unwrap_or_else(|| Arc::clone(&telemetry) as Arc<dyn ServiceTelemetry>);
         let health = Arc::new(HarnessHealth::default());
         let deadline_scheduler = Arc::new(HarnessDeadlineScheduler::default());
         let cursor_tokens = Arc::new(SequentialCursorTokens::default());
-        let providers = ServiceProviders::new(
+        let mut providers = ServiceProviders::new(
             Arc::clone(&ports) as Arc<dyn CatalogReadPort>,
             Arc::clone(&policy) as Arc<dyn riffdb_service::CurrentPolicyPort>,
             Arc::clone(&ports) as Arc<dyn AuthoritativeReadPort>,
@@ -394,13 +439,18 @@ impl ServiceHarness {
             Arc::clone(&ports) as Arc<dyn CapabilityTokenIssuer>,
             Arc::new(HarnessIncidentIds::new(fail_incident_source)),
             Arc::new(HarnessDiagnostics),
-            Arc::clone(&telemetry) as Arc<dyn ServiceTelemetry>,
+            service_telemetry,
             Arc::clone(&health) as Arc<dyn ServiceHealthHooks>,
             Arc::new(TokioSpawner),
             Arc::clone(&deadline_scheduler) as Arc<dyn RequestDeadlineScheduler>,
             Arc::clone(&cursor_tokens) as Arc<dyn CursorTokenGenerator>,
             Arc::new(FixedCursorClock),
         );
+        if let (Some(executor), Some(modules)) = (query_executor, query_modules) {
+            providers = providers
+                .with_query_executor(executor)
+                .with_query_modules(modules);
+        }
         let identity = ServiceIdentity::new(
             database_id(),
             environment(),
@@ -512,6 +562,33 @@ impl ServiceHarness {
                 .try_reserve_capacity(),
             Err(riffdb_commit::CommandExecutionAdmissionError::Overloaded)
         )
+    }
+
+    /// Accepted administration-audit coordinator messages since start.
+    pub(crate) fn audit_submission_count(&self) -> u64 {
+        self.coordinator
+            .as_ref()
+            .expect("coordinator is running")
+            .administration_audit_executor()
+            .accepted_submission_count()
+    }
+
+    /// Force the command writer's EWMA queue-delay estimate (pre-admission shed).
+    pub(crate) fn force_queue_delay_estimate_micros(&self, micros: u64) {
+        self.coordinator
+            .as_ref()
+            .expect("coordinator is running")
+            .command_executor()
+            .force_queue_delay_estimate_micros_for_tests(micros);
+    }
+
+    /// Read the current queue-delay estimate.
+    pub(crate) fn queue_delay_estimate_micros(&self) -> u64 {
+        self.coordinator
+            .as_ref()
+            .expect("coordinator is running")
+            .command_executor()
+            .estimated_queue_delay_micros()
     }
 
     /// Exhausts the independent retained-byte budget (for RetainedBytes stage tests).
@@ -1077,6 +1154,15 @@ impl ServiceHarness {
         self.policy.deny_after_next_allows(allow_count);
     }
 
+    /// Advances the policy clock to `seconds` after the `allow_count`-th allow.
+    ///
+    /// Models wall time passing between one safe point and the next without
+    /// any capability-view mutation.
+    pub(crate) fn advance_policy_clock_after_next_allows(&self, allow_count: usize, seconds: i64) {
+        self.policy
+            .advance_clock_after_next_allows(allow_count, seconds);
+    }
+
     pub(crate) async fn wait_for_stalled_projection(&self) {
         self.ports.wait_for_stalled_projection().await;
         self.deadline_scheduler.wait_for_projection_waiters(2).await;
@@ -1409,6 +1495,11 @@ impl ServiceHarness {
             result.durability(),
         );
         AuthoritativeOutcomeSnapshot::journaled(facts, stored)
+    }
+
+    /// Active validated contract retained by the harness catalog.
+    pub(crate) fn active_validated_bundle(&self) -> ValidatedContractBundle {
+        self.database.active_catalog.bundle().clone()
     }
 
     pub(crate) fn stop_coordinator(&mut self) {
@@ -2076,11 +2167,17 @@ pub(crate) struct HarnessPolicy {
     calls: AtomicUsize,
     allowed_calls: AtomicUsize,
     revoke_after_allowed_call: AtomicUsize,
+    advance_clock_after_allowed_call: AtomicUsize,
+    advance_clock_to_seconds: AtomicI64,
     audit_discovery_operations: AtomicBool,
     partition_constraints: Mutex<Vec<Option<PartitionConstraint>>>,
     panic_next: AtomicBool,
     capability_order: Arc<Mutex<Vec<&'static str>>>,
     discovery_order: Arc<Mutex<Vec<&'static str>>>,
+    /// Settable authorization time shared by evaluation and the view checkpoint.
+    ///
+    /// Production samples one wall clock for both; the harness samples this.
+    now_seconds: AtomicI64,
 }
 
 impl HarnessPolicy {
@@ -2096,6 +2193,7 @@ impl HarnessPolicy {
         authorize_all_commands: bool,
         capability_order: Arc<Mutex<Vec<&'static str>>>,
         discovery_order: Arc<Mutex<Vec<&'static str>>>,
+        extra_permissions: Vec<CapabilityPermissionV1>,
     ) -> Self {
         let mut permissions = vec![
             CapabilityPermissionV1::InvokeCommand(
@@ -2171,16 +2269,39 @@ impl HarnessPolicy {
                 ));
             }
         }
+        permissions.extend(extra_permissions);
         permissions.push(
             CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::DeployContract)
                 .expect("unparameterized deploy-contract permission"),
         );
         let permissions = CapabilityPermissionsV1::new(permissions).expect("canonical permissions");
+        let field_visibility = if broad_operations {
+            contract
+                .schema()
+                .entities()
+                .iter()
+                .map(|entity| {
+                    riffdb_types::EntityFieldVisibilityV1::new(
+                        contract.lineage().clone(),
+                        entity.id(),
+                        entity
+                            .record()
+                            .fields()
+                            .iter()
+                            .map(riffdb_contract_ir::FieldSchema::id)
+                            .collect(),
+                    )
+                    .expect("entity field visibility")
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let grant = CapabilityGrantV1::new(
             TenantScope::Global,
             partition_scope,
             permissions.clone(),
-            Vec::new(),
+            field_visibility.clone(),
             NonZeroU16::new(100).expect("nonzero row limit"),
             Vec::new(),
         )
@@ -2193,7 +2314,7 @@ impl HarnessPolicy {
             )])
             .expect("one narrow harness partition"),
             permissions,
-            Vec::new(),
+            field_visibility,
             NonZeroU16::new(100).expect("nonzero row limit"),
             Vec::new(),
         )
@@ -2237,11 +2358,14 @@ impl HarnessPolicy {
             calls: AtomicUsize::new(0),
             allowed_calls: AtomicUsize::new(0),
             revoke_after_allowed_call: AtomicUsize::new(0),
+            advance_clock_after_allowed_call: AtomicUsize::new(0),
+            advance_clock_to_seconds: AtomicI64::new(0),
             audit_discovery_operations: AtomicBool::new(false),
             partition_constraints: Mutex::new(Vec::new()),
             panic_next: AtomicBool::new(false),
             capability_order,
             discovery_order,
+            now_seconds: AtomicI64::new(BASE_SECONDS + 20),
         }
     }
 
@@ -2250,12 +2374,26 @@ impl HarnessPolicy {
     }
 
     fn revoke(&self) {
+        // No generation is hand-set here. The fixture records the real
+        // active-to-revoked record transition, and the capability-view
+        // generation this policy reports is derived from that transition —
+        // exactly as production derives it from a view publish.
         self.fixture
             .revoke_current(timestamp(BASE_SECONDS + 15))
             .expect("revoke current harness capability");
         self.narrowed_fixture
             .revoke_current(timestamp(BASE_SECONDS + 15))
             .expect("revoke narrowed harness capability");
+    }
+
+    /// Returns the authorization time this policy currently samples.
+    pub(crate) fn now(&self) -> Timestamp {
+        timestamp(self.now_seconds.load(Ordering::Acquire))
+    }
+
+    /// Moves the authorization clock forward, as wall time does between safe points.
+    pub(crate) fn advance_to(&self, seconds: i64) {
+        self.now_seconds.store(seconds, Ordering::Release);
     }
 
     fn use_narrowed_for_next_allow(&self) {
@@ -2268,6 +2406,19 @@ impl HarnessPolicy {
         self.use_narrowed_fixture.store(true, Ordering::Release);
         self.restore_after_narrowed_allow
             .store(true, Ordering::Release);
+    }
+
+    fn advance_clock_after_next_allows(&self, allow_count: usize, seconds: i64) {
+        assert!(allow_count != 0, "the clock advances after an allow");
+        self.advance_clock_to_seconds
+            .store(seconds, Ordering::Release);
+        self.advance_clock_after_allowed_call.store(
+            self.allowed_calls
+                .load(Ordering::Acquire)
+                .checked_add(allow_count)
+                .expect("bounded policy-call count"),
+            Ordering::Release,
+        );
     }
 
     fn deny_after_next_allows(&self, allow_count: usize) {
@@ -2344,7 +2495,7 @@ impl riffdb_service::CurrentPolicyPort for HarnessPolicy {
         let resolver = fixture.current_capability_resolver();
         let decision = CurrentAuthorizer::new(
             &resolver,
-            &FixedAuthorizationClock,
+            &HarnessAuthorizationClock(self.now()),
             &NoopAuthorizationTelemetry,
             database_id(),
             environment(),
@@ -2385,8 +2536,44 @@ impl riffdb_service::CurrentPolicyPort for HarnessPolicy {
             {
                 self.revoke();
             }
+            if self
+                .advance_clock_after_allowed_call
+                .compare_exchange(allowed_call, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                self.advance_to(self.advance_clock_to_seconds.load(Ordering::Acquire));
+            }
         }
         Ok(decision)
+    }
+
+    fn capability_view_generation(&self) -> Option<u64> {
+        // Derived, never hand-set: the two fixture readers each advance their
+        // own generation on any record or resolution-mode change, and which
+        // fixture is current is itself part of what resolution returns. The
+        // packing is injective for the small counters a test can reach, so
+        // "unchanged" here means "nothing that resolution depends on moved".
+        let current = self.fixture.view_generation()?;
+        let narrowed = self.narrowed_fixture.view_generation()?;
+        let selector = u64::from(self.use_narrowed_fixture.load(Ordering::Acquire));
+        Some((current << 33) | (narrowed << 1) | selector)
+    }
+
+    fn capability_view_checkpoint(&self) -> Option<CapabilityViewCheckpoint> {
+        // Same clock the evaluation above samples.
+        Some(CapabilityViewCheckpoint::new(
+            self.capability_view_generation()?,
+            self.now(),
+        ))
+    }
+}
+
+/// Authorization clock reading one settable harness instant.
+struct HarnessAuthorizationClock(Timestamp);
+
+impl AuthorizationClock for HarnessAuthorizationClock {
+    fn now(&self) -> Result<Timestamp, AuthorizationClockError> {
+        Ok(self.0)
     }
 }
 
@@ -4195,6 +4382,94 @@ impl HarnessTelemetry {
 impl ServiceTelemetry for HarnessTelemetry {
     fn record(&self, event: ServiceTelemetryEvent) {
         self.0.lock().expect("telemetry mutex").push(event);
+    }
+}
+
+/// Fixed active module for named symbolic-query harness tests.
+pub(crate) struct FixedQueryModulePort {
+    module: ValidatedQueryModule,
+}
+
+impl FixedQueryModulePort {
+    pub(crate) fn new(module: ValidatedQueryModule) -> Self {
+        Self { module }
+    }
+}
+
+impl QueryModuleReadPort for FixedQueryModulePort {
+    fn prepare_active_query_module<'a>(
+        &'a self,
+        _control: &'a RequestControl,
+        _contract: ValidatedContractBundle,
+    ) -> PortFuture<'a, Option<ValidatedQueryModule>, QueryModuleReadError> {
+        let module = self.module.clone();
+        Box::pin(async move { Ok(Some(module)) })
+    }
+
+    fn prepare_query_module<'a>(
+        &'a self,
+        _control: &'a RequestControl,
+        _contract: ValidatedContractBundle,
+        module_hash: riffdb_types::QueryModuleHash,
+    ) -> PortFuture<'a, Option<ValidatedQueryModule>, QueryModuleReadError> {
+        let module = (self.module.identity() == module_hash).then(|| self.module.clone());
+        Box::pin(async move { Ok(module) })
+    }
+}
+
+/// Empty read view that returns absence for every point/scan access.
+pub(crate) struct EmptyQueryExecutor;
+
+impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
+    fn execute_query_page(
+        &self,
+        program: &riffdb_query_ir::QueryAccessProgramV1,
+        parameters: &riffdb_query_executor::QueryParameters,
+        prior: Option<&riffdb_query_executor::QueryContinuation>,
+    ) -> Result<riffdb_query_executor::QueryOwnedSnapshot, riffdb_query_executor::QueryExecutionError>
+    {
+        struct EmptyView;
+        impl riffdb_query_executor::QueryReadView for EmptyView {
+            type Error = ();
+
+            fn fault(&self, _error: &Self::Error) -> riffdb_query_executor::QueryBackendFault {
+                riffdb_query_executor::QueryBackendFault::Unavailable
+            }
+
+            fn application_head(&self) -> u64 {
+                0
+            }
+
+            fn point(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                _predicates: &[riffdb_query_executor::BoundPredicate],
+            ) -> Result<Option<riffdb_query_executor::QueryRow>, Self::Error> {
+                Ok(None)
+            }
+
+            fn dependent_point_batch(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                predicates: &[Vec<riffdb_query_executor::BoundPredicate>],
+            ) -> Result<Vec<Option<riffdb_query_executor::QueryRow>>, Self::Error> {
+                Ok(vec![None; predicates.len()])
+            }
+
+            fn scan(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                _predicates: &[riffdb_query_executor::BoundPredicate],
+                _limit: u64,
+                _after: Option<&[u8]>,
+            ) -> Result<riffdb_query_executor::QueryScanPage, Self::Error> {
+                Ok(riffdb_query_executor::QueryScanPage::exact_end(
+                    Vec::new(),
+                    0,
+                ))
+            }
+        }
+        riffdb_query_executor::execute_page_in_snapshot(program, parameters, prior, &mut EmptyView)
     }
 }
 

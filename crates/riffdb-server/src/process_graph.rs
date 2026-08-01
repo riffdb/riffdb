@@ -458,13 +458,14 @@ impl ProductionGraphBuilder {
         let service: Arc<dyn ApplicationService> =
             Arc::new(activator.activate(identity, process, executors, providers));
 
-        if let Err(source) = lifecycle.install_activated(
+        if let Err(source) = lifecycle.install_activated_with_telemetry(
             service,
             security,
             server_generation,
             retained_metadata.history_incarnation(),
             startup_lifecycle,
             allocator_capacity,
+            Some(observability.clone() as Arc<dyn ServiceTelemetry>),
         ) {
             lifecycle.stop();
             let cleanup =
@@ -559,6 +560,28 @@ impl RunningProductionGraph {
         &self,
     ) -> [u64; riffdb_observability::MAX_WRITE_GROUP_SIZE] {
         self.observability.write_completion_group_snapshot()
+    }
+
+    /// Dispatch-reason counts plus selected/deferred totals for shutdown evidence.
+    pub(crate) fn command_group_dispatch_snapshot(
+        &self,
+    ) -> (
+        [u64; riffdb_observability::COMMAND_GROUP_DISPATCH_REASON_COUNT],
+        u64,
+        u64,
+    ) {
+        self.observability.command_group_dispatch_snapshot()
+    }
+
+    /// Per-stage read-pipeline histograms for shutdown evidence.
+    pub(crate) fn read_stage_snapshot(
+        &self,
+    ) -> [(
+        u64,
+        u64,
+        [u64; riffdb_observability::HISTOGRAM_UPPER_BOUNDS.len()],
+    ); riffdb_observability::READ_PIPELINE_STAGE_COUNT] {
+        self.observability.read_stage_snapshot()
     }
 
     /// History incarnation retained from the successful open that built this graph.
@@ -909,7 +932,7 @@ mod tests {
             .find("activator.activate(")
             .expect("service activation");
         let install = source
-            .find("lifecycle.install_activated(")
+            .find("lifecycle.install_activated_with_telemetry(")
             .expect("route publication");
         assert!(sample < activate);
         assert!(activate < install);

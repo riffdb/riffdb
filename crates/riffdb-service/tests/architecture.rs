@@ -15,6 +15,7 @@ const COMMIT_SOURCE: &str = include_str!("../src/commit_operations.rs");
 const CONTEXT_SOURCE: &str = include_str!("../src/context.rs");
 const DTO_SOURCE: &str = include_str!("../src/dto.rs");
 const MAINTENANCE_SOURCE: &str = include_str!("../src/maintenance_operations.rs");
+const ORCHESTRATION_SOURCE: &str = include_str!("../src/orchestration.rs");
 const PORTS_SOURCE: &str = include_str!("../src/ports.rs");
 const QUERY_SOURCE: &str = include_str!("../src/query_discovery_operations.rs");
 const SERVICE_SOURCE: &str = include_str!("../src/service.rs");
@@ -473,15 +474,22 @@ fn dependent_query_batches_cannot_escape_identity_scope_or_final_reauthorization
     }
     assert!(execution.contains("execute_authorized_query_page("));
     assert!(execution.contains(".into_application_query()"));
+    // The read pipeline reauthorizes through its own revision-checked entry
+    // point. Both safe points remain; only their cost differs when the
+    // capability view, the validity window, and the request are unchanged.
     assert!(
         execution
-            .matches(".reauthorize(&service, &context)")
+            .matches(".reauthorize_read(&service, &context)")
             .count()
             >= 2,
         "execution must reauthorize before the dependent batch and before release"
     );
+    assert!(
+        !execution.contains(".reauthorize(&service, &context)"),
+        "the read pipeline must not reach the shared unconditional entry point"
+    );
     let final_authorization = execution
-        .rfind("begun.reauthorize(&service, &context)")
+        .rfind("begun.reauthorize_read(&service, &context)")
         .expect("final authorization");
     let result_construction = execution
         .find("ExecuteSymbolicQueryResult::from_snapshot")
@@ -514,4 +522,74 @@ fn dependent_query_batches_cannot_escape_identity_scope_or_final_reauthorization
             "query proof consumer omitted {exact_requirement}"
         );
     }
+}
+
+/// The revision-checked reauthorization shortcut stays scoped to the read pipeline.
+///
+/// Every other caller — commits, commands, contracts, discovery, and
+/// administration, including the mandatory recheck after a capacity wait —
+/// reaches `full_reauthorize` unconditionally. This guards against the
+/// shortcut being hoisted back into the shared entry point.
+#[test]
+fn the_revision_checked_reauthorization_shortcut_is_reachable_only_from_the_read_entry_point() {
+    let shortcut_uses = ORCHESTRATION_SOURCE
+        .matches("reissue_for_unchanged_view(")
+        .count();
+    assert_eq!(
+        shortcut_uses, 1,
+        "the reissue rule must have exactly one call site in service orchestration"
+    );
+
+    // The pin covers the whole crate, not just orchestration: a reissue call
+    // appearing in any other service source would bypass the read-entry scoping.
+    let mut crate_wide_uses = 0;
+    for entry in
+        std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src")).expect("service src dir")
+    {
+        let path = entry.expect("src entry").path();
+        if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            let source = std::fs::read_to_string(&path).expect("service source");
+            crate_wide_uses += source.matches("reissue_for_unchanged_view(").count();
+        }
+    }
+    assert_eq!(
+        crate_wide_uses, 1,
+        "the reissue rule must have exactly one call site across the whole service crate"
+    );
+
+    let invocation = ORCHESTRATION_SOURCE
+        .split_once("impl BegunInvocation {")
+        .expect("the begun-invocation impl exists")
+        .1;
+    let read_entry = invocation
+        .split_once("pub(crate) async fn reauthorize_read(")
+        .expect("the read reauthorization entry point exists")
+        .1
+        .split_once("\n    /// Reauthorizes newly loaded exact facts")
+        .expect("the read entry point has a closed boundary")
+        .0;
+    assert!(
+        read_entry.contains("reissue_for_unchanged_view("),
+        "the read entry point owns the only reissue call site"
+    );
+    assert!(
+        read_entry.contains("self.full_reauthorize(service, context, request)"),
+        "a declined reissue must fall through to the full evaluation"
+    );
+
+    let shared_entry = invocation
+        .split_once("pub(crate) async fn reauthorize_request(")
+        .expect("the shared reauthorization entry point exists")
+        .1
+        .split_once("\n    /// Applies the proof-shape")
+        .expect("the shared entry point has a closed boundary")
+        .0;
+    assert!(
+        !shared_entry.contains("reissue_for_unchanged_view("),
+        "the shared entry point must never take the revision-checked shortcut"
+    );
+    assert!(
+        shared_entry.contains("self.full_reauthorize(service, context, request)"),
+        "the shared entry point must always fully re-evaluate"
+    );
 }

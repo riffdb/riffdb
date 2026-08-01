@@ -159,10 +159,7 @@ impl SeedDataset {
                     name: format!("project-{org_i}-{project_i}"),
                 });
 
-                let member_count = scale
-                    .members_per_project
-                    .min(scale.users_per_org)
-                    .max(1);
+                let member_count = scale.members_per_project.min(scale.users_per_org).max(1);
                 for member_i in 0..member_count {
                     let user = &org_users[member_i as usize % org_users.len()];
                     members.push(ProjectMemberRow {
@@ -201,7 +198,9 @@ impl SeedDataset {
                             comment_id: uuid_from_ordinal(NS_COMMENT, comment_ordinal),
                             ticket_id,
                             author_id: author.user_id,
-                            body: format!("comment body {org_i}/{project_i}/{ticket_i}/{comment_i}"),
+                            body: format!(
+                                "comment body {org_i}/{project_i}/{ticket_i}/{comment_i}"
+                            ),
                         });
                     }
 
@@ -296,10 +295,7 @@ impl SeedDataset {
             .cloned()
             .collect::<Vec<_>>();
         let label_a = labels.first().expect("seed has labels").label_id;
-        let label_b = labels
-            .get(1)
-            .map(|label| label.label_id)
-            .unwrap_or(label_a);
+        let label_b = labels.get(1).map(|label| label.label_id).unwrap_or(label_a);
         let write_project_id = self
             .projects
             .iter()

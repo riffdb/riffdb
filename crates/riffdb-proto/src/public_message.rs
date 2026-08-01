@@ -165,11 +165,20 @@ pub fn decode_public_message<M: PublicMessage>(input: &[u8]) -> Result<M, Public
 
 /// Validates an already decoded public message without service or catalog context.
 pub fn validate_public_message<M: PublicMessage>(message: &M) -> Result<(), PublicWireError> {
+    validate_public_message_encoded_len(message).map(|_| ())
+}
+
+/// Validates structure and bound, returning the computed encoded length so a
+/// subsequent encode can reuse it instead of walking the message again.
+pub fn validate_public_message_encoded_len<M: PublicMessage>(
+    message: &M,
+) -> Result<usize, PublicWireError> {
     message.validate_structure()?;
-    if message.encoded_len() > M::MAX_ENCODED_BYTES {
+    let encoded_len = message.encoded_len();
+    if encoded_len > M::MAX_ENCODED_BYTES {
         return Err(PublicWireError::MessageTooLarge);
     }
-    Ok(())
+    Ok(encoded_len)
 }
 
 /// Validates the request/response relation that is not carried in either

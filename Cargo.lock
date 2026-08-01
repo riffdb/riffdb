@@ -1653,6 +1653,7 @@ dependencies = [
  "riffdb-auth",
  "riffdb-client-rust",
  "riffdb-errors",
+ "riffdb-observability",
  "riffdb-proto",
  "riffdb-service",
  "riffdb-testkit",
@@ -1698,6 +1699,13 @@ dependencies = [
  "riffdb-storage-api",
  "riffdb-types",
  "zeroize",
+]
+
+[[package]]
+name = "riffdb-bench-root"
+version = "0.1.0"
+dependencies = [
+ "rustix",
 ]
 
 [[package]]
@@ -2007,6 +2015,7 @@ dependencies = [
  "riffdb-client-rust",
  "riffdb-commit",
  "riffdb-conflict",
+ "riffdb-contract-compiler",
  "riffdb-contract-ir",
  "riffdb-errors",
  "riffdb-idempotency",
@@ -2017,6 +2026,7 @@ dependencies = [
  "riffdb-proto",
  "riffdb-query-executor",
  "riffdb-query-ir",
+ "riffdb-query-module",
  "riffdb-service",
  "riffdb-storage-api",
  "riffdb-storage-redb",
@@ -2043,6 +2053,7 @@ dependencies = [
  "riffdb-errors",
  "riffdb-idempotency",
  "riffdb-invariant",
+ "riffdb-observability",
  "riffdb-policy",
  "riffdb-query-compiler",
  "riffdb-query-executor",

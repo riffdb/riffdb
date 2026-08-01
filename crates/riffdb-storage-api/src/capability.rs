@@ -1397,6 +1397,21 @@ pub trait CapabilityReader {
         &self,
         candidates: &[CapabilityTokenDigest],
     ) -> Result<CapabilityLookupResult, StorageError>;
+
+    /// Returns the monotonic capability-view generation, when one is published.
+    ///
+    /// The generation MUST advance on every mutation that can change what
+    /// [`CapabilityReader::read_capability`] or
+    /// [`CapabilityReader::resolve_capability_digests`] would return.
+    ///
+    /// `None` means "no usable generation" and MUST be returned by readers that
+    /// publish no generation and by any reader whose generation state is
+    /// unreadable (for example a poisoned lock). Consumers treat `None` as "the
+    /// view may have changed" and fall back to full re-evaluation, so a missing
+    /// generation costs work but never weakens an authorization outcome.
+    fn capability_view_generation(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Complete ordered capability inventory used to rebuild a non-authoritative view.
