@@ -34,9 +34,9 @@ use riffdb_idempotency::{
 use riffdb_invariant::derive_input_command_facts;
 use riffdb_policy::{
     AgentSessionAdmissionPolicy, AuthorizationClock, AuthorizationClockError, AuthorizationError,
-    CurrentAuthorizer, Decision, NoopAuthorizationTelemetry, NormalizedCapabilityCreateRecord,
-    OperationRequest, PartitionConstraint, ProvenanceSelector, TrustedAudienceCatalog,
-    UntrustedInvocationClaims,
+    CapabilityViewCheckpoint, CurrentAuthorizer, Decision, NoopAuthorizationTelemetry,
+    NormalizedCapabilityCreateRecord, OperationRequest, PartitionConstraint, ProvenanceSelector,
+    TrustedAudienceCatalog, UntrustedInvocationClaims,
 };
 use riffdb_service::{
     AbsentCapabilityRevokeTargetSnapshot, AffectedEntityView, AuthoritativeCommitNotification,
@@ -98,7 +98,7 @@ use riffdb_types::{
 };
 use tokio::sync::Notify;
 
-const BASE_SECONDS: i64 = 1_700_200_000;
+pub(crate) const BASE_SECONDS: i64 = 1_700_200_000;
 const BUDGET_SOURCE: &str = include_str!("../../../contracts/examples/budget.riff");
 const COMMAND_NAME: &str = "CreateBudget";
 const COMMAND_CALLER_KEY: &str = "service-harness-command-key";
@@ -1154,6 +1154,15 @@ impl ServiceHarness {
         self.policy.deny_after_next_allows(allow_count);
     }
 
+    /// Advances the policy clock to `seconds` after the `allow_count`-th allow.
+    ///
+    /// Models wall time passing between one safe point and the next without
+    /// any capability-view mutation.
+    pub(crate) fn advance_policy_clock_after_next_allows(&self, allow_count: usize, seconds: i64) {
+        self.policy
+            .advance_clock_after_next_allows(allow_count, seconds);
+    }
+
     pub(crate) async fn wait_for_stalled_projection(&self) {
         self.ports.wait_for_stalled_projection().await;
         self.deadline_scheduler.wait_for_projection_waiters(2).await;
@@ -2158,17 +2167,17 @@ pub(crate) struct HarnessPolicy {
     calls: AtomicUsize,
     allowed_calls: AtomicUsize,
     revoke_after_allowed_call: AtomicUsize,
+    advance_clock_after_allowed_call: AtomicUsize,
+    advance_clock_to_seconds: AtomicI64,
     audit_discovery_operations: AtomicBool,
     partition_constraints: Mutex<Vec<Option<PartitionConstraint>>>,
     panic_next: AtomicBool,
     capability_order: Arc<Mutex<Vec<&'static str>>>,
     discovery_order: Arc<Mutex<Vec<&'static str>>>,
-    /// Monotonic generation for revision-checked reauthorization tests.
-    capability_view_generation: AtomicU64,
-    /// When false (default), each generation observation is unique so existing
-    /// harness call-count tests exercise the full reauth path. Security and
-    /// cheap-path tests enable stable generation explicitly.
-    stable_capability_view_generation: AtomicBool,
+    /// Settable authorization time shared by evaluation and the view checkpoint.
+    ///
+    /// Production samples one wall clock for both; the harness samples this.
+    now_seconds: AtomicI64,
 }
 
 impl HarnessPolicy {
@@ -2349,13 +2358,14 @@ impl HarnessPolicy {
             calls: AtomicUsize::new(0),
             allowed_calls: AtomicUsize::new(0),
             revoke_after_allowed_call: AtomicUsize::new(0),
+            advance_clock_after_allowed_call: AtomicUsize::new(0),
+            advance_clock_to_seconds: AtomicI64::new(0),
             audit_discovery_operations: AtomicBool::new(false),
             partition_constraints: Mutex::new(Vec::new()),
             panic_next: AtomicBool::new(false),
             capability_order,
             discovery_order,
-            capability_view_generation: AtomicU64::new(0),
-            stable_capability_view_generation: AtomicBool::new(false),
+            now_seconds: AtomicI64::new(BASE_SECONDS + 20),
         }
     }
 
@@ -2364,12 +2374,10 @@ impl HarnessPolicy {
     }
 
     fn revoke(&self) {
-        // Bump generation before/with the fixture revoke so revision-checked
-        // reauthorization falls through to a full evaluation against the
-        // revoked capability — same publication ordering as production view
-        // publish under the capability write lock.
-        self.capability_view_generation
-            .fetch_add(1, Ordering::Release);
+        // No generation is hand-set here. The fixture records the real
+        // active-to-revoked record transition, and the capability-view
+        // generation this policy reports is derived from that transition —
+        // exactly as production derives it from a view publish.
         self.fixture
             .revoke_current(timestamp(BASE_SECONDS + 15))
             .expect("revoke current harness capability");
@@ -2378,20 +2386,14 @@ impl HarnessPolicy {
             .expect("revoke narrowed harness capability");
     }
 
-    /// Enables stable capability-view generation for revision-checked reauth tests.
-    pub(crate) fn enable_stable_capability_view_generation(&self) {
-        self.stable_capability_view_generation
-            .store(true, Ordering::Release);
+    /// Returns the authorization time this policy currently samples.
+    pub(crate) fn now(&self) -> Timestamp {
+        timestamp(self.now_seconds.load(Ordering::Acquire))
     }
 
-    /// Bumps the capability-view generation without revoking (shape-divergence tests).
-    pub(crate) fn bump_capability_view_generation(&self) {
-        self.capability_view_generation
-            .fetch_add(1, Ordering::Release);
-    }
-
-    pub(crate) fn capability_view_generation_value(&self) -> u64 {
-        self.capability_view_generation.load(Ordering::Acquire)
+    /// Moves the authorization clock forward, as wall time does between safe points.
+    pub(crate) fn advance_to(&self, seconds: i64) {
+        self.now_seconds.store(seconds, Ordering::Release);
     }
 
     fn use_narrowed_for_next_allow(&self) {
@@ -2404,6 +2406,19 @@ impl HarnessPolicy {
         self.use_narrowed_fixture.store(true, Ordering::Release);
         self.restore_after_narrowed_allow
             .store(true, Ordering::Release);
+    }
+
+    fn advance_clock_after_next_allows(&self, allow_count: usize, seconds: i64) {
+        assert!(allow_count != 0, "the clock advances after an allow");
+        self.advance_clock_to_seconds
+            .store(seconds, Ordering::Release);
+        self.advance_clock_after_allowed_call.store(
+            self.allowed_calls
+                .load(Ordering::Acquire)
+                .checked_add(allow_count)
+                .expect("bounded policy-call count"),
+            Ordering::Release,
+        );
     }
 
     fn deny_after_next_allows(&self, allow_count: usize) {
@@ -2480,7 +2495,7 @@ impl riffdb_service::CurrentPolicyPort for HarnessPolicy {
         let resolver = fixture.current_capability_resolver();
         let decision = CurrentAuthorizer::new(
             &resolver,
-            &FixedAuthorizationClock,
+            &HarnessAuthorizationClock(self.now()),
             &NoopAuthorizationTelemetry,
             database_id(),
             environment(),
@@ -2521,23 +2536,44 @@ impl riffdb_service::CurrentPolicyPort for HarnessPolicy {
             {
                 self.revoke();
             }
+            if self
+                .advance_clock_after_allowed_call
+                .compare_exchange(allowed_call, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                self.advance_to(self.advance_clock_to_seconds.load(Ordering::Acquire));
+            }
         }
         Ok(decision)
     }
 
-    fn capability_view_generation(&self) -> u64 {
-        if self
-            .stable_capability_view_generation
-            .load(Ordering::Acquire)
-        {
-            self.capability_view_generation.load(Ordering::Acquire)
-        } else {
-            // Unstable mode: every observation is unique so reauthorization
-            // always falls through to full evaluation (preserves legacy
-            // harness call-count semantics).
-            self.capability_view_generation
-                .fetch_add(1, Ordering::AcqRel)
-        }
+    fn capability_view_generation(&self) -> Option<u64> {
+        // Derived, never hand-set: the two fixture readers each advance their
+        // own generation on any record or resolution-mode change, and which
+        // fixture is current is itself part of what resolution returns. The
+        // packing is injective for the small counters a test can reach, so
+        // "unchanged" here means "nothing that resolution depends on moved".
+        let current = self.fixture.view_generation()?;
+        let narrowed = self.narrowed_fixture.view_generation()?;
+        let selector = u64::from(self.use_narrowed_fixture.load(Ordering::Acquire));
+        Some((current << 33) | (narrowed << 1) | selector)
+    }
+
+    fn capability_view_checkpoint(&self) -> Option<CapabilityViewCheckpoint> {
+        // Same clock the evaluation above samples.
+        Some(CapabilityViewCheckpoint::new(
+            self.capability_view_generation()?,
+            self.now(),
+        ))
+    }
+}
+
+/// Authorization clock reading one settable harness instant.
+struct HarnessAuthorizationClock(Timestamp);
+
+impl AuthorizationClock for HarnessAuthorizationClock {
+    fn now(&self) -> Result<Timestamp, AuthorizationClockError> {
+        Ok(self.0)
     }
 }
 

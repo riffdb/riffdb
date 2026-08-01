@@ -15,10 +15,10 @@ use crate::operation::PartitionRequirement;
 use crate::{
     AuthorizationClock, AuthorizationDefect, AuthorizationTelemetry, AuthorizationTelemetryEvent,
     AuthorizedCapabilityMutationPreparation, AuthorizedOfflineMaintenance, AuthorizedOperation,
-    CapabilityActivity, CapabilityMutationRequest, CurrentAuthorizationIdentity, Decision,
-    Obligations, OfflineMaintenanceAuthorizationRequest, OfflineMaintenanceDecision,
-    OperationRequest, OutputClassification, PolicyCode, TransactionCurrentCapabilityFacts,
-    TrustedAudienceCatalog,
+    CapabilityActivity, CapabilityMutationRequest, CheckedCapabilityValidity,
+    CurrentAuthorizationIdentity, Decision, Obligations, OfflineMaintenanceAuthorizationRequest,
+    OfflineMaintenanceDecision, OperationRequest, OutputClassification, PolicyCode,
+    TransactionCurrentCapabilityFacts, TrustedAudienceCatalog,
 };
 
 /// A redaction-safe internal failure before policy could decide.
@@ -201,6 +201,9 @@ where
                     current_facts.revision,
                     principal_facts.principal_id,
                     principal_facts.actor_kind,
+                    // Retained so revision-checked reauthorization can apply the
+                    // exact same time clause without reloading the record.
+                    current_validity(&current_facts),
                 );
                 let proof = if request.permission_requirement().is_none() {
                     AuthorizedOperation::new_discovery(
@@ -522,6 +525,11 @@ fn application_query_accesses_visible(
     })
 }
 
+/// Projects the exact validity window carried by reloaded current facts.
+fn current_validity(current: &CurrentFacts) -> CheckedCapabilityValidity {
+    CheckedCapabilityValidity::new(current.issued_at, current.expires_at)
+}
+
 fn validate_current(
     principal: &PrincipalFacts,
     current: &CurrentFacts,
@@ -538,8 +546,9 @@ fn validate_current(
         && current.actor_kind == principal.actor_kind
         && current.audiences.binary_search(&principal.audience).is_ok()
         && current.grant.tenant_scope() == &principal.tenant_scope
-        && current.issued_at <= now
-        && now < current.expires_at;
+        // Single definition of the time clause; revision-checked
+        // reauthorization applies the same predicate to the retained window.
+        && current_validity(current).admits(now);
     if valid {
         Ok(())
     } else {
