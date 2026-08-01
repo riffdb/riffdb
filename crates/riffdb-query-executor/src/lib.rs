@@ -16,8 +16,15 @@ use riffdb_types::{CanonicalValue, QueryCostVectorV1, encode_canonical_value};
 pub const MAX_QUERY_PARAMETERS: usize = 1_024;
 /// Maximum fields copied into one owned row.
 pub const MAX_QUERY_ROW_FIELDS: usize = 1_024;
-/// Maximum physical candidates inspected by one access step.
-pub const MAX_QUERY_SCANNED_ROWS: u64 = 500;
+/// Scan-bound constants and helpers shared with deploy-time resolution.
+///
+/// `MAX_QUERY_SCANNED_ROWS` is the physical scan ceiling. Adapters may inspect
+/// one extra row (`QUERY_CONTINUATION_PROBE_ROWS`) when minting a continuation;
+/// legal page takes are therefore bounded by `max_query_page_take()`.
+pub use riffdb_query_ir::{
+    MAX_QUERY_SCANNED_ROWS, QUERY_CONTINUATION_PROBE_ROWS, max_query_page_take,
+    page_take_within_scan_bound, scanned_rows_budget_for_page_take,
+};
 /// Maximum opaque continuation bytes supplied by one engine adapter.
 pub const MAX_QUERY_CONTINUATION_BYTES: usize = 4_096;
 
@@ -159,6 +166,10 @@ impl QueryScanPage {
     }
 
     /// Constructs a non-final page with explicit physical progress.
+    ///
+    /// Construction does not enforce `MAX_QUERY_SCANNED_ROWS`; the closed
+    /// executor classifies an over-scan as [`QueryExecutionError::BoundExceeded`]
+    /// so adapters never map a knowable page bound into an integrity fault.
     pub fn continued(
         rows: Vec<QueryRow>,
         epoch: u64,
@@ -168,8 +179,7 @@ impl QueryScanPage {
         let point_reads = rows.len() as u64;
         (!continuation.is_empty()
             && continuation.len() <= MAX_QUERY_CONTINUATION_BYTES
-            && scanned_rows > 0
-            && scanned_rows <= MAX_QUERY_SCANNED_ROWS)
+            && scanned_rows > 0)
             .then_some(Self {
                 rows,
                 epoch,
@@ -183,7 +193,7 @@ impl QueryScanPage {
     ///
     /// The executor independently reconciles these counts with the returned
     /// rows and the plan fuel; this constructor intentionally performs only
-    /// structural bounds checks.
+    /// structural bounds checks (not the scan ceiling).
     #[doc(hidden)]
     pub fn reported(
         rows: Vec<QueryRow>,
@@ -192,10 +202,9 @@ impl QueryScanPage {
         point_reads: u64,
         continuation: Option<Vec<u8>>,
     ) -> Option<Self> {
-        (scanned_rows <= MAX_QUERY_SCANNED_ROWS
-            && continuation.as_ref().is_none_or(|value| {
-                !value.is_empty() && value.len() <= MAX_QUERY_CONTINUATION_BYTES
-            })
+        (continuation
+            .as_ref()
+            .is_none_or(|value| !value.is_empty() && value.len() <= MAX_QUERY_CONTINUATION_BYTES)
             && (continuation.is_none() || scanned_rows > 0))
             .then_some(Self {
                 rows,
@@ -781,15 +790,25 @@ fn resolve_row_limit(
 ) -> Result<u64, QueryExecutionError> {
     let limit = match step.row_limit() {
         QueryRowLimit::Literal(value) => *value,
-        QueryRowLimit::Parameter { name, default } => match parameters.get(name) {
-            Some(CanonicalValue::U64(value)) => *value,
-            Some(_) => return Err(QueryExecutionError::InvalidProgram),
-            None => default.ok_or_else(|| QueryExecutionError::MissingParameter {
-                parameter: name.clone(),
-            })?,
-        },
+        QueryRowLimit::Parameter { name, default } => {
+            let value = match parameters.get(name) {
+                Some(CanonicalValue::U64(value)) => *value,
+                Some(_) => return Err(QueryExecutionError::InvalidProgram),
+                None => default.ok_or_else(|| QueryExecutionError::MissingParameter {
+                    parameter: name.clone(),
+                })?,
+            };
+            // Parameterized Limit is validated before any backend scan so an
+            // over-bound runtime value is InputInvalid, never INTERNAL.
+            if value == 0 || !page_take_within_scan_bound(value) || value > step.maximum_rows() {
+                return Err(QueryExecutionError::InvalidParameter {
+                    parameter: name.clone(),
+                });
+            }
+            value
+        }
     };
-    if limit == 0 || limit > step.maximum_rows() {
+    if limit == 0 || limit > step.maximum_rows() || !page_take_within_scan_bound(limit) {
         return Err(QueryExecutionError::BoundExceeded);
     }
     Ok(limit)

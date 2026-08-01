@@ -2007,7 +2007,7 @@ fn materialize_query_parameters(
             (TypeReference::Limit, None) if parameter.default.is_some() => continue,
             (_, None) => return Err(validation_failure(ValidationCode::InvalidValue)),
             (TypeReference::Limit, Some(SubmittedValue::U64(value)))
-                if (1..=500).contains(value) =>
+                if *value >= 1 && riffdb_query_executor::page_take_within_scan_bound(*value) =>
             {
                 canonical.insert(name.to_owned(), CanonicalValue::U64(*value));
             }

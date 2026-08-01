@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use riffdb_contract_ir::{CommandPlan, ContractBundle, RecordTypeRef, ValueType, ValueTypeTag};
-use riffdb_query_ir::{NamedQuerySchemas, NamedTypeSchema, PageBound};
+use riffdb_query_ir::{NamedQuerySchemas, NamedTypeSchema, PageBound, max_query_page_take};
 use serde_json::{Map, Value, json};
 
 use crate::QueryModule;
@@ -295,7 +295,8 @@ fn mcp_type_schema(value_type: &NamedTypeSchema) -> Value {
         NamedTypeSchema::List { element, maximum } => {
             let maximum = match maximum {
                 PageBound::Literal(maximum) => *maximum,
-                PageBound::Parameter(_) => 500,
+                // Parameterized page bound is capped by the continuation-aware max take.
+                PageBound::Parameter(_) => max_query_page_take(),
             };
             json!({"type": "array", "items": mcp_type_schema(element), "maxItems": maximum})
         }
@@ -316,7 +317,9 @@ fn mcp_type_schema(value_type: &NamedTypeSchema) -> Value {
             })
         }
         NamedTypeSchema::Cursor => json!({"type": "string"}),
-        NamedTypeSchema::Limit => json!({"maximum": 500, "minimum": 1, "type": "integer"}),
+        NamedTypeSchema::Limit => {
+            json!({"maximum": max_query_page_take(), "minimum": 1, "type": "integer"})
+        }
     }
 }
 

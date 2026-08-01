@@ -2,7 +2,9 @@
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_ir::{
-    NamedTypeSchema, QueryDiagnosticCode, SourceSymbolKind, SymbolicCatalog, resolve_query_surface,
+    MAX_QUERY_SCANNED_ROWS, NamedTypeSchema, QUERY_CONTINUATION_PROBE_ROWS, QueryDiagnosticCode,
+    SourceSymbolKind, SymbolicCatalog, max_query_page_take, page_take_within_scan_bound,
+    resolve_query_surface, scanned_rows_budget_for_page_take,
 };
 use riffdb_riffql_syntax::parse_query;
 
@@ -55,10 +57,7 @@ const QUERIES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Historical runtime-`Limit` BoardPage shape (Limit range up to 500).
-/// take-500 fails at execute: MAX_QUERY_SCANNED_ROWS=500 plus a continuation
-/// probe scans 501 → RDB-INTERNAL-0001 (incidents include
-/// 019fbf5b-1a64-7877-94c3-47d7a0763539). Harness uses BoardPage50/200/450.
+/// Runtime-`Limit` BoardPage shape (Limit max is continuation-aware page take).
 const RUNTIME_LIMIT_BOARD_PAGE: &str = r#"query BoardPage(
     $organization_id: Organization.organization_id,
     $project_id: Project.project_id,
@@ -71,6 +70,60 @@ const RUNTIME_LIMIT_BOARD_PAGE: &str = r#"query BoardPage(
             && status == $status
         order by ticket_id asc
         take $limit
+
+    return Found {
+        tickets: tickets {
+            ticket_id
+            project_id
+            title
+            status
+            reporter_id
+            assignee_id
+        }
+    }
+
+    outcomes Found
+}
+"#;
+
+const STATIC_TAKE_500: &str = r#"query BoardPage500(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $status: TicketStatus,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == $status
+        order by ticket_id asc
+        take 500
+
+    return Found {
+        tickets: tickets {
+            ticket_id
+            project_id
+            title
+            status
+            reporter_id
+            assignee_id
+        }
+    }
+
+    outcomes Found
+}
+"#;
+
+const STATIC_TAKE_MAX: &str = r#"query BoardPageMax(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $status: TicketStatus,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == $status
+        order by ticket_id asc
+        take 499
 
     return Found {
         tickets: tickets {
@@ -161,16 +214,63 @@ fn board_page_50_static_resolves_wide_row_without_runtime_limit() {
     assert!(matches!(tickets.value_type(), NamedTypeSchema::List { .. }));
 }
 
-/// Marker: a take-500 page (runtime Limit or static) exceeds MAX_QUERY_SCANNED_ROWS=500
-/// because the executor probes one extra row for continuation (scan 501 → RDB-INTERNAL-0001).
-/// Live incidents include 019fbf5b-1a64-7877-94c3-47d7a0763539 (and the static-500 abort).
-/// Harness uses BoardPage50/200/450 so take N ≤ 450 leaves room for the probe.
 #[test]
-#[ignore = "scan ceiling: take 500 + continuation probe (501) trips MAX_QUERY_SCANNED_ROWS=500 (RDB-INTERNAL-0001; incidents incl. 019fbf5b-1a64-7877-94c3-47d7a0763539); harness uses static BoardPage50/200/450"]
-fn board_page_take_500_hits_executor_scan_ceiling() {
+fn scan_bound_constants_encode_continuation_probe_relationship() {
+    assert_eq!(MAX_QUERY_SCANNED_ROWS, 500);
+    assert_eq!(QUERY_CONTINUATION_PROBE_ROWS, 1);
+    assert_eq!(max_query_page_take(), 499);
+    assert_eq!(scanned_rows_budget_for_page_take(499), Some(500));
+    assert_eq!(scanned_rows_budget_for_page_take(500), Some(501));
+    assert!(page_take_within_scan_bound(499));
+    assert!(!page_take_within_scan_bound(500));
+    assert!(!page_take_within_scan_bound(0));
+}
+
+/// Incidents 019fbf5b-1a64… / 019fbf60-aaac…: take 500 + continuation probe (501)
+/// used to deploy then fail as RDB-INTERNAL-0001. Static take 500 is now rejected
+/// at resolve with a diagnostic that names the continuation-aware page bound.
+#[test]
+fn static_take_500_is_rejected_at_resolve_with_bound_diagnostic() {
     let bundle = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");
-    // Historical runtime-limit shape still resolves; execute of take 500 fails either way.
+    let document = parse_query(STATIC_TAKE_500).expect("parse static take 500");
+    let diagnostics =
+        resolve_query_surface(&document, &catalog).expect_err("take 500 must not resolve");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(diagnostic.code(), QueryDiagnosticCode::ArtifactLimit);
+    assert!(
+        diagnostic.summary().contains("499"),
+        "diagnostic must name the max page take: {}",
+        diagnostic.summary()
+    );
+    assert!(
+        diagnostic.summary().contains("continuation probe")
+            || diagnostic.summary().contains("scan ceiling"),
+        "diagnostic must explain the probe reserve: {}",
+        diagnostic.summary()
+    );
+}
+
+#[test]
+fn static_take_at_max_page_take_resolves() {
+    let bundle = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");
+    let document = parse_query(STATIC_TAKE_MAX).expect("parse static take 499");
+    let resolved = resolve_query_surface(&document, &catalog).expect("take 499 resolves");
+    let tickets = &resolved.schemas().results()[0].fields()[0];
+    assert!(matches!(
+        tickets.value_type(),
+        NamedTypeSchema::List {
+            maximum: riffdb_query_ir::PageBound::Literal(499),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn runtime_limit_board_page_still_resolves() {
+    let bundle = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");
     let document = parse_query(RUNTIME_LIMIT_BOARD_PAGE).expect("parse runtime BoardPage");
     let resolved = resolve_query_surface(&document, &catalog).expect("runtime BoardPage resolves");
     assert!(
@@ -179,8 +279,35 @@ fn board_page_take_500_hits_executor_scan_ceiling() {
             .parameters()
             .iter()
             .any(|param| param.name() == "limit"),
-        "historical runtime BoardPage had a Limit parameter"
+        "runtime BoardPage exposes a Limit parameter"
     );
+}
+
+#[test]
+fn limit_default_over_max_page_take_is_rejected_at_resolve() {
+    let bundle = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");
+    let source = r#"query OverDefault(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $limit: Limit = 500,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id && project_id == $project_id
+        order by ticket_id asc
+        take $limit
+    return Found { tickets: tickets { ticket_id } }
+    outcomes Found
+}
+"#;
+    let document = parse_query(source).expect("parse");
+    let diagnostics =
+        resolve_query_surface(&document, &catalog).expect_err("Limit default 500 must fail");
+    assert_eq!(
+        diagnostics.as_slice()[0].code(),
+        QueryDiagnosticCode::ArtifactLimit
+    );
+    assert!(diagnostics.as_slice()[0].summary().contains("499"));
 }
 
 #[test]

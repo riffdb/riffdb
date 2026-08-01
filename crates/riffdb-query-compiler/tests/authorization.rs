@@ -133,7 +133,7 @@ fn encoded_result_cost_overflow_is_source_spanned_and_releases_no_plan() {
           && project_id == $project_id
           && status == $status
         order by ticket_id asc
-        take 500
+        take 499
     return Found {{
         {copies}
     }}
