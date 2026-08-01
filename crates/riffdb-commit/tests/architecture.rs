@@ -524,7 +524,11 @@ fn production_group_collection_never_parks_on_a_submillisecond_tokio_timer() {
         "IDEMPOTENCY_INSPECTION_GROUP_WINDOW",
         "tokio::time::timeout_at",
         ".enable_time()",
+        ".enable_all()",
         "MAX_GROUP_WAIT_MICROSECONDS",
+        "tokio::time::sleep",
+        "tokio::time::timeout",
+        "tokio::time::interval",
     ] {
         assert!(
             !production.contains(forbidden),
@@ -1662,9 +1666,11 @@ fn coordinator_actor_uses_only_the_reviewed_current_thread_channel_surface() {
         .and_then(|(_, remainder)| remainder.split_once("\n}"))
         .map(|(body, _)| body)
         .expect("running coordinator Drop implementation");
+    // Pipelined writer: Drop must join the intake actor so WriterHandle joins
+    // the writer before returning (no orphaned write transaction).
     assert!(
-        !drop_body.contains(".join()"),
-        "coordinator Drop must initiate shutdown without blocking on a join"
+        drop_body.contains(".join()"),
+        "coordinator Drop must join the intake actor (and thus the writer)"
     );
 }
 

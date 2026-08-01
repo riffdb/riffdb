@@ -927,32 +927,6 @@ impl BegunInvocation {
         result
     }
 
-    /// Durable-start path for callers that still need a standalone Started row.
-    #[allow(dead_code)] // retained for non-fused paths that require a durable start alone
-    async fn ensure_deferred_start(
-        &self,
-        service: &RiffDbServiceInner,
-        context: &RequestContext,
-    ) -> Result<(), AuditAppendFailure> {
-        if !self.started || !self.deferred_start.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        service
-            .append_audit(
-                context,
-                self.operation,
-                ServiceAuditPhaseV1::Started,
-                self.targets.clone(),
-                self.approval_id.clone(),
-                ServiceAuditLinkV1::None,
-                AuditAppendControl::Terminal,
-            )
-            .await?;
-        self.lifecycle.mark_durable_start();
-        self.deferred_start.store(false, Ordering::Release);
-        Ok(())
-    }
-
     async fn finish_reauthorization_phase(
         &self,
         service: &RiffDbServiceInner,
