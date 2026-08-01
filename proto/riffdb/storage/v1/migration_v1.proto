@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/application.proto";
+import "riffdb/storage/v1/common.proto";
+
+enum ContractMigrationJournalStepV1 {
+  CONTRACT_MIGRATION_JOURNAL_STEP_UNSPECIFIED = 0;
+  CONTRACT_MIGRATION_JOURNAL_STEP_TRANSFORMING = 1;
+  CONTRACT_MIGRATION_JOURNAL_STEP_REBUILDING_PROJECTIONS = 2;
+  CONTRACT_MIGRATION_JOURNAL_STEP_VALIDATING = 3;
+  CONTRACT_MIGRATION_JOURNAL_STEP_READY_FOR_CUTOVER = 4;
+  CONTRACT_MIGRATION_JOURNAL_STEP_COMPLETE = 5;
+}
+
+message ContractMigrationArtifactIdentityV1 {
+  bytes parent_bundle_hash = 1;
+  bytes candidate_bundle_hash = 2;
+  bytes migration_bundle_hash = 3;
+}
+
+message ContractMigrationOperationArtifactsV1 {
+  uint64 candidate_bundle_length = 1;
+  bytes candidate_bundle_sha256 = 2;
+  uint64 migration_bundle_length = 3;
+  bytes migration_bundle_sha256 = 4;
+}
+
+message StoredContractMigrationJournalV1 {
+  bytes database_id = 1;
+  bytes operation_id = 2;
+  bytes semantic_input_hash = 3;
+  ContractMigrationArtifactIdentityV1 artifacts = 4;
+  ContractMigrationJournalStepV1 step = 5;
+  optional EntityTargetV1 exclusive_cursor = 6;
+  uint64 checked_rows = 7;
+  uint64 changed_rows = 8;
+  uint64 batch_count = 9;
+  optional uint64 frozen_application_frontier = 10;
+  repeated uint32 required_projection_ids = 11;
+  optional bytes previous_journal_hash = 12;
+  bytes journal_hash = 13;
+}
+
+message StoredContractMigrationRecordV1 {
+  bytes database_id = 1;
+  bytes operation_id = 2;
+  bytes semantic_input_hash = 3;
+  ContractMigrationArtifactIdentityV1 artifacts = 4;
+  ContractMigrationOperationArtifactsV1 operation_artifacts = 5;
+  string source_backup_name = 6;
+  bytes source_backup_manifest_checksum = 7;
+  AuditPrincipalV1 principal = 8;
+  optional string approval_id = 9;
+  optional uint64 predecessor_application_frontier = 10;
+  optional uint64 successor_application_frontier = 11;
+  uint64 checked_rows = 12;
+  uint64 changed_rows = 13;
+  uint64 batch_count = 14;
+  bytes terminal_validation_digest = 15;
+  uint64 administration_sequence = 16;
+}
+
+message StoredContractWriteRetirementV1 {
+  bytes parent_bundle_hash = 1;
+  bytes candidate_bundle_hash = 2;
+  bytes migration_bundle_hash = 3;
+  bytes operation_id = 4;
+  uint64 administration_sequence = 5;
+}
+
+message StoredRetiredEntityRecordV1 {
+  bytes operation_id = 1;
+  bytes migration_bundle_hash = 2;
+  EntityTargetV1 original_target = 3;
+  bytes original_entity_envelope = 4;
+}

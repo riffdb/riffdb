@@ -704,6 +704,7 @@ fn validate_service_audit_phase_link(
                     | ServiceOperationV1::ResolveCommandOutcome
                     | ServiceOperationV1::DeployContract
                     | ServiceOperationV1::DeployQueryModule
+                    | ServiceOperationV1::ApplyContractMigration
                     | ServiceOperationV1::CreateCapability
                     | ServiceOperationV1::RevokeCapability
             ),
@@ -715,6 +716,7 @@ fn validate_service_audit_phase_link(
                 operation,
                 ServiceOperationV1::DeployContract
                     | ServiceOperationV1::DeployQueryModule
+                    | ServiceOperationV1::ApplyContractMigration
                     | ServiceOperationV1::CreateCapability
                     | ServiceOperationV1::RevokeCapability
             ),
@@ -1275,6 +1277,7 @@ mod tests {
                                     | ServiceOperationV1::ResolveCommandOutcome
                                     | ServiceOperationV1::DeployContract
                                     | ServiceOperationV1::DeployQueryModule
+                                    | ServiceOperationV1::ApplyContractMigration
                                     | ServiceOperationV1::CreateCapability
                                     | ServiceOperationV1::RevokeCapability
                             ),
@@ -1287,6 +1290,7 @@ mod tests {
                                 operation,
                                 ServiceOperationV1::DeployContract
                                     | ServiceOperationV1::DeployQueryModule
+                                    | ServiceOperationV1::ApplyContractMigration
                                     | ServiceOperationV1::CreateCapability
                                     | ServiceOperationV1::RevokeCapability
                             ),

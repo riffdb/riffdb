@@ -5,6 +5,8 @@
 - **Exact text accepted:** 2026-07-31
 - **Acceptance reference:** Human maintainer exact-text acceptance in the
   implementation session on 2026-07-31
+- **Operation-artifact clarification accepted:** 2026-07-31, human maintainer
+  confirmation in the WP-408 implementation session
 - **Decision deadline:** Before WP-407 freezes migration storage semantics
 - **Depends on:** ADR-0076, ADR-0077
 - **Amends:** ADR-0003, ADR-0004, ADR-0006, ADR-0010, ADR-0019, ADR-0022,
@@ -60,6 +62,15 @@ receipt files remain under the selected database's reserved
 `backup_root/.maintenance` subtree. Existing lexical path-disjointness and
 symlink rejection apply.
 
+Before drain, the server publishes the exact canonical successor contract
+bundle and migration bundle as immutable operation artifacts under the
+protected `.maintenance/migrations/<operation-id>/` subtree. Each artifact and
+its parent are synced before acceptance. The receipt binds each artifact's
+exact length and SHA-256 checksum. Restart reconstructs and revalidates the plan
+only from those artifacts plus the exact predecessor backup; it never requests
+caller resubmission. The artifacts remain private and are not embedded in the
+bounded receipt because their combined accepted maximum exceeds 30 MiB.
+
 `ContractMigrationReceiptV1` is a versioned checksummed canonically encoded
 external operation state. It binds the database identity, operation ID/kind,
 semantic input hash, exact artifacts, source backup name/manifest hash, stage
@@ -73,6 +84,16 @@ journal hash. Each batch transaction atomically compares the expected journal,
 rechecks every input row version/hash, applies at most 64 row mutations under
 the existing encoded transaction bound, updates all affected indexes and
 generations, and advances the journal. Scan pages contain at most 256 rows.
+
+The additive V1 durable layout uses exactly four tables:
+`contract_migration_journal`, keyed by the 16-byte operation UUID;
+`contract_migrations`, keyed by that UUID;
+`contract_write_retirements`, keyed by the 32-byte predecessor bundle hash; and
+`retired_entities`, keyed by operation UUID followed by a big-endian `u32`
+length and the canonical entity-target bytes. The corresponding writable
+envelope records are `StoredContractMigrationJournalV1`,
+`StoredContractMigrationRecordV1`, `StoredContractWriteRetirementV1`, and
+`StoredRetiredEntityRecordV1`, defined additively in `migration_v1.proto`.
 
 The commit crate owns a separate `MigrationCoordinator`. Catalog supplies a
 sealed validated migration plan and schema proof. The coordinator evaluates

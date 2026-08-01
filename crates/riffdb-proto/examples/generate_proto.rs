@@ -50,6 +50,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/index_generation_v2.proto",
     "riffdb/storage/v1/index_v2.proto",
     "riffdb/storage/v1/metadata.proto",
+    "riffdb/storage/v1/migration_v1.proto",
     "riffdb/storage/v1/outbox.proto",
     "riffdb/storage/v1/projection.proto",
     "riffdb/storage/v1/registry_v2.proto",
@@ -70,6 +71,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/index_generation_v2.proto",
     "riffdb/storage/v1/index_v2.proto",
     "riffdb/storage/v1/metadata.proto",
+    "riffdb/storage/v1/migration_v1.proto",
     "riffdb/storage/v1/outbox.proto",
     "riffdb/storage/v1/projection.proto",
     "riffdb/storage/v1/registry_v2.proto",
@@ -295,6 +297,26 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
     durable(
         "entity_references_v3.proto",
         "StoredCommitRecordV3",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "migration_v1.proto",
+        "StoredContractMigrationJournalV1",
+        PayloadBound::Document,
+    ),
+    durable(
+        "migration_v1.proto",
+        "StoredContractMigrationRecordV1",
+        PayloadBound::Admission,
+    ),
+    durable(
+        "migration_v1.proto",
+        "StoredContractWriteRetirementV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "migration_v1.proto",
+        "StoredRetiredEntityRecordV1",
         PayloadBound::EnvelopeMaximum,
     ),
 ];
@@ -614,6 +636,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let entity_reference_v3_record = durable_registry
         .get(current_v1_record_count + 8)
         .ok_or_else(|| io::Error::other("durable entity-reference registry is incomplete"))?;
+    let migration_v1_records = durable_registry
+        .get(current_v1_record_count + 9..current_v1_record_count + 13)
+        .ok_or_else(|| io::Error::other("durable migration-v1 registry is incomplete"))?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -718,6 +743,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/durable-entity-reference-v3-record-bound.bin",
         &durable_record_bounds(std::slice::from_ref(entity_reference_v3_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-migration-v1-schema-hashes.bin",
+        &durable_schema_hashes(migration_v1_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-migration-v1-record-bounds.bin",
+        &durable_record_bounds(migration_v1_records),
     )?;
     write_artifact(
         &output_root,
@@ -986,9 +1021,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 38 {
+    if DURABLE_RECORDS.len() != 42 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 38 records").into(),
+            io::Error::other("readable durable registry must contain exactly 42 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -998,7 +1033,7 @@ fn build_durable_registry(
             .any(|file| file.package() != "riffdb.storage.v1")
     {
         return Err(io::Error::other(
-            "storage descriptor must contain exactly the sixteen riffdb.storage.v1 sources",
+            "storage descriptor must contain exactly the eighteen riffdb.storage.v1 sources",
         )
         .into());
     }
@@ -1012,9 +1047,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 89 || enum_count != 12 {
+    if message_count != 95 || enum_count != 13 {
         return Err(io::Error::other(format!(
-            "storage schema must contain 88 semantic messages plus StoredEnvelope and 12 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain 94 semantic messages plus StoredEnvelope and 13 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1215,6 +1250,9 @@ fn durable_writable_registry_fixture(
     let commit_v3 = records
         .get(current_v1_record_count + 8)
         .ok_or_else(|| io::Error::other("durable registry is missing StoredCommitRecordV3"))?;
+    let migration_v1 = records
+        .get(current_v1_record_count + 9..current_v1_record_count + 13)
+        .ok_or_else(|| io::Error::other("durable registry is missing migration V1 records"))?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -1228,10 +1266,11 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(history_incarnation))
         .chain(std::iter::once(service_audit_request_index))
         .chain(std::iter::once(event_route))
+        .chain(migration_v1.iter())
         .chain(std::iter::once(registry_v2));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 4);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 8);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

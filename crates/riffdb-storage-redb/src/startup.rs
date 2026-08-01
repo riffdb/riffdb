@@ -40,26 +40,29 @@ use crate::hooks::RedbTestOperation;
 use crate::keys;
 use crate::layout::{
     AUDIT, AUDIT_BY_REQUEST, CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY,
-    COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING,
+    COMMITS, CONTRACT_BUNDLES, CONTRACT_MIGRATION_JOURNAL, CONTRACT_MIGRATIONS,
+    CONTRACT_WRITE_RETIREMENTS, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING,
     INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE,
     META_CAPABILITY_BOOTSTRAP, META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
     META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, OUTBOX, OUTBOX_STATUS,
     PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE,
-    QUERY_MODULES, SECONDARY_INDEXES, TABLE_NAMES,
+    QUERY_MODULES, RETIRED_ENTITIES, SECONDARY_INDEXES, TABLE_NAMES,
 };
 use crate::store::{
-    PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST, PRE_ENTITY_REFERENCE_REGISTRY_DIGEST,
-    PRE_EVENT_ROUTE_REGISTRY_DIGEST, PRE_HISTORY_INCARNATION_REGISTRY_DIGEST,
-    PRE_INDEX_GENERATION_REGISTRY_DIGEST, RedbDormantPorts, RedbStore, SharedRedb,
+    PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST, PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST,
+    PRE_ENTITY_REFERENCE_REGISTRY_DIGEST, PRE_EVENT_ROUTE_REGISTRY_DIGEST,
+    PRE_HISTORY_INCARNATION_REGISTRY_DIGEST, PRE_INDEX_GENERATION_REGISTRY_DIGEST,
+    RedbDormantPorts, RedbStore, SharedRedb,
 };
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
-const STRUCTURAL_TABLE_COUNT: usize = 23;
+const STRUCTURAL_TABLE_COUNT: usize = 27;
 
 fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
     digest == riffdb_storage_api::proto_codec::current_record_registry_digest()
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST)
+        || digest == riffdb_types::SchemaHash::from_bytes(PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST)
@@ -1169,6 +1172,18 @@ impl RedbStructuralEvidenceSession {
                     22 => transaction
                         .open_table(AUDIT_BY_REQUEST)
                         .map_err(table_error)?,
+                    23 => transaction
+                        .open_table(CONTRACT_MIGRATION_JOURNAL)
+                        .map_err(table_error)?,
+                    24 => transaction
+                        .open_table(CONTRACT_MIGRATIONS)
+                        .map_err(table_error)?,
+                    25 => transaction
+                        .open_table(CONTRACT_WRITE_RETIREMENTS)
+                        .map_err(table_error)?,
+                    26 => transaction
+                        .open_table(RETIRED_ENTITIES)
+                        .map_err(table_error)?,
                     _ => return Err(invariant()),
                 };
                 let range = table.range::<&[u8]>(..).map_err(precommit_storage_error)?;
@@ -1244,8 +1259,64 @@ fn inspect_table_row_from_bytes(
         20 => inspect_capability_lookup_row(transaction, key, value),
         21 => inspect_audit_row(transaction, index, key, value),
         22 => inspect_audit_by_request_row(transaction, key, value),
+        23 => inspect_contract_migration_journal_row(key, value),
+        24 => inspect_contract_migration_record_row(key, value),
+        25 => inspect_contract_write_retirement_row(key, value),
+        26 => inspect_retired_entity_row(key, value),
         _ => Err(invariant()),
     }
+}
+
+fn inspect_contract_migration_journal_row(
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let operation = keys::decode_contract_migration_operation_key(key).map_err(|_| corrupt())?;
+    let decoded = riffdb_storage_api::proto_codec::decode_contract_migration_journal_v1(value)
+        .map_err(crate::error::codec_error)?;
+    if decoded.value().operation_id() != operation {
+        return Err(corrupt());
+    }
+    Ok(None)
+}
+
+fn inspect_contract_migration_record_row(
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let operation = keys::decode_contract_migration_operation_key(key).map_err(|_| corrupt())?;
+    let decoded = riffdb_storage_api::proto_codec::decode_contract_migration_record_v1(value)
+        .map_err(crate::error::codec_error)?;
+    if decoded.value().operation_id() != operation {
+        return Err(corrupt());
+    }
+    Ok(None)
+}
+
+fn inspect_contract_write_retirement_row(
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let parent = keys::decode_contract_write_retirement_key(key).map_err(|_| corrupt())?;
+    let decoded = riffdb_storage_api::proto_codec::decode_contract_write_retirement_v1(value)
+        .map_err(crate::error::codec_error)?;
+    if decoded.value().artifacts().parent() != parent {
+        return Err(corrupt());
+    }
+    Ok(None)
+}
+
+fn inspect_retired_entity_row(
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let (operation, target) = keys::decode_retired_entity_key(key).map_err(|_| corrupt())?;
+    let decoded = riffdb_storage_api::proto_codec::decode_retired_entity_record_v1(value)
+        .map_err(crate::error::codec_error)?;
+    if decoded.value().operation_id() != operation || decoded.value().original_target() != &target {
+        return Err(corrupt());
+    }
+    Ok(None)
 }
 
 fn allocate_open_session() -> Result<OpenSessionId, StorageError> {
@@ -1293,6 +1364,10 @@ fn collect_startup_snapshot(
         table_len(transaction, CAPABILITY_TOKENS)?,
         table_len(transaction, AUDIT)?,
         table_len(transaction, AUDIT_BY_REQUEST)?,
+        table_len(transaction, CONTRACT_MIGRATION_JOURNAL)?,
+        table_len(transaction, CONTRACT_MIGRATIONS)?,
+        table_len(transaction, CONTRACT_WRITE_RETIREMENTS)?,
+        table_len(transaction, RETIRED_ENTITIES)?,
     ];
     let total = counts.iter().try_fold(1u64, |total, count| {
         total.checked_add(*count).ok_or_else(limit_exceeded)

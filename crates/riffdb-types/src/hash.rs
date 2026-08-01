@@ -8,8 +8,9 @@ use sha2::{Digest, Sha256};
 use crate::{
     ApplicationLockHash, ApplicationManifestHash, ApplicationRoleDefinitionHash,
     ApplicationRoleHash, ApplicationSourceHash, CanonicalInputHash, CanonicalValueHash,
-    CapabilityTokenDigest, ConflictKeyHash, ContractBundleHash, ContractPlanRootHash, DigestKey,
-    DigestKeyId, EntityKeyHash, EntityRecordHash, EventHash, GeneratedArtifactHash,
+    CapabilityTokenDigest, ConflictKeyHash, ContractBundleHash, ContractMigrationInputHash,
+    ContractMigrationJournalHash, ContractMigrationValidationDigest, ContractPlanRootHash,
+    DigestKey, DigestKeyId, EntityKeyHash, EntityRecordHash, EventHash, GeneratedArtifactHash,
     MigrationBundleHash, MigrationSourceHash, OfflineMaintenanceInputHash, PartitionKeyHash,
     PlanHash, ProjectionApplyHash, ProjectionPlanHash, QueryModuleHash, QueryParameterHash,
     QueryPlanHash, QuerySourceHash, SchemaHash, SourceHash,
@@ -78,13 +79,19 @@ pub enum HashDomain {
     ProjectionApply,
     /// One checked offline-maintenance semantic input.
     OfflineMaintenanceInput,
+    /// One checked contract-migration semantic input.
+    ContractMigrationInput,
+    /// One canonical contract-migration journal state.
+    ContractMigrationJournal,
+    /// One complete staged contract-migration validation.
+    ContractMigrationValidation,
     /// One bounded command-batch source, item, or checkpoint document.
     CommandBatch,
 }
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 31] = [
         Self::CanonicalValue,
         Self::Source,
         Self::MigrationSource,
@@ -112,6 +119,9 @@ impl HashDomain {
         Self::Schema,
         Self::ProjectionApply,
         Self::OfflineMaintenanceInput,
+        Self::ContractMigrationInput,
+        Self::ContractMigrationJournal,
+        Self::ContractMigrationValidation,
         Self::CommandBatch,
     ];
 
@@ -145,6 +155,9 @@ impl HashDomain {
             Self::Schema => "riffdb.schema/v1",
             Self::ProjectionApply => "riffdb.projection-apply/v1",
             Self::OfflineMaintenanceInput => "riffdb.offline-maintenance-input/v1",
+            Self::ContractMigrationInput => "riffdb.contract-migration-input/v1",
+            Self::ContractMigrationJournal => "riffdb.contract-migration-journal/v1",
+            Self::ContractMigrationValidation => "riffdb.contract-migration-validation/v1",
             Self::CommandBatch => "riffdb.command-batch/v1",
         }
     }
@@ -449,6 +462,24 @@ typed_hash_function!(
     hash_offline_maintenance_input,
     OfflineMaintenanceInput,
     OfflineMaintenanceInputHash
+);
+typed_hash_function!(
+    /// Hashes one canonical contract-migration semantic input.
+    hash_contract_migration_input,
+    ContractMigrationInput,
+    ContractMigrationInputHash
+);
+typed_hash_function!(
+    /// Hashes one canonical contract-migration journal state.
+    hash_contract_migration_journal,
+    ContractMigrationJournal,
+    ContractMigrationJournalHash
+);
+typed_hash_function!(
+    /// Hashes one complete staged contract-migration validation report.
+    hash_contract_migration_validation,
+    ContractMigrationValidation,
+    ContractMigrationValidationDigest
 );
 
 /// Computes a domain-separated v1 HMAC-SHA-256 lookup digest.

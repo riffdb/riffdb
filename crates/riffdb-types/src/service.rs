@@ -66,11 +66,13 @@ pub enum ServiceOperationV1 {
     ExecuteQuery,
     /// Compile and atomically activate one immutable query module.
     DeployQueryModule,
+    /// Apply one accepted offline contract migration.
+    ApplyContractMigration,
 }
 
 impl ServiceOperationV1 {
     /// Every accepted v1 service operation, in tag order.
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 28] = [
         Self::ValidateContract,
         Self::ExplainCommand,
         Self::DeployContract,
@@ -98,6 +100,7 @@ impl ServiceOperationV1 {
         Self::ExplainQuery,
         Self::ExecuteQuery,
         Self::DeployQueryModule,
+        Self::ApplyContractMigration,
     ];
 
     /// Returns the stable v1 semantic tag.
@@ -131,6 +134,7 @@ impl ServiceOperationV1 {
             Self::ExplainQuery => 0x19,
             Self::ExecuteQuery => 0x1a,
             Self::DeployQueryModule => 0x1b,
+            Self::ApplyContractMigration => 0x1c,
         }
     }
 
@@ -165,6 +169,7 @@ impl ServiceOperationV1 {
             0x19 => Some(Self::ExplainQuery),
             0x1a => Some(Self::ExecuteQuery),
             0x1b => Some(Self::DeployQueryModule),
+            0x1c => Some(Self::ApplyContractMigration),
             _ => None,
         }
     }

@@ -6,14 +6,15 @@
 //! Exact physical-key mappings for the frozen redb table layout.
 
 use riffdb_storage_api::{
-    IdempotencyIdentityKey, PartitionIndexTarget, StructurallyDecodedIndexRangePrefixV1,
+    EntityTarget, IdempotencyIdentityKey, PartitionIndexTarget,
+    StructurallyDecodedIndexRangePrefixV1,
 };
 use riffdb_types::{
     AdministrationSequence, CapabilityId, CapabilityTokenDigest, CommitSequence,
-    ContractBundleHash, ContractLineage, ContractVersion, DIGEST_SCHEME_V1, DigestKeyId, EntityKey,
-    EventId, IndexEntryKey, IndexId, MAX_CONTRACT_LINEAGE_BYTES, PartitionKey, PartitionKeyHash,
-    ProjectionApplyKey, ProjectionFrontierKey, ProjectionGroupKey, ProvenanceId, QueryModuleHash,
-    RequestId,
+    ContractBundleHash, ContractLineage, ContractMigrationOperationId, ContractVersion,
+    DIGEST_SCHEME_V1, DigestKeyId, EntityKey, EntityTypeId, EventId, IndexEntryKey, IndexId,
+    MAX_CONTRACT_LINEAGE_BYTES, PartitionKey, PartitionKeyHash, ProjectionApplyKey,
+    ProjectionFrontierKey, ProjectionGroupKey, ProvenanceId, QueryModuleHash, RequestId,
 };
 
 pub(crate) const SINGLETON_KEY: [u8; 1] = [0x01];
@@ -26,6 +27,7 @@ const CAPABILITY_KEY_BYTES: usize = 1 + UUID_KEY_BYTES;
 const CAPABILITY_TOKEN_KEY_BYTES: usize = 1 + 1 + 4 + 32;
 const AUDIT_KEY_BYTES: usize = 1 + U64_KEY_BYTES;
 const AUDIT_BY_REQUEST_KEY_BYTES: usize = UUID_KEY_BYTES + U64_KEY_BYTES;
+const MIGRATION_RETIREMENT_KEY_BYTES: usize = 32;
 
 /// Redacted failure to structurally decode one physical table key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,6 +67,117 @@ pub(crate) fn decode_administration_sequence_key(
         .ok_or(PhysicalKeyError::InvalidComponent)?;
     require_canonical(bytes, &encode_administration_sequence_key(sequence))?;
     Ok(sequence)
+}
+
+pub(crate) const fn encode_contract_migration_operation_key(
+    operation_id: ContractMigrationOperationId,
+) -> [u8; UUID_KEY_BYTES] {
+    operation_id.into_bytes()
+}
+
+pub(crate) fn decode_contract_migration_operation_key(
+    bytes: &[u8],
+) -> Result<ContractMigrationOperationId, PhysicalKeyError> {
+    let operation_id = ContractMigrationOperationId::from_bytes(exact_array(bytes)?)
+        .map_err(|_| PhysicalKeyError::InvalidComponent)?;
+    require_canonical(
+        bytes,
+        &encode_contract_migration_operation_key(operation_id),
+    )?;
+    Ok(operation_id)
+}
+
+pub(crate) const fn encode_contract_write_retirement_key(
+    parent: ContractBundleHash,
+) -> [u8; MIGRATION_RETIREMENT_KEY_BYTES] {
+    parent.into_bytes()
+}
+
+pub(crate) fn decode_contract_write_retirement_key(
+    bytes: &[u8],
+) -> Result<ContractBundleHash, PhysicalKeyError> {
+    let parent = ContractBundleHash::from_bytes(exact_array(bytes)?);
+    require_canonical(bytes, &encode_contract_write_retirement_key(parent))?;
+    Ok(parent)
+}
+
+pub(crate) fn encode_retired_entity_key(
+    operation_id: ContractMigrationOperationId,
+    target: &EntityTarget,
+) -> Result<Vec<u8>, PhysicalKeyError> {
+    let key = target.key().as_bytes();
+    let target_length = 4_usize
+        .checked_add(4)
+        .and_then(|value| value.checked_add(key.len()))
+        .ok_or(PhysicalKeyError::SizeOverflow)?;
+    let mut encoded = Vec::with_capacity(
+        UUID_KEY_BYTES
+            .checked_add(4)
+            .and_then(|value| value.checked_add(target_length))
+            .ok_or(PhysicalKeyError::SizeOverflow)?,
+    );
+    encoded.extend_from_slice(operation_id.as_bytes());
+    encoded.extend_from_slice(
+        &u32::try_from(target_length)
+            .map_err(|_| PhysicalKeyError::SizeOverflow)?
+            .to_be_bytes(),
+    );
+    encoded.extend_from_slice(&target.entity_type_id().get().to_be_bytes());
+    encoded.extend_from_slice(
+        &u32::try_from(key.len())
+            .map_err(|_| PhysicalKeyError::SizeOverflow)?
+            .to_be_bytes(),
+    );
+    encoded.extend_from_slice(key);
+    Ok(encoded)
+}
+
+pub(crate) fn decode_retired_entity_key(
+    bytes: &[u8],
+) -> Result<(ContractMigrationOperationId, EntityTarget), PhysicalKeyError> {
+    let operation_end = UUID_KEY_BYTES;
+    let target_length_end = operation_end + 4;
+    let type_end = target_length_end + 4;
+    let key_length_end = type_end + 4;
+    if bytes.len() < key_length_end {
+        return Err(PhysicalKeyError::InvalidLength);
+    }
+    let operation_id = ContractMigrationOperationId::from_bytes(
+        bytes[..operation_end]
+            .try_into()
+            .map_err(|_| PhysicalKeyError::InvalidLength)?,
+    )
+    .map_err(|_| PhysicalKeyError::InvalidComponent)?;
+    let target_length = usize::try_from(u32::from_be_bytes(
+        bytes[operation_end..target_length_end]
+            .try_into()
+            .map_err(|_| PhysicalKeyError::InvalidLength)?,
+    ))
+    .map_err(|_| PhysicalKeyError::SizeOverflow)?;
+    if target_length != bytes.len() - target_length_end {
+        return Err(PhysicalKeyError::InvalidLength);
+    }
+    let entity_type = EntityTypeId::new(u32::from_be_bytes(
+        bytes[target_length_end..type_end]
+            .try_into()
+            .map_err(|_| PhysicalKeyError::InvalidLength)?,
+    ))
+    .ok_or(PhysicalKeyError::InvalidComponent)?;
+    let key_length = usize::try_from(u32::from_be_bytes(
+        bytes[type_end..key_length_end]
+            .try_into()
+            .map_err(|_| PhysicalKeyError::InvalidLength)?,
+    ))
+    .map_err(|_| PhysicalKeyError::SizeOverflow)?;
+    if key_length != bytes.len() - key_length_end {
+        return Err(PhysicalKeyError::InvalidLength);
+    }
+    let key = EntityKey::from_bytes(bytes[key_length_end..].to_vec())
+        .map_err(|_| PhysicalKeyError::InvalidComponent)?;
+    let target =
+        EntityTarget::new(entity_type, key).map_err(|_| PhysicalKeyError::InvalidComponent)?;
+    require_canonical(bytes, &encode_retired_entity_key(operation_id, &target)?)?;
+    Ok((operation_id, target))
 }
 
 pub(crate) const fn encode_provenance_key(provenance_id: ProvenanceId) -> [u8; 16] {

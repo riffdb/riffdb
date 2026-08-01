@@ -6438,7 +6438,8 @@ work_packages:
   requirements: [MIG-007, MIG-008, MIG-009, MIG-010, MIG-011, MIG-012, MIG-013, MIG-014, MIG-015, MIG-016, MIG-020]
   required_adrs: [ADR-0004, ADR-0006, ADR-0019, ADR-0022, ADR-0032, ADR-0042, ADR-0050, ADR-0061, ADR-0063,
     ADR-0072, ADR-0073, ADR-0078]
-  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/riffdb/storage/**, crates/riffdb-types/**,
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/0078-staged-migration-storage-and-recovery.md,
+    proto/riffdb/storage/**, crates/riffdb-proto/**, fixtures/proto/**, crates/riffdb-types/**,
     crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**, crates/riffdb-server/src/maintenance_*/**,
     crates/riffdb-server/src/maintenance_*.rs, crates/riffdb-server/src/startup/**, crates/riffdb-server/src/startup.rs,
     crates/riffdb-server/tests/**, fixtures/storage/**, fixtures/migrations/**, fuzz/**, tests/maintenance/**,

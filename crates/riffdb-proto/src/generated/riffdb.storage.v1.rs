@@ -1578,6 +1578,178 @@ pub mod stored_administration_sequence_allocator_v1 {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ContractMigrationArtifactIdentityV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub parent_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub candidate_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub migration_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ContractMigrationOperationArtifactsV1 {
+    #[prost(uint64, tag = "1")]
+    pub candidate_bundle_length: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub candidate_bundle_sha256: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "3")]
+    pub migration_bundle_length: u64,
+    #[prost(bytes = "vec", tag = "4")]
+    pub migration_bundle_sha256: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredContractMigrationJournalV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub semantic_input_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "4")]
+    pub artifacts: ::core::option::Option<ContractMigrationArtifactIdentityV1>,
+    #[prost(enumeration = "ContractMigrationJournalStepV1", tag = "5")]
+    pub step: i32,
+    #[prost(message, optional, tag = "6")]
+    pub exclusive_cursor: ::core::option::Option<EntityTargetV1>,
+    #[prost(uint64, tag = "7")]
+    pub checked_rows: u64,
+    #[prost(uint64, tag = "8")]
+    pub changed_rows: u64,
+    #[prost(uint64, tag = "9")]
+    pub batch_count: u64,
+    #[prost(uint64, optional, tag = "10")]
+    pub frozen_application_frontier: ::core::option::Option<u64>,
+    #[prost(uint32, repeated, tag = "11")]
+    pub required_projection_ids: ::prost::alloc::vec::Vec<u32>,
+    #[prost(bytes = "vec", optional, tag = "12")]
+    pub previous_journal_hash: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", tag = "13")]
+    pub journal_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredContractMigrationRecordV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub semantic_input_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "4")]
+    pub artifacts: ::core::option::Option<ContractMigrationArtifactIdentityV1>,
+    #[prost(message, optional, tag = "5")]
+    pub operation_artifacts: ::core::option::Option<
+        ContractMigrationOperationArtifactsV1,
+    >,
+    #[prost(string, tag = "6")]
+    pub source_backup_name: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "7")]
+    pub source_backup_manifest_checksum: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "8")]
+    pub principal: ::core::option::Option<AuditPrincipalV1>,
+    #[prost(string, optional, tag = "9")]
+    pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint64, optional, tag = "10")]
+    pub predecessor_application_frontier: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "11")]
+    pub successor_application_frontier: ::core::option::Option<u64>,
+    #[prost(uint64, tag = "12")]
+    pub checked_rows: u64,
+    #[prost(uint64, tag = "13")]
+    pub changed_rows: u64,
+    #[prost(uint64, tag = "14")]
+    pub batch_count: u64,
+    #[prost(bytes = "vec", tag = "15")]
+    pub terminal_validation_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "16")]
+    pub administration_sequence: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredContractWriteRetirementV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub parent_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub candidate_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub migration_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "5")]
+    pub administration_sequence: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredRetiredEntityRecordV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub operation_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub migration_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub original_target: ::core::option::Option<EntityTargetV1>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub original_entity_envelope: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ContractMigrationJournalStepV1 {
+    ContractMigrationJournalStepUnspecified = 0,
+    ContractMigrationJournalStepTransforming = 1,
+    ContractMigrationJournalStepRebuildingProjections = 2,
+    ContractMigrationJournalStepValidating = 3,
+    ContractMigrationJournalStepReadyForCutover = 4,
+    ContractMigrationJournalStepComplete = 5,
+}
+impl ContractMigrationJournalStepV1 {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::ContractMigrationJournalStepUnspecified => {
+                "CONTRACT_MIGRATION_JOURNAL_STEP_UNSPECIFIED"
+            }
+            Self::ContractMigrationJournalStepTransforming => {
+                "CONTRACT_MIGRATION_JOURNAL_STEP_TRANSFORMING"
+            }
+            Self::ContractMigrationJournalStepRebuildingProjections => {
+                "CONTRACT_MIGRATION_JOURNAL_STEP_REBUILDING_PROJECTIONS"
+            }
+            Self::ContractMigrationJournalStepValidating => {
+                "CONTRACT_MIGRATION_JOURNAL_STEP_VALIDATING"
+            }
+            Self::ContractMigrationJournalStepReadyForCutover => {
+                "CONTRACT_MIGRATION_JOURNAL_STEP_READY_FOR_CUTOVER"
+            }
+            Self::ContractMigrationJournalStepComplete => {
+                "CONTRACT_MIGRATION_JOURNAL_STEP_COMPLETE"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CONTRACT_MIGRATION_JOURNAL_STEP_UNSPECIFIED" => {
+                Some(Self::ContractMigrationJournalStepUnspecified)
+            }
+            "CONTRACT_MIGRATION_JOURNAL_STEP_TRANSFORMING" => {
+                Some(Self::ContractMigrationJournalStepTransforming)
+            }
+            "CONTRACT_MIGRATION_JOURNAL_STEP_REBUILDING_PROJECTIONS" => {
+                Some(Self::ContractMigrationJournalStepRebuildingProjections)
+            }
+            "CONTRACT_MIGRATION_JOURNAL_STEP_VALIDATING" => {
+                Some(Self::ContractMigrationJournalStepValidating)
+            }
+            "CONTRACT_MIGRATION_JOURNAL_STEP_READY_FOR_CUTOVER" => {
+                Some(Self::ContractMigrationJournalStepReadyForCutover)
+            }
+            "CONTRACT_MIGRATION_JOURNAL_STEP_COMPLETE" => {
+                Some(Self::ContractMigrationJournalStepComplete)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredOutboxIntentV1 {
     #[prost(message, optional, tag = "1")]
     pub event: ::core::option::Option<StoredDurableEventV1>,

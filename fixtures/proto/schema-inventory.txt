@@ -29,6 +29,9 @@ files
     import riffdb/storage/v1/application.proto
   riffdb/storage/v1/metadata.proto
     import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/migration_v1.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/common.proto
   riffdb/storage/v1/outbox.proto
     import riffdb/storage/v1/application.proto
     import riffdb/storage/v1/common.proto
@@ -284,6 +287,15 @@ messages
     1 target optional .riffdb.storage.v1.EntityTargetV1
     2 entity_version optional uint64
     3 post_image_hash optional bytes
+  riffdb.storage.v1.ContractMigrationArtifactIdentityV1 fields=3
+    1 parent_bundle_hash optional bytes
+    2 candidate_bundle_hash optional bytes
+    3 migration_bundle_hash optional bytes
+  riffdb.storage.v1.ContractMigrationOperationArtifactsV1 fields=4
+    1 candidate_bundle_length optional uint64
+    2 candidate_bundle_sha256 optional bytes
+    3 migration_bundle_length optional uint64
+    4 migration_bundle_sha256 optional bytes
   riffdb.storage.v1.ContractVersionAuditTargetV1 fields=2
     1 contract_lineage optional string
     2 contract_version optional uint64
@@ -491,6 +503,43 @@ messages
     2 contract_version optional uint64
     3 contract_bundle_hash optional bytes
     4 canonical_bundle optional bytes
+  riffdb.storage.v1.StoredContractMigrationJournalV1 fields=13
+    1 database_id optional bytes
+    2 operation_id optional bytes
+    3 semantic_input_hash optional bytes
+    4 artifacts optional .riffdb.storage.v1.ContractMigrationArtifactIdentityV1
+    5 step optional .riffdb.storage.v1.ContractMigrationJournalStepV1
+    6 exclusive_cursor optional .riffdb.storage.v1.EntityTargetV1 proto3-optional oneof=_exclusive_cursor
+    7 checked_rows optional uint64
+    8 changed_rows optional uint64
+    9 batch_count optional uint64
+    10 frozen_application_frontier optional uint64 proto3-optional oneof=_frozen_application_frontier
+    11 required_projection_ids repeated uint32
+    12 previous_journal_hash optional bytes proto3-optional oneof=_previous_journal_hash
+    13 journal_hash optional bytes
+  riffdb.storage.v1.StoredContractMigrationRecordV1 fields=16
+    1 database_id optional bytes
+    2 operation_id optional bytes
+    3 semantic_input_hash optional bytes
+    4 artifacts optional .riffdb.storage.v1.ContractMigrationArtifactIdentityV1
+    5 operation_artifacts optional .riffdb.storage.v1.ContractMigrationOperationArtifactsV1
+    6 source_backup_name optional string
+    7 source_backup_manifest_checksum optional bytes
+    8 principal optional .riffdb.storage.v1.AuditPrincipalV1
+    9 approval_id optional string proto3-optional oneof=_approval_id
+    10 predecessor_application_frontier optional uint64 proto3-optional oneof=_predecessor_application_frontier
+    11 successor_application_frontier optional uint64 proto3-optional oneof=_successor_application_frontier
+    12 checked_rows optional uint64
+    13 changed_rows optional uint64
+    14 batch_count optional uint64
+    15 terminal_validation_digest optional bytes
+    16 administration_sequence optional uint64
+  riffdb.storage.v1.StoredContractWriteRetirementV1 fields=5
+    1 parent_bundle_hash optional bytes
+    2 candidate_bundle_hash optional bytes
+    3 migration_bundle_hash optional bytes
+    4 operation_id optional bytes
+    5 administration_sequence optional uint64
   riffdb.storage.v1.StoredDatabaseIdentityV1 fields=1
     1 database_id optional bytes
   riffdb.storage.v1.StoredDurableEventV1 fields=4
@@ -628,6 +677,11 @@ messages
     2 index_range_epoch optional .riffdb.storage.v1.IndexRangeReadDependencyV1 oneof=dependency
   riffdb.storage.v1.StoredRecordRegistryV2 fields=1
     1 registry_digest optional bytes
+  riffdb.storage.v1.StoredRetiredEntityRecordV1 fields=4
+    1 operation_id optional bytes
+    2 migration_bundle_hash optional bytes
+    3 original_target optional .riffdb.storage.v1.EntityTargetV1
+    4 original_entity_envelope optional bytes
   riffdb.storage.v1.StoredServiceAuditRequestIndexV1 fields=2
     1 request_id optional bytes
     2 administration_sequence optional uint64
@@ -1521,6 +1575,13 @@ enums
     23 CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY
     24 CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY
     25 CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY
+  riffdb.storage.v1.ContractMigrationJournalStepV1 values=6
+    0 CONTRACT_MIGRATION_JOURNAL_STEP_UNSPECIFIED
+    1 CONTRACT_MIGRATION_JOURNAL_STEP_TRANSFORMING
+    2 CONTRACT_MIGRATION_JOURNAL_STEP_REBUILDING_PROJECTIONS
+    3 CONTRACT_MIGRATION_JOURNAL_STEP_VALIDATING
+    4 CONTRACT_MIGRATION_JOURNAL_STEP_READY_FOR_CUTOVER
+    5 CONTRACT_MIGRATION_JOURNAL_STEP_COMPLETE
   riffdb.storage.v1.DurabilityModeV1 values=4
     0 DURABILITY_MODE_UNSPECIFIED
     1 DURABILITY_MODE_SYNC
