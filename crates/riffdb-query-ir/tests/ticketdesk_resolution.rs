@@ -18,8 +18,8 @@ const QUERIES: &[(&str, &str)] = &[
         include_str!("../../../queries/ticketdesk/board_page_200.riffq"),
     ),
     (
-        "board_page_500",
-        include_str!("../../../queries/ticketdesk/board_page_500.riffq"),
+        "board_page_450",
+        include_str!("../../../queries/ticketdesk/board_page_450.riffq"),
     ),
     (
         "get_ticket",
@@ -55,11 +55,10 @@ const QUERIES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Historical runtime-`Limit` BoardPage shape that *resolves* but fails at
-/// execute on the live engine (RDB-INTERNAL-0001).
-///
-/// Incident: 019fbf5b-1a64-7877-94c3-47d7a0763539.
-/// The app-baseline harness uses static BoardPage50/200/500 instead.
+/// Historical runtime-`Limit` BoardPage shape (Limit range up to 500).
+/// take-500 fails at execute: MAX_QUERY_SCANNED_ROWS=500 plus a continuation
+/// probe scans 501 → RDB-INTERNAL-0001 (incidents include
+/// 019fbf5b-1a64-7877-94c3-47d7a0763539). Harness uses BoardPage50/200/450.
 const RUNTIME_LIMIT_BOARD_PAGE: &str = r#"query BoardPage(
     $organization_id: Organization.organization_id,
     $project_id: Project.project_id,
@@ -162,15 +161,16 @@ fn board_page_50_static_resolves_wide_row_without_runtime_limit() {
     assert!(matches!(tickets.value_type(), NamedTypeSchema::List { .. }));
 }
 
-/// Marker for the engine gap: runtime `take $limit` still *resolves*, but live
-/// execute returns RDB-INTERNAL-0001 (incident 019fbf5b-1a64-7877-94c3-47d7a0763539).
-/// Kept ignored so CI does not pretend the parameterized path is production-ready;
-/// the harness uses static BoardPage50/200/500 until the engine is fixed.
+/// Marker: a take-500 page (runtime Limit or static) exceeds MAX_QUERY_SCANNED_ROWS=500
+/// because the executor probes one extra row for continuation (scan 501 → RDB-INTERNAL-0001).
+/// Live incidents include 019fbf5b-1a64-7877-94c3-47d7a0763539 (and the static-500 abort).
+/// Harness uses BoardPage50/200/450 so take N ≤ 450 leaves room for the probe.
 #[test]
-#[ignore = "RDB-INTERNAL-0001 incident 019fbf5b-1a64-7877-94c3-47d7a0763539: take $limit resolves but fails at execute; harness uses static BoardPage50/200/500"]
-fn board_page_runtime_limit_resolves_but_engine_cannot_execute() {
+#[ignore = "scan ceiling: take 500 + continuation probe (501) trips MAX_QUERY_SCANNED_ROWS=500 (RDB-INTERNAL-0001; incidents incl. 019fbf5b-1a64-7877-94c3-47d7a0763539); harness uses static BoardPage50/200/450"]
+fn board_page_take_500_hits_executor_scan_ceiling() {
     let bundle = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");
+    // Historical runtime-limit shape still resolves; execute of take 500 fails either way.
     let document = parse_query(RUNTIME_LIMIT_BOARD_PAGE).expect("parse runtime BoardPage");
     let resolved = resolve_query_surface(&document, &catalog).expect("runtime BoardPage resolves");
     assert!(

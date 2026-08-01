@@ -59,12 +59,12 @@ const QUERY_SOURCES: &[(&str, &str)] = &[
         include_str!("../../../../queries/ticketdesk/board_page_200.riffq"),
     ),
     (
-        "BoardPage50",
-        include_str!("../../../../queries/ticketdesk/board_page_50.riffq"),
+        "BoardPage450",
+        include_str!("../../../../queries/ticketdesk/board_page_450.riffq"),
     ),
     (
-        "BoardPage500",
-        include_str!("../../../../queries/ticketdesk/board_page_500.riffq"),
+        "BoardPage50",
+        include_str!("../../../../queries/ticketdesk/board_page_50.riffq"),
     ),
     (
         "GetTicket",

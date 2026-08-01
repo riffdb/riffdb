@@ -3,7 +3,7 @@
 /// Default open-ticket density for the board-scale cell under the full profile.
 ///
 /// One `(project, status=open)` cell holds this many tickets so
-/// `board_page_500` returns a real 500-row page.
+/// `board_page_450` returns a real 450-row page under the scan ceiling.
 pub const FULL_BOARD_DENSE_OPEN: u32 = 600;
 
 /// Row-count knobs for the TicketDesk seed.

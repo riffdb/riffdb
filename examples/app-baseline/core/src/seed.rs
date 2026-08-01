@@ -171,7 +171,7 @@ impl SeedDataset {
                 }
 
                 // Board-scale density: org-0/project-0 gets a large open cell so
-                // board_page_500 is a real 500-row page under the full profile.
+                // board_page_450 is a real 450-row page under the full profile (scan ceiling).
                 let is_board_project = org_i == 0 && project_i == 0 && scale.board_dense_open > 0;
                 let ticket_count = if is_board_project {
                     scale.board_dense_open.max(scale.tickets_per_project)
@@ -269,7 +269,7 @@ impl SeedDataset {
     /// Deterministic board page: open tickets in the board cell, ordered by
     /// `ticket_id` ascending, truncated to `limit`.
     ///
-    /// Matches static RiffQL `BoardPage50`/`200`/`500` and PostgreSQL board SQL
+    /// Matches static RiffQL `BoardPage50`/`200`/`450` and PostgreSQL board SQL
     /// (`ORDER BY ticket_id ASC LIMIT n`).
     #[must_use]
     pub fn board_page_ticket_ids(&self, limit: u32) -> Vec<crate::UuidBytes> {
@@ -561,7 +561,7 @@ mod tests {
             "full seed board cell must hold >=500 open tickets, got {dense}"
         );
         assert_eq!(dense, Scale::full().board_dense_open as usize);
-        for limit in [50_u32, 200, 500] {
+        for limit in [50_u32, 200, 450] {
             let page = dataset.board_page_ticket_ids(limit);
             assert_eq!(page.len(), limit as usize, "board page limit={limit}");
             // Order-sensitive: strictly ascending ticket_id.

@@ -1,4 +1,4 @@
-query BoardPage500(
+query BoardPage450(
     $organization_id: Organization.organization_id,
     $project_id: Project.project_id,
     $status: TicketStatus,
@@ -8,7 +8,7 @@ query BoardPage500(
             && project_id == $project_id
             && status == $status
         order by ticket_id asc
-        take 500
+        take 450
 
     return Found {
         tickets: tickets {

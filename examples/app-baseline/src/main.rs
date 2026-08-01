@@ -103,8 +103,8 @@ fn run() -> Result<(), String> {
     let mut rd_rep_scenarios: Vec<Vec<riffdb_app_baseline_core::ScenarioResult>> = Vec::new();
     let mut rd_write_groups: Option<Vec<u64>> = None;
     // Live order-sensitive board page cross-check (rep 0): all static sizes
-    // the dense cell can fill (50/200/500 → BoardPage50/200/500 on RiffDB).
-    let board_crosscheck_limits: Vec<u32> = [50_u32, 200, 500]
+    // the dense cell can fill (50/200/450 → BoardPage50/200/450 on RiffDB).
+    let board_crosscheck_limits: Vec<u32> = [50_u32, 200, 450]
         .into_iter()
         .filter(|&limit| dataset.board_dense_open_count() >= limit as usize)
         .collect();
@@ -1508,7 +1508,7 @@ fn print_summary(report: &serde_json::Value) {
 
 fn print_board_marginal_line(label: &str, value: &serde_json::Value) {
     if let Some(median) = value.as_u64() {
-        println!("{label}={median}  ( (p50_500 − p50_50) / 450 )");
+        println!("{label}={median}  ( (p50_450 − p50_50) / 400 )");
         return;
     }
     if let Some(median) = value["median"].as_f64() {

@@ -23,8 +23,8 @@ pub enum ScenarioId {
     BoardPage50,
     /// Board-scale wide page: 200 open tickets in the dense cell.
     BoardPage200,
-    /// Board-scale wide page: 500 open tickets in the dense cell.
-    BoardPage500,
+    /// Board-scale wide page: 450 open tickets in the dense cell.
+    BoardPage450,
     /// Post-seed write: create comment.
     CreateComment,
     /// Atomic multi-entity write: close ticket + comment.
@@ -49,7 +49,7 @@ impl ScenarioId {
             Self::TicketDetailPage => "ticket_detail_page",
             Self::BoardPage50 => "board_page_50",
             Self::BoardPage200 => "board_page_200",
-            Self::BoardPage500 => "board_page_500",
+            Self::BoardPage450 => "board_page_450",
             Self::CreateComment => "create_comment",
             Self::CloseTicketWithComment => "close_ticket_with_comment",
             Self::SwapMemberRoles => "swap_member_roles",
@@ -63,7 +63,7 @@ impl ScenarioId {
         match self {
             Self::BoardPage50 => Some(50),
             Self::BoardPage200 => Some(200),
-            Self::BoardPage500 => Some(500),
+            Self::BoardPage450 => Some(450),
             _ => None,
         }
     }
@@ -81,7 +81,7 @@ impl ScenarioId {
             Self::TicketDetailPage,
             Self::BoardPage50,
             Self::BoardPage200,
-            Self::BoardPage500,
+            Self::BoardPage450,
             Self::CreateComment,
             Self::CloseTicketWithComment,
             Self::SwapMemberRoles,
@@ -117,12 +117,12 @@ pub struct ScenarioResult {
     pub last_row_count: usize,
 }
 
-/// Per-row marginal cost from the board size curve: `(p50_500 − p50_50) / 450`.
+/// Per-row marginal cost from the board size curve: `(p50_450 − p50_50) / 400`.
 ///
-/// Returns `None` when either sample is missing or `p50_500 < p50_50`.
+/// Returns `None` when either sample is missing or `p50_450 < p50_50`.
 #[must_use]
-pub fn board_marginal_ns_per_row(p50_50_ns: u64, p50_500_ns: u64) -> Option<u64> {
-    p50_500_ns.checked_sub(p50_50_ns).map(|delta| delta / 450)
+pub fn board_marginal_ns_per_row(p50_50_ns: u64, p50_450_ns: u64) -> Option<u64> {
+    p50_450_ns.checked_sub(p50_50_ns).map(|delta| delta / 400)
 }
 
 /// Extracts board p50s from measured results and computes marginal cost.
@@ -136,7 +136,7 @@ pub fn board_marginal_from_results(results: &[ScenarioResult]) -> Option<u64> {
     };
     board_marginal_ns_per_row(
         p50(ScenarioId::BoardPage50)?,
-        p50(ScenarioId::BoardPage500)?,
+        p50(ScenarioId::BoardPage450)?,
     )
 }
 
@@ -228,7 +228,7 @@ pub fn run_scenarios<B: AppBackend>(
                         (count, elapsed)
                     })
                 }
-                ScenarioId::BoardPage50 | ScenarioId::BoardPage200 | ScenarioId::BoardPage500 => {
+                ScenarioId::BoardPage50 | ScenarioId::BoardPage200 | ScenarioId::BoardPage450 => {
                     let limit = result
                         .scenario
                         .board_page_limit()
@@ -325,7 +325,7 @@ fn run_once<B: AppBackend>(
             ScenarioId::TicketDetailPage => {
                 let _ = backend.ticket_detail_page(probes.organization_id, probes.ticket_id, 50)?;
             }
-            ScenarioId::BoardPage50 | ScenarioId::BoardPage200 | ScenarioId::BoardPage500 => {
+            ScenarioId::BoardPage50 | ScenarioId::BoardPage200 | ScenarioId::BoardPage450 => {
                 let limit = scenario.board_page_limit().expect("board limit");
                 let _ = backend.board_page(
                     probes.board_organization_id,
@@ -481,22 +481,22 @@ mod tests {
     }
 
     #[test]
-    fn board_marginal_ns_per_row_divides_delta_by_450() {
-        assert_eq!(board_marginal_ns_per_row(1_000, 46_000), Some(100));
+    fn board_marginal_ns_per_row_divides_delta_by_400() {
+        assert_eq!(board_marginal_ns_per_row(1_000, 41_000), Some(100));
         assert_eq!(board_marginal_ns_per_row(10, 10), Some(0));
         assert_eq!(board_marginal_ns_per_row(100, 50), None);
-        // (p50_500 - p50_50) / 450 with non-multiple remainder floors.
-        assert_eq!(board_marginal_ns_per_row(0, 449), Some(0));
-        assert_eq!(board_marginal_ns_per_row(0, 450), Some(1));
+        // (p50_450 - p50_50) / 400 with non-multiple remainder floors.
+        assert_eq!(board_marginal_ns_per_row(0, 399), Some(0));
+        assert_eq!(board_marginal_ns_per_row(0, 400), Some(1));
     }
 
     #[test]
     fn board_marginal_from_results_reads_board_page_p50s() {
         let mut s50 = SampleSet::default();
-        let mut s500 = SampleSet::default();
+        let mut s450 = SampleSet::default();
         for _ in 0..3 {
             s50.record(std::time::Duration::from_nanos(1_000));
-            s500.record(std::time::Duration::from_nanos(46_000));
+            s450.record(std::time::Duration::from_nanos(41_000));
         }
         let results = vec![
             ScenarioResult {
@@ -505,9 +505,9 @@ mod tests {
                 last_row_count: 50,
             },
             ScenarioResult {
-                scenario: ScenarioId::BoardPage500,
-                samples: s500,
-                last_row_count: 500,
+                scenario: ScenarioId::BoardPage450,
+                samples: s450,
+                last_row_count: 450,
             },
         ];
         assert_eq!(board_marginal_from_results(&results), Some(100));
@@ -527,7 +527,7 @@ mod tests {
         let ids = ScenarioId::for_dataset(&dataset);
         assert!(ids.contains(&ScenarioId::BoardPage50));
         assert!(ids.contains(&ScenarioId::BoardPage200));
-        assert!(ids.contains(&ScenarioId::BoardPage500));
+        assert!(ids.contains(&ScenarioId::BoardPage450));
         assert_eq!(ids.len(), 14);
     }
 
@@ -542,7 +542,7 @@ mod tests {
             dataset: dataset.clone(),
             last_board_ids: Vec::new(),
         };
-        for limit in [50_u32, 200, 500] {
+        for limit in [50_u32, 200, 450] {
             let expected = dataset.board_page_ticket_ids(limit);
             assert_eq!(expected.len(), limit as usize);
             let rows = backend
@@ -557,6 +557,6 @@ mod tests {
             assert_eq!(ids, expected, "board page limit={limit}");
             assert_eq!(rows.len(), limit as usize);
         }
-        assert_eq!(backend.last_board_ids.len(), 500);
+        assert_eq!(backend.last_board_ids.len(), 450);
     }
 }
