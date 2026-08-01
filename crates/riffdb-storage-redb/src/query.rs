@@ -2,8 +2,9 @@
 
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Included};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use redb::ReadOnlyTable;
+use redb::{ReadOnlyTable, ReadTransaction, TableDefinition};
 use riffdb_query_executor::{
     BoundPredicate, QueryBackendFault, QueryContinuation, QueryExecutionError, QueryExecutionPort,
     QueryOwnedSnapshot, QueryParameters, QueryReadView, QueryRow, QueryScanPage,
@@ -24,6 +25,64 @@ use crate::store::RedbOperationalPorts;
 
 type BytesTable = ReadOnlyTable<&'static [u8], &'static [u8]>;
 
+/// Closed counters for falsifying lazy table opens on the composite-query path.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct QueryTableOpenCounts {
+    /// `COMMITS` opens (commit head is part of the read contract).
+    pub commits: u64,
+    /// `ENTITIES` opens.
+    pub entities: u64,
+    /// `SECONDARY_INDEXES` opens.
+    pub indexes: u64,
+    /// `INDEX_EPOCHS` opens.
+    pub epochs: u64,
+}
+
+static QUERY_TABLE_OPENS_COMMITS: AtomicU64 = AtomicU64::new(0);
+static QUERY_TABLE_OPENS_ENTITIES: AtomicU64 = AtomicU64::new(0);
+static QUERY_TABLE_OPENS_INDEXES: AtomicU64 = AtomicU64::new(0);
+static QUERY_TABLE_OPENS_EPOCHS: AtomicU64 = AtomicU64::new(0);
+
+/// Resets composite-query table-open counters (test probe).
+#[doc(hidden)]
+pub fn reset_query_table_open_counts() {
+    QUERY_TABLE_OPENS_COMMITS.store(0, Ordering::Relaxed);
+    QUERY_TABLE_OPENS_ENTITIES.store(0, Ordering::Relaxed);
+    QUERY_TABLE_OPENS_INDEXES.store(0, Ordering::Relaxed);
+    QUERY_TABLE_OPENS_EPOCHS.store(0, Ordering::Relaxed);
+}
+
+/// Snapshot of composite-query table-open counters since the last reset.
+#[doc(hidden)]
+#[must_use]
+pub fn query_table_open_counts() -> QueryTableOpenCounts {
+    QueryTableOpenCounts {
+        commits: QUERY_TABLE_OPENS_COMMITS.load(Ordering::Relaxed),
+        entities: QUERY_TABLE_OPENS_ENTITIES.load(Ordering::Relaxed),
+        indexes: QUERY_TABLE_OPENS_INDEXES.load(Ordering::Relaxed),
+        epochs: QUERY_TABLE_OPENS_EPOCHS.load(Ordering::Relaxed),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum QueryTableKind {
+    Commits,
+    Entities,
+    Indexes,
+    Epochs,
+}
+
+fn record_query_table_open(kind: QueryTableKind) {
+    let counter = match kind {
+        QueryTableKind::Commits => &QUERY_TABLE_OPENS_COMMITS,
+        QueryTableKind::Entities => &QUERY_TABLE_OPENS_ENTITIES,
+        QueryTableKind::Indexes => &QUERY_TABLE_OPENS_INDEXES,
+        QueryTableKind::Epochs => &QUERY_TABLE_OPENS_EPOCHS,
+    };
+    counter.fetch_add(1, Ordering::Relaxed);
+}
+
 impl QueryExecutionPort for RedbOperationalPorts {
     fn execute_query_page(
         &self,
@@ -32,31 +91,36 @@ impl QueryExecutionPort for RedbOperationalPorts {
         prior: Option<&QueryContinuation>,
     ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
         let transaction = self.begin_read().map_err(map_storage_query_error)?;
-        let entities = transaction
-            .open_table(ENTITIES)
-            .map_err(|error| map_storage_query_error(crate::error::table_error(error)))?;
-        let indexes = transaction
-            .open_table(SECONDARY_INDEXES)
-            .map_err(|error| map_storage_query_error(crate::error::table_error(error)))?;
-        let epochs = transaction
-            .open_table(INDEX_EPOCHS)
-            .map_err(|error| map_storage_query_error(crate::error::table_error(error)))?;
-        let commits = transaction
-            .open_table(COMMITS)
-            .map_err(|error| map_storage_query_error(crate::error::table_error(error)))?;
+        // Commit head is part of the read contract and always runs first.
+        let commits = open_query_table(&transaction, COMMITS, QueryTableKind::Commits)
+            .map_err(map_storage_query_error)?;
         let head = read_commit_head(&transaction, &commits)
             .map_err(map_storage_query_error)?
             .map_or(0, riffdb_types::CommitSequence::get);
+        drop(commits);
+        // Entities / index / epoch tables open on first touch only.
         let mut view = RedbQueryView {
-            entities,
-            indexes,
-            epochs,
+            transaction: &transaction,
+            entities: None,
+            indexes: None,
+            epochs: None,
             head,
             program,
             parameters,
         };
         execute_page_in_snapshot(program, parameters, prior, &mut view)
     }
+}
+
+fn open_query_table(
+    transaction: &ReadTransaction,
+    definition: TableDefinition<&'static [u8], &'static [u8]>,
+    kind: QueryTableKind,
+) -> Result<BytesTable, StorageError> {
+    record_query_table_open(kind);
+    transaction
+        .open_table(definition)
+        .map_err(crate::error::table_error)
 }
 
 fn map_storage_query_error(error: StorageError) -> QueryExecutionError {
@@ -81,12 +145,48 @@ const fn storage_query_fault(error: &StorageError) -> QueryBackendFault {
 }
 
 struct RedbQueryView<'a> {
-    entities: BytesTable,
-    indexes: BytesTable,
-    epochs: BytesTable,
+    transaction: &'a ReadTransaction,
+    entities: Option<BytesTable>,
+    indexes: Option<BytesTable>,
+    epochs: Option<BytesTable>,
     head: u64,
     program: &'a QueryAccessProgramV1,
     parameters: &'a QueryParameters,
+}
+
+impl RedbQueryView<'_> {
+    fn entities_table(&mut self) -> Result<&BytesTable, StorageError> {
+        if self.entities.is_none() {
+            self.entities = Some(open_query_table(
+                self.transaction,
+                ENTITIES,
+                QueryTableKind::Entities,
+            )?);
+        }
+        Ok(self.entities.as_ref().expect("entities just opened"))
+    }
+
+    fn indexes_table(&mut self) -> Result<&BytesTable, StorageError> {
+        if self.indexes.is_none() {
+            self.indexes = Some(open_query_table(
+                self.transaction,
+                SECONDARY_INDEXES,
+                QueryTableKind::Indexes,
+            )?);
+        }
+        Ok(self.indexes.as_ref().expect("indexes just opened"))
+    }
+
+    fn epochs_table(&mut self) -> Result<&BytesTable, StorageError> {
+        if self.epochs.is_none() {
+            self.epochs = Some(open_query_table(
+                self.transaction,
+                INDEX_EPOCHS,
+                QueryTableKind::Epochs,
+            )?);
+        }
+        Ok(self.epochs.as_ref().expect("epochs just opened"))
+    }
 }
 
 impl QueryReadView for RedbQueryView<'_> {
@@ -125,7 +225,8 @@ impl QueryReadView for RedbQueryView<'_> {
             .encode_entity(&values)
             .map_err(|_| invariant())?;
         let target = EntityTarget::new(step.internal_entity_id(), key).map_err(|_| invariant())?;
-        read_entity_record(&self.entities, &target)?
+        let entities = self.entities_table()?;
+        read_entity_record(entities, &target)?
             .map(|record| row_from_record(self.program, step, &record))
             .transpose()
     }
@@ -168,7 +269,10 @@ impl QueryReadView for RedbQueryView<'_> {
             .map_err(|_| invariant())?;
         let generation_target =
             PartitionIndexTarget::new(partition, step.internal_index_id().ok_or_else(invariant)?);
-        let epoch = read_epoch(&self.epochs, &generation_target)?;
+        let epoch = {
+            let epochs = self.epochs_table()?;
+            read_epoch(epochs, &generation_target)?
+        };
         let page_limit =
             usize::try_from(limit).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let fetch_limit = page_limit.saturating_add(1);
@@ -187,54 +291,62 @@ impl QueryReadView for RedbQueryView<'_> {
             prefixes.reverse();
         }
 
-        'prefixes: for prefix in prefixes {
-            let upper = exclusive_prefix_end(prefix.as_bytes()).ok_or_else(invariant)?;
-            if after.is_some_and(|after| match direction {
-                AccessDirection::Forward => upper.as_slice() <= after,
-                AccessDirection::Reverse => prefix.as_bytes() > after,
-            }) {
-                continue;
-            }
-            let lower_bound = match (direction, after) {
-                (AccessDirection::Forward, Some(after)) if after.starts_with(prefix.as_bytes()) => {
-                    Excluded(after)
+        {
+            let indexes = self.indexes_table()?;
+            'prefixes: for prefix in prefixes {
+                let upper = exclusive_prefix_end(prefix.as_bytes()).ok_or_else(invariant)?;
+                if after.is_some_and(|after| match direction {
+                    AccessDirection::Forward => upper.as_slice() <= after,
+                    AccessDirection::Reverse => prefix.as_bytes() > after,
+                }) {
+                    continue;
                 }
-                _ => Included(prefix.as_bytes()),
-            };
-            let upper_bound = match (direction, after) {
-                (AccessDirection::Reverse, Some(after)) if after.starts_with(prefix.as_bytes()) => {
-                    Excluded(after)
-                }
-                _ => Excluded(upper.as_slice()),
-            };
-            let mut range = self
-                .indexes
-                .range::<&[u8]>((lower_bound, upper_bound))
-                .map_err(precommit_storage_error)?;
-            match direction {
-                AccessDirection::Forward => {
-                    for entry in &mut range {
-                        let decoded =
-                            decode_current_index_entry(entry.map_err(precommit_storage_error)?)?;
-                        if decoded.1.partition_key() != generation_target.partition_key() {
-                            continue;
-                        }
-                        entries.push(decoded);
-                        if entries.len() == fetch_limit {
-                            break 'prefixes;
+                let lower_bound = match (direction, after) {
+                    (AccessDirection::Forward, Some(after))
+                        if after.starts_with(prefix.as_bytes()) =>
+                    {
+                        Excluded(after)
+                    }
+                    _ => Included(prefix.as_bytes()),
+                };
+                let upper_bound = match (direction, after) {
+                    (AccessDirection::Reverse, Some(after))
+                        if after.starts_with(prefix.as_bytes()) =>
+                    {
+                        Excluded(after)
+                    }
+                    _ => Excluded(upper.as_slice()),
+                };
+                let mut range = indexes
+                    .range::<&[u8]>((lower_bound, upper_bound))
+                    .map_err(precommit_storage_error)?;
+                match direction {
+                    AccessDirection::Forward => {
+                        for entry in &mut range {
+                            let decoded = decode_current_index_entry(
+                                entry.map_err(precommit_storage_error)?,
+                            )?;
+                            if decoded.1.partition_key() != generation_target.partition_key() {
+                                continue;
+                            }
+                            entries.push(decoded);
+                            if entries.len() == fetch_limit {
+                                break 'prefixes;
+                            }
                         }
                     }
-                }
-                AccessDirection::Reverse => {
-                    while let Some(entry) = range.next_back() {
-                        let decoded =
-                            decode_current_index_entry(entry.map_err(precommit_storage_error)?)?;
-                        if decoded.1.partition_key() != generation_target.partition_key() {
-                            continue;
-                        }
-                        entries.push(decoded);
-                        if entries.len() == fetch_limit {
-                            break 'prefixes;
+                    AccessDirection::Reverse => {
+                        while let Some(entry) = range.next_back() {
+                            let decoded = decode_current_index_entry(
+                                entry.map_err(precommit_storage_error)?,
+                            )?;
+                            if decoded.1.partition_key() != generation_target.partition_key() {
+                                continue;
+                            }
+                            entries.push(decoded);
+                            if entries.len() == fetch_limit {
+                                break 'prefixes;
+                            }
                         }
                     }
                 }
@@ -253,17 +365,17 @@ impl QueryReadView for RedbQueryView<'_> {
         let continuation = has_more
             .then(|| entries.last().map(|entry| entry.0.as_bytes().to_vec()))
             .flatten();
-        let rows = entries
-            .into_iter()
-            .map(|(key, _)| {
-                let decoded = schema.decode_index(&key).map_err(|_| corrupt())?;
-                let target =
-                    EntityTarget::new(step.internal_entity_id(), decoded.entity_key().clone())
-                        .map_err(|_| corrupt())?;
-                let record = read_entity_record(&self.entities, &target)?.ok_or_else(corrupt)?;
-                row_from_record(self.program, step, &record)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut rows = Vec::with_capacity(entries.len());
+        for (key, _) in entries {
+            let decoded = schema.decode_index(&key).map_err(|_| corrupt())?;
+            let target = EntityTarget::new(step.internal_entity_id(), decoded.entity_key().clone())
+                .map_err(|_| corrupt())?;
+            let record = {
+                let entities = self.entities_table()?;
+                read_entity_record(entities, &target)?.ok_or_else(corrupt)?
+            };
+            rows.push(row_from_record(self.program, step, &record)?);
+        }
         match continuation {
             Some(continuation) => {
                 QueryScanPage::continued(rows, epoch, scanned_rows.max(1), continuation)
@@ -542,12 +654,24 @@ query ProjectMembers(
             ("ticket_id".to_owned(), ticket),
         ]))
         .expect("parameters");
+        crate::reset_query_table_open_counts();
         let snapshot = ports.execute_query(&program, &parameters).expect("query");
         assert_eq!(snapshot.outcome(), "Found");
         assert!(matches!(
             snapshot.fields().get("ticket"),
             Some(QueryResultValue::One(row)) if row.field("title").is_some()
         ));
+        let opens = crate::query_table_open_counts();
+        assert_eq!(
+            opens,
+            QueryTableOpenCounts {
+                commits: 1,
+                entities: 1,
+                indexes: 0,
+                epochs: 0,
+            },
+            "point query opens only commits (head) and entities; eager open would also open indexes/epochs"
+        );
     }
 
     #[test]
@@ -671,7 +795,19 @@ query ProjectMembers(
             ("project_id".to_owned(), project),
         ]))
         .expect("parameters");
+        crate::reset_query_table_open_counts();
         let snapshot = ports.execute_query(&program, &parameters).expect("query");
+        let opens = crate::query_table_open_counts();
+        assert_eq!(
+            opens,
+            QueryTableOpenCounts {
+                commits: 1,
+                entities: 1,
+                indexes: 1,
+                epochs: 1,
+            },
+            "index-step query opens commits, entities, indexes, and epochs exactly once each"
+        );
         assert!(matches!(
             snapshot.fields().get("members"),
             Some(QueryResultValue::Many(rows)) if rows.len() == 1
