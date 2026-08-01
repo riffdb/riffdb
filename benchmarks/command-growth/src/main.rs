@@ -6,6 +6,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use riffdb_bench_root::{
     BenchDir, BenchRoot, BenchRootOptions, default_perf_db_root, run_device_baseline_for,
@@ -13,8 +14,8 @@ use riffdb_bench_root::{
 };
 use riffdb_storage_redb::benchmark_support::{
     EngineDurability, EngineMechanicsProfile, ServiceAuditGrowthHarness,
-    initialize_engine_mechanics, measure_clean_startup, measure_engine_reopen,
-    run_engine_mechanics_window,
+    initialize_engine_mechanics, measure_clean_startup, measure_clean_startup_linear,
+    measure_engine_reopen, run_engine_mechanics_window,
 };
 
 const CHECKED_CHECKPOINTS: [u64; 6] = [0, 1_024, 4_096, 16_384, 32_768, 65_536];
@@ -28,6 +29,16 @@ const PERF_013_MAX_GROWTH_RATIO: u64 = 32;
 const PERF_013_MAX_STARTUP_NS: u64 = 30_000_000_000;
 const PREFLIGHT_ENVIRONMENT: &str = "RIFFDB_COMMAND_GROWTH_PREFLIGHT";
 const PREFLIGHT_EVIDENCE: &str = "semantic-crash-v1";
+/// Bump when the retained-history generator contract changes; watermark reuse refuses mismatch.
+const STARTUP_SCALE_SCHEMA_DIGEST: &str = "service-audit-growth-startup-scale-v1";
+const STARTUP_SCALE_DB_FILE: &str = "startup-scale.redb";
+const STARTUP_SCALE_WATERMARK_FILE: &str = "startup-scale-watermark.json";
+/// Observed ~1.1 KiB/command at multi-million retained counts; headroom for free-space preflight.
+const STARTUP_SCALE_BYTES_PER_COMMAND: u64 = 1_200;
+const STARTUP_SCALE_FREE_HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
+const STARTUP_SCALE_GENERATE_CHUNK: usize = 256;
+const PROC_STATUS_PATH: &str = "/proc/self/status";
+const PROC_STATUS_MAX_BYTES: usize = 65_536;
 
 fn main() -> ExitCode {
     match run() {
@@ -51,12 +62,17 @@ fn run() -> Result<bool, ()> {
     }
     let default_root =
         default_perf_db_root(Path::new(env!("CARGO_MANIFEST_DIR")), "command-growth");
+    let min_free_bytes = configuration
+        .startup_scale
+        .as_ref()
+        .map(|targets| estimate_startup_scale_free_bytes(targets))
+        .unwrap_or(64 * 1024 * 1024);
     let bench_root = BenchRoot::resolve(BenchRootOptions {
         harness: "command-growth",
         cli_override: configuration.database_root.clone(),
         default_root,
         allow_tmpfs: configuration.allow_tmpfs,
-        min_free_bytes: 64 * 1024 * 1024,
+        min_free_bytes,
     })
     .map_err(|error| {
         eprintln!("command-growth root: {error}");
@@ -80,6 +96,10 @@ fn run() -> Result<bool, ()> {
         "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"environment\",\"body\":{}}}",
         bench_root.environment_report_json()
     );
+
+    if let Some(targets) = &configuration.startup_scale {
+        return run_startup_scale(&configuration, &bench_root, targets);
+    }
 
     let mut startup_4096_reps = Vec::new();
     let mut startup_65536_reps = Vec::new();
@@ -374,10 +394,22 @@ struct Configuration {
     database_root: Option<PathBuf>,
     allow_tmpfs: bool,
     reps: usize,
+    /// Opt-in retained-history startup scale targets (command counts).
+    startup_scale: Option<Vec<u64>>,
+    /// Reusable database directory for `--startup-scale` (watermark + redb file).
+    startup_scale_db: Option<PathBuf>,
 }
 
 impl Configuration {
     fn parse() -> Result<Self, ()> {
+        Self::parse_from(env::args().skip(1))
+    }
+
+    fn parse_from<I, S>(args: I) -> Result<Self, ()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
         let mut checked = false;
         let mut assert_perf_003 = false;
         let mut assert_group_mechanics = false;
@@ -388,9 +420,11 @@ impl Configuration {
         let mut database_root = None;
         let mut allow_tmpfs = false;
         let mut reps = 1_usize;
-        let mut args = env::args().skip(1).peekable();
+        let mut startup_scale = None;
+        let mut startup_scale_db = None;
+        let mut args = args.into_iter().peekable();
         while let Some(argument) = args.next() {
-            match argument.as_str() {
+            match argument.as_ref() {
                 "--smoke" => {
                     checked = false;
                     reps = 1;
@@ -452,17 +486,27 @@ impl Configuration {
                     }
                 }
                 "--database-root" => {
-                    database_root = Some(PathBuf::from(args.next().ok_or(())?));
+                    database_root = Some(PathBuf::from(args.next().ok_or(())?.as_ref()));
                 }
                 "--allow-tmpfs" => allow_tmpfs = true,
                 "--reps" => {
-                    reps = args.next().ok_or(())?.parse().map_err(|_| ())?;
+                    reps = args.next().ok_or(())?.as_ref().parse().map_err(|_| ())?;
                     if !(1..=32).contains(&reps) {
                         return Err(());
                     }
                 }
+                "--startup-scale" => {
+                    let list = args.next().ok_or(())?;
+                    startup_scale = Some(parse_startup_scale_list(list.as_ref())?);
+                }
+                "--startup-scale-db" => {
+                    startup_scale_db = Some(PathBuf::from(args.next().ok_or(())?.as_ref()));
+                }
                 _ => return Err(()),
             }
+        }
+        if startup_scale_db.is_some() && startup_scale.is_none() {
+            return Err(());
         }
         Ok(Self {
             checked,
@@ -475,8 +519,425 @@ impl Configuration {
             database_root,
             allow_tmpfs,
             reps,
+            startup_scale,
+            startup_scale_db,
         })
     }
+}
+
+/// Free-space floor covering the largest retained target (~1.2 KiB/command + headroom).
+fn estimate_startup_scale_free_bytes(targets: &[u64]) -> u64 {
+    let max = targets.iter().copied().max().unwrap_or(0);
+    max.saturating_mul(STARTUP_SCALE_BYTES_PER_COMMAND)
+        .saturating_add(STARTUP_SCALE_FREE_HEADROOM_BYTES)
+        .max(64 * 1024 * 1024)
+}
+
+fn parse_startup_scale_list(raw: &str) -> Result<Vec<u64>, ()> {
+    if raw.is_empty() {
+        return Err(());
+    }
+    let mut out = Vec::new();
+    for part in raw.split(',') {
+        let value: u64 = part.trim().parse().map_err(|_| ())?;
+        if value == 0 {
+            return Err(());
+        }
+        out.push(value);
+    }
+    if out.is_empty() {
+        return Err(());
+    }
+    Ok(out)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GenerationWatermark {
+    schema_digest: String,
+    retained: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GenerationPlan {
+    Create { target: u64 },
+    Append { from: u64, target: u64 },
+    AlreadySatisfied { retained: u64 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WatermarkError {
+    SchemaMismatch,
+    RetainedExceedsTarget,
+}
+
+/// Plans how many commands to generate given an optional on-disk watermark.
+///
+/// When `force_regenerate` is true (test hook only), always plans a full create —
+/// used by the falsifiability transcript to prove the reuse assertion depends on
+/// the watermark.
+fn plan_generation(
+    existing: Option<&GenerationWatermark>,
+    target: u64,
+    force_regenerate: bool,
+) -> Result<GenerationPlan, WatermarkError> {
+    if force_regenerate {
+        return Ok(GenerationPlan::Create { target });
+    }
+    match existing {
+        None => Ok(GenerationPlan::Create { target }),
+        Some(wm) if wm.schema_digest != STARTUP_SCALE_SCHEMA_DIGEST => {
+            Err(WatermarkError::SchemaMismatch)
+        }
+        Some(wm) if wm.retained > target => Err(WatermarkError::RetainedExceedsTarget),
+        Some(wm) if wm.retained == target => Ok(GenerationPlan::AlreadySatisfied {
+            retained: wm.retained,
+        }),
+        Some(wm) => Ok(GenerationPlan::Append {
+            from: wm.retained,
+            target,
+        }),
+    }
+}
+
+impl GenerationWatermark {
+    fn to_json(&self) -> String {
+        format!(
+            "{{\"schema_digest\":\"{}\",\"retained\":{}}}",
+            escape_json(&self.schema_digest),
+            self.retained
+        )
+    }
+
+    fn from_json(raw: &str) -> Result<Self, ()> {
+        let schema_digest = json_string_field(raw, "schema_digest")?;
+        let retained = json_u64_field(raw, "retained")?;
+        Ok(Self {
+            schema_digest,
+            retained,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DrainLinearCheck {
+    first_half_ns: u64,
+    second_half_ns: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StartupScaleRecord {
+    retained: u64,
+    file_bytes: u64,
+    generate_ns: u64,
+    generated_commands: u64,
+    generate_commands_per_second: u64,
+    startup_ns: u64,
+    startup_ns_per_command: u64,
+    peak_rss_bytes: u64,
+    drain_linear_check: DrainLinearCheck,
+}
+
+impl StartupScaleRecord {
+    fn to_jsonl(&self) -> String {
+        format!(
+            "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"startup_scale\",\"retained\":{},\"file_bytes\":{},\"generate_ns\":{},\"generated_commands\":{},\"generate_commands_per_second\":{},\"startup_ns\":{},\"startup_ns_per_command\":{},\"peak_rss_bytes\":{},\"drain_linear_check\":{{\"first_half_ns\":{},\"second_half_ns\":{}}}}}",
+            self.retained,
+            self.file_bytes,
+            self.generate_ns,
+            self.generated_commands,
+            self.generate_commands_per_second,
+            self.startup_ns,
+            self.startup_ns_per_command,
+            self.peak_rss_bytes,
+            self.drain_linear_check.first_half_ns,
+            self.drain_linear_check.second_half_ns
+        )
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn from_jsonl(raw: &str) -> Result<Self, ()> {
+        if !raw.contains("\"record_type\":\"startup_scale\"") {
+            return Err(());
+        }
+        Ok(Self {
+            retained: json_u64_field(raw, "retained")?,
+            file_bytes: json_u64_field(raw, "file_bytes")?,
+            generate_ns: json_u64_field(raw, "generate_ns")?,
+            generated_commands: json_u64_field(raw, "generated_commands")?,
+            generate_commands_per_second: json_u64_field(raw, "generate_commands_per_second")?,
+            startup_ns: json_u64_field(raw, "startup_ns")?,
+            startup_ns_per_command: json_u64_field(raw, "startup_ns_per_command")?,
+            peak_rss_bytes: json_u64_field(raw, "peak_rss_bytes")?,
+            drain_linear_check: DrainLinearCheck {
+                first_half_ns: json_u64_field(raw, "first_half_ns")?,
+                second_half_ns: json_u64_field(raw, "second_half_ns")?,
+            },
+        })
+    }
+}
+
+fn run_startup_scale(
+    configuration: &Configuration,
+    bench_root: &BenchRoot,
+    targets: &[u64],
+) -> Result<bool, ()> {
+    // Hold optional session dir so Drop cleans ephemeral runs; durable reuse uses
+    // `--startup-scale-db` and is never owned by BenchDir.
+    let ephemeral = if configuration.startup_scale_db.is_none() {
+        Some(BenchDir::create(bench_root, "startup-scale").map_err(|_| ())?)
+    } else {
+        None
+    };
+    let db_dir = if let Some(path) = &configuration.startup_scale_db {
+        path.clone()
+    } else {
+        ephemeral
+            .as_ref()
+            .expect("ephemeral dir when no startup-scale-db")
+            .path()
+            .to_path_buf()
+    };
+    fs::create_dir_all(&db_dir).map_err(|_| ())?;
+    println!(
+        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"startup_scale_configuration\",\"targets\":[{}],\"db_dir\":\"{}\",\"schema_digest\":\"{STARTUP_SCALE_SCHEMA_DIGEST}\"}}",
+        targets
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        escape_json(&db_dir.display().to_string())
+    );
+
+    let mut sorted_targets = targets.to_vec();
+    sorted_targets.sort_unstable();
+    // Process in ascending order so a single reusable DB can extend: M → N.
+    for target in sorted_targets {
+        let record = measure_one_startup_scale(&db_dir, target, false)?;
+        println!("{}", record.to_jsonl());
+        println!(
+            "startup-scale retained={target} file_bytes={} generate_ns={} generated={} rate={}/s startup_ns={} ns/cmd={} peak_rss_bytes={} drain_first_half_ns={} drain_second_half_ns={}",
+            record.file_bytes,
+            record.generate_ns,
+            record.generated_commands,
+            record.generate_commands_per_second,
+            record.startup_ns,
+            record.startup_ns_per_command,
+            record.peak_rss_bytes,
+            record.drain_linear_check.first_half_ns,
+            record.drain_linear_check.second_half_ns
+        );
+    }
+    drop(ephemeral);
+    Ok(true)
+}
+
+fn measure_one_startup_scale(
+    db_dir: &Path,
+    target: u64,
+    force_regenerate: bool,
+) -> Result<StartupScaleRecord, ()> {
+    let db_path = db_dir.join(STARTUP_SCALE_DB_FILE);
+    let watermark_path = db_dir.join(STARTUP_SCALE_WATERMARK_FILE);
+    let existing = load_watermark(&watermark_path, &db_path)?;
+    let plan =
+        plan_generation(existing.as_ref(), target, force_regenerate).map_err(|err| match err {
+            WatermarkError::SchemaMismatch => {
+                eprintln!("startup-scale: schema digest mismatch; refuse reuse");
+            }
+            WatermarkError::RetainedExceedsTarget => {
+                eprintln!(
+                    "startup-scale: watermark retained exceeds target {target}; refuse shrink"
+                );
+            }
+        })?;
+
+    let generate_started = Instant::now();
+    let generated_commands = match plan {
+        GenerationPlan::Create { target } => {
+            if db_path.exists() {
+                fs::remove_file(&db_path).map_err(|_| ())?;
+            }
+            if watermark_path.exists() {
+                fs::remove_file(&watermark_path).map_err(|_| ())?;
+            }
+            let mut harness = ServiceAuditGrowthHarness::new(&db_path).map_err(|_| ())?;
+            append_commands(&mut harness, 1, target)?;
+            drop(harness);
+            target
+        }
+        GenerationPlan::Append { from, target } => {
+            let delta = target.checked_sub(from).ok_or(())?;
+            if delta == 0 {
+                0
+            } else {
+                let mut harness = ServiceAuditGrowthHarness::reopen(&db_path).map_err(|_| ())?;
+                let first = from.checked_add(1).ok_or(())?;
+                append_commands(&mut harness, first, delta)?;
+                drop(harness);
+                delta
+            }
+        }
+        GenerationPlan::AlreadySatisfied { .. } => 0,
+    };
+    let generate_ns = u64::try_from(generate_started.elapsed().as_nanos()).map_err(|_| ())?;
+    write_watermark(
+        &watermark_path,
+        &GenerationWatermark {
+            schema_digest: STARTUP_SCALE_SCHEMA_DIGEST.to_owned(),
+            retained: target,
+        },
+    )?;
+
+    let file_bytes = fs::metadata(&db_path).map_err(|_| ())?.len();
+    let rss_before = read_vm_hwm_bytes().unwrap_or(0);
+    let measurement = measure_clean_startup_linear(&db_path).map_err(|_| ())?;
+    let rss_after = read_vm_hwm_bytes().unwrap_or(rss_before);
+    let peak_rss_bytes = rss_after.max(rss_before);
+    let startup_ns = u64::try_from(measurement.elapsed().as_nanos()).map_err(|_| ())?;
+    let startup_ns_per_command = startup_ns / target.max(1);
+    let generate_commands_per_second = if generated_commands == 0 {
+        0
+    } else {
+        commands_per_second(
+            usize::try_from(generated_commands).map_err(|_| ())?,
+            generate_ns.max(1),
+        )?
+    };
+
+    Ok(StartupScaleRecord {
+        retained: target,
+        file_bytes,
+        generate_ns,
+        generated_commands,
+        generate_commands_per_second,
+        startup_ns,
+        startup_ns_per_command,
+        peak_rss_bytes,
+        drain_linear_check: DrainLinearCheck {
+            first_half_ns: u64::try_from(measurement.first_half().as_nanos()).map_err(|_| ())?,
+            second_half_ns: u64::try_from(measurement.second_half().as_nanos()).map_err(|_| ())?,
+        },
+    })
+}
+
+fn append_commands(
+    harness: &mut ServiceAuditGrowthHarness,
+    first_command: u64,
+    count: u64,
+) -> Result<(), ()> {
+    let mut next = first_command;
+    let mut remaining = count;
+    while remaining > 0 {
+        let chunk_u64 = remaining.min(u64::try_from(STARTUP_SCALE_GENERATE_CHUNK).map_err(|_| ())?);
+        let chunk = usize::try_from(chunk_u64).map_err(|_| ())?;
+        harness.run_window(next, chunk).map_err(|_| ())?;
+        next = next.checked_add(chunk_u64).ok_or(())?;
+        remaining = remaining.checked_sub(chunk_u64).ok_or(())?;
+    }
+    Ok(())
+}
+
+fn load_watermark(
+    watermark_path: &Path,
+    db_path: &Path,
+) -> Result<Option<GenerationWatermark>, ()> {
+    let wm_exists = watermark_path.exists();
+    let db_exists = db_path.exists();
+    match (wm_exists, db_exists) {
+        (false, false) => Ok(None),
+        (true, true) => {
+            let raw = fs::read_to_string(watermark_path).map_err(|_| ())?;
+            Ok(Some(GenerationWatermark::from_json(&raw)?))
+        }
+        (true, false) | (false, true) => {
+            eprintln!(
+                "startup-scale: watermark/database pair incomplete; refuse (regenerate after wipe)"
+            );
+            Err(())
+        }
+    }
+}
+
+fn write_watermark(path: &Path, watermark: &GenerationWatermark) -> Result<(), ()> {
+    fs::write(path, watermark.to_json()).map_err(|_| ())
+}
+
+fn read_vm_hwm_bytes() -> Option<u64> {
+    let mut file = fs::File::open(PROC_STATUS_PATH).ok()?;
+    let mut buf = vec![0_u8; PROC_STATUS_MAX_BYTES.saturating_add(1)];
+    let mut total = 0_usize;
+    loop {
+        if total >= buf.len() {
+            return None;
+        }
+        match std::io::Read::read(&mut file, &mut buf[total..]) {
+            Ok(0) => break,
+            Ok(n) => total = total.saturating_add(n),
+            Err(_) => return None,
+        }
+    }
+    if total > PROC_STATUS_MAX_BYTES {
+        return None;
+    }
+    let text = std::str::from_utf8(&buf[..total]).ok()?;
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("VmHWM:") else {
+            continue;
+        };
+        let kib: u64 = rest.split_whitespace().next()?.parse().ok()?;
+        return kib.checked_mul(1024);
+    }
+    None
+}
+
+fn escape_json(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn json_u64_field(raw: &str, field: &str) -> Result<u64, ()> {
+    let needle = format!("\"{field}\":");
+    let start = raw.find(&needle).ok_or(())? + needle.len();
+    let rest = raw[start..].trim_start();
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    rest[..end].parse().map_err(|_| ())
+}
+
+fn json_string_field(raw: &str, field: &str) -> Result<String, ()> {
+    let needle = format!("\"{field}\":\"");
+    let start = raw.find(&needle).ok_or(())? + needle.len();
+    let rest = &raw[start..];
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => return Ok(out),
+            '\\' => match chars.next() {
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some(other) => out.push(other),
+                None => return Err(()),
+            },
+            c => out.push(c),
+        }
+    }
+    Err(())
 }
 
 #[cfg(test)]
@@ -512,5 +973,198 @@ mod tests {
         );
         assert!(root.to_string_lossy().contains("perf-db"));
         assert!(!root.starts_with("/tmp"));
+    }
+
+    #[test]
+    fn startup_scale_flag_parses_single_and_list() {
+        let single = Configuration::parse_from(["--startup-scale", "1024"]).expect("single");
+        assert_eq!(single.startup_scale.as_deref(), Some(&[1024][..]));
+
+        let list =
+            Configuration::parse_from(["--startup-scale", "1024,4096,1000000"]).expect("list");
+        assert_eq!(
+            list.startup_scale.as_deref(),
+            Some(&[1_024, 4_096, 1_000_000][..])
+        );
+
+        let with_db = Configuration::parse_from([
+            "--startup-scale",
+            "64",
+            "--startup-scale-db",
+            "/var/perf/scale",
+            "--allow-tmpfs",
+        ])
+        .expect("with db");
+        assert_eq!(
+            with_db.startup_scale_db.as_deref(),
+            Some(Path::new("/var/perf/scale"))
+        );
+        assert!(with_db.allow_tmpfs);
+
+        assert!(Configuration::parse_from(["--startup-scale-db", "/x"]).is_err());
+        assert!(Configuration::parse_from(["--startup-scale", "0"]).is_err());
+        assert!(Configuration::parse_from(["--startup-scale", ""]).is_err());
+        assert!(Configuration::parse_from(["--startup-scale", "1,abc"]).is_err());
+    }
+
+    #[test]
+    fn watermark_reuse_plans_append_and_refuses_digest_mismatch() {
+        let none = plan_generation(None, 4_096, false).expect("create");
+        assert_eq!(none, GenerationPlan::Create { target: 4_096 });
+
+        let partial = GenerationWatermark {
+            schema_digest: STARTUP_SCALE_SCHEMA_DIGEST.to_owned(),
+            retained: 1_024,
+        };
+        assert_eq!(
+            plan_generation(Some(&partial), 4_096, false).expect("append"),
+            GenerationPlan::Append {
+                from: 1_024,
+                target: 4_096
+            }
+        );
+        assert_eq!(
+            plan_generation(Some(&partial), 1_024, false).expect("satisfied"),
+            GenerationPlan::AlreadySatisfied { retained: 1_024 }
+        );
+        assert_eq!(
+            plan_generation(Some(&partial), 512, false).expect_err("shrink"),
+            WatermarkError::RetainedExceedsTarget
+        );
+
+        let bad = GenerationWatermark {
+            schema_digest: "other-digest".to_owned(),
+            retained: 1_024,
+        };
+        assert_eq!(
+            plan_generation(Some(&bad), 4_096, false).expect_err("mismatch"),
+            WatermarkError::SchemaMismatch
+        );
+
+        // Falsifiability hook: force_regenerate ignores a valid watermark.
+        assert_eq!(
+            plan_generation(Some(&partial), 4_096, true).expect("forced"),
+            GenerationPlan::Create { target: 4_096 }
+        );
+    }
+
+    #[test]
+    fn startup_scale_record_round_trips_jsonl() {
+        let record = StartupScaleRecord {
+            retained: 4_096,
+            file_bytes: 12_345_678,
+            generate_ns: 9_000_000_000,
+            generated_commands: 3_072,
+            generate_commands_per_second: 341,
+            startup_ns: 120_000_000,
+            startup_ns_per_command: 29_296,
+            peak_rss_bytes: 256 * 1024 * 1024,
+            drain_linear_check: DrainLinearCheck {
+                first_half_ns: 55_000_000,
+                second_half_ns: 58_000_000,
+            },
+        };
+        let jsonl = record.to_jsonl();
+        assert!(jsonl.contains("\"record_type\":\"startup_scale\""));
+        assert!(jsonl.contains("\"drain_linear_check\":{\"first_half_ns\":55000000"));
+        let parsed = StartupScaleRecord::from_jsonl(&jsonl).expect("parse");
+        assert_eq!(parsed, record);
+    }
+
+    #[test]
+    fn free_space_estimate_covers_ten_million_commands() {
+        let bytes = estimate_startup_scale_free_bytes(&[1_000_000, 10_000_000]);
+        // 10M * 1200 + 512 MiB ≈ 11.4 GiB — must exceed the ~11 GB database.
+        assert!(bytes >= 11_u64 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn startup_scale_end_to_end_and_reuse_append() {
+        let root = unique_temp_dir("startup-scale-e2e");
+        let db_dir = root.join("db");
+        fs::create_dir_all(&db_dir).expect("mkdir");
+
+        let first = measure_one_startup_scale(&db_dir, 1_024, false).expect("n=1024");
+        assert_eq!(first.retained, 1_024);
+        assert_eq!(first.generated_commands, 1_024);
+        assert!(first.file_bytes > 0);
+        assert!(first.startup_ns > 0);
+        assert!(first.startup_ns_per_command > 0);
+        assert!(first.generate_commands_per_second > 0);
+
+        let second = measure_one_startup_scale(&db_dir, 4_096, false).expect("n=4096");
+        assert_eq!(second.retained, 4_096);
+        // Reuse must append only the delta — falsifiable by force_regenerate.
+        assert_eq!(
+            second.generated_commands, 3_072,
+            "reuse append must generate N-M only"
+        );
+        assert!(
+            second.file_bytes >= first.file_bytes,
+            "file_bytes must be monotone non-decreasing"
+        );
+        assert!(second.startup_ns > 0);
+
+        // Already satisfied: zero generate.
+        let again = measure_one_startup_scale(&db_dir, 4_096, false).expect("satisfied");
+        assert_eq!(again.generated_commands, 0);
+        assert_eq!(again.retained, 4_096);
+
+        // Falsifiability: force regenerate → full create count, not delta.
+        let forced = measure_one_startup_scale(&db_dir, 4_096, true).expect("forced");
+        assert_eq!(
+            forced.generated_commands, 4_096,
+            "force_regenerate must rewrite full history"
+        );
+
+        // Digest mismatch refuses.
+        let wm_path = db_dir.join(STARTUP_SCALE_WATERMARK_FILE);
+        fs::write(
+            &wm_path,
+            GenerationWatermark {
+                schema_digest: "broken".to_owned(),
+                retained: 4_096,
+            }
+            .to_json(),
+        )
+        .expect("write bad watermark");
+        assert!(
+            measure_one_startup_scale(&db_dir, 8_192, false).is_err(),
+            "digest mismatch must refuse"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Transcript: breaking the watermark (always regenerate) fails the reuse
+    /// generate-count assertion that the happy-path test above relies on.
+    #[test]
+    fn falsifiability_always_regenerate_breaks_reuse_generate_count() {
+        let root = unique_temp_dir("startup-scale-falsify");
+        let db_dir = root.join("db");
+        fs::create_dir_all(&db_dir).expect("mkdir");
+
+        let _ = measure_one_startup_scale(&db_dir, 512, false).expect("seed");
+        // Simulate a broken plan that always regenerates when extending.
+        let broken = measure_one_startup_scale(&db_dir, 1_024, true).expect("broken reuse");
+        let expected_delta = 512_u64;
+        assert_ne!(
+            broken.generated_commands, expected_delta,
+            "transcript: force_regenerate yields full count {}, not delta {}",
+            broken.generated_commands, expected_delta
+        );
+        assert_eq!(broken.generated_commands, 1_024);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = env::temp_dir().join(format!("riffdb-{label}-{stamp}"));
+        fs::create_dir_all(&path).expect("mkdir");
+        path
     }
 }

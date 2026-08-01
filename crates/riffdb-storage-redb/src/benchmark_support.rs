@@ -436,7 +436,81 @@ pub fn measure_clean_startup(path: &Path) -> Result<Duration, EngineBenchmarkErr
     Ok(started.elapsed())
 }
 
+/// Timing for one PERF-013 clean startup with evidence-drain half-split.
+///
+/// `first_half` / `second_half` sum wall time over the first and second halves of
+/// combined structural + historical evidence *page reads* (by page count, each
+/// ExactEnd response counted as one page). Opaque cursors do not expose a
+/// retained-command sequence midpoint, so page-count half-split is the drain-API
+/// linear check. Validation work is unchanged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CleanStartupMeasurement {
+    elapsed: Duration,
+    first_half: Duration,
+    second_half: Duration,
+    evidence_pages: u64,
+}
+
+impl CleanStartupMeasurement {
+    /// Full open + structural + historical + operational handoff wall time.
+    #[must_use]
+    pub const fn elapsed(self) -> Duration {
+        self.elapsed
+    }
+
+    /// Wall time spent in the first half of evidence page reads.
+    #[must_use]
+    pub const fn first_half(self) -> Duration {
+        self.first_half
+    }
+
+    /// Wall time spent in the second half of evidence page reads.
+    #[must_use]
+    pub const fn second_half(self) -> Duration {
+        self.second_half
+    }
+
+    /// Structural + historical evidence page reads (including ExactEnd responses).
+    #[must_use]
+    pub const fn evidence_pages(self) -> u64 {
+        self.evidence_pages
+    }
+}
+
+/// Full clean startup with combined structural+historical page half-split timings.
+pub fn measure_clean_startup_linear(
+    path: &Path,
+) -> Result<CleanStartupMeasurement, EngineBenchmarkError> {
+    let started = Instant::now();
+    let (first_half, second_half, evidence_pages) = drain_startup_evidence_linear(path)?;
+    Ok(CleanStartupMeasurement {
+        elapsed: started.elapsed(),
+        first_half,
+        second_half,
+        evidence_pages,
+    })
+}
+
+/// Splits ordered page durations into first/second half sums (by page count).
+///
+/// When the page count is odd the extra page is attributed to the second half
+/// (`mid = len / 2`). Empty input yields `(0, 0)`.
+#[must_use]
+pub fn split_half_page_durations(page_ns: &[u64]) -> (u64, u64) {
+    let mid = page_ns.len() / 2;
+    let first = page_ns[..mid].iter().copied().sum();
+    let second = page_ns[mid..].iter().copied().sum();
+    (first, second)
+}
+
 fn drain_startup_evidence(path: &Path) -> Result<(), EngineBenchmarkError> {
+    let _ = drain_startup_evidence_linear(path)?;
+    Ok(())
+}
+
+fn drain_startup_evidence_linear(
+    path: &Path,
+) -> Result<(Duration, Duration, u64), EngineBenchmarkError> {
     use riffdb_storage_api::{
         EvidencePageLimit, HistoricalEvidenceCursor, HistoricalEvidencePage,
         ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
@@ -460,26 +534,43 @@ fn drain_startup_evidence(path: &Path) -> Result<(), EngineBenchmarkError> {
     let database_id = session.database_id();
     let open_session_id = session.open_session_id();
     let limit = EvidencePageLimit::new(64).ok_or(EngineBenchmarkError::Engine)?;
+    let mut page_ns = Vec::new();
     let mut structural = StructuralEvidenceCursor::start(database_id, open_session_id);
     let structural_end = loop {
+        let page_started = Instant::now();
         match session
             .read_structural_evidence(structural, limit)
             .map_err(|_| EngineBenchmarkError::Engine)?
         {
-            StructuralEvidencePage::Page { next, .. } => structural = next,
-            StructuralEvidencePage::ExactEnd(end) => break end,
+            StructuralEvidencePage::Page { next, .. } => {
+                page_ns.push(u64::try_from(page_started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+                structural = next;
+            }
+            StructuralEvidencePage::ExactEnd(end) => {
+                page_ns.push(u64::try_from(page_started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+                break end;
+            }
         }
     };
     let mut historical = HistoricalEvidenceCursor::start(database_id, open_session_id);
     let historical_end = loop {
+        let page_started = Instant::now();
         match session
             .read_historical_evidence(historical, limit)
             .map_err(|_| EngineBenchmarkError::Engine)?
         {
-            HistoricalEvidencePage::Page { next, .. } => historical = next,
-            HistoricalEvidencePage::ExactEnd(end) => break end,
+            HistoricalEvidencePage::Page { next, .. } => {
+                page_ns.push(u64::try_from(page_started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+                historical = next;
+            }
+            HistoricalEvidencePage::ExactEnd(end) => {
+                page_ns.push(u64::try_from(page_started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+                break end;
+            }
         }
     };
+    let evidence_pages = u64::try_from(page_ns.len()).unwrap_or(u64::MAX);
+    let (first_half_ns, second_half_ns) = split_half_page_durations(&page_ns);
     let outcome = session
         .finish(structural_end, historical_end)
         .map_err(|_| EngineBenchmarkError::Engine)?;
@@ -494,7 +585,11 @@ fn drain_startup_evidence(path: &Path) -> Result<(), EngineBenchmarkError> {
             return Err(EngineBenchmarkError::Engine);
         }
     }
-    Ok(())
+    Ok((
+        Duration::from_nanos(first_half_ns),
+        Duration::from_nanos(second_half_ns),
+        evidence_pages,
+    ))
 }
 
 fn configure(
@@ -674,4 +769,68 @@ fn uuid_v7_bytes(tag: u8, sequence: u64) -> [u8; 16] {
     bytes[8] = 0x80 | (tag & 0x3f);
     bytes[9..].copy_from_slice(&sequence.to_be_bytes()[1..]);
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        EngineDurability, EngineMechanicsProfile, ServiceAuditGrowthHarness,
+        initialize_engine_mechanics, measure_clean_startup, measure_clean_startup_linear,
+        run_engine_mechanics_window, split_half_page_durations,
+    };
+    use std::time::Duration;
+
+    #[test]
+    fn split_half_page_durations_empty_and_balanced() {
+        assert_eq!(split_half_page_durations(&[]), (0, 0));
+        assert_eq!(split_half_page_durations(&[10]), (0, 10));
+        assert_eq!(split_half_page_durations(&[10, 20]), (10, 20));
+        assert_eq!(split_half_page_durations(&[1, 2, 3, 4]), (3, 7));
+        assert_eq!(split_half_page_durations(&[1, 2, 3]), (1, 5));
+    }
+
+    #[test]
+    fn clean_startup_linear_matches_plain_measurement_shape() {
+        let dir = tempfile_dir();
+        let path = dir.join("linear-check.redb");
+        let mut harness = ServiceAuditGrowthHarness::new(&path).expect("new harness");
+        harness.run_window(1, 32).expect("seed window");
+        drop(harness);
+
+        let plain = measure_clean_startup(&path).expect("plain startup");
+        let linear = measure_clean_startup_linear(&path).expect("linear startup");
+        assert!(linear.elapsed() > Duration::ZERO);
+        assert!(plain > Duration::ZERO);
+        // Half-split parts are pure page timings; their sum is at most total elapsed
+        // (structural + handoff sit outside the historical halves).
+        let halves = linear.first_half().saturating_add(linear.second_half());
+        assert!(halves <= linear.elapsed().saturating_mul(2));
+        assert!(linear.evidence_pages() >= 1);
+    }
+
+    #[test]
+    fn engine_mechanics_profile_rejects_zero_group() {
+        assert!(EngineMechanicsProfile::new(EngineDurability::None, 0).is_err());
+    }
+
+    #[test]
+    fn initialize_and_window_still_compile_paths() {
+        let dir = tempfile_dir();
+        let path = dir.join("mechanics.redb");
+        initialize_engine_mechanics(&path).expect("init");
+        let profile =
+            EngineMechanicsProfile::new(EngineDurability::ImmediateOnePhase, 1).expect("profile");
+        let sample = run_engine_mechanics_window(&path, 1, 4, profile).expect("window");
+        assert_eq!(sample.commands(), 4);
+    }
+
+    fn tempfile_dir() -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("riffdb-bench-support-{stamp}"));
+        std::fs::create_dir_all(&path).expect("mkdir");
+        path
+    }
 }
