@@ -2168,7 +2168,7 @@
             ]
           },
           "limit": {
-            "maximum": 500,
+            "maximum": 499,
             "minimum": 1,
             "type": "integer"
           },
@@ -2218,7 +2218,7 @@
                   ],
                   "type": "object"
                 },
-                "maxItems": 500,
+                "maxItems": 499,
                 "type": "array"
               },
               "outcome": {
@@ -2259,7 +2259,7 @@
             ]
           },
           "limit": {
-            "maximum": 500,
+            "maximum": 499,
             "minimum": 1,
             "type": "integer"
           },
@@ -2333,7 +2333,7 @@
                   ],
                   "type": "object"
                 },
-                "maxItems": 500,
+                "maxItems": 499,
                 "type": "array"
               }
             },
@@ -2373,7 +2373,7 @@
             "type": "string"
           },
           "limit": {
-            "maximum": 500,
+            "maximum": 499,
             "minimum": 1,
             "type": "integer"
           },
@@ -2444,7 +2444,7 @@
                   ],
                   "type": "object"
                 },
-                "maxItems": 500,
+                "maxItems": 499,
                 "type": "array"
               }
             },

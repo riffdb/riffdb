@@ -11,7 +11,7 @@ use crate::{
     EntitySymbol, MAX_QUERY_ARTIFACT_BYTES, MAX_SOURCE_MAP_ENTRIES, NamedFieldSchema,
     NamedParameterSchema, NamedQuerySchemas, NamedResultBranchSchema, NamedTypeSchema, PageBound,
     QUERY_IR_VERSION_V1, QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage,
-    QueryDiagnostics, SymbolicCatalog,
+    QueryDiagnostics, SymbolicCatalog, page_take_within_scan_bound,
 };
 
 const IR_MAGIC: &[u8] = b"RIFFDB-QUERY-SURFACE\0";
@@ -279,6 +279,42 @@ impl<'a> Resolver<'a> {
                 ));
             }
             let ty = self.resolve_type(&parameter.ty.value, parameter.ty.span)?;
+            if matches!(ty, NamedTypeSchema::Limit)
+                && let Some(default) = parameter.default.as_ref()
+            {
+                match &default.value {
+                    Literal::Unsigned(value) => {
+                        let parsed = value.parse::<u64>().ok().filter(|value| *value > 0);
+                        match parsed {
+                            Some(limit) if page_take_within_scan_bound(limit) => {}
+                            Some(_) => {
+                                return Err(self.diagnostic(
+                                    QueryDiagnosticCode::ArtifactLimit,
+                                    default.span,
+                                    vec![name.to_owned()],
+                                    "Limit default exceeds the maximum page take of 499 (scan ceiling reserves one row for the continuation probe)",
+                                ));
+                            }
+                            None => {
+                                return Err(self.diagnostic(
+                                    QueryDiagnosticCode::InvalidType,
+                                    default.span,
+                                    vec![name.to_owned()],
+                                    "Limit default is not a positive u64",
+                                ));
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(self.diagnostic(
+                            QueryDiagnosticCode::InvalidType,
+                            default.span,
+                            vec![name.to_owned()],
+                            "Limit default must be a positive unsigned literal",
+                        ));
+                    }
+                }
+            }
             self.parameters.insert(name.to_owned(), ty.clone());
             self.push_map(
                 parameter.name.span,
@@ -812,19 +848,26 @@ impl<'a> Resolver<'a> {
         span: Span,
     ) -> Result<PageBound, QueryDiagnostics> {
         match expression {
-            Expression::Literal(Literal::Unsigned(value)) => value
-                .parse::<u64>()
-                .ok()
-                .filter(|value| *value > 0)
-                .map(PageBound::Literal)
-                .ok_or_else(|| {
-                    self.diagnostic(
+            Expression::Literal(Literal::Unsigned(value)) => {
+                let parsed = value.parse::<u64>().ok().filter(|value| *value > 0);
+                match parsed {
+                    Some(take) if page_take_within_scan_bound(take) => Ok(PageBound::Literal(take)),
+                    Some(_) => Err(self.diagnostic(
+                        QueryDiagnosticCode::ArtifactLimit,
+                        span,
+                        Vec::new(),
+                        // Bound is max_query_page_take() (= 499): take + continuation probe
+                        // must stay within MAX_QUERY_SCANNED_ROWS (500).
+                        "static take exceeds the maximum page take of 499 (scan ceiling reserves one row for the continuation probe)",
+                    )),
+                    None => Err(self.diagnostic(
                         QueryDiagnosticCode::InvalidType,
                         span,
                         Vec::new(),
                         "take literal is not a positive u64",
-                    )
-                }),
+                    )),
+                }
+            }
             Expression::Parameter(parameter)
                 if matches!(
                     self.parameters.get(parameter.value.as_str()),
