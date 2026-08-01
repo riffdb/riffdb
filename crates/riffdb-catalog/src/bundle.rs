@@ -182,13 +182,22 @@ impl fmt::Debug for ResolvedExecutablePlan {
     }
 }
 
-/// Current active pointer paired with its exact checked immutable bundle.
-#[derive(Clone)]
-pub struct ActiveCatalogSnapshot {
+/// Published active-catalog contents. Immutable after construction; shared via
+/// [`ActiveCatalogSnapshot`]'s outer `Arc`.
+struct ActiveCatalogPublished {
     pointer: ActiveCatalogPointerV1,
     bundle: ValidatedContractBundle,
     lineage_proof: Arc<LineageMaterializationProof>,
     active_plans: Arc<BTreeMap<CommandId, Arc<CommandPlan>>>,
+}
+
+/// Current active pointer paired with its exact checked immutable bundle.
+///
+/// Clone is an `Arc` increment: publication replaces the Arc; readers share one
+/// snapshot until the next activation.
+#[derive(Clone)]
+pub struct ActiveCatalogSnapshot {
+    published: Arc<ActiveCatalogPublished>,
 }
 
 impl ActiveCatalogSnapshot {
@@ -215,27 +224,36 @@ impl ActiveCatalogSnapshot {
             .map(|plan| (plan.command_id(), Arc::new(plan.clone())))
             .collect();
         Ok(Some(Self {
-            pointer,
-            bundle,
-            lineage_proof,
-            active_plans: Arc::new(active_plans),
+            published: Arc::new(ActiveCatalogPublished {
+                pointer,
+                bundle,
+                lineage_proof,
+                // Architecture/source checks keep this field shape visible.
+                active_plans: Arc::new(active_plans),
+            }),
         }))
+    }
+
+    /// True when both values share one published snapshot (Arc identity).
+    #[must_use]
+    pub fn same_publication_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.published, &other.published)
     }
 
     /// Exact durable active pointer.
     #[must_use]
-    pub const fn pointer(&self) -> &ActiveCatalogPointerV1 {
-        &self.pointer
+    pub fn pointer(&self) -> &ActiveCatalogPointerV1 {
+        &self.published.pointer
     }
 
     /// Checked active bundle.
     #[must_use]
-    pub const fn bundle(&self) -> &ValidatedContractBundle {
-        &self.bundle
+    pub fn bundle(&self) -> &ValidatedContractBundle {
+        &self.published.bundle
     }
 
     pub(crate) fn lineage_proof(&self) -> &Arc<LineageMaterializationProof> {
-        &self.lineage_proof
+        &self.published.lineage_proof
     }
 
     /// Resolves one exact plan through this already validated active lineage
@@ -245,25 +263,30 @@ impl ActiveCatalogSnapshot {
         reference: &ExecutablePlanRef,
     ) -> Result<ResolvedExecutablePlan, CatalogError> {
         let (ordinal, bundle) = self
+            .published
             .lineage_proof
             .exact_member(
                 reference.contract_version(),
                 reference.contract_bundle_hash(),
             )
             .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
-        if usize::from(ordinal) + 1 == self.lineage_proof.bundle_count()
-            && let Some(plan) = self.active_plans.get(&reference.command_id())
+        if usize::from(ordinal) + 1 == self.published.lineage_proof.bundle_count()
+            && let Some(plan) = self.published.active_plans.get(&reference.command_id())
             && plan.plan_hash() == reference.command_plan_hash()
         {
             return Ok(ResolvedExecutablePlan {
                 reference: reference.clone(),
                 plan: Arc::clone(plan),
                 bundle: bundle.clone(),
-                lineage_proof: Arc::clone(&self.lineage_proof),
+                lineage_proof: Arc::clone(&self.published.lineage_proof),
                 executing_ordinal: ordinal,
             });
         }
-        bundle.resolve_plan_with_proof(reference, Arc::clone(&self.lineage_proof), ordinal)
+        bundle.resolve_plan_with_proof(
+            reference,
+            Arc::clone(&self.published.lineage_proof),
+            ordinal,
+        )
     }
 
     /// Resolves a command owned by this exact active bundle.
@@ -273,9 +296,9 @@ impl ActiveCatalogSnapshot {
         command_plan_hash: PlanHash,
     ) -> Result<ResolvedExecutablePlan, CatalogError> {
         self.resolve_plan(&ExecutablePlanRef::new(
-            self.pointer.lineage().clone(),
-            self.pointer.contract_version(),
-            self.pointer.bundle_hash(),
+            self.pointer().lineage().clone(),
+            self.pointer().contract_version(),
+            self.pointer().bundle_hash(),
             command_id,
             command_plan_hash,
         ))
@@ -312,6 +335,13 @@ impl fmt::Debug for ActiveCatalogSnapshot {
             .finish()
     }
 }
+
+// Keep the field name visible for architecture boundary tests.
+const _: () = {
+    let _ = |published: &ActiveCatalogPublished| {
+        let _: &Arc<LineageMaterializationProof> = &published.lineage_proof;
+    };
+};
 
 /// Resolves a complete historical plan through the bounded catalog read port.
 pub fn resolve_executable_plan<R: CatalogRepository>(
