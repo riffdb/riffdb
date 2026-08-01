@@ -302,6 +302,20 @@ const LIFECYCLE_ACCEPTING: u8 = 0;
 const LIFECYCLE_DRAINING: u8 = 1;
 const LIFECYCLE_FENCED: u8 = 2;
 const LIFECYCLE_STOPPED: u8 = 3;
+
+/// Test-only: non-null points at the lifecycle Arc of the coordinator whose
+/// intake actor should panic after the next dispatch (drop-order test).
+#[cfg(test)]
+static TEST_PANIC_LIFECYCLE: std::sync::atomic::AtomicPtr<AtomicU8> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// Monotonic drop-order counters (atomics only; no blocking locks here).
+#[cfg(test)]
+static TEST_DROP_SEQ: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static TEST_WRITER_HANDLE_DROP_END_SEQ: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static TEST_STOPPED_LIFECYCLE_DROP_SEQ: AtomicU64 = AtomicU64::new(0);
 const SUBMISSION_GATE_CLOSED: usize = 1 << (usize::BITS - 1);
 const SUBMISSION_COUNT_MASK: usize = !SUBMISSION_GATE_CLOSED;
 const MAX_QUEUED_COMMAND_BYTES: usize = 32 * 1_024 * 1_024;
@@ -1393,6 +1407,10 @@ impl RunningCommandCoordinator {
     }
 
     /// Starts the coordinator with one least-authority semantic telemetry sink.
+    ///
+    /// Requires [`Clone`] on the repository so an evaluation worker pool can be
+    /// installed. Prefer [`Self::start_with_commit_telemetry`] when the
+    /// repository is move-only (e.g. redb operational ports).
     #[allow(clippy::too_many_arguments)]
     #[allow(private_bounds)] // Sealed blanket proof; callers supply ordinary storage ports.
     pub fn start_with_telemetry<Repository>(
@@ -1438,6 +1456,54 @@ impl RunningCommandCoordinator {
             notifications,
             telemetry,
             Some(evaluation_pool),
+        )
+    }
+
+    /// Starts the coordinator with telemetry and no evaluation worker pool.
+    ///
+    /// Same bound set as [`Self::start`] (no [`Clone`]), for move-only storage
+    /// ports that still need a real commit telemetry sink.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(private_bounds)]
+    pub fn start_with_commit_telemetry<Repository>(
+        workload_capacity: CoordinatorWorkloadCapacity,
+        durability: CoordinatorDurability,
+        repository: Repository,
+        conflicts: Arc<dyn ConflictManager>,
+        admission_clock: Arc<dyn AdmissionClock>,
+        administration_clock: Arc<dyn AdministrationClock>,
+        authorization_clock: Arc<dyn AuthorizationClock>,
+        provenance_source: Arc<dyn ProvenanceIdSource>,
+        notifications: Arc<dyn ApplicationCommitNotificationSink>,
+        telemetry: Arc<dyn CommitTelemetry>,
+    ) -> Result<Self, CoordinatorStartError>
+    where
+        Repository: AdmissionRepository
+            + AuditedAdmissionRepository
+            + SnapshotReader
+            + ApplicationCommandTransactionPort
+            + RepeatableCommandBatchPort
+            + ExecutionFailureTransitionPort
+            + ServiceAuditAppendRepository
+            + CatalogAdministrationRepository
+            + QueryModuleAdministrationRepository
+            + CapabilityAdministrationTransactionPort
+            + CapabilityBootstrapAdministrationRepository
+            + Send
+            + 'static,
+    {
+        Self::start_with_evaluation_pool(
+            workload_capacity,
+            durability,
+            repository,
+            conflicts,
+            admission_clock,
+            administration_clock,
+            authorization_clock,
+            provenance_source,
+            notifications,
+            telemetry,
+            None,
         )
     }
 
@@ -1723,9 +1789,21 @@ impl fmt::Debug for RunningCommandCoordinator {
 impl Drop for RunningCommandCoordinator {
     fn drop(&mut self) {
         self.initiate_shutdown();
-        // Join the intake actor so WriterHandle Drop joins the writer before
-        // this Drop returns; detaching would leave an open write txn orphaned.
+        // Off-thread: join the intake actor so WriterHandle Drop joins the
+        // writer before this Drop returns (blocking is acceptable — Drop is
+        // rare outside tests/shutdown and must not leave a write txn open).
+        // On the actor thread, joining would deadlock (same SelfJoin case
+        // shutdown() already refuses); detach with a debug log instead.
         if let Some(actor_thread) = self.actor_thread.take() {
+            if thread::current().id() == self.actor_thread_id {
+                // Detach by dropping the JoinHandle without join (SelfJoin path).
+                // Logging is best-effort; the crate has no tracing dependency.
+                let _ = std::io::Write::write_all(
+                    &mut std::io::stderr(),
+                    b"riffdb_commit: RunningCommandCoordinator dropped on actor thread; detaching\n",
+                );
+                return;
+            }
             let _ = actor_thread.join();
         }
     }
@@ -2247,6 +2325,11 @@ impl Drop for WriterHandle {
         {
             self.panicked.store(1, Ordering::Release);
         }
+        #[cfg(test)]
+        {
+            let seq = TEST_DROP_SEQ.fetch_add(1, Ordering::AcqRel) + 1;
+            TEST_WRITER_HANDLE_DROP_END_SEQ.store(seq, Ordering::Release);
+        }
     }
 }
 
@@ -2272,12 +2355,17 @@ impl CommandCoordinatorActor {
                 // Formation edge: drain ready channel messages into pending while
                 // under admission capacity (concurrent equal-key groups form here),
                 // then form. Concurrent intake while the writer is busy also fills
-                // pending via the select arm below. Capacity bounds both paths so
-                // reserve_capacity parks under a blocked writer.
+                // pending via the select arm below.
+                //
+                // Accepted backlog bound under a blocked writer is 2C+1:
+                // pending ≤ C (this drain guard) plus channel capacity C+1
+                // (workload_capacity + 1 for the shutdown slot). Permit parking
+                // still engages once the channel is full.
                 //
                 // Pipelining-removal neuter (pre-split): disable the busy-path
                 // select arm *and* this multi-message drain — arm-only is not
                 // enough because this drain would re-batch at the completion edge.
+                let pending_was_empty = pending.is_empty();
                 let receiver_closed = loop {
                     if pending.len() >= workload_capacity {
                         break false;
@@ -2290,6 +2378,11 @@ impl CommandCoordinatorActor {
                 };
                 if receiver_closed {
                     shutting_down = true;
+                }
+                // Collection-time semantics: reset formation anchor on the first
+                // arrival after an idle park (not only on writer feedback).
+                if pending_was_empty && !pending.is_empty() {
+                    formation_anchor = Instant::now();
                 }
 
                 if let Some((unit, reason)) = form_next_unit(&mut pending) {
@@ -2334,6 +2427,16 @@ impl CommandCoordinatorActor {
                         .try_send(unit)
                         .expect("writer idle: work channel must accept the formed unit");
                     writer_busy = true;
+                    #[cfg(test)]
+                    {
+                        let target = TEST_PANIC_LIFECYCLE.load(Ordering::Acquire);
+                        if !target.is_null()
+                            && std::ptr::eq(Arc::as_ptr(&self.lifecycle.lifecycle), target)
+                        {
+                            TEST_PANIC_LIFECYCLE.store(std::ptr::null_mut(), Ordering::Release);
+                            panic!("test: intentional actor panic after dispatch");
+                        }
+                    }
                     continue;
                 }
                 if shutting_down && pending.is_empty() {
@@ -2385,7 +2488,13 @@ impl CommandCoordinatorActor {
                         && pending.len() < workload_capacity =>
                     {
                         match message {
-                            Some(message) => pending.push_back(message),
+                            Some(message) => {
+                                // First message of a new collection after idle.
+                                if pending.is_empty() {
+                                    formation_anchor = Instant::now();
+                                }
+                                pending.push_back(message);
+                            }
                             None => shutting_down = true,
                         }
                     }
@@ -2484,9 +2593,16 @@ impl CommandWriter {
                     idle,
                     queue_delay_estimate_micros,
                 });
-            feedback_tx
-                .try_send(UnitCompleted)
-                .expect("intake actor must accept writer feedback");
+            // Capacity 2 with ≤1 outstanding unit: send always succeeds while
+            // the intake actor is alive. During actor-panic unwind, avoid a
+            // second panic from expect on a closed channel.
+            if !std::thread::panicking() {
+                feedback_tx
+                    .try_send(UnitCompleted)
+                    .expect("intake actor must accept writer feedback");
+            } else {
+                let _ = feedback_tx.try_send(UnitCompleted);
+            }
             last_edge = Instant::now();
         }
     }
@@ -3354,6 +3470,11 @@ impl Drop for StoppedLifecycle {
             }
         }
         self.submission_gate.close();
+        #[cfg(test)]
+        {
+            let seq = TEST_DROP_SEQ.fetch_add(1, Ordering::AcqRel) + 1;
+            TEST_STOPPED_LIFECYCLE_DROP_SEQ.store(seq, Ordering::Release);
+        }
     }
 }
 
