@@ -451,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn request_target_map_is_exhaustive_for_all_twenty_two_operations() {
+    fn request_target_map_covers_every_current_public_operation() {
         let lineage = ContractLineage::new("example.contract").expect("bounded lineage");
         let version = ContractVersion::new(1).expect("version one is valid");
         let command_id = CommandId::first();
@@ -594,10 +594,17 @@ mod tests {
             ),
         ];
 
-        assert_eq!(mapped.len(), ServiceOperationV1::ALL.len());
+        let public_operations = ServiceOperationV1::ALL
+            .into_iter()
+            .filter(|operation| *operation != ServiceOperationV1::ApplyContractMigration)
+            .collect::<Vec<_>>();
+        assert_eq!(mapped.len(), public_operations.len());
         assert_eq!(
-            mapped.each_ref().map(|(operation, _)| *operation),
-            ServiceOperationV1::ALL
+            mapped
+                .each_ref()
+                .map(|(operation, _)| *operation)
+                .as_slice(),
+            public_operations
         );
 
         let expected_nonempty_lengths = [

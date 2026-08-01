@@ -137,6 +137,7 @@ const _: () = assert!(riffdb_storage_api::MAX_INTEGRITY_FINDINGS > ENTITY_CHAIN_
 #[derive(Clone, Debug)]
 enum EvidenceLocator {
     Bundle(Vec<u8>),
+    ContractMigrationEdge(ContractBundleHash),
     PlanReference(riffdb_storage_api::ExecutablePlanRef),
     ActiveCatalog,
     PersistedKeyEntity(Vec<u8>),
@@ -155,6 +156,7 @@ impl EvidenceLocator {
             | Self::PersistedKeyEntity(key)
             | Self::IndexMigration(key)
             | Self::PersistedKeyEpoch(key) => key.len().saturating_add(8),
+            Self::ContractMigrationEdge(_) => 32 + 8,
             Self::PlanReference(plan) => plan
                 .contract_lineage()
                 .as_bytes()
@@ -892,6 +894,10 @@ impl RedbStructuralEvidenceSession {
             CAPABILITY_TOKENS,
             AUDIT,
             AUDIT_BY_REQUEST,
+            CONTRACT_MIGRATION_JOURNAL,
+            CONTRACT_MIGRATIONS,
+            CONTRACT_WRITE_RETIREMENTS,
+            RETIRED_ENTITIES,
         ]
         .into_iter()
         .enumerate()
@@ -2419,6 +2425,7 @@ fn build_historical_evidence_plan(
     };
 
     collect_bundle_locators(transaction, &mut insert)?;
+    collect_contract_migration_edge_locators(transaction, &mut insert)?;
     collect_plan_locators(transaction, &mut insert)?;
     collect_active_catalog_locator(transaction, &mut insert)?;
     collect_persisted_key_locators(transaction, &mut insert)?;
@@ -2428,6 +2435,27 @@ fn build_historical_evidence_plan(
         entries: ordered.into_iter().collect(),
         next_index: 0,
     })
+}
+
+fn collect_contract_migration_edge_locators(
+    transaction: &ReadTransaction,
+    insert: &mut dyn FnMut(Vec<u8>, EvidenceLocator) -> Result<(), StorageError>,
+) -> Result<(), StorageError> {
+    let retirements = transaction
+        .open_table(CONTRACT_WRITE_RETIREMENTS)
+        .map_err(table_error)?;
+    for entry in retirements.iter().map_err(precommit_storage_error)? {
+        let (key, _) = entry.map_err(precommit_storage_error)?;
+        let predecessor =
+            keys::decode_contract_write_retirement_key(key.value()).map_err(|_| corrupt())?;
+        let edge = read_contract_migration_edge(transaction, predecessor)?.ok_or_else(corrupt)?;
+        let evidence = HistoricalSemanticEvidence::ContractMigrationEdge(Box::new(edge));
+        insert(
+            historical_order_key(&evidence),
+            EvidenceLocator::ContractMigrationEdge(predecessor),
+        )?;
+    }
+    Ok(())
 }
 
 fn collect_bundle_locators(
@@ -2696,6 +2724,11 @@ fn materialize_historical_evidence(
                 ),
             ))
         }
+        EvidenceLocator::ContractMigrationEdge(predecessor) => {
+            read_contract_migration_edge(transaction, *predecessor)?
+                .map(|edge| HistoricalSemanticEvidence::ContractMigrationEdge(Box::new(edge)))
+                .ok_or_else(corrupt)
+        }
         EvidenceLocator::PlanReference(plan) => {
             Ok(HistoricalSemanticEvidence::PlanReference(plan.clone()))
         }
@@ -2799,6 +2832,13 @@ fn historical_order_key(evidence: &HistoricalSemanticEvidence) -> Vec<u8> {
             key.extend_from_slice(&bundle.version().to_be_bytes());
             key.extend_from_slice(bundle.bundle_hash().as_bytes());
         }
+        HistoricalSemanticEvidence::ContractMigrationEdge(edge) => {
+            key.extend_from_slice(&[0x01, 0xff]);
+            let artifacts = edge.retirement().artifacts();
+            key.extend_from_slice(artifacts.parent().as_bytes());
+            key.extend_from_slice(artifacts.candidate().as_bytes());
+            key.extend_from_slice(edge.retirement().operation_id().as_bytes());
+        }
         HistoricalSemanticEvidence::PlanReference(plan) => {
             key.push(0x02);
             push_lineage(&mut key, plan.contract_lineage());
@@ -2869,6 +2909,20 @@ fn historical_semantic_bytes(evidence: &HistoricalSemanticEvidence) -> Result<us
             .as_bytes()
             .len()
             .checked_add(1 + 4 + bundle.lineage().as_bytes().len() + 8 + 32 + 4),
+        HistoricalSemanticEvidence::ContractMigrationEdge(edge) => {
+            let migration = riffdb_storage_api::proto_codec::encode_contract_migration_record_v1(
+                edge.migration(),
+            )
+            .map_err(|_| corrupt())?;
+            let retirement = riffdb_storage_api::proto_codec::encode_contract_write_retirement_v1(
+                edge.retirement(),
+            )
+            .map_err(|_| corrupt())?;
+            migration
+                .as_bytes()
+                .len()
+                .checked_add(retirement.as_bytes().len())
+        }
         HistoricalSemanticEvidence::PlanReference(plan) => {
             (1 + 4 + plan.contract_lineage().as_bytes().len()).checked_add(8 + 32 + 4 + 32)
         }
@@ -2898,6 +2952,44 @@ fn historical_semantic_bytes(evidence: &HistoricalSemanticEvidence) -> Result<us
         }
     };
     bytes.ok_or_else(limit_exceeded)
+}
+
+fn read_contract_migration_edge(
+    transaction: &ReadTransaction,
+    predecessor: ContractBundleHash,
+) -> Result<Option<riffdb_storage_api::StoredContractMigrationEdgeV1>, StorageError> {
+    let retirements = transaction
+        .open_table(CONTRACT_WRITE_RETIREMENTS)
+        .map_err(table_error)?;
+    let retirement_key = keys::encode_contract_write_retirement_key(predecessor);
+    let Some(retirement) = retirements
+        .get(retirement_key.as_slice())
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(None);
+    };
+    let (retirement, _) =
+        riffdb_storage_api::proto_codec::decode_contract_write_retirement_v1(retirement.value())
+            .map_err(|_| corrupt())?
+            .into_parts();
+    if retirement.artifacts().parent() != predecessor {
+        return Err(corrupt());
+    }
+    let migrations = transaction
+        .open_table(CONTRACT_MIGRATIONS)
+        .map_err(table_error)?;
+    let operation_key = keys::encode_contract_migration_operation_key(retirement.operation_id());
+    let migration = migrations
+        .get(operation_key.as_slice())
+        .map_err(precommit_storage_error)?
+        .ok_or_else(corrupt)?;
+    let (migration, _) =
+        riffdb_storage_api::proto_codec::decode_contract_migration_record_v1(migration.value())
+            .map_err(|_| corrupt())?
+            .into_parts();
+    riffdb_storage_api::StoredContractMigrationEdgeV1::new(retirement, migration)
+        .map(Some)
+        .map_err(|_| corrupt())
 }
 
 fn read_historical_bundle(
@@ -3037,6 +3129,21 @@ fn bundle_has_activation(
             riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(ref activation)
                 if activation.activated().matches_bundle(bundle)
         ) {
+            return Ok(true);
+        }
+    }
+    drop(table);
+    let migrations = transaction
+        .open_table(CONTRACT_MIGRATIONS)
+        .map_err(table_error)?;
+    for entry in migrations.iter().map_err(precommit_storage_error)? {
+        let (_, value) = entry.map_err(precommit_storage_error)?;
+        let Ok(record) =
+            riffdb_storage_api::proto_codec::decode_contract_migration_record_v1(value.value())
+        else {
+            return Ok(false);
+        };
+        if record.value().artifacts().candidate() == bundle.bundle_hash() {
             return Ok(true);
         }
     }
@@ -3214,7 +3321,7 @@ fn active_catalog_matches_last_activation(
     active: Option<&riffdb_storage_api::ActiveCatalogPointerV1>,
 ) -> Result<bool, StorageError> {
     let table = transaction.open_table(AUDIT).map_err(table_error)?;
-    let mut last = None;
+    let mut last_catalog = None;
     for entry in table.iter().map_err(precommit_storage_error)? {
         let (physical_key, value) = entry.map_err(precommit_storage_error)?;
         let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
@@ -3228,10 +3335,52 @@ fn active_catalog_matches_last_activation(
             return Ok(false);
         }
         if let riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(record) = record {
-            last = Some(record.activated().clone());
+            last_catalog = Some((sequence, record.activated().clone()));
         }
     }
-    Ok(last.as_ref() == active)
+    drop(table);
+
+    let migrations = transaction
+        .open_table(CONTRACT_MIGRATIONS)
+        .map_err(table_error)?;
+    let mut last_migration = None;
+    for entry in migrations.iter().map_err(precommit_storage_error)? {
+        let (_, value) = entry.map_err(precommit_storage_error)?;
+        let Ok(record) =
+            riffdb_storage_api::proto_codec::decode_contract_migration_record_v1(value.value())
+        else {
+            return Ok(false);
+        };
+        let record = record.value();
+        let sequence = record.administration_sequence();
+        if last_migration
+            .as_ref()
+            .is_some_and(|(current, _)| *current == sequence)
+        {
+            return Ok(false);
+        }
+        if last_migration
+            .as_ref()
+            .is_none_or(|(current, _)| sequence > *current)
+        {
+            last_migration = Some((sequence, record.artifacts().candidate()));
+        }
+    }
+
+    match (last_catalog, last_migration) {
+        (None, None) => Ok(active.is_none()),
+        (Some((_, pointer)), None) => Ok(active == Some(&pointer)),
+        (None, Some(_)) => Ok(false),
+        (Some((catalog_sequence, pointer)), Some((migration_sequence, candidate))) => {
+            if catalog_sequence > migration_sequence {
+                Ok(active == Some(&pointer))
+            } else if migration_sequence > catalog_sequence {
+                Ok(active.is_some_and(|pointer| pointer.bundle_hash() == candidate))
+            } else {
+                Ok(false)
+            }
+        }
+    }
 }
 
 fn bundle_exists(
@@ -4080,6 +4229,19 @@ fn service_lifecycle_is_reciprocal(
             {
                 ObservedServiceLifecycle::Standalone
             }
+            None if record.principal().is_some()
+                && record.operation()
+                    == riffdb_types::ServiceOperationV1::ApplyContractMigration
+                && record.phase() == riffdb_types::ServiceAuditPhaseV1::Succeeded
+                && matches!(
+                    record.link(),
+                    riffdb_types::ServiceAuditLinkV1::ControlPlane {
+                        administration_sequence
+                    } if administration_sequence == record.administration_sequence()
+                ) =>
+            {
+                ObservedServiceLifecycle::Standalone
+            }
             Some(ObservedServiceLifecycle::Started {
                 started,
                 terminal_seen: false,
@@ -4154,6 +4316,13 @@ fn service_link_is_valid(
         riffdb_types::ServiceAuditLinkV1::ControlPlane {
             administration_sequence,
         } => {
+            if record.operation() == riffdb_types::ServiceOperationV1::ApplyContractMigration {
+                return migration_service_link_is_valid(
+                    transaction,
+                    record,
+                    administration_sequence,
+                );
+            }
             let target = match audit_record_at(transaction, administration_sequence)? {
                 Ok(Some(value)) => value,
                 Ok(None) | Err(_) => return Ok(false),
@@ -4210,6 +4379,44 @@ fn service_link_is_valid(
             )
         }
     }
+}
+
+fn migration_service_link_is_valid(
+    transaction: &ReadTransaction,
+    audit: &riffdb_storage_api::StoredServiceAuditRecordV1,
+    administration_sequence: riffdb_types::AdministrationSequence,
+) -> Result<bool, StorageError> {
+    if audit.administration_sequence() != administration_sequence
+        || audit.phase() != riffdb_types::ServiceAuditPhaseV1::Succeeded
+    {
+        return Ok(false);
+    }
+    let Some(principal) = audit.principal() else {
+        return Ok(false);
+    };
+    let migrations = transaction
+        .open_table(CONTRACT_MIGRATIONS)
+        .map_err(table_error)?;
+    let mut matching = 0_u8;
+    for row in migrations.iter().map_err(precommit_storage_error)? {
+        let (_, encoded) = row.map_err(precommit_storage_error)?;
+        let Ok(record) =
+            riffdb_storage_api::proto_codec::decode_contract_migration_record_v1(encoded.value())
+        else {
+            return Ok(false);
+        };
+        let record = record.value();
+        if record.administration_sequence() == administration_sequence {
+            matching = matching.saturating_add(1);
+            if matching != 1
+                || record.principal() != principal
+                || record.approval_id() != audit.approval_id()
+            {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(matching == 1)
 }
 
 fn application_allocator_matches(

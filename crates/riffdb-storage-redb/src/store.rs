@@ -1669,27 +1669,35 @@ impl RedbDormantPorts {
     pub fn into_operational_after_catalog_validation(
         self,
     ) -> Result<RedbOperationalPorts, StorageError> {
-        let transaction = self
-            .shared
-            .database
-            .begin_read()
-            .map_err(transaction_error)?;
-        let indexes = TransientIndexes::rebuild(&transaction)?;
-        drop(transaction);
-        let mut state = self
-            .shared
-            .transient_indexes
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        if !matches!(*state, TransientIndexState::Dormant) {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        *state = TransientIndexState::Ready(indexes);
-        drop(state);
-        Ok(RedbOperationalPorts {
-            shared: self.shared,
-        })
+        activate_operational_ports(self.shared)
     }
+}
+
+impl RedbStore {
+    /// Releases ports only to the crate-private migration-stage recovery gate.
+    pub(crate) fn into_contract_migration_ports(
+        self,
+    ) -> Result<RedbOperationalPorts, StorageError> {
+        activate_operational_ports(self.shared)
+    }
+}
+
+fn activate_operational_ports(
+    shared: Arc<SharedRedb>,
+) -> Result<RedbOperationalPorts, StorageError> {
+    let transaction = shared.database.begin_read().map_err(transaction_error)?;
+    let indexes = TransientIndexes::rebuild(&transaction)?;
+    drop(transaction);
+    let mut state = shared
+        .transient_indexes
+        .lock()
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    if !matches!(*state, TransientIndexState::Dormant) {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    *state = TransientIndexState::Ready(indexes);
+    drop(state);
+    Ok(RedbOperationalPorts { shared })
 }
 
 impl RedbOperationalPorts {

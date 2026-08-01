@@ -14,6 +14,8 @@ pub enum RedbTestOperation {
     ExecutionFailure,
     CommandBatch,
     StorageFormatMigrationBatch,
+    ContractMigrationBatch,
+    ContractMigrationCutover,
     IndexMigrationBatch,
     CatalogAdministration,
     /// Immutable query-module activation.

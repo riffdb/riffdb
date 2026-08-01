@@ -6440,9 +6440,16 @@ work_packages:
     ADR-0072, ADR-0073, ADR-0078]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/0078-staged-migration-storage-and-recovery.md,
     proto/riffdb/storage/**, crates/riffdb-proto/**, fixtures/proto/**, crates/riffdb-types/**,
-    crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**, crates/riffdb-server/src/maintenance_*/**,
+    crates/riffdb-catalog/**, crates/riffdb-commit/src/lib.rs, crates/riffdb-commit/src/migration.rs,
+    crates/riffdb-commit/tests/architecture.rs,
+    crates/riffdb-projection/src/migration.rs, crates/riffdb-storage-api/**,
+    crates/riffdb-policy/src/operation.rs, crates/riffdb-service/src/audit.rs, crates/riffdb-storage-memory/src/migration.rs,
+    crates/riffdb-storage-memory/src/startup.rs, crates/riffdb-storage-redb/**, crates/riffdb-server/src/maintenance_*/**,
+    crates/riffdb-observability/src/metrics.rs,
     crates/riffdb-server/src/maintenance_*.rs, crates/riffdb-server/src/startup/**, crates/riffdb-server/src/startup.rs,
-    crates/riffdb-server/tests/**, fixtures/storage/**, fixtures/migrations/**, fuzz/**, tests/maintenance/**,
+    crates/riffdb-server/src/daemon.rs, crates/riffdb-server/src/lib.rs,
+    crates/riffdb-server/src/projection_worker.rs, crates/riffdb-server/src/storage.rs,
+    crates/riffdb-server/Cargo.toml, crates/riffdb-server/tests/**, fixtures/storage/**, fixtures/migrations/**, fuzz/**, tests/maintenance/**,
     tests/migrations/**, tests/recovery/**, scripts/**, docs/**]
   deliverables:
   - Versioned receipt, journal, permanent migration, retired-row, table-key, envelope, and integrity formats with goldens

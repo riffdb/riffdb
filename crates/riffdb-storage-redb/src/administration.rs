@@ -25,8 +25,9 @@ use riffdb_storage_api::{
     ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
     StorageError, StorageErrorKind, StorageScanLimit, StoredAdministrationAuditRecordV1,
     StoredCapabilityAdministrationV1, StoredCapabilityRecordV1, StoredCatalogAdministrationV1,
-    StoredContractBundleV1, StoredQueryModuleAdministrationV1, StoredQueryModuleV1,
-    StoredServiceAuditRecordV1, TransactionCurrentCapabilityObservationV1,
+    StoredContractBundleV1, StoredContractMigrationEdgeV1, StoredContractMigrationRecordV1,
+    StoredQueryModuleAdministrationV1, StoredQueryModuleV1, StoredServiceAuditRecordV1,
+    TransactionCurrentCapabilityObservationV1,
 };
 use riffdb_types::{
     AdministrationSequence, CapabilityId, CapabilityTokenDigest, ContractBundleHash,
@@ -49,15 +50,17 @@ use crate::codec::{
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::hooks::RedbTestOperation;
 use crate::keys::{
-    decode_audit_key, decode_capability_key, encode_active_query_module_key,
-    encode_application_sequence_key, encode_audit_key, encode_capability_key,
-    encode_capability_token_key, encode_contract_bundle_key, encode_provenance_key,
-    encode_query_module_key,
+    decode_audit_key, decode_capability_key, decode_contract_migration_operation_key,
+    encode_active_query_module_key, encode_application_sequence_key, encode_audit_key,
+    encode_capability_key, encode_capability_token_key, encode_contract_bundle_key,
+    encode_contract_migration_operation_key, encode_contract_write_retirement_key,
+    encode_provenance_key, encode_query_module_key,
 };
 use crate::layout::{
     AUDIT, CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS,
-    CONTRACT_BUNDLES, EVENTS, META, META_ADMINISTRATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
-    META_DATABASE_ID, PROVENANCE, QUERY_MODULE_ACTIVE, QUERY_MODULES,
+    CONTRACT_BUNDLES, CONTRACT_MIGRATIONS, CONTRACT_WRITE_RETIREMENTS, EVENTS, META,
+    META_ADMINISTRATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP, META_DATABASE_ID, PROVENANCE,
+    QUERY_MODULE_ACTIVE, QUERY_MODULES,
 };
 use crate::store::{RedbOperationalPorts, RedbWriteAccess};
 
@@ -102,7 +105,7 @@ fn read_database_id_readonly(
     Ok(*decode_database_identity_v1(value.value())?.value())
 }
 
-fn read_administration_allocator(
+pub(crate) fn read_administration_allocator(
     transaction: &redb::WriteTransaction,
 ) -> Result<AdministrationSequenceAllocator, StorageError> {
     let table = transaction.open_table(META).map_err(table_error)?;
@@ -207,7 +210,7 @@ fn allocate_sequences(
     Ok((allocation.assigned().to_vec(), allocation.next()))
 }
 
-fn write_administration_allocator(
+pub(crate) fn write_administration_allocator(
     transaction: &redb::WriteTransaction,
     expected: AdministrationSequenceAllocator,
     next: AdministrationSequenceAllocator,
@@ -253,7 +256,7 @@ fn write_service_audit_request_index(
     Ok(())
 }
 
-fn append_audit_record(
+pub(crate) fn append_audit_record(
     transaction: &redb::WriteTransaction,
     record: &StoredAdministrationAuditRecordV1,
 ) -> Result<(), StorageError> {
@@ -384,6 +387,67 @@ where
     Ok(last)
 }
 
+fn last_contract_migration<T>(
+    table: &T,
+) -> Result<Option<StoredContractMigrationRecordV1>, StorageError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let mut last = None;
+    for entry in table.iter().map_err(precommit_storage_error)? {
+        let (key, value) = entry.map_err(precommit_storage_error)?;
+        let operation =
+            decode_contract_migration_operation_key(key.value()).map_err(|_| corrupt())?;
+        let record =
+            riffdb_storage_api::proto_codec::decode_contract_migration_record_v1(value.value())
+                .map_err(|_| corrupt())?
+                .into_parts()
+                .0;
+        if record.operation_id() != operation {
+            return Err(corrupt());
+        }
+        if last
+            .as_ref()
+            .is_none_or(|prior: &StoredContractMigrationRecordV1| {
+                prior.administration_sequence() < record.administration_sequence()
+            })
+        {
+            last = Some(record);
+        }
+    }
+    Ok(last)
+}
+
+fn active_authority_sequence(
+    pointer: &ActiveCatalogPointerV1,
+    catalog: Option<&StoredCatalogAdministrationV1>,
+    migration: Option<&StoredContractMigrationRecordV1>,
+) -> Result<AdministrationSequence, StorageError> {
+    match (catalog, migration) {
+        (Some(catalog), Some(migration))
+            if catalog.administration_sequence() > migration.administration_sequence() =>
+        {
+            (catalog.activated() == pointer)
+                .then_some(catalog.administration_sequence())
+                .ok_or_else(corrupt)
+        }
+        (Some(catalog), Some(migration))
+            if migration.administration_sequence() > catalog.administration_sequence() =>
+        {
+            (migration.artifacts().candidate() == pointer.bundle_hash())
+                .then_some(migration.administration_sequence())
+                .ok_or_else(corrupt)
+        }
+        (Some(catalog), None) => (catalog.activated() == pointer)
+            .then_some(catalog.administration_sequence())
+            .ok_or_else(corrupt),
+        (None, Some(migration)) => (migration.artifacts().candidate() == pointer.bundle_hash())
+            .then_some(migration.administration_sequence())
+            .ok_or_else(corrupt),
+        (Some(_), Some(_)) | (None, None) => Err(corrupt()),
+    }
+}
+
 impl CatalogRepository for RedbOperationalPorts {
     fn read_active_catalog(&self) -> Result<Option<ActiveCatalogPointerV1>, StorageError> {
         let transaction = self.begin_read()?;
@@ -395,9 +459,16 @@ impl CatalogRepository for RedbOperationalPorts {
         drop(active_table);
         let audit = transaction.open_table(AUDIT).map_err(table_error)?;
         let last = last_catalog_activation(&audit)?;
-        match (&active, last) {
-            (None, None) => Ok(None),
-            (Some(pointer), Some(record)) if record.activated() == pointer => {
+        drop(audit);
+        let migrations = transaction
+            .open_table(CONTRACT_MIGRATIONS)
+            .map_err(table_error)?;
+        let last_migration = last_contract_migration(&migrations)?;
+        drop(migrations);
+        match (&active, last.as_ref(), last_migration.as_ref()) {
+            (None, None, None) => Ok(None),
+            (Some(pointer), catalog, migration) => {
+                active_authority_sequence(pointer, catalog, migration)?;
                 let bundles = transaction
                     .open_table(CONTRACT_BUNDLES)
                     .map_err(table_error)?;
@@ -427,6 +498,48 @@ impl CatalogRepository for RedbOperationalPorts {
             .open_table(CONTRACT_BUNDLES)
             .map_err(table_error)?;
         read_contract_bundle_from_table(&table, lineage, contract_version)
+    }
+
+    fn read_contract_migration_edge(
+        &self,
+        predecessor: ContractBundleHash,
+    ) -> Result<Option<StoredContractMigrationEdgeV1>, StorageError> {
+        let transaction = self.begin_read()?;
+        read_database_id_readonly(&transaction)?;
+        let retirements = transaction
+            .open_table(CONTRACT_WRITE_RETIREMENTS)
+            .map_err(table_error)?;
+        let retirement_key = encode_contract_write_retirement_key(predecessor);
+        let Some(retirement) = retirements
+            .get(retirement_key.as_slice())
+            .map_err(precommit_storage_error)?
+        else {
+            return Ok(None);
+        };
+        let retirement = decoded_value(
+            riffdb_storage_api::proto_codec::decode_contract_write_retirement_v1(
+                retirement.value(),
+            )
+            .map_err(|_| corrupt())?,
+        );
+        if retirement.artifacts().parent() != predecessor {
+            return Err(corrupt());
+        }
+        let migrations = transaction
+            .open_table(CONTRACT_MIGRATIONS)
+            .map_err(table_error)?;
+        let operation_key = encode_contract_migration_operation_key(retirement.operation_id());
+        let migration = migrations
+            .get(operation_key.as_slice())
+            .map_err(precommit_storage_error)?
+            .ok_or_else(corrupt)?;
+        let migration = decoded_value(
+            riffdb_storage_api::proto_codec::decode_contract_migration_record_v1(migration.value())
+                .map_err(|_| corrupt())?,
+        );
+        StoredContractMigrationEdgeV1::new(retirement, migration)
+            .map(Some)
+            .map_err(|_| corrupt())
     }
 }
 
@@ -509,11 +622,14 @@ impl CatalogAdministrationRepository for RedbOperationalPorts {
         if active.as_ref() == Some(&requested) {
             let audit = transaction.open_table(AUDIT).map_err(table_error)?;
             let last = last_catalog_activation(&audit)?.ok_or_else(corrupt)?;
-            if last.activated() != &requested {
-                return Err(corrupt());
-            }
-            let sequence = last.administration_sequence();
             drop(audit);
+            let migrations = transaction
+                .open_table(CONTRACT_MIGRATIONS)
+                .map_err(table_error)?;
+            let last_migration = last_contract_migration(&migrations)?;
+            drop(migrations);
+            let sequence =
+                active_authority_sequence(&requested, Some(&last), last_migration.as_ref())?;
             access.abort()?;
             return Ok(CatalogActivationResult::AlreadyActive {
                 active: requested,

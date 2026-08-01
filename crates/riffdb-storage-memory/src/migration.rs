@@ -246,6 +246,21 @@ impl MigrationStagePort for MemoryMigrationStage {
         Ok(self.state.unresolved_retiring_admissions)
     }
 
+    fn migration_journal_state(
+        &self,
+        migration: riffdb_types::MigrationBundleHash,
+    ) -> Result<Option<MigrationJournalState>, MigrationStageError> {
+        if self
+            .state
+            .journal
+            .as_ref()
+            .is_some_and(|journal| journal.migration() != migration || journal.is_complete())
+        {
+            return Err(MigrationStageError::Integrity);
+        }
+        Ok(self.state.journal.clone())
+    }
+
     fn apply_migration_batch(&mut self, batch: MigrationBatch) -> Result<(), MigrationStageError> {
         if self.state.retired_predecessor_writes
             || self.state.journal.as_ref().is_some_and(|journal| {
@@ -349,6 +364,20 @@ impl MigrationStagePort for MemoryMigrationStage {
         Ok(())
     }
 
+    fn validate_migration_stage_structure(&self) -> Result<(), MigrationStageError> {
+        if self.state.retired_predecessor_writes
+            || self.state.migration_record.is_some()
+            || self
+                .state
+                .journal
+                .as_ref()
+                .is_none_or(MigrationJournalState::is_complete)
+        {
+            return Err(MigrationStageError::Integrity);
+        }
+        Ok(())
+    }
+
     fn finalize_migration(
         &mut self,
         cutover: MigrationCutover,
@@ -360,10 +389,6 @@ impl MigrationStagePort for MemoryMigrationStage {
             .ok_or(MigrationStageError::Integrity)?;
         if self.state.active_bundle.bundle_hash() != cutover.parent()
             || journal.migration() != cutover.migration()
-            || !cutover.required_projections().iter().all(|projection| {
-                self.state.projection_candidates.get(projection)
-                    == Some(&self.state.history.application_sequence)
-            })
             || self.state.entities.iter().any(|row| {
                 row.schema_binding().bundle_hash() != cutover.candidate().bundle_hash()
                     && !cutover

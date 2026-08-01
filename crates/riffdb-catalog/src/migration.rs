@@ -12,11 +12,12 @@ use riffdb_invariant::{
     EvaluationError, ExpressionValueSource, evaluate_expression, evaluate_predicate,
 };
 use riffdb_storage_api::{
-    DurableKeySchemaBindingV1, EntityTarget, StoredEntityRecordV1, StoredIndexEntryV2,
+    DurableKeySchemaBindingV1, EntityTarget, MigrationScanCursor, MigrationStageError,
+    MigrationStagePort, StoredEntityRecordV1, StoredIndexEntryV2,
 };
 use riffdb_types::{
-    CanonicalRecord, CanonicalValue, ContractBundleHash, EntityTypeId, FieldId, IndexId,
-    MigrationBundleHash,
+    CanonicalRecord, CanonicalValue, ContractBundleHash, ContractMigrationValidationDigest,
+    EntityTypeId, FieldId, IndexId, MigrationBundleHash, hash_contract_migration_validation,
 };
 
 use crate::ValidatedContractBundle;
@@ -223,6 +224,36 @@ pub struct PreparedMigrationRow {
     rebuilt_indexes: Vec<StoredIndexEntryV2>,
     relationships: Vec<MigrationRelationshipFact>,
     unique_keys: Vec<MigrationUniqueFact>,
+}
+
+/// Move-only catalog proof that every staged row has valid successor meaning.
+pub struct ValidatedMigrationStage {
+    validation_digest: ContractMigrationValidationDigest,
+    checked_rows: u64,
+}
+
+impl ValidatedMigrationStage {
+    /// Returns the canonical semantic validation digest.
+    #[must_use]
+    pub const fn validation_digest(&self) -> ContractMigrationValidationDigest {
+        self.validation_digest
+    }
+
+    /// Returns the complete authoritative row count validated.
+    #[must_use]
+    pub const fn checked_rows(&self) -> u64 {
+        self.checked_rows
+    }
+}
+
+impl fmt::Debug for ValidatedMigrationStage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ValidatedMigrationStage")
+            .field("validation_digest", &self.validation_digest)
+            .field("checked_rows", &self.checked_rows)
+            .finish()
+    }
 }
 
 impl PreparedMigrationRow {
@@ -505,6 +536,22 @@ impl ValidatedMigrationPlan {
         &self.rebuilt_projections
     }
 
+    pub(crate) fn candidate_lineage_proof(
+        &self,
+    ) -> Result<Arc<LineageMaterializationProof>, MigrationFinding> {
+        let parent = self
+            .parent_lineage
+            .clone()
+            .map_or_else(
+                || LineageMaterializationProof::from_forward_bundles(vec![self.parent.clone()]),
+                Ok,
+            )
+            .map_err(|_| MigrationFinding::new(migration_finding_code::ARTIFACT_MISMATCH))?;
+        parent
+            .extend_migrated(self.candidate.clone())
+            .map_err(|_| MigrationFinding::new(migration_finding_code::ARTIFACT_MISMATCH))
+    }
+
     /// Purely validates and prepares one predecessor row.
     pub fn prepare_row(
         &self,
@@ -602,6 +649,154 @@ impl ValidatedMigrationPlan {
             relationships,
             unique_keys,
         })
+    }
+
+    /// Completely revalidates staged rows under successor catalog meaning.
+    pub fn validate_successor_stage<S: MigrationStagePort>(
+        &self,
+        stage: &S,
+        expected_rows: u64,
+    ) -> Result<ValidatedMigrationStage, MigrationFinding> {
+        if stage.active_bundle_hash() != self.parent_bundle_hash() {
+            return Err(MigrationFinding::from_stage_error(
+                MigrationStageError::Integrity,
+            ));
+        }
+        let mut cursor = MigrationScanCursor::start();
+        let mut checked_rows = 0_u64;
+        loop {
+            let page = stage
+                .scan_migration_rows(&cursor)
+                .map_err(MigrationFinding::from_stage_error)?;
+            if page.rows().first().is_some_and(|row| {
+                cursor
+                    .exclusive_lower_bound()
+                    .is_some_and(|lower| row.target() <= lower)
+            }) || page.next().is_some_and(|next| next <= &cursor)
+            {
+                return Err(MigrationFinding::from_stage_error(
+                    MigrationStageError::Integrity,
+                ));
+            }
+            for row in page.rows() {
+                let prepared = self.successor_stage_facts(row)?;
+                for relationship in prepared.relationships() {
+                    if !stage
+                        .migration_target_exists(relationship.target())
+                        .map_err(MigrationFinding::from_stage_error)?
+                    {
+                        return Err(MigrationFinding::from_stage_error(
+                            MigrationStageError::RelationshipMissing(
+                                relationship.source().entity_type_id(),
+                            ),
+                        ));
+                    }
+                }
+                for unique in prepared.unique_keys() {
+                    self.validate_successor_unique(stage, unique)?;
+                }
+                checked_rows = checked_rows.checked_add(1).ok_or_else(|| {
+                    MigrationFinding::from_stage_error(MigrationStageError::LimitExceeded)
+                })?;
+            }
+            let Some(next) = page.next() else {
+                break;
+            };
+            cursor = next.clone();
+        }
+        if checked_rows != expected_rows {
+            return Err(MigrationFinding::from_stage_error(
+                MigrationStageError::RowChanged,
+            ));
+        }
+        let mut bytes = Vec::with_capacity(32 * 3 + 8);
+        bytes.extend_from_slice(self.parent_bundle_hash().as_bytes());
+        bytes.extend_from_slice(self.candidate_bundle_hash().as_bytes());
+        bytes.extend_from_slice(self.migration_bundle_hash().as_bytes());
+        bytes.extend_from_slice(&checked_rows.to_be_bytes());
+        Ok(ValidatedMigrationStage {
+            validation_digest: hash_contract_migration_validation(&bytes),
+            checked_rows,
+        })
+    }
+
+    fn successor_stage_facts(
+        &self,
+        row: &StoredEntityRecordV1,
+    ) -> Result<PreparedMigrationRow, MigrationFinding> {
+        if row.schema_binding().bundle_hash() != self.candidate_bundle_hash() {
+            let prepared = self.prepare_row(row.clone())?;
+            if prepared.post_image().is_some() {
+                return Err(MigrationFinding::from_stage_error(
+                    MigrationStageError::RowChanged,
+                ));
+            }
+            return Ok(prepared);
+        }
+        if row.schema_binding().lineage() != self.candidate.lineage()
+            || row.schema_binding().contract_version() != self.candidate.contract_version()
+            || row.written_by_contract() != self.candidate.contract_version()
+        {
+            return Err(MigrationFinding::from_stage_error(
+                MigrationStageError::Integrity,
+            ));
+        }
+        let entity_id = row.target().entity_type_id();
+        let entity = self
+            .candidate
+            .bundle()
+            .schema()
+            .entity(entity_id)
+            .ok_or_else(|| {
+                MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity_id)
+            })?;
+        validate_record(self.candidate.bundle().schema(), entity, row)?;
+        validate_all_invariants(entity, row.fields())?;
+        let relationships = derive_relationships(self, entity_id, row, row.fields())?;
+        let unique_keys = derive_unique(self, entity, row, row.fields())?;
+        Ok(PreparedMigrationRow {
+            source: row.clone(),
+            post_image: None,
+            rebuilt_indexes: Vec::new(),
+            relationships,
+            unique_keys,
+        })
+    }
+
+    fn validate_successor_unique<S: MigrationStagePort>(
+        &self,
+        stage: &S,
+        expected: &MigrationUniqueFact,
+    ) -> Result<(), MigrationFinding> {
+        let mut cursor = MigrationScanCursor::start();
+        loop {
+            let page = stage
+                .scan_migration_rows(&cursor)
+                .map_err(MigrationFinding::from_stage_error)?;
+            for candidate in page.rows() {
+                if candidate.target() == expected.source() {
+                    continue;
+                }
+                let candidate = self.successor_stage_facts(candidate)?;
+                if candidate.unique_keys().iter().any(|fact| {
+                    fact.entity_type() == expected.entity_type()
+                        && fact.index() == expected.index()
+                        && fact.prefix() == expected.prefix()
+                }) {
+                    return Err(MigrationFinding::from_stage_error(
+                        MigrationStageError::UniqueConflict {
+                            entity: expected.entity_type(),
+                            index: expected.index(),
+                        },
+                    ));
+                }
+            }
+            let Some(next) = page.next() else {
+                break;
+            };
+            cursor = next.clone();
+        }
+        Ok(())
     }
 
     fn materialize_parent_fields(
@@ -855,6 +1050,24 @@ fn validate_added_invariants(
                     MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity.id())
                 })?
         {
+            return Err(
+                MigrationFinding::new(migration_finding_code::INVARIANT_REJECTED)
+                    .entity(entity.id()),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_all_invariants(
+    entity: &EntitySchema,
+    record: &CanonicalRecord,
+) -> Result<(), MigrationFinding> {
+    let values = SchemaRowValues { row: record };
+    for invariant in entity.invariants() {
+        if !evaluate_predicate(invariant.expressions(), invariant.predicate(), &values).map_err(
+            |_| MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity.id()),
+        )? {
             return Err(
                 MigrationFinding::new(migration_finding_code::INVARIANT_REJECTED)
                     .entity(entity.id()),

@@ -73,19 +73,27 @@ fn dependency_surface_keeps_redb_private_and_excludes_infrastructure_assemblies(
 }
 
 #[test]
-fn sha256_dependency_is_confined_to_offline_backup_manifests() {
+fn sha256_dependency_is_confined_to_reviewed_backup_and_migration_integrity_boundaries() {
     let source = crate_root().join("src");
     for entry in fs::read_dir(source).expect("read source directory") {
         let path = entry.expect("source entry").path();
-        if path.file_name().is_some_and(|name| name == "backup.rs")
+        if path
+            .file_name()
+            .is_some_and(|name| matches!(name.to_str(), Some("backup.rs" | "migration_stage.rs")))
             || path.extension().is_none_or(|extension| extension != "rs")
         {
             continue;
         }
         assert!(
             !read(&path).contains("sha2"),
-            "sha2 must remain confined to backup.rs: {}",
+            "sha2 must remain confined to reviewed integrity boundaries: {}",
             path.display()
+        );
+    }
+    for path in ["src/maintenance/codec.rs", "src/maintenance/store.rs"] {
+        assert!(
+            read(crate_root().join(path)).contains("sha2"),
+            "migration artifact integrity must retain SHA-256: {path}"
         );
     }
 }
@@ -159,6 +167,26 @@ fn only_operational_ports_implement_semantic_runtime_traits() {
     }
     assert!(sources.contains("impl SnapshotReader for RedbOperationalPorts"));
     assert!(sources.contains("impl ApplicationCommandTransactionPort for RedbOperationalPorts"));
+}
+
+#[test]
+fn partial_contract_migration_reopen_is_confined_to_the_witness_gate() {
+    let sources = rust_sources();
+    assert_eq!(
+        sources.matches("into_contract_migration_ports").count(),
+        2,
+        "the dormant-port bypass must remain one private constructor and one witnessed call"
+    );
+
+    let store = production_source(crate_root().join("src/store.rs"));
+    assert!(store.contains("pub(crate) fn into_contract_migration_ports"));
+
+    let migration = production_source(crate_root().join("src/migration_stage.rs"));
+    assert!(migration.contains("pub fn resume("));
+    assert!(migration.contains("RedbContractMigrationImmutableWitness"));
+    assert!(migration.contains("store.into_contract_migration_ports()?"));
+    assert!(migration.contains("stage.immutable_history_digest != witness.digest"));
+    assert!(migration.contains("validate_entity_index_structure(&stage.ports)?"));
 }
 
 #[test]

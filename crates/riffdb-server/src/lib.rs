@@ -14,6 +14,7 @@ mod lifecycle_service;
 mod maintenance_adapter;
 mod maintenance_driver;
 mod maintenance_lifecycle;
+mod maintenance_migration;
 mod maintenance_recovery_controller;
 mod notifications;
 mod operational_status;

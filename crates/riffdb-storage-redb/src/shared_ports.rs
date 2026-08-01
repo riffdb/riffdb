@@ -30,9 +30,9 @@ use riffdb_storage_api::{
     ProjectionRecoveryValidationRequestV1, ProjectionRecoveryValidationResultV1, ProjectionStatus,
     QueryModuleRepository, ReadSnapshot, SnapshotReader, SnapshotRequest, StorageError,
     StorageErrorKind, StorageScanLimit, StoredCapabilityRecordV1, StoredCommitRecordV1,
-    StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
-    StoredProvenanceRecordV1, StoredQueryModuleV1, UndeliveredOutboxStatusScanRequestV1,
-    UndeliveredOutboxStatusScanV1,
+    StoredContractBundleV1, StoredContractMigrationEdgeV1, StoredDurableEventV1,
+    StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1, StoredQueryModuleV1,
+    UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1,
 };
 use riffdb_types::{
     CapabilityId, CapabilityTokenDigest, CommitSequence, ContractBundleHash, ContractLineage,
@@ -170,6 +170,13 @@ impl CatalogRepository for RedbSharedPorts {
         contract_version: ContractVersion,
     ) -> Result<Option<StoredContractBundleV1>, StorageError> {
         CatalogRepository::read_contract_bundle(&self.operational(), lineage, contract_version)
+    }
+
+    fn read_contract_migration_edge(
+        &self,
+        predecessor: ContractBundleHash,
+    ) -> Result<Option<StoredContractMigrationEdgeV1>, StorageError> {
+        CatalogRepository::read_contract_migration_edge(&self.operational(), predecessor)
     }
 }
 

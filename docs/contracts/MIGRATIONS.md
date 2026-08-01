@@ -6,12 +6,12 @@ The latter is `RequiresMigration`: the candidate is valid, but deployment does
 not activate it without an exact migration artifact for the active parent.
 
 The current implementation compiles and locks Gate A migration artifacts and
-can inspect them locally. WP-407 also provides the deterministic memory
-reference model for complete preflight, bounded row/index batches, projection
-candidate readiness, and final cutover. It does **not** yet apply a migration to
-a redb database or expose migration through the server. `riffdb migration plan`
-remains read-only. Durable staging and crash recovery arrive in WP-408; public
-authorization and administration arrive in WP-409; WP-410 proves the installed
+can inspect them locally. It also contains the internal redb execution and
+startup-recovery path: complete preflight, an immutable automatic backup,
+bounded staged transforms, projection rebuild, complete validation, atomic
+publication, and automatic post-publication rollback. `riffdb migration plan`
+remains read-only. Public authorization, check/apply/status RPCs, SDK methods,
+and CLI commands are not available until WP-409; WP-410 proves the installed
 Gate-A workflow end to end.
 
 ## Semantic execution boundary
@@ -35,9 +35,72 @@ commit sequence or rewrites command, outcome, event, provenance, idempotency,
 outbox, or retained history bytes. Only successful final cutover assigns one
 administration sequence in the reference model.
 
-These semantics are not a hidden storage-edit API. The memory stage is a test
-and conformance model; production redb staging, durable journal/record codecs,
-backup identity, publication, and restart reconciliation belong to WP-408.
+These semantics are not a hidden storage-edit API. The memory stage remains the
+reference model. The redb implementation realizes the same sealed ports; only
+the commit-owned coordinator can construct batches or cutover, and neither the
+server recovery controller nor a storage adapter interprets migration IR.
+
+## Durable redb lifecycle
+
+An accepted operation durably binds a UUIDv7 operation ID, canonical input
+hash, exact parent/candidate/migration hashes, exact protected artifact files,
+and restart-stable admission evidence. Same operation ID with different input
+fails before drain. The receipt uses a closed monotonic phase graph and contains
+no row value, credential, token, or absolute path.
+
+After the selected database drains, apply repeats the complete read-only
+preflight before allocating disk or creating a backup. RiffDB reserves a
+conservative amount of space, creates and verifies the immutable normal backup
+`pre-migration-<operation-id>`, and materializes a protected sibling stage on
+the target filesystem. It never stages through `/tmp`, accepts a caller-selected
+path, follows a symlink, or publishes across filesystems.
+
+A deterministic artifact, predecessor-data, pending-admission, capacity, or
+disk preflight rejection records a value-free `FailedClosed` reason, creates no
+backup, and reopens the freshly validated predecessor. Invalid predecessor data
+must then be repaired through ordinary predecessor commands before a new
+migration operation is attempted.
+
+The stage journal advances atomically with each bounded mutation transaction.
+The coordinator scans at most 256 rows per page and writes at most 64 mutations
+per batch. Required projections build in fresh generations through the frozen
+application frontier. A complete startup-equivalent validation of the private
+stage is required before atomic rename and parent-directory synchronization.
+
+Cutover atomically activates the exact successor, installs the predecessor
+write fence, stores permanent migration evidence and terminal service audit,
+and consumes one administration sequence. It consumes no application sequence
+and does not rewrite command history. The automatic backup is retained after
+success.
+
+## Restart and rollback behavior
+
+Startup reconciles the checksummed external receipt, protected artifacts,
+backup manifest, sibling stage, published target, in-database journal, permanent
+migration record, and predecessor-write retirement. It never guesses between
+inconsistent evidence.
+
+- Before publication, the predecessor remains authoritative. Recovery resumes
+  the exact journaled stage or recreates it from the verified backup.
+- At the publication boundary, recovery determines whether the exact
+  predecessor or exact successor is installed and continues from that state.
+- After publication, the successor is not ready until a fresh complete startup
+  validation succeeds.
+- If published validation fails, recovery restores and freshly validates the
+  exact automatic backup before readiness, then records `FailedRolledBack`.
+- A target, receipt, stage, backup, journal, retirement, or permanent-record
+  combination outside the closed reconciliation table fails closed.
+
+Migration maintenance owns only the selected database files. Database identity
+checks and path confinement prevent a stage, backup, or receipt from being
+rebound to a sibling database. The public lifecycle needed to drain one live
+database while continuing to serve siblings is part of WP-409.
+
+The durable V1 compatibility vectors live under
+`fixtures/migrations/durable/v1`. Protobuf schema hashes and record bounds live
+under `fixtures/proto`. Run `./scripts/generate-migration-durable-fixtures
+--check` after changing a receipt codec, migration table key, or migration
+record encoding.
 
 ## Exact identity model
 
@@ -149,3 +212,8 @@ identities by hand.
 
 Contract migrations are operator-only. They are not generated as application
 commands, application-role permissions, MCP tools, or MCP resources.
+
+There is intentionally no supported storage-level invocation or manual file
+procedure for starting a migration. Until WP-409 supplies the authorized public
+administration path, application authors can lock and inspect artifacts but
+cannot request redb migration execution through a supported interface.

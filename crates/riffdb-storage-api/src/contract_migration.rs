@@ -3,7 +3,8 @@
 use riffdb_types::{
     AdministrationSequence, ApprovalId, CommitSequence, ContractBundleHash,
     ContractMigrationInputHash, ContractMigrationJournalHash, ContractMigrationOperationId,
-    ContractMigrationValidationDigest, DatabaseId, MigrationBundleHash, ProjectionId,
+    ContractMigrationValidationDigest, DatabaseId, MigrationBundleHash, ProjectionId, RequestId,
+    ServiceIngressKindV1, Timestamp,
 };
 
 use crate::{
@@ -534,6 +535,44 @@ pub struct StoredContractWriteRetirementV1 {
     administration_sequence: AdministrationSequence,
 }
 
+/// Exact permanent evidence authorizing one migrated catalog lineage edge.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredContractMigrationEdgeV1 {
+    retirement: StoredContractWriteRetirementV1,
+    migration: StoredContractMigrationRecordV1,
+}
+
+impl StoredContractMigrationEdgeV1 {
+    /// Joins the predecessor-keyed fence to its operation-keyed migration record.
+    pub fn new(
+        retirement: StoredContractWriteRetirementV1,
+        migration: StoredContractMigrationRecordV1,
+    ) -> Result<Self, StorageValueError> {
+        if retirement.operation_id() != migration.operation_id()
+            || retirement.artifacts() != migration.artifacts()
+            || retirement.administration_sequence() != migration.administration_sequence()
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self {
+            retirement,
+            migration,
+        })
+    }
+
+    /// Returns the predecessor-keyed write fence.
+    #[must_use]
+    pub const fn retirement(&self) -> StoredContractWriteRetirementV1 {
+        self.retirement
+    }
+
+    /// Borrows the complete permanent migration record.
+    #[must_use]
+    pub const fn migration(&self) -> &StoredContractMigrationRecordV1 {
+        &self.migration
+    }
+}
+
 impl StoredContractWriteRetirementV1 {
     /// Constructs exact predecessor retirement evidence.
     #[must_use]
@@ -690,6 +729,66 @@ pub struct ContractMigrationReceiptTransitionV1 {
     failure: Option<ContractMigrationReceiptFailureV1>,
 }
 
+/// Exact authorization and request evidence retained before migration drain.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractMigrationAdmissionV1 {
+    principal: AuditPrincipalV1,
+    approval_id: Option<ApprovalId>,
+    request_id: RequestId,
+    accepted_at: Timestamp,
+    ingress: ServiceIngressKindV1,
+}
+
+impl ContractMigrationAdmissionV1 {
+    /// Constructs the complete restart-stable admission evidence.
+    #[must_use]
+    pub const fn new(
+        principal: AuditPrincipalV1,
+        approval_id: Option<ApprovalId>,
+        request_id: RequestId,
+        accepted_at: Timestamp,
+        ingress: ServiceIngressKindV1,
+    ) -> Self {
+        Self {
+            principal,
+            approval_id,
+            request_id,
+            accepted_at,
+            ingress,
+        }
+    }
+
+    /// Borrows the exact authenticated principal and capability revision.
+    #[must_use]
+    pub const fn principal(&self) -> &AuditPrincipalV1 {
+        &self.principal
+    }
+
+    /// Borrows the optional human approval identity.
+    #[must_use]
+    pub const fn approval_id(&self) -> Option<&ApprovalId> {
+        self.approval_id.as_ref()
+    }
+
+    /// Returns the original request identity.
+    #[must_use]
+    pub const fn request_id(&self) -> RequestId {
+        self.request_id
+    }
+
+    /// Returns the server-supplied acceptance timestamp.
+    #[must_use]
+    pub const fn accepted_at(&self) -> Timestamp {
+        self.accepted_at
+    }
+
+    /// Returns the authenticated ingress classification.
+    #[must_use]
+    pub const fn ingress(&self) -> ServiceIngressKindV1 {
+        self.ingress
+    }
+}
+
 impl ContractMigrationReceiptTransitionV1 {
     /// Constructs a non-failure phase transition.
     #[must_use]
@@ -730,6 +829,7 @@ pub struct ContractMigrationReceiptV1 {
     input_hash: ContractMigrationInputHash,
     artifacts: ContractMigrationArtifactsV1,
     operation_artifacts: ContractMigrationOperationArtifactsV1,
+    admission: ContractMigrationAdmissionV1,
     backup_name: Option<riffdb_types::BackupNameV1>,
     backup_manifest: Option<OfflineBackupManifestIdentityV1>,
     stage_identity: Option<[u8; 32]>,
@@ -745,6 +845,7 @@ impl ContractMigrationReceiptV1 {
         input_hash: ContractMigrationInputHash,
         artifacts: ContractMigrationArtifactsV1,
         operation_artifacts: ContractMigrationOperationArtifactsV1,
+        admission: ContractMigrationAdmissionV1,
         backup_name: Option<riffdb_types::BackupNameV1>,
         backup_manifest: Option<OfflineBackupManifestIdentityV1>,
         stage_identity: Option<[u8; 32]>,
@@ -795,6 +896,7 @@ impl ContractMigrationReceiptV1 {
             input_hash,
             artifacts,
             operation_artifacts,
+            admission,
             backup_name,
             backup_manifest,
             stage_identity,
@@ -827,6 +929,11 @@ impl ContractMigrationReceiptV1 {
     pub const fn operation_artifacts(&self) -> ContractMigrationOperationArtifactsV1 {
         self.operation_artifacts
     }
+    /// Borrows exact restart-stable authorization and request evidence.
+    #[must_use]
+    pub const fn admission(&self) -> &ContractMigrationAdmissionV1 {
+        &self.admission
+    }
     /// Borrows the retained backup name when published.
     #[must_use]
     pub const fn backup_name(&self) -> Option<&riffdb_types::BackupNameV1> {
@@ -854,6 +961,89 @@ impl ContractMigrationReceiptV1 {
             .last()
             .expect("a canonical receipt is nonempty")
             .receipt_phase()
+    }
+
+    /// Appends one checked non-failure phase transition without changing evidence.
+    pub fn advance(
+        &self,
+        phase: ContractMigrationReceiptPhaseV1,
+    ) -> Result<Self, StorageValueError> {
+        self.advance_with(
+            ContractMigrationReceiptTransitionV1::phase(phase),
+            None,
+            None,
+        )
+    }
+
+    /// Binds the immutable automatic backup while advancing to `BackupPublished`.
+    pub fn publish_backup(
+        &self,
+        backup_name: riffdb_types::BackupNameV1,
+        backup_manifest: OfflineBackupManifestIdentityV1,
+    ) -> Result<Self, StorageValueError> {
+        self.advance_with(
+            ContractMigrationReceiptTransitionV1::phase(
+                ContractMigrationReceiptPhaseV1::BackupPublished,
+            ),
+            Some((backup_name, backup_manifest)),
+            None,
+        )
+    }
+
+    /// Binds the protected sibling stage while advancing to `Transforming`.
+    pub fn begin_transforming(&self, stage_identity: [u8; 32]) -> Result<Self, StorageValueError> {
+        self.advance_with(
+            ContractMigrationReceiptTransitionV1::phase(
+                ContractMigrationReceiptPhaseV1::Transforming,
+            ),
+            None,
+            Some(stage_identity),
+        )
+    }
+
+    /// Appends one terminal failure transition with its closed safe classification.
+    pub fn fail(
+        &self,
+        phase: ContractMigrationReceiptPhaseV1,
+        failure: ContractMigrationReceiptFailureV1,
+    ) -> Result<Self, StorageValueError> {
+        self.advance_with(
+            ContractMigrationReceiptTransitionV1::failed(phase, failure),
+            None,
+            None,
+        )
+    }
+
+    fn advance_with(
+        &self,
+        transition: ContractMigrationReceiptTransitionV1,
+        backup: Option<(riffdb_types::BackupNameV1, OfflineBackupManifestIdentityV1)>,
+        stage_identity: Option<[u8; 32]>,
+    ) -> Result<Self, StorageValueError> {
+        if self.current_phase().is_terminal()
+            || backup.is_some() && self.backup_name.is_some()
+            || stage_identity.is_some() && self.stage_identity.is_some()
+        {
+            return Err(StorageValueError::InvalidShape);
+        }
+        let mut transitions = self.transitions.clone();
+        transitions.push(transition);
+        let (backup_name, backup_manifest) = backup.map_or_else(
+            || (self.backup_name.clone(), self.backup_manifest.clone()),
+            |(name, manifest)| (Some(name), Some(manifest)),
+        );
+        Self::from_canonical_parts(
+            self.database_id,
+            self.operation_id,
+            self.input_hash,
+            self.artifacts,
+            self.operation_artifacts,
+            self.admission.clone(),
+            backup_name,
+            backup_manifest,
+            stage_identity.or(self.stage_identity),
+            transitions,
+        )
     }
 }
 

@@ -2020,6 +2020,7 @@ dependencies = [
  "riffdb-service",
  "riffdb-storage-api",
  "riffdb-storage-redb",
+ "riffdb-testkit",
  "riffdb-types",
  "serde",
  "tokio",

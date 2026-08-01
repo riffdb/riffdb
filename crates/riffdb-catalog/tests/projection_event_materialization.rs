@@ -2,9 +2,11 @@
 
 use riffdb_catalog::{
     ActiveCatalogSnapshot, CatalogErrorKind, ProjectionEventMaterializationErrorKind,
-    ValidatedContractBundle,
+    ValidatedContractBundle, ValidatedMigrationPlan,
 };
-use riffdb_contract_compiler::{compile_contract_source, compile_contract_successor};
+use riffdb_contract_compiler::{
+    compile_contract_source, compile_contract_successor, compile_migration_source,
+};
 use riffdb_contract_ir::{ContractBundle, EventSchema};
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, CatalogRepository, ExecutablePlanRef, StorageError,
@@ -142,6 +144,46 @@ fn stored_event(event_type: EventTypeId, payload: CanonicalRecord) -> StoredDura
         derive_event_hash_v1(event_id, event_type, &payload).expect("bounded event hash");
     StoredDurableEventV1::new(event_id, event_type, payload, event_hash)
         .expect("bounded stored event")
+}
+
+#[test]
+fn sealed_migration_resolves_added_projection_without_activating_candidate() {
+    let parent_source = EVENT_V1.replace(
+        r#"
+  projection Changes {
+    source event Changed
+    key (id)
+    measure item_count = count()
+    frontier transactionally_ordered
+  }
+"#,
+        "",
+    );
+    let candidate_source = EVENT_V1.replace("version 1", "version 2");
+    let parent = compile_contract_source(&parent_source).expect("parent compiles");
+    let candidate = compile_contract_successor(&candidate_source, &parent)
+        .expect("projection-adding successor compiles");
+    let migration = compile_migration_source(
+        "migration ProjectionEventEvolution from 1 to 2 {}",
+        &parent,
+        &candidate,
+    )
+    .expect("derived projection rebuild compiles");
+    let parent = ValidatedContractBundle::from_compiler_bundle(parent).expect("checked parent");
+    let candidate =
+        ValidatedContractBundle::from_compiler_bundle(candidate).expect("checked candidate");
+    let projection_id = candidate.bundle().projections()[0].projection_id();
+    let plan = ValidatedMigrationPlan::from_artifacts(parent, candidate.clone(), migration)
+        .expect("sealed migration");
+
+    let resolved = plan
+        .resolve_candidate_projection(projection_id)
+        .expect("candidate projection authority");
+    assert_eq!(resolved.identity(), &projection_identity(&candidate));
+    assert_eq!(
+        resolved.projection_plan(),
+        &candidate.bundle().projections()[0]
+    );
 }
 
 #[test]

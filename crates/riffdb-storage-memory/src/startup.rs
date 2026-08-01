@@ -3296,6 +3296,7 @@ contract MemoryMigration version 1 {
                     index_keys += 1;
                 }
                 HistoricalSemanticEvidence::Bundle(_)
+                | HistoricalSemanticEvidence::ContractMigrationEdge(_)
                 | HistoricalSemanticEvidence::PlanReference(_)
                 | HistoricalSemanticEvidence::ActiveCatalog(_)
                 | HistoricalSemanticEvidence::CapabilityPartition(_) => {}
@@ -3672,6 +3673,7 @@ contract MemoryMigration version 1 {
                 }
                 HistoricalSemanticEvidence::ActiveCatalog(None) => "active:none".to_owned(),
                 HistoricalSemanticEvidence::ActiveCatalog(Some(_))
+                | HistoricalSemanticEvidence::ContractMigrationEdge(_)
                 | HistoricalSemanticEvidence::PersistedKey(_)
                 | HistoricalSemanticEvidence::IndexMigrationRow(_)
                 | HistoricalSemanticEvidence::CapabilityPartition(_) => {

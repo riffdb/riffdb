@@ -15,8 +15,8 @@ use crate::{
     MAX_CATALOG_BUNDLE_BYTES, MAX_HISTORICAL_EVIDENCE_PAGE_BYTES, MAX_INDEX_MIGRATION_PAGE_BYTES,
     MAX_INDEX_MIGRATION_PAGE_ENTRIES, MAX_INTEGRITY_FINDINGS, MAX_READABLE_DIGEST_KEYS,
     MAX_SCAN_PAGE_ENTRIES, PartitionIndexTarget, RetainedMetadataV1, StorageError,
-    StorageValueError, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
-    StoredIndexEpochV1, StructurallyDecodedIndexRangePrefixV1,
+    StorageValueError, StoredContractMigrationEdgeV1, StoredEntityRecordV1, StoredIndexEntryV1,
+    StoredIndexEntryV2, StoredIndexEpochV1, StructurallyDecodedIndexRangePrefixV1,
 };
 
 /// A process-local, non-durable structural-open session identity.
@@ -960,6 +960,8 @@ impl fmt::Debug for HistoricalCapabilityPartitionEvidenceV1 {
 pub enum HistoricalSemanticEvidence {
     /// One immutable stored bundle and its structural identity.
     Bundle(HistoricalBundleEvidence),
+    /// One structurally joined permanent authorization for a migrated lineage edge.
+    ContractMigrationEdge(Box<StoredContractMigrationEdgeV1>),
     /// One exact plan reference found in authoritative durable state.
     PlanReference(ExecutablePlanRef),
     /// The singleton active relation, absent only in the accepted initialization state.
@@ -981,6 +983,15 @@ impl HistoricalSemanticEvidence {
                 push_lineage(&mut key, bundle.lineage());
                 key.extend_from_slice(&bundle.version().to_be_bytes());
                 key.extend_from_slice(bundle.bundle_hash().as_bytes());
+            }
+            Self::ContractMigrationEdge(edge) => {
+                // Lineage length begins with zero under the foundational bound,
+                // so this suffix sorts after every bundle and before plans.
+                key.extend_from_slice(&[0x01, 0xff]);
+                let artifacts = edge.retirement().artifacts();
+                key.extend_from_slice(artifacts.parent().as_bytes());
+                key.extend_from_slice(artifacts.candidate().as_bytes());
+                key.extend_from_slice(edge.retirement().operation_id().as_bytes());
             }
             Self::PlanReference(plan) => {
                 key.push(0x02);
@@ -1018,6 +1029,19 @@ impl HistoricalSemanticEvidence {
                 .len()
                 .checked_add(1 + 4 + bundle.lineage().as_bytes().len() + 8 + 32 + 4)
                 .ok_or(StorageValueError::SizeOverflow),
+            Self::ContractMigrationEdge(edge) => {
+                let migration =
+                    crate::proto_codec::encode_contract_migration_record_v1(edge.migration())
+                        .map_err(|_| StorageValueError::InvalidShape)?;
+                let retirement =
+                    crate::proto_codec::encode_contract_write_retirement_v1(edge.retirement())
+                        .map_err(|_| StorageValueError::InvalidShape)?;
+                migration
+                    .as_bytes()
+                    .len()
+                    .checked_add(retirement.as_bytes().len())
+                    .ok_or(StorageValueError::SizeOverflow)
+            }
             Self::PlanReference(plan) => (1 + 4 + plan.contract_lineage().as_bytes().len())
                 .checked_add(8 + 32 + 4 + 32)
                 .ok_or(StorageValueError::SizeOverflow),

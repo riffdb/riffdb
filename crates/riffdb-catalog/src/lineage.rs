@@ -143,6 +143,39 @@ impl LineageMaterializationProof {
     pub(crate) fn from_forward_bundles(
         bundles: Vec<ValidatedContractBundle>,
     ) -> Result<Arc<Self>, CatalogError> {
+        for pair in bundles.windows(2) {
+            validate_forward_edge(&pair[0], &pair[1], false)?;
+        }
+        Self::materialize_forward_bundles(bundles)
+    }
+
+    pub(crate) fn from_historical_bundles(
+        bundles: Vec<ValidatedContractBundle>,
+        migration_edges: &BTreeSet<(ContractBundleHash, ContractBundleHash)>,
+    ) -> Result<Arc<Self>, CatalogError> {
+        let mut used_edges = BTreeSet::new();
+        for pair in bundles.windows(2) {
+            let parent = &pair[0];
+            let candidate = &pair[1];
+            if validate_forward_edge(parent, candidate, false).is_ok() {
+                continue;
+            }
+            let edge = (parent.bundle_hash(), candidate.bundle_hash());
+            if !migration_edges.contains(&edge) {
+                return Err(CatalogError::new(CatalogErrorKind::ActiveCatalogMismatch));
+            }
+            validate_forward_edge(parent, candidate, true)?;
+            used_edges.insert(edge);
+        }
+        if used_edges != *migration_edges {
+            return Err(CatalogError::new(CatalogErrorKind::ActiveCatalogMismatch));
+        }
+        Self::materialize_forward_bundles(bundles)
+    }
+
+    fn materialize_forward_bundles(
+        bundles: Vec<ValidatedContractBundle>,
+    ) -> Result<Arc<Self>, CatalogError> {
         let first = bundles
             .first()
             .ok_or_else(|| CatalogError::new(CatalogErrorKind::ActiveCatalogMismatch))?;
@@ -159,10 +192,6 @@ impl LineageMaterializationProof {
         if !is_structural_genesis(first) {
             return Err(CatalogError::new(CatalogErrorKind::ActiveCatalogMismatch));
         }
-        for pair in bundles.windows(2) {
-            validate_forward_edge(&pair[0], &pair[1])?;
-        }
-
         let field_introductions = derive_field_introductions(&bundles)?;
         let semantic_proof_bytes = semantic_proof_charge(
             lineage.as_bytes().len(),
@@ -223,7 +252,23 @@ impl LineageMaterializationProof {
         }
 
         reverse.reverse();
-        Self::from_forward_bundles(reverse)
+        for pair in reverse.windows(2) {
+            let parent = &pair[0];
+            let candidate = &pair[1];
+            if validate_forward_edge(parent, candidate, false).is_ok() {
+                continue;
+            }
+            let edge = repository
+                .read_contract_migration_edge(parent.bundle_hash())?
+                .ok_or_else(|| CatalogError::new(CatalogErrorKind::ActiveCatalogMismatch))?;
+            if edge.retirement().artifacts().parent() != parent.bundle_hash()
+                || edge.retirement().artifacts().candidate() != candidate.bundle_hash()
+            {
+                return Err(CatalogError::new(CatalogErrorKind::ActiveCatalogMismatch));
+            }
+            validate_forward_edge(parent, candidate, true)?;
+        }
+        Self::materialize_forward_bundles(reverse)
     }
 
     pub(crate) fn extend(
@@ -238,6 +283,21 @@ impl LineageMaterializationProof {
         let mut bundles = self.bundles.to_vec();
         bundles.push(candidate);
         Self::from_forward_bundles(bundles)
+    }
+
+    /// Extends a sealed parent proof by one migration-authorized terminal edge.
+    pub(crate) fn extend_migrated(
+        self: &Arc<Self>,
+        candidate: ValidatedContractBundle,
+    ) -> Result<Arc<Self>, CatalogError> {
+        validate_forward_edge(self.terminal(), &candidate, true)?;
+        Self::materialize_forward_bundles(
+            self.bundles
+                .iter()
+                .cloned()
+                .chain(std::iter::once(candidate))
+                .collect(),
+        )
     }
 
     pub(crate) fn bundle_count(&self) -> usize {
@@ -405,6 +465,7 @@ pub(crate) fn is_structural_genesis(bundle: &ValidatedContractBundle) -> bool {
 fn validate_forward_edge(
     parent: &ValidatedContractBundle,
     candidate: &ValidatedContractBundle,
+    migrated: bool,
 ) -> Result<(), CatalogError> {
     let Some(parent_reference) = candidate.bundle().parent() else {
         return Err(CatalogError::new(CatalogErrorKind::ActiveCatalogMismatch));
@@ -412,7 +473,18 @@ fn validate_forward_edge(
     if candidate.lineage() != parent.lineage()
         || parent_reference.contract_version() != parent.contract_version()
         || parent_reference.bundle_hash() != parent.bundle_hash()
-        || validate_successor_compatibility(candidate, parent).is_err()
+        || if migrated {
+            candidate.bundle().compatibility().overall() != CompatibilityClass::RequiresMigration
+                || candidate
+                    .bundle()
+                    .compatibility()
+                    .entries()
+                    .iter()
+                    .any(|entry| entry.class() == CompatibilityClass::Incompatible)
+        } else {
+            candidate.bundle().compatibility().overall() == CompatibilityClass::RequiresMigration
+                || validate_successor_compatibility(candidate, parent).is_err()
+        }
     {
         return Err(CatalogError::new(CatalogErrorKind::ActiveCatalogMismatch));
     }
@@ -429,6 +501,8 @@ fn derive_field_introductions(
         let ordinal = u16::try_from(index)
             .map_err(|_| CatalogError::new(CatalogErrorKind::LineageBundleCountLimit))?;
         let previous = index.checked_sub(1).map(|prior| &bundles[prior]);
+        let migrated_transition = previous.is_some()
+            && bundle.bundle().compatibility().overall() == CompatibilityClass::RequiresMigration;
 
         for entity in bundle.bundle().schema().entities() {
             register_record_fields(
@@ -440,6 +514,7 @@ fn derive_field_introductions(
                     .and_then(|prior| prior.bundle().schema().entity(entity.id()))
                     .map(riffdb_contract_ir::EntitySchema::record),
                 ordinal,
+                migrated_transition,
             )?;
         }
         for event in bundle.bundle().schema().events() {
@@ -452,6 +527,7 @@ fn derive_field_introductions(
                     .and_then(|prior| prior.bundle().schema().event(event.id()))
                     .map(riffdb_contract_ir::EventSchema::payload),
                 ordinal,
+                migrated_transition,
             )?;
         }
     }
@@ -466,6 +542,7 @@ fn register_record_fields(
     current: &RecordSchema,
     previous: Option<&RecordSchema>,
     ordinal: u16,
+    migrated_transition: bool,
 ) -> Result<(), CatalogError> {
     if !introductions.contains_key(&owner) && introductions.len() == MAX_LINEAGE_RECORD_OWNERS_V1 {
         return Err(CatalogError::new(
@@ -486,7 +563,7 @@ fn register_record_fields(
         if previous.is_some_and(|record| record.field(field.id()).is_some()) {
             return Err(CatalogError::new(CatalogErrorKind::ActiveCatalogMismatch));
         }
-        if previous.is_some() && !field.value_type().is_optional() {
+        if previous.is_some() && !migrated_transition && !field.value_type().is_optional() {
             return Err(CatalogError::new(CatalogErrorKind::ActiveCatalogMismatch));
         }
         if *total_fields == MAX_LINEAGE_RECORD_FIELDS_V1 {
@@ -866,6 +943,53 @@ contract LineageProof version {version} {{
                 wrong_parent,
             ])
             .expect_err("wrong exact parent hash")
+            .kind(),
+            CatalogErrorKind::ActiveCatalogMismatch
+        );
+    }
+
+    #[test]
+    fn historical_requires_exact_migration_authority_for_required_field_edge() {
+        const PARENT: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/migrations/bundle/v1/parent.contract.bundle"
+        ));
+        const CANDIDATE: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/migrations/bundle/v1/candidate.contract.bundle"
+        ));
+        let parent = ValidatedContractBundle::decode(PARENT).expect("parent fixture");
+        let candidate = ValidatedContractBundle::decode(CANDIDATE).expect("candidate fixture");
+        let lineage = vec![parent.clone(), candidate.clone()];
+
+        assert_eq!(
+            LineageMaterializationProof::from_forward_bundles(lineage.clone())
+                .expect_err("ordinary activation cannot admit RequiresMigration")
+                .kind(),
+            CatalogErrorKind::ActiveCatalogMismatch
+        );
+        assert_eq!(
+            LineageMaterializationProof::from_historical_bundles(lineage.clone(), &BTreeSet::new())
+                .expect_err("breaking history needs permanent migration authority")
+                .kind(),
+            CatalogErrorKind::ActiveCatalogMismatch
+        );
+
+        let exact = BTreeSet::from([(parent.bundle_hash(), candidate.bundle_hash())]);
+        let proof = LineageMaterializationProof::from_historical_bundles(lineage, &exact)
+            .expect("exact migrated edge");
+        assert_eq!(proof.bundle_count(), 2);
+
+        let unrelated = BTreeSet::from([(
+            parent.bundle_hash(),
+            ContractBundleHash::from_bytes([0x55; 32]),
+        )]);
+        assert_eq!(
+            LineageMaterializationProof::from_historical_bundles(
+                vec![parent, candidate],
+                &unrelated,
+            )
+            .expect_err("another candidate hash cannot authorize the edge")
             .kind(),
             CatalogErrorKind::ActiveCatalogMismatch
         );

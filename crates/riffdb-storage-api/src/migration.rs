@@ -4,8 +4,9 @@ use std::error::Error;
 use std::fmt;
 
 use riffdb_types::{
-    AdministrationSequence, CanonicalValueHash, ContractBundleHash, EntityTypeId, IndexId,
-    MigrationBundleHash, ProjectionId, hash_canonical_value,
+    AdministrationSequence, CanonicalValueHash, CommitSequence, ContractBundleHash,
+    ContractMigrationValidationDigest, EntityTypeId, IndexId, MigrationBundleHash, ProjectionId,
+    hash_canonical_value,
 };
 
 use crate::{
@@ -435,6 +436,7 @@ pub struct MigrationCutover {
     migration: MigrationBundleHash,
     required_projections: Vec<ProjectionId>,
     retained_parent_lineage: Vec<ContractBundleHash>,
+    validation_digest: ContractMigrationValidationDigest,
 }
 
 impl MigrationCutover {
@@ -446,6 +448,7 @@ impl MigrationCutover {
         migration: MigrationBundleHash,
         required_projections: Vec<ProjectionId>,
         retained_parent_lineage: Vec<ContractBundleHash>,
+        validation_digest: ContractMigrationValidationDigest,
     ) -> Self {
         Self {
             parent,
@@ -453,6 +456,7 @@ impl MigrationCutover {
             migration,
             required_projections,
             retained_parent_lineage,
+            validation_digest,
         }
     }
 
@@ -484,6 +488,12 @@ impl MigrationCutover {
     #[must_use]
     pub fn retained_parent_lineage(&self) -> &[ContractBundleHash] {
         &self.retained_parent_lineage
+    }
+
+    /// Returns the catalog-sealed complete validation identity.
+    #[must_use]
+    pub const fn validation_digest(&self) -> ContractMigrationValidationDigest {
+        self.validation_digest
     }
 }
 
@@ -561,8 +571,40 @@ pub trait MigrationStagePort {
     /// Reports unresolved admissions owned by a predecessor version being retired.
     fn has_unresolved_retiring_admissions(&self) -> Result<bool, MigrationStageError>;
 
+    /// Reads exact restart progress for this artifact, when a batch already committed.
+    fn migration_journal_state(
+        &self,
+        migration: MigrationBundleHash,
+    ) -> Result<Option<MigrationJournalState>, MigrationStageError> {
+        let _ = migration;
+        Ok(None)
+    }
+
+    /// Reads the exact durable orchestration step for restart recovery.
+    fn migration_journal_step(
+        &self,
+        migration: MigrationBundleHash,
+    ) -> Result<Option<crate::ContractMigrationJournalStepV1>, MigrationStageError> {
+        self.migration_journal_state(migration)
+            .map(|journal| journal.map(|_| crate::ContractMigrationJournalStepV1::Transforming))
+    }
+
+    /// Returns the immutable application frontier captured before staging.
+    fn migration_frozen_frontier(&self) -> Option<CommitSequence> {
+        None
+    }
+
     /// Applies row/index mutations and journal advancement atomically.
     fn apply_migration_batch(&mut self, batch: MigrationBatch) -> Result<(), MigrationStageError>;
+
+    /// Advances durable orchestration evidence without changing authoritative rows.
+    fn checkpoint_migration_step(
+        &mut self,
+        _step: crate::ContractMigrationJournalStepV1,
+        _required_projections: &[ProjectionId],
+    ) -> Result<(), MigrationStageError> {
+        Ok(())
+    }
 
     /// Builds fresh required projection generations through the frozen frontier.
     fn build_migration_projection_candidates(
@@ -576,6 +618,11 @@ pub trait MigrationStagePort {
         candidate: ContractBundleHash,
         retained_parent_lineage: &[ContractBundleHash],
     ) -> Result<(), MigrationStageError>;
+
+    /// Performs storage-owned complete structural validation of the private stage.
+    fn validate_migration_stage_structure(&self) -> Result<(), MigrationStageError> {
+        self.validate_migration_stage(self.active_bundle_hash(), &[])
+    }
 
     /// Atomically activates the successor, fences predecessor writes, and records migration.
     fn finalize_migration(

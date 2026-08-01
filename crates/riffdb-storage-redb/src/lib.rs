@@ -10,6 +10,8 @@ mod backup;
 pub mod benchmark_support;
 mod codec;
 mod derived;
+#[cfg(feature = "test-fixtures")]
+mod durable_fixtures;
 mod error;
 #[cfg(feature = "test-fixtures")]
 mod fixtures;
@@ -18,6 +20,7 @@ mod hooks;
 mod keys;
 mod layout;
 mod maintenance;
+mod migration_stage;
 mod query;
 mod reads;
 mod shared_ports;
@@ -30,19 +33,29 @@ pub use backup::{
 };
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
+pub use durable_fixtures::{MigrationDurableFixture, migration_durable_fixture_set};
+#[cfg(feature = "test-fixtures")]
+#[doc(hidden)]
 pub use fixtures::downgrade_all_index_rows_to_v1_fixture;
 #[doc(hidden)]
 pub use hooks::{RedbTestController, RedbTestEvent, RedbTestOperation, RedbTestPhase};
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use maintenance::validate_maintenance_receipt_fixture;
+#[cfg(feature = "test-fixtures")]
+#[doc(hidden)]
+pub use maintenance::validate_migration_receipt_fixture;
 #[doc(hidden)]
 pub use maintenance::{
     RedbMaintenanceFailpoint, RedbMaintenanceTestController, RedbMaintenanceTestEvent,
 };
 pub use maintenance::{
     RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation, RedbMaintenanceStorage,
-    RedbSealedStagedRestore, RedbStagedRestore,
+    RedbMigrationDiskReservation, RedbSealedStagedRestore, RedbStagedRestore,
+};
+pub use migration_stage::{
+    RedbContractMigrationContext, RedbContractMigrationImmutableWitness,
+    RedbContractMigrationPreflight, RedbContractMigrationStage, RedbMigrationProjectionPorts,
 };
 pub use shared_ports::RedbSharedPorts;
 pub use startup::{

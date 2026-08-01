@@ -39,10 +39,11 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - There is no general SQL surface, arbitrary transaction callback, analytical
   join engine, distributed transaction, replication, failover, or consensus.
 - Contract migration source, canonical artifacts, Application Source V3, Lock
-  V4, read-only planning, and the Gate-A memory semantic coordinator are
-  implemented. Applying a migration to a redb database, crash-safe staged
-  publication/recovery, and public migration authorization are not available
-  until the remaining P7 work packages are complete.
+  V4, read-only planning, Gate-A memory semantics, redb staged execution, crash
+  recovery, and automatic rollback are implemented. Public migration
+  authorization and check/apply/status RPC, SDK, and CLI operations are not
+  available yet, so there is no supported operator path to start that internal
+  lifecycle.
 - The POC authorization model uses opaque local capability tokens, not a
   production identity provider or OAuth authorization server.
 - Capability administration has create and revoke operations but no

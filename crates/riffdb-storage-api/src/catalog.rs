@@ -7,7 +7,10 @@ use riffdb_types::{
     RequestId, Timestamp,
 };
 
-use crate::{AuditPrincipalV1, MAX_CATALOG_BUNDLE_BYTES, StorageError, StorageValueError};
+use crate::{
+    AuditPrincipalV1, MAX_CATALOG_BUNDLE_BYTES, StorageError, StorageValueError,
+    StoredContractMigrationEdgeV1,
+};
 
 /// Storage-structural identity and canonical bytes for one immutable bundle.
 #[derive(Clone, Eq, PartialEq)]
@@ -356,6 +359,18 @@ pub trait CatalogRepository {
         lineage: &ContractLineage,
         contract_version: ContractVersion,
     ) -> Result<Option<StoredContractBundleV1>, StorageError>;
+
+    /// Resolves exact permanent evidence for a migrated successor edge.
+    ///
+    /// Repositories predating contract migration have no such evidence. The
+    /// default preserves that fail-closed absence without burdening read-only
+    /// test repositories or non-migrating backends.
+    fn read_contract_migration_edge(
+        &self,
+        _predecessor: ContractBundleHash,
+    ) -> Result<Option<StoredContractMigrationEdgeV1>, StorageError> {
+        Ok(None)
+    }
 }
 
 /// Coordinator-only typed catalog activation transition.

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+mode="${1:-}"
+case "$mode" in
+    "")
+        output_root="$repo_root"
+        ;;
+    --check)
+        scratch="$(mktemp -d)"
+        trap 'rm -rf "$scratch"' EXIT
+        output_root="$scratch"
+        ;;
+    *)
+        printf 'usage: %s [--check]\n' "$0" >&2
+        exit 2
+        ;;
+esac
+
+cd "$repo_root"
+LC_ALL=C TZ=UTC cargo run --quiet --locked -p riffdb-storage-redb \
+    --features test-fixtures --example generate_migration_durable_fixtures -- \
+    --output-root "$output_root"
+
+if [[ "$mode" == "--check" ]]; then
+    if ! diff --recursive --brief -- \
+        fixtures/migrations/durable/v1 \
+        "$output_root/fixtures/migrations/durable/v1"; then
+        printf 'migration durable fixtures are stale, missing, or have an unexpected file inventory\n' >&2
+        exit 1
+    fi
+    printf 'Migration durable fixtures are current.\n'
+else
+    printf 'Generated migration durable fixtures.\n'
+fi
