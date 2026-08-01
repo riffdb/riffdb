@@ -1,92 +1,190 @@
-# ADR-0086: Columnar Projection and Read Freshness Classes
+# ADR-0086: Columnar Projection, Read Sources, and Freshness Policies
 
-- **Status:** Proposed
+- **Status:** Proposed (revised per maintainer review, 2026-08-01)
 - **Date:** 2026-08-01
 - **Decision owners:** RiffDB maintainers
-- **Related:** ADR-0010 (frontiers), ADR-0070 (read stability), ADR-0080 (partitioned events, durable consumers), ADR-0082 (single total order)
+- **Related:** ADR-0010 (frontiers), ADR-0070 (read stability), ADR-0080 (partitioned events, durable consumers), ADR-0082 (single total order), ADR-0085 (retention), ADR-0087 (projected ad-hoc query surface — planned)
 
 ## Context
 
 Measured on real disk (board-scale harness, 2026-08-01): RiffDB's per-row read
 cost is 8,741 ns/row vs PostgreSQL's 837 ns (10.4×); a 450-row board page costs
-4.06 ms (UX-acceptable) with ~96% of that latency in the per-row pipeline.
-Point reads are 1.19× at 50 rows. Separately, arbitrary filter combinations
-(issue-tracker-style ad-hoc predicates) do not map to compiled named queries
-with declared access paths, and analytical aggregation has no story. A
-columnar projection — derived, rebuildable, fed from the single total order —
-addresses all three: at per-organization scale a column scan is a universal
-index, and aggregation is native.
+4.06 ms with ~96% of latency in the per-row pipeline. Arbitrary filter
+combinations do not map to compiled named queries with declared access paths,
+and analytical aggregation has no story. A columnar projection — derived,
+fed from the single total order — addresses all three. At moderate
+per-organization scale, a column scan provides a universal *fallback* access
+path and avoids requiring a composite index for every filter combination; it
+is not promised to solve every scale tier, and the architecture leaves room
+for dictionary encoding, zone maps, bitmap and sorted-segment indexes, top-K
+lane structures, text indexes, and vectorized execution without selecting any
+of them here.
 
 ## Decision
 
-### 1. The projection is a derived accelerator, never authoritative
+### 1. Projected state is derived and non-authoritative — with a qualified rebuildability claim
 
-A per-database columnar store (delta buffer + compacted segments) built by a
-durable consumer (ADR-0080) from the commit stream. It is rebuildable from
-authoritative records, excluded from backup identity (SPEC's accelerator
-clause), and its loss is a rebuild, never data loss. No contract amendment to
-STO-011/STO-012/backup format is required while this holds.
+Only projections whose **complete source closure is recoverable** from
+backup-authoritative state plus retained authoritative history qualify as
+rebuildable accelerators. Projections are classified at deploy time:
 
-### 2. Two public read-freshness classes, declared per query
+- **Snapshot-rebuildable** — reconstructible from authoritative current state
+  (e.g. a current ticket board). Segments are excluded from backup identity.
+- **History-rebuildable** — additionally require retained authoritative
+  events/records (e.g. daily status-transition rollups). Segments may be
+  excluded from backup only while the required source history is itself
+  backup-authoritative or retained under an explicit source-retention policy
+  (ADR-0085 interaction below).
+- **Non-rebuildable derived state** — disallowed, unless explicitly promoted
+  into backup identity or bound to a declared external authoritative source.
 
-- **Authoritative** (existing): serves from the authoritative snapshot;
-  read-your-writes via `read_after_commit` against the application head.
-  Unchanged semantics, unchanged path.
-- **Projection-fenced** (new): serves from the columnar projection;
-  `read_after_commit(seq)` fences against the PROJECTION frontier — the query
-  waits (bounded, typed timeout) until the frontier reaches `seq`, then reads.
-  A client that just committed sees its own write or a typed
-  `projection-lagging` error, never silent staleness. Queries declare their
-  class at deploy time; the class is part of the compiled contract surface.
+Projection definitions and catalog metadata are always part of backed-up
+contract state; only accelerator segments are exempt, and only under the
+closure rule above.
 
-Interactive board/filter queries use projection-fenced reads with the fence
-carried automatically by the SDK from the session's last commit. Analytics
-run projection-fenced without a fence (bounded-staleness, frontier reported
-in the response).
+### 2. Queries declare a read source
 
-### 3. Bounded lag is a stated, measured property
+- **Authoritative** (existing path; semantics unchanged), or
+- **Projected(projection_name)**.
 
-The consumer's apply lag under the write-parity workloads is a published
-gate (target: frontier within 100 ms of head at sustained parity-load write
-rates; burst recovery bound stated). A projection that violates its lag gate
-is unhealthy: it alerts, and — per ADR-0085 — blocks the retention watermark.
-Projection health is therefore operationally first-class, not best-effort.
+### 3. Projected queries declare a freshness policy
 
-### 4. Ad-hoc query surface (scoped)
+- **Causal(commit_token, max_wait)** — serve only once the projection
+  contains at least the supplied commit token; typed lagging outcome on
+  `max_wait` expiry. Example: `freshness causal { inherit_session_commit true; max_wait 500ms }`.
+- **Bounded(max_lag)** — serve only if head-to-frontier lag is within the
+  declared duration.
+- **Available** — serve current projection state, reporting its frontier,
+  with no staleness guarantee.
 
-The projection MAY expose a bounded ad-hoc predicate/aggregation surface
-(filter combinations over projected columns, order, limit, aggregate) — the
-JQL-shaped workload — because projected reads carry no authoritative-path
-risk: worst case is a slow scan of derived data, bounded by per-organization
-scale. The authoritative path's compiled-only discipline is unchanged.
-Capability enforcement applies identically to projected reads (field
-visibility filters projected columns at build time, not query time).
+Every projected response reports the projection frontier. **Commit tokens and
+frontiers are opaque, scoped types** (`CommitToken`, `ProjectionFrontier`) —
+today internally one sequence, later possibly database/partition identity,
+contract lineage, placement epoch, or vector positions — never a public bare
+`u64`. SDK propagation of the causal token is automatic, inspectable, and
+overrideable (`read_context.last_commit`, `with_read_context(..)`,
+`without_causal_fence()`); "session" is defined as the read context object,
+not a connection, to stay meaningful across pools, stateless servers, tabs,
+and agent invocations.
+
+### 4. A frontier is an atomic visibility guarantee
+
+If a projection reports frontier F, every projection effect of every relevant
+commit at or before F is completely visible, and no reader can observe a
+partially applied commit; the frontier advances only after all changes for a
+commit are published atomically to a stable, queryable projection snapshot.
+Compaction preserves logical query results and never moves the frontier
+backward. The **visible frontier** (may lead, e.g. in-memory delta) and the
+**durable/recoverable frontier** (checkpointed) are distinct: retention
+decisions use the durable frontier; after restart the projection may regress
+to it and replay. Crash invariants: the durable frontier never overclaims
+recoverable state; applying a commit twice is idempotent; a crash before
+checkpoint advancement causes replay; a crash after it cannot lose the
+associated projection changes.
+
+### 5. Authorization is enforced twice
+
+The projection definition determines which data classifications and columns
+are **eligible to enter the derived plane** — the maximum exposure envelope.
+Every query is then authorized at planning and execution time for the
+requesting principal: authorization applies to every field referenced in
+selection, predicates, ordering, grouping, and aggregation (and joins, when
+supported), and row-level policy is applied **before** aggregation, so a
+principal cannot infer a protected field through counts or groupings.
+Capability revocation takes effect for subsequent projected queries
+immediately; it is never frozen into a compiled physical plan. Build-time
+pruning is defense in depth, not a substitute for principal-specific
+authorization.
+
+### 6. Lag is an explicit per-projection SLO
+
+Each projection declares a profile and target, e.g. `profile serving,
+target_lag p99 <= 100ms` for the board projection vs `profile analytical,
+target_lag p99 <= 5s` for rollups. The metric: `projection_lag =` wall-clock
+time of the application head minus wall-clock time represented by the durable
+projection frontier, reported alongside a sequence-distance backlog metric
+(time lag alone hides backlog shape). Targets are stated with their hardware
+profile, sustained write rate, burst shape, recovery time, and
+compaction-concurrency conditions. Violation changes projection health and
+produces typed freshness outcomes — never silent stale read-after-write.
+
+### 7. Projection lifecycle outcomes are typed
+
+Projected queries return typed outcomes across the lifecycle: `Ready {result,
+frontier, head}`, `ProjectionLagging {required, current, head, lag,
+retry_after}`, `ProjectionBuilding {progress, current_frontier}`,
+`ProjectionRebuilding {reason, progress}`, `ProjectionDegraded {reason,
+current_frontier}`, `ProjectionInvalid {projection_version, contract_version,
+reason}`. Fallback to the authoritative path occurs only when the query
+explicitly declares a compiled equivalent and a fallback policy — never
+silently.
+
+### 8. Retention interaction: bounded replay budget (amends ADR-0085's consequence)
+
+A healthy projection's durable frontier fences the retention watermark. An
+unhealthy one must not become a disk-exhaustion incident: each
+snapshot-rebuildable projection carries a replay budget (max retention age,
+max retained bytes, max sequence backlog). On breach, the projection is
+marked `RebuildRequired`, **detached from the retention watermark**, and
+rebuilt from an authoritative snapshot plus the remaining tail, returning
+typed rebuilding outcomes meanwhile. History-rebuildable projections require
+an explicit source-retention policy and never inherit unlimited retention
+accidentally.
+
+### 9. Ad-hoc projected queries require separate bounded-query governance
+
+This ADR establishes only that the projection plane is an allowed source for
+bounded symbolic ad-hoc queries — tenant-scoped (exactly one organization
+scope per query; segments logically partitioned by organization;
+cross-organization queries require a separate explicit analytical
+capability), resource-budgeted (required limits, scan/grouping budgets),
+cancellable, subject to the authorization model above, and never permitted to
+starve the apply consumer. Grammar, budgets, admission control, explain
+output, and deferred features are specified by **ADR-0087**.
 
 ## Consequences
 
 - Board/filter/aggregation workloads move off the per-row authoritative
-  pipeline; the 10.4× marginal-cost gap becomes a columnar scan.
-- The authoritative row pipeline remains worth one optimization pass
-  (single-copy + batch encode, est. 8.7 → 2–3 µs/row) for authoritative-class
-  list reads — independent of this decision.
-- Two freshness classes become permanent public API surface — decided now,
-  while no external clients exist, per the format-acceptance discipline.
-- New durable consumer + segment files: operational surface (disk for
-  segments, rebuild tooling, lag monitoring) — all derived-state, all
-  rebuildable.
+  pipeline; the authoritative row pipeline remains worth one optimization
+  pass (single-copy + batch encode, est. 8.7 → 2–3 µs/row) independently.
+- Read sources and freshness policies become permanent public API surface —
+  decided now, while no external clients exist.
+- New durable consumer + segment files: operational surface (disk, rebuild
+  tooling, lag/backlog monitoring), all derived-state under the closure rule.
 
 ## Rejected alternatives
 
-- **Serve interactive reads from the projection without a fence.** Silent
-  staleness after own-writes; the exact failure users notice most.
-- **Tail-merge (columnar + authoritative delta overlay) as v1.** Strictly
-  better latency under lag, substantially more machinery; deferred as an
-  optimization of the projection-fenced class, not a different contract.
-- **SQL on the authoritative path.** Reopens every injection/planning/
-  un-indexed-query failure mode the compiled contract exists to exclude.
+- **Serving interactive reads from the projection without a causal fence.**
+  Silent staleness after own writes — the failure users notice most.
+- **Tail-merge as v1.** Better latency under lag, substantially more
+  machinery; deferred as an optimization of Causal, not a different contract.
+- **General ad-hoc queries on the authoritative path.** Would bypass
+  RiffDB's deployed access-plan, locality, authorization, and resource-bound
+  guarantees. Projected ad-hoc queries preserve authoritative write safety
+  and are governed by explicit scan, memory, time, and tenant bounds.
+
+## Acceptance criteria (feasibility prototype + evidence)
+
+**Correctness:** projected results match a reference evaluator at the same
+frontier across randomized command histories; readers see all-or-none of a
+commit's effects; `Causal(token)` never returns pre-token state; irrelevant
+commits still advance the processed frontier; duplicate application is
+idempotent; deletes/retractions/updates correct; compaction result-invariant;
+crash injection never yields an overclaiming durable frontier.
+**Authorization:** selected/predicate/order/group/aggregate fields authorized
+per principal; row policy before aggregation; revocation effective for
+subsequent reads; no inference of hidden values through counts/groupings
+beyond stated policy.
+**Operability:** rebuild from authoritative backup succeeds; all lifecycle
+outcomes typed; a stuck projection cannot exhaust retention storage; apply
+continues under concurrent query load; cancellation releases resources;
+compaction/rebuild admission-limited.
+**Performance:** 450 / 10k / 100k / 1M rows × 1%/10%/100% selectivity ×
+{filter, filter+sort+limit, group+aggregate} × 1/16/64 readers × {sustained
+writes, bursts, compaction running, cold/warm}; recording query p50/p95/p99,
+apply-lag p50/p95/p99, burst catch-up, write/disk amplification, memory per
+projected row, CPU split, rebuild throughput.
 
 ## Acceptance
 
-Pending maintainer acceptance. On acceptance: consumer + delta-store
-feasibility prototype measured against the board-scale harness (scan latency
-and apply-lag under burst) before the implementation package is briefed.
+Pending maintainer acceptance.
