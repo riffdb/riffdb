@@ -6,7 +6,8 @@ export TZ=UTC
 
 usage() {
     printf '%s\n' \
-        'usage: benchmarks/run-app-baseline [--smoke|--full] [--samples N] [--warmup N]' \
+        'usage: benchmarks/run-app-baseline [--self-test]' \
+        '         | [--smoke|--full] [--samples N] [--warmup N]' \
         '         [--concurrent-clients N] [--concurrent-operations N]' \
         '         [--load interactive|agent|membership_contention] [--load-clients N] [--load-duration-secs N]' \
         '         [--load-warmup-secs N] [--load-zipf-s F] [--load-contended]' \
@@ -20,6 +21,28 @@ usage() {
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
+
+# --self-test: build riffdbd and run the full app-baseline --workspace suite,
+# including the kill -9 dead-peer e2e (RUN_RIFFDB_DEAD_PEER=1).
+if [[ "${1:-}" == "--self-test" ]]; then
+    if (($# != 1)); then
+        printf 'benchmarks/run-app-baseline --self-test takes no other arguments\n' >&2
+        exit 2
+    fi
+    printf 'self-test: building riffdbd (release)\n'
+    cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd
+    riffdbd_bin="$repo_root/target/release/riffdbd"
+    [[ -x "$riffdbd_bin" ]] || {
+        printf 'self-test: riffdbd missing after build: %s\n' "$riffdbd_bin" >&2
+        exit 1
+    }
+    printf 'self-test: cargo test --workspace (dead-peer e2e enforced)\n'
+    export RIFFDB_APP_BASELINE_RIFFDBD_BIN="$riffdbd_bin"
+    export RUN_RIFFDB_DEAD_PEER=1
+    cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+    printf 'self-test: ok\n'
+    exit 0
+fi
 
 mode=smoke
 samples=
@@ -44,6 +67,10 @@ database_root=
 output=
 while (($#)); do
     case "$1" in
+        --self-test)
+            printf 'benchmarks/run-app-baseline --self-test must be the only argument\n' >&2
+            exit 2
+            ;;
         --smoke) mode=smoke; shift ;;
         --full) mode=full; shift ;;
         --samples)

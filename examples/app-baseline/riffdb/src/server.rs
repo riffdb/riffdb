@@ -605,20 +605,21 @@ pub fn resolve_database_root(override_root: Option<&Path>) -> PathBuf {
     if let Some(path) = override_root {
         return path.to_path_buf();
     }
-    if let Some(from_env) = std::env::var_os(riffdb_bench_root::BENCH_DB_ROOT_ENV) {
-        if !from_env.is_empty() {
-            return PathBuf::from(from_env);
-        }
+    if let Some(from_env) = std::env::var_os(riffdb_bench_root::BENCH_DB_ROOT_ENV)
+        && !from_env.is_empty()
+    {
+        return PathBuf::from(from_env);
     }
-    if let Some(from_env) = std::env::var_os(DATABASE_ROOT_ENV) {
-        if !from_env.is_empty() {
-            return PathBuf::from(from_env);
-        }
+    if let Some(from_env) = std::env::var_os(DATABASE_ROOT_ENV)
+        && !from_env.is_empty()
+    {
+        return PathBuf::from(from_env);
     }
     PathBuf::from(DEFAULT_DATABASE_ROOT)
 }
 
 /// Resolves a classified [`riffdb_bench_root::BenchRoot`] for session dirs.
+#[allow(clippy::result_large_err)]
 pub fn resolve_bench_root(
     options: &ServerStartOptions,
 ) -> Result<riffdb_bench_root::BenchRoot, riffdb_bench_root::BenchRootError> {
@@ -1074,7 +1075,9 @@ mod tests {
     fn min_free_bytes_scales_with_mode() {
         assert_eq!(min_free_bytes_for_full(false), MIN_FREE_BYTES_SMOKE);
         assert_eq!(min_free_bytes_for_full(true), MIN_FREE_BYTES_FULL);
-        assert!(MIN_FREE_BYTES_FULL > MIN_FREE_BYTES_SMOKE);
+        const {
+            assert!(MIN_FREE_BYTES_FULL > MIN_FREE_BYTES_SMOKE);
+        }
     }
 
     #[test]

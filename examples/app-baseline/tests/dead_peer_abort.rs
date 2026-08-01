@@ -56,9 +56,7 @@ fn kill_daemon_mid_load_aborts_within_two_seconds() {
                  RIFFDB_APP_BASELINE_RIFFDBD_BIN"
             );
         }
-        eprintln!(
-            "dead_peer_abort: soft-skip (no riffdbd); set RUN_RIFFDB_DEAD_PEER=1 to require"
-        );
+        eprintln!("dead_peer_abort: soft-skip (no riffdbd); set RUN_RIFFDB_DEAD_PEER=1 to require");
         return;
     };
 
@@ -167,9 +165,8 @@ fn kill_daemon_mid_load_aborts_within_two_seconds() {
         "unexpected error text: {err}"
     );
     assert!(
-        err.contains("signal=9") || err.contains("signal=SIGKILL") || err.contains("signal 9")
-            || err.contains("exit"),
-        "death message must mention exit/signal: {err}"
+        err.contains("signal=9") || err.contains("signal=SIGKILL") || err.contains("signal 9"),
+        "death message must mention kill signal: {err}"
     );
     // stderr_tail may be empty if the process was SIGKILL'd before writing; still
     // require the death message scaffolding (database_root / free_bytes).
