@@ -269,7 +269,7 @@ impl SeedDataset {
     /// Deterministic board page: open tickets in the board cell, ordered by
     /// `ticket_id` ascending, truncated to `limit`.
     ///
-    /// Matches both the RiffQL `BoardPage` query and the PostgreSQL board SQL
+    /// Matches static RiffQL `BoardPage50`/`200`/`500` and PostgreSQL board SQL
     /// (`ORDER BY ticket_id ASC LIMIT n`).
     #[must_use]
     pub fn board_page_ticket_ids(&self, limit: u32) -> Vec<crate::UuidBytes> {

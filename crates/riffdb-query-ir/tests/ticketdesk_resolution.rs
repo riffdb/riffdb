@@ -10,8 +10,16 @@ const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ti
 
 const QUERIES: &[(&str, &str)] = &[
     (
-        "board_page",
-        include_str!("../../../queries/ticketdesk/board_page.riffq"),
+        "board_page_50",
+        include_str!("../../../queries/ticketdesk/board_page_50.riffq"),
+    ),
+    (
+        "board_page_200",
+        include_str!("../../../queries/ticketdesk/board_page_200.riffq"),
+    ),
+    (
+        "board_page_500",
+        include_str!("../../../queries/ticketdesk/board_page_500.riffq"),
     ),
     (
         "get_ticket",
@@ -46,6 +54,39 @@ const QUERIES: &[(&str, &str)] = &[
         include_str!("../../../queries/ticketdesk/project_summary.riffq"),
     ),
 ];
+
+/// Historical runtime-`Limit` BoardPage shape that *resolves* but fails at
+/// execute on the live engine (RDB-INTERNAL-0001).
+///
+/// Incident: 019fbf5b-1a64-7877-94c3-47d7a0763539.
+/// The app-baseline harness uses static BoardPage50/200/500 instead.
+const RUNTIME_LIMIT_BOARD_PAGE: &str = r#"query BoardPage(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $status: TicketStatus,
+    $limit: Limit = 50,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == $status
+        order by ticket_id asc
+        take $limit
+
+    return Found {
+        tickets: tickets {
+            ticket_id
+            project_id
+            title
+            status
+            reporter_id
+            assignee_id
+        }
+    }
+
+    outcomes Found
+}
+"#;
 
 #[test]
 fn ticketdesk_queries_resolve_to_exact_name_addressed_schemas_and_source_maps() {
@@ -102,23 +143,44 @@ fn list_query_schema_uses_contract_names_and_declared_page_bound() {
 }
 
 #[test]
-fn board_page_resolves_wide_row_with_runtime_limit() {
+fn board_page_50_static_resolves_wide_row_without_runtime_limit() {
     let bundle = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");
     let source = QUERIES
         .iter()
-        .find_map(|(name, source)| (*name == "board_page").then_some(*source))
-        .expect("BoardPage query is present");
-    let document = parse_query(source).expect("parse BoardPage");
-    let resolved = resolve_query_surface(&document, &catalog).expect("resolve BoardPage");
+        .find_map(|(name, source)| (*name == "board_page_50").then_some(*source))
+        .expect("BoardPage50 query is present");
+    let document = parse_query(source).expect("parse BoardPage50");
+    let resolved = resolve_query_surface(&document, &catalog).expect("resolve BoardPage50");
     let params = resolved.schemas().parameters();
     assert!(
-        params.iter().any(|param| param.name() == "limit"),
-        "BoardPage exposes a runtime Limit parameter for 50/200/500 board sizes"
+        !params.iter().any(|param| param.name() == "limit"),
+        "static BoardPage50 must not expose a runtime Limit parameter"
     );
     let tickets = &resolved.schemas().results()[0].fields()[0];
     assert_eq!(tickets.name(), "tickets");
     assert!(matches!(tickets.value_type(), NamedTypeSchema::List { .. }));
+}
+
+/// Marker for the engine gap: runtime `take $limit` still *resolves*, but live
+/// execute returns RDB-INTERNAL-0001 (incident 019fbf5b-1a64-7877-94c3-47d7a0763539).
+/// Kept ignored so CI does not pretend the parameterized path is production-ready;
+/// the harness uses static BoardPage50/200/500 until the engine is fixed.
+#[test]
+#[ignore = "RDB-INTERNAL-0001 incident 019fbf5b-1a64-7877-94c3-47d7a0763539: take $limit resolves but fails at execute; harness uses static BoardPage50/200/500"]
+fn board_page_runtime_limit_resolves_but_engine_cannot_execute() {
+    let bundle = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");
+    let document = parse_query(RUNTIME_LIMIT_BOARD_PAGE).expect("parse runtime BoardPage");
+    let resolved = resolve_query_surface(&document, &catalog).expect("runtime BoardPage resolves");
+    assert!(
+        resolved
+            .schemas()
+            .parameters()
+            .iter()
+            .any(|param| param.name() == "limit"),
+        "historical runtime BoardPage had a Limit parameter"
+    );
 }
 
 #[test]

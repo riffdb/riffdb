@@ -125,7 +125,8 @@ pub trait AppBackend {
     /// Board-scale wide ticket page: full row fields for one (project, status), ordered.
     ///
     /// Both backends must use the same predicate, column set, `ORDER BY ticket_id ASC`,
-    /// and `LIMIT n` (see `BOARD_PAGE_SQL` / `queries/ticketdesk/board_page.riffq`).
+    /// and page size n ∈ {50, 200, 500} (`BOARD_PAGE_SQL` LIMIT $4 on PG;
+    /// static `BoardPage50`/`200`/`500` named queries on RiffDB).
     fn board_page(
         &mut self,
         organization_id: UuidBytes,

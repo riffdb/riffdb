@@ -18,7 +18,7 @@ from riffdb_application._binding import decode_variant, encode_record
 CONTRACT_LINEAGE: Final[str] = "TicketDesk"
 CONTRACT_VERSION: Final[int] = 1
 CONTRACT_BUNDLE_HASH: Final[str] = "4137b07572c6efc3423411e782ca5424fb66eaf1baee117dc340c5d978e92986"
-QUERY_MODULE_HASH: Final[str] = "af7f316551add4b4c12025387b206e384406821b5d327c378f4fa93838ebac97"
+QUERY_MODULE_HASH: Final[str] = "a286d52b4ac4a6433bd5038ddaf2cbca12228564eccf5c9cdbbeb5e356249863"
 
 class TicketStatus(StrEnum):
     OPEN = "Open"
@@ -89,17 +89,16 @@ class ProjectMember:
     project_id: UUID
     organization_id: UUID
 
-BOARD_PAGE_QUERY_PLAN_HASH: Final[str] = "23101f02a3fb909062807b49d8932c7e6234be7cfe8055471098d4984ae0903e"
+BOARD_PAGE200_QUERY_PLAN_HASH: Final[str] = "0a1ae618490625e0847b4eb7ef01587da13dbbcc29bba077cd12954211b5dbf3"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class BoardPageParams:
+class BoardPage200Params:
     organization_id: UUID
     project_id: UUID
     status: TicketStatus
-    limit: Annotated[int, "u64"] | None = None
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class BoardPageFoundTickets:
+class BoardPage200FoundTickets:
     ticket_id: UUID
     project_id: UUID
     title: str
@@ -108,11 +107,59 @@ class BoardPageFoundTickets:
     assignee_id: UUID
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class BoardPageFound:
-    tickets: tuple[BoardPageFoundTickets, ...]
+class BoardPage200Found:
+    tickets: tuple[BoardPage200FoundTickets, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
-BoardPageResult: TypeAlias = BoardPageFound
+BoardPage200Result: TypeAlias = BoardPage200Found
+
+BOARD_PAGE50_QUERY_PLAN_HASH: Final[str] = "5688ca0c7fc293fbe56145376105a79f70873b34f847f5750ab8ce36ed9ab292"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BoardPage50Params:
+    organization_id: UUID
+    project_id: UUID
+    status: TicketStatus
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BoardPage50FoundTickets:
+    ticket_id: UUID
+    project_id: UUID
+    title: str
+    status: TicketStatus
+    reporter_id: UUID
+    assignee_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BoardPage50Found:
+    tickets: tuple[BoardPage50FoundTickets, ...]
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+BoardPage50Result: TypeAlias = BoardPage50Found
+
+BOARD_PAGE500_QUERY_PLAN_HASH: Final[str] = "9adfa7b2fe1406dffa99418ccb400e9539a9dfc6d7b6602a5f8ebcc0ecb273bb"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BoardPage500Params:
+    organization_id: UUID
+    project_id: UUID
+    status: TicketStatus
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BoardPage500FoundTickets:
+    ticket_id: UUID
+    project_id: UUID
+    title: str
+    status: TicketStatus
+    reporter_id: UUID
+    assignee_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BoardPage500Found:
+    tickets: tuple[BoardPage500FoundTickets, ...]
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+BoardPage500Result: TypeAlias = BoardPage500Found
 
 GET_TICKET_QUERY_PLAN_HASH: Final[str] = "1fb6b4cbb4a7810457d07826d0cbbab74354cc82e04e5d056af7985761e0028c"
 
@@ -718,15 +765,39 @@ class TicketDeskClient:
         self._transport = transport
         self._command_attempts = command_attempts
 
-    def board_page(self, parameters: BoardPageParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPageResult]:
+    def board_page200(self, parameters: BoardPage200Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage200Result]:
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
-            query_name="BoardPage", plan_hash=BOARD_PAGE_QUERY_PLAN_HASH,
+            query_name="BoardPage200", plan_hash=BOARD_PAGE200_QUERY_PLAN_HASH,
             parameters=encode_record(parameters), options=options,
         )
         outcomes = {
-            "Found": BoardPageFound,
+            "Found": BoardPage200Found,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def board_page50(self, parameters: BoardPage50Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage50Result]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="BoardPage50", plan_hash=BOARD_PAGE50_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": BoardPage50Found,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def board_page500(self, parameters: BoardPage500Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage500Result]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="BoardPage500", plan_hash=BOARD_PAGE500_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": BoardPage500Found,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
@@ -1055,15 +1126,39 @@ class AsyncTicketDeskClient:
         self._transport = transport
         self._command_attempts = command_attempts
 
-    async def board_page(self, parameters: BoardPageParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPageResult]:
+    async def board_page200(self, parameters: BoardPage200Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage200Result]:
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
-            query_name="BoardPage", plan_hash=BOARD_PAGE_QUERY_PLAN_HASH,
+            query_name="BoardPage200", plan_hash=BOARD_PAGE200_QUERY_PLAN_HASH,
             parameters=encode_record(parameters), options=options,
         )
         outcomes = {
-            "Found": BoardPageFound,
+            "Found": BoardPage200Found,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def board_page50(self, parameters: BoardPage50Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage50Result]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="BoardPage50", plan_hash=BOARD_PAGE50_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": BoardPage50Found,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def board_page500(self, parameters: BoardPage500Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage500Result]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="BoardPage500", plan_hash=BOARD_PAGE500_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": BoardPage500Found,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
