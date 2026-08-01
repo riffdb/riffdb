@@ -24,6 +24,14 @@ LC_ALL=C TZ=UTC cargo run --quiet --locked -p riffdb-contract-ir \
 LC_ALL=C TZ=UTC cargo run --quiet --locked -p riffdb-contract-compiler \
     --example generate_contract_fixtures -- --output-root "$output_root"
 
+# WP-407 model fixtures have their own deterministic generator. Preserve that
+# separately owned subtree while comparing the compiler-owned inventory.
+if [[ "$mode" == "--check" && -d "$repo_root/fixtures/migrations/model" ]]; then
+    mkdir -p "$output_root/fixtures/migrations/model"
+    cp -a "$repo_root/fixtures/migrations/model/." \
+        "$output_root/fixtures/migrations/model/"
+fi
+
 if [[ "$mode" == "--check" ]]; then
     if ! diff --brief -- \
         crates/riffdb-contract-ir/FORMAT.md \

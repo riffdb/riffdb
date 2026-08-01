@@ -6,9 +6,38 @@ The latter is `RequiresMigration`: the candidate is valid, but deployment does
 not activate it without an exact migration artifact for the active parent.
 
 The current implementation compiles and locks Gate A migration artifacts and
-can inspect them locally. It does **not** yet execute a migration or cut over an
-active database. `riffdb migration plan` is read-only. Runtime application,
-crash recovery, authorization, and cutover arrive in WP-407 through WP-410.
+can inspect them locally. WP-407 also provides the deterministic memory
+reference model for complete preflight, bounded row/index batches, projection
+candidate readiness, and final cutover. It does **not** yet apply a migration to
+a redb database or expose migration through the server. `riffdb migration plan`
+remains read-only. Durable staging and crash recovery arrive in WP-408; public
+authorization and administration arrive in WP-409; WP-410 proves the installed
+Gate-A workflow end to end.
+
+## Semantic execution boundary
+
+The catalog rechecks the exact parent, candidate, migration hash, direct
+compatibility, and complete Gate-A proof before producing a validated plan.
+Migration expressions run as pure row-local evaluations. Apply repeats the
+whole read-only preflight before it constructs any mutation.
+
+The commit-owned migration coordinator is the only first-party caller of the
+stage mutation and cutover ports. It scans at most 256 rows per page and applies
+at most 64 row/index transitions per atomic journal step. Every transition
+rechecks the exact target, entity version, schema binding, canonical bytes, and
+canonical row hash. Required projection generations are tied to the frozen
+application frontier before final cutover.
+
+Gate-A required-field transforms advance each changed entity version exactly
+once and bind that post-image to the successor. Index-only and validation-only
+work does not advance entity versions. Migration never assigns an application
+commit sequence or rewrites command, outcome, event, provenance, idempotency,
+outbox, or retained history bytes. Only successful final cutover assigns one
+administration sequence in the reference model.
+
+These semantics are not a hidden storage-edit API. The memory stage is a test
+and conformance model; production redb staging, durable journal/record codecs,
+backup identity, publication, and restart reconciliation belong to WP-408.
 
 ## Exact identity model
 

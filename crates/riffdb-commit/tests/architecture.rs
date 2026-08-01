@@ -16,6 +16,7 @@ const COMMAND_PREPARATION_SOURCE: &str = include_str!("../src/command_preparatio
 const LIB_SOURCE: &str = include_str!("../src/lib.rs");
 const CLOCK_SOURCE: &str = include_str!("../src/clock.rs");
 const INITIALIZATION_SOURCE: &str = include_str!("../src/initialization.rs");
+const MIGRATION_SOURCE: &str = include_str!("../src/migration.rs");
 const NOTIFICATION_SOURCE: &str = include_str!("../src/notification.rs");
 const OUTCOME_SOURCE: &str = include_str!("../src/outcome.rs");
 const PROVENANCE_SOURCE: &str = include_str!("../src/provenance.rs");
@@ -71,6 +72,75 @@ fn production_source(source: &str) -> &str {
     source
         .split_once("\n#[cfg(test)]\nmod tests")
         .map_or(source, |(production, _)| production)
+}
+
+fn rust_sources(root: PathBuf) -> Vec<PathBuf> {
+    let mut pending = vec![root];
+    let mut sources = Vec::new();
+    while let Some(path) = pending.pop() {
+        for entry in fs::read_dir(path).expect("read source directory") {
+            let path = entry.expect("source entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                sources.push(path);
+            }
+        }
+    }
+    sources.sort();
+    sources
+}
+
+#[test]
+fn migration_mutation_and_cutover_calls_are_commit_owned() {
+    for required in [
+        "pub struct MigrationCoordinator;",
+        "MigrationRowMutation::new(",
+        "MigrationBatch::new(",
+        ".apply_migration_batch(batch)",
+        ".finalize_migration(MigrationCutover::new(",
+    ] {
+        assert!(
+            MIGRATION_SOURCE.contains(required),
+            "migration coordinator is missing authority boundary {required}"
+        );
+    }
+
+    let root = crate_root();
+    let workspace = root.parent().expect("workspace crates directory");
+    for crate_entry in fs::read_dir(workspace).expect("read workspace crates") {
+        let crate_path = crate_entry.expect("crate entry").path();
+        let Some(crate_name) = crate_path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let source_root = crate_path.join("src");
+        if !source_root.is_dir() {
+            continue;
+        }
+        for path in rust_sources(source_root) {
+            let source = fs::read_to_string(&path).expect("production source is UTF-8");
+            if source.contains("MigrationBatch::new(")
+                || source.contains("MigrationRowMutation::new(")
+            {
+                assert_eq!(
+                    crate_name,
+                    "riffdb-commit",
+                    "batch construction in {}",
+                    path.display()
+                );
+            }
+            if source.contains(".apply_migration_batch(batch)")
+                || source.contains(".finalize_migration(MigrationCutover::new(")
+            {
+                assert_eq!(
+                    crate_name,
+                    "riffdb-commit",
+                    "migration mutation call in {}",
+                    path.display()
+                );
+            }
+        }
+    }
 }
 
 fn braced_item_body<'a>(source: &'a str, declaration: &str) -> &'a str {
@@ -637,6 +707,7 @@ fn manifest_has_only_the_reviewed_dependencies_needed_by_commit_orchestration() 
             "riffdb-idempotency",
             "riffdb-invariant",
             "riffdb-policy",
+            "riffdb-projection",
             "riffdb-runtime",
             "riffdb-storage-api",
             "riffdb-types",

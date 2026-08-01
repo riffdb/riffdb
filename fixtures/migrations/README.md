@@ -37,7 +37,8 @@ WP-406 creates:
 - `compatibility/v1/` parent/candidate/proof reports for every change code; and
 - `application/` source V3, lock V4, direct-parent, and prior-format fixtures.
 
-WP-407 creates `model/gate-a/` generated histories and pure expected states.
+WP-407 creates `model/gate-a/` generated boundary histories and pure expected
+states. `scripts/generate-migration-model-fixtures` owns that subtree.
 WP-408 creates `durable/v1/` receipt, journal, permanent record, archive, table-
 key, registry, impossible-pair, and recovery fixtures. WP-409 creates `public/v1/`
 descriptor, wire, SDK, CLI JSONL, authorization, redaction, and negative MCP

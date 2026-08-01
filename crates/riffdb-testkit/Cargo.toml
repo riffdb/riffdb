@@ -23,8 +23,10 @@ riffdb-types = { path = "../riffdb-types", version = "0.1.0" }
 [dev-dependencies]
 riffdb-cli = { path = "../riffdb-cli", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
 riffdb-client-rust = { path = "../riffdb-client-rust", version = "0.1.0", default-features = false }
+riffdb-commit = { path = "../riffdb-commit", version = "0.1.0", default-features = false }
 riffdb-proto = { path = "../riffdb-proto", version = "0.1.0", default-features = false }
 riffdb-server = { path = "../riffdb-server", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
+riffdb-storage-memory = { path = "../riffdb-storage-memory", version = "0.1.0", default-features = false }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel"] }
 
@@ -37,6 +39,10 @@ harness = false
 name = "offline_maintenance_matrix"
 path = "../../tests/recovery/offline_maintenance_matrix.rs"
 harness = false
+
+[[test]]
+name = "contract_migration_model"
+path = "../../tests/migrations/contract_migration_model.rs"
 
 [lints]
 workspace = true

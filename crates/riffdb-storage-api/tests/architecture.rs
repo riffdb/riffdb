@@ -13,6 +13,7 @@ const MODULES: &[(&str, &str)] = &[
     ("error.rs", include_str!("../src/error.rs")),
     ("identity.rs", include_str!("../src/identity.rs")),
     ("integrity.rs", include_str!("../src/integrity.rs")),
+    ("migration.rs", include_str!("../src/migration.rs")),
     ("lib.rs", include_str!("../src/lib.rs")),
     ("outbox.rs", include_str!("../src/outbox.rs")),
     ("plan.rs", include_str!("../src/plan.rs")),

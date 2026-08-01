@@ -6409,10 +6409,10 @@ work_packages:
     authority against the deterministic memory backend before concrete staging.
   requirements: [MIG-004, MIG-005, MIG-009, MIG-011, MIG-012, MIG-013, MIG-014, MIG-015, MIG-019, MIG-020]
   required_adrs: [ADR-0003, ADR-0004, ADR-0010, ADR-0023, ADR-0049, ADR-0076, ADR-0077, ADR-0078]
-  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-types/**, crates/riffdb-contract-ir/**,
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, crates/riffdb-types/**, crates/riffdb-contract-ir/**,
     crates/riffdb-catalog/**, crates/riffdb-invariant/**, crates/riffdb-storage-api/**,
     crates/riffdb-storage-memory/**, crates/riffdb-commit/**, crates/riffdb-projection/**,
-    fixtures/migrations/**, tests/migrations/**, scripts/**, docs/**]
+    crates/riffdb-testkit/Cargo.toml, fixtures/migrations/**, tests/migrations/**, scripts/**, docs/**]
   deliverables:
   - Catalog-sealed validated migration plans, pure deterministic row transforms, complete preflight, and stable
     value-free findings
