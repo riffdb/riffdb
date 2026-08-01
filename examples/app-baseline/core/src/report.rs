@@ -2,13 +2,20 @@
 
 use serde_json::{Value, json};
 
-use crate::{SampleSummary, Scale, ScenarioId, ScenarioResult, board_marginal_from_results};
+use crate::{
+    SEED_GENERATION, SampleSummary, Scale, ScenarioId, ScenarioResult, board_marginal_from_results,
+};
 
 /// Side-by-side board query sources (identical predicate/order/limit semantics).
 pub const BOARD_PAGE_RIFFQ: &str = include_str!("../../../../queries/ticketdesk/board_page.riffq");
 
-/// PostgreSQL SQL for the board page (matches `BOARD_PAGE_RIFFQ` semantics).
-pub const BOARD_PAGE_SQL: &str = "SELECT organization_id::text, ticket_id::text, project_id::text,\n\
+/// Canonical PostgreSQL SQL executed for board pages (and cited in the report).
+///
+/// Six result columns only — `organization_id` is taken from the bind parameter
+/// `$1`, matching the RiffDB adapter (which never re-encodes org from the row).
+/// The Ticket entity has eight fields; `created_at` / `updated_at` are omitted
+/// on both sides by design for this result-size curve.
+pub const BOARD_PAGE_SQL: &str = "SELECT ticket_id::text, project_id::text,\n\
             reporter_id::text, assignee_id::text, status, title\n\
      FROM ticket\n\
      WHERE organization_id = $1::text::uuid\n\
@@ -81,6 +88,8 @@ pub fn build_report(
             "list_limit": 50,
             "board_page_sizes": [50, 200, 500],
             "board_scenarios_in_smoke": "skipped (board_dense_open=0)",
+            "seed_generation": SEED_GENERATION,
+            "baseline_note": "seed_generation 2 supersedes pre-B1 full baselines (ticket count and probe keys changed)",
         },
         "board_page_query": {
             "riffql_source": "queries/ticketdesk/board_page.riffq",
@@ -88,6 +97,7 @@ pub fn build_report(
             "sql": BOARD_PAGE_SQL,
             "predicate": "organization_id + project_id + status",
             "order_by": "ticket_id ASC",
+            "field_set": "6-field wide row (ticket_id, project_id, title, status, reporter_id, assignee_id); Ticket entity has 8 fields — created_at/updated_at omitted on both backends by design",
             "columns": [
                 "ticket_id",
                 "project_id",
@@ -96,6 +106,7 @@ pub fn build_report(
                 "reporter_id",
                 "assignee_id"
             ],
+            "organization_id": "bound as $1 / query parameter; not re-selected or re-encoded from the row",
         },
         "backends": backend_values,
         "comparisons": comparisons,
@@ -107,6 +118,7 @@ pub fn build_report(
             "Write scenarios execute one new durable write per measured sample on both backends (no idempotent replays).",
             "PostgreSQL runs behind a Docker userland port proxy; RiffDB listens directly on loopback.",
             "Board scenarios skip under --smoke (board_dense_open=0); full profile densifies org-0/project-0 open tickets.",
+            "seed_generation 2 (board-density layout) supersedes pre-B1 full baselines; do not compare ticket counts or probe keys across generations.",
         ],
     })
 }
@@ -134,9 +146,95 @@ fn backend_json(backend: &BackendReport) -> Value {
         "scenarios": scenarios,
     });
     if let Some(marginal) = board_marginal_from_results(&backend.scenarios) {
+        // Scalar placeholder; attach_rep_summaries overwrites with a rep-stability
+        // summary when multiple reps are present.
         value["board_marginal_ns_per_row"] = json!(marginal);
     }
     value
+}
+
+/// Asserts board scenario last_row_counts match across backends.
+///
+/// Called after both backends have measured so a silent cardinality skew cannot
+/// masquerade as a fair p50 ratio.
+pub fn assert_board_last_row_counts_equal(backends: &[BackendReport]) -> Result<(), String> {
+    let Some(postgres) = backends.iter().find(|b| b.backend_id == "postgres_sql") else {
+        return Ok(());
+    };
+    let Some(riffdb) = backends
+        .iter()
+        .find(|b| b.backend_id == "riffdb_public_grpc")
+    else {
+        return Ok(());
+    };
+    for scenario in ScenarioId::all() {
+        if scenario.board_page_limit().is_none() {
+            continue;
+        }
+        let Some(pg) = postgres
+            .scenarios
+            .iter()
+            .find(|row| row.scenario == scenario)
+        else {
+            continue;
+        };
+        let Some(rd) = riffdb.scenarios.iter().find(|row| row.scenario == scenario) else {
+            continue;
+        };
+        if pg.last_row_count != rd.last_row_count {
+            return Err(format!(
+                "measurement-integrity: board scenario {} last_row_count mismatch postgres={} riffdb={}",
+                scenario.as_str(),
+                pg.last_row_count,
+                rd.last_row_count
+            ));
+        }
+        if let Some(limit) = scenario.board_page_limit()
+            && pg.last_row_count != limit as usize
+        {
+            return Err(format!(
+                "measurement-integrity: board scenario {} expected {} rows, got {}",
+                scenario.as_str(),
+                limit,
+                pg.last_row_count
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Order-sensitive board page ticket_id sequence comparison (live cross-check).
+pub fn assert_board_ticket_sequences_equal(
+    postgres_ids: &[[u8; 16]],
+    riffdb_ids: &[[u8; 16]],
+    limit: u32,
+) -> Result<(), String> {
+    if postgres_ids.len() != limit as usize {
+        return Err(format!(
+            "measurement-integrity: postgres board_page({limit}) returned {} rows",
+            postgres_ids.len()
+        ));
+    }
+    if riffdb_ids.len() != limit as usize {
+        return Err(format!(
+            "measurement-integrity: riffdb board_page({limit}) returned {} rows",
+            riffdb_ids.len()
+        ));
+    }
+    if postgres_ids != riffdb_ids {
+        // Locate first divergence for a useful abort message without dumping
+        // full UUID lists into stderr.
+        let first = postgres_ids
+            .iter()
+            .zip(riffdb_ids.iter())
+            .position(|(pg, rd)| pg != rd)
+            .unwrap_or(0);
+        return Err(format!(
+            "measurement-integrity: board_page({limit}) ticket_id sequence mismatch \
+             at index {first} (order-sensitive PG vs RiffDB cross-check)"
+        ));
+    }
+    Ok(())
 }
 
 fn summary_json(summary: &SampleSummary) -> Value {
@@ -180,16 +278,25 @@ fn build_comparisons(backends: &[BackendReport]) -> Value {
         };
         let pg_p50 = pg.samples.summary().p50_ns;
         let rd_p50 = rd.samples.summary().p50_ns;
-        scenarios.push(json!({
+        let mut row = json!({
             "scenario": scenario.as_str(),
             "postgres_p50_ns": pg_p50,
             "riffdb_p50_ns": rd_p50,
+            "postgres_last_row_count": pg.last_row_count,
+            "riffdb_last_row_count": rd.last_row_count,
+            "last_row_count_equal": pg.last_row_count == rd.last_row_count,
             "ratio_riffdb_over_postgres": if pg_p50 == 0 {
                 0.0
             } else {
                 rd_p50 as f64 / pg_p50 as f64
             },
-        }));
+        });
+        if scenario.board_page_limit().is_some() && pg.last_row_count != rd.last_row_count {
+            // Surface the integrity failure in the report payload even when the
+            // hard abort in main is the primary guard.
+            row["measurement_integrity"] = json!("last_row_count_mismatch");
+        }
+        scenarios.push(row);
     }
     scenarios.sort_by(|left, right| {
         right["ratio_riffdb_over_postgres"]
@@ -217,10 +324,37 @@ fn build_comparisons(backends: &[BackendReport]) -> Value {
         board_marginal_from_results(&postgres.scenarios),
         board_marginal_from_results(&riffdb.scenarios),
     ) {
+        // Single-rep scalar; multi-rep stability is attached later.
         comparisons["board_marginal_ns_per_row"] = json!({
             "postgres": pg_m,
             "riffdb": rd_m,
         });
     }
     comparisons
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BOARD_PAGE_SQL, assert_board_ticket_sequences_equal};
+
+    #[test]
+    fn board_page_sql_omits_organization_id_column() {
+        assert!(
+            !BOARD_PAGE_SQL.contains("organization_id::text"),
+            "board SQL must not pay to encode organization_id; fill from $1"
+        );
+        assert!(BOARD_PAGE_SQL.contains("ticket_id::text"));
+        assert!(BOARD_PAGE_SQL.contains("ORDER BY ticket_id ASC"));
+        assert!(BOARD_PAGE_SQL.contains("LIMIT $4"));
+    }
+
+    #[test]
+    fn board_ticket_sequence_compare_detects_mismatch() {
+        let a = [[1_u8; 16], [2_u8; 16]];
+        let b = [[1_u8; 16], [3_u8; 16]];
+        assert!(assert_board_ticket_sequences_equal(&a, &a, 2).is_ok());
+        let err = assert_board_ticket_sequences_equal(&a, &b, 2).expect_err("mismatch");
+        assert!(err.contains("measurement-integrity"));
+        assert!(err.contains("index 1"));
+    }
 }

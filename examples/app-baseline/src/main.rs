@@ -13,9 +13,10 @@ use std::time::{Duration, Instant};
 use riffdb_app_baseline_core::{
     AppBackend, BackendReport, LOAD_CONCURRENCY_SWEEP_CLIENTS, LoadConfig, LoadExecutionShape,
     RIFFDB_MAX_LOAD_CLIENTS, RIFFDB_SATURATE_LOAD_CLIENTS, SATURATE_COORDINATOR_WORKLOAD_CAPACITY,
-    Scale, SeedDataset, WorkloadProfile, build_report, concurrency_curve_point,
-    print_concurrency_sweep_summary, print_load_summary, run_closed_loop_load,
-    run_closed_loop_load_with_abort, run_scenarios,
+    SEED_GENERATION, Scale, SeedDataset, WorkloadProfile, assert_board_last_row_counts_equal,
+    assert_board_ticket_sequences_equal, board_marginal_from_results, build_report,
+    concurrency_curve_point, print_concurrency_sweep_summary, print_load_summary,
+    run_closed_loop_load, run_closed_loop_load_with_abort, run_scenarios,
 };
 use riffdb_app_baseline_postgres::{PostgresAppBackend, PostgresDurabilitySettings};
 use riffdb_app_baseline_riffdb::{
@@ -101,6 +102,14 @@ fn run() -> Result<(), String> {
     let mut rd_rep_seed_ns: Vec<u64> = Vec::new();
     let mut rd_rep_scenarios: Vec<Vec<riffdb_app_baseline_core::ScenarioResult>> = Vec::new();
     let mut rd_write_groups: Option<Vec<u64>> = None;
+    // Live order-sensitive board page cross-check (rep 0, once both backends seed).
+    let mut board_crosscheck_pg_ids: Option<Vec<[u8; 16]>> = None;
+    let mut board_crosscheck_done = false;
+    let board_crosscheck_limit = if dataset.board_dense_open_count() >= 500 {
+        Some(500_u32)
+    } else {
+        None
+    };
 
     for rep in 0..args.reps {
         if !args.skip_postgres {
@@ -126,6 +135,26 @@ fn run() -> Result<(), String> {
             let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
             let scenarios = run_scenarios(&mut postgres, &dataset, args.warmups, args.samples)
                 .map_err(|error| error.to_string())?;
+            if rep == 0
+                && let Some(limit) = board_crosscheck_limit
+            {
+                let probes = dataset.probes();
+                let rows = postgres
+                    .board_page(
+                        probes.board_organization_id,
+                        probes.board_project_id,
+                        probes.open_status,
+                        limit,
+                    )
+                    .map_err(|error| error.to_string())?;
+                if rows.len() != limit as usize {
+                    return Err(format!(
+                        "measurement-integrity: postgres board_page({limit}) returned {} rows",
+                        rows.len()
+                    ));
+                }
+                board_crosscheck_pg_ids = Some(rows.into_iter().map(|row| row.ticket_id).collect());
+            }
             if rep == 0
                 && let Some(clients) = args.concurrent_clients
             {
@@ -206,6 +235,28 @@ fn run() -> Result<(), String> {
                 }
             };
             if rep == 0
+                && let (Some(limit), Some(pg_ids)) =
+                    (board_crosscheck_limit, board_crosscheck_pg_ids.as_ref())
+            {
+                let probes = dataset.probes();
+                let rows = session
+                    .backend
+                    .board_page(
+                        probes.board_organization_id,
+                        probes.board_project_id,
+                        probes.open_status,
+                        limit,
+                    )
+                    .map_err(|error| error.to_string())?;
+                let rd_ids: Vec<[u8; 16]> = rows.into_iter().map(|row| row.ticket_id).collect();
+                assert_board_ticket_sequences_equal(pg_ids, &rd_ids, limit)?;
+                board_crosscheck_done = true;
+                eprintln!(
+                    "board-page cross-check ok: live PG and RiffDB returned identical \
+                     ticket_id sequences for board_page({limit})"
+                );
+            }
+            if rep == 0
                 && let Some(clients) = args.concurrent_clients
             {
                 let prototype = session.backend.clone();
@@ -222,6 +273,17 @@ fn run() -> Result<(), String> {
             rd_rep_seed_ns.push(seed_ns);
             rd_rep_scenarios.push(scenarios);
         }
+    }
+
+    if board_crosscheck_limit.is_some()
+        && !args.skip_postgres
+        && !args.skip_riffdb
+        && !board_crosscheck_done
+    {
+        return Err(
+            "measurement-integrity: board_page live cross-check was required but did not run"
+                .to_owned(),
+        );
     }
 
     if !pg_rep_scenarios.is_empty() {
@@ -277,6 +339,8 @@ fn run() -> Result<(), String> {
         return Err("no backends selected".to_owned());
     }
 
+    assert_board_last_row_counts_equal(&backends)?;
+
     let mut report = build_report(args.scale, args.warmups, args.samples, &backends);
     if !concurrent_reads.is_empty() {
         report["concurrent_point_reads"] = serde_json::Value::Array(concurrent_reads);
@@ -290,6 +354,13 @@ fn run() -> Result<(), String> {
         &rd_rep_seed_ns,
         &rd_rep_scenarios,
     );
+    if board_crosscheck_done {
+        report["board_page_live_crosscheck"] = json!({
+            "status": "ok",
+            "limit": board_crosscheck_limit,
+            "order_sensitive": true,
+        });
+    }
     if let Some(baseline) = device_baseline_json {
         report["device_baseline"] = baseline;
     }
@@ -1108,15 +1179,16 @@ fn assert_all_parity(report: &serde_json::Value) -> Result<(), String> {
     let scenarios = report["comparisons"]["scenarios"]
         .as_array()
         .ok_or("all-parity assertion is missing scenario ratios")?;
-    // Require the full scenario set (including board_page_*). Use --full (or
-    // --board-density >= 500) so board pages are measured; --smoke skips them
-    // and therefore cannot pass all-parity.
-    for expected in riffdb_app_baseline_core::ScenarioId::all() {
-        let expected = expected.as_str();
-        let row = scenarios
-            .iter()
-            .find(|row| row["scenario"].as_str() == Some(expected))
-            .ok_or_else(|| format!("all-parity assertion is missing {expected}"))?;
+    // Gate every *measured* scenario present in the report. Smoke omits
+    // board_page_* (board_dense_open=0); full includes them. An empty
+    // measured set is refuse, not a free pass.
+    if scenarios.is_empty() {
+        return Err("all-parity assertion is missing scenario ratios".to_owned());
+    }
+    for row in scenarios {
+        let expected = row["scenario"]
+            .as_str()
+            .ok_or("all-parity scenario row missing name")?;
         let ratio = gated_ratio(&row["ratio_riffdb_over_postgres"])
             .map_err(|error| format!("all-parity {expected}: {error}"))?;
         if !ratio.is_finite() || ratio > MAX_RATIO {
@@ -1125,7 +1197,10 @@ fn assert_all_parity(report: &serde_json::Value) -> Result<(), String> {
             ));
         }
     }
-    println!("all-parity gate passed: seed and every p50 ratio are <= {MAX_RATIO:.2}x");
+    println!(
+        "all-parity gate passed: seed and every measured p50 ratio ({} scenarios) are <= {MAX_RATIO:.2}x",
+        scenarios.len()
+    );
     Ok(())
 }
 
@@ -1324,6 +1399,47 @@ fn attach_rep_summaries(
             }
         }
     }
+
+    // Board marginal cost is the package headline: compute per rep and emit a
+    // gated-style stability summary (median/min/max/spread_ratio).
+    let n = pg_scenarios.len().min(rd_scenarios.len());
+    if n > 0 {
+        let mut pg_marginals = Vec::new();
+        let mut rd_marginals = Vec::new();
+        for i in 0..n {
+            if let Some(m) = board_marginal_from_results(&pg_scenarios[i]) {
+                pg_marginals.push(m as f64);
+            }
+            if let Some(m) = board_marginal_from_results(&rd_scenarios[i]) {
+                rd_marginals.push(m as f64);
+            }
+        }
+        if !pg_marginals.is_empty() && !rd_marginals.is_empty() {
+            let pg_summary = scalar_summary(&pg_marginals);
+            let rd_summary = scalar_summary(&rd_marginals);
+            report["comparisons"]["board_marginal_ns_per_row"] = json!({
+                "postgres": pg_summary.clone(),
+                "riffdb": rd_summary.clone(),
+            });
+            // Mirror onto backend objects when present.
+            if let Some(backends) = report["backends"].as_array_mut() {
+                for backend in backends {
+                    match backend["backend_id"].as_str() {
+                        Some("postgres_sql") => {
+                            backend["board_marginal_ns_per_row"] = pg_summary.clone();
+                        }
+                        Some("riffdb_public_grpc") => {
+                            backend["board_marginal_ns_per_row"] = rd_summary.clone();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            rep_summaries.insert("board_marginal:postgres".to_owned(), pg_summary);
+            rep_summaries.insert("board_marginal:riffdb".to_owned(), rd_summary);
+        }
+    }
+
     report["comparisons"]["rep_summaries"] = serde_json::Value::Object(rep_summaries);
 }
 
@@ -1338,6 +1454,12 @@ fn device_baseline_value(baseline: &DeviceBaseline) -> serde_json::Value {
 
 fn print_summary(report: &serde_json::Value) {
     println!("\n== TicketDesk app baseline summary ==");
+    let seed_gen = report["configuration"]["seed_generation"]
+        .as_u64()
+        .unwrap_or(u64::from(SEED_GENERATION));
+    println!(
+        "seed_generation={seed_gen} (pre-B1 full baselines superseded; do not compare across generations)"
+    );
     if let Some(backends) = report["backends"].as_array() {
         for backend in backends {
             let id = backend["backend_id"].as_str().unwrap_or("?");
@@ -1352,9 +1474,10 @@ fn print_summary(report: &serde_json::Value) {
                     println!("  {name}: p50={p50:.3}ms rows={rows}");
                 }
             }
-            if let Some(marginal) = backend["board_marginal_ns_per_row"].as_u64() {
-                println!("  board_marginal_ns_per_row={marginal}  ( (p50_500 − p50_50) / 450 )");
-            }
+            print_board_marginal_line(
+                "  board_marginal_ns_per_row",
+                &backend["board_marginal_ns_per_row"],
+            );
         }
     }
     if report["comparisons"]["available"] == true {
@@ -1367,10 +1490,31 @@ fn print_summary(report: &serde_json::Value) {
             }
         }
         if let Some(obj) = report["comparisons"]["board_marginal_ns_per_row"].as_object() {
-            let pg = obj.get("postgres").and_then(|v| v.as_u64()).unwrap_or(0);
-            let rd = obj.get("riffdb").and_then(|v| v.as_u64()).unwrap_or(0);
-            println!("\nboard marginal ns/row: postgres={pg} riffdb={rd}");
+            print_board_marginal_line(
+                "board marginal ns/row postgres",
+                obj.get("postgres").unwrap_or(&json!(null)),
+            );
+            print_board_marginal_line(
+                "board marginal ns/row riffdb",
+                obj.get("riffdb").unwrap_or(&json!(null)),
+            );
         }
+    }
+}
+
+fn print_board_marginal_line(label: &str, value: &serde_json::Value) {
+    if let Some(median) = value.as_u64() {
+        println!("{label}={median}  ( (p50_500 − p50_50) / 450 )");
+        return;
+    }
+    if let Some(median) = value["median"].as_f64() {
+        let min = value["min"].as_f64().unwrap_or(median);
+        let max = value["max"].as_f64().unwrap_or(median);
+        let spread = value["spread_ratio"].as_f64().unwrap_or(1.0);
+        let stability = value["stability"].as_str().unwrap_or("?");
+        println!(
+            "{label}: median={median:.0} min={min:.0} max={max:.0} spread_ratio={spread:.2} ({stability})"
+        );
     }
 }
 
@@ -1730,8 +1874,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        Args, RiffDbTransport, WorkloadProfile, assert_all_parity, assert_write_parity,
-        gated_ratio, median_scenarios, require_stable, scalar_summary,
+        Args, RiffDbTransport, Scale, SeedDataset, WorkloadProfile, assert_all_parity,
+        assert_write_parity, gated_ratio, median_scenarios, require_stable, scalar_summary,
     };
 
     fn parity_report(seed_ratio: f64, write_ratio: f64) -> Value {
@@ -1845,7 +1989,12 @@ mod tests {
 
     #[test]
     fn all_parity_gate_uses_the_strict_application_threshold() {
-        assert!(assert_all_parity(&parity_report(1.10, 1.10)).is_err());
+        // Over-threshold measured scenario fails.
+        assert!(assert_all_parity(&parity_report(1.11, 1.10)).is_err());
+        assert!(assert_all_parity(&parity_report(1.10, 1.11)).is_err());
+        // Write-only measured set at the exact boundary passes (smoke-shaped).
+        assert_all_parity(&parity_report(1.10, 1.10)).expect("write-only measured set at boundary");
+        // Full measured set (all scenarios including board) at 1.10 passes.
         let scenarios = riffdb_app_baseline_core::ScenarioId::all()
             .into_iter()
             .map(|scenario| {
@@ -1863,6 +2012,33 @@ mod tests {
             }
         });
         assert_all_parity(&report).expect("exact strict boundary");
+    }
+
+    #[test]
+    fn smoke_measured_set_passes_all_parity() {
+        // --smoke measures 11 scenarios (board_page_* skipped). all-parity must
+        // gate the measured set, not ScenarioId::all().
+        let smoke = SeedDataset::generate(Scale::smoke());
+        let measured = riffdb_app_baseline_core::ScenarioId::for_dataset(&smoke);
+        assert_eq!(measured.len(), 11);
+        assert!(!measured.iter().any(|id| id.board_page_limit().is_some()));
+        let scenarios = measured
+            .into_iter()
+            .map(|scenario| {
+                json!({
+                    "scenario": scenario.as_str(),
+                    "ratio_riffdb_over_postgres": 1.05,
+                })
+            })
+            .collect::<Vec<_>>();
+        let report = json!({
+            "comparisons": {
+                "available": true,
+                "seed": {"ratio_riffdb_over_postgres": 1.05},
+                "scenarios": scenarios,
+            }
+        });
+        assert_all_parity(&report).expect("smoke measured set must pass all-parity");
     }
 
     #[test]

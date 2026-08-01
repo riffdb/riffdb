@@ -320,13 +320,15 @@ impl SeedDataset {
         let project_id = ticket.project_id;
         let organization_id = ticket.organization_id;
         let assignee_id = ticket.assignee_id;
-        // The close-with-comment target must be invisible to every read probe:
-        // a different open ticket (so the read ticket stays open and its comment
-        // list stays fixed), in a different project (so
-        // `list_tickets_by_project_status` keeps its row count), and with a
-        // different assignee (so `list_open_tickets_for_assignee` keeps its row
-        // count when the ticket is closed). Weaker fallbacks keep `probes()`
-        // working at scales that cannot satisfy the full predicate.
+        // The close-with-comment target must be invisible to every read probe
+        // AND to the board-scale cell:
+        // - different open ticket (read ticket stays open; comment list fixed)
+        // - different project from the ordinary list-probe project
+        // - different project from the board cell (closing must not shrink
+        //   board_page_* result sets mid-rep)
+        // - different assignee (list_open_tickets_for_assignee row count fixed)
+        // Weaker fallbacks keep `probes()` working at tiny scales, but full/smoke
+        // always satisfy the full predicate.
         let other_open_ticket = |row: &&TicketRow| {
             row.organization_id == organization_id
                 && row.ticket_id != ticket.ticket_id
@@ -338,7 +340,20 @@ impl SeedDataset {
             .find(|row| {
                 other_open_ticket(row)
                     && row.project_id != project_id
+                    && row.project_id != board_project
                     && row.assignee_id != assignee_id
+            })
+            .or_else(|| {
+                self.tickets.iter().find(|row| {
+                    other_open_ticket(row)
+                        && row.project_id != project_id
+                        && row.project_id != board_project
+                })
+            })
+            .or_else(|| {
+                self.tickets
+                    .iter()
+                    .find(|row| other_open_ticket(row) && row.project_id != board_project)
             })
             .or_else(|| self.tickets.iter().find(other_open_ticket))
             .cloned()
@@ -367,11 +382,21 @@ impl SeedDataset {
             .collect::<Vec<_>>();
         let label_a = labels.first().expect("seed has labels").label_id;
         let label_b = labels.get(1).map(|label| label.label_id).unwrap_or(label_a);
+        // Open-ticket writes must also land outside the board cell so
+        // board_page_* cardinality stays fixed across samples.
         let write_project_id = self
             .projects
             .iter()
             .find(|project| {
-                project.organization_id == organization_id && project.project_id != project_id
+                project.organization_id == organization_id
+                    && project.project_id != project_id
+                    && project.project_id != board_project
+            })
+            .or_else(|| {
+                self.projects.iter().find(|project| {
+                    project.organization_id == organization_id
+                        && project.project_id != board_project
+                })
             })
             .map(|project| project.project_id)
             .unwrap_or(project_id);
@@ -406,12 +431,12 @@ impl SeedDataset {
 
 /// Fixed keys exercised by timed scenarios.
 ///
-/// Read probes (`ticket_id`, `project_id`, `assignee_id`, ...) are never
-/// mutated by write scenarios, so every measured sample of a read scenario
-/// sees identical data. Write scenarios derive a distinct idempotency key
-/// and distinct created-entity IDs per sample so both backends execute one
-/// genuinely new durable write per sample (no idempotent replays and no
-/// conflict-suppressed inserts).
+/// Read probes (`ticket_id`, `project_id`, `assignee_id`, board cell, ...) are
+/// never mutated by write scenarios, so every measured sample of a read
+/// scenario — including board_page_* — sees identical data. Write scenarios
+/// derive a distinct idempotency key and distinct created-entity IDs per
+/// sample so both backends execute one genuinely new durable write per sample
+/// (no idempotent replays and no conflict-suppressed inserts).
 #[derive(Clone, Debug)]
 pub struct ScenarioProbes {
     /// Organization under test.
@@ -591,6 +616,16 @@ mod tests {
                 .expect("write ticket exists in the dataset");
             assert_ne!(write_ticket.project_id, probes.project_id);
             assert_ne!(write_ticket.assignee_id, probes.assignee_id);
+            // Board cell: write project AND write ticket must be disjoint from
+            // the dense board project so board_page_* cardinality is fixed.
+            assert_ne!(
+                probes.write_project_id, probes.board_project_id,
+                "write_project_id must not be the board cell project"
+            );
+            assert_ne!(
+                write_ticket.project_id, probes.board_project_id,
+                "write_ticket must not live in the board cell"
+            );
             // Board cell stays out of ordinary list probes when density is on.
             if scale.board_dense_open > 0 {
                 assert_ne!(probes.project_id, probes.board_project_id);
@@ -604,6 +639,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn write_probe_board_disjointness_fails_when_write_lands_on_board() {
+        // Falsifiability: if write probes point at the board project, the
+        // board-disjointness assertion must fire.
+        let dataset = SeedDataset::generate(Scale::full());
+        let mut probes = dataset.probes();
+        probes.write_project_id = probes.board_project_id;
+        // Also place the write ticket on the board (as the broken selection did).
+        let board_ticket = dataset
+            .tickets
+            .iter()
+            .find(|ticket| ticket.project_id == probes.board_project_id)
+            .expect("board has tickets");
+        probes.write_ticket_id = board_ticket.ticket_id;
+
+        let write_ticket = dataset
+            .tickets
+            .iter()
+            .find(|ticket| ticket.ticket_id == probes.write_ticket_id)
+            .expect("write ticket exists");
+        let board_project_ok = probes.write_project_id != probes.board_project_id;
+        let board_ticket_ok = write_ticket.project_id != probes.board_project_id;
+        assert!(
+            !board_project_ok || !board_ticket_ok,
+            "broken write probe must fail board-disjointness"
+        );
+        // Restore: regenerated probes satisfy the invariant.
+        let restored = dataset.probes();
+        let restored_write = dataset
+            .tickets
+            .iter()
+            .find(|ticket| ticket.ticket_id == restored.write_ticket_id)
+            .expect("restored write ticket");
+        assert_ne!(restored.write_project_id, restored.board_project_id);
+        assert_ne!(restored_write.project_id, restored.board_project_id);
     }
 
     #[test]
