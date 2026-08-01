@@ -395,11 +395,12 @@ fn record_generated_batch_item_completion<T, F>(
 ///
 /// Undecodable error details and unset oneof arms are **defense-in-depth**:
 /// production clients reject both shapes at the kept client inbound decode
-/// (`decode_public_message` inside StrictProstDecoder) before an `Ok` batch
-/// response exists, so those wire defects arrive as transport-level protocol
-/// failures and take the blanket re-entry path. If a decoded response still
-/// reaches these arms, same-key re-entry is scheduled; when that re-entry is
-/// exhausted, the original protocol failure is surfaced as the item error.
+/// (`decode_public_message` inside StrictProstDecoder — no separate client
+/// re-walk after decode) before an `Ok` batch response exists, so those wire
+/// defects arrive as transport-level protocol failures and take the blanket
+/// re-entry path. If a decoded response still reaches these arms, same-key
+/// re-entry is scheduled; when that re-entry is exhausted, the original
+/// protocol failure is surfaced as the item error.
 fn resolve_generated_batch_items<C: GeneratedCommand>(
     prepared: Vec<(usize, C)>,
     items: Vec<v1::ExecuteCommandBatchItem>,
