@@ -2,6 +2,9 @@
 
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Included};
+#[cfg(test)]
+use std::sync::Mutex;
+#[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use redb::{ReadOnlyTable, ReadTransaction, TableDefinition};
@@ -25,38 +28,39 @@ use crate::store::RedbOperationalPorts;
 
 type BytesTable = ReadOnlyTable<&'static [u8], &'static [u8]>;
 
-/// Closed counters for falsifying lazy table opens on the composite-query path.
-#[doc(hidden)]
+/// Per-table open counts for falsifying lazy opens (test-only).
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct QueryTableOpenCounts {
-    /// `COMMITS` opens (commit head is part of the read contract).
-    pub commits: u64,
-    /// `ENTITIES` opens.
-    pub entities: u64,
-    /// `SECONDARY_INDEXES` opens.
-    pub indexes: u64,
-    /// `INDEX_EPOCHS` opens.
-    pub epochs: u64,
+struct QueryTableOpenCounts {
+    commits: u64,
+    entities: u64,
+    indexes: u64,
+    epochs: u64,
 }
 
+/// Serializes counting assertions against concurrent query-running tests.
+#[cfg(test)]
+static QUERY_TABLE_OPEN_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
 static QUERY_TABLE_OPENS_COMMITS: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
 static QUERY_TABLE_OPENS_ENTITIES: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
 static QUERY_TABLE_OPENS_INDEXES: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
 static QUERY_TABLE_OPENS_EPOCHS: AtomicU64 = AtomicU64::new(0);
 
-/// Resets composite-query table-open counters (test probe).
-#[doc(hidden)]
-pub fn reset_query_table_open_counts() {
+#[cfg(test)]
+fn reset_query_table_open_counts() {
     QUERY_TABLE_OPENS_COMMITS.store(0, Ordering::Relaxed);
     QUERY_TABLE_OPENS_ENTITIES.store(0, Ordering::Relaxed);
     QUERY_TABLE_OPENS_INDEXES.store(0, Ordering::Relaxed);
     QUERY_TABLE_OPENS_EPOCHS.store(0, Ordering::Relaxed);
 }
 
-/// Snapshot of composite-query table-open counters since the last reset.
-#[doc(hidden)]
-#[must_use]
-pub fn query_table_open_counts() -> QueryTableOpenCounts {
+#[cfg(test)]
+fn query_table_open_counts() -> QueryTableOpenCounts {
     QueryTableOpenCounts {
         commits: QUERY_TABLE_OPENS_COMMITS.load(Ordering::Relaxed),
         entities: QUERY_TABLE_OPENS_ENTITIES.load(Ordering::Relaxed),
@@ -73,7 +77,10 @@ enum QueryTableKind {
     Epochs,
 }
 
-fn record_query_table_open(kind: QueryTableKind) {
+/// Test-only observation of composite-query table opens. Compiled out of
+/// normal builds (same pattern as `note_query_module_pool_dispatch`).
+#[cfg(test)]
+fn note_query_table_open(kind: QueryTableKind) {
     let counter = match kind {
         QueryTableKind::Commits => &QUERY_TABLE_OPENS_COMMITS,
         QueryTableKind::Entities => &QUERY_TABLE_OPENS_ENTITIES,
@@ -82,6 +89,9 @@ fn record_query_table_open(kind: QueryTableKind) {
     };
     counter.fetch_add(1, Ordering::Relaxed);
 }
+
+#[cfg(not(test))]
+const fn note_query_table_open(_kind: QueryTableKind) {}
 
 impl QueryExecutionPort for RedbOperationalPorts {
     fn execute_query_page(
@@ -117,7 +127,7 @@ fn open_query_table(
     definition: TableDefinition<&'static [u8], &'static [u8]>,
     kind: QueryTableKind,
 ) -> Result<BytesTable, StorageError> {
-    record_query_table_open(kind);
+    note_query_table_open(kind);
     transaction
         .open_table(definition)
         .map_err(crate::error::table_error)
@@ -654,14 +664,17 @@ query ProjectMembers(
             ("ticket_id".to_owned(), ticket),
         ]))
         .expect("parameters");
-        crate::reset_query_table_open_counts();
+        let _serial = QUERY_TABLE_OPEN_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_query_table_open_counts();
         let snapshot = ports.execute_query(&program, &parameters).expect("query");
         assert_eq!(snapshot.outcome(), "Found");
         assert!(matches!(
             snapshot.fields().get("ticket"),
             Some(QueryResultValue::One(row)) if row.field("title").is_some()
         ));
-        let opens = crate::query_table_open_counts();
+        let opens = query_table_open_counts();
         assert_eq!(
             opens,
             QueryTableOpenCounts {
@@ -795,9 +808,12 @@ query ProjectMembers(
             ("project_id".to_owned(), project),
         ]))
         .expect("parameters");
-        crate::reset_query_table_open_counts();
+        let _serial = QUERY_TABLE_OPEN_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_query_table_open_counts();
         let snapshot = ports.execute_query(&program, &parameters).expect("query");
-        let opens = crate::query_table_open_counts();
+        let opens = query_table_open_counts();
         assert_eq!(
             opens,
             QueryTableOpenCounts {
@@ -974,6 +990,9 @@ query list_members_exact(
             ("project_id".to_owned(), project),
         ]))
         .expect("parameters");
+        let _serial = QUERY_TABLE_OPEN_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let snapshot = ports.execute_query(&program, &parameters).expect("query");
         assert!(matches!(
             snapshot.fields().get("members"),
@@ -982,6 +1001,56 @@ query list_members_exact(
         assert!(
             snapshot.continuation().is_none() && snapshot.continuation_binding().is_none(),
             "exact-end page must not mint a continuation"
+        );
+    }
+
+    /// Lazy open of a missing ENTITIES table yields the same backend integrity
+    /// classification as the pre-R3 eager path.
+    #[test]
+    fn missing_entities_table_on_point_query_is_backend_integrity() {
+        use riffdb_query_executor::QueryExecutionError;
+
+        let bundle = compile_contract_source(CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let program =
+            compile_query(&parse_query(POINT_QUERY).expect("parse"), &catalog).expect("program");
+        let organization = CanonicalValue::Uuid([1; 16]);
+        let ticket = CanonicalValue::Uuid([2; 16]);
+
+        let path = TestPath::new();
+        let mut store = RedbStore::open(&path.0).expect("store");
+        let database_id =
+            DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x13; 10])
+                .expect("database ID");
+        store.initialize_database(database_id).expect("initialize");
+        let ports = RedbOperationalPorts {
+            shared: Arc::clone(&store.shared),
+        };
+        // Drop the entities table after init so first touch fails.
+        {
+            let access = ports.begin_write().expect("write");
+            access
+                .transaction()
+                .expect("txn")
+                .delete_table(ENTITIES)
+                .expect("delete entities");
+            access.commit().expect("commit");
+        }
+        let parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), organization),
+            ("ticket_id".to_owned(), ticket),
+        ]))
+        .expect("parameters");
+        let _serial = QUERY_TABLE_OPEN_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let error = ports
+            .execute_query(&program, &parameters)
+            .expect_err("missing entities must fail");
+        assert_eq!(
+            error,
+            QueryExecutionError::BackendIntegrity,
+            "lazy first-touch of a missing ENTITIES table must keep the pre-R3 integrity taxonomy"
         );
     }
 }
