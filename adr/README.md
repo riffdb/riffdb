@@ -103,6 +103,8 @@ direction, merged draft, or implementation choice.
 | [0082](0082-single-total-order-and-pre-alpha-format-acceptances.md) | Single Total Order and Pre-Alpha Format Acceptances | Accepted |
 | [0083](0083-authoritative-entity-references.md) | Authoritative Entity References | Accepted |
 | [0084](0084-batch-item-results.md) | Batch Item Results | Accepted |
+| [0085](0085-history-retention-and-startup-scaling.md) | History Retention and Startup Scaling | Proposed |
+| [0086](0086-columnar-projection-and-read-freshness-classes.md) | Columnar Projection and Read Freshness Classes | Proposed |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
