@@ -126,19 +126,19 @@ fn run() -> Result<(), String> {
             let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
             let scenarios = run_scenarios(&mut postgres, &dataset, args.warmups, args.samples)
                 .map_err(|error| error.to_string())?;
-            if rep == 0 {
-                if let Some(clients) = args.concurrent_clients {
-                    let url = Arc::new(url);
-                    concurrent_reads.push(run_concurrent_point_reads(
-                        "postgres_sql",
-                        clients,
-                        args.concurrent_operations,
-                        &dataset,
-                        move || {
-                            PostgresAppBackend::new(url.as_str()).map_err(|error| error.to_string())
-                        },
-                    )?);
-                }
+            if rep == 0
+                && let Some(clients) = args.concurrent_clients
+            {
+                let url = Arc::new(url);
+                concurrent_reads.push(run_concurrent_point_reads(
+                    "postgres_sql",
+                    clients,
+                    args.concurrent_operations,
+                    &dataset,
+                    move || {
+                        PostgresAppBackend::new(url.as_str()).map_err(|error| error.to_string())
+                    },
+                )?);
             }
             pg_rep_seed_ns.push(seed_ns);
             pg_rep_scenarios.push(scenarios);
@@ -205,17 +205,17 @@ fn run() -> Result<(), String> {
                     return Err(error.to_string());
                 }
             };
-            if rep == 0 {
-                if let Some(clients) = args.concurrent_clients {
-                    let prototype = session.backend.clone();
-                    concurrent_reads.push(run_concurrent_point_reads(
-                        "riffdb_public_grpc",
-                        clients,
-                        args.concurrent_operations,
-                        &dataset,
-                        move || Ok(prototype.clone()),
-                    )?);
-                }
+            if rep == 0
+                && let Some(clients) = args.concurrent_clients
+            {
+                let prototype = session.backend.clone();
+                concurrent_reads.push(run_concurrent_point_reads(
+                    "riffdb_public_grpc",
+                    clients,
+                    args.concurrent_operations,
+                    &dataset,
+                    move || Ok(prototype.clone()),
+                )?);
             }
             let write_completion_groups = session.shutdown().map_err(|error| error.to_string())?;
             rd_write_groups = Some(write_completion_groups.to_vec());
@@ -310,8 +310,8 @@ fn run() -> Result<(), String> {
         report["postgres_data_host_path"] = json!(path.display().to_string());
     }
     if let Some(medium) = &postgres_host_medium {
-        report["postgres_storage_medium"] =
-            serde_json::from_str(&medium.to_report_json()).unwrap_or(json!(medium.to_report_json()));
+        report["postgres_storage_medium"] = serde_json::from_str(&medium.to_report_json())
+            .unwrap_or(json!(medium.to_report_json()));
     }
     if let Some(path) = &riffdb_database_root {
         report["riffdb_database_root"] = json!(path.display().to_string());
@@ -1022,12 +1022,12 @@ fn gated_ratio(value: &serde_json::Value) -> Result<f64, String> {
 }
 
 fn refuse_if_postgres_ram_backed(report: &serde_json::Value) -> Result<(), String> {
-    if let Some(medium) = report.get("postgres_storage_medium") {
-        if medium["kind"].as_str() == Some("ram_backed") {
-            return Err(format!(
-                "parity refused: PostgreSQL data medium is RAM-backed ({medium})"
-            ));
-        }
+    if let Some(medium) = report.get("postgres_storage_medium")
+        && medium["kind"].as_str() == Some("ram_backed")
+    {
+        return Err(format!(
+            "parity refused: PostgreSQL data medium is RAM-backed ({medium})"
+        ));
     }
     Ok(())
 }
@@ -1127,6 +1127,14 @@ fn assert_all_parity(report: &serde_json::Value) -> Result<(), String> {
 }
 
 fn require_stable(report: &serde_json::Value) -> Result<(), String> {
+    // Single-rep stability is trivially "stable" (spread undefined/1.0); refuse
+    // rather than pass a meaningless gate.
+    let reps = report["reps"].as_u64().unwrap_or(1);
+    if reps < 2 {
+        return Err(
+            "--require-stable requires --reps >= 2 (single-rep stability is trivial)".to_owned(),
+        );
+    }
     let mut unstable = Vec::new();
     if let Some(summaries) = report["comparisons"]["rep_summaries"].as_object() {
         for (name, summary) in summaries {
@@ -1206,31 +1214,41 @@ fn scalar_summary(values: &[f64]) -> serde_json::Value {
     })
 }
 
-/// Per-scenario median of p50 across reps (independent ranking, not execution-order pick).
+/// Per scenario, select the median-ranking rep by p50 and carry that rep's
+/// **real** [`SampleSet`] (genuine percentiles). Never synthesizes a single-sample set.
+///
+/// Cross-rep median p50 for ratio gates lives in `attach_rep_summaries` objects,
+/// not in fabricated timing samples.
 fn median_scenarios(
     reps: &[Vec<riffdb_app_baseline_core::ScenarioResult>],
 ) -> Vec<riffdb_app_baseline_core::ScenarioResult> {
     if reps.is_empty() {
         return Vec::new();
     }
+    // --reps 1: pass through the only real distribution unchanged.
+    if reps.len() == 1 {
+        return reps[0].clone();
+    }
     let template = &reps[0];
     template
         .iter()
         .map(|proto| {
-            let mut p50s = Vec::with_capacity(reps.len());
-            let mut last_row = proto.last_row_count;
-            for rep in reps {
+            let mut ranked: Vec<(u64, usize)> = Vec::with_capacity(reps.len());
+            for (rep_index, rep) in reps.iter().enumerate() {
                 if let Some(row) = rep.iter().find(|r| r.scenario == proto.scenario) {
-                    p50s.push(row.samples.summary().p50_ns.max(1));
-                    last_row = row.last_row_count;
+                    ranked.push((row.samples.summary().p50_ns, rep_index));
                 }
             }
-            let median_p50 = median_u64(&p50s).max(1);
-            riffdb_app_baseline_core::ScenarioResult {
-                scenario: proto.scenario,
-                samples: riffdb_app_baseline_core::SampleSet::from_nanos(vec![median_p50]),
-                last_row_count: last_row,
+            if ranked.is_empty() {
+                return proto.clone();
             }
+            ranked.sort_by_key(|(p50, _)| *p50);
+            let median_rep = ranked[ranked.len() / 2].1;
+            reps[median_rep]
+                .iter()
+                .find(|r| r.scenario == proto.scenario)
+                .cloned()
+                .unwrap_or_else(|| proto.clone())
         })
         .collect()
 }
@@ -1897,6 +1915,7 @@ mod tests {
         })
         .collect::<Vec<_>>();
         let report = json!({
+            "reps": 3,
             "comparisons": {
                 "available": true,
                 "seed": {"ratio_riffdb_over_postgres": 1.0},
@@ -1917,17 +1936,71 @@ mod tests {
     }
 
     #[test]
-    fn median_scenarios_ranks_p50_independently_of_execution_order() {
+    fn median_scenarios_carries_real_distribution_from_median_ranking_rep() {
         use riffdb_app_baseline_core::{SampleSet, ScenarioId, ScenarioResult};
-        // Unsorted reps: p50 values 300, 100, 200 → median 200 (not middle-in-order 100).
-        let mk = |p50: u64| ScenarioResult {
-            scenario: ScenarioId::CreateComment,
-            samples: SampleSet::from_nanos(vec![p50]),
-            last_row_count: 1,
+        // Distinct multi-sample distributions; rank by p50, carry real SampleSet.
+        // rep0: high p50 (~500), 3 samples
+        // rep1: low p50 (~100), 4 samples
+        // rep2: median p50 (~200), 5 samples with p99 != p50
+        let mk = |samples: Vec<u64>| {
+            let count = samples.len();
+            ScenarioResult {
+                scenario: ScenarioId::CreateComment,
+                samples: SampleSet::from_nanos(samples),
+                last_row_count: count,
+            }
         };
-        let reps = vec![vec![mk(300)], vec![mk(100)], vec![mk(200)]];
-        let median = median_scenarios(&reps);
-        assert_eq!(median.len(), 1);
-        assert_eq!(median[0].samples.summary().p50_ns, 200);
+        let rep_high = vec![mk(vec![400, 500, 600])]; // p50 ≈ 500
+        let rep_low = vec![mk(vec![50, 100, 110, 120])]; // p50 ≈ 100
+        let rep_mid = vec![mk(vec![180, 190, 200, 250, 900])]; // p50 ≈ 200, p99 high
+        // Execution order high, low, mid — median-by-p50 is mid (200), not execution middle (low).
+        let reps = vec![rep_high, rep_low, rep_mid.clone()];
+        let selected = median_scenarios(&reps);
+        assert_eq!(selected.len(), 1);
+        let summary = selected[0].samples.summary();
+        assert_eq!(
+            summary.sample_count, 5,
+            "must carry the median-ranking rep's real sample count, not fabricate 1"
+        );
+        assert_eq!(summary.p50_ns, rep_mid[0].samples.summary().p50_ns);
+        assert_ne!(
+            summary.p99_ns, summary.p50_ns,
+            "real distribution must keep p99 distinct from p50"
+        );
+        assert_eq!(summary.max_ns, 900);
+    }
+
+    #[test]
+    fn median_scenarios_reps_one_passes_through_unchanged() {
+        use riffdb_app_baseline_core::{SampleSet, ScenarioId, ScenarioResult};
+        let only = vec![ScenarioResult {
+            scenario: ScenarioId::CreateComment,
+            samples: SampleSet::from_nanos(vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100]),
+            last_row_count: 10,
+        }];
+        let out = median_scenarios(std::slice::from_ref(&only));
+        let summary = out[0].samples.summary();
+        assert_eq!(summary.sample_count, 10);
+        assert_eq!(summary.p50_ns, only[0].samples.summary().p50_ns);
+        assert_ne!(summary.p99_ns, summary.p50_ns);
+    }
+
+    #[test]
+    fn require_stable_refuses_single_rep() {
+        let report = json!({
+            "reps": 1,
+            "comparisons": {
+                "rep_summaries": {
+                    "seed_ratio": {"stability": "stable", "spread_ratio": 1.0},
+                },
+                "seed": {"ratio_riffdb_over_postgres": 1.0},
+                "scenarios": [],
+            }
+        });
+        let err = require_stable(&report).expect_err("single-rep must refuse");
+        assert!(
+            err.contains("--reps >= 2") || err.contains("trivial"),
+            "{err}"
+        );
     }
 }
