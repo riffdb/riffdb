@@ -2429,7 +2429,7 @@ mod tests {
     #[test]
     fn staged_audit_group_uses_exactly_one_begin_read_for_sequence_lookup() {
         let path = TestPath::new("audit-group-one-begin-read");
-        let controller = crate::hooks::RedbTestController::observe_audit_sequence_reads();
+        let controller = crate::hooks::RedbTestController::count_audit_sequence_begin_reads();
         let mut store = RedbStore::open_with_test_controller(&path.0, controller.clone())
             .expect("open controlled database");
         store
@@ -2462,6 +2462,63 @@ mod tests {
             "grouped sequence lookup must open exactly one read snapshot"
         );
         access.abort().expect("abort uncommitted staging");
+    }
+
+    #[test]
+    fn service_audit_group_uses_exactly_one_begin_read_for_sequence_lookup() {
+        let path = TestPath::new("audit-group-append-one-begin-read");
+        let controller = crate::hooks::RedbTestController::count_audit_sequence_begin_reads();
+        let mut store = RedbStore::open_with_test_controller(&path.0, controller.clone())
+            .expect("open controlled database");
+        store
+            .initialize_database(database_id())
+            .expect("initialize");
+        let dormant = crate::store::RedbDormantPorts {
+            shared: store.shared,
+        };
+        let mut ports = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate");
+        let intents = [denied_audit(20), denied_audit(21), denied_audit(22)];
+        let before = controller.audit_sequence_begin_reads();
+        ports
+            .append_service_audit_group(&intents)
+            .expect("append group");
+        assert_eq!(
+            controller
+                .audit_sequence_begin_reads()
+                .saturating_sub(before),
+            1,
+            "group append must open exactly one sequence-lookup snapshot"
+        );
+    }
+
+    #[test]
+    fn fused_pair_appends_both_rows_in_one_transaction() {
+        let (_path, mut ports) = initialized_ports("fused-pair-happy");
+        let started = command_audit(1, ServiceAuditPhaseV1::Started, 1);
+        let terminal = command_audit(1, ServiceAuditPhaseV1::Failed, 2);
+        ports
+            .append_service_audit_fused_pair(&started, &terminal)
+            .expect("fused pair");
+        assert_eq!(audit_count(&ports), 2);
+    }
+
+    #[test]
+    fn fused_pair_against_an_existing_started_fails_closed_and_writes_nothing() {
+        let (_path, mut ports) = initialized_ports("fused-pair-conflict");
+        let started = command_audit(2, ServiceAuditPhaseV1::Started, 1);
+        ports
+            .append_service_audit(&started)
+            .expect("standalone started");
+        let before = audit_count(&ports);
+        let again_started = command_audit(2, ServiceAuditPhaseV1::Started, 3);
+        let terminal = command_audit(2, ServiceAuditPhaseV1::Failed, 4);
+        let err = ports
+            .append_service_audit_fused_pair(&again_started, &terminal)
+            .expect_err("pair against existing Started must fail closed");
+        assert_eq!(err.kind(), StorageErrorKind::InvariantViolation);
+        assert_eq!(audit_count(&ports), before);
     }
 
     #[test]

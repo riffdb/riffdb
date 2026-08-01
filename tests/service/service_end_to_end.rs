@@ -355,6 +355,58 @@ fn read_only_capacity_rejects_before_audit_start_with_typed_overload() {
     });
 }
 
+#[test]
+fn queue_delay_shed_rejects_before_admission_with_zero_durable_audit_rows() {
+    run_async(async move {
+        const REQUEST_SEED: u8 = 0xE5;
+        let mut harness = ServiceHarness::command_capacity_one();
+        // Seed a large EWMA so pre-admission shed fires when try_reserve fails.
+        harness.force_queue_delay_estimate_micros(50_000);
+        assert_eq!(harness.queue_delay_estimate_micros(), 50_000);
+        let held = harness.hold_command_capacity();
+        let (context, _c) =
+            harness.context_with_deadline(REQUEST_SEED, Instant::now() + Duration::from_millis(30));
+        let failure = harness
+            .service
+            .execute_command(context, harness.execute_command_request())
+            .await
+            .expect_err("queue-delay shed must reject");
+        assert_eq!(
+            failure.public_error().map(|e| e.kind()),
+            Some(PublicErrorKind::Overloaded)
+        );
+        drop(held);
+        harness.stop_coordinator();
+        assert!(
+            harness.audit_records(REQUEST_SEED).is_empty(),
+            "pre-admission queue-delay shed must leave zero durable audit rows"
+        );
+    });
+}
+
+#[test]
+fn stale_zero_queue_delay_estimate_never_sheds() {
+    run_async(async move {
+        // With a stale-zero estimate the shed branch is skipped even under a
+        // tight budget. Capacity is free, so the command commits.
+        let mut harness = ServiceHarness::command();
+        assert_eq!(
+            harness.queue_delay_estimate_micros(),
+            0,
+            "writer must start with a stale-zero estimate"
+        );
+        let (context, _c) =
+            harness.context_with_deadline(0xE6, Instant::now() + Duration::from_millis(30));
+        let ok = harness
+            .service
+            .execute_command(context, harness.execute_command_request())
+            .await
+            .expect("stale-zero estimate must not pre-shed an otherwise-admissible command");
+        assert!(matches!(ok, ExecuteCommandResult::Journaled(_)));
+        harness.stop_coordinator();
+    });
+}
+
 /// I1: capacity overload settles without audit; a later success still audits.
 /// Non-capacity admission failures must not use the capacity settle path
 /// (`is_capacity_overload` is Overloaded-only — covered in unit tests).

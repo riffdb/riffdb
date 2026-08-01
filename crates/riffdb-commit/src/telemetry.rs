@@ -171,6 +171,8 @@ pub enum CommitTelemetryEvent {
         busy: Duration,
         /// Time the writer waited idle before this unit.
         idle: Duration,
+        /// Latest EWMA queue-delay estimate in microseconds after this unit.
+        queue_delay_estimate_micros: u64,
     },
 }
 

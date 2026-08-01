@@ -521,6 +521,32 @@ fn explicit_bootstrap_rejection_is_unaudited_and_consumes_no_bootstrap_state() {
 }
 
 #[test]
+fn replayed_command_produces_exactly_one_coordinator_audit_message() {
+    run_async(async move {
+        let mut command = ServiceHarness::command();
+        let committed = execute_journaled(&command, 0xb0).await;
+        assert_eq!(committed.completion(), JournaledCompletion::Committed);
+        // First commit writes Started+Succeeded inside the command batch — zero
+        // separate administration-audit coordinator messages for that path.
+        let before_replay = command.audit_submission_count();
+        let replayed = execute_journaled(&command, 0xb1).await;
+        assert_eq!(replayed.completion(), JournaledCompletion::Replayed);
+        let delta = command
+            .audit_submission_count()
+            .saturating_sub(before_replay);
+        assert_eq!(
+            delta, 1,
+            "replay must submit exactly one fused Started+terminal coordinator message (was 2)"
+        );
+        command.stop_coordinator();
+        let records = command.audit_records(0xb1);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].phase(), ServiceAuditPhaseV1::Started);
+        assert_eq!(records[1].phase(), ServiceAuditPhaseV1::Succeeded);
+    });
+}
+
+#[test]
 fn known_command_and_control_plane_replays_keep_the_exact_succeeded_link() {
     run_async(async move {
         let mut command = ServiceHarness::command();

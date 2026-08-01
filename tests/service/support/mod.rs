@@ -514,6 +514,33 @@ impl ServiceHarness {
         )
     }
 
+    /// Accepted administration-audit coordinator messages since start.
+    pub(crate) fn audit_submission_count(&self) -> u64 {
+        self.coordinator
+            .as_ref()
+            .expect("coordinator is running")
+            .administration_audit_executor()
+            .accepted_submission_count()
+    }
+
+    /// Force the command writer's EWMA queue-delay estimate (pre-admission shed).
+    pub(crate) fn force_queue_delay_estimate_micros(&self, micros: u64) {
+        self.coordinator
+            .as_ref()
+            .expect("coordinator is running")
+            .command_executor()
+            .force_queue_delay_estimate_micros_for_tests(micros);
+    }
+
+    /// Read the current queue-delay estimate.
+    pub(crate) fn queue_delay_estimate_micros(&self) -> u64 {
+        self.coordinator
+            .as_ref()
+            .expect("coordinator is running")
+            .command_executor()
+            .estimated_queue_delay_micros()
+    }
+
     /// Exhausts the independent retained-byte budget (for RetainedBytes stage tests).
     pub(crate) fn hold_all_retained_bytes(&self) -> tokio::sync::OwnedSemaphorePermit {
         // Acquire the full 32 MiB / 1 KiB unit budget used by the coordinator.

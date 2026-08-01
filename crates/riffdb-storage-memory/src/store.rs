@@ -137,6 +137,14 @@ impl MemoryOperationalPorts {
     {
         self.shared.apply_prepared(prepare)
     }
+
+    /// Exclusive mutation under one gate lease with a mutable state view.
+    pub(crate) fn apply_exclusive_mut<R>(
+        &self,
+        operation: impl FnOnce(&mut MemoryState) -> Result<R, StorageError>,
+    ) -> Result<R, StorageError> {
+        self.shared.apply_exclusive_mut(operation)
+    }
 }
 
 impl SharedMemory {
@@ -161,6 +169,16 @@ impl SharedMemory {
         let mut state = self.state()?;
         let delta = prepare(&state)?;
         Ok(delta.apply(&mut state))
+    }
+
+    /// Exclusive mutation with a mutable state view under one gate lease.
+    pub(crate) fn apply_exclusive_mut<R>(
+        &self,
+        operation: impl FnOnce(&mut MemoryState) -> Result<R, StorageError>,
+    ) -> Result<R, StorageError> {
+        let _lease = self.gate.acquire()?;
+        let mut state = self.state()?;
+        operation(&mut state)
     }
 
     fn state(&self) -> Result<MutexGuard<'_, MemoryState>, StorageError> {
