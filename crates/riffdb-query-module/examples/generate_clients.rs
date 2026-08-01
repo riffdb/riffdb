@@ -26,12 +26,12 @@ const QUERIES: [(&str, &str); 11] = [
         include_str!("../../../queries/ticketdesk/board_page_200.riffq"),
     ),
     (
-        "BoardPage50",
-        include_str!("../../../queries/ticketdesk/board_page_50.riffq"),
+        "BoardPage450",
+        include_str!("../../../queries/ticketdesk/board_page_450.riffq"),
     ),
     (
-        "BoardPage500",
-        include_str!("../../../queries/ticketdesk/board_page_500.riffq"),
+        "BoardPage50",
+        include_str!("../../../queries/ticketdesk/board_page_50.riffq"),
     ),
     (
         "GetTicket",

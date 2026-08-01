@@ -20,12 +20,12 @@ const QUERIES: [(&str, &str); 11] = [
         include_str!("../../../queries/ticketdesk/board_page_200.riffq"),
     ),
     (
-        "BoardPage50",
-        include_str!("../../../queries/ticketdesk/board_page_50.riffq"),
+        "BoardPage450",
+        include_str!("../../../queries/ticketdesk/board_page_450.riffq"),
     ),
     (
-        "BoardPage500",
-        include_str!("../../../queries/ticketdesk/board_page_500.riffq"),
+        "BoardPage50",
+        include_str!("../../../queries/ticketdesk/board_page_50.riffq"),
     ),
     (
         "GetTicket",
@@ -104,7 +104,7 @@ fn symbolic_role_lowers_only_to_exact_application_operations() {
     }));
     assert!(role.operations().iter().any(|operation| {
         operation.kind() == ApplicationRoleOperationKind::Query
-            && operation.name() == "BoardPage500"
+            && operation.name() == "BoardPage450"
     }));
     for command in [
         "CloseTicketWithComment",

@@ -6,30 +6,34 @@ use crate::{
     SEED_GENERATION, SampleSummary, Scale, ScenarioId, ScenarioResult, board_marginal_from_results,
 };
 
-/// RiffDB board queries use static-compiled `take N` (BoardPage50/200/500).
+/// RiffDB board queries use static-compiled `take N` (BoardPage50/200/450).
 ///
-/// Runtime `take $limit` compiles but fails at execute with RDB-INTERNAL-0001
-/// (incident 019fbf5b-1a64-7877-94c3-47d7a0763539); the harness does not use it.
+/// take-500 (static or runtime Limit) trips `MAX_QUERY_SCANNED_ROWS=500` because
+/// the executor probes one extra row for continuation (scan 501 → RDB-INTERNAL-0001;
+/// incidents include 019fbf5b-1a64-7877-94c3-47d7a0763539). Largest board page is 450.
 pub const BOARD_PAGE_RIFFQ_50: &str =
     include_str!("../../../../queries/ticketdesk/board_page_50.riffq");
 /// Static 200-row board page.
 pub const BOARD_PAGE_RIFFQ_200: &str =
     include_str!("../../../../queries/ticketdesk/board_page_200.riffq");
-/// Static 500-row board page.
-pub const BOARD_PAGE_RIFFQ_500: &str =
-    include_str!("../../../../queries/ticketdesk/board_page_500.riffq");
+/// Static 450-row board page (within scan ceiling + continuation probe).
+pub const BOARD_PAGE_RIFFQ_450: &str =
+    include_str!("../../../../queries/ticketdesk/board_page_450.riffq");
 
-/// Incident id for the parameterized-take execute failure (engine out of scope).
+/// Incident id for the take-500 / scan-ceiling execute failure (engine out of scope).
 pub const BOARD_LIMIT_ENGINE_INCIDENT: &str = "019fbf5b-1a64-7877-94c3-47d7a0763539";
+
+/// Executor bound that forces board pages ≤ 450 (`take N` + one continuation probe).
+pub const MAX_QUERY_SCANNED_ROWS: u32 = 500;
 
 /// Canonical PostgreSQL SQL executed for board pages (and cited in the report).
 ///
 /// Six result columns only — `organization_id` is taken from the bind parameter
 /// `$1`, matching the RiffDB adapter (which never re-encodes org from the row).
 /// PG keeps a parameterized `LIMIT $4` (works). RiffDB uses static-compiled
-/// BoardPage50/200/500 by design constraint pending the engine fix above.
-/// The Ticket entity has eight fields; `created_at` / `updated_at` are omitted
-/// on both sides by design for this result-size curve.
+/// BoardPage50/200/450 (take 500 would exceed the scan ceiling). The Ticket
+/// entity has eight fields; `created_at` / `updated_at` are omitted on both
+/// sides by design for this result-size curve.
 pub const BOARD_PAGE_SQL: &str = "SELECT ticket_id::text, project_id::text,\n\
             reporter_id::text, assignee_id::text, status, title\n\
      FROM ticket\n\
@@ -101,27 +105,30 @@ pub fn build_report(
             "timing_source": "std::time::Instant",
             "distribution_method": "nearest-rank p50/p95/p99",
             "list_limit": 50,
-            "board_page_sizes": [50, 200, 500],
+            "board_page_sizes": [50, 200, 450],
             "board_scenarios_in_smoke": "skipped (board_dense_open=0)",
             "seed_generation": SEED_GENERATION,
             "baseline_note": "seed_generation 2 supersedes pre-B1 full baselines (ticket count and probe keys changed)",
             "board_limit_mode": "static_compiled",
             "board_limit_engine_incident": BOARD_LIMIT_ENGINE_INCIDENT,
-            "board_limit_note": "RiffDB BoardPage50/200/500 use static take N; runtime take $limit fails at execute (RDB-INTERNAL-0001). PostgreSQL keeps LIMIT $4.",
+            "board_limit_note": "RiffDB BoardPage50/200/450 use static take N ≤ 450 so take+continuation-probe stays within MAX_QUERY_SCANNED_ROWS=500. take 500 fails (RDB-INTERNAL-0001). PostgreSQL keeps LIMIT $4.",
+            "board_marginal_formula": "(p50_450 − p50_50) / 400",
         },
         "board_page_query": {
             "riffql_sources": [
                 "queries/ticketdesk/board_page_50.riffq",
                 "queries/ticketdesk/board_page_200.riffq",
-                "queries/ticketdesk/board_page_500.riffq"
+                "queries/ticketdesk/board_page_450.riffq"
             ],
             "riffql": {
                 "50": BOARD_PAGE_RIFFQ_50,
                 "200": BOARD_PAGE_RIFFQ_200,
-                "500": BOARD_PAGE_RIFFQ_500,
+                "450": BOARD_PAGE_RIFFQ_450,
             },
             "sql": BOARD_PAGE_SQL,
-            "limit_asymmetry": "RiffDB static-compiled take 50/200/500 (engine parameterized-take broken); PG parameterized LIMIT $4 (works)",
+            "max_query_scanned_rows": MAX_QUERY_SCANNED_ROWS,
+            "max_query_scanned_rows_note": "Engine page contract: take N + one continuation probe must be ≤ 500. Larger boards paginate via cursors (future scenario).",
+            "limit_asymmetry": "RiffDB static-compiled take 50/200/450 (take 500 trips scan ceiling); PG parameterized LIMIT $4 (works)",
             "engine_incident": BOARD_LIMIT_ENGINE_INCIDENT,
             "predicate": "organization_id + project_id + status",
             "order_by": "ticket_id ASC",
@@ -147,7 +154,7 @@ pub fn build_report(
             "PostgreSQL runs behind a Docker userland port proxy; RiffDB listens directly on loopback.",
             "Board scenarios skip under --smoke (board_dense_open=0); full profile densifies org-0/project-0 open tickets.",
             "seed_generation 2 (board-density layout) supersedes pre-B1 full baselines; do not compare ticket counts or probe keys across generations.",
-            "RiffDB board pages use static-compiled take 50/200/500 (BoardPage50/200/500); runtime take $limit fails at execute (RDB-INTERNAL-0001 incident 019fbf5b-1a64-7877-94c3-47d7a0763539). PostgreSQL uses parameterized LIMIT $4.",
+            "RiffDB board pages use static-compiled take 50/200/450 (BoardPage50/200/450). take 500 + continuation probe exceeds MAX_QUERY_SCANNED_ROWS=500 (RDB-INTERNAL-0001; incident 019fbf5b-1a64-7877-94c3-47d7a0763539). Larger boards need cursor pagination. PostgreSQL uses parameterized LIMIT $4.",
         ],
     })
 }

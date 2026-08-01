@@ -26,7 +26,7 @@ use riffdb_client_rust::{
 };
 use riffdb_ticketdesk::{
     AddProjectMemberInput, AttachLabelInput, BoardPage50Params, BoardPage50Result,
-    BoardPage200Params, BoardPage200Result, BoardPage500Params, BoardPage500Result,
+    BoardPage200Params, BoardPage200Result, BoardPage450Params, BoardPage450Result,
     CloseTicketWithCommentInput, CreateCommentInput, CreateLabelInput, CreateOrganizationInput,
     CreateProjectInput, CreateTicketInput, CreateUserInput, GetTicketParams, GetTicketResult,
     GetUserParams, GetUserResult, ListCommentsParams, ListCommentsResult,
@@ -434,9 +434,9 @@ impl AppBackend for RiffDbPublicBackend {
         status: TicketStatus,
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error> {
-        // Static-compiled limits only: runtime `take $limit` hits RDB-INTERNAL-0001
-        // (incident 019fbf5b-1a64-7877-94c3-47d7a0763539). Map harness page sizes
-        // onto BoardPage50/200/500 named queries.
+        // Static BoardPage50/200/450 only. take 500 (static or runtime Limit)
+        // trips MAX_QUERY_SCANNED_ROWS=500 via continuation probe (scan 501 →
+        // RDB-INTERNAL-0001; incident 019fbf5b-1a64-7877-94c3-47d7a0763539).
         self.block_on(async {
             let org = uuid_text(organization_id);
             let project = uuid_text(project_id);
@@ -496,10 +496,10 @@ impl AppBackend for RiffDbPublicBackend {
                         })
                         .collect()
                 }
-                500 => {
-                    let BoardPage500Result::Found(found) = self
+                450 => {
+                    let BoardPage450Result::Found(found) = self
                         .ticketdesk()
-                        .board_page500(BoardPage500Params {
+                        .board_page450(BoardPage450Params {
                             organization_id: org,
                             project_id: project,
                             status: status_s,
@@ -526,7 +526,7 @@ impl AppBackend for RiffDbPublicBackend {
                     code: "RDB-INTERNAL-0001".to_owned(),
                     detail: format!(
                         "board_page limit {other} has no static BoardPage query \
-                         (only 50/200/500; parameterized take is broken at execute)"
+                         (only 50/200/450; take 500 trips MAX_QUERY_SCANNED_ROWS via continuation probe)"
                     ),
                 }),
             }
