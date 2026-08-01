@@ -9,11 +9,16 @@ mod gate;
 mod integrity_administration;
 mod integrity_command;
 mod integrity_projection;
+mod migration;
 mod query;
 mod startup;
 mod state;
 mod store;
 
+pub use migration::{
+    MemoryMigrationHistoryWitness, MemoryMigrationJournal, MemoryMigrationRecord,
+    MemoryMigrationSnapshot, MemoryMigrationStage,
+};
 pub use startup::{
     MemoryCompletionAuthority, MemoryDormantPorts, MemoryHistoricalEvidenceEnd,
     MemoryStartupIndexMigrationPort, MemoryStructuralEvidenceEnd, MemoryStructuralEvidenceSession,

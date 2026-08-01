@@ -1,0 +1,14 @@
+format=riffdb-migration-model-v1
+scan_rows=256
+batch_mutations=64
+history=row_count,checked_rows,changed_rows,scan_pages,batches
+0,0,0,0,1
+1,1,1,1,1
+63,63,63,1,1
+64,64,64,1,1
+65,65,65,1,2
+255,255,255,1,4
+256,256,256,1,4
+257,257,257,2,5
+300,300,300,2,5
+513,513,513,3,9

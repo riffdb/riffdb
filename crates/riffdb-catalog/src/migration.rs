@@ -1,0 +1,1089 @@
+//! Catalog-sealed contract migration plans and pure Gate-A row evaluation.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::sync::Arc;
+
+use riffdb_contract_ir::{
+    CompatibilityClass, ContractCandidateV1, EntitySchema, MigrationBundleV1,
+    MigrationExpressionV1, MigrationStepKindV1, StableIdNamespaceTag, compare_successor,
+};
+use riffdb_invariant::{
+    EvaluationError, ExpressionValueSource, evaluate_expression, evaluate_predicate,
+};
+use riffdb_storage_api::{
+    DurableKeySchemaBindingV1, EntityTarget, StoredEntityRecordV1, StoredIndexEntryV2,
+};
+use riffdb_types::{
+    CanonicalRecord, CanonicalValue, ContractBundleHash, EntityTypeId, FieldId, IndexId,
+    MigrationBundleHash,
+};
+
+use crate::ValidatedContractBundle;
+use crate::lineage::LineageMaterializationProof;
+use crate::materialization::validate_static_value;
+
+/// Value-free migration diagnostic codes owned by the semantic catalog boundary.
+pub mod migration_finding_code {
+    /// Artifact identities or exact proof coverage do not match.
+    pub const ARTIFACT_MISMATCH: &str = "RDB-M100";
+    /// The artifact contains a valid but not-yet-executable migration step.
+    pub const UNSUPPORTED_STEP: &str = "RDB-M101";
+    /// A predecessor row is structurally invalid for its exact schema.
+    pub const INVALID_ROW: &str = "RDB-M102";
+    /// A changed entity cannot advance its authoritative version.
+    pub const ENTITY_VERSION_EXHAUSTED: &str = "RDB-M103";
+    /// A deterministic row expression failed checked arithmetic.
+    pub const TRANSFORM_ARITHMETIC: &str = "RDB-M104";
+    /// A successor invariant rejected a transformed row.
+    pub const INVARIANT_REJECTED: &str = "RDB-M105";
+    /// A successor index value could not be derived exactly.
+    pub const INDEX_INVALID: &str = "RDB-M106";
+    /// A required relationship target is absent.
+    pub const RELATIONSHIP_MISSING: &str = "RDB-M107";
+    /// A successor unique key collides.
+    pub const UNIQUE_CONFLICT: &str = "RDB-M108";
+    /// A fixed migration resource bound was exceeded.
+    pub const RESOURCE_LIMIT: &str = "RDB-M109";
+    /// Transaction-current row evidence changed before a bounded batch applied.
+    pub const ROW_CHANGED: &str = "RDB-M110";
+    /// Migration storage or journal state is internally inconsistent.
+    pub const INTEGRITY: &str = "RDB-M111";
+    /// An unresolved predecessor admission would be stranded by cutover.
+    pub const PENDING_ADMISSION: &str = "RDB-M112";
+}
+
+/// One bounded, value-free semantic migration finding.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct MigrationFinding {
+    code: &'static str,
+    entity_type: Option<EntityTypeId>,
+    field: Option<FieldId>,
+    index: Option<IndexId>,
+}
+
+impl MigrationFinding {
+    const fn new(code: &'static str) -> Self {
+        Self {
+            code,
+            entity_type: None,
+            field: None,
+            index: None,
+        }
+    }
+
+    const fn entity(mut self, entity_type: EntityTypeId) -> Self {
+        self.entity_type = Some(entity_type);
+        self
+    }
+
+    const fn with_field(mut self, field: FieldId) -> Self {
+        self.field = Some(field);
+        self
+    }
+
+    const fn with_index(mut self, index: IndexId) -> Self {
+        self.index = Some(index);
+        self
+    }
+
+    /// Stable closed diagnostic code.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        self.code
+    }
+
+    /// Optional affected entity identity.
+    #[must_use]
+    pub const fn entity_type(self) -> Option<EntityTypeId> {
+        self.entity_type
+    }
+
+    /// Optional affected field identity.
+    #[must_use]
+    pub const fn field(self) -> Option<FieldId> {
+        self.field
+    }
+
+    /// Optional affected index identity.
+    #[must_use]
+    pub const fn index(self) -> Option<IndexId> {
+        self.index
+    }
+
+    /// Maps a value-free stage failure into the catalog-owned diagnostic set.
+    #[must_use]
+    pub const fn from_stage_error(error: riffdb_storage_api::MigrationStageError) -> Self {
+        match error {
+            riffdb_storage_api::MigrationStageError::LimitExceeded
+            | riffdb_storage_api::MigrationStageError::SequenceExhausted => {
+                Self::new(migration_finding_code::RESOURCE_LIMIT)
+            }
+            riffdb_storage_api::MigrationStageError::RowChanged => {
+                Self::new(migration_finding_code::ROW_CHANGED)
+            }
+            riffdb_storage_api::MigrationStageError::Integrity => {
+                Self::new(migration_finding_code::INTEGRITY)
+            }
+            riffdb_storage_api::MigrationStageError::RelationshipMissing(entity) => {
+                Self::new(migration_finding_code::RELATIONSHIP_MISSING).entity(entity)
+            }
+            riffdb_storage_api::MigrationStageError::UniqueConflict { entity, index } => {
+                Self::new(migration_finding_code::UNIQUE_CONFLICT)
+                    .entity(entity)
+                    .with_index(index)
+            }
+            riffdb_storage_api::MigrationStageError::PendingAdmission => {
+                Self::new(migration_finding_code::PENDING_ADMISSION)
+            }
+        }
+    }
+}
+
+impl fmt::Debug for MigrationFinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MigrationFinding")
+            .field("code", &self.code)
+            .field("entity_type", &self.entity_type)
+            .field("field", &self.field)
+            .field("index", &self.index)
+            .finish()
+    }
+}
+
+/// One relationship target derived from a transformed source row.
+#[derive(Clone, Eq, PartialEq)]
+pub struct MigrationRelationshipFact {
+    name: String,
+    source: EntityTarget,
+    target: EntityTarget,
+}
+
+impl MigrationRelationshipFact {
+    /// Relationship name from the checked successor.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Complete referencing row target.
+    #[must_use]
+    pub const fn source(&self) -> &EntityTarget {
+        &self.source
+    }
+
+    /// Complete required target.
+    #[must_use]
+    pub const fn target(&self) -> &EntityTarget {
+        &self.target
+    }
+}
+
+/// One complete successor unique-prefix fact.
+#[derive(Clone, Eq, PartialEq)]
+pub struct MigrationUniqueFact {
+    entity_type: EntityTypeId,
+    index: IndexId,
+    prefix: Vec<u8>,
+    source: EntityTarget,
+}
+
+impl MigrationUniqueFact {
+    /// Owning entity.
+    #[must_use]
+    pub const fn entity_type(&self) -> EntityTypeId {
+        self.entity_type
+    }
+
+    /// Backing successor index.
+    #[must_use]
+    pub const fn index(&self) -> IndexId {
+        self.index
+    }
+
+    /// Canonical complete-component prefix bytes.
+    #[must_use]
+    pub fn prefix(&self) -> &[u8] {
+        &self.prefix
+    }
+
+    /// Source row whose uniqueness is being proved.
+    #[must_use]
+    pub const fn source(&self) -> &EntityTarget {
+        &self.source
+    }
+}
+
+/// Pure checked result for one predecessor row.
+#[must_use = "prepared migration rows must be checked or applied"]
+pub struct PreparedMigrationRow {
+    source: StoredEntityRecordV1,
+    post_image: Option<StoredEntityRecordV1>,
+    rebuilt_indexes: Vec<StoredIndexEntryV2>,
+    relationships: Vec<MigrationRelationshipFact>,
+    unique_keys: Vec<MigrationUniqueFact>,
+}
+
+impl PreparedMigrationRow {
+    /// Exact source evidence used by preflight and transaction-current recheck.
+    #[must_use]
+    pub const fn source(&self) -> &StoredEntityRecordV1 {
+        &self.source
+    }
+
+    /// Successor-bound post-image, absent when the entity row need not change.
+    #[must_use]
+    pub const fn post_image(&self) -> Option<&StoredEntityRecordV1> {
+        self.post_image.as_ref()
+    }
+
+    /// Newly derived successor index rows.
+    #[must_use]
+    pub fn rebuilt_indexes(&self) -> &[StoredIndexEntryV2] {
+        &self.rebuilt_indexes
+    }
+
+    /// Required relationship targets derived from this row.
+    #[must_use]
+    pub fn relationships(&self) -> &[MigrationRelationshipFact] {
+        &self.relationships
+    }
+
+    /// Complete unique-key prefixes derived from this row.
+    #[must_use]
+    pub fn unique_keys(&self) -> &[MigrationUniqueFact] {
+        &self.unique_keys
+    }
+}
+
+/// Catalog-owned exact Gate-A migration proof.
+///
+/// Fields are private and artifacts are re-decoded at construction, so callers
+/// cannot assemble a migration authority from independently checked values.
+pub struct ValidatedMigrationPlan {
+    parent: ValidatedContractBundle,
+    parent_lineage: Option<Arc<LineageMaterializationProof>>,
+    parent_lineage_hashes: Vec<ContractBundleHash>,
+    candidate: ValidatedContractBundle,
+    migration: MigrationBundleV1,
+    set_fields: BTreeMap<EntityTypeId, Vec<(FieldId, MigrationExpressionV1)>>,
+    rebuilt_indexes: BTreeMap<EntityTypeId, Vec<IndexId>>,
+    added_invariants: BTreeMap<EntityTypeId, BTreeSet<riffdb_types::InvariantId>>,
+    added_relationships: BTreeSet<(EntityTypeId, String)>,
+    added_unique: BTreeSet<(EntityTypeId, IndexId)>,
+    rebuilt_projections: BTreeSet<riffdb_types::ProjectionId>,
+}
+
+impl ValidatedMigrationPlan {
+    /// Revalidates exact artifacts and seals one complete executable Gate-A plan.
+    pub fn from_artifacts(
+        parent: ValidatedContractBundle,
+        candidate: ValidatedContractBundle,
+        migration: MigrationBundleV1,
+    ) -> Result<Self, MigrationFinding> {
+        Self::from_artifacts_with_lineage(parent, None, candidate, migration)
+    }
+
+    /// Revalidates an exact active parent lineage and seals ancestor-row normalization.
+    pub fn from_lineage_artifacts(
+        parent_lineage: Vec<ValidatedContractBundle>,
+        candidate: ValidatedContractBundle,
+        migration: MigrationBundleV1,
+    ) -> Result<Self, MigrationFinding> {
+        let proof = LineageMaterializationProof::from_forward_bundles(parent_lineage)
+            .map_err(|_| MigrationFinding::new(migration_finding_code::ARTIFACT_MISMATCH))?;
+        let parent = proof.terminal().clone();
+        Self::from_artifacts_with_lineage(parent, Some(proof), candidate, migration)
+    }
+
+    fn from_artifacts_with_lineage(
+        parent: ValidatedContractBundle,
+        parent_lineage: Option<Arc<LineageMaterializationProof>>,
+        candidate: ValidatedContractBundle,
+        migration: MigrationBundleV1,
+    ) -> Result<Self, MigrationFinding> {
+        let parent_lineage_hashes = parent_lineage.as_ref().map_or_else(
+            || vec![parent.bundle_hash()],
+            |proof| {
+                proof
+                    .bundles()
+                    .iter()
+                    .map(ValidatedContractBundle::bundle_hash)
+                    .collect()
+            },
+        );
+        let migration = MigrationBundleV1::decode(migration.canonical_bytes())
+            .map_err(|_| MigrationFinding::new(migration_finding_code::ARTIFACT_MISMATCH))?;
+        if parent.lineage() != candidate.lineage()
+            || migration.lineage() != parent.lineage()
+            || migration.parent_version() != parent.contract_version()
+            || migration.parent_bundle_hash() != parent.bundle_hash()
+            || migration.candidate_version() != candidate.contract_version()
+            || migration.candidate_bundle_hash() != candidate.bundle_hash()
+        {
+            return Err(MigrationFinding::new(
+                migration_finding_code::ARTIFACT_MISMATCH,
+            ));
+        }
+        let direct = ContractCandidateV1::new(
+            candidate.bundle().schema(),
+            candidate.bundle().commands(),
+            candidate.bundle().projections(),
+            candidate.bundle().mcp_command_names(),
+        )
+        .and_then(|candidate| compare_successor(parent.bundle(), candidate))
+        .map_err(|_| MigrationFinding::new(migration_finding_code::ARTIFACT_MISMATCH))?;
+        if direct.overall() != CompatibilityClass::RequiresMigration
+            || direct
+                .entries()
+                .iter()
+                .any(|entry| entry.class() == CompatibilityClass::Incompatible)
+        {
+            return Err(MigrationFinding::new(
+                migration_finding_code::ARTIFACT_MISMATCH,
+            ));
+        }
+
+        let expected = expected_gate_a_steps(&parent, &candidate)?;
+        let mut actual = BTreeSet::new();
+        let mut set_fields = BTreeMap::<EntityTypeId, Vec<(FieldId, MigrationExpressionV1)>>::new();
+        let mut rebuilt_indexes = BTreeMap::<EntityTypeId, Vec<IndexId>>::new();
+        let mut added_invariants =
+            BTreeMap::<EntityTypeId, BTreeSet<riffdb_types::InvariantId>>::new();
+        let mut added_relationships = BTreeSet::new();
+        let mut added_unique = BTreeSet::new();
+        let mut rebuilt_projections = BTreeSet::new();
+        for step in migration.steps() {
+            let key = match step.kind() {
+                MigrationStepKindV1::SetField {
+                    entity,
+                    field,
+                    expression,
+                } => {
+                    let schema = candidate
+                        .bundle()
+                        .schema()
+                        .entity(*entity)
+                        .and_then(|entity| entity.record().field(*field))
+                        .ok_or_else(|| {
+                            MigrationFinding::new(migration_finding_code::ARTIFACT_MISMATCH)
+                        })?;
+                    if expression
+                        .arena()
+                        .get(expression.result())
+                        .is_none_or(|node| node.result_type() != schema.value_type())
+                    {
+                        return Err(MigrationFinding::new(
+                            migration_finding_code::ARTIFACT_MISMATCH,
+                        ));
+                    }
+                    set_fields
+                        .entry(*entity)
+                        .or_default()
+                        .push((*field, expression.clone()));
+                    GateAStepKey::SetField(*entity, *field)
+                }
+                MigrationStepKindV1::RebuildIndex { entity, index } => {
+                    rebuilt_indexes.entry(*entity).or_default().push(*index);
+                    GateAStepKey::RebuildIndex(*entity, *index)
+                }
+                MigrationStepKindV1::ValidateRelationship {
+                    source_entity,
+                    name,
+                } => {
+                    added_relationships.insert((*source_entity, name.clone()));
+                    GateAStepKey::Relationship(*source_entity, name.clone())
+                }
+                MigrationStepKindV1::ValidateUnique { entity, index } => {
+                    added_unique.insert((*entity, *index));
+                    GateAStepKey::Unique(*entity, *index)
+                }
+                MigrationStepKindV1::ValidateInvariant {
+                    owner_namespace: StableIdNamespaceTag::Entity,
+                    owner_id,
+                    invariant,
+                } => {
+                    let entity = EntityTypeId::new(*owner_id).ok_or_else(|| {
+                        MigrationFinding::new(migration_finding_code::ARTIFACT_MISMATCH)
+                    })?;
+                    added_invariants
+                        .entry(entity)
+                        .or_default()
+                        .insert(*invariant);
+                    GateAStepKey::EntityInvariant(entity, *invariant)
+                }
+                MigrationStepKindV1::ValidateInvariant {
+                    owner_namespace: StableIdNamespaceTag::Aggregate,
+                    ..
+                } => {
+                    return Err(MigrationFinding::new(
+                        migration_finding_code::UNSUPPORTED_STEP,
+                    ));
+                }
+                MigrationStepKindV1::RebuildProjection { projection } => {
+                    rebuilt_projections.insert(*projection);
+                    GateAStepKey::Projection(*projection)
+                }
+                _ => {
+                    return Err(MigrationFinding::new(
+                        migration_finding_code::UNSUPPORTED_STEP,
+                    ));
+                }
+            };
+            if !actual.insert(key) {
+                return Err(MigrationFinding::new(
+                    migration_finding_code::ARTIFACT_MISMATCH,
+                ));
+            }
+        }
+        if actual != expected {
+            return Err(MigrationFinding::new(
+                migration_finding_code::ARTIFACT_MISMATCH,
+            ));
+        }
+        for fields in set_fields.values_mut() {
+            fields.sort_unstable_by_key(|(field, _)| *field);
+        }
+        for indexes in rebuilt_indexes.values_mut() {
+            indexes.sort_unstable();
+        }
+        Ok(Self {
+            parent,
+            parent_lineage,
+            parent_lineage_hashes,
+            candidate,
+            migration,
+            set_fields,
+            rebuilt_indexes,
+            added_invariants,
+            added_relationships,
+            added_unique,
+            rebuilt_projections,
+        })
+    }
+
+    /// Exact canonical migration identity.
+    #[must_use]
+    pub const fn migration_bundle_hash(&self) -> MigrationBundleHash {
+        self.migration.bundle_hash()
+    }
+
+    /// Exact parent bundle identity.
+    #[must_use]
+    pub fn parent_bundle_hash(&self) -> ContractBundleHash {
+        self.parent.bundle_hash()
+    }
+
+    /// Exact successor bundle identity.
+    #[must_use]
+    pub fn candidate_bundle_hash(&self) -> ContractBundleHash {
+        self.candidate.bundle_hash()
+    }
+
+    /// Borrows exact active-lineage bundle hashes accepted on unchanged rows.
+    #[must_use]
+    pub fn parent_lineage_hashes(&self) -> &[ContractBundleHash] {
+        &self.parent_lineage_hashes
+    }
+
+    /// Exact checked parent bundle.
+    #[must_use]
+    pub const fn parent(&self) -> &ValidatedContractBundle {
+        &self.parent
+    }
+
+    /// Exact checked successor bundle.
+    #[must_use]
+    pub const fn candidate(&self) -> &ValidatedContractBundle {
+        &self.candidate
+    }
+
+    /// Successor projections that require a fresh candidate generation.
+    #[must_use]
+    pub fn rebuilt_projections(&self) -> &BTreeSet<riffdb_types::ProjectionId> {
+        &self.rebuilt_projections
+    }
+
+    /// Purely validates and prepares one predecessor row.
+    pub fn prepare_row(
+        &self,
+        row: StoredEntityRecordV1,
+    ) -> Result<PreparedMigrationRow, MigrationFinding> {
+        let entity_id = row.target().entity_type_id();
+        let parent_entity = self
+            .parent
+            .bundle()
+            .schema()
+            .entity(entity_id)
+            .ok_or_else(|| {
+                MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity_id)
+            })?;
+        let parent_fields = self.materialize_parent_fields(&row, parent_entity)?;
+        let candidate_entity = self
+            .candidate
+            .bundle()
+            .schema()
+            .entity(entity_id)
+            .ok_or_else(|| {
+                MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity_id)
+            })?;
+
+        let mut output = parent_fields
+            .fields()
+            .iter()
+            .cloned()
+            .collect::<BTreeMap<_, _>>();
+        let mut changed = false;
+        if let Some(fields) = self.set_fields.get(&entity_id) {
+            let values = SchemaRowValues {
+                row: &parent_fields,
+            };
+            for (field, expression) in fields {
+                let value = evaluate_expression(expression.arena(), expression.result(), &values)
+                    .map_err(|error| expression_finding(error, entity_id, *field))?;
+                output.insert(*field, value);
+                changed = true;
+            }
+        }
+        if changed {
+            for field in candidate_entity.record().fields() {
+                if !output.contains_key(&field.id()) && field.value_type().is_optional() {
+                    output.insert(field.id(), CanonicalValue::Null);
+                }
+            }
+        }
+        let effective = if changed {
+            CanonicalRecord::new(output.into_iter().collect()).map_err(|_| {
+                MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity_id)
+            })?
+        } else {
+            parent_fields
+        };
+        validate_candidate_record(
+            self.candidate.bundle().schema(),
+            candidate_entity,
+            &effective,
+        )?;
+        validate_added_invariants(self, candidate_entity, &effective)?;
+
+        let post_image = if changed {
+            let version = row.entity_version().checked_next().ok_or_else(|| {
+                MigrationFinding::new(migration_finding_code::ENTITY_VERSION_EXHAUSTED)
+                    .entity(entity_id)
+            })?;
+            Some(
+                StoredEntityRecordV1::new(
+                    row.target().clone(),
+                    version,
+                    self.candidate.contract_version(),
+                    DurableKeySchemaBindingV1::new(
+                        self.candidate.lineage().clone(),
+                        self.candidate.contract_version(),
+                        self.candidate.bundle_hash(),
+                    ),
+                    effective.clone(),
+                )
+                .map_err(|_| {
+                    MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity_id)
+                })?,
+            )
+        } else {
+            None
+        };
+        let partition = derive_partition(self, entity_id, &effective)?;
+        let rebuilt_indexes = derive_indexes(self, candidate_entity, &row, &effective, &partition)?;
+        let relationships = derive_relationships(self, entity_id, &row, &effective)?;
+        let unique_keys = derive_unique(self, candidate_entity, &row, &effective)?;
+        Ok(PreparedMigrationRow {
+            source: row,
+            post_image,
+            rebuilt_indexes,
+            relationships,
+            unique_keys,
+        })
+    }
+
+    fn materialize_parent_fields(
+        &self,
+        row: &StoredEntityRecordV1,
+        parent_entity: &EntitySchema,
+    ) -> Result<CanonicalRecord, MigrationFinding> {
+        if row.schema_binding().lineage() != self.parent.lineage() {
+            return Err(MigrationFinding::new(migration_finding_code::INVALID_ROW)
+                .entity(parent_entity.id()));
+        }
+        if row.schema_binding().contract_version() == self.parent.contract_version()
+            && row.schema_binding().bundle_hash() == self.parent.bundle_hash()
+            && row.written_by_contract() == self.parent.contract_version()
+        {
+            validate_record(self.parent.bundle().schema(), parent_entity, row)?;
+            return Ok(row.fields().clone());
+        }
+
+        let proof = self.parent_lineage.as_ref().ok_or_else(|| {
+            MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(parent_entity.id())
+        })?;
+        let (_, writer) = proof
+            .exact_binding_member(row.schema_binding())
+            .ok_or_else(|| {
+                MigrationFinding::new(migration_finding_code::INVALID_ROW)
+                    .entity(parent_entity.id())
+            })?;
+        if row.written_by_contract() != writer.contract_version() {
+            return Err(MigrationFinding::new(migration_finding_code::INVALID_ROW)
+                .entity(parent_entity.id()));
+        }
+        let writer_entity = writer
+            .bundle()
+            .schema()
+            .entity(parent_entity.id())
+            .ok_or_else(|| {
+                MigrationFinding::new(migration_finding_code::INVALID_ROW)
+                    .entity(parent_entity.id())
+            })?;
+        validate_record(writer.bundle().schema(), writer_entity, row)?;
+
+        let fields = parent_entity
+            .record()
+            .fields()
+            .iter()
+            .map(|field| {
+                if let Some(value) = field_value(row.fields(), field.id()) {
+                    return Ok((field.id(), value.clone()));
+                }
+                if field.value_type().is_optional() {
+                    return Ok((field.id(), CanonicalValue::Null));
+                }
+                Err(MigrationFinding::new(migration_finding_code::INVALID_ROW)
+                    .entity(parent_entity.id())
+                    .with_field(field.id()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let materialized = CanonicalRecord::new(fields).map_err(|_| {
+            MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(parent_entity.id())
+        })?;
+        validate_candidate_record(self.parent.bundle().schema(), parent_entity, &materialized)?;
+        Ok(materialized)
+    }
+}
+
+impl fmt::Debug for ValidatedMigrationPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ValidatedMigrationPlan")
+            .field("parent", &"[CHECKED]")
+            .field("candidate", &"[CHECKED]")
+            .field("migration", &"[CHECKED]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+enum GateAStepKey {
+    SetField(EntityTypeId, FieldId),
+    RebuildIndex(EntityTypeId, IndexId),
+    Relationship(EntityTypeId, String),
+    Unique(EntityTypeId, IndexId),
+    EntityInvariant(EntityTypeId, riffdb_types::InvariantId),
+    AggregateInvariant(riffdb_types::AggregateTypeId, riffdb_types::InvariantId),
+    Projection(riffdb_types::ProjectionId),
+}
+
+fn expected_gate_a_steps(
+    parent: &ValidatedContractBundle,
+    candidate: &ValidatedContractBundle,
+) -> Result<BTreeSet<GateAStepKey>, MigrationFinding> {
+    let mut expected = BTreeSet::new();
+    for entity in candidate.bundle().schema().entities() {
+        let Some(old) = parent.bundle().schema().entity(entity.id()) else {
+            continue;
+        };
+        for field in entity.record().fields() {
+            if old.record().field(field.id()).is_none() && !field.value_type().is_optional() {
+                expected.insert(GateAStepKey::SetField(entity.id(), field.id()));
+            }
+        }
+        for index in entity.indexes() {
+            if old.indexes().iter().all(|old| old.id() != index.id()) {
+                expected.insert(GateAStepKey::RebuildIndex(entity.id(), index.id()));
+            }
+        }
+        for invariant in entity.invariants() {
+            if old
+                .invariants()
+                .iter()
+                .all(|old| old.id() != invariant.id())
+            {
+                expected.insert(GateAStepKey::EntityInvariant(entity.id(), invariant.id()));
+            }
+        }
+    }
+    for relationship in candidate.bundle().schema().relationships() {
+        if parent
+            .bundle()
+            .schema()
+            .entity(relationship.source_entity())
+            .is_some()
+            && parent.bundle().schema().relationships().iter().all(|old| {
+                old.source_entity() != relationship.source_entity()
+                    || old.name() != relationship.name()
+            })
+        {
+            expected.insert(GateAStepKey::Relationship(
+                relationship.source_entity(),
+                relationship.name().to_owned(),
+            ));
+        }
+    }
+    for unique in candidate.bundle().schema().unique_keys() {
+        if parent
+            .bundle()
+            .schema()
+            .entity(unique.source_entity())
+            .is_some()
+            && parent.bundle().schema().unique_keys().iter().all(|old| {
+                old.source_entity() != unique.source_entity() || old.name() != unique.name()
+            })
+        {
+            expected.insert(GateAStepKey::Unique(
+                unique.source_entity(),
+                unique.index_id(),
+            ));
+        }
+    }
+    for aggregate in candidate.bundle().schema().aggregates() {
+        let Some(old) = parent.bundle().schema().aggregate(aggregate.id()) else {
+            continue;
+        };
+        for invariant in aggregate.invariants() {
+            if old
+                .invariants()
+                .iter()
+                .all(|old| old.id() != invariant.id())
+            {
+                expected.insert(GateAStepKey::AggregateInvariant(
+                    aggregate.id(),
+                    invariant.id(),
+                ));
+            }
+        }
+    }
+    for projection in candidate.bundle().projections() {
+        if parent
+            .bundle()
+            .projections()
+            .iter()
+            .all(|old| old.projection_id() != projection.projection_id())
+            && parent
+                .bundle()
+                .schema()
+                .event(projection.source_event())
+                .is_some()
+        {
+            expected.insert(GateAStepKey::Projection(projection.projection_id()));
+        }
+    }
+    if expected
+        .iter()
+        .any(|key| matches!(key, GateAStepKey::AggregateInvariant(..)))
+    {
+        return Err(MigrationFinding::new(
+            migration_finding_code::UNSUPPORTED_STEP,
+        ));
+    }
+    Ok(expected)
+}
+
+fn validate_record(
+    schema: &riffdb_contract_ir::SchemaIr,
+    entity: &EntitySchema,
+    row: &StoredEntityRecordV1,
+) -> Result<(), MigrationFinding> {
+    validate_candidate_record(schema, entity, row.fields())?;
+    let values = entity
+        .primary_key_fields()
+        .iter()
+        .map(|field| {
+            field_value(row.fields(), *field).cloned().ok_or_else(|| {
+                MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity.id())
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if !matches!(
+        entity.primary_key().encode_entity(&values),
+        Ok(key) if &key == row.target().key()
+    ) {
+        return Err(MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity.id()));
+    }
+    Ok(())
+}
+
+fn validate_candidate_record(
+    schema: &riffdb_contract_ir::SchemaIr,
+    entity: &EntitySchema,
+    record: &CanonicalRecord,
+) -> Result<(), MigrationFinding> {
+    if record.fields().len() != entity.record().fields().len() {
+        return Err(MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity.id()));
+    }
+    for (actual, expected) in record.fields().iter().zip(entity.record().fields()) {
+        if actual.0 != expected.id()
+            || validate_static_value(schema, expected.value_type(), &actual.1).is_err()
+        {
+            return Err(MigrationFinding::new(migration_finding_code::INVALID_ROW)
+                .entity(entity.id())
+                .with_field(expected.id()));
+        }
+    }
+    Ok(())
+}
+
+fn validate_added_invariants(
+    plan: &ValidatedMigrationPlan,
+    entity: &EntitySchema,
+    record: &CanonicalRecord,
+) -> Result<(), MigrationFinding> {
+    let Some(required) = plan.added_invariants.get(&entity.id()) else {
+        return Ok(());
+    };
+    let values = SchemaRowValues { row: record };
+    for invariant in entity.invariants() {
+        if required.contains(&invariant.id())
+            && !evaluate_predicate(invariant.expressions(), invariant.predicate(), &values)
+                .map_err(|_| {
+                    MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity.id())
+                })?
+        {
+            return Err(
+                MigrationFinding::new(migration_finding_code::INVARIANT_REJECTED)
+                    .entity(entity.id()),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn derive_partition(
+    plan: &ValidatedMigrationPlan,
+    entity: EntityTypeId,
+    record: &CanonicalRecord,
+) -> Result<riffdb_types::PartitionKey, MigrationFinding> {
+    let aggregate = plan
+        .candidate
+        .bundle()
+        .schema()
+        .aggregates()
+        .iter()
+        .find(|aggregate| aggregate.owns(entity))
+        .ok_or_else(|| MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity))?;
+    let values = SchemaRowValues { row: record };
+    let value = evaluate_expression(
+        aggregate.keys().expressions(),
+        aggregate.keys().partition_expression(),
+        &values,
+    )
+    .map_err(|_| MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity))?;
+    aggregate
+        .keys()
+        .partition_schema()
+        .encode_partition(&[value])
+        .map_err(|_| MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity))
+}
+
+fn derive_indexes(
+    plan: &ValidatedMigrationPlan,
+    entity: &EntitySchema,
+    source: &StoredEntityRecordV1,
+    record: &CanonicalRecord,
+    partition: &riffdb_types::PartitionKey,
+) -> Result<Vec<StoredIndexEntryV2>, MigrationFinding> {
+    let Some(required) = plan.rebuilt_indexes.get(&entity.id()) else {
+        return Ok(Vec::new());
+    };
+    let binding = DurableKeySchemaBindingV1::new(
+        plan.candidate.lineage().clone(),
+        plan.candidate.contract_version(),
+        plan.candidate.bundle_hash(),
+    );
+    required
+        .iter()
+        .map(|index_id| {
+            let index = entity
+                .indexes()
+                .iter()
+                .find(|index| index.id() == *index_id)
+                .ok_or_else(|| {
+                    MigrationFinding::new(migration_finding_code::INDEX_INVALID)
+                        .entity(entity.id())
+                        .with_index(*index_id)
+                })?;
+            let values = index
+                .fields()
+                .iter()
+                .map(|field| {
+                    field_value(record, *field).cloned().ok_or_else(|| {
+                        MigrationFinding::new(migration_finding_code::INDEX_INVALID)
+                            .entity(entity.id())
+                            .with_field(*field)
+                            .with_index(*index_id)
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let key = index
+                .key_schema()
+                .encode_index(&values, source.target().key().clone())
+                .map_err(|_| {
+                    MigrationFinding::new(migration_finding_code::INDEX_INVALID)
+                        .entity(entity.id())
+                        .with_index(*index_id)
+                })?;
+            StoredIndexEntryV2::new(
+                key,
+                binding.clone(),
+                CanonicalRecord::new(Vec::new()).expect("empty record"),
+                partition.clone(),
+            )
+            .map_err(|_| {
+                MigrationFinding::new(migration_finding_code::INDEX_INVALID)
+                    .entity(entity.id())
+                    .with_index(*index_id)
+            })
+        })
+        .collect()
+}
+
+fn derive_relationships(
+    plan: &ValidatedMigrationPlan,
+    entity: EntityTypeId,
+    source: &StoredEntityRecordV1,
+    record: &CanonicalRecord,
+) -> Result<Vec<MigrationRelationshipFact>, MigrationFinding> {
+    plan.candidate
+        .bundle()
+        .schema()
+        .relationships()
+        .iter()
+        .filter(|relationship| {
+            relationship.source_entity() == entity
+                && plan
+                    .added_relationships
+                    .contains(&(entity, relationship.name().to_owned()))
+        })
+        .map(|relationship| {
+            let target_schema = plan
+                .candidate
+                .bundle()
+                .schema()
+                .entity(relationship.target_entity())
+                .ok_or_else(|| MigrationFinding::new(migration_finding_code::ARTIFACT_MISMATCH))?;
+            let values = relationship
+                .source_fields()
+                .iter()
+                .map(|field| {
+                    field_value(record, *field).cloned().ok_or_else(|| {
+                        MigrationFinding::new(migration_finding_code::INVALID_ROW)
+                            .entity(entity)
+                            .with_field(*field)
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let key = target_schema
+                .primary_key()
+                .encode_entity(&values)
+                .map_err(|_| {
+                    MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity)
+                })?;
+            let target = EntityTarget::new(relationship.target_entity(), key).map_err(|_| {
+                MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity)
+            })?;
+            Ok(MigrationRelationshipFact {
+                name: relationship.name().to_owned(),
+                source: source.target().clone(),
+                target,
+            })
+        })
+        .collect()
+}
+
+fn derive_unique(
+    plan: &ValidatedMigrationPlan,
+    entity: &EntitySchema,
+    source: &StoredEntityRecordV1,
+    record: &CanonicalRecord,
+) -> Result<Vec<MigrationUniqueFact>, MigrationFinding> {
+    plan.candidate
+        .bundle()
+        .schema()
+        .unique_keys()
+        .iter()
+        .filter(|unique| {
+            unique.source_entity() == entity.id()
+                && plan
+                    .added_unique
+                    .contains(&(entity.id(), unique.index_id()))
+        })
+        .map(|unique| {
+            let index = entity
+                .indexes()
+                .iter()
+                .find(|index| index.id() == unique.index_id())
+                .ok_or_else(|| MigrationFinding::new(migration_finding_code::ARTIFACT_MISMATCH))?;
+            let values = unique
+                .fields()
+                .iter()
+                .map(|field| {
+                    field_value(record, *field).cloned().ok_or_else(|| {
+                        MigrationFinding::new(migration_finding_code::INVALID_ROW)
+                            .entity(entity.id())
+                            .with_field(*field)
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let prefix = index
+                .key_schema()
+                .encode_index_prefix(&values)
+                .map_err(|_| {
+                    MigrationFinding::new(migration_finding_code::INDEX_INVALID)
+                        .entity(entity.id())
+                        .with_index(index.id())
+                })?;
+            Ok(MigrationUniqueFact {
+                entity_type: entity.id(),
+                index: index.id(),
+                prefix: prefix.as_bytes().to_vec(),
+                source: source.target().clone(),
+            })
+        })
+        .collect()
+}
+
+fn expression_finding(
+    error: EvaluationError,
+    entity: EntityTypeId,
+    field: FieldId,
+) -> MigrationFinding {
+    let code = match error {
+        EvaluationError::Arithmetic => migration_finding_code::TRANSFORM_ARITHMETIC,
+        EvaluationError::Integrity => migration_finding_code::INVALID_ROW,
+    };
+    MigrationFinding::new(code).entity(entity).with_field(field)
+}
+
+fn field_value(record: &CanonicalRecord, field: FieldId) -> Option<&CanonicalValue> {
+    record
+        .fields()
+        .binary_search_by_key(&field, |(candidate, _)| *candidate)
+        .ok()
+        .map(|index| &record.fields()[index].1)
+}
+
+struct SchemaRowValues<'a> {
+    row: &'a CanonicalRecord,
+}
+
+impl ExpressionValueSource for SchemaRowValues<'_> {
+    fn schema_field(&self, _entity_type: EntityTypeId, field: FieldId) -> Option<CanonicalValue> {
+        field_value(self.row, field).cloned()
+    }
+}

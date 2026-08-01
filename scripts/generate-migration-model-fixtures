@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+mode="${1:-}"
+case "$mode" in
+    "")
+        output="$repo_root/fixtures/migrations/model/gate-a/required-field-boundaries.txt"
+        ;;
+    --check)
+        scratch="$(mktemp -d)"
+        trap 'rm -rf "$scratch"' EXIT
+        output="$scratch/required-field-boundaries.txt"
+        ;;
+    *)
+        printf 'usage: %s [--check]\n' "$0" >&2
+        exit 2
+        ;;
+esac
+
+mkdir -p "$(dirname "$output")"
+{
+    printf 'format=riffdb-migration-model-v1\n'
+    printf 'scan_rows=256\n'
+    printf 'batch_mutations=64\n'
+    printf 'history=row_count,checked_rows,changed_rows,scan_pages,batches\n'
+    for row_count in 0 1 63 64 65 255 256 257 300 513; do
+        if ((row_count == 0)); then
+            scan_pages=0
+            batches=1
+        else
+            scan_pages=$(((row_count + 255) / 256))
+            batches=$(((row_count + 63) / 64))
+        fi
+        printf '%d,%d,%d,%d,%d\n' \
+            "$row_count" "$row_count" "$row_count" "$scan_pages" "$batches"
+    done
+} >"$output"
+
+if [[ "$mode" == "--check" ]]; then
+    expected="$repo_root/fixtures/migrations/model/gate-a/required-field-boundaries.txt"
+    if ! diff --brief -- "$expected" "$output"; then
+        printf 'migration model fixtures are stale\n' >&2
+        exit 1
+    fi
+    printf 'Migration model fixtures are current.\n'
+else
+    printf 'Generated migration model fixtures.\n'
+fi

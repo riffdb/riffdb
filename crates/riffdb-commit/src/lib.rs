@@ -20,6 +20,7 @@ mod command_validation;
 mod control_plane;
 mod idempotency_inspection;
 mod initialization;
+mod migration;
 mod notification;
 mod outcome;
 mod provenance;
@@ -73,6 +74,7 @@ pub use initialization::{
     DatabaseInitializationCompletion, DatabaseInitializationDecision,
     DatabaseInitializationExecutor, DatabaseInitializationPermit, InitializedDatabase,
 };
+pub use migration::{MigrationApplyReport, MigrationCheckReport, MigrationCoordinator};
 pub use notification::{ApplicationCommitNotificationError, ApplicationCommitNotificationSink};
 pub use outcome::{CommittedOutcome, CommittedOutcomeDisposition, CommittedOutcomeDurabilityError};
 pub use provenance::{ProvenanceIdSource, ProvenanceIdSourceError};
