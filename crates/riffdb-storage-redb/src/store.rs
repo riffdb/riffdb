@@ -198,6 +198,7 @@ enum RegistryMigration {
     HistoryIncarnation,
     AuditRequestIndex,
     EntityReference,
+    ContractMigration,
 }
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
@@ -230,6 +231,11 @@ pub(crate) const PRE_EVENT_ROUTE_REGISTRY_DIGEST: [u8; 32] = [
 pub(crate) const PRE_ENTITY_REFERENCE_REGISTRY_DIGEST: [u8; 32] = [
     0xfb, 0x52, 0x21, 0xd7, 0x9c, 0xd8, 0x29, 0xd3, 0x0a, 0x44, 0x78, 0x88, 0xca, 0xf8, 0x1d, 0xb8,
     0x51, 0xcd, 0x4e, 0x77, 0xb7, 0xdc, 0xb3, 0x94, 0xe9, 0x86, 0x39, 0x7d, 0x1a, 0x71, 0x2b, 0x4d,
+];
+/// Registry digest immediately before durable contract-migration records became writable.
+pub(crate) const PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST: [u8; 32] = [
+    0x5d, 0x79, 0x8d, 0x58, 0xec, 0x21, 0x95, 0x11, 0x3e, 0x51, 0x73, 0x88, 0x97, 0xbb, 0xc5, 0x3b,
+    0x95, 0x96, 0xc4, 0xa1, 0x2c, 0x4e, 0x05, 0x4f, 0x32, 0xca, 0xa3, 0x67, 0x9e, 0x2d, 0x46, 0xe5,
 ];
 
 /// Last observed redb repair progress in basis points (0..=10_000), for recovery telemetry.
@@ -368,6 +374,10 @@ impl RedbStore {
                     == &SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST)
                 {
                     RegistryMigration::EntityReference
+                } else if observed.value()
+                    == &SchemaHash::from_bytes(PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST)
+                {
+                    RegistryMigration::ContractMigration
                 } else {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
@@ -454,6 +464,23 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST),
+            )?;
+        }
+        if matches!(
+            registry_migration,
+            RegistryMigration::EventReferencesThenGenerations
+                | RegistryMigration::Generations
+                | RegistryMigration::HistoryIncarnation
+                | RegistryMigration::AuditRequestIndex
+                | RegistryMigration::EventRoute
+                | RegistryMigration::EntityReference
+                | RegistryMigration::ContractMigration
+        ) {
+            install_contract_migration_tables(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -1455,6 +1482,15 @@ fn publish_record_registry(
     shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
     shared.commit_durable(transaction)?;
     shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)
+}
+
+fn install_contract_migration_tables(shared: &SharedRedb) -> Result<(), StorageError> {
+    let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    create_all_tables(&transaction).map_err(table_error)?;
+    shared.commit_durable(transaction)
 }
 
 fn migrate_string_table(

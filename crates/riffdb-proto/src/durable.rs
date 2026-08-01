@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 39;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 43;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 33;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 37;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -90,6 +90,14 @@ const ENTITY_REFERENCE_V3_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
 const ENTITY_REFERENCE_V3_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-entity-reference-v3-record-bound.bin"
+));
+const MIGRATION_V1_SCHEMA_HASH_BYTES: &[u8; 128] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-migration-v1-schema-hashes.bin"
+));
+const MIGRATION_V1_RECORD_BOUND_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-migration-v1-record-bounds.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
@@ -224,6 +232,26 @@ const fn entity_reference_v3_record_bound(offset: usize) -> usize {
         ENTITY_REFERENCE_V3_RECORD_BOUND_BYTES[offset + 1],
         ENTITY_REFERENCE_V3_RECORD_BOUND_BYTES[offset + 2],
         ENTITY_REFERENCE_V3_RECORD_BOUND_BYTES[offset + 3],
+    ]) as usize
+}
+
+const fn migration_v1_schema_hash(index: usize) -> SchemaHash {
+    let mut bytes = [0_u8; 32];
+    let mut offset = 0;
+    while offset < bytes.len() {
+        bytes[offset] = MIGRATION_V1_SCHEMA_HASH_BYTES[index * 32 + offset];
+        offset += 1;
+    }
+    SchemaHash::from_bytes(bytes)
+}
+
+const fn migration_v1_record_bound(index: usize, offset: usize) -> usize {
+    let start = index * 8 + offset;
+    u32::from_be_bytes([
+        MIGRATION_V1_RECORD_BOUND_BYTES[start],
+        MIGRATION_V1_RECORD_BOUND_BYTES[start + 1],
+        MIGRATION_V1_RECORD_BOUND_BYTES[start + 2],
+        MIGRATION_V1_RECORD_BOUND_BYTES[start + 3],
     ]) as usize
 }
 
@@ -446,6 +474,45 @@ const COMMIT_V3_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current
 )
 .with_compact_identity(17, 3);
 
+macro_rules! migration_v1_schema {
+    ($name:literal, $message:ty, $index:literal, $role:literal) => {
+        RecordSchema::new_current(
+            concat!("riffdb.storage.v1.", $name),
+            migration_v1_schema_hash($index),
+            migration_v1_record_bound($index, 0),
+            migration_v1_record_bound($index, 4),
+            preflight_payload::<{ 38 + $index }>,
+            validate_payload::<{ 38 + $index }, $message>,
+        )
+        .with_compact_identity($role, 1)
+    };
+}
+
+const CONTRACT_MIGRATION_JOURNAL_V1_RECORD_SCHEMA: RecordSchema<'static> = migration_v1_schema!(
+    "StoredContractMigrationJournalV1",
+    v1::StoredContractMigrationJournalV1,
+    0,
+    34
+);
+const CONTRACT_MIGRATION_RECORD_V1_RECORD_SCHEMA: RecordSchema<'static> = migration_v1_schema!(
+    "StoredContractMigrationRecordV1",
+    v1::StoredContractMigrationRecordV1,
+    1,
+    35
+);
+const CONTRACT_WRITE_RETIREMENT_V1_RECORD_SCHEMA: RecordSchema<'static> = migration_v1_schema!(
+    "StoredContractWriteRetirementV1",
+    v1::StoredContractWriteRetirementV1,
+    2,
+    36
+);
+const RETIRED_ENTITY_RECORD_V1_RECORD_SCHEMA: RecordSchema<'static> = migration_v1_schema!(
+    "StoredRetiredEntityRecordV1",
+    v1::StoredRetiredEntityRecordV1,
+    3,
+    37
+);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -552,6 +619,22 @@ readable_message!(
 );
 readable_message!(v1::StoredEventRouteV1, EVENT_ROUTE_V1_RECORD_SCHEMA);
 readable_message!(v1::StoredCommitRecordV3, COMMIT_V3_RECORD_SCHEMA);
+readable_message!(
+    v1::StoredContractMigrationJournalV1,
+    CONTRACT_MIGRATION_JOURNAL_V1_RECORD_SCHEMA
+);
+readable_message!(
+    v1::StoredContractMigrationRecordV1,
+    CONTRACT_MIGRATION_RECORD_V1_RECORD_SCHEMA
+);
+readable_message!(
+    v1::StoredContractWriteRetirementV1,
+    CONTRACT_WRITE_RETIREMENT_V1_RECORD_SCHEMA
+);
+readable_message!(
+    v1::StoredRetiredEntityRecordV1,
+    RETIRED_ENTITY_RECORD_V1_RECORD_SCHEMA
+);
 
 writable_message!(v1::StoredStorageFormatVersionV1);
 writable_message!(v1::StoredDatabaseIdentityV1);
@@ -586,6 +669,10 @@ writable_message!(v1::StoredIndexGenerationV2);
 writable_message!(v1::StoredHistoryIncarnationV1);
 writable_message!(v1::StoredServiceAuditRequestIndexV1);
 writable_message!(v1::StoredEventRouteV1);
+writable_message!(v1::StoredContractMigrationJournalV1);
+writable_message!(v1::StoredContractMigrationRecordV1);
+writable_message!(v1::StoredContractWriteRetirementV1);
+writable_message!(v1::StoredRetiredEntityRecordV1);
 
 /// Encodes one sealed generated message after the same allocation-free shape preflight.
 pub fn encode_current_message<M: WritableRecordMessage>(
@@ -644,6 +731,10 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     SERVICE_AUDIT_REQUEST_INDEX_V1_RECORD_SCHEMA,
     EVENT_ROUTE_V1_RECORD_SCHEMA,
     COMMIT_V3_RECORD_SCHEMA,
+    CONTRACT_MIGRATION_JOURNAL_V1_RECORD_SCHEMA,
+    CONTRACT_MIGRATION_RECORD_V1_RECORD_SCHEMA,
+    CONTRACT_WRITE_RETIREMENT_V1_RECORD_SCHEMA,
+    RETIRED_ENTITY_RECORD_V1_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
 ];
 
@@ -681,6 +772,10 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     HISTORY_INCARNATION_V1_RECORD_SCHEMA,
     SERVICE_AUDIT_REQUEST_INDEX_V1_RECORD_SCHEMA,
     EVENT_ROUTE_V1_RECORD_SCHEMA,
+    CONTRACT_MIGRATION_JOURNAL_V1_RECORD_SCHEMA,
+    CONTRACT_MIGRATION_RECORD_V1_RECORD_SCHEMA,
+    CONTRACT_WRITE_RETIREMENT_V1_RECORD_SCHEMA,
+    RETIRED_ENTITY_RECORD_V1_RECORD_SCHEMA,
     REGISTRY_V2_RECORD_SCHEMA,
 ];
 

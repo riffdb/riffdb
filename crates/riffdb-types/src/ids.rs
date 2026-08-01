@@ -420,6 +420,18 @@ hash_id!(
     /// The stable semantic-input hash of one offline maintenance operation.
     OfflineMaintenanceInputHash
 );
+hash_id!(
+    /// The stable semantic-input hash of one contract migration operation.
+    ContractMigrationInputHash
+);
+hash_id!(
+    /// The chained hash of one durable contract migration journal state.
+    ContractMigrationJournalHash
+);
+hash_id!(
+    /// The digest of one complete staged contract migration validation.
+    ContractMigrationValidationDigest
+);
 
 /// A validation failure for a UUIDv7 identifier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -600,6 +612,10 @@ uuid_v7_id!(
 uuid_v7_id!(
     /// The caller-stable identifier of one offline maintenance operation.
     OfflineMaintenanceOperationId
+);
+uuid_v7_id!(
+    /// The caller-stable identifier of one contract migration operation.
+    ContractMigrationOperationId
 );
 
 /// A safe validation failure for a bounded textual identifier.

@@ -37,8 +37,16 @@ pub(crate) const CAPABILITY_TOKENS: TableDefinition<&[u8], &[u8]> =
 pub(crate) const AUDIT: TableDefinition<&[u8], &[u8]> = TableDefinition::new("audit");
 pub(crate) const AUDIT_BY_REQUEST: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("audit_by_request");
+pub(crate) const CONTRACT_MIGRATION_JOURNAL: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("contract_migration_journal");
+pub(crate) const CONTRACT_MIGRATIONS: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("contract_migrations");
+pub(crate) const CONTRACT_WRITE_RETIREMENTS: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("contract_write_retirements");
+pub(crate) const RETIRED_ENTITIES: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("retired_entities");
 
-pub(crate) const TABLE_NAMES: [&str; 23] = [
+pub(crate) const TABLE_NAMES: [&str; 27] = [
     "meta",
     "contract_bundles",
     "catalog_active",
@@ -62,9 +70,13 @@ pub(crate) const TABLE_NAMES: [&str; 23] = [
     "capability_tokens",
     "audit",
     "audit_by_request",
+    "contract_migration_journal",
+    "contract_migrations",
+    "contract_write_retirements",
+    "retired_entities",
 ];
 
-pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 22] = [
+pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 26] = [
     CONTRACT_BUNDLES,
     CATALOG_ACTIVE,
     QUERY_MODULES,
@@ -87,6 +99,10 @@ pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 22] = [
     CAPABILITY_TOKENS,
     AUDIT,
     AUDIT_BY_REQUEST,
+    CONTRACT_MIGRATION_JOURNAL,
+    CONTRACT_MIGRATIONS,
+    CONTRACT_WRITE_RETIREMENTS,
+    RETIRED_ENTITIES,
 ];
 
 pub(crate) const META_FORMAT_VERSION: &str = "format_version";
@@ -140,6 +156,10 @@ pub(crate) fn create_all_tables(tx: &WriteTransaction) -> Result<(), TableError>
     drop(tx.open_table(CAPABILITY_TOKENS)?);
     drop(tx.open_table(AUDIT)?);
     drop(tx.open_table(AUDIT_BY_REQUEST)?);
+    drop(tx.open_table(CONTRACT_MIGRATION_JOURNAL)?);
+    drop(tx.open_table(CONTRACT_MIGRATIONS)?);
+    drop(tx.open_table(CONTRACT_WRITE_RETIREMENTS)?);
+    drop(tx.open_table(RETIRED_ENTITIES)?);
     Ok(())
 }
 
@@ -177,10 +197,14 @@ mod tests {
             CAPABILITY_TOKENS.name(),
             AUDIT.name(),
             AUDIT_BY_REQUEST.name(),
+            CONTRACT_MIGRATION_JOURNAL.name(),
+            CONTRACT_MIGRATIONS.name(),
+            CONTRACT_WRITE_RETIREMENTS.name(),
+            RETIRED_ENTITIES.name(),
         ];
 
         assert_eq!(definition_names, TABLE_NAMES);
-        assert_eq!(TABLE_NAMES.len(), 23);
+        assert_eq!(TABLE_NAMES.len(), 27);
         assert_eq!(
             TABLE_NAMES.into_iter().collect::<BTreeSet<_>>().len(),
             TABLE_NAMES.len()
