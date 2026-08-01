@@ -770,11 +770,49 @@ struct AdminAuditCheckpoint {
 
 impl AdminAuditCheckpoint {
     fn capture(state: &MemoryState) -> Self {
+        // Compile-coupled: listing every MemoryState field without `..` so a
+        // new field forces an explicit decision about whether the fused-pair
+        // rollback snapshot must include it.
+        let MemoryState {
+            metadata,
+            catalog_bundles: _,
+            catalog_activations: _,
+            catalog_bundle_activations: _,
+            query_modules: _,
+            active_query_modules: _,
+            administration_audit,
+            service_audit_invocations,
+            admissions: _,
+            entities: _,
+            entity_commits: _,
+            index_entries: _,
+            index_epochs: _,
+            historical_plan_references: _,
+            historical_persisted_keys: _,
+            commits: _,
+            commit_admissions: _,
+            committed_admissions: _,
+            provenance: _,
+            events: _,
+            event_routes: _,
+            outbox_intents: _,
+            outbox_statuses: _,
+            pending_outbox_events: _,
+            undelivered_outbox_events: _,
+            capabilities: _,
+            capability_lookups: _,
+            projection_controls: _,
+            projection_states: _,
+            projection_applies: _,
+            synthetic_charges,
+            #[cfg(test)]
+                injected_structural_findings: _,
+        } = state;
         Self {
-            metadata: state.metadata.clone(),
-            administration_audit: state.administration_audit.clone(),
-            service_audit_invocations: state.service_audit_invocations.clone(),
-            administration_charges: state.synthetic_charges.administration_audit.clone(),
+            metadata: metadata.clone(),
+            administration_audit: administration_audit.clone(),
+            service_audit_invocations: service_audit_invocations.clone(),
+            administration_charges: synthetic_charges.administration_audit.clone(),
         }
     }
 
