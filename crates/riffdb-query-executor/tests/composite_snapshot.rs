@@ -594,3 +594,257 @@ fn row<const N: usize>(entity: &str, fields: [(&str, CanonicalValue); N]) -> Que
     )
     .expect("row")
 }
+
+const STATIC_MAX_PAGE: &str = r#"
+query BoardPageMax(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == TicketStatus.Open
+        order by ticket_id asc
+        take 499
+    return Found { tickets: tickets { ticket_id } }
+    outcomes Found
+}
+"#;
+
+const PARAM_PAGE: &str = r#"
+query ParamPage(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $limit: Limit = 25,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == TicketStatus.Open
+        order by ticket_id asc
+        take $limit
+    return Found { tickets: tickets { ticket_id } }
+    outcomes Found
+}
+"#;
+
+/// Adapter-style view that mirrors real storage: fetch limit+1, charge the probe
+/// to scanned_rows, return at most `limit` rows with a continuation when more exist.
+struct ProbeScanView {
+    available: usize,
+    scan_calls: usize,
+    open_status: CanonicalValue,
+}
+
+impl QueryReadView for ProbeScanView {
+    type Error = ();
+
+    fn fault(&self, _error: &Self::Error) -> riffdb_query_executor::QueryBackendFault {
+        riffdb_query_executor::QueryBackendFault::Unavailable
+    }
+
+    fn application_head(&self) -> u64 {
+        1
+    }
+
+    fn point(
+        &mut self,
+        _step: &QueryAccessStep,
+        _predicates: &[BoundPredicate],
+    ) -> Result<Option<QueryRow>, Self::Error> {
+        Err(())
+    }
+
+    fn dependent_point_batch(
+        &mut self,
+        _step: &QueryAccessStep,
+        _predicates: &[Vec<BoundPredicate>],
+    ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
+        Err(())
+    }
+
+    fn scan(
+        &mut self,
+        step: &QueryAccessStep,
+        _predicates: &[BoundPredicate],
+        limit: u64,
+        _after: Option<&[u8]>,
+    ) -> Result<QueryScanPage, Self::Error> {
+        self.scan_calls += 1;
+        let page_limit = usize::try_from(limit).expect("limit fits usize");
+        let fetch = page_limit.saturating_add(1);
+        let scanned = self.available.min(fetch);
+        let has_more = self.available > page_limit;
+        let return_count = if has_more { page_limit } else { scanned };
+        let rows = (0..return_count)
+            .map(|index| {
+                row(
+                    step.entity(),
+                    [
+                        ("organization_id", CanonicalValue::Uuid([1; 16])),
+                        ("project_id", CanonicalValue::Uuid([2; 16])),
+                        (
+                            "ticket_id",
+                            CanonicalValue::Uuid({
+                                let mut id = [0_u8; 16];
+                                id[0] = (index / 256) as u8;
+                                id[1] = (index % 256) as u8;
+                                id[15] = 3;
+                                id
+                            }),
+                        ),
+                        ("status", self.open_status.clone()),
+                    ],
+                )
+            })
+            .collect::<Vec<_>>();
+        let scanned_rows = u64::try_from(scanned).expect("scanned fits u64");
+        if has_more {
+            QueryScanPage::continued(rows, 1, scanned_rows.max(1), vec![0xAB]).ok_or(())
+        } else {
+            Ok(QueryScanPage::exact_end(rows, 1))
+        }
+    }
+}
+
+fn open_status_value(catalog: &SymbolicCatalog) -> CanonicalValue {
+    let status = catalog.enumeration("TicketStatus").expect("status enum");
+    CanonicalValue::Enum {
+        type_id: status.internal_id(),
+        variant_id: status.variant("Open").expect("Open"),
+    }
+}
+
+#[test]
+fn max_page_take_executes_with_continuation_probe_against_full_range() {
+    use riffdb_query_executor::max_query_page_take;
+
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let program =
+        compile_query(&parse_query(STATIC_MAX_PAGE).expect("query"), &catalog).expect("program");
+    assert_eq!(program.steps()[0].maximum_rows(), max_query_page_take());
+    let parameters = QueryParameters::checked(BTreeMap::from([
+        ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+        ("project_id".to_owned(), CanonicalValue::Uuid([2; 16])),
+    ]))
+    .expect("parameters");
+    // ≥ max_query_page_take() rows in range so the adapter probes one past the page.
+    let mut view = ProbeScanView {
+        available: max_query_page_take() as usize + 10,
+        scan_calls: 0,
+        open_status: open_status_value(&catalog),
+    };
+    let snapshot = execute_in_snapshot(&program, &parameters, &mut view).expect("execute max take");
+    assert_eq!(view.scan_calls, 1);
+    match snapshot.fields().get("tickets") {
+        Some(QueryResultValue::Many(rows)) => {
+            assert_eq!(rows.len() as u64, max_query_page_take());
+        }
+        other => panic!("expected many tickets, got {other:?}"),
+    }
+    assert!(
+        snapshot.continuation().is_some(),
+        "range larger than take must mint a continuation after the probe"
+    );
+}
+
+#[test]
+fn parameterized_limit_over_max_page_take_is_invalid_parameter_with_zero_scan() {
+    use riffdb_query_executor::{MAX_QUERY_SCANNED_ROWS, max_query_page_take};
+
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let program =
+        compile_query(&parse_query(PARAM_PAGE).expect("query"), &catalog).expect("program");
+    let parameters = QueryParameters::checked(BTreeMap::from([
+        ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+        ("project_id".to_owned(), CanonicalValue::Uuid([2; 16])),
+        (
+            "limit".to_owned(),
+            CanonicalValue::U64(MAX_QUERY_SCANNED_ROWS),
+        ),
+    ]))
+    .expect("parameters");
+    let mut view = ProbeScanView {
+        available: 1_000,
+        scan_calls: 0,
+        open_status: open_status_value(&catalog),
+    };
+    assert_eq!(
+        execute_in_snapshot(&program, &parameters, &mut view),
+        Err(QueryExecutionError::InvalidParameter {
+            parameter: "limit".to_owned(),
+        })
+    );
+    assert_eq!(
+        view.scan_calls, 0,
+        "over-bound Limit must not execute a scan"
+    );
+
+    let parameters = QueryParameters::checked(BTreeMap::from([
+        ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+        ("project_id".to_owned(), CanonicalValue::Uuid([2; 16])),
+        (
+            "limit".to_owned(),
+            CanonicalValue::U64(max_query_page_take()),
+        ),
+    ]))
+    .expect("parameters");
+    let mut view = ProbeScanView {
+        available: max_query_page_take() as usize + 5,
+        scan_calls: 0,
+        open_status: open_status_value(&catalog),
+    };
+    let snapshot = execute_in_snapshot(&program, &parameters, &mut view).expect("at-bound limit");
+    assert_eq!(view.scan_calls, 1);
+    match snapshot.fields().get("tickets") {
+        Some(QueryResultValue::Many(rows)) => {
+            assert_eq!(rows.len() as u64, max_query_page_take());
+        }
+        other => panic!("expected many tickets, got {other:?}"),
+    }
+}
+
+#[test]
+fn scan_ceiling_breach_is_bound_exceeded_not_internal() {
+    use riffdb_query_executor::MAX_QUERY_SCANNED_ROWS;
+
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let program =
+        compile_query(&parse_query(OPEN_TICKETS).expect("query"), &catalog).expect("program");
+    let status = catalog.enumeration("TicketStatus").expect("status enum");
+    let parameters = QueryParameters::checked(BTreeMap::from([
+        ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+        ("project_id".to_owned(), CanonicalValue::Uuid([2; 16])),
+    ]))
+    .expect("parameters");
+    let ticket = row(
+        "Ticket",
+        [
+            ("organization_id", CanonicalValue::Uuid([1; 16])),
+            ("project_id", CanonicalValue::Uuid([2; 16])),
+            ("ticket_id", CanonicalValue::Uuid([3; 16])),
+            (
+                "status",
+                CanonicalValue::Enum {
+                    type_id: status.internal_id(),
+                    variant_id: status.variant("Open").expect("Open"),
+                },
+            ),
+        ],
+    );
+    // Force an over-scan page (take 5 plan, synthetic scanned = MAX+1) through
+    // the public constructor so defense-in-depth classifies BoundExceeded.
+    let mut over = ReportedWorkView {
+        row: ticket,
+        scanned_rows: MAX_QUERY_SCANNED_ROWS + 1,
+        point_reads: 1,
+        continuation: true,
+    };
+    assert_eq!(
+        execute_in_snapshot(&program, &parameters, &mut over),
+        Err(QueryExecutionError::BoundExceeded)
+    );
+}
