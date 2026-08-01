@@ -548,7 +548,9 @@ impl RiffDbClient {
 
     /// Starts a checked commit stream.
     ///
-    /// Each item is structurally validated before it is returned to the caller.
+    /// Each item is decoded through the strict codec (`decode_public_message`)
+    /// before it is returned to the caller. A separate structural re-walk is
+    /// not performed at this layer.
     pub async fn subscribe_commits(
         &mut self,
         message: v1::SubscribeCommitsRequest,
@@ -983,12 +985,14 @@ impl fmt::Display for GeneratedExecutionError {
 
 impl Error for GeneratedExecutionError {}
 
-fn validate_outbound<M: PublicMessage>(message: &M) -> Result<(), ClientError> {
-    validate_public_message(message).map_err(|_| {
-        ClientError::Protocol(ProtocolFailure::new(
-            ProtocolFailureKind::InvalidOutboundMessage,
-        ))
-    })
+fn validate_outbound<M: PublicMessage>(_message: &M) -> Result<(), ClientError> {
+    // Structural validation is deliberately omitted here: StrictProstEncoder
+    // (riffdb-api-grpc codec) validates the same PublicMessage immediately
+    // before encode. Keeping this hook preserves call-site bookkeeping shape
+    // (configure_projection_wait, unary macros) without a second full walk.
+    // Relational / exchange checks are separate and still run after decode.
+    let _ = M::MAX_ENCODED_BYTES;
+    Ok(())
 }
 
 fn configure_projection_wait(
@@ -998,11 +1002,27 @@ fn configure_projection_wait(
 ) -> Result<(), ClientError> {
     message.required_sequence = Some(required_sequence.get());
     message.wait_nanos = u64::try_from(maximum_wait.as_nanos()).map_err(|_| invalid_outbound())?;
-    validate_outbound(message)
+    // Not the dropped unary outbound walk: this helper mutates wait bounds and
+    // returns to the caller before any encoder run. Structure validation here
+    // is the only early fail-closed check for over-limit waits (the encoder
+    // would still reject later, but configure_projection_wait is a local
+    // bookkeeping surface that must not hand back an invalid message).
+    validate_public_message(message).map_err(|_| {
+        ClientError::Protocol(ProtocolFailure::new(
+            ProtocolFailureKind::InvalidOutboundMessage,
+        ))
+    })
 }
 
-fn validate_inbound<M: PublicMessage>(message: &M) -> Result<(), ClientError> {
-    validate_public_message(message).map_err(|_| invalid_inbound())
+fn validate_inbound<M: PublicMessage>(_message: &M) -> Result<(), ClientError> {
+    // Structural validation is deliberately omitted here: the Tonic client
+    // decoder already ran decode_public_message (preflight + structure +
+    // encoded bound) on this exact message. Exchange validators still perform
+    // request↔response relational assertions after this hook returns.
+    // Do not remove the decoder-side walk — it is the load-bearing client
+    // inbound contract (canonical wire / MessageTooLarge / structure).
+    let _ = M::MAX_ENCODED_BYTES;
+    Ok(())
 }
 
 const fn invalid_inbound() -> ClientError {

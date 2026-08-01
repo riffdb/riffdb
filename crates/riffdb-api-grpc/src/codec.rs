@@ -6,12 +6,13 @@ use std::marker::PhantomData;
 use riffdb_errors::{ApplicationError, ApplicationErrorCode, ApplicationErrorContext};
 #[cfg(feature = "server")]
 use riffdb_proto::encode_application_error;
-use riffdb_proto::{PublicMessage, decode_public_message, validate_public_message};
+use riffdb_proto::{PublicMessage, decode_public_message, validate_public_message_encoded_len};
 use tonic::Status;
 use tonic::codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
 #[cfg(feature = "server")]
 use tonic::codegen::Bytes;
-use tonic_prost::prost::bytes::Buf;
+use tonic_prost::prost::Message;
+use tonic_prost::prost::bytes::{Buf, BufMut};
 
 const INVALID_MESSAGE: &str = "invalid protobuf message";
 
@@ -66,10 +67,16 @@ where
         item: Self::Item,
         destination: &mut EncodeBuf<'_>,
     ) -> Result<(), Self::Error> {
-        validate_public_message(&item)
+        // Structural validation is the server outbound fail-closed guarantee
+        // (including MessageTooLarge classification). Reuse the encoded length
+        // so encode does not walk the tree a second time.
+        let encoded_len = validate_public_message_encoded_len(&item)
             .map_err(|_| Status::internal(crate::EMERGENCY_INTERNAL_MESSAGE))?;
-        item.encode(destination)
-            .map_err(|_| Status::internal(crate::EMERGENCY_INTERNAL_MESSAGE))
+        if destination.remaining_mut() < encoded_len {
+            return Err(Status::internal(crate::EMERGENCY_INTERNAL_MESSAGE));
+        }
+        Message::encode_raw(&item, destination);
+        Ok(())
     }
 }
 
@@ -143,5 +150,37 @@ mod tests {
             riffdb_errors::ApplicationOperation::ExecuteQuery
         );
         assert_eq!(error.context().trace_id(), None);
+    }
+
+    /// R3a: the kept client/server inbound decode walk rejects structurally
+    /// invalid wire. Neutering `decode_public_message`'s internal
+    /// `validate_public_message` call makes this fail (transcript).
+    #[test]
+    fn kept_decode_walk_rejects_structurally_invalid_response_bytes() {
+        // StatsRequest preflight is a no-op; a short request_id fails only in
+        // validate_structure (via validate_public_message inside decode).
+        let invalid = v1::StatsRequest {
+            request_id: vec![0x01, 0x02, 0x03],
+        };
+        let bytes = Message::encode_to_vec(&invalid);
+        assert!(
+            decode_public_message::<v1::StatsRequest>(&bytes).is_err(),
+            "decode_public_message (kept client/server inbound walk) must reject invalid wire"
+        );
+        // Preflight-level rejection remains load-bearing as well.
+        let duplicate = [0x0a, 0x01, b'a', 0x0a, 0x01, b'b'];
+        assert!(decode_public_message::<v1::ValidateContractRequest>(&duplicate).is_err());
+    }
+
+    /// R3a micro: validation returns the encoded length so encode can reuse it.
+    #[test]
+    fn validate_public_message_encoded_len_matches_encode() {
+        let item = v1::HealthRequest { request_id: None };
+        let len = riffdb_proto::validate_public_message_encoded_len(&item).expect("valid");
+        assert!(len <= v1::HealthRequest::MAX_ENCODED_BYTES);
+        assert_eq!(len, item.encoded_len());
+        let mut raw = Vec::with_capacity(len);
+        Message::encode(&item, &mut raw).expect("encode");
+        assert_eq!(raw.len(), len);
     }
 }

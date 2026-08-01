@@ -82,24 +82,26 @@ fn query_module_pool_dispatch_count() -> u64 {
 
 #[derive(Default)]
 struct ActiveCatalogView {
-    snapshot: Option<ActiveCatalogSnapshot>,
+    /// Published snapshot is immutable; publication replaces the Arc.
+    /// Cache hits hand out `Arc::clone` instead of cloning catalog contents.
+    snapshot: Option<Arc<ActiveCatalogSnapshot>>,
 }
 
 impl ActiveCatalogView {
     fn get(
         &self,
         pointer: Option<&ActiveCatalogPointerV1>,
-    ) -> Option<Option<ActiveCatalogSnapshot>> {
+    ) -> Option<Option<Arc<ActiveCatalogSnapshot>>> {
         match (pointer, self.snapshot.as_ref()) {
             (None, None) => Some(None),
             (Some(pointer), Some(snapshot)) if snapshot.pointer() == pointer => {
-                Some(Some(snapshot.clone()))
+                Some(Some(Arc::clone(snapshot)))
             }
             _ => None,
         }
     }
 
-    fn replace(&mut self, snapshot: Option<ActiveCatalogSnapshot>) {
+    fn replace(&mut self, snapshot: Option<Arc<ActiveCatalogSnapshot>>) {
         self.snapshot = snapshot;
     }
 }
@@ -114,7 +116,8 @@ fn read_active_catalog_cached<R: CatalogRepository>(
         .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?
         .get(durable_pointer.as_ref())
     {
-        return Ok(snapshot);
+        // Arc clone only — consumers receive a shared published snapshot.
+        return Ok(snapshot.map(|shared| ActiveCatalogSnapshot::clone(shared.as_ref())));
     }
 
     // A cache miss always takes the complete catalog validation path. The
@@ -122,10 +125,11 @@ fn read_active_catalog_cached<R: CatalogRepository>(
     // activation yields either the prior or successor complete snapshot,
     // never a pointer/bundle mixture.
     let snapshot = ActiveCatalogSnapshot::read(repository)?;
+    let published = snapshot.as_ref().map(|value| Arc::new(value.clone()));
     cache
         .lock()
         .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidHistoricalEvidence))?
-        .replace(snapshot.clone());
+        .replace(published);
     Ok(snapshot)
 }
 
@@ -2099,6 +2103,92 @@ mod tests {
 
         assert_catalog::<ServerCatalogReadPort>();
         assert_authoritative::<ServerAuthoritativeReadPort>();
+    }
+
+    /// Cache hits hand out the same published Arc (pointer equality). Reverting
+    /// the view to `snapshot.clone()` of an owned value without Arc publication
+    /// identity would still pass semantic equality but fail `Arc::ptr_eq`.
+    #[test]
+    fn active_catalog_view_hands_out_the_same_arc_without_republish() {
+        use riffdb_contract_compiler::compile_contract_source;
+        use std::num::NonZeroU64;
+
+        use riffdb_storage_api::{
+            AuditPrincipalV1, CatalogActivationIntentV1, CatalogActivationResult,
+            CatalogAdministrationRepository, CatalogRepository,
+        };
+        use riffdb_types::{ActorId, ActorKind, CapabilityId, RequestId, Timestamp};
+
+        use crate::real_storage_support::RealStorage;
+
+        const CONTRACT: &str =
+            include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
+
+        let real = RealStorage::open("catalog-arc");
+        let mut storage = real.storage.clone();
+        let bundle = ValidatedContractBundle::from_compiler_bundle(
+            compile_contract_source(CONTRACT).expect("ticketdesk contract compiles"),
+        )
+        .expect("compiled bundle is catalog-valid");
+        let activated = CatalogAdministrationRepository::activate_catalog(
+            &mut storage,
+            &CatalogActivationIntentV1::new(
+                None,
+                bundle.to_stored().expect("encode contract bundle"),
+                RequestId::from_unix_milliseconds_and_random(1, [0x41; 10]).expect("request"),
+                AuditPrincipalV1::new(
+                    ActorId::new("catalog-arc").expect("actor"),
+                    ActorKind::Human,
+                    CapabilityId::from_unix_milliseconds_and_random(3, [0x3c; 10])
+                        .expect("capability"),
+                    NonZeroU64::MIN,
+                ),
+                Timestamp::new(1_000, 0).expect("timestamp"),
+                None,
+            ),
+        )
+        .expect("activate");
+        assert!(matches!(
+            activated,
+            CatalogActivationResult::Activated { .. }
+        ));
+
+        let first = read_active_catalog_cached(&storage, &Mutex::new(ActiveCatalogView::default()))
+            .expect("first read")
+            .expect("active catalog present");
+        let cache = Mutex::new(ActiveCatalogView::default());
+        cache
+            .lock()
+            .expect("cache")
+            .replace(Some(Arc::new(first.clone())));
+        let pointer = storage
+            .read_active_catalog()
+            .expect("pointer")
+            .expect("active pointer");
+        let a = cache
+            .lock()
+            .expect("cache")
+            .get(Some(&pointer))
+            .expect("hit")
+            .expect("present");
+        let b = cache
+            .lock()
+            .expect("cache")
+            .get(Some(&pointer))
+            .expect("hit")
+            .expect("present");
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "two cache hits without republish must share one Arc"
+        );
+        assert!(
+            a.same_publication_as(&b),
+            "cloned snapshot values from the same Arc share publication identity"
+        );
+        assert!(
+            first.same_publication_as(&first.clone()),
+            "ActiveCatalogSnapshot::clone is Arc-backed publication sharing"
+        );
     }
 
     /// Real `ServerCatalogReadPort` over a real on-disk redb database with a

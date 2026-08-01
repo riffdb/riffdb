@@ -19,6 +19,8 @@ mod keys;
 mod layout;
 mod maintenance;
 mod query;
+#[doc(hidden)]
+pub use query::{QueryTableOpenCounts, query_table_open_counts, reset_query_table_open_counts};
 mod reads;
 mod shared_ports;
 mod startup;
