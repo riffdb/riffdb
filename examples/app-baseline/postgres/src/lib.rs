@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use postgres::{Client, Config, NoTls, Row, Statement};
 use riffdb_app_baseline_core::{
-    AppBackend, CloseTicketWithCommentSeed, CommentRow, CommentSeed, LabelRow,
+    AppBackend, BOARD_PAGE_SQL, CloseTicketWithCommentSeed, CommentRow, CommentSeed, LabelRow,
     OpenTicketWithLabelsSeed, OrganizationRow, ProjectMemberRow, ProjectRow, SeedDataset,
     SwapMemberRolesSeed, TicketDetailPage, TicketRow, TicketStatus, UserRow, UuidBytes,
     format_uuid,
@@ -162,17 +162,6 @@ const LIST_TICKETS_BY_PROJECT_STATUS_SQL: &str =
        AND project_id = $2::text::uuid
        AND status = $3
      ORDER BY ticket_id
-     LIMIT $4";
-
-/// Board-scale wide page — must stay byte-identical in semantics to
-/// `queries/ticketdesk/board_page.riffq` and `BOARD_PAGE_SQL` in core::report.
-const BOARD_PAGE_SQL: &str = "SELECT organization_id::text, ticket_id::text, project_id::text,
-            reporter_id::text, assignee_id::text, status, title
-     FROM ticket
-     WHERE organization_id = $1::text::uuid
-       AND project_id = $2::text::uuid
-       AND status = $3
-     ORDER BY ticket_id ASC
      LIMIT $4";
 
 const LIST_OPEN_TICKETS_FOR_ASSIGNEE_SQL: &str =
@@ -628,6 +617,7 @@ impl AppBackend for PostgresAppBackend {
         status: TicketStatus,
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error> {
+        // BOARD_PAGE_SQL is the single shared constant also cited in the report.
         let statement = self.statement(BOARD_PAGE_SQL)?;
         let client = self.client()?;
         let rows = client
@@ -641,7 +631,11 @@ impl AppBackend for PostgresAppBackend {
                 ],
             )
             .map_err(db_err)?;
-        rows.iter().map(decode_ticket).collect()
+        // organization_id is not selected (mirrors RiffDB filling org from the
+        // request parameter rather than re-encoding it per row).
+        rows.iter()
+            .map(|row| decode_board_ticket(row, organization_id))
+            .collect()
     }
 
     fn list_open_tickets_for_assignee(
@@ -985,6 +979,19 @@ fn decode_ticket(row: &Row) -> Result<TicketRow, PostgresError> {
         assignee_id: parse_uuid(row.get(4))?,
         status: TicketStatus::parse(row.get::<_, &str>(5)).ok_or(PostgresError::Decode)?,
         title: row.get(6),
+    })
+}
+
+/// Board page decode: six selected columns; org filled from the bind parameter.
+fn decode_board_ticket(row: &Row, organization_id: UuidBytes) -> Result<TicketRow, PostgresError> {
+    Ok(TicketRow {
+        organization_id,
+        ticket_id: parse_uuid(row.get(0))?,
+        project_id: parse_uuid(row.get(1))?,
+        reporter_id: parse_uuid(row.get(2))?,
+        assignee_id: parse_uuid(row.get(3))?,
+        status: TicketStatus::parse(row.get::<_, &str>(4)).ok_or(PostgresError::Decode)?,
+        title: row.get(5),
     })
 }
 

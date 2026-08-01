@@ -59,6 +59,13 @@ From the repository root:
 # optional: override board cell density (default full=600, smoke=0 / board skipped)
 ./benchmarks/run-app-baseline --full --board-density 800
 
+## Seed generation
+
+`seed_generation: 2` (board-density layout) is recorded in every report. Full
+profile ticket count and probe keys changed vs pre-B1 generation 1 (~2000
+tickets / ~15160 rows → densified board cell). **Pre-B1 `--full` baselines are
+superseded and not comparable.**
+
 # fail unless the same-run seed and every write p50 are within 2x PostgreSQL
 ./benchmarks/run-app-baseline --full --assert-write-parity
 

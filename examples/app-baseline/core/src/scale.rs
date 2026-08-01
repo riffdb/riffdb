@@ -35,13 +35,15 @@ impl Scale {
     /// Fast correctness/smoke profile.
     ///
     /// Board scenarios are skipped: `board_dense_open == 0` keeps smoke seed
-    /// small and fast.
+    /// small and fast. `projects_per_org` is at least 3 so write probes can
+    /// land outside both the ordinary read-probe project and the board-cell
+    /// project (first project).
     #[must_use]
     pub const fn smoke() -> Self {
         Self {
             organizations: 2,
             users_per_org: 5,
-            projects_per_org: 2,
+            projects_per_org: 3,
             members_per_project: 3,
             tickets_per_project: 10,
             comments_per_ticket: 3,
@@ -97,11 +99,13 @@ impl Scale {
         if self.organizations == Self::smoke().organizations
             && self.tickets_per_project == Self::smoke().tickets_per_project
             && self.board_dense_open == Self::smoke().board_dense_open
+            && self.projects_per_org == Self::smoke().projects_per_org
         {
             "smoke"
         } else if self.organizations == Self::full().organizations
             && self.tickets_per_project == Self::full().tickets_per_project
             && self.board_dense_open == Self::full().board_dense_open
+            && self.projects_per_org == Self::full().projects_per_org
         {
             "full"
         } else {
@@ -109,3 +113,10 @@ impl Scale {
         }
     }
 }
+
+/// Seed layout generation number.
+///
+/// Generation 2 is the board-density layout (dense org-0/project-0 open cell,
+/// write probes outside the board cell). Pre-B1 generation-1 full baselines
+/// (≈2000 tickets / ≈15160 rows) are not comparable.
+pub const SEED_GENERATION: u32 = 2;

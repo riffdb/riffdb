@@ -532,46 +532,31 @@ mod tests {
     }
 
     #[test]
-    fn board_scenarios_return_exact_page_sizes_order_sensitive() {
+    fn board_scenarios_return_exact_page_sizes_matching_seed_order() {
+        // Seed-filter unit check: the AppBackend-shaped filter agrees with
+        // SeedDataset::board_page_ticket_ids. Live PG vs RiffDB sequence
+        // equivalence is enforced once-per-run in the binary harness
+        // (`assert_board_ticket_sequences_equal`).
         let dataset = SeedDataset::generate(Scale::full());
-        // Two independent "backends" (PG-shaped and RiffDB-shaped seed filters)
-        // must return the same ordered ticket_id page — order-sensitive compare.
-        let mut pg = SeedBackedBackend {
-            dataset: dataset.clone(),
-            last_board_ids: Vec::new(),
-        };
-        let mut riffdb = SeedBackedBackend {
+        let mut backend = SeedBackedBackend {
             dataset: dataset.clone(),
             last_board_ids: Vec::new(),
         };
         for limit in [50_u32, 200, 500] {
             let expected = dataset.board_page_ticket_ids(limit);
             assert_eq!(expected.len(), limit as usize);
-            let pg_rows = pg
+            let rows = backend
                 .board_page(
                     dataset.board_cell().0,
                     dataset.board_cell().1,
                     TicketStatus::Open,
                     limit,
                 )
-                .expect("pg board");
-            let rd_rows = riffdb
-                .board_page(
-                    dataset.board_cell().0,
-                    dataset.board_cell().1,
-                    TicketStatus::Open,
-                    limit,
-                )
-                .expect("riffdb board");
-            let pg_ids: Vec<_> = pg_rows.iter().map(|row| row.ticket_id).collect();
-            let rd_ids: Vec<_> = rd_rows.iter().map(|row| row.ticket_id).collect();
-            assert_eq!(pg_ids, expected, "pg page limit={limit}");
-            assert_eq!(rd_ids, expected, "riffdb page limit={limit}");
-            assert_eq!(pg_ids, rd_ids, "order-sensitive PG/RiffDB equivalence");
-            assert_eq!(pg_rows.len(), limit as usize);
-            assert_eq!(rd_rows.len(), limit as usize);
+                .expect("board page");
+            let ids: Vec<_> = rows.iter().map(|row| row.ticket_id).collect();
+            assert_eq!(ids, expected, "board page limit={limit}");
+            assert_eq!(rows.len(), limit as usize);
         }
-        assert_eq!(pg.last_board_ids.len(), 500);
-        assert_eq!(riffdb.last_board_ids, pg.last_board_ids);
+        assert_eq!(backend.last_board_ids.len(), 500);
     }
 }
