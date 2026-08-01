@@ -30,14 +30,18 @@ const PERF_013_MAX_STARTUP_NS: u64 = 30_000_000_000;
 const PREFLIGHT_ENVIRONMENT: &str = "RIFFDB_COMMAND_GROWTH_PREFLIGHT";
 const PREFLIGHT_EVIDENCE: &str = "semantic-crash-v1";
 /// Bump when the retained-history generator contract changes; watermark reuse refuses mismatch.
-const STARTUP_SCALE_SCHEMA_DIGEST: &str = "service-audit-growth-startup-scale-v1";
+const STARTUP_SCALE_SCHEMA_DIGEST: &str = "service-audit-growth-startup-scale-v2-grouped-fused";
 const STARTUP_SCALE_DB_FILE: &str = "startup-scale.redb";
 const STARTUP_SCALE_WATERMARK_FILE: &str = "startup-scale-watermark.json";
-/// Observed ~1.1 KiB/command at multi-million retained counts; headroom for free-space preflight.
+const STARTUP_SCALE_GENERATION_MODE: &str = "grouped_fused";
+/// Extrapolated from 10^3–10^4 command service-audit growth samples (~1.1–1.2 KiB/cmd)
+/// plus headroom for free-space preflight of multi-million retained DBs.
 const STARTUP_SCALE_BYTES_PER_COMMAND: u64 = 1_200;
 const STARTUP_SCALE_FREE_HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
-const STARTUP_SCALE_GENERATE_CHUNK: usize = 256;
+/// One grouped-fused durable transaction covers up to MAX_GROUPED_WRITE_TRANSITIONS commands.
+const STARTUP_SCALE_GENERATE_CHUNK: usize = 64;
 const PROC_STATUS_PATH: &str = "/proc/self/status";
+const PROC_CLEAR_REFS_PATH: &str = "/proc/self/clear_refs";
 const PROC_STATUS_MAX_BYTES: usize = 65_536;
 
 fn main() -> ExitCode {
@@ -508,6 +512,19 @@ impl Configuration {
         if startup_scale_db.is_some() && startup_scale.is_none() {
             return Err(());
         }
+        let any_assert = assert_perf_003
+            || assert_group_mechanics
+            || assert_perf_008
+            || assert_perf_009
+            || assert_perf_012
+            || assert_perf_013;
+        if startup_scale.is_some() && any_assert {
+            eprintln!(
+                "command-growth: --startup-scale cannot be combined with --assert-* gates \
+                 (startup-scale early-returns before gate evaluation; combination would false-pass)"
+            );
+            return Err(());
+        }
         Ok(Self {
             checked,
             assert_perf_003,
@@ -622,6 +639,9 @@ impl GenerationWatermark {
 struct DrainLinearCheck {
     first_half_ns: u64,
     second_half_ns: u64,
+    structural_pages: u64,
+    historical_pages: u64,
+    evidence_pages: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -634,13 +654,15 @@ struct StartupScaleRecord {
     startup_ns: u64,
     startup_ns_per_command: u64,
     peak_rss_bytes: u64,
+    drain_rss_delta_bytes: u64,
+    rss_measure_mode: String,
     drain_linear_check: DrainLinearCheck,
 }
 
 impl StartupScaleRecord {
     fn to_jsonl(&self) -> String {
         format!(
-            "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"startup_scale\",\"retained\":{},\"file_bytes\":{},\"generate_ns\":{},\"generated_commands\":{},\"generate_commands_per_second\":{},\"startup_ns\":{},\"startup_ns_per_command\":{},\"peak_rss_bytes\":{},\"drain_linear_check\":{{\"first_half_ns\":{},\"second_half_ns\":{}}}}}",
+            "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"startup_scale\",\"retained\":{},\"file_bytes\":{},\"generate_ns\":{},\"generated_commands\":{},\"generate_commands_per_second\":{},\"startup_ns\":{},\"startup_ns_per_command\":{},\"peak_rss_bytes\":{},\"drain_rss_delta_bytes\":{},\"rss_measure_mode\":\"{}\",\"drain_linear_check\":{{\"first_half_ns\":{},\"second_half_ns\":{},\"structural_pages\":{},\"historical_pages\":{},\"evidence_pages\":{}}},\"half_split_note\":\"only ratio movement across N is meaningful; midpoint may cross structural/historical junction — use page counts\"}}",
             self.retained,
             self.file_bytes,
             self.generate_ns,
@@ -649,8 +671,13 @@ impl StartupScaleRecord {
             self.startup_ns,
             self.startup_ns_per_command,
             self.peak_rss_bytes,
+            self.drain_rss_delta_bytes,
+            escape_json(&self.rss_measure_mode),
             self.drain_linear_check.first_half_ns,
-            self.drain_linear_check.second_half_ns
+            self.drain_linear_check.second_half_ns,
+            self.drain_linear_check.structural_pages,
+            self.drain_linear_check.historical_pages,
+            self.drain_linear_check.evidence_pages
         )
     }
 
@@ -668,9 +695,14 @@ impl StartupScaleRecord {
             startup_ns: json_u64_field(raw, "startup_ns")?,
             startup_ns_per_command: json_u64_field(raw, "startup_ns_per_command")?,
             peak_rss_bytes: json_u64_field(raw, "peak_rss_bytes")?,
+            drain_rss_delta_bytes: json_u64_field(raw, "drain_rss_delta_bytes")?,
+            rss_measure_mode: json_string_field(raw, "rss_measure_mode")?,
             drain_linear_check: DrainLinearCheck {
                 first_half_ns: json_u64_field(raw, "first_half_ns")?,
                 second_half_ns: json_u64_field(raw, "second_half_ns")?,
+                structural_pages: json_u64_field(raw, "structural_pages")?,
+                historical_pages: json_u64_field(raw, "historical_pages")?,
+                evidence_pages: json_u64_field(raw, "evidence_pages")?,
             },
         })
     }
@@ -698,24 +730,31 @@ fn run_startup_scale(
             .to_path_buf()
     };
     fs::create_dir_all(&db_dir).map_err(|_| ())?;
+    // F2: medium classification + free-space preflight on the RESOLVED db_dir
+    // (not only the BenchRoot / --database-root path). Refuse RamBacked unless
+    // --allow-tmpfs.
+    let min_free = estimate_startup_scale_free_bytes(targets);
+    let db_placement = validate_startup_scale_db_dir(&db_dir, min_free, configuration.allow_tmpfs)?;
     println!(
-        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"startup_scale_configuration\",\"targets\":[{}],\"db_dir\":\"{}\",\"schema_digest\":\"{STARTUP_SCALE_SCHEMA_DIGEST}\"}}",
+        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"startup_scale_configuration\",\"targets\":[{}],\"db_dir\":\"{}\",\"schema_digest\":\"{STARTUP_SCALE_SCHEMA_DIGEST}\",\"generation_mode\":\"{STARTUP_SCALE_GENERATION_MODE}\",\"db_medium\":{},\"db_free_bytes_at_start\":{},\"min_free_bytes\":{min_free}}}",
         targets
             .iter()
             .map(u64::to_string)
             .collect::<Vec<_>>()
             .join(","),
-        escape_json(&db_dir.display().to_string())
+        escape_json(&db_placement.path().display().to_string()),
+        db_placement.medium().to_report_json(),
+        db_placement.free_bytes_at_start(),
     );
 
     let mut sorted_targets = targets.to_vec();
     sorted_targets.sort_unstable();
     // Process in ascending order so a single reusable DB can extend: M → N.
     for target in sorted_targets {
-        let record = measure_one_startup_scale(&db_dir, target, false)?;
+        let record = measure_one_startup_scale(db_placement.path(), target, false)?;
         println!("{}", record.to_jsonl());
         println!(
-            "startup-scale retained={target} file_bytes={} generate_ns={} generated={} rate={}/s startup_ns={} ns/cmd={} peak_rss_bytes={} drain_first_half_ns={} drain_second_half_ns={}",
+            "startup-scale retained={target} file_bytes={} generate_ns={} generated={} rate={}/s startup_ns={} ns/cmd={} peak_rss_bytes={} drain_rss_delta_bytes={} rss_mode={} structural_pages={} historical_pages={} evidence_pages={} drain_first_half_ns={} drain_second_half_ns={} (half-split: only ratio movement across N is meaningful)",
             record.file_bytes,
             record.generate_ns,
             record.generated_commands,
@@ -723,12 +762,36 @@ fn run_startup_scale(
             record.startup_ns,
             record.startup_ns_per_command,
             record.peak_rss_bytes,
+            record.drain_rss_delta_bytes,
+            record.rss_measure_mode,
+            record.drain_linear_check.structural_pages,
+            record.drain_linear_check.historical_pages,
+            record.drain_linear_check.evidence_pages,
             record.drain_linear_check.first_half_ns,
             record.drain_linear_check.second_half_ns
         );
     }
     drop(ephemeral);
     Ok(true)
+}
+
+/// Resolves `db_dir` through BenchRoot so medium + free-space gates apply to the
+/// actual startup-scale database placement (including `--startup-scale-db`).
+fn validate_startup_scale_db_dir(
+    db_dir: &Path,
+    min_free_bytes: u64,
+    allow_tmpfs: bool,
+) -> Result<BenchRoot, ()> {
+    BenchRoot::resolve(BenchRootOptions {
+        harness: "command-growth-startup-scale-db",
+        cli_override: Some(db_dir.to_path_buf()),
+        default_root: db_dir.to_path_buf(),
+        allow_tmpfs,
+        min_free_bytes,
+    })
+    .map_err(|error| {
+        eprintln!("startup-scale db_dir placement: {error}");
+    })
 }
 
 fn measure_one_startup_scale(
@@ -761,7 +824,7 @@ fn measure_one_startup_scale(
                 fs::remove_file(&watermark_path).map_err(|_| ())?;
             }
             let mut harness = ServiceAuditGrowthHarness::new(&db_path).map_err(|_| ())?;
-            append_commands(&mut harness, 1, target)?;
+            append_commands_grouped_fused(&mut harness, 1, target)?;
             drop(harness);
             target
         }
@@ -772,7 +835,7 @@ fn measure_one_startup_scale(
             } else {
                 let mut harness = ServiceAuditGrowthHarness::reopen(&db_path).map_err(|_| ())?;
                 let first = from.checked_add(1).ok_or(())?;
-                append_commands(&mut harness, first, delta)?;
+                append_commands_grouped_fused(&mut harness, first, delta)?;
                 drop(harness);
                 delta
             }
@@ -789,10 +852,8 @@ fn measure_one_startup_scale(
     )?;
 
     let file_bytes = fs::metadata(&db_path).map_err(|_| ())?.len();
-    let rss_before = read_vm_hwm_bytes().unwrap_or(0);
-    let measurement = measure_clean_startup_linear(&db_path).map_err(|_| ())?;
-    let rss_after = read_vm_hwm_bytes().unwrap_or(rss_before);
-    let peak_rss_bytes = rss_after.max(rss_before);
+    let (measurement, peak_rss_bytes, drain_rss_delta_bytes, rss_measure_mode) =
+        measure_drain_with_rss(&db_path, target)?;
     let startup_ns = u64::try_from(measurement.elapsed().as_nanos()).map_err(|_| ())?;
     let startup_ns_per_command = startup_ns / target.max(1);
     let generate_commands_per_second = if generated_commands == 0 {
@@ -813,14 +874,66 @@ fn measure_one_startup_scale(
         startup_ns,
         startup_ns_per_command,
         peak_rss_bytes,
+        drain_rss_delta_bytes,
+        rss_measure_mode,
         drain_linear_check: DrainLinearCheck {
             first_half_ns: u64::try_from(measurement.first_half().as_nanos()).map_err(|_| ())?,
             second_half_ns: u64::try_from(measurement.second_half().as_nanos()).map_err(|_| ())?,
+            structural_pages: measurement.structural_pages(),
+            historical_pages: measurement.historical_pages(),
+            evidence_pages: measurement.evidence_pages(),
         },
     })
 }
 
-fn append_commands(
+/// Drain-scoped RSS: prefer `/proc/self/clear_refs` = 5 (reset VmHWM to current
+/// RSS) immediately before the drain so generation memory does not pollute the
+/// peak. Fallback records `after - before` when clear_refs is unavailable.
+fn measure_drain_with_rss(
+    db_path: &Path,
+    retained: u64,
+) -> Result<
+    (
+        riffdb_storage_redb::benchmark_support::CleanStartupMeasurement,
+        u64,
+        u64,
+        String,
+    ),
+    (),
+> {
+    let rss_before = read_vm_hwm_bytes().unwrap_or(0);
+    let cleared = clear_peak_rss();
+    let rss_baseline = if cleared {
+        // After reset, VmHWM ≈ current RSS; use that as the drain baseline.
+        read_vm_hwm_bytes().unwrap_or(rss_before)
+    } else {
+        rss_before
+    };
+    let measurement = measure_clean_startup_linear(db_path, retained).map_err(|_| ())?;
+    let rss_after = read_vm_hwm_bytes().unwrap_or(rss_baseline);
+    let drain_rss_delta_bytes = rss_after.saturating_sub(rss_baseline);
+    let (peak_rss_bytes, mode) = if cleared {
+        // Drain-scoped high-water mark (HWM was reset immediately before drain).
+        (rss_after, "clear_refs")
+    } else {
+        // Fallback: process-lifetime HWM may still include generation; delta is
+        // the honest additive signal.
+        (rss_after, "delta_fallback")
+    };
+    Ok((
+        measurement,
+        peak_rss_bytes,
+        drain_rss_delta_bytes,
+        mode.to_owned(),
+    ))
+}
+
+/// Write `5` to `/proc/self/clear_refs` to reset VmHWM to current RSS (Linux).
+fn clear_peak_rss() -> bool {
+    fs::write(PROC_CLEAR_REFS_PATH, b"5").is_ok()
+}
+
+fn append_commands_grouped_fused(
     harness: &mut ServiceAuditGrowthHarness,
     first_command: u64,
     count: u64,
@@ -830,7 +943,9 @@ fn append_commands(
     while remaining > 0 {
         let chunk_u64 = remaining.min(u64::try_from(STARTUP_SCALE_GENERATE_CHUNK).map_err(|_| ())?);
         let chunk = usize::try_from(chunk_u64).map_err(|_| ())?;
-        harness.run_window(next, chunk).map_err(|_| ())?;
+        harness
+            .run_window_grouped_fused(next, chunk)
+            .map_err(|_| ())?;
         next = next.checked_add(chunk_u64).ok_or(())?;
         remaining = remaining.checked_sub(chunk_u64).ok_or(())?;
     }
@@ -1008,6 +1123,25 @@ mod tests {
     }
 
     #[test]
+    fn startup_scale_rejects_assert_flag_both_orders() {
+        // F3: either order must refuse — combination would silent-false-pass gates.
+        assert!(
+            Configuration::parse_from(["--startup-scale", "1024", "--assert-perf-013"]).is_err()
+        );
+        assert!(
+            Configuration::parse_from(["--assert-perf-013", "--startup-scale", "1024"]).is_err()
+        );
+        assert!(
+            Configuration::parse_from(["--startup-scale", "64", "--assert-perf-003"]).is_err()
+        );
+        assert!(
+            Configuration::parse_from(["--assert-perf-008", "--startup-scale", "64"]).is_err()
+        );
+        // startup-scale alone still ok
+        assert!(Configuration::parse_from(["--startup-scale", "64"]).is_ok());
+    }
+
+    #[test]
     fn watermark_reuse_plans_append_and_refuses_digest_mismatch() {
         let none = plan_generation(None, 4_096, false).expect("create");
         assert_eq!(none, GenerationPlan::Create { target: 4_096 });
@@ -1059,14 +1193,21 @@ mod tests {
             startup_ns: 120_000_000,
             startup_ns_per_command: 29_296,
             peak_rss_bytes: 256 * 1024 * 1024,
+            drain_rss_delta_bytes: 12 * 1024 * 1024,
+            rss_measure_mode: "clear_refs".to_owned(),
             drain_linear_check: DrainLinearCheck {
                 first_half_ns: 55_000_000,
                 second_half_ns: 58_000_000,
+                structural_pages: 40,
+                historical_pages: 2,
+                evidence_pages: 42,
             },
         };
         let jsonl = record.to_jsonl();
         assert!(jsonl.contains("\"record_type\":\"startup_scale\""));
-        assert!(jsonl.contains("\"drain_linear_check\":{\"first_half_ns\":55000000"));
+        assert!(jsonl.contains("\"structural_pages\":40"));
+        assert!(jsonl.contains("\"rss_measure_mode\":\"clear_refs\""));
+        assert!(jsonl.contains("half_split_note"));
         let parsed = StartupScaleRecord::from_jsonl(&jsonl).expect("parse");
         assert_eq!(parsed, record);
     }
@@ -1076,6 +1217,55 @@ mod tests {
         let bytes = estimate_startup_scale_free_bytes(&[1_000_000, 10_000_000]);
         // 10M * 1200 + 512 MiB ≈ 11.4 GiB — must exceed the ~11 GB database.
         assert!(bytes >= 11_u64 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn startup_scale_db_on_tmpfs_refuses_without_allow() {
+        // F2 transcript: reviewer's /tmp probe must refuse RamBacked without --allow-tmpfs.
+        let tmp = env::temp_dir().join(format!(
+            "riffdb-startup-scale-tmpfs-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&tmp).expect("mkdir /tmp probe");
+        // min_free deliberately small so free-space is not the refusal reason on
+        // constrained CI; medium classification is the gate under test.
+        let result = validate_startup_scale_db_dir(&tmp, 1, false);
+        let _ = fs::remove_dir_all(&tmp);
+        match result {
+            Err(()) => {
+                // Expected on hosts where /tmp is tmpfs/ramfs.
+            }
+            Ok(root) => {
+                // Host keeps /tmp on disk — still assert we classified something.
+                assert!(
+                    !root.medium().is_ram_backed(),
+                    "if resolve succeeds without allow_tmpfs, medium must not be RamBacked"
+                );
+            }
+        }
+        // Explicit RamBacked path via classify: when /tmp is tmpfs, refuse is required.
+        if let Ok(medium) = riffdb_bench_root::classify_medium(&env::temp_dir())
+            && medium.is_ram_backed()
+        {
+            let probe = env::temp_dir().join(format!(
+                "riffdb-startup-scale-tmpfs-must-fail-{}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&probe).expect("mkdir");
+            assert!(
+                validate_startup_scale_db_dir(&probe, 1, false).is_err(),
+                "tmpfs db_dir without allow_tmpfs must refuse"
+            );
+            // With allow, same path resolves.
+            assert!(
+                validate_startup_scale_db_dir(&probe, 1, true).is_ok(),
+                "tmpfs db_dir with allow_tmpfs must accept"
+            );
+            let _ = fs::remove_dir_all(&probe);
+        }
     }
 
     #[test]
@@ -1091,6 +1281,17 @@ mod tests {
         assert!(first.startup_ns > 0);
         assert!(first.startup_ns_per_command > 0);
         assert!(first.generate_commands_per_second > 0);
+        assert!(
+            first.rss_measure_mode == "clear_refs" || first.rss_measure_mode == "delta_fallback"
+        );
+        assert!(first.drain_linear_check.evidence_pages >= 1);
+        assert_eq!(
+            first.drain_linear_check.evidence_pages,
+            first
+                .drain_linear_check
+                .structural_pages
+                .saturating_add(first.drain_linear_check.historical_pages)
+        );
 
         let second = measure_one_startup_scale(&db_dir, 4_096, false).expect("n=4096");
         assert_eq!(second.retained, 4_096);
