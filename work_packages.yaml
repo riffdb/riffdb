@@ -6858,7 +6858,8 @@ work_packages:
   required_adrs: [ADR-0019, ADR-0073, ADR-0085]
   allowed_paths: [Cargo.lock, work_packages.yaml, crates/riffdb-storage-redb/**, crates/riffdb-storage-api/**,
     crates/riffdb-proto/**, proto/riffdb/storage/v1/**, tests/storage_recovery/**, benchmarks/command-growth/**,
-    docs/performance/perf-013-014.md, fixtures/proto/**]
+    docs/performance/perf-013-014.md, fixtures/proto/**, scripts/generate-proto,
+    tests/command_semantics/command_concurrency.rs]
   deliverables:
   - StoredValidatedPrefixCheckpointV1 durable format, registry migration PRE_VALIDATED → current, meta key write
   - Checkpoint write after clean finish + public write_validated_prefix_checkpoint; verify/ignore on open
