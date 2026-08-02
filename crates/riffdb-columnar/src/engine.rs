@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use riffdb_storage_api::{AuthoritativePointReader, AuthoritativeScanReader};
-use riffdb_types::FrontierPosition;
+use riffdb_types::{FrontierPosition, ProjectionFrontier};
 
 use crate::apply::{ApplyProgress, ApplyState};
 use crate::checkpoint::{CheckpointDir, CheckpointError, ManifestV1};
@@ -12,7 +12,7 @@ use crate::definition::{DefinitionFingerprint, RegisteredDefinition};
 use crate::error::ColumnarError;
 use crate::hooks::ColumnarTestController;
 use crate::outcome::{ColumnarOutcome, ProjectionBuilding, ProjectionReady};
-use crate::query::{ColumnarQueryRequest, QueryResult, execute_query};
+use crate::query::{ColumnarQueryRequest, QueryResult, query_snapshot};
 use crate::store::ColumnarSnapshot;
 
 /// Options for opening a columnar projection directory.
@@ -20,6 +20,29 @@ use crate::store::ColumnarSnapshot;
 pub struct OpenOptions {
     /// Storage directory for segment files and MANIFEST.
     pub directory: PathBuf,
+    /// History incarnation of the authoritative database (ADR-0072 / ADR-0086).
+    ///
+    /// Bound into every [`ProjectionFrontier`] returned by this engine so a
+    /// restore can never satisfy a pre-restore causal token.
+    pub history_incarnation: u64,
+}
+
+impl OpenOptions {
+    /// Opens under history incarnation `1` (bootstrap default).
+    #[must_use]
+    pub fn new(directory: impl Into<PathBuf>) -> Self {
+        Self {
+            directory: directory.into(),
+            history_incarnation: 1,
+        }
+    }
+
+    /// Sets the history incarnation used for frontier tokens.
+    #[must_use]
+    pub fn with_history_incarnation(mut self, history_incarnation: u64) -> Self {
+        self.history_incarnation = history_incarnation;
+        self
+    }
 }
 
 /// Columnar projection engine (pull-based apply API).
@@ -31,6 +54,8 @@ pub struct ColumnarEngine {
     has_published: bool,
     /// Durable frontier from last successful checkpoint / open.
     durable_frontier: FrontierPosition,
+    /// History incarnation bound into published frontiers (immutable for engine life).
+    history_incarnation: u64,
 }
 
 impl ColumnarEngine {
@@ -80,6 +105,7 @@ impl ColumnarEngine {
             checkpoint,
             has_published,
             durable_frontier,
+            history_incarnation: options.history_incarnation,
         })
     }
 
@@ -95,6 +121,12 @@ impl ColumnarEngine {
         &self.definition
     }
 
+    /// History incarnation bound into frontiers returned by this engine.
+    #[must_use]
+    pub const fn history_incarnation(&self) -> u64 {
+        self.history_incarnation
+    }
+
     /// Published snapshot (may be empty before first publication).
     #[must_use]
     pub fn published_snapshot(&self) -> Arc<ColumnarSnapshot> {
@@ -103,20 +135,29 @@ impl ColumnarEngine {
 
     /// Processed frontier (may lead published during holdback).
     #[must_use]
-    pub fn processed_frontier(&self) -> FrontierPosition {
-        self.apply.working.processed
+    pub fn processed_frontier(&self) -> ProjectionFrontier {
+        ProjectionFrontier::new(self.history_incarnation, self.apply.working.processed)
     }
 
     /// Published visible frontier.
     #[must_use]
-    pub fn published_frontier(&self) -> FrontierPosition {
-        self.apply.published.visible_frontier
+    pub fn published_frontier(&self) -> ProjectionFrontier {
+        ProjectionFrontier::new(
+            self.history_incarnation,
+            self.apply.published.visible_frontier,
+        )
     }
 
     /// Durable checkpoint frontier.
     #[must_use]
-    pub fn durable_frontier(&self) -> FrontierPosition {
-        self.durable_frontier
+    pub fn durable_frontier(&self) -> ProjectionFrontier {
+        ProjectionFrontier::new(self.history_incarnation, self.durable_frontier)
+    }
+
+    /// Raw position of the published frontier (without incarnation wrapper).
+    #[must_use]
+    pub fn published_frontier_position(&self) -> FrontierPosition {
+        self.apply.published.visible_frontier
     }
 
     /// Deferred-set size (observability for CP3).
@@ -155,35 +196,31 @@ impl ColumnarEngine {
     /// Lifecycle status for the current published state vs `head`.
     #[must_use]
     pub fn outcome(&self, head: FrontierPosition) -> ColumnarOutcome {
-        if !self.has_published
-            && self.apply.published.visible_frontier == FrontierPosition::BeforeFirst
-            && self.apply.working.processed == FrontierPosition::BeforeFirst
-        {
-            return ColumnarOutcome::Building(ProjectionBuilding {
-                applied_through: self.apply.working.processed,
-                head,
-            });
-        }
         if !self.has_published {
             return ColumnarOutcome::Building(ProjectionBuilding {
-                applied_through: self.apply.working.processed,
-                head,
+                applied_through: ProjectionFrontier::new(
+                    self.history_incarnation,
+                    self.apply.working.processed,
+                ),
+                head: ProjectionFrontier::new(self.history_incarnation, head),
             });
         }
         ColumnarOutcome::Ready(ProjectionReady {
             snapshot: Arc::clone(&self.apply.published),
-            frontier: self.apply.published.visible_frontier,
-            head,
+            frontier: self.published_frontier(),
+            head: ProjectionFrontier::new(self.history_incarnation, head),
             result: None,
         })
     }
 
     /// Executes a query against the published snapshot.
+    ///
+    /// Thin wrapper over [`query_snapshot`] after the building-state check.
     pub fn query(&self, request: &ColumnarQueryRequest) -> Result<QueryResult, ColumnarError> {
         if !self.has_published {
             return Err(ColumnarError::InvalidState("projection is still building"));
         }
-        execute_query(&self.definition, &self.apply.published, request).map_err(Into::into)
+        query_snapshot(&self.definition, &self.apply.published, request).map_err(Into::into)
     }
 
     /// Checkpoints the race-free visible frontier to durable storage.

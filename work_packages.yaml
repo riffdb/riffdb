@@ -6941,3 +6941,36 @@ work_packages:
   exit_gate: Columnar engine results match an independent oracle at every published frontier and
     after recovery; crash injection never overclaims a durable frontier; org scope is airtight.
   human_review_triggers: *id001
+- id: WP-431
+  name: Columnar projected-read surface engine additions (CP2a)
+  depends_on: [WP-430]
+  objective: Extend the columnar engine for the ADR-0086 projected read surface — select
+    narrowing, primary-key row exposure and order, public snapshot query entry, closed lifecycle
+    reason enums, structured storage errors, org-key encoding hook, and incarnation-bound
+    ProjectionFrontier/CommitToken types — without public wire/RPC surface (CP2b).
+  requirements: []
+  required_adrs: [ADR-0086, ADR-0087, ADR-0072]
+  allowed_paths: [work_packages.yaml, crates/riffdb-columnar/**, crates/riffdb-types/src/freshness.rs,
+    crates/riffdb-types/src/lib.rs]
+  deliverables:
+  - riffdb-types freshness module (CommitToken, ProjectionFrontier, FreshnessPolicy) with
+    incarnation binding and redacted opaque bytes
+  - "select: Vec<FieldId> on ColumnarQueryRequest (empty = all projected fields)"
+  - Decoded primary-key values on QueryRow; PK components addressable in OrderSpec with
+    typed rejection for non-value-order-preserving key types
+  - Public query_snapshot entry; engine.query as thin wrapper
+  - Closed RebuildingReason/DegradedReason enums with exhaustiveness pin
+  - ColumnarError::Storage as structured StorageFailure (never stringified StorageError)
+  - Public encode_org_scope_key / OrgKey::from_value hook for CP2b equivalence
+  - Engine open takes history_incarnation; frontier accessors return ProjectionFrontier
+  acceptance_commands:
+  - cargo test -p riffdb-types -p riffdb-columnar --all-features
+  - cargo test -p riffdb-columnar --all-features --test cp2a
+  - cargo fmt --all -- --check
+  - cargo clippy -p riffdb-types -p riffdb-columnar --all-targets --all-features -- -D warnings
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  exit_gate: CP1 acceptance suite remains green under empty-select semantics; select narrowing
+    cannot widen; PK-order proof holds for fixed-width key components; frontiers never satisfy
+    cross-incarnation tokens; structured storage errors expose only closed kinds.
+  human_review_triggers: *id001
