@@ -4,17 +4,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use riffdb_types::{
-    ApplicationManifestHash, ContractBundleHash, QueryModuleHash, hash_application_manifest,
+    ApplicationManifestHash, ContractBundleHash, QueryModuleHash, ReactiveModuleHash,
+    hash_application_manifest,
 };
 use serde_json::{Map, Value, json};
 
 /// Exact manifest schema identifier.
 pub const APPLICATION_MANIFEST_SCHEMA_V1: &str = "riffdb.application-manifest/v1";
+/// Exact manifest schema binding immutable reactive modules.
+pub const APPLICATION_MANIFEST_SCHEMA_V2: &str = "riffdb.application-manifest/v2";
 /// Maximum accepted application-manifest source bytes.
 pub const MAX_APPLICATION_MANIFEST_BYTES: usize = 1_048_576;
 const MAX_NAME_BYTES: usize = 256;
 const MAX_PATH_BYTES: usize = 512;
 const MAX_QUERY_MODULES: usize = 32;
+const MAX_REACTIVE_MODULES: usize = 32;
 const MAX_QUERY_SOURCES: usize = 4_096;
 const MAX_ROLES: usize = 128;
 const MAX_ROLE_OPERATIONS: usize = 4_096;
@@ -146,6 +150,38 @@ impl ManifestQueryModule {
     }
 }
 
+/// One immutable reactive-module binding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManifestReactiveModule {
+    name: String,
+    version: u64,
+    module_hash: ReactiveModuleHash,
+    source: String,
+}
+
+impl ManifestReactiveModule {
+    /// Module name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// Positive version.
+    #[must_use]
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+    /// Exact module identity.
+    #[must_use]
+    pub const fn module_hash(&self) -> ReactiveModuleHash {
+        self.module_hash
+    }
+    /// Workspace-relative source path.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+}
+
 /// One symbolic application role.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManifestRole {
@@ -154,6 +190,9 @@ pub struct ManifestRole {
     tenant_scope: ManifestTenantScope,
     queries: Vec<String>,
     commands: Vec<String>,
+    event_streams: Vec<String>,
+    watch_queries: Vec<String>,
+    agent_subscriptions: Vec<String>,
 }
 
 /// Symbolic tenant binding required by an application role.
@@ -204,6 +243,21 @@ impl ManifestRole {
     pub fn commands(&self) -> &[String] {
         &self.commands
     }
+    /// Exact event-stream allowlist.
+    #[must_use]
+    pub fn event_streams(&self) -> &[String] {
+        &self.event_streams
+    }
+    /// Exact query-watch allowlist.
+    #[must_use]
+    pub fn watch_queries(&self) -> &[String] {
+        &self.watch_queries
+    }
+    /// Exact contextual-subscription allowlist.
+    #[must_use]
+    pub fn agent_subscriptions(&self) -> &[String] {
+        &self.agent_subscriptions
+    }
 }
 
 /// Generated artifact output roots.
@@ -212,6 +266,7 @@ pub struct ManifestGenerationTargets {
     rust: String,
     typescript: String,
     mcp: String,
+    python: Option<String>,
 }
 
 impl ManifestGenerationTargets {
@@ -232,14 +287,21 @@ impl ManifestGenerationTargets {
     pub fn mcp(&self) -> &str {
         &self.mcp
     }
+    /// Workspace-relative Python output when present.
+    #[must_use]
+    pub fn python(&self) -> Option<&str> {
+        self.python.as_deref()
+    }
 }
 
 /// One exact canonical application manifest.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApplicationManifest {
+    schema: &'static str,
     application_name: String,
     contract: ManifestContract,
     query_modules: Vec<ManifestQueryModule>,
+    reactive_modules: Vec<ManifestReactiveModule>,
     roles: Vec<ManifestRole>,
     generation: ManifestGenerationTargets,
     seed_inputs: Vec<String>,
@@ -256,8 +318,23 @@ impl ApplicationManifest {
         }
         let value: Value = serde_json::from_str(source)
             .map_err(|_| ManifestError::new(ManifestErrorKind::InvalidJson))?;
-        let root = object(
-            &value,
+        let schema_value = value
+            .as_object()
+            .and_then(|root| root.get("schema"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| ManifestError::new(ManifestErrorKind::InvalidShape))?;
+        let root_keys = if schema_value == APPLICATION_MANIFEST_SCHEMA_V2 {
+            &[
+                "application",
+                "contract",
+                "generation",
+                "query_modules",
+                "reactive_modules",
+                "roles",
+                "schema",
+                "seed_inputs",
+            ][..]
+        } else {
             &[
                 "application",
                 "contract",
@@ -266,19 +343,27 @@ impl ApplicationManifest {
                 "roles",
                 "schema",
                 "seed_inputs",
-            ],
-        )?;
-        if string(root, "schema")? != APPLICATION_MANIFEST_SCHEMA_V1 {
-            return Err(ManifestError::new(ManifestErrorKind::UnsupportedVersion));
-        }
+            ][..]
+        };
+        let root = object(&value, root_keys)?;
+        let schema = match string(root, "schema")? {
+            APPLICATION_MANIFEST_SCHEMA_V1 => APPLICATION_MANIFEST_SCHEMA_V1,
+            APPLICATION_MANIFEST_SCHEMA_V2 => APPLICATION_MANIFEST_SCHEMA_V2,
+            _ => return Err(ManifestError::new(ManifestErrorKind::UnsupportedVersion)),
+        };
         let application_name = checked_name(string(root, "application")?)?;
         let contract = parse_contract(required(root, "contract")?)?;
         let query_modules = parse_query_modules(required(root, "query_modules")?)?;
-        let roles = parse_roles(required(root, "roles")?, &query_modules)?;
-        let generation = parse_generation(required(root, "generation")?)?;
+        let reactive_modules = if schema == APPLICATION_MANIFEST_SCHEMA_V2 {
+            parse_reactive_modules(required(root, "reactive_modules")?)?
+        } else {
+            Vec::new()
+        };
+        let roles = parse_roles(required(root, "roles")?, &query_modules, schema)?;
+        let generation = parse_generation(required(root, "generation")?, schema)?;
         let seed_inputs = parse_paths(required(root, "seed_inputs")?, MAX_SEED_INPUTS)?;
 
-        let canonical_value = json!({
+        let mut canonical_value = json!({
             "application": application_name,
             "contract": {
                 "bundle_hash": hex(contract.bundle_hash.as_bytes()),
@@ -300,16 +385,41 @@ impl ApplicationManifest {
                 })).collect::<Vec<_>>(),
                 "version": module.version,
             })).collect::<Vec<_>>(),
-            "roles": roles.iter().map(|role| json!({
-                "commands": role.commands,
-                "environment": role.environment,
-                "name": role.name,
-                "queries": role.queries,
-                "tenant_scope": role.tenant_scope.as_str(),
-            })).collect::<Vec<_>>(),
-            "schema": APPLICATION_MANIFEST_SCHEMA_V1,
+            "roles": roles.iter().map(|role| if schema == APPLICATION_MANIFEST_SCHEMA_V2 {
+                json!({"agent_subscriptions": role.agent_subscriptions, "commands": role.commands,
+                    "environment": role.environment, "event_streams": role.event_streams,
+                    "name": role.name, "queries": role.queries,
+                    "tenant_scope": role.tenant_scope.as_str(), "watch_queries": role.watch_queries})
+            } else {
+                json!({"commands": role.commands, "environment": role.environment,
+                    "name": role.name, "queries": role.queries,
+                    "tenant_scope": role.tenant_scope.as_str()})
+            }).collect::<Vec<_>>(),
+            "schema": schema,
             "seed_inputs": seed_inputs,
         });
+        if schema == APPLICATION_MANIFEST_SCHEMA_V2 {
+            let root = canonical_value.as_object_mut().expect("manifest object");
+            root.insert(
+                "generation".to_owned(),
+                json!({
+                    "mcp": generation.mcp, "python": generation.python,
+                    "rust": generation.rust, "typescript": generation.typescript,
+                }),
+            );
+            root.insert(
+                "reactive_modules".to_owned(),
+                json!(
+                    reactive_modules
+                        .iter()
+                        .map(|module| json!({
+                            "module_hash": hex(module.module_hash.as_bytes()), "name": module.name,
+                            "source": module.source, "version": module.version,
+                        }))
+                        .collect::<Vec<_>>()
+                ),
+            );
+        }
         let mut canonical_bytes = serde_json::to_vec(&canonical_value)
             .map_err(|_| ManifestError::new(ManifestErrorKind::InvalidJson))?;
         canonical_bytes.push(b'\n');
@@ -326,9 +436,11 @@ impl ApplicationManifest {
         )?;
         let identity = hash_application_manifest(&canonical_bytes);
         Ok(Self {
+            schema,
             application_name,
             contract,
             query_modules,
+            reactive_modules,
             roles,
             generation,
             seed_inputs,
@@ -355,6 +467,12 @@ impl ApplicationManifest {
         &self.application_name
     }
 
+    /// Exact manifest schema.
+    #[must_use]
+    pub const fn schema(&self) -> &'static str {
+        self.schema
+    }
+
     /// Exact contract binding.
     #[must_use]
     pub const fn contract(&self) -> &ManifestContract {
@@ -365,6 +483,12 @@ impl ApplicationManifest {
     #[must_use]
     pub fn query_modules(&self) -> &[ManifestQueryModule] {
         &self.query_modules
+    }
+
+    /// Reactive modules in canonical name order.
+    #[must_use]
+    pub fn reactive_modules(&self) -> &[ManifestReactiveModule] {
+        &self.reactive_modules
     }
 
     /// Symbolic roles in canonical name order.
@@ -508,9 +632,33 @@ fn parse_query_modules(value: &Value) -> Result<Vec<ManifestQueryModule>, Manife
     Ok(modules)
 }
 
+fn parse_reactive_modules(value: &Value) -> Result<Vec<ManifestReactiveModule>, ManifestError> {
+    let values = array(value, 1, MAX_REACTIVE_MODULES)?;
+    let mut modules = values
+        .iter()
+        .map(|value| {
+            let object = object(value, &["module_hash", "name", "source", "version"])?;
+            Ok(ManifestReactiveModule {
+                name: checked_name(string(object, "name")?)?,
+                version: positive_u64(object, "version")?,
+                module_hash: ReactiveModuleHash::from_bytes(parse_hash(string(
+                    object,
+                    "module_hash",
+                )?)?),
+                source: checked_path(string(object, "source")?)?,
+            })
+        })
+        .collect::<Result<Vec<_>, ManifestError>>()?;
+    modules.sort_by(|left, right| left.name.cmp(&right.name));
+    ensure_unique(modules.iter().map(|module| module.name.as_str()))?;
+    ensure_unique(modules.iter().map(|module| module.source.as_str()))?;
+    Ok(modules)
+}
+
 fn parse_roles(
     value: &Value,
     modules: &[ManifestQueryModule],
+    schema: &str,
 ) -> Result<Vec<ManifestRole>, ManifestError> {
     let values = array(value, 1, MAX_ROLES)?;
     let available_queries = modules
@@ -519,16 +667,56 @@ fn parse_roles(
         .collect::<BTreeSet<_>>();
     let mut roles = Vec::with_capacity(values.len());
     for value in values {
-        let object = object(
-            value,
-            &["commands", "environment", "name", "queries", "tenant_scope"],
-        )?;
+        let object = if schema == APPLICATION_MANIFEST_SCHEMA_V2 {
+            object(
+                value,
+                &[
+                    "agent_subscriptions",
+                    "commands",
+                    "environment",
+                    "event_streams",
+                    "name",
+                    "queries",
+                    "tenant_scope",
+                    "watch_queries",
+                ],
+            )?
+        } else {
+            object(
+                value,
+                &["commands", "environment", "name", "queries", "tenant_scope"],
+            )?
+        };
         let mut queries = parse_names(required(object, "queries")?, MAX_ROLE_OPERATIONS)?;
         let mut commands = parse_names(required(object, "commands")?, MAX_ROLE_OPERATIONS)?;
+        let mut event_streams = if schema == APPLICATION_MANIFEST_SCHEMA_V2 {
+            parse_names(required(object, "event_streams")?, MAX_ROLE_OPERATIONS)?
+        } else {
+            Vec::new()
+        };
+        let mut watch_queries = if schema == APPLICATION_MANIFEST_SCHEMA_V2 {
+            parse_names(required(object, "watch_queries")?, MAX_ROLE_OPERATIONS)?
+        } else {
+            Vec::new()
+        };
+        let mut agent_subscriptions = if schema == APPLICATION_MANIFEST_SCHEMA_V2 {
+            parse_names(
+                required(object, "agent_subscriptions")?,
+                MAX_ROLE_OPERATIONS,
+            )?
+        } else {
+            Vec::new()
+        };
         queries.sort();
         commands.sort();
+        event_streams.sort();
+        watch_queries.sort();
+        agent_subscriptions.sort();
         ensure_unique(queries.iter().map(String::as_str))?;
         ensure_unique(commands.iter().map(String::as_str))?;
+        ensure_unique(event_streams.iter().map(String::as_str))?;
+        ensure_unique(watch_queries.iter().map(String::as_str))?;
+        ensure_unique(agent_subscriptions.iter().map(String::as_str))?;
         if queries
             .iter()
             .any(|query| !available_queries.contains(query.as_str()))
@@ -545,6 +733,9 @@ fn parse_roles(
             },
             queries,
             commands,
+            event_streams,
+            watch_queries,
+            agent_subscriptions,
         });
     }
     roles.sort_by(|left, right| left.name.cmp(&right.name));
@@ -552,18 +743,34 @@ fn parse_roles(
     Ok(roles)
 }
 
-fn parse_generation(value: &Value) -> Result<ManifestGenerationTargets, ManifestError> {
-    let object = object(value, &["mcp", "rust", "typescript"])?;
+fn parse_generation(
+    value: &Value,
+    schema: &str,
+) -> Result<ManifestGenerationTargets, ManifestError> {
+    let object = if schema == APPLICATION_MANIFEST_SCHEMA_V2 {
+        object(value, &["mcp", "python", "rust", "typescript"])?
+    } else {
+        object(value, &["mcp", "rust", "typescript"])?
+    };
     let generation = ManifestGenerationTargets {
         rust: checked_path(string(object, "rust")?)?,
         typescript: checked_path(string(object, "typescript")?)?,
         mcp: checked_path(string(object, "mcp")?)?,
+        python: if schema == APPLICATION_MANIFEST_SCHEMA_V2 {
+            Some(checked_path(string(object, "python")?)?)
+        } else {
+            None
+        },
     };
-    ensure_unique([
+    let mut paths = vec![
         generation.rust.as_str(),
         generation.typescript.as_str(),
         generation.mcp.as_str(),
-    ])?;
+    ];
+    if let Some(python) = generation.python.as_deref() {
+        paths.push(python);
+    }
+    ensure_unique(paths)?;
     Ok(generation)
 }
 
@@ -758,11 +965,15 @@ fn build_source_map(
             .map_err(|_| ManifestError::new(ManifestErrorKind::InvalidJson))?;
         let encoded_name = serde_json::to_string(&role.name)
             .map_err(|_| ManifestError::new(ManifestErrorKind::InvalidJson))?;
-        let prefix = format!(",\"environment\":{encoded_environment},\"name\":{encoded_name},");
-        let object_start = source
-            .find(&prefix)
+        let name_marker = format!("\"name\":{encoded_name}");
+        let name_start = source
+            .find(&name_marker)
             .ok_or_else(|| ManifestError::new(ManifestErrorKind::InvalidShape))?;
-        let start = object_start + ",\"environment\":".len();
+        let environment_marker = format!("\"environment\":{encoded_environment}");
+        let marker_start = source[..name_start]
+            .rfind(&environment_marker)
+            .ok_or_else(|| ManifestError::new(ManifestErrorKind::InvalidShape))?;
+        let start = marker_start + "\"environment\":".len();
         spans.insert(
             format!("roles.{}.environment", role.name),
             ManifestSpan {

@@ -27,6 +27,7 @@ Commands:
   capability
   server
   backup
+  retention    Offline exclusive retention maintenance on a closed database file
   demo
 
 Options:
@@ -366,6 +367,30 @@ Commands:
   create
   restore
   operation
+
+Options:
+      --config <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+### `riffdb retention`
+
+```text
+Offline exclusive retention maintenance on a closed database file
+
+Usage: riffdb retention [OPTIONS] <COMMAND>
+
+Commands:
+  status               Prints the retention watermark and fencing breakdown for a closed database
+  hold                 Operator hold management (add / remove)
+  projection-detach    Detaches a projection identity from the fencing minimum (audited)
+  projection-reattach  Reattaches a previously detached projection to the minimum (audited)
+  prune                Offline prune of commits/events/outbox through a target inclusive sequence
 
 Options:
       --config <PATH>
@@ -1296,6 +1321,104 @@ Options:
   -h, --help                               Print help
 ```
 
+#### `riffdb retention status`
+
+```text
+Prints the retention watermark and fencing breakdown for a closed database
+
+Usage: riffdb retention status [OPTIONS] --database-path <PATH>
+
+Options:
+      --config <PATH>
+      --database-path <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb retention hold`
+
+```text
+Operator hold management (add / remove)
+
+Usage: riffdb retention hold [OPTIONS] <COMMAND>
+
+Commands:
+  add
+  remove
+
+Options:
+      --config <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb retention projection-detach`
+
+```text
+Detaches a projection identity from the fencing minimum (audited)
+
+Usage: riffdb retention projection-detach [OPTIONS] --database-path <PATH> --projection-id <ID> --reason <TEXT>
+
+Options:
+      --config <PATH>
+      --database-path <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --projection-id <ID>
+      --database <DATABASE>
+      --reason <TEXT>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb retention projection-reattach`
+
+```text
+Reattaches a previously detached projection to the minimum (audited)
+
+Usage: riffdb retention projection-reattach [OPTIONS] --database-path <PATH> --projection-id <ID> --reason <TEXT>
+
+Options:
+      --config <PATH>
+      --database-path <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --projection-id <ID>
+      --database <DATABASE>
+      --reason <TEXT>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb retention prune`
+
+```text
+Offline prune of commits/events/outbox through a target inclusive sequence
+
+Usage: riffdb retention prune [OPTIONS] --database-path <PATH> --target-sequence <N>
+
+Options:
+      --config <PATH>
+      --database-path <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --target-sequence <N>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
 #### `riffdb demo budget`
 
 ```text
@@ -1320,4 +1443,40 @@ Options:
 
   -h, --help
           Print help
+```
+
+##### `riffdb retention hold add`
+
+```text
+Usage: riffdb retention hold add [OPTIONS] --database-path <PATH> --hold-id <ID> --sequence <N> --reason <TEXT>
+
+Options:
+      --config <PATH>
+      --database-path <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --hold-id <ID>
+      --database <DATABASE>
+      --sequence <N>
+      --output <human|json>                [possible values: human, json]
+      --reason <TEXT>
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+##### `riffdb retention hold remove`
+
+```text
+Usage: riffdb retention hold remove [OPTIONS] --database-path <PATH> --hold-id <ID>
+
+Options:
+      --config <PATH>
+      --database-path <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --hold-id <ID>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
 ```

@@ -5,17 +5,19 @@ use std::fmt;
 use std::num::NonZeroU16;
 
 use riffdb_contract_ir::ContractBundle;
+use riffdb_query_ir::{ReactiveModulePlanV1, ReactiveOperationPlanV1};
 use riffdb_types::{
     ApplicationManifestHash, ApplicationRoleHash, CapabilityGrantV1, CapabilityPermissionV1,
     CapabilityPermissionsV1, ContractBundleHash, ContractLineage, ContractVersion,
     EntityFieldVisibilityV1, Environment, PartitionScopeV1, QueryModuleHash, QueryOperationName,
-    TenantId, TenantScope, hash_application_role,
+    ReactiveModuleHash, TenantId, TenantScope, hash_application_role,
 };
 
 use crate::{ApplicationManifest, ManifestRole, ManifestTenantScope, QueryModule};
 
 const ROLE_MAGIC: &[u8] = b"RIFFDB-APPLICATION-ROLE\0";
 const ROLE_FORMAT_VERSION_V1: u32 = 1;
+const ROLE_FORMAT_VERSION_V2: u32 = 2;
 const MAX_ROLE_BYTES: usize = 1024 * 1024;
 
 /// Symbolic operation kind exposed by a compiled application role.
@@ -25,6 +27,12 @@ pub enum ApplicationRoleOperationKind {
     Query,
     /// One exact compiled symbolic command.
     Command,
+    /// One exact event stream.
+    EventStream,
+    /// One exact named-query watch.
+    QueryWatch,
+    /// One exact contextual subscription.
+    AgentSubscription,
 }
 
 /// One safe name-only role operation description.
@@ -60,6 +68,7 @@ pub struct CompiledApplicationRole {
     contract_version: ContractVersion,
     contract_hash: ContractBundleHash,
     module_hashes: Vec<QueryModuleHash>,
+    reactive_module_hashes: Vec<ReactiveModuleHash>,
     operations: Vec<ApplicationRoleOperation>,
     identity: ApplicationRoleHash,
     grant: CapabilityGrantV1,
@@ -118,6 +127,11 @@ impl CompiledApplicationRole {
     #[must_use]
     pub fn module_hashes(&self) -> &[QueryModuleHash] {
         &self.module_hashes
+    }
+    /// Exact immutable reactive-module identities.
+    #[must_use]
+    pub fn reactive_module_hashes(&self) -> &[ReactiveModuleHash] {
+        &self.reactive_module_hashes
     }
 
     /// Name-only operation allowlist suitable for CLI and MCP description.
@@ -210,6 +224,36 @@ pub fn compile_application_role(
     contract: &ContractBundle,
     modules: &[QueryModule],
 ) -> Result<CompiledApplicationRole, ApplicationRoleError> {
+    compile_application_role_inner(manifest, role_name, tenant, contract, modules, &[])
+}
+
+/// Compiles a V2 manifest role including exact reactive permissions.
+pub fn compile_application_role_v2(
+    manifest: &ApplicationManifest,
+    role_name: &str,
+    tenant: Option<TenantId>,
+    contract: &ContractBundle,
+    modules: &[QueryModule],
+    reactive_modules: &[ReactiveModulePlanV1],
+) -> Result<CompiledApplicationRole, ApplicationRoleError> {
+    compile_application_role_inner(
+        manifest,
+        role_name,
+        tenant,
+        contract,
+        modules,
+        reactive_modules,
+    )
+}
+
+fn compile_application_role_inner(
+    manifest: &ApplicationManifest,
+    role_name: &str,
+    tenant: Option<TenantId>,
+    contract: &ContractBundle,
+    modules: &[QueryModule],
+    reactive_modules: &[ReactiveModulePlanV1],
+) -> Result<CompiledApplicationRole, ApplicationRoleError> {
     let role = manifest
         .roles()
         .iter()
@@ -285,6 +329,79 @@ pub fn compile_application_role(
             name: command_name.clone(),
         });
     }
+    let reactive_by_operation = validate_reactive_modules(manifest, contract, reactive_modules)?;
+    for (names, expected_kind) in [
+        (
+            role.event_streams(),
+            ApplicationRoleOperationKind::EventStream,
+        ),
+        (
+            role.watch_queries(),
+            ApplicationRoleOperationKind::QueryWatch,
+        ),
+        (
+            role.agent_subscriptions(),
+            ApplicationRoleOperationKind::AgentSubscription,
+        ),
+    ] {
+        for name in names {
+            let (module, operation) = reactive_by_operation
+                .get(name.as_str())
+                .copied()
+                .ok_or_else(|| {
+                    ApplicationRoleError::new(ApplicationRoleErrorKind::UnknownOperation)
+                })?;
+            let kind_matches = matches!(
+                (expected_kind, operation.plan()),
+                (
+                    ApplicationRoleOperationKind::EventStream,
+                    ReactiveOperationPlanV1::Stream { .. }
+                ) | (
+                    ApplicationRoleOperationKind::QueryWatch,
+                    ReactiveOperationPlanV1::Watch { .. }
+                ) | (
+                    ApplicationRoleOperationKind::AgentSubscription,
+                    ReactiveOperationPlanV1::Subscription { .. }
+                )
+            );
+            if !kind_matches {
+                return Err(ApplicationRoleError::new(
+                    ApplicationRoleErrorKind::UnknownOperation,
+                ));
+            }
+            let permission = match expected_kind {
+                ApplicationRoleOperationKind::EventStream => {
+                    CapabilityPermissionV1::ConsumeEventStream(
+                        lineage.clone(),
+                        module.identity(),
+                        operation.name().clone(),
+                    )
+                }
+                ApplicationRoleOperationKind::QueryWatch => {
+                    CapabilityPermissionV1::WatchNamedQuery(
+                        lineage.clone(),
+                        module.identity(),
+                        operation.name().clone(),
+                    )
+                }
+                ApplicationRoleOperationKind::AgentSubscription => {
+                    CapabilityPermissionV1::ConsumeContextualSubscription(
+                        lineage.clone(),
+                        module.identity(),
+                        operation.name().clone(),
+                    )
+                }
+                ApplicationRoleOperationKind::Query | ApplicationRoleOperationKind::Command => {
+                    unreachable!("reactive loop kind")
+                }
+            };
+            permissions.push(permission);
+            operations.push(ApplicationRoleOperation {
+                kind: expected_kind,
+                name: name.clone(),
+            });
+        }
+    }
     operations.sort_by(|left, right| {
         operation_kind_tag(left.kind)
             .cmp(&operation_kind_tag(right.kind))
@@ -324,6 +441,11 @@ pub fn compile_application_role(
         .map(QueryModule::identity)
         .collect::<Vec<_>>();
     module_hashes.sort_unstable();
+    let mut reactive_module_hashes = reactive_modules
+        .iter()
+        .map(ReactiveModulePlanV1::identity)
+        .collect::<Vec<_>>();
+    reactive_module_hashes.sort_unstable();
     let canonical = encode_role(
         manifest,
         role,
@@ -331,6 +453,7 @@ pub fn compile_application_role(
         &tenant_scope,
         contract,
         &module_hashes,
+        &reactive_module_hashes,
         &operations,
         &base_grant,
     )?;
@@ -357,10 +480,62 @@ pub fn compile_application_role(
         contract_version: contract.contract_version(),
         contract_hash: contract.bundle_hash(),
         module_hashes,
+        reactive_module_hashes,
         operations,
         identity,
         grant,
     })
+}
+
+fn validate_reactive_modules<'a>(
+    manifest: &ApplicationManifest,
+    contract: &ContractBundle,
+    modules: &'a [ReactiveModulePlanV1],
+) -> Result<
+    BTreeMap<
+        String,
+        (
+            &'a ReactiveModulePlanV1,
+            &'a riffdb_query_ir::CompiledReactiveOperationV1,
+        ),
+    >,
+    ApplicationRoleError,
+> {
+    if modules.len() != manifest.reactive_modules().len() {
+        return if modules.is_empty() && manifest.reactive_modules().is_empty() {
+            Ok(BTreeMap::new())
+        } else {
+            Err(ApplicationRoleError::new(
+                ApplicationRoleErrorKind::ModuleMismatch,
+            ))
+        };
+    }
+    let mut operations = BTreeMap::new();
+    for declaration in manifest.reactive_modules() {
+        let module = modules
+            .iter()
+            .find(|module| module.name() == declaration.name())
+            .ok_or_else(|| ApplicationRoleError::new(ApplicationRoleErrorKind::ModuleMismatch))?;
+        if module.identity() != declaration.module_hash()
+            || module.version() != declaration.version()
+            || module.contract_hash() != contract.bundle_hash()
+        {
+            return Err(ApplicationRoleError::new(
+                ApplicationRoleErrorKind::ModuleMismatch,
+            ));
+        }
+        for operation in module.operations() {
+            if operations
+                .insert(operation.name().as_str().to_owned(), (module, operation))
+                .is_some()
+            {
+                return Err(ApplicationRoleError::new(
+                    ApplicationRoleErrorKind::ModuleMismatch,
+                ));
+            }
+        }
+    }
+    Ok(operations)
 }
 
 fn validate_contract(
@@ -437,12 +612,20 @@ fn encode_role(
     tenant_scope: &TenantScope,
     contract: &ContractBundle,
     module_hashes: &[QueryModuleHash],
+    reactive_module_hashes: &[ReactiveModuleHash],
     operations: &[ApplicationRoleOperation],
     grant: &CapabilityGrantV1,
 ) -> Result<Vec<u8>, ApplicationRoleError> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(ROLE_MAGIC);
-    bytes.extend_from_slice(&ROLE_FORMAT_VERSION_V1.to_be_bytes());
+    bytes.extend_from_slice(
+        &(if reactive_module_hashes.is_empty() {
+            ROLE_FORMAT_VERSION_V1
+        } else {
+            ROLE_FORMAT_VERSION_V2
+        })
+        .to_be_bytes(),
+    );
     write_bytes(&mut bytes, manifest.identity().as_bytes())?;
     write_text(&mut bytes, manifest.application_name())?;
     write_text(&mut bytes, role.name())?;
@@ -454,6 +637,12 @@ fn encode_role(
     write_count(&mut bytes, module_hashes.len())?;
     for hash in module_hashes {
         bytes.extend_from_slice(hash.as_bytes());
+    }
+    if !reactive_module_hashes.is_empty() {
+        write_count(&mut bytes, reactive_module_hashes.len())?;
+        for hash in reactive_module_hashes {
+            bytes.extend_from_slice(hash.as_bytes());
+        }
     }
     write_count(&mut bytes, operations.len())?;
     for operation in operations {
@@ -482,6 +671,9 @@ const fn operation_kind_tag(kind: ApplicationRoleOperationKind) -> u8 {
     match kind {
         ApplicationRoleOperationKind::Query => 1,
         ApplicationRoleOperationKind::Command => 2,
+        ApplicationRoleOperationKind::EventStream => 3,
+        ApplicationRoleOperationKind::QueryWatch => 4,
+        ApplicationRoleOperationKind::AgentSubscription => 5,
     }
 }
 

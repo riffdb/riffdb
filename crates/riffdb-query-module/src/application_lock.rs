@@ -4,6 +4,10 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use riffdb_contract_ir::{ContractBundle, MigrationBundleV1};
+use riffdb_query_ir::{
+    REACTIVE_IR_VERSION_V1, REACTIVE_MODULE_FORMAT_VERSION_V1, ReactiveModulePlanV1,
+    ReactiveOperationPlanV1,
+};
 use riffdb_types::{
     ApplicationLockHash, ApplicationManifestHash, ApplicationSourceHash, ContractBundleHash,
     ContractVersion, GeneratedArtifactHash, MigrationBundleHash, MigrationSourceHash,
@@ -25,12 +29,16 @@ pub const APPLICATION_LOCK_SCHEMA_V2: &str = "riffdb.application-lock/v2";
 pub const APPLICATION_LOCK_SCHEMA_V3: &str = "riffdb.application-lock/v3";
 /// Exact lock schema pinning direct-parent migration artifacts.
 pub const APPLICATION_LOCK_SCHEMA_V4: &str = "riffdb.application-lock/v4";
+/// Exact lock schema binding reactive modules and V2 role definitions.
+pub const APPLICATION_LOCK_SCHEMA_V5: &str = "riffdb.application-lock/v5";
 /// Compiler-owned canonical contract-bundle artifact path.
 pub const CONTRACT_BUNDLE_ARTIFACT_PATH: &str = "generated/riffdb.contract.bundle";
 /// Maximum accepted canonical application-lock bytes.
 pub const MAX_APPLICATION_LOCK_BYTES: usize = 4 * 1_024 * 1_024;
 /// Current tenant-unbound role-definition format.
 pub const APPLICATION_ROLE_DEFINITION_FORMAT_V1: u32 = 1;
+/// Role definition format with exact reactive operation authority.
+pub const APPLICATION_ROLE_DEFINITION_FORMAT_V2: u32 = 2;
 const MAX_ARTIFACT_BYTES: usize = 16 * 1_024 * 1_024;
 const MAX_ARTIFACTS: usize = 128;
 
@@ -155,6 +163,8 @@ pub enum GeneratedApplicationArtifactKind {
     Mcp,
     /// Canonical compiler-owned contract bundle.
     ContractBundle,
+    /// Canonical reactive module.
+    ReactiveModule,
 }
 
 impl GeneratedApplicationArtifactKind {
@@ -166,6 +176,7 @@ impl GeneratedApplicationArtifactKind {
             Self::Python => "python",
             Self::Mcp => "mcp",
             Self::ContractBundle => "contract_bundle",
+            Self::ReactiveModule => "reactive_module",
         }
     }
 }
@@ -234,6 +245,13 @@ pub struct ApplicationLock {
     migrations: Vec<LockedApplicationMigration>,
 }
 
+struct ApplicationLockCompileInputs<'a> {
+    reactive_modules: &'a [ReactiveModulePlanV1],
+    artifacts: &'a [GeneratedApplicationArtifact],
+    pin_contract_bundle: bool,
+    migrations: Option<&'a [ApplicationMigrationLockInput]>,
+}
+
 impl ApplicationLock {
     /// Compiles the complete exact lock without performing I/O or deployment.
     pub fn compile(
@@ -243,7 +261,18 @@ impl ApplicationLock {
         modules: &[QueryModule],
         artifacts: &[GeneratedApplicationArtifact],
     ) -> Result<Self, ApplicationLockError> {
-        Self::compile_inner(source, manifest, contract, modules, artifacts, false, None)
+        Self::compile_inner(
+            source,
+            manifest,
+            contract,
+            modules,
+            ApplicationLockCompileInputs {
+                reactive_modules: &[],
+                artifacts,
+                pin_contract_bundle: false,
+                migrations: None,
+            },
+        )
     }
 
     /// Compiles lock V3 with the exact canonical contract bundle as an artifact.
@@ -254,7 +283,18 @@ impl ApplicationLock {
         modules: &[QueryModule],
         artifacts: &[GeneratedApplicationArtifact],
     ) -> Result<Self, ApplicationLockError> {
-        Self::compile_inner(source, manifest, contract, modules, artifacts, true, None)
+        Self::compile_inner(
+            source,
+            manifest,
+            contract,
+            modules,
+            ApplicationLockCompileInputs {
+                reactive_modules: &[],
+                artifacts,
+                pin_contract_bundle: true,
+                migrations: None,
+            },
+        )
     }
 
     /// Compiles lock V4 with every exact direct-parent migration artifact.
@@ -271,9 +311,36 @@ impl ApplicationLock {
             manifest,
             contract,
             modules,
-            artifacts,
-            true,
-            Some(migrations),
+            ApplicationLockCompileInputs {
+                reactive_modules: &[],
+                artifacts,
+                pin_contract_bundle: true,
+                migrations: Some(migrations),
+            },
+        )
+    }
+
+    /// Compiles lock V5 with exact reactive modules and direct-parent migrations.
+    pub fn compile_v5(
+        source: &ApplicationSourceManifest,
+        manifest: &ApplicationManifest,
+        contract: &ContractBundle,
+        modules: &[QueryModule],
+        reactive_modules: &[ReactiveModulePlanV1],
+        artifacts: &[GeneratedApplicationArtifact],
+        migrations: &[ApplicationMigrationLockInput],
+    ) -> Result<Self, ApplicationLockError> {
+        Self::compile_inner(
+            source,
+            manifest,
+            contract,
+            modules,
+            ApplicationLockCompileInputs {
+                reactive_modules,
+                artifacts,
+                pin_contract_bundle: true,
+                migrations: Some(migrations),
+            },
         )
     }
 
@@ -282,18 +349,29 @@ impl ApplicationLock {
         manifest: &ApplicationManifest,
         contract: &ContractBundle,
         modules: &[QueryModule],
-        artifacts: &[GeneratedApplicationArtifact],
-        pin_contract_bundle: bool,
-        migration_inputs: Option<&[ApplicationMigrationLockInput]>,
+        inputs: ApplicationLockCompileInputs<'_>,
     ) -> Result<Self, ApplicationLockError> {
-        if source.schema() == crate::APPLICATION_SOURCE_SCHEMA_V3 && migration_inputs.is_none() {
+        let ApplicationLockCompileInputs {
+            reactive_modules,
+            artifacts,
+            pin_contract_bundle,
+            migrations: migration_inputs,
+        } = inputs;
+        if matches!(
+            source.schema(),
+            crate::APPLICATION_SOURCE_SCHEMA_V3 | crate::APPLICATION_SOURCE_SCHEMA_V4
+        ) && migration_inputs.is_none()
+        {
             return Err(ApplicationLockError::new(
                 ApplicationLockErrorKind::UnsupportedVersion,
             ));
         }
-        let expected = source
-            .exact_manifest(contract, modules)
-            .map_err(|_| ApplicationLockError::new(ApplicationLockErrorKind::IdentityMismatch))?;
+        let expected = if source.schema() == crate::APPLICATION_SOURCE_SCHEMA_V4 {
+            source.exact_manifest_v2(contract, modules, reactive_modules)
+        } else {
+            source.exact_manifest(contract, modules)
+        }
+        .map_err(|_| ApplicationLockError::new(ApplicationLockErrorKind::IdentityMismatch))?;
         if expected.canonical_bytes() != manifest.canonical_bytes() {
             return Err(ApplicationLockError::new(
                 ApplicationLockErrorKind::IdentityMismatch,
@@ -314,6 +392,15 @@ impl ApplicationLock {
         {
             return Err(ApplicationLockError::new(
                 ApplicationLockErrorKind::Duplicate,
+            ));
+        }
+        if source.schema() != crate::APPLICATION_SOURCE_SCHEMA_V4
+            && artifacts
+                .iter()
+                .any(|artifact| artifact.kind == GeneratedApplicationArtifactKind::ReactiveModule)
+        {
+            return Err(ApplicationLockError::new(
+                ApplicationLockErrorKind::InvalidShape,
             ));
         }
         let contract_bundle_artifact = artifacts
@@ -345,7 +432,45 @@ impl ApplicationLock {
                 ));
             }
         }
-        let schema = if migration_inputs.is_some() {
+        let schema = if source.schema() == crate::APPLICATION_SOURCE_SCHEMA_V4 {
+            if migration_inputs.is_none()
+                || manifest.schema() != crate::APPLICATION_MANIFEST_SCHEMA_V2
+            {
+                return Err(ApplicationLockError::new(
+                    ApplicationLockErrorKind::InvalidShape,
+                ));
+            }
+            require_python_artifact(source, &artifacts)?;
+            if artifacts
+                .iter()
+                .filter(|artifact| {
+                    artifact.kind == GeneratedApplicationArtifactKind::ReactiveModule
+                })
+                .count()
+                != reactive_modules.len()
+            {
+                return Err(ApplicationLockError::new(
+                    ApplicationLockErrorKind::IdentityMismatch,
+                ));
+            }
+            for module in reactive_modules {
+                let path = format!(
+                    "generated/reactive/{}.riffdb.reactive.module",
+                    module.name()
+                );
+                let expected = GeneratedApplicationArtifact::new(
+                    GeneratedApplicationArtifactKind::ReactiveModule,
+                    path,
+                    module.canonical_bytes(),
+                )?;
+                if !artifacts.contains(&expected) {
+                    return Err(ApplicationLockError::new(
+                        ApplicationLockErrorKind::IdentityMismatch,
+                    ));
+                }
+            }
+            APPLICATION_LOCK_SCHEMA_V5
+        } else if migration_inputs.is_some() {
             if source.schema() != crate::APPLICATION_SOURCE_SCHEMA_V3 {
                 return Err(ApplicationLockError::new(
                     ApplicationLockErrorKind::InvalidShape,
@@ -385,10 +510,13 @@ impl ApplicationLock {
             }
             APPLICATION_LOCK_SCHEMA_V2
         } else {
-            if artifacts
-                .iter()
-                .any(|artifact| artifact.kind == GeneratedApplicationArtifactKind::Python)
-            {
+            if artifacts.iter().any(|artifact| {
+                matches!(
+                    artifact.kind,
+                    GeneratedApplicationArtifactKind::Python
+                        | GeneratedApplicationArtifactKind::ReactiveModule
+                )
+            }) {
                 return Err(ApplicationLockError::new(
                     ApplicationLockErrorKind::InvalidShape,
                 ));
@@ -401,7 +529,10 @@ impl ApplicationLock {
             contract,
             &artifacts,
             migration_inputs.unwrap_or_default(),
-            schema == APPLICATION_LOCK_SCHEMA_V4,
+            matches!(
+                schema,
+                APPLICATION_LOCK_SCHEMA_V4 | APPLICATION_LOCK_SCHEMA_V5
+            ),
         )?;
         let mut sorted_modules = modules.iter().collect::<Vec<_>>();
         sorted_modules.sort_by(|left, right| left.name().cmp(right.name()));
@@ -412,7 +543,7 @@ impl ApplicationLock {
         let role_values = manifest
             .roles()
             .iter()
-            .map(|role| role_value(role, modules, contract))
+            .map(|role| role_value(role, modules, reactive_modules, contract))
             .collect::<Result<Vec<_>, _>>()?;
         let mut value = json!({
             "artifacts": artifacts.iter().map(|artifact| json!({
@@ -421,7 +552,9 @@ impl ApplicationLock {
                 "path": artifact.path,
             })).collect::<Vec<_>>(),
             "compiler_formats": {
-                "application_role_definition": APPLICATION_ROLE_DEFINITION_FORMAT_V1,
+                "application_role_definition": if schema == APPLICATION_LOCK_SCHEMA_V5 {
+                    APPLICATION_ROLE_DEFINITION_FORMAT_V2
+                } else { APPLICATION_ROLE_DEFINITION_FORMAT_V1 },
                 "contract_bundle": contract.format_version(),
                 "contract_grammar": contract.grammar_version(),
                 "contract_ir": contract.ir_version(),
@@ -441,7 +574,35 @@ impl ApplicationLock {
             "schema": schema,
             "source_hash": hex(source.identity().as_bytes()),
         });
-        if schema == APPLICATION_LOCK_SCHEMA_V4 {
+        if schema == APPLICATION_LOCK_SCHEMA_V5 {
+            let object = value.as_object_mut().expect("application lock object");
+            object.insert(
+                "reactive_modules".to_owned(),
+                json!(
+                    reactive_modules
+                        .iter()
+                        .map(reactive_module_value)
+                        .collect::<Vec<_>>()
+                ),
+            );
+            let formats = object
+                .get_mut("compiler_formats")
+                .and_then(Value::as_object_mut)
+                .expect("compiler formats object");
+            formats.insert(
+                "reactive_grammar".to_owned(),
+                json!(riffdb_query_syntax::REACTIVE_GRAMMAR_VERSION_V1),
+            );
+            formats.insert("reactive_ir".to_owned(), json!(REACTIVE_IR_VERSION_V1));
+            formats.insert(
+                "reactive_module".to_owned(),
+                json!(REACTIVE_MODULE_FORMAT_VERSION_V1),
+            );
+        }
+        if matches!(
+            schema,
+            APPLICATION_LOCK_SCHEMA_V4 | APPLICATION_LOCK_SCHEMA_V5
+        ) {
             let object = value
                 .as_object_mut()
                 .expect("compiler-created application lock is an object");
@@ -514,7 +675,7 @@ impl ApplicationLock {
         )?)?);
         let contract_bundle_artifact = if matches!(
             schema,
-            APPLICATION_LOCK_SCHEMA_V3 | APPLICATION_LOCK_SCHEMA_V4
+            APPLICATION_LOCK_SCHEMA_V3 | APPLICATION_LOCK_SCHEMA_V4 | APPLICATION_LOCK_SCHEMA_V5
         ) {
             let artifacts = required(object, "artifacts")?
                 .as_array()
@@ -544,7 +705,10 @@ impl ApplicationLock {
         } else {
             None
         };
-        let migrations = if schema == APPLICATION_LOCK_SCHEMA_V4 {
+        let migrations = if matches!(
+            schema,
+            APPLICATION_LOCK_SCHEMA_V4 | APPLICATION_LOCK_SCHEMA_V5
+        ) {
             required(object, "migrations")?
                 .as_array()
                 .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?
@@ -624,6 +788,9 @@ fn validate_migration_inputs(
         return Ok(Vec::new());
     }
     if inputs.is_empty() || inputs.len() != source.migrations().len() {
+        if inputs.is_empty() && source.migrations().is_empty() {
+            return Ok(Vec::new());
+        }
         return Err(ApplicationLockError::new(
             ApplicationLockErrorKind::IdentityMismatch,
         ));
@@ -841,6 +1008,7 @@ fn module_value(module: &QueryModule) -> Value {
 fn role_value(
     role: &crate::ManifestRole,
     modules: &[QueryModule],
+    reactive_modules: &[ReactiveModulePlanV1],
     contract: &ContractBundle,
 ) -> Result<Value, ApplicationLockError> {
     let mut queries = Vec::with_capacity(role.queries().len());
@@ -871,13 +1039,57 @@ fn role_value(
         ManifestTenantScope::Global => "global",
         ManifestTenantScope::Tenant => "tenant",
     };
-    let definition = json!({
-        "commands": commands,
-        "environment": role.environment(),
-        "name": role.name(),
-        "queries": queries,
-        "tenant_scope": scope,
-    });
+    let reactive_operation = |name: &str, expected: u8| -> Result<Value, ApplicationLockError> {
+        let (module, operation) = reactive_modules
+            .iter()
+            .find_map(|module| module.operation(name).map(|operation| (module, operation)))
+            .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::UnknownOperation))?;
+        let kind = match operation.plan() {
+            ReactiveOperationPlanV1::Stream { .. } => 1,
+            ReactiveOperationPlanV1::Watch { .. } => 2,
+            ReactiveOperationPlanV1::Subscription { .. } => 3,
+        };
+        if kind != expected {
+            return Err(ApplicationLockError::new(
+                ApplicationLockErrorKind::UnknownOperation,
+            ));
+        }
+        Ok(
+            json!({"module_hash": hex(module.identity().as_bytes()), "name": name,
+            "operation_hash": hex(operation.identity().as_bytes())}),
+        )
+    };
+    let event_streams = role
+        .event_streams()
+        .iter()
+        .map(|name| reactive_operation(name, 1))
+        .collect::<Result<Vec<_>, _>>()?;
+    let watch_queries = role
+        .watch_queries()
+        .iter()
+        .map(|name| reactive_operation(name, 2))
+        .collect::<Result<Vec<_>, _>>()?;
+    let agent_subscriptions = role
+        .agent_subscriptions()
+        .iter()
+        .map(|name| reactive_operation(name, 3))
+        .collect::<Result<Vec<_>, _>>()?;
+    let definition = if reactive_modules.is_empty() {
+        json!({
+            "commands": commands,
+            "environment": role.environment(),
+            "name": role.name(),
+            "queries": queries,
+            "tenant_scope": scope,
+        })
+    } else {
+        json!({
+            "agent_subscriptions": agent_subscriptions,
+            "commands": commands, "environment": role.environment(), "event_streams": event_streams,
+            "name": role.name(), "queries": queries, "tenant_scope": scope,
+            "watch_queries": watch_queries,
+        })
+    };
     let definition_bytes = serde_json::to_vec(&definition)
         .map_err(|_| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
     Ok(json!({
@@ -886,13 +1098,40 @@ fn role_value(
     }))
 }
 
+fn reactive_module_value(module: &ReactiveModulePlanV1) -> Value {
+    json!({
+        "contract_hash": hex(module.contract_hash().as_bytes()),
+        "module_hash": hex(module.identity().as_bytes()),
+        "name": module.name(),
+        "operations": module.operations().iter().map(|operation| json!({
+            "name": operation.name().as_str(),
+            "operation_hash": hex(operation.identity().as_bytes()),
+        })).collect::<Vec<_>>(),
+        "source_hash": hex(module.source_hash().as_bytes()),
+        "version": module.version(),
+    })
+}
+
 fn validate_lock_shape(value: &Value) -> Result<&'static str, ApplicationLockError> {
     let schema_value = value
         .as_object()
         .and_then(|root| root.get("schema"))
         .and_then(Value::as_str)
         .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
-    let root_keys = if schema_value == APPLICATION_LOCK_SCHEMA_V4 {
+    let root_keys = if schema_value == APPLICATION_LOCK_SCHEMA_V5 {
+        &[
+            "artifacts",
+            "compiler_formats",
+            "contract",
+            "exact_manifest_hash",
+            "migrations",
+            "modules",
+            "reactive_modules",
+            "roles",
+            "schema",
+            "source_hash",
+        ][..]
+    } else if schema_value == APPLICATION_LOCK_SCHEMA_V4 {
         &[
             "artifacts",
             "compiler_formats",
@@ -922,6 +1161,7 @@ fn validate_lock_shape(value: &Value) -> Result<&'static str, ApplicationLockErr
         Some(APPLICATION_LOCK_SCHEMA_V2) => APPLICATION_LOCK_SCHEMA_V2,
         Some(APPLICATION_LOCK_SCHEMA_V3) => APPLICATION_LOCK_SCHEMA_V3,
         Some(APPLICATION_LOCK_SCHEMA_V4) => APPLICATION_LOCK_SCHEMA_V4,
+        Some(APPLICATION_LOCK_SCHEMA_V5) => APPLICATION_LOCK_SCHEMA_V5,
         _ => {
             return Err(ApplicationLockError::new(
                 ApplicationLockErrorKind::UnsupportedVersion,
@@ -930,7 +1170,21 @@ fn validate_lock_shape(value: &Value) -> Result<&'static str, ApplicationLockErr
     };
     parse_hash(required(root, "source_hash")?)?;
     parse_hash(required(root, "exact_manifest_hash")?)?;
-    let format_keys = if schema == APPLICATION_LOCK_SCHEMA_V4 {
+    let format_keys = if schema == APPLICATION_LOCK_SCHEMA_V5 {
+        &[
+            "application_role_definition",
+            "contract_bundle",
+            "contract_grammar",
+            "contract_ir",
+            "migration_bundle",
+            "migration_grammar",
+            "migration_ir",
+            "query_module",
+            "reactive_grammar",
+            "reactive_ir",
+            "reactive_module",
+        ][..]
+    } else if schema == APPLICATION_LOCK_SCHEMA_V4 {
         &[
             "application_role_definition",
             "contract_bundle",
@@ -979,12 +1233,19 @@ fn validate_lock_shape(value: &Value) -> Result<&'static str, ApplicationLockErr
         ));
     }
     validate_sorted_array(required(root, "modules")?, "name", validate_module)?;
+    if schema == APPLICATION_LOCK_SCHEMA_V5 {
+        validate_sorted_array(
+            required(root, "reactive_modules")?,
+            "name",
+            validate_reactive_module,
+        )?;
+    }
     validate_sorted_roles(required(root, "roles")?)?;
     let artifacts = required(root, "artifacts")?;
     validate_sorted_array(artifacts, "path", |value| validate_artifact(value, schema))?;
     if matches!(
         schema,
-        APPLICATION_LOCK_SCHEMA_V2 | APPLICATION_LOCK_SCHEMA_V4
+        APPLICATION_LOCK_SCHEMA_V2 | APPLICATION_LOCK_SCHEMA_V4 | APPLICATION_LOCK_SCHEMA_V5
     ) {
         let python_count = artifacts
             .as_array()
@@ -1000,7 +1261,7 @@ fn validate_lock_shape(value: &Value) -> Result<&'static str, ApplicationLockErr
     }
     if matches!(
         schema,
-        APPLICATION_LOCK_SCHEMA_V3 | APPLICATION_LOCK_SCHEMA_V4
+        APPLICATION_LOCK_SCHEMA_V3 | APPLICATION_LOCK_SCHEMA_V4 | APPLICATION_LOCK_SCHEMA_V5
     ) {
         let contract_bundles = artifacts
             .as_array()
@@ -1017,15 +1278,57 @@ fn validate_lock_shape(value: &Value) -> Result<&'static str, ApplicationLockErr
             ));
         }
     }
-    if schema == APPLICATION_LOCK_SCHEMA_V4 {
-        validate_migration_array(
-            required(root, "migrations")?,
-            required(contract, "version")?
-                .as_u64()
-                .ok_or_else(|| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?,
-        )?;
+    if matches!(
+        schema,
+        APPLICATION_LOCK_SCHEMA_V4 | APPLICATION_LOCK_SCHEMA_V5
+    ) {
+        let migrations = required(root, "migrations")?;
+        let empty_v5 = schema == APPLICATION_LOCK_SCHEMA_V5
+            && migrations.as_array().is_some_and(Vec::is_empty);
+        if !empty_v5 {
+            validate_migration_array(
+                migrations,
+                required(contract, "version")?.as_u64().ok_or_else(|| {
+                    ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape)
+                })?,
+            )?;
+        }
     }
     Ok(schema)
+}
+
+fn validate_reactive_module(value: &Value) -> Result<(), ApplicationLockError> {
+    let module = exact_object(
+        value,
+        &[
+            "contract_hash",
+            "module_hash",
+            "name",
+            "operations",
+            "source_hash",
+            "version",
+        ],
+    )?;
+    for key in ["contract_hash", "module_hash", "source_hash"] {
+        parse_hash(required(module, key)?)?;
+    }
+    if required(module, "name")?.as_str().is_none()
+        || required(module, "version")?.as_u64().is_none()
+    {
+        return Err(ApplicationLockError::new(
+            ApplicationLockErrorKind::InvalidShape,
+        ));
+    }
+    validate_sorted_array(required(module, "operations")?, "name", |value| {
+        let operation = exact_object(value, &["name", "operation_hash"])?;
+        parse_hash(required(operation, "operation_hash")?)?;
+        if required(operation, "name")?.as_str().is_none() {
+            return Err(ApplicationLockError::new(
+                ApplicationLockErrorKind::InvalidShape,
+            ));
+        }
+        Ok(())
+    })
 }
 
 fn validate_migration_array(
@@ -1093,10 +1396,28 @@ fn validate_module(value: &Value) -> Result<(), ApplicationLockError> {
 fn validate_role(value: &Value) -> Result<(), ApplicationLockError> {
     let role = exact_object(value, &["definition", "definition_hash"])?;
     let stored_hash = parse_hash(required(role, "definition_hash")?)?;
-    let definition = exact_object(
-        required(role, "definition")?,
-        &["commands", "environment", "name", "queries", "tenant_scope"],
-    )?;
+    let definition_value = required(role, "definition")?;
+    let is_v2 = definition_value.get("agent_subscriptions").is_some();
+    let definition = if is_v2 {
+        exact_object(
+            definition_value,
+            &[
+                "agent_subscriptions",
+                "commands",
+                "environment",
+                "event_streams",
+                "name",
+                "queries",
+                "tenant_scope",
+                "watch_queries",
+            ],
+        )?
+    } else {
+        exact_object(
+            definition_value,
+            &["commands", "environment", "name", "queries", "tenant_scope"],
+        )?
+    };
     let definition_bytes = serde_json::to_vec(required(role, "definition")?)
         .map_err(|_| ApplicationLockError::new(ApplicationLockErrorKind::InvalidShape))?;
     if hash_application_role_definition(&definition_bytes).as_bytes() != &stored_hash {
@@ -1131,7 +1452,23 @@ fn validate_role(value: &Value) -> Result<(), ApplicationLockError> {
             ));
         }
         Ok(())
-    })
+    })?;
+    if is_v2 {
+        for key in ["event_streams", "watch_queries", "agent_subscriptions"] {
+            validate_sorted_array(required(definition, key)?, "name", |value| {
+                let operation = exact_object(value, &["module_hash", "name", "operation_hash"])?;
+                parse_hash(required(operation, "module_hash")?)?;
+                parse_hash(required(operation, "operation_hash")?)?;
+                if required(operation, "name")?.as_str().is_none() {
+                    return Err(ApplicationLockError::new(
+                        ApplicationLockErrorKind::InvalidShape,
+                    ));
+                }
+                Ok(())
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_sorted_roles(value: &Value) -> Result<(), ApplicationLockError> {
@@ -1170,17 +1507,21 @@ fn validate_artifact(value: &Value, schema: &str) -> Result<(), ApplicationLockE
             (
                 APPLICATION_LOCK_SCHEMA_V2
                     | APPLICATION_LOCK_SCHEMA_V3
-                    | APPLICATION_LOCK_SCHEMA_V4,
+                    | APPLICATION_LOCK_SCHEMA_V4
+                    | APPLICATION_LOCK_SCHEMA_V5,
                 "python"
             )
         )
         && !matches!(
             (schema, kind),
             (
-                APPLICATION_LOCK_SCHEMA_V3 | APPLICATION_LOCK_SCHEMA_V4,
+                APPLICATION_LOCK_SCHEMA_V3
+                    | APPLICATION_LOCK_SCHEMA_V4
+                    | APPLICATION_LOCK_SCHEMA_V5,
                 "contract_bundle"
             )
         )
+        && !(schema == APPLICATION_LOCK_SCHEMA_V5 && kind == "reactive_module")
     {
         return Err(ApplicationLockError::new(
             ApplicationLockErrorKind::InvalidShape,

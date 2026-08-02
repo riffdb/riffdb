@@ -31,6 +31,10 @@ enum CapabilityPermissionKindV1 {
   CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY = 23;
   CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY = 24;
   CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY = 25;
+  CAPABILITY_PERMISSION_KIND_CONSUME_EVENT_STREAM = 27;
+  CAPABILITY_PERMISSION_KIND_SEEK_EVENT_STREAM_CONSUMER = 28;
+  CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY = 29;
+  CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION = 30;
 }
 
 enum RevocationReasonCodeV1 {
@@ -61,6 +65,8 @@ message CapabilityPermissionV1 {
   optional bytes query_module_hash = 4;
   optional string query_name = 5;
   optional bytes application_role_hash = 6;
+  optional bytes reactive_module_hash = 7;
+  optional string reactive_operation_name = 8;
 }
 
 message CapabilityPermissionsV1 {

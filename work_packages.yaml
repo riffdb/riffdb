@@ -6683,11 +6683,14 @@ work_packages:
   requirements: [EVT-005, EVT-006, EVT-007, CON-001, CON-005, CON-007, LIVE-002, LIVE-003, LIVE-004,
     LIVE-005, LIVE-007, CTX-001, CTX-003, CTX-004, CTX-008]
   required_adrs: [ADR-0055, ADR-0057, ADR-0064, ADR-0065, ADR-0075, ADR-0077, ADR-0080]
-  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, crates/riffdb-query-syntax/**,
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/riffdb/storage/**,
+    proto/riffdb/v1/**, fixtures/proto/**, crates/riffdb-query-syntax/**,
     crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
-    crates/riffdb-diagnostics/**, crates/riffdb-types/**, crates/riffdb-policy/**, crates/riffdb-service/**,
-    crates/riffdb-cli/**, fixtures/reactive/**, fixtures/application-manifests/**, fixtures/application-locks/**,
-    scripts/**, docs/**, templates/**]
+    crates/riffdb-diagnostics/**, crates/riffdb-types/**, crates/riffdb-auth/**,
+    crates/riffdb-storage-api/**, crates/riffdb-policy/**, crates/riffdb-service/**,
+    crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-server/**,
+    crates/riffdb-cli/**, fixtures/reactive/**, fixtures/application-manifests/**,
+    fixtures/application-locks/**, scripts/**, docs/**, templates/**]
   deliverables:
   - Bounded stream/subscription syntax, formatter, source spans, typed reactive IR, canonical module hash, and diagnostics
   - Application Source V4 and Lock V5 preserving V1-V3/V1-V4, explicit migration, and exact generated artifact closure
@@ -6697,6 +6700,7 @@ work_packages:
   - cargo test -p riffdb-query-syntax -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-module --all-features
   - cargo test -p riffdb-types -p riffdb-policy -p riffdb-service -p riffdb-cli --all-features
   - ./scripts/check-application-bindings
+  - ./scripts/generate-proto --check
   - ./scripts/check-generated
   - ./scripts/check-requirement-coverage
   - cargo fmt --all -- --check

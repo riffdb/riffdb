@@ -10,23 +10,26 @@ mod application_role;
 mod application_source;
 mod generation;
 mod python_generation;
+mod reactive_module;
 
 pub use application_manifest::{
-    APPLICATION_MANIFEST_SCHEMA_V1, ApplicationManifest, ApplicationManifestSourceMap,
-    MAX_APPLICATION_MANIFEST_BYTES, ManifestContract, ManifestError, ManifestErrorKind,
-    ManifestGenerationTargets, ManifestQueryModule, ManifestQuerySource, ManifestRole,
-    ManifestSpan, ManifestTenantScope,
+    APPLICATION_MANIFEST_SCHEMA_V1, APPLICATION_MANIFEST_SCHEMA_V2, ApplicationManifest,
+    ApplicationManifestSourceMap, MAX_APPLICATION_MANIFEST_BYTES, ManifestContract, ManifestError,
+    ManifestErrorKind, ManifestGenerationTargets, ManifestQueryModule, ManifestQuerySource,
+    ManifestReactiveModule, ManifestRole, ManifestSpan, ManifestTenantScope,
 };
 pub use application_role::{
     ApplicationRoleError, ApplicationRoleErrorKind, ApplicationRoleOperation,
     ApplicationRoleOperationKind, CompiledApplicationRole, compile_application_role,
+    compile_application_role_v2,
 };
 pub use application_source::{
     APPLICATION_SOURCE_SCHEMA_V1, APPLICATION_SOURCE_SCHEMA_V2, APPLICATION_SOURCE_SCHEMA_V3,
-    ApplicationSourceContract, ApplicationSourceError, ApplicationSourceErrorKind,
-    ApplicationSourceGeneration, ApplicationSourceManifest, ApplicationSourceMigration,
-    ApplicationSourceQuery, ApplicationSourceQueryModule, ApplicationSourceRole,
-    ApplicationSourceTenantScope, MAX_APPLICATION_MIGRATIONS, MAX_APPLICATION_SOURCE_BYTES,
+    APPLICATION_SOURCE_SCHEMA_V4, ApplicationSourceContract, ApplicationSourceError,
+    ApplicationSourceErrorKind, ApplicationSourceGeneration, ApplicationSourceManifest,
+    ApplicationSourceMigration, ApplicationSourceQuery, ApplicationSourceQueryModule,
+    ApplicationSourceReactiveModule, ApplicationSourceRole, ApplicationSourceTenantScope,
+    MAX_APPLICATION_MIGRATIONS, MAX_APPLICATION_SOURCE_BYTES,
 };
 pub use generation::{
     GeneratedMcpCommand, GeneratedMcpTool, McpToolGenerationError, generate_mcp_commands,
@@ -34,6 +37,10 @@ pub use generation::{
 };
 pub use python_generation::{
     PythonGenerationError, PythonGenerationLocation, generate_python_client,
+};
+pub use reactive_module::{
+    ReactiveModuleCompilationError, compile_reactive_source, decode_and_validate_reactive_module,
+    reactive_query_catalog,
 };
 
 use riffdb_contract_ir::ContractBundle;
@@ -737,8 +744,9 @@ impl<'a> Reader<'a> {
 }
 pub use application_lock::{
     APPLICATION_LOCK_SCHEMA_V1, APPLICATION_LOCK_SCHEMA_V2, APPLICATION_LOCK_SCHEMA_V3,
-    APPLICATION_LOCK_SCHEMA_V4, APPLICATION_ROLE_DEFINITION_FORMAT_V1, ApplicationLock,
-    ApplicationLockError, ApplicationLockErrorKind, ApplicationMigrationLockInput,
-    CONTRACT_BUNDLE_ARTIFACT_PATH, GeneratedApplicationArtifact, GeneratedApplicationArtifactKind,
-    LockedApplicationMigration, MAX_APPLICATION_LOCK_BYTES,
+    APPLICATION_LOCK_SCHEMA_V4, APPLICATION_LOCK_SCHEMA_V5, APPLICATION_ROLE_DEFINITION_FORMAT_V1,
+    APPLICATION_ROLE_DEFINITION_FORMAT_V2, ApplicationLock, ApplicationLockError,
+    ApplicationLockErrorKind, ApplicationMigrationLockInput, CONTRACT_BUNDLE_ARTIFACT_PATH,
+    GeneratedApplicationArtifact, GeneratedApplicationArtifactKind, LockedApplicationMigration,
+    MAX_APPLICATION_LOCK_BYTES,
 };

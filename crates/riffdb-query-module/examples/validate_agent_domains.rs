@@ -463,6 +463,9 @@ fn role_json(role: &CompiledApplicationRole) -> String {
             "kind": match operation.kind() {
                 ApplicationRoleOperationKind::Query => "query",
                 ApplicationRoleOperationKind::Command => "command",
+                ApplicationRoleOperationKind::EventStream => "event_stream",
+                ApplicationRoleOperationKind::QueryWatch => "watch_query",
+                ApplicationRoleOperationKind::AgentSubscription => "agent_subscription",
             },
             "name": operation.name(),
         })).collect::<Vec<_>>(),

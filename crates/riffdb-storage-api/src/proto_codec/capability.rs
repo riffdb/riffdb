@@ -7,7 +7,8 @@ use riffdb_types::{
     ActorId, AdministrationSequence, ApplicationRoleHash, ApprovalId, Audience,
     CapabilityGrantError, CapabilityId, CapabilityTokenDigest, CommandId, ContractLineage,
     DatabaseId, DigestKeyId, EntityTypeId, Environment, FieldId, IndexId, PartitionKey,
-    ProjectionId, QueryModuleHash, QueryOperationName, RequestId,
+    ProjectionId, QueryModuleHash, QueryOperationName, ReactiveModuleHash, ReactiveOperationName,
+    RequestId,
 };
 
 use crate::{
@@ -41,52 +42,93 @@ fn permission_to_proto(value: &CapabilityPermissionV1) -> wire::CapabilityPermis
         ScanIndex, Unparameterized,
     };
 
-    let (contract_lineage, stable_id, query_module_hash, query_name, application_role_hash) =
-        match value {
-            Unparameterized(_) => (None, None, None, None, None),
-            ExplainCommand(lineage, id) | InvokeCommand(lineage, id) => (
-                Some(lineage.as_str().to_owned()),
-                Some(id.get()),
-                None,
-                None,
-                None,
-            ),
-            ReadEntity(lineage, id) => (
-                Some(lineage.as_str().to_owned()),
-                Some(id.get()),
-                None,
-                None,
-                None,
-            ),
-            ScanIndex(lineage, id) => (
-                Some(lineage.as_str().to_owned()),
-                Some(id.get()),
-                None,
-                None,
-                None,
-            ),
-            QueryProjection(lineage, id) | ReadProjectionStatus(lineage, id) => (
-                Some(lineage.as_str().to_owned()),
-                Some(id.get()),
-                None,
-                None,
-                None,
-            ),
-            CapabilityPermissionV1::ExplainNamedQuery(lineage, hash, name)
-            | CapabilityPermissionV1::ExecuteNamedQuery(lineage, hash, name) => (
-                Some(lineage.as_str().to_owned()),
-                None,
-                Some(hash.as_bytes().to_vec()),
-                Some(name.as_str().to_owned()),
-                None,
-            ),
-            CapabilityPermissionV1::ApplicationRoleIdentity(hash) => {
-                (None, None, None, None, Some(hash.as_bytes().to_vec()))
-            }
-            CapabilityPermissionV1::MigrateContract(lineage) => {
-                (Some(lineage.as_str().to_owned()), None, None, None, None)
-            }
-        };
+    let (
+        contract_lineage,
+        stable_id,
+        query_module_hash,
+        query_name,
+        application_role_hash,
+        reactive_module_hash,
+        reactive_operation_name,
+    ) = match value {
+        Unparameterized(_) => (None, None, None, None, None, None, None),
+        ExplainCommand(lineage, id) | InvokeCommand(lineage, id) => (
+            Some(lineage.as_str().to_owned()),
+            Some(id.get()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+        ReadEntity(lineage, id) => (
+            Some(lineage.as_str().to_owned()),
+            Some(id.get()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+        ScanIndex(lineage, id) => (
+            Some(lineage.as_str().to_owned()),
+            Some(id.get()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+        QueryProjection(lineage, id) | ReadProjectionStatus(lineage, id) => (
+            Some(lineage.as_str().to_owned()),
+            Some(id.get()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+        CapabilityPermissionV1::ExplainNamedQuery(lineage, hash, name)
+        | CapabilityPermissionV1::ExecuteNamedQuery(lineage, hash, name) => (
+            Some(lineage.as_str().to_owned()),
+            None,
+            Some(hash.as_bytes().to_vec()),
+            Some(name.as_str().to_owned()),
+            None,
+            None,
+            None,
+        ),
+        CapabilityPermissionV1::ApplicationRoleIdentity(hash) => (
+            None,
+            None,
+            None,
+            None,
+            Some(hash.as_bytes().to_vec()),
+            None,
+            None,
+        ),
+        CapabilityPermissionV1::MigrateContract(lineage) => (
+            Some(lineage.as_str().to_owned()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+        CapabilityPermissionV1::ConsumeEventStream(lineage, hash, name)
+        | CapabilityPermissionV1::SeekEventStreamConsumer(lineage, hash, name)
+        | CapabilityPermissionV1::WatchNamedQuery(lineage, hash, name)
+        | CapabilityPermissionV1::ConsumeContextualSubscription(lineage, hash, name) => (
+            Some(lineage.as_str().to_owned()),
+            None,
+            None,
+            None,
+            None,
+            Some(hash.as_bytes().to_vec()),
+            Some(name.as_str().to_owned()),
+        ),
+    };
     wire::CapabilityPermissionV1 {
         kind: i32::from(value.kind().tag()),
         contract_lineage,
@@ -94,6 +136,8 @@ fn permission_to_proto(value: &CapabilityPermissionV1) -> wire::CapabilityPermis
         query_module_hash,
         query_name,
         application_role_hash,
+        reactive_module_hash,
+        reactive_operation_name,
     }
 }
 
@@ -110,17 +154,19 @@ fn permission_from_proto(
         value.query_module_hash,
         value.query_name,
         value.application_role_hash,
+        value.reactive_module_hash,
+        value.reactive_operation_name,
     ) {
-        (None, None, None, None, None) => PermissionParameter::None,
-        (Some(lineage), None, None, None, None) => {
+        (None, None, None, None, None, None, None) => PermissionParameter::None,
+        (Some(lineage), None, None, None, None, None, None) => {
             ContractLineage::new(lineage).map_err(|_| DurableCodecError::corrupt())?;
             PermissionParameter::Lineage
         }
-        (Some(lineage), Some(id), None, None, None) => PermissionParameter::StableId(
+        (Some(lineage), Some(id), None, None, None, None, None) => PermissionParameter::StableId(
             ContractLineage::new(lineage).map_err(|_| DurableCodecError::corrupt())?,
             id,
         ),
-        (Some(lineage), None, Some(hash), Some(name), None) => {
+        (Some(lineage), None, Some(hash), Some(name), None, None, None) => {
             let hash: [u8; 32] = hash.try_into().map_err(|_| DurableCodecError::corrupt())?;
             PermissionParameter::NamedQuery(
                 ContractLineage::new(lineage).map_err(|_| DurableCodecError::corrupt())?,
@@ -128,9 +174,17 @@ fn permission_from_proto(
                 QueryOperationName::new(name).map_err(|_| DurableCodecError::corrupt())?,
             )
         }
-        (None, None, None, None, Some(hash)) => {
+        (None, None, None, None, Some(hash), None, None) => {
             let hash: [u8; 32] = hash.try_into().map_err(|_| DurableCodecError::corrupt())?;
             PermissionParameter::ApplicationRole(ApplicationRoleHash::from_bytes(hash))
+        }
+        (Some(lineage), None, None, None, None, Some(hash), Some(name)) => {
+            let hash: [u8; 32] = hash.try_into().map_err(|_| DurableCodecError::corrupt())?;
+            PermissionParameter::ReactiveOperation(
+                ContractLineage::new(lineage).map_err(|_| DurableCodecError::corrupt())?,
+                ReactiveModuleHash::from_bytes(hash),
+                ReactiveOperationName::new(name).map_err(|_| DurableCodecError::corrupt())?,
+            )
         }
         _ => return Err(DurableCodecError::corrupt()),
     };
@@ -195,6 +249,28 @@ fn permission_from_proto(
         (CapabilityPermissionKindV1::MigrateContract, PermissionParameter::Lineage) => {
             Err(DurableCodecError::corrupt())
         }
+        (
+            CapabilityPermissionKindV1::ConsumeEventStream,
+            PermissionParameter::ReactiveOperation(lineage, hash, name),
+        ) => Ok(CapabilityPermissionV1::ConsumeEventStream(
+            lineage, hash, name,
+        )),
+        (
+            CapabilityPermissionKindV1::SeekEventStreamConsumer,
+            PermissionParameter::ReactiveOperation(lineage, hash, name),
+        ) => Ok(CapabilityPermissionV1::SeekEventStreamConsumer(
+            lineage, hash, name,
+        )),
+        (
+            CapabilityPermissionKindV1::WatchNamedQuery,
+            PermissionParameter::ReactiveOperation(lineage, hash, name),
+        ) => Ok(CapabilityPermissionV1::WatchNamedQuery(lineage, hash, name)),
+        (
+            CapabilityPermissionKindV1::ConsumeContextualSubscription,
+            PermissionParameter::ReactiveOperation(lineage, hash, name),
+        ) => Ok(CapabilityPermissionV1::ConsumeContextualSubscription(
+            lineage, hash, name,
+        )),
         (kind, PermissionParameter::None) => {
             grant_result(CapabilityPermissionV1::unparameterized(kind))
         }
@@ -203,7 +279,8 @@ fn permission_from_proto(
             PermissionParameter::StableId(..)
             | PermissionParameter::Lineage
             | PermissionParameter::NamedQuery(..)
-            | PermissionParameter::ApplicationRole(..),
+            | PermissionParameter::ApplicationRole(..)
+            | PermissionParameter::ReactiveOperation(..),
         ) => Err(DurableCodecError::corrupt()),
     }
 }
@@ -214,6 +291,7 @@ enum PermissionParameter {
     StableId(ContractLineage, u32),
     NamedQuery(ContractLineage, QueryModuleHash, QueryOperationName),
     ApplicationRole(ApplicationRoleHash),
+    ReactiveOperation(ContractLineage, ReactiveModuleHash, ReactiveOperationName),
 }
 
 fn permissions_to_proto(value: &CapabilityPermissionsV1) -> wire::CapabilityPermissionsV1 {
@@ -736,6 +814,28 @@ mod permission_tests {
             CapabilityPermissionV1::ApplicationRoleIdentity(ApplicationRoleHash::from_bytes(
                 [0x42; 32],
             )),
+        ] {
+            assert_eq!(
+                permission_from_proto(permission_to_proto(&permission)).expect("round trip"),
+                permission
+            );
+        }
+    }
+
+    #[test]
+    fn exact_reactive_permissions_round_trip_durably() {
+        let lineage = ContractLineage::new("ticketdesk").expect("lineage");
+        let module = ReactiveModuleHash::from_bytes([0x43; 32]);
+        let name = ReactiveOperationName::new("TicketActivity").expect("operation");
+        for permission in [
+            CapabilityPermissionV1::ConsumeEventStream(lineage.clone(), module, name.clone()),
+            CapabilityPermissionV1::SeekEventStreamConsumer(lineage.clone(), module, name.clone()),
+            CapabilityPermissionV1::WatchNamedQuery(lineage.clone(), module, name.clone()),
+            CapabilityPermissionV1::ConsumeContextualSubscription(
+                lineage.clone(),
+                module,
+                name.clone(),
+            ),
         ] {
             assert_eq!(
                 permission_from_proto(permission_to_proto(&permission)).expect("round trip"),
