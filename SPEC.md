@@ -6580,6 +6580,21 @@ ADR-0055.
   bounded generation cannot be proved. No application path may select a weaker
   invalidation granularity, and no non-durable command state may become visible
   to reads or derived workers.
+- `PERF-013`: Startup cost MUST scale linearly in retained history: measured as
+  the full structural and historical evidence drain plus operational handoff
+  (not merely engine open), `t_startup(65536) / t_startup(4096)` MUST NOT
+  exceed 32 and `t_startup(65536)` MUST NOT exceed 30 seconds on the recorded
+  evidence hardware. The assertion gate is enabled only against fresh JSONL
+  evidence (`--assert-perf-013` on the command-growth harness); a validated-
+  prefix checkpoint (ADR-0019 Amendment 1) MAY shorten the measured drain but
+  MUST NOT be present in the baseline measurement.
+- `PERF-014`: Unclean recovery MUST be exercised with real evidence: a writer
+  process killed without close (engine repair provably invoked, observed via
+  the repair callback), reopened, and measured against a clean startup of an
+  equivalently seeded database. The unclean/clean wall-time ratio MUST be
+  recorded with every evidence refresh. A hard ratio bound is NOT asserted
+  until the measurement is demonstrated stable on CI hardware; relabelled
+  clean drains or simulated kills MUST NOT be presented as PERF-014 evidence.
 
 The milestone is complete only when WP-205 through WP-300 pass their package
 acceptance commands and an independent fresh-agent TicketDesk run satisfies
