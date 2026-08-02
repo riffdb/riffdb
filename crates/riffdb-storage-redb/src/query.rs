@@ -216,31 +216,8 @@ impl QueryReadView for RedbQueryView<'_> {
         step: &QueryAccessStep,
         predicates: &[BoundPredicate],
     ) -> Result<Option<QueryRow>, Self::Error> {
-        let key_fields = match step.access() {
-            QueryAccessKind::Point { key_fields }
-            | QueryAccessKind::DependentPointBatch { key_fields, .. } => key_fields,
-            QueryAccessKind::Index { .. } => return Err(invariant()),
-        };
-        let values = key_fields
-            .iter()
-            .map(|field| exact_value(predicates, field))
-            .collect::<Result<Vec<_>, _>>()?;
-        if values
-            .iter()
-            .any(|value| matches!(value, CanonicalValue::Null))
-        {
-            return Ok(None);
-        }
-        let key = step
-            .internal_entity_key_schema()
-            .encode_entity(&values)
-            .map_err(|_| invariant())?;
-        let target = EntityTarget::new(step.internal_entity_id(), key).map_err(|_| invariant())?;
         let plan = RowMaterializePlan::for_step(self.program, step)?;
-        let entities = self.entities_table()?;
-        read_entity_record(entities, &target)?
-            .map(|record| plan.materialize(&record))
-            .transpose()
+        self.point_with_plan(step, predicates, &plan)
     }
 
     fn dependent_point_batch(
@@ -251,9 +228,11 @@ impl QueryReadView for RedbQueryView<'_> {
         if !matches!(step.access(), QueryAccessKind::DependentPointBatch { .. }) {
             return Err(invariant());
         }
+        // One plan for the whole batch (not per predicate/row).
+        let plan = RowMaterializePlan::for_step(self.program, step)?;
         predicates
             .iter()
-            .map(|predicates| self.point(step, predicates))
+            .map(|predicates| self.point_with_plan(step, predicates, &plan))
             .collect()
     }
 
@@ -399,6 +378,40 @@ impl QueryReadView for RedbQueryView<'_> {
     }
 }
 
+impl RedbQueryView<'_> {
+    fn point_with_plan(
+        &mut self,
+        step: &QueryAccessStep,
+        predicates: &[BoundPredicate],
+        plan: &RowMaterializePlan,
+    ) -> Result<Option<QueryRow>, StorageError> {
+        let key_fields = match step.access() {
+            QueryAccessKind::Point { key_fields }
+            | QueryAccessKind::DependentPointBatch { key_fields, .. } => key_fields,
+            QueryAccessKind::Index { .. } => return Err(invariant()),
+        };
+        let values = key_fields
+            .iter()
+            .map(|field| exact_value(predicates, field))
+            .collect::<Result<Vec<_>, _>>()?;
+        if values
+            .iter()
+            .any(|value| matches!(value, CanonicalValue::Null))
+        {
+            return Ok(None);
+        }
+        let key = step
+            .internal_entity_key_schema()
+            .encode_entity(&values)
+            .map_err(|_| invariant())?;
+        let target = EntityTarget::new(step.internal_entity_id(), key).map_err(|_| invariant())?;
+        let entities = self.entities_table()?;
+        read_entity_record(entities, &target)?
+            .map(|record| plan.materialize(&record))
+            .transpose()
+    }
+}
+
 fn decode_current_index_entry(
     entry: (
         redb::AccessGuard<'_, &'static [u8]>,
@@ -485,8 +498,9 @@ fn index_prefixes(
 
 /// Per-step field-name interning for one-pass row materialization.
 ///
-/// Built once per access step and shared across every row of that step so
-/// entity/field names are not `to_owned` per row.
+/// Callers build this once per access step (scan loop, single point, or whole
+/// dependent-point batch) and share it across every row of that step so
+/// entity/field `Arc<str>` names are not reconstructed per row.
 struct RowMaterializePlan {
     entity: Arc<str>,
     /// Needed `(FieldId, name)` pairs sorted by field ID for a dual-pointer merge
@@ -520,6 +534,8 @@ impl RowMaterializePlan {
         let stored = record.fields().fields();
         let mut fields = BTreeMap::new();
         let mut store_index = 0usize;
+        // Merge requires needed FieldIds unique (name uniqueness is plan-checked;
+        // duplicate FieldIds would yield CorruptData rather than last-wins map).
         for (need_id, name) in &self.needed {
             while store_index < stored.len() && stored[store_index].0.get() < need_id.get() {
                 store_index += 1;

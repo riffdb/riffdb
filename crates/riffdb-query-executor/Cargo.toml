@@ -8,6 +8,8 @@ publish.workspace = true
 
 [features]
 default = []
+# Test-only constructors for cross-crate tests; never enabled by shipped code.
+test-fixtures = []
 
 [dependencies]
 riffdb-query-ir = { version = "0.1.0", path = "../riffdb-query-ir", default-features = false }

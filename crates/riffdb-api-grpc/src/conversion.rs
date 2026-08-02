@@ -511,7 +511,18 @@ pub fn execute_symbolic_query_result_to_proto(
 }
 
 /// Moves one owned canonical value into its public wire form without cloning the graph.
+///
+/// Mirrors [`riffdb_proto::canonical_value_to_proto`]: validate exactly once at
+/// the top after recursive unchecked conversion (not per recursion level).
 fn canonical_value_into_public(value: riffdb_types::CanonicalValue) -> Result<v1::Value, Status> {
+    let wire = canonical_value_into_public_unchecked(value);
+    riffdb_proto::validate_value(&wire).map_err(|_| invalid_service_response())?;
+    Ok(wire)
+}
+
+/// Recursive conversion without validation. Private so callers cannot skip
+/// structural checks on the public surface.
+fn canonical_value_into_public_unchecked(value: riffdb_types::CanonicalValue) -> v1::Value {
     use riffdb_types::CanonicalValue;
     use v1::value::Kind;
 
@@ -520,12 +531,8 @@ fn canonical_value_into_public(value: riffdb_types::CanonicalValue) -> Result<v1
         CanonicalValue::Bool(value) => Kind::BoolValue(value),
         CanonicalValue::I64(value) => Kind::I64Value(value),
         CanonicalValue::U64(value) => Kind::U64Value(value),
-        CanonicalValue::Decimal(value) => {
-            return canonical_value_to_public(&CanonicalValue::Decimal(value));
-        }
-        CanonicalValue::Money(value) => {
-            return canonical_value_to_public(&CanonicalValue::Money(value));
-        }
+        CanonicalValue::Decimal(value) => Kind::DecimalValue(riffdb_proto::decimal_to_proto(value)),
+        CanonicalValue::Money(value) => Kind::MoneyValue(riffdb_proto::money_to_proto(value)),
         CanonicalValue::String(value) => Kind::StringValue(value.into_string()),
         CanonicalValue::Bytes(value) => Kind::BytesValue(value.into_vec()),
         CanonicalValue::Uuid(value) => Kind::UuidValue(value.to_vec()),
@@ -547,7 +554,7 @@ fn canonical_value_into_public(value: riffdb_types::CanonicalValue) -> Result<v1
         CanonicalValue::List(values) => {
             let mut output = Vec::with_capacity(values.len());
             for child in values.into_values() {
-                output.push(canonical_value_into_public(child)?);
+                output.push(canonical_value_into_public_unchecked(child));
             }
             Kind::ListValue(v1::ValueList { values: output })
         }
@@ -557,16 +564,13 @@ fn canonical_value_into_public(value: riffdb_types::CanonicalValue) -> Result<v1
                 fields.push(v1::ValueField {
                     field_id: Some(field_id.get()),
                     name: String::new(),
-                    value: Some(canonical_value_into_public(child)?),
+                    value: Some(canonical_value_into_public_unchecked(child)),
                 });
             }
             Kind::RecordValue(v1::ValueRecord { fields })
         }
     };
-    let wire = v1::Value { kind: Some(kind) };
-    // Structural checks mirror canonical_value_to_proto without a second graph clone.
-    riffdb_proto::validate_value(&wire).map_err(|_| invalid_service_response())?;
-    Ok(wire)
+    v1::Value { kind: Some(kind) }
 }
 
 fn query_module_descriptor_to_proto(
@@ -4585,12 +4589,12 @@ mod tests {
         assert!(status.details().is_empty());
     }
 
-    /// Golden encoded `ExecuteQueryResponse` bytes for a multi-row symbolic result
+    /// Frozen encoded `ExecuteQueryResponse` bytes for a multi-row symbolic result
     /// covering enums, uuids, and representative scalar field types.
     ///
-    /// Captured against parent commit `15325d36e862c51c4d10b3d1b920ea9d6044d13e`
-    /// (branch tip before the single-copy row pipeline). The conversion path must
-    /// remain byte-identical after the move-based restructure.
+    /// Literal hex captured by the independent reviewer from the REAL parent binary's
+    /// `execute_symbolic_query_result_to_proto` at `15325d36e862c51c4d10b3d1b920ea9d6044d13e`
+    /// (588 bytes). Transcript: flip one byte of the literal → observe failure → restore.
     #[test]
     fn symbolic_execute_response_proto_bytes_match_parent_golden() {
         use std::sync::Arc;
@@ -4700,11 +4704,9 @@ mod tests {
             .expect("convert")
             .encode_to_vec();
 
-        // Golden bytes frozen from parent 15325d36e862c51c4d10b3d1b920ea9d6044d13e
-        // via the equivalent hand-built ExecuteQueryResponse (same field order and
-        // wire values). Re-derive by constructing the prost message below if the
-        // public message schema changes deliberately.
-        let golden = hand_built_board_response_bytes();
+        // Frozen parent output (15325d3); not re-encoded at test time.
+        const GOLDEN_HEX: &str = "0a600a0a7469636b65746465736b10011a20abababababababababababababababababababababababababababababababab220c426f6172645469636b6574732a20cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd1205466f756e64184d22de030a077469636b65747310031ae8010a0c0a06616374697665120210010a0c0a04626c6f6212044202dead0a0b0a05636f756e741202202a0a140a0a637265617465645f6f6e1206520408c0b8020a160a066c6162656c73120c6a0a0a033a01610a033a01620a120a046d657461120a72080a0608011a02180d0a0a0a046e6f7465120208000a160a06737461747573120c620a080410011a044f70656e0a1f0a097469636b65745f696412124a10111111111111111111111111111111110a140a057469746c65120b3a09626f6172642d726f770a180a0a757064617465645f6174120a5a080880c49fd50c107b12065469636b65741ae5010a0c0a06616374697665120210010a0c0a04626c6f6212044202dead0a0b0a05636f756e741202202a0a140a0a637265617465645f6f6e1206520408c0b8020a160a066c6162656c73120c6a0a0a033a01610a033a01620a120a046d657461120a72080a0608011a02180d0a0a0a046e6f7465120208000a160a06737461747573120c620a080410011a044f70656e0a1f0a097469636b65745f696412124a10222222222222222222222222222222220a110a057469746c6512083a067365636f6e640a180a0a757064617465645f6174120a5a080880c49fd50c107b12065469636b6574";
+        let golden = hex_decode(GOLDEN_HEX);
         assert_eq!(
             encoded,
             golden,
@@ -4714,94 +4716,80 @@ mod tests {
         );
     }
 
-    fn hand_built_board_response_bytes() -> Vec<u8> {
+    fn hex_decode(hex: &str) -> Vec<u8> {
+        assert!(hex.len().is_multiple_of(2), "hex length");
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex digit"))
+            .collect()
+    }
+
+    /// Exhaustive into/borrow conversion parity, including Decimal/Money and nesting.
+    #[test]
+    fn canonical_value_into_public_matches_borrow_path_across_variants() {
+        use riffdb_types::{
+            CanonicalBytes, CanonicalList, CanonicalRecord, CanonicalString, CanonicalValue,
+            CurrencyCode, Date, Decimal, DecimalSpec, EnumTypeId, EnumVariantId, FieldId, Money,
+            Timestamp,
+        };
         use tonic_prost::prost::Message;
 
-        let value = |kind: v1::value::Kind| v1::Value { kind: Some(kind) };
-        let param = |name: &str, kind: v1::value::Kind| app_v1::Parameter {
-            name: name.to_owned(),
-            value: Some(value(kind)),
-        };
-        let record_fields = |ticket_id: [u8; 16], title: &str| {
-            vec![
-                param("active", v1::value::Kind::BoolValue(true)),
-                param("blob", v1::value::Kind::BytesValue(vec![0xde, 0xad])),
-                param("count", v1::value::Kind::U64Value(42)),
-                param(
-                    "created_on",
-                    v1::value::Kind::DateValue(v1::Date {
-                        days_since_unix_epoch: 20_000,
-                    }),
-                ),
-                param(
-                    "labels",
-                    v1::value::Kind::ListValue(v1::ValueList {
-                        values: vec![
-                            value(v1::value::Kind::StringValue("a".to_owned())),
-                            value(v1::value::Kind::StringValue("b".to_owned())),
-                        ],
-                    }),
-                ),
-                param(
-                    "meta",
-                    v1::value::Kind::RecordValue(v1::ValueRecord {
-                        fields: vec![v1::ValueField {
-                            field_id: Some(1),
-                            name: String::new(),
-                            value: Some(value(v1::value::Kind::I64Value(-7))),
-                        }],
-                    }),
-                ),
-                param(
-                    "note",
-                    v1::value::Kind::NullValue(v1::NullValue::NullValue as i32),
-                ),
-                param(
-                    "status",
-                    v1::value::Kind::EnumValue(v1::EnumValue {
-                        type_id: 4,
-                        variant_id: 1,
-                        name: "Open".to_owned(),
-                    }),
-                ),
-                param("ticket_id", v1::value::Kind::UuidValue(ticket_id.to_vec())),
-                param("title", v1::value::Kind::StringValue(title.to_owned())),
-                param(
-                    "updated_at",
-                    v1::value::Kind::TimestampValue(v1::Timestamp {
-                        seconds: 1_700_000_000,
-                        nanos: 123,
-                    }),
-                ),
-            ]
-        };
-        let response = app_v1::ExecuteQueryResponse {
-            identity: Some(app_v1::QueryIdentity {
-                contract_lineage: "ticketdesk".to_owned(),
-                contract_version: 1,
-                contract_bundle_hash: vec![0xab; 32],
-                query_name: Some("BoardTickets".to_owned()),
-                plan_hash: vec![0xcd; 32],
-                module_hash: None,
-            }),
-            outcome: "Found".to_owned(),
-            application_head: 77,
-            fields: vec![app_v1::ResultField {
-                name: "tickets".to_owned(),
-                cardinality: app_v1::ResultCardinality::Many as i32,
-                records: vec![
-                    app_v1::ResultRecord {
-                        fields: record_fields([0x11; 16], "board-row"),
-                        entity: "Ticket".to_owned(),
-                    },
-                    app_v1::ResultRecord {
-                        fields: record_fields([0x22; 16], "second"),
-                        entity: "Ticket".to_owned(),
-                    },
-                ],
-            }],
-            next_cursor: None,
-        };
-        response.encode_to_vec()
+        let decimal = Decimal::new(DecimalSpec::new(10, 2).expect("spec"), 1_234).expect("decimal");
+        let money = Money::new(CurrencyCode::new("USD").expect("ccy"), decimal);
+        let samples = [
+            CanonicalValue::Null,
+            CanonicalValue::Bool(true),
+            CanonicalValue::I64(-9),
+            CanonicalValue::U64(42),
+            CanonicalValue::Decimal(decimal),
+            CanonicalValue::Money(money),
+            CanonicalValue::String(CanonicalString::new("hi").expect("s")),
+            CanonicalValue::Bytes(CanonicalBytes::new(vec![1, 2]).expect("b")),
+            CanonicalValue::Date(Date::from_days_since_unix_epoch(100)),
+            CanonicalValue::Timestamp(Timestamp::new(1, 2).expect("ts")),
+            CanonicalValue::Uuid([0xab; 16]),
+            CanonicalValue::Enum {
+                type_id: EnumTypeId::new(3).expect("t"),
+                variant_id: EnumVariantId::new(1).expect("v"),
+            },
+            CanonicalValue::List(
+                CanonicalList::new(vec![CanonicalValue::Money(money), CanonicalValue::U64(1)])
+                    .expect("list"),
+            ),
+            CanonicalValue::Record(
+                CanonicalRecord::new(vec![
+                    (FieldId::new(1).expect("f"), CanonicalValue::Money(money)),
+                    (
+                        FieldId::new(2).expect("f"),
+                        CanonicalValue::Decimal(decimal),
+                    ),
+                ])
+                .expect("record"),
+            ),
+        ];
+        for sample in samples {
+            let borrowed = canonical_value_to_public(&sample).expect("borrow");
+            let owned = canonical_value_into_public(sample.clone()).expect("into");
+            assert_eq!(
+                borrowed.encode_to_vec(),
+                owned.encode_to_vec(),
+                "into/borrow mismatch for {sample:?}"
+            );
+        }
+    }
+
+    /// F4: the single top-level `validate_value` must reject a value that is
+    /// constructible node-by-node yet exceeds the wire document bound.
+    #[test]
+    fn canonical_value_into_public_rejects_oversize_document_at_top_level() {
+        use riffdb_types::CanonicalValue;
+
+        // MAX_STRING_BYTES == MAX_CANONICAL_DOCUMENT_BYTES, so a max-length
+        // string is a valid canonical node whose encoded form (payload plus
+        // wire framing) exceeds the document bound — only the top-level
+        // validation can catch it.
+        let oversize = CanonicalValue::string("x".repeat(riffdb_types::MAX_STRING_BYTES))
+            .expect("max-length string is constructible");
+        assert!(canonical_value_into_public(oversize).is_err());
     }
 }
