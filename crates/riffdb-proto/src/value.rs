@@ -286,7 +286,12 @@ fn validate_record(value: &v1::ValueRecord, depth: usize) -> Result<(), ValueVal
     Ok(())
 }
 
-fn decimal_to_proto(value: CanonicalDecimal) -> v1::Decimal {
+/// Encodes one canonical decimal in its public wire form.
+///
+/// The sole canonical encoder for `v1::Decimal` — callers building wire
+/// values outside [`canonical_value_to_proto`] must use this rather than
+/// duplicating the minimal two's-complement encoding.
+pub fn decimal_to_proto(value: CanonicalDecimal) -> v1::Decimal {
     v1::Decimal {
         coefficient_twos_complement: encode_minimal_i128(value.coefficient()),
         scale: u32::from(value.spec().scale()),
@@ -294,7 +299,10 @@ fn decimal_to_proto(value: CanonicalDecimal) -> v1::Decimal {
     }
 }
 
-fn money_to_proto(value: CanonicalMoney) -> v1::Money {
+/// Encodes one canonical money value in its public wire form.
+///
+/// See [`decimal_to_proto`]; the same single-encoder rule applies.
+pub fn money_to_proto(value: CanonicalMoney) -> v1::Money {
     v1::Money {
         currency: value.currency().to_string(),
         amount: Some(decimal_to_proto(value.amount())),

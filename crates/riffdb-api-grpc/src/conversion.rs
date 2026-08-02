@@ -531,8 +531,8 @@ fn canonical_value_into_public_unchecked(value: riffdb_types::CanonicalValue) ->
         CanonicalValue::Bool(value) => Kind::BoolValue(value),
         CanonicalValue::I64(value) => Kind::I64Value(value),
         CanonicalValue::U64(value) => Kind::U64Value(value),
-        CanonicalValue::Decimal(value) => Kind::DecimalValue(decimal_into_public(value)),
-        CanonicalValue::Money(value) => Kind::MoneyValue(money_into_public(value)),
+        CanonicalValue::Decimal(value) => Kind::DecimalValue(riffdb_proto::decimal_to_proto(value)),
+        CanonicalValue::Money(value) => Kind::MoneyValue(riffdb_proto::money_to_proto(value)),
         CanonicalValue::String(value) => Kind::StringValue(value.into_string()),
         CanonicalValue::Bytes(value) => Kind::BytesValue(value.into_vec()),
         CanonicalValue::Uuid(value) => Kind::UuidValue(value.to_vec()),
@@ -571,35 +571,6 @@ fn canonical_value_into_public_unchecked(value: riffdb_types::CanonicalValue) ->
         }
     };
     v1::Value { kind: Some(kind) }
-}
-
-fn decimal_into_public(value: riffdb_types::Decimal) -> v1::Decimal {
-    v1::Decimal {
-        coefficient_twos_complement: encode_minimal_i128_public(value.coefficient()),
-        scale: u32::from(value.spec().scale()),
-        precision: Some(u32::from(value.spec().precision())),
-    }
-}
-
-fn money_into_public(value: riffdb_types::Money) -> v1::Money {
-    v1::Money {
-        currency: value.currency().to_string(),
-        amount: Some(decimal_into_public(value.amount())),
-    }
-}
-
-fn encode_minimal_i128_public(value: i128) -> Vec<u8> {
-    let bytes = value.to_be_bytes();
-    let mut start = 0;
-    while start < bytes.len() - 1 {
-        let removable_positive = bytes[start] == 0 && bytes[start + 1] & 0x80 == 0;
-        let removable_negative = bytes[start] == 0xff && bytes[start + 1] & 0x80 != 0;
-        if !removable_positive && !removable_negative {
-            break;
-        }
-        start += 1;
-    }
-    bytes[start..].to_vec()
 }
 
 fn query_module_descriptor_to_proto(
@@ -4807,29 +4778,18 @@ mod tests {
         }
     }
 
-    /// F4: top-level validation still rejects malformed wire after the split.
+    /// F4: the single top-level `validate_value` must reject a value that is
+    /// constructible node-by-node yet exceeds the wire document bound.
     #[test]
-    fn canonical_value_into_public_rejects_malformed_at_top_level() {
-        // Empty string is valid; an over-long string is rejected by CanonicalString
-        // construction. Build an unchecked empty-kind value path via a list of
-        // zero nested depth that still exercises validate_value on the outer shell.
-        use riffdb_types::{CanonicalList, CanonicalValue};
+    fn canonical_value_into_public_rejects_oversize_document_at_top_level() {
+        use riffdb_types::CanonicalValue;
 
-        // Nested structure that is well-formed for CanonicalValue but we assert the
-        // public entry still runs validate_value by comparing with a deliberately
-        // invalid wire value produced only through the unchecked helper then
-        // validated at the public boundary.
-        let valid = CanonicalValue::List(
-            CanonicalList::new(vec![CanonicalValue::Bool(true)]).expect("list"),
-        );
-        assert!(canonical_value_into_public(valid).is_ok());
-
-        // Directly exercise top-level rejection: empty Kind is invalid.
-        let malformed = v1::Value { kind: None };
-        assert!(riffdb_proto::validate_value(&malformed).is_err());
-        // Public entry always validates; empty kind cannot be produced by
-        // unchecked conversion of a real CanonicalValue, so assert the gate:
-        let gate = riffdb_proto::validate_value;
-        assert!(gate(&malformed).is_err());
+        // MAX_STRING_BYTES == MAX_CANONICAL_DOCUMENT_BYTES, so a max-length
+        // string is a valid canonical node whose encoded form (payload plus
+        // wire framing) exceeds the document bound — only the top-level
+        // validation can catch it.
+        let oversize = CanonicalValue::string("x".repeat(riffdb_types::MAX_STRING_BYTES))
+            .expect("max-length string is constructible");
+        assert!(canonical_value_into_public(oversize).is_err());
     }
 }
