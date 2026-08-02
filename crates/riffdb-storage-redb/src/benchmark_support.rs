@@ -24,7 +24,7 @@ use crate::layout::{
 use crate::store::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
 
 const MAX_WINDOW_COMMANDS: usize = 4_096;
-const MAX_GROUP_COMMANDS: usize = 64;
+pub const MAX_GROUP_COMMANDS: usize = riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
 const PENDING_VALUE_BYTES: usize = 512;
 const ENTITY_VALUE_BYTES: usize = 768;
 const INDEX_VALUE_BYTES: usize = 256;

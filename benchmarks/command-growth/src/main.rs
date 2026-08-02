@@ -39,7 +39,7 @@ const STARTUP_SCALE_GENERATION_MODE: &str = "grouped_fused";
 const STARTUP_SCALE_BYTES_PER_COMMAND: u64 = 1_200;
 const STARTUP_SCALE_FREE_HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
 /// One grouped-fused durable transaction covers up to MAX_GROUPED_WRITE_TRANSITIONS commands.
-const STARTUP_SCALE_GENERATE_CHUNK: usize = 64;
+const STARTUP_SCALE_GENERATE_CHUNK: usize = riffdb_storage_redb::benchmark_support::MAX_GROUP_COMMANDS;
 const PROC_STATUS_PATH: &str = "/proc/self/status";
 const PROC_CLEAR_REFS_PATH: &str = "/proc/self/clear_refs";
 const PROC_STATUS_MAX_BYTES: usize = 65_536;
