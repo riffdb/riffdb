@@ -145,7 +145,10 @@ deliberate maintenance points, never in the hot write path.
   {first sequence, last sequence, per-table pruned-row counts, content
   digest over the pruned rows, previous-tombstone hash, incarnation},
   hash-chained like the contract-migration journal with the chain root bound
-  to the registry digest. Ranges are contiguous, non-overlapping, ascending,
+  to the registry digest CURRENT AT CHAIN ROOTING, recorded durably in the
+  watermark record and verified against that recorded value — never against
+  the process's current digest, so registry migrations cannot invalidate an
+  existing chain. Ranges are contiguous, non-overlapping, ascending,
   and abut the watermark.
 - **What prunes in v1.** COMMITS bodies, EVENTS payloads, and OUTBOX /
   OUTBOX_STATUS rows (all sequence-keyed) below the watermark. Retained:
