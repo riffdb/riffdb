@@ -380,6 +380,7 @@ const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("ApplicationQueryService", "CheckQuery", false),
     ("ApplicationQueryService", "DeployQueryModule", false),
     ("ApplicationQueryService", "DescribeContract", false),
+    ("ApplicationQueryService", "ExecuteProjectedQuery", false),
     ("ApplicationQueryService", "ExecuteQuery", false),
     ("ApplicationQueryService", "ExplainQuery", false),
     ("ApplicationQueryService", "GetQueryModule", false),
@@ -1727,7 +1728,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
 
     if actual != expected {
         return Err(io::Error::other(format!(
-            "service inventory differs from the accepted seven-service, thirty-eight-RPC baseline: expected {expected:?}, found {actual:?}"
+            "service inventory differs from the accepted seven-service, thirty-nine-RPC baseline: expected {expected:?}, found {actual:?}"
         ))
         .into());
     }

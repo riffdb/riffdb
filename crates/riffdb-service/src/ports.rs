@@ -703,6 +703,141 @@ pub trait ProjectionQueryPort: Send + Sync {
     >;
 }
 
+/// Closed failure while observing a published columnar projection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ColumnarPortError {
+    /// Projection observation capacity or engine state is temporarily unavailable.
+    Unavailable,
+    /// Checked projection identity or published state failed integrity.
+    Integrity,
+}
+
+/// Optional lifecycle classification carried with a published observation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ColumnarLifecycle {
+    /// Published snapshot is queryable.
+    Ready,
+    /// Catch-up before first publication.
+    Building,
+    /// Rebuild in progress after detach/rebuild policy.
+    Rebuilding {
+        /// Closed rebuild reason.
+        reason: riffdb_columnar::RebuildingReason,
+        /// Progress numerator.
+        progress_applied: u64,
+        /// Progress denominator (0 = unknown).
+        progress_total: u64,
+    },
+    /// Degraded but still serving.
+    Degraded {
+        /// Closed degraded reason.
+        reason: riffdb_columnar::DegradedReason,
+    },
+    /// Manifest fingerprint mismatch or other invalid durable state.
+    Invalid {
+        /// Fingerprint expected by the registered definition.
+        expected_fingerprint: riffdb_columnar::DefinitionFingerprint,
+        /// Fingerprint found in durable state.
+        found_fingerprint: riffdb_columnar::DefinitionFingerprint,
+    },
+}
+
+/// One published columnar observation with no engine lock retained.
+///
+/// Callers may hold the `Arc` snapshot and query it after `observe` returns.
+#[derive(Clone, Debug)]
+pub struct ColumnarObservation {
+    definition: riffdb_columnar::RegisteredDefinition,
+    snapshot: std::sync::Arc<riffdb_columnar::ColumnarSnapshot>,
+    published_frontier: riffdb_types::ProjectionFrontier,
+    head: riffdb_types::ProjectionFrontier,
+    has_published: bool,
+    lifecycle: Option<ColumnarLifecycle>,
+}
+
+impl ColumnarObservation {
+    /// Constructs one complete observation after the engine lock is released.
+    #[must_use]
+    pub fn new(
+        definition: riffdb_columnar::RegisteredDefinition,
+        snapshot: std::sync::Arc<riffdb_columnar::ColumnarSnapshot>,
+        published_frontier: riffdb_types::ProjectionFrontier,
+        head: riffdb_types::ProjectionFrontier,
+        has_published: bool,
+        lifecycle: Option<ColumnarLifecycle>,
+    ) -> Self {
+        Self {
+            definition,
+            snapshot,
+            published_frontier,
+            head,
+            has_published,
+            lifecycle,
+        }
+    }
+
+    /// Registered definition for field resolution and query execution.
+    #[must_use]
+    pub const fn definition(&self) -> &riffdb_columnar::RegisteredDefinition {
+        &self.definition
+    }
+
+    /// Published snapshot (`Arc` so the engine lock need not be held).
+    #[must_use]
+    pub fn snapshot(&self) -> &std::sync::Arc<riffdb_columnar::ColumnarSnapshot> {
+        &self.snapshot
+    }
+
+    /// Clones the published snapshot handle.
+    #[must_use]
+    pub fn snapshot_arc(&self) -> std::sync::Arc<riffdb_columnar::ColumnarSnapshot> {
+        std::sync::Arc::clone(&self.snapshot)
+    }
+
+    /// Visible published frontier of the snapshot.
+    #[must_use]
+    pub const fn published_frontier(&self) -> &riffdb_types::ProjectionFrontier {
+        &self.published_frontier
+    }
+
+    /// Application head known when the observation was taken.
+    #[must_use]
+    pub const fn head(&self) -> &riffdb_types::ProjectionFrontier {
+        &self.head
+    }
+
+    /// Whether at least one snapshot has been published.
+    #[must_use]
+    pub const fn has_published(&self) -> bool {
+        self.has_published
+    }
+
+    /// Optional lifecycle classification for Building/Invalid/etc.
+    #[must_use]
+    pub const fn lifecycle(&self) -> Option<&ColumnarLifecycle> {
+        self.lifecycle.as_ref()
+    }
+}
+
+/// Service-facing port over published columnar projection state.
+///
+/// Implementations must release any engine lock before returning
+/// [`ColumnarObservation`] so callers can query the snapshot without
+/// contending with apply.
+pub trait ColumnarProjectionPort: Send + Sync {
+    /// Observes one named projection's published snapshot and frontiers.
+    fn observe(&self, projection_name: &str) -> Result<ColumnarObservation, ColumnarPortError>;
+
+    /// Returns the registered definition for a known projection name.
+    fn definition(&self, projection_name: &str) -> Option<riffdb_columnar::RegisteredDefinition>;
+
+    /// Process-local notifier for register-before-read waits.
+    fn notifier(&self) -> &crate::ColumnarNotifier;
+
+    /// Startup-fixed known projection names.
+    fn known_names(&self) -> &[String];
+}
+
 /// Closed payload-free outbox-status source failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutboxStatusPortError {

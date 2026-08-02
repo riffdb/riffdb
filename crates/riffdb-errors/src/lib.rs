@@ -46,6 +46,8 @@ pub enum ApplicationOperation {
     ExecuteCommand,
     /// Execute a bounded command batch.
     BatchCommand,
+    /// Execute one projected columnar query under a freshness policy.
+    ExecuteProjectedQuery,
 }
 
 impl ApplicationOperation {
@@ -61,6 +63,7 @@ impl ApplicationOperation {
             Self::GetQueryModule => "GetQueryModule",
             Self::ExecuteCommand => "ExecuteCommand",
             Self::BatchCommand => "BatchCommand",
+            Self::ExecuteProjectedQuery => "ExecuteProjectedQuery",
         }
     }
 }
