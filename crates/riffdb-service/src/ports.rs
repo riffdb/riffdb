@@ -479,6 +479,10 @@ pub enum AuthoritativeReadError {
     Unavailable,
     /// Authoritative state failed semantic or reciprocal integrity.
     Integrity,
+    /// The requested history existed and was retired by retention pruning
+    /// (ADR-0085 A2) — a correct-request client outcome, never an integrity
+    /// failure.
+    HistoryPruned,
     /// A lower continuation or frozen fence no longer denotes a valid page.
     InvalidContinuation,
     /// Cancellation was observed while waiting for read-path admission.

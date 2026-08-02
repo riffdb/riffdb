@@ -6884,11 +6884,21 @@ work_packages:
     retained history (PERF-013).
   requirements: [PERF-013]
   required_adrs: [ADR-0019, ADR-0085]
-  allowed_paths: [Cargo.lock, work_packages.yaml, crates/riffdb-storage-redb/**, crates/riffdb-storage-api/**,
+  allowed_paths: [Cargo.lock, work_packages.yaml, adr/0085-history-retention-and-startup-scaling.md,
+    crates/riffdb-storage-redb/**, crates/riffdb-storage-api/**, crates/riffdb-storage-memory/src/**,
     crates/riffdb-proto/**, proto/riffdb/storage/v1/**, proto/riffdb/v1/**, proto/riffdb/app/**,
     crates/riffdb-errors/**, crates/riffdb-observability/**, crates/riffdb-client-rust/**,
-    crates/riffdb-catalog/**, crates/riffdb-cli/**, tests/storage_recovery/**, fixtures/proto/**,
-    scripts/generate-proto]
+    crates/riffdb-catalog/**, crates/riffdb-cli/**, tests/storage_recovery/**, tests/service_audit/**,
+    tests/service/support/**, fixtures/proto/**, fixtures/application-errors/registry-v1.tsv,
+    scripts/generate-proto, crates/riffdb-api-grpc/src/error.rs,
+    crates/riffdb-api-mcp/src/presentation.rs, crates/riffdb-auth/src/authenticator.rs,
+    crates/riffdb-commit/src/control_plane.rs, crates/riffdb-projection/src/error.rs,
+    crates/riffdb-projection/src/evaluator.rs, crates/riffdb-server/src/maintenance_adapter.rs,
+    crates/riffdb-server/src/maintenance_driver.rs, crates/riffdb-server/src/maintenance_migration.rs,
+    crates/riffdb-server/src/outbox_adapter.rs, crates/riffdb-server/src/read_adapters.rs,
+    crates/riffdb-service/src/administration_operations.rs, crates/riffdb-service/src/command_operations.rs,
+    crates/riffdb-service/src/commit_operations.rs, crates/riffdb-service/src/ports.rs,
+    crates/riffdb-service/src/query_discovery_operations.rs, crates/riffdb-service/src/service.rs]
   deliverables:
   - StoredRetentionWatermarkV1/Holds/HistoryTombstoneV1 durable formats and registry migration PRE_RETENTION → current
   - Offline exclusive prune with fencing min, atomic sub-range tombstone+delete+watermark, checkpoint invalidation

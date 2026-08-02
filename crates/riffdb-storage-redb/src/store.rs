@@ -74,6 +74,11 @@ pub(crate) struct SharedRedb {
     /// Per-reason counts of ignored validated-prefix checkpoints
     /// (index = `CheckpointIgnoreReason::index`).
     checkpoint_ignored: [AtomicU64; 10],
+    /// Retention watermark sequence, loaded and self-hash-verified once at
+    /// open. The watermark advances only under exclusive OFFLINE maintenance,
+    /// which cannot run while this handle holds the database open, so reads
+    /// never re-hash the meta record per call (ADR-0085 A2 hot-path rule).
+    retention_watermark: AtomicU64,
 }
 
 /// Closed redb durability profiles for authoritative application writes.
@@ -135,6 +140,11 @@ impl SharedRedb {
 
     pub(crate) fn fence_writes(&self) {
         self.write_fenced.store(true, Ordering::Release);
+    }
+
+    /// Retention watermark sequence verified once at open (0 = unpruned).
+    pub(crate) fn retention_watermark(&self) -> u64 {
+        self.retention_watermark.load(Ordering::Acquire)
     }
 
     pub(crate) fn durable_commit_epoch(&self) -> u64 {
@@ -387,10 +397,35 @@ impl RedbStore {
                 startup_validation_clean: AtomicBool::new(false),
                 checkpoint_write_failures: AtomicU64::new(0),
                 checkpoint_ignored: [(); 10].map(|()| AtomicU64::new(0)),
+                retention_watermark: AtomicU64::new(0),
             }),
         };
         store.ensure_current_storage_format()?;
+        store.cache_verified_retention_watermark()?;
         Ok(store)
+    }
+
+    /// Loads and semantically verifies the retention watermark once per open
+    /// handle; an undecodable watermark record refuses the open (fail closed
+    /// — no read or validation path accepts one anyway).
+    fn cache_verified_retention_watermark(&self) -> Result<(), StorageError> {
+        let transaction = self
+            .shared
+            .database
+            .begin_read()
+            .map_err(transaction_error)?;
+        // A pre-initialization database has no META table yet: watermark 0.
+        let sequence = match transaction.open_table(crate::layout::META) {
+            Err(redb::TableError::TableDoesNotExist(_)) => 0,
+            Err(error) => return Err(crate::error::table_error(error)),
+            Ok(_) => crate::retention::load_watermark(&transaction)?
+                .map(|watermark| watermark.watermark_sequence())
+                .unwrap_or(0),
+        };
+        self.shared
+            .retention_watermark
+            .store(sequence, Ordering::Release);
+        Ok(())
     }
 
     fn ensure_current_storage_format(&self) -> Result<(), StorageError> {

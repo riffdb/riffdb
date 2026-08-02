@@ -350,6 +350,11 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "StoredHistoryTombstoneV1",
         PayloadBound::Tiny,
     ),
+    durable(
+        "retention_watermark_v1.proto",
+        "StoredRetentionAdministrationV1",
+        PayloadBound::Tiny,
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -690,6 +695,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let history_tombstone_record = durable_registry
         .get(current_v1_record_count + 17)
         .ok_or_else(|| io::Error::other("durable history-tombstone registry is incomplete"))?;
+    let retention_administration_record = durable_registry
+        .get(current_v1_record_count + 18)
+        .ok_or_else(|| {
+            io::Error::other("durable retention-administration registry is incomplete")
+        })?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -854,6 +864,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/durable-history-tombstone-v1-record-bound.bin",
         &durable_record_bounds(std::slice::from_ref(history_tombstone_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-retention-administration-v1-schema-hash.bin",
+        &retention_administration_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-retention-administration-v1-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(retention_administration_record)),
     )?;
     write_artifact(
         &output_root,
@@ -1122,9 +1142,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 47 {
+    if DURABLE_RECORDS.len() != 48 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 47 records").into(),
+            io::Error::other("readable durable registry must contain exactly 48 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1148,9 +1168,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 102 || enum_count != 13 {
+    if message_count != 103 || enum_count != 15 {
         return Err(io::Error::other(format!(
-            "storage schema must contain 101 semantic messages plus StoredEnvelope and 13 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain 102 semantic messages plus StoredEnvelope and 15 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1370,6 +1390,9 @@ fn durable_writable_registry_fixture(
     let history_tombstone = records
         .get(current_v1_record_count + 17)
         .ok_or_else(|| io::Error::other("durable registry is missing StoredHistoryTombstoneV1"))?;
+    let retention_administration = records.get(current_v1_record_count + 18).ok_or_else(|| {
+        io::Error::other("durable registry is missing StoredRetentionAdministrationV1")
+    })?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -1389,10 +1412,11 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(retention_watermark))
         .chain(std::iter::once(retention_holds))
         .chain(std::iter::once(history_tombstone))
+        .chain(std::iter::once(retention_administration))
         .chain(std::iter::once(registry_v2));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 13);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 14);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

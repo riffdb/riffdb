@@ -1162,6 +1162,9 @@ fn authoritative_read_failure(
         AuthoritativeReadError::Unavailable => PublicError::storage_unavailable().into(),
         AuthoritativeReadError::Cancelled => ServiceFailure::Cancelled,
         AuthoritativeReadError::DeadlineExceeded => ServiceFailure::DeadlineExceeded,
+        // Retired history is a correct-request client outcome (RDB-HISTORY-0102),
+        // never a lower-integrity failure.
+        AuthoritativeReadError::HistoryPruned => PublicError::history_pruned().into(),
         AuthoritativeReadError::Integrity | AuthoritativeReadError::InvalidContinuation => {
             lower_integrity_failure(service, operation)
         }
@@ -1228,8 +1231,11 @@ impl CommitSubscription for ServiceCommitSubscription {
                             | AuthoritativeReadError::DeadlineExceeded => {
                                 self.end(CommitSubscriptionEndReason::Unavailable)
                             }
+                            // Prune is offline-only: an acknowledged live
+                            // commit can never be pruned under this handle.
                             AuthoritativeReadError::Integrity
-                            | AuthoritativeReadError::InvalidContinuation => self.end_integrity(),
+                            | AuthoritativeReadError::InvalidContinuation
+                            | AuthoritativeReadError::HistoryPruned => self.end_integrity(),
                         };
                         ensure_response_budget(&terminal)?;
                         return Ok(terminal);
@@ -1293,7 +1299,12 @@ impl ServiceCommitSubscription {
             .await
             {
                 Ok(Ok(notification)) => notification,
-                Ok(Err(AuthoritativeReadError::InvalidContinuation)) => {
+                // A pruned resume point ends the contiguous scan exactly like
+                // a gap: the subscriber must restart above the watermark.
+                Ok(Err(
+                    AuthoritativeReadError::InvalidContinuation
+                    | AuthoritativeReadError::HistoryPruned,
+                )) => {
                     return self.end(CommitSubscriptionEndReason::ScanGap);
                 }
                 Ok(Err(
@@ -1373,8 +1384,12 @@ impl ServiceCommitSubscription {
         {
             Ok(Ok(Ok(Some(snapshot)))) => snapshot,
             Ok(Ok(Ok(None)))
+            // Prune is offline-only: a frontier-advanced commit can never be
+            // pruned under this live handle.
             | Ok(Ok(Err(
-                AuthoritativeReadError::Integrity | AuthoritativeReadError::InvalidContinuation,
+                AuthoritativeReadError::Integrity
+                | AuthoritativeReadError::InvalidContinuation
+                | AuthoritativeReadError::HistoryPruned,
             )))
             | Ok(Err(PortDriverStopped)) => return self.end_integrity(),
             Ok(Ok(Err(

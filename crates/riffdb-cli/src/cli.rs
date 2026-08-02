@@ -608,12 +608,23 @@ pub(crate) enum RetentionCommand {
         #[command(subcommand)]
         command: RetentionHoldCommand,
     },
-    /// Detaches a projection identity from the fencing minimum.
+    /// Detaches a projection identity from the fencing minimum (audited).
     ProjectionDetach {
         #[arg(long, value_name = "PATH")]
         database_path: OsString,
         #[arg(long, value_name = "ID")]
         projection_id: String,
+        #[arg(long, value_name = "TEXT")]
+        reason: String,
+    },
+    /// Reattaches a previously detached projection to the minimum (audited).
+    ProjectionReattach {
+        #[arg(long, value_name = "PATH")]
+        database_path: OsString,
+        #[arg(long, value_name = "ID")]
+        projection_id: String,
+        #[arg(long, value_name = "TEXT")]
+        reason: String,
     },
     /// Offline prune of commits/events/outbox through a target inclusive sequence.
     Prune {
@@ -783,13 +794,34 @@ mod tests {
             "--database-path",
             "/tmp/db.redb",
             "--projection-id",
-            "proj-1",
+            "7",
+            "--reason",
+            "replay budget hold",
         ])
         .expect("detach");
         assert!(matches!(
             detach.command,
             TopLevel::Retention {
                 command: RetentionCommand::ProjectionDetach { .. }
+            }
+        ));
+
+        let reattach = Cli::try_parse_from([
+            "riffdb",
+            "retention",
+            "projection-reattach",
+            "--database-path",
+            "/tmp/db.redb",
+            "--projection-id",
+            "7",
+            "--reason",
+            "budget restored",
+        ])
+        .expect("reattach");
+        assert!(matches!(
+            reattach.command,
+            TopLevel::Retention {
+                command: RetentionCommand::ProjectionReattach { .. }
             }
         ));
     }

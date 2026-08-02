@@ -504,6 +504,8 @@ pub enum StoredAdministrationAuditRecordV1 {
     Capability(crate::StoredCapabilityAdministrationV1),
     /// Application-service invocation phase.
     Service(StoredServiceAuditRecordV1),
+    /// Offline retention administration action (projection detach/reattach).
+    Retention(crate::StoredRetentionAdministrationV1),
 }
 
 impl StoredAdministrationAuditRecordV1 {
@@ -515,6 +517,7 @@ impl StoredAdministrationAuditRecordV1 {
             Self::QueryModule(record) => record.administration_sequence(),
             Self::Capability(record) => record.administration_sequence(),
             Self::Service(record) => record.administration_sequence(),
+            Self::Retention(record) => record.administration_sequence(),
         }
     }
 }

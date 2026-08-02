@@ -10,16 +10,20 @@ use redb::{
 };
 use riffdb_storage_api::{
     HISTORY_INCARNATION_INITIAL, HistoryTombstoneContentDigest, HistoryTombstoneHash,
-    RetentionFenceBinding, RetentionFencingInputs, RetentionHoldV1, StorageError, StorageErrorKind,
-    StoredHistoryTombstoneV1, StoredOutboxStatusV1, StoredRetentionHoldsV1,
-    StoredRetentionWatermarkV1, compute_max_permissible_watermark, history_tombstone_chain_root,
+    RetentionAdministrationAction, RetentionFenceBinding, RetentionFencingInputs,
+    RetentionHoldKind, RetentionHoldV1, StorageError, StorageErrorKind,
+    StoredAdministrationAuditRecordV1, StoredHistoryTombstoneV1, StoredOutboxStatusV1,
+    StoredRetentionAdministrationV1, StoredRetentionHoldsV1, StoredRetentionWatermarkV1,
+    compute_max_permissible_watermark, history_tombstone_chain_root,
     proto_codec::{
         current_record_registry_digest, decode_history_tombstone_v1, decode_projection_control_v1,
         decode_retention_holds_v1, decode_retention_watermark_v1, encode_history_tombstone_v1,
         encode_retention_holds_v1, encode_retention_watermark_v1,
     },
 };
-use riffdb_types::{CommitSequence, FrontierPosition, HashDomain, SchemaHash, hash};
+use riffdb_types::{
+    CommitSequence, FrontierPosition, HashDomain, ProjectionId, SchemaHash, Timestamp, hash,
+};
 
 use crate::codec;
 use crate::error::{
@@ -31,15 +35,13 @@ use crate::keys::{
 };
 use crate::layout::{
     COMMITS, CONTRACT_MIGRATION_JOURNAL, EVENTS, HISTORY_TOMBSTONES, META,
-    META_HISTORY_INCARNATION, META_RETENTION_HOLDS, META_RETENTION_WATERMARK,
-    META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS, PROJECTION_FRONTIER,
+    META_APPLICATION_SEQUENCE, META_HISTORY_INCARNATION, META_RETENTION_HOLDS,
+    META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS,
+    PROJECTION_FRONTIER,
 };
 
 /// Inclusive commit sequences pruned per offline sub-range transaction.
-pub const RETENTION_PRUNE_SUBRANGE_SEQUENCES: u64 = 1_024;
-
-/// Prefix for hold_ids that mark a projection identity as detached from fencing.
-pub const PROJECTION_DETACH_HOLD_PREFIX: &str = "detach/";
+pub(crate) const RETENTION_PRUNE_SUBRANGE_SEQUENCES: u64 = 1_024;
 
 /// Status snapshot for offline retention inspection.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -115,6 +117,9 @@ impl RedbOfflineRetention {
     }
 
     /// Adds or replaces one operator hold (canonical order preserved).
+    ///
+    /// Refuses to replace a projection-detach hold row: those carry a
+    /// different kind and are only removed by the audited reattach action.
     pub fn add_hold(
         &self,
         hold_id: impl Into<String>,
@@ -130,6 +135,9 @@ impl RedbOfflineRetention {
             let existing = read_holds_meta(&meta)?;
             let mut list = existing.holds().to_vec();
             if let Some(slot) = list.iter_mut().find(|h| h.hold_id() == hold.hold_id()) {
+                if slot.kind() != RetentionHoldKind::Operator {
+                    return Err(storage_error(StorageErrorKind::InvariantViolation));
+                }
                 *slot = hold;
             } else {
                 list.push(hold);
@@ -146,13 +154,21 @@ impl RedbOfflineRetention {
         self.after_commit(RedbTestOperation::RetentionHold)
     }
 
-    /// Removes one operator hold by id. Missing is a no-op success.
+    /// Removes one OPERATOR hold by id. Missing is a no-op success; a
+    /// projection-detach row with this id refuses (audited reattach only).
     pub fn remove_hold(&self, hold_id: &str) -> Result<(), StorageError> {
         let database = Database::open(&self.database_path).map_err(database_error)?;
         let write = begin_durable_write(&database)?;
         {
             let mut meta = write.open_table(META).map_err(table_error)?;
             let existing = read_holds_meta(&meta)?;
+            if existing
+                .holds()
+                .iter()
+                .any(|h| h.hold_id() == hold_id && h.kind() != RetentionHoldKind::Operator)
+            {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
             let list: Vec<_> = existing
                 .holds()
                 .iter()
@@ -170,25 +186,153 @@ impl RedbOfflineRetention {
         self.after_commit(RedbTestOperation::RetentionHold)
     }
 
-    /// Marks a projection identity as detached from the fencing minimum.
-    pub fn detach_projection(&self, projection_id: &str) -> Result<(), StorageError> {
-        if projection_id.is_empty() {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        let hold_id = format!("{PROJECTION_DETACH_HOLD_PREFIX}{projection_id}");
-        self.add_hold(
-            hold_id,
-            u64::MAX,
-            "projection detached from retention fencing",
+    /// Detaches a projection identity from the fencing minimum.
+    ///
+    /// An audited administration action (ADR-0085 A2): the typed detach hold
+    /// row and one retention administration audit record commit atomically
+    /// through the shared administration sequence space. The timestamp is
+    /// operator-supplied; this offline layer holds no clock.
+    pub fn detach_projection(
+        &self,
+        projection_id: ProjectionId,
+        reason: &str,
+        timestamp: Timestamp,
+    ) -> Result<(), StorageError> {
+        self.administer_projection_hold(
+            projection_id,
+            reason,
+            timestamp,
+            RetentionAdministrationAction::ProjectionDetach,
         )
     }
 
+    /// Reattaches a previously detached projection to the fencing minimum.
+    ///
+    /// The inverse audited administration action; refuses when the projection
+    /// is not currently detached.
+    pub fn reattach_projection(
+        &self,
+        projection_id: ProjectionId,
+        reason: &str,
+        timestamp: Timestamp,
+    ) -> Result<(), StorageError> {
+        self.administer_projection_hold(
+            projection_id,
+            reason,
+            timestamp,
+            RetentionAdministrationAction::ProjectionReattach,
+        )
+    }
+
+    fn administer_projection_hold(
+        &self,
+        projection_id: ProjectionId,
+        reason: &str,
+        timestamp: Timestamp,
+        action: RetentionAdministrationAction,
+    ) -> Result<(), StorageError> {
+        let database = Database::open(&self.database_path).map_err(database_error)?;
+        let write = begin_durable_write(&database)?;
+        let already_detached = {
+            let mut meta = write.open_table(META).map_err(table_error)?;
+            let existing = read_holds_meta(&meta)?;
+            let mut list = existing.holds().to_vec();
+            let hold_id = projection_id.get().to_string();
+            let position = list.iter().position(|h| h.hold_id() == hold_id);
+            let mut idempotent = false;
+            match action {
+                RetentionAdministrationAction::ProjectionDetach => {
+                    if let Some(index) = position {
+                        // Already detached is idempotent; an operator hold
+                        // under the same id refuses (kind conflict).
+                        if list[index].kind() != RetentionHoldKind::ProjectionDetach {
+                            return Err(storage_error(StorageErrorKind::InvariantViolation));
+                        }
+                        idempotent = true;
+                    } else {
+                        let hold = RetentionHoldV1::new_projection_detach(projection_id, reason)
+                            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+                        list.push(hold);
+                        list.sort_by(|a, b| a.hold_id().cmp(b.hold_id()));
+                    }
+                }
+                RetentionAdministrationAction::ProjectionReattach => {
+                    let Some(index) = position else {
+                        return Err(storage_error(StorageErrorKind::InvariantViolation));
+                    };
+                    if list[index].kind() != RetentionHoldKind::ProjectionDetach {
+                        return Err(storage_error(StorageErrorKind::InvariantViolation));
+                    }
+                    list.remove(index);
+                }
+            }
+            if !idempotent {
+                let holds = StoredRetentionHoldsV1::new(list)
+                    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+                let encoded =
+                    encode_retention_holds_v1(&holds).map_err(crate::error::codec_error)?;
+                meta.insert(META_RETENTION_HOLDS, encoded.as_bytes())
+                    .map_err(precommit_storage_error)?;
+            }
+            idempotent
+        };
+        if already_detached {
+            return write.abort().map_err(precommit_storage_error);
+        }
+        // Audited administration action: allocate the next administration
+        // sequence and append the retention record in the SAME transaction.
+        {
+            let allocator = crate::administration::read_administration_allocator(&write)?;
+            let next = allocator
+                .allocate_consecutive(1)
+                .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+            let sequence = next.assigned()[0];
+            let record = StoredRetentionAdministrationV1::new(
+                sequence,
+                action,
+                projection_id,
+                reason,
+                timestamp,
+            )
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            crate::administration::append_audit_record(
+                &write,
+                &StoredAdministrationAuditRecordV1::Retention(record),
+            )?;
+            crate::administration::write_administration_allocator(&write, allocator, next.next())?;
+        }
+        self.before_commit(RedbTestOperation::RetentionHold)?;
+        commit_durable(write)?;
+        self.after_commit(RedbTestOperation::RetentionHold)
+    }
+
     /// Offline prune of commits/events/outbox/outbox_status up to `target_inclusive`.
+    ///
+    /// Refuses unless the fencing computation authorizes the exact target and
+    /// the existing watermark/tombstone state verifies. Every sub-range
+    /// commits atomically {delete rows, append chained tombstone, advance
+    /// watermark}; the tombstone chain roots at the registry digest current
+    /// at ROOTING, recorded durably in the watermark record (ADR-0085 A2).
     pub fn prune_to(&self, target_inclusive: u64) -> Result<RetentionStatusV1, StorageError> {
         if target_inclusive == 0 {
             return self.status();
         }
         let database = Database::open(&self.database_path).map_err(database_error)?;
+
+        // Pre-verification: refuse to extend a watermark/chain state that
+        // does not verify (fail toward NOT deleting). Also fixes the chain
+        // rooting digest for this run: carried from the recorded value, or —
+        // first rooting only — the digest current right now.
+        let chain_root_digest = {
+            let transaction = database.begin_read().map_err(transaction_error)?;
+            let watermark = load_watermark(&transaction)?;
+            let (current, recorded_root) = match watermark.as_ref() {
+                None => (0, None),
+                Some(wm) => (wm.watermark_sequence(), wm.chain_root_registry_digest()),
+            };
+            verify_tombstone_chain(&transaction, current, recorded_root)?;
+            recorded_root.unwrap_or_else(current_record_registry_digest)
+        };
 
         // First exclusive transaction: delete validated-prefix checkpoint.
         {
@@ -234,11 +378,22 @@ impl RedbOfflineRetention {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
             let previous_hash = load_last_tombstone_hash(&transaction)?;
-            let registry = current_record_registry_digest();
             drop(transaction);
 
             let mut write = begin_durable_write(&database)?;
             let (content_digest, counts) = digest_and_count_range(&write, first, last)?;
+            // Pre-delete verification: the fencing head guarantees every
+            // sequence in [first, last] committed, so exactly one commit row
+            // per sequence must be present. A shortfall is pre-existing
+            // corruption — refuse rather than launder it into "verified
+            // pruned" (fail toward NOT deleting).
+            let range_size = last
+                .checked_sub(first)
+                .and_then(|span| span.checked_add(1))
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+            if counts.commits != range_size {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
             delete_commit_range(&mut write, first, last)?;
             delete_event_keyed_range(&mut write, EVENTS, first, last)?;
             delete_event_keyed_range(&mut write, OUTBOX, first, last)?;
@@ -246,7 +401,7 @@ impl RedbOfflineRetention {
 
             let prev = match previous_hash {
                 Some(hash) => Some(hash),
-                None if first == 1 => Some(history_tombstone_chain_root(registry)),
+                None if first == 1 => Some(history_tombstone_chain_root(chain_root_digest)),
                 None => return Err(storage_error(StorageErrorKind::InvariantViolation)),
             };
             let tombstone = StoredHistoryTombstoneV1::new(
@@ -275,8 +430,9 @@ impl RedbOfflineRetention {
             }
             {
                 let mut meta = write.open_table(META).map_err(table_error)?;
-                let watermark = StoredRetentionWatermarkV1::new(last, incarnation)
-                    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+                let watermark =
+                    StoredRetentionWatermarkV1::new(last, incarnation, Some(chain_root_digest))
+                        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
                 let encoded =
                     encode_retention_watermark_v1(&watermark).map_err(crate::error::codec_error)?;
                 meta.insert(META_RETENTION_WATERMARK, encoded.as_bytes())
@@ -399,12 +555,14 @@ pub(crate) fn collect_fencing_inputs(
     let min_hold = holds
         .holds()
         .iter()
-        .filter(|h| !h.hold_id().starts_with(PROJECTION_DETACH_HOLD_PREFIX))
+        .filter(|h| h.kind() == RetentionHoldKind::Operator)
         .map(RetentionHoldV1::sequence)
         .min();
     let undelivered = undelivered_outbox_low_water(transaction)?;
     let staged = staged_migration_frozen_frontier(transaction)?;
+    let head = durable_application_head(transaction)?;
     Ok(RetentionFencingInputs {
+        durable_application_head: Some(head),
         min_projection_durable_frontier: min_projection,
         min_operator_hold_sequence: min_hold,
         undelivered_outbox_low_water: undelivered,
@@ -416,12 +574,37 @@ fn detached_projection_ids(holds: &StoredRetentionHoldsV1) -> BTreeSet<String> {
     holds
         .holds()
         .iter()
-        .filter_map(|h| {
-            h.hold_id()
-                .strip_prefix(PROJECTION_DETACH_HOLD_PREFIX)
-                .map(str::to_owned)
-        })
+        .filter(|h| h.kind() == RetentionHoldKind::ProjectionDetach)
+        .map(|h| h.hold_id().to_owned())
         .collect()
+}
+
+/// Last committed application sequence from the durable allocator
+/// (`Next(n)` ⇒ `n - 1`, `Exhausted` ⇒ `u64::MAX`, absent row ⇒ 0).
+///
+/// The allocator is authoritative even when the commits table is empty:
+/// after a full prune the rows are gone but the head is not, and the
+/// watermark must never pass it (sequences committed later would otherwise
+/// be born below the watermark).
+pub(crate) fn durable_application_head(
+    transaction: &redb::ReadTransaction,
+) -> Result<u64, StorageError> {
+    let meta = transaction.open_table(META).map_err(table_error)?;
+    let Some(encoded) = meta
+        .get(META_APPLICATION_SEQUENCE)
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(0);
+    };
+    let allocator = codec::decode_application_sequence_allocator_v1(encoded.value())?
+        .into_parts()
+        .0;
+    Ok(match allocator {
+        riffdb_storage_api::ApplicationSequenceAllocator::Next(next) => {
+            next.get().saturating_sub(1)
+        }
+        riffdb_storage_api::ApplicationSequenceAllocator::Exhausted => u64::MAX,
+    })
 }
 
 fn min_projection_durable_frontier(
@@ -459,37 +642,43 @@ fn min_projection_durable_frontier(
     Ok(if any { min_frontier } else { None })
 }
 
+/// Lowest commit sequence carrying an undelivered outbox intent, minus one.
+///
+/// Canonical undelivered semantics (matching the recovery scan in
+/// `derived.rs::scan_undelivered_outbox_statuses`): iterate OUTBOX intents;
+/// an intent with an ABSENT status row is undelivered (the initial state), and
+/// only a present `Delivered` status counts as delivered — pending and
+/// dead-letter both fence. Scanning statuses alone is fail-open: never-claimed
+/// intents have no status row and would be invisible to the fence.
 fn undelivered_outbox_low_water(
     transaction: &redb::ReadTransaction,
 ) -> Result<Option<u64>, StorageError> {
+    let intents = transaction.open_table(OUTBOX).map_err(table_error)?;
     let statuses = transaction.open_table(OUTBOX_STATUS).map_err(table_error)?;
-    let mut low: Option<u64> = None;
-    for entry in statuses.iter().map_err(precommit_storage_error)? {
-        let (key, value) = entry.map_err(precommit_storage_error)?;
+    for entry in intents.iter().map_err(precommit_storage_error)? {
+        let (key, _) = entry.map_err(precommit_storage_error)?;
         let event_id = decode_event_key(key.value())
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let status: StoredOutboxStatusV1 = codec::decode_outbox_status_v1(value.value())
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-            .into_parts()
-            .0;
-        if !outbox_status_is_terminal(&status) {
-            let seq = event_id.commit_sequence().get();
-            let bind = seq.saturating_sub(1);
-            low = Some(match low {
-                None => bind,
-                Some(existing) => existing.min(bind),
-            });
+        let delivered = match statuses.get(key.value()).map_err(precommit_storage_error)? {
+            None => false,
+            Some(value) => {
+                let status: StoredOutboxStatusV1 = codec::decode_outbox_status_v1(value.value())
+                    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                    .into_parts()
+                    .0;
+                matches!(
+                    status.state(),
+                    riffdb_storage_api::OutboxDeliveryStateV1::Delivered { .. }
+                )
+            }
+        };
+        if !delivered {
+            // Intents iterate in ascending (sequence, index) order, so the
+            // first undelivered intent carries the minimum sequence.
+            return Ok(Some(event_id.commit_sequence().get().saturating_sub(1)));
         }
     }
-    Ok(low)
-}
-
-fn outbox_status_is_terminal(status: &StoredOutboxStatusV1) -> bool {
-    use riffdb_storage_api::OutboxDeliveryStateV1;
-    matches!(
-        status.state(),
-        OutboxDeliveryStateV1::Delivered { .. } | OutboxDeliveryStateV1::DeadLetter { .. }
-    )
+    Ok(None)
 }
 
 fn staged_migration_frozen_frontier(
@@ -562,10 +751,7 @@ fn digest_and_count_range(
         ("outbox_status", OUTBOX_STATUS, &mut counts.outbox_status),
     ] {
         let table = write.open_table(definition).map_err(table_error)?;
-        let mut lower = [0u8; 16];
-        lower[..8].copy_from_slice(&first.to_be_bytes());
-        let mut upper = [0xffu8; 16];
-        upper[..8].copy_from_slice(&last.to_be_bytes());
+        let (lower, upper) = event_keyed_range_bounds(first, last);
         for entry in table
             .range::<&[u8]>((Included(lower.as_slice()), Included(upper.as_slice())))
             .map_err(precommit_storage_error)?
@@ -622,6 +808,18 @@ fn delete_commit_range(
     Ok(())
 }
 
+/// Exact inclusive bounds over 12-byte event keys `(sequence: u64, index: u32)`
+/// for `[first, last]`. A 16-byte bound would sort every `(first, 0)` key BELOW
+/// the lower bound (shorter keys with equal prefix sort first), silently
+/// excluding index-0 rows from digest, count, and deletion.
+fn event_keyed_range_bounds(first: u64, last: u64) -> ([u8; 12], [u8; 12]) {
+    let mut lower = [0u8; 12];
+    lower[..8].copy_from_slice(&first.to_be_bytes());
+    let mut upper = [0xffu8; 12];
+    upper[..8].copy_from_slice(&last.to_be_bytes());
+    (lower, upper)
+}
+
 fn delete_event_keyed_range(
     write: &mut WriteTransaction,
     definition: TableDefinition<'_, &[u8], &[u8]>,
@@ -629,10 +827,7 @@ fn delete_event_keyed_range(
     last: u64,
 ) -> Result<(), StorageError> {
     let mut table = write.open_table(definition).map_err(table_error)?;
-    let mut lower = [0u8; 16];
-    lower[..8].copy_from_slice(&first.to_be_bytes());
-    let mut upper = [0xffu8; 16];
-    upper[..8].copy_from_slice(&last.to_be_bytes());
+    let (lower, upper) = event_keyed_range_bounds(first, last);
     let mut keys = Vec::new();
     for entry in table
         .range::<&[u8]>((Included(lower.as_slice()), Included(upper.as_slice())))
@@ -650,26 +845,35 @@ fn delete_event_keyed_range(
 }
 
 /// Verifies the tombstone chain covers `[1, watermark]` contiguously.
+///
+/// `chain_root_registry_digest` is the digest RECORDED in the watermark
+/// record at rooting (ADR-0085 A2) — never the process's current digest.
+/// Verifies: hash chain from the recorded root, contiguity, abutment at the
+/// watermark, and count arithmetic (each range pruned exactly one commit per
+/// sequence, so per-tombstone `commits_count == last - first + 1` and the
+/// chain total equals the watermark).
 pub(crate) fn verify_tombstone_chain(
     transaction: &redb::ReadTransaction,
     watermark: u64,
-    registry_digest: SchemaHash,
+    chain_root_registry_digest: Option<SchemaHash>,
 ) -> Result<(), StorageError> {
+    let table = transaction
+        .open_table(HISTORY_TOMBSTONES)
+        .map_err(table_error)?;
     if watermark == 0 {
-        let table = transaction
-            .open_table(HISTORY_TOMBSTONES)
-            .map_err(table_error)?;
         if table.len().map_err(precommit_storage_error)? != 0 {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         return Ok(());
     }
-    let table = transaction
-        .open_table(HISTORY_TOMBSTONES)
-        .map_err(table_error)?;
-    let mut expected_previous = Some(history_tombstone_chain_root(registry_digest));
+    // A pruned watermark without a recorded rooting digest cannot verify.
+    let Some(root_digest) = chain_root_registry_digest else {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    };
+    let mut expected_previous = Some(history_tombstone_chain_root(root_digest));
     let mut expected_first = 1u64;
     let mut last_seen = 0u64;
+    let mut total_commits = 0u64;
     for entry in table.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
         let first_key = decode_application_sequence_key(key.value())
@@ -690,6 +894,17 @@ pub(crate) fn verify_tombstone_chain(
         if computed != tombstone.tombstone_hash() {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
+        let range_size = tombstone
+            .last_sequence()
+            .checked_sub(tombstone.first_sequence())
+            .and_then(|span| span.checked_add(1))
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        if tombstone.commits_count() != range_size {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        total_commits = total_commits
+            .checked_add(range_size)
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
         expected_previous = Some(tombstone.tombstone_hash());
         expected_first = tombstone
             .last_sequence()
@@ -697,7 +912,7 @@ pub(crate) fn verify_tombstone_chain(
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
         last_seen = tombstone.last_sequence();
     }
-    if last_seen != watermark {
+    if last_seen != watermark || total_commits != watermark {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
     Ok(())
@@ -707,4 +922,21 @@ pub(crate) fn verify_tombstone_chain(
 #[must_use]
 pub(crate) const fn sequence_covered_by_watermark(sequence: u64, watermark: u64) -> bool {
     sequence > 0 && sequence <= watermark
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sequence_covered_by_watermark;
+
+    #[test]
+    fn coverage_predicate_is_exact_below_or_equal_watermark() {
+        // The single arbiter of "absence is tombstone-covered". Accepting
+        // uncovered absence here would launder corruption into pruned truth.
+        assert!(sequence_covered_by_watermark(1, 1));
+        assert!(sequence_covered_by_watermark(1, 2));
+        assert!(!sequence_covered_by_watermark(2, 1));
+        assert!(!sequence_covered_by_watermark(1, 0));
+        assert!(!sequence_covered_by_watermark(0, 5));
+        assert!(!sequence_covered_by_watermark(0, 0));
+    }
 }

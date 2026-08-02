@@ -1,35 +1,30 @@
-//! Retention watermark, fencing, offline prune, and tombstone coverage (ADR-0085 A2).
+//! Retention fencing, holds, audited projection administration, and format
+//! plumbing (ADR-0085 A2). The populated-history prune end-to-end lives in
+//! `tests/storage_recovery/storage_recovery_matrix.rs` — pruning an empty
+//! database is impossible by construction (the durable application head
+//! fences the watermark at 0).
 //!
 //! Falsifiability notes (what a neutered implementation would break):
-//! - `prune_refuses_without_fencing_inputs`: prune without fencing max would pass.
-//! - `prune_never_exceeds_hold_fence`: prune past hold would pass.
-//! - `crash_before_subrange_reopens_valid` / `crash_after_subrange_commit_resumes`:
-//!   non-atomic subrange would leave unopenable state.
-//! - `tombstone_chain_corruption_refuses_open`: ignoring chain hash would open.
-//! - `pre_retention_registry_migrates_on_open`: skipping PRE_RETENTION publish would fail.
-//! - `checkpoint_with_wrong_watermark_binding_is_ignored`: trusting mismatched
-//!   checkpoint would skip full validation incorrectly or refuse open.
-//! - `backup_pruned_db_restores_and_validates`: omitting watermark from manifest
-//!   would fail allocator check on fully-pruned empty history or lose stamp.
-//! - `outbox_undelivered_fence_blocks_prune`: ignoring undelivered outbox would
-//!   allow prune past low-water.
+//! - `prune_refuses_on_empty_history_even_under_holds`: dropping the durable
+//!   application-head fencing input would let the empty prune pass.
+//! - `projection_detach_and_reattach_are_audited`: skipping the audit append
+//!   or the typed hold kind would break the audit/kind assertions.
+//! - `pre_retention_registry_migrates_on_open`: skipping the PRE_RETENTION
+//!   publish step would fail the reopen.
+//! - `watermark_holds_tombstone_codec_roundtrip`: dropping the chain-root
+//!   digest or hold-kind wire fields would break the roundtrips.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use riffdb_storage_api::{
-    BackupBuildMetadataV1, DatabaseIdentityProbe, DatabaseIdentityProbePort,
-    DatabaseInitializationPort, DatabaseInitializationResult, OfflineBackupPersistencePort,
-    OfflineRestoreOverwritePolicyV1, OfflineRestorePersistencePort, OfflineRestoreResultV1,
-    RetentionFenceBinding, RetentionFencingInputs, StorageErrorKind,
-    compute_max_permissible_watermark,
+    DatabaseIdentityProbe, DatabaseIdentityProbePort, DatabaseInitializationPort,
+    DatabaseInitializationResult, RetentionAdministrationAction, RetentionFenceBinding,
+    RetentionFencingInputs, RetentionHoldKind, StorageErrorKind, compute_max_permissible_watermark,
 };
-use riffdb_storage_redb::{
-    RedbOfflineBackup, RedbOfflineRestore, RedbOfflineRetention, RedbStore, RedbTestController,
-    RedbTestOperation,
-};
-use riffdb_types::DatabaseId;
+use riffdb_storage_redb::{RedbOfflineRetention, RedbStore};
+use riffdb_types::{DatabaseId, ProjectionId, Timestamp};
 
 static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(1);
 
@@ -77,13 +72,33 @@ fn initialize(path: &Path) {
     );
 }
 
-#[test]
-fn fencing_each_input_binds_alone() {
-    let only_hold = RetentionFencingInputs {
+fn timestamp() -> Timestamp {
+    Timestamp::new(1_700_000_010, 0).expect("timestamp")
+}
+
+const fn no_inputs() -> RetentionFencingInputs {
+    RetentionFencingInputs {
+        durable_application_head: None,
         min_projection_durable_frontier: None,
-        min_operator_hold_sequence: Some(7),
+        min_operator_hold_sequence: None,
         undelivered_outbox_low_water: None,
         staged_migration_frozen_frontier: None,
+    }
+}
+
+#[test]
+fn fencing_each_input_binds_alone() {
+    let only_head = RetentionFencingInputs {
+        durable_application_head: Some(3),
+        ..no_inputs()
+    };
+    let (v, b) = compute_max_permissible_watermark(&only_head);
+    assert_eq!(v, Some(3));
+    assert_eq!(b, RetentionFenceBinding::DurableApplicationHead);
+
+    let only_hold = RetentionFencingInputs {
+        min_operator_hold_sequence: Some(7),
+        ..no_inputs()
     };
     let (v, b) = compute_max_permissible_watermark(&only_hold);
     assert_eq!(v, Some(7));
@@ -92,13 +107,7 @@ fn fencing_each_input_binds_alone() {
 
 #[test]
 fn fencing_absent_all_inputs_is_unbounded() {
-    let empty = RetentionFencingInputs {
-        min_projection_durable_frontier: None,
-        min_operator_hold_sequence: None,
-        undelivered_outbox_low_water: None,
-        staged_migration_frozen_frontier: None,
-    };
-    let (v, b) = compute_max_permissible_watermark(&empty);
+    let (v, b) = compute_max_permissible_watermark(&no_inputs());
     assert_eq!(v, None);
     assert_eq!(b, RetentionFenceBinding::Unbounded);
 }
@@ -112,67 +121,30 @@ fn empty_db_opens_with_zero_watermark() {
         .expect("status");
     assert_eq!(status.watermark_sequence, 0);
     assert_eq!(status.tombstone_count, 0);
+    // The durable application head is always collected: 0 for empty history.
+    assert_eq!(status.max_permissible_watermark, Some(0));
+    assert_eq!(
+        status.fence_binding,
+        RetentionFenceBinding::DurableApplicationHead
+    );
 }
 
 #[test]
-fn prune_refuses_without_fencing_inputs() {
-    let root = TestRoot::new("no-fence");
+fn prune_refuses_on_empty_history_even_under_holds() {
+    // Nothing ever committed: the durable head fences the watermark at 0.
+    // Pruning an empty database is impossible by construction — a permissive
+    // hold cannot override the head.
+    let root = TestRoot::new("no-history");
     initialize(&root.db());
-    let err = RedbOfflineRetention::bind(root.db())
-        .prune_to(1)
-        .expect_err("must refuse");
+    let maintenance = RedbOfflineRetention::bind(root.db());
+    let err = maintenance.prune_to(1).expect_err("must refuse");
     assert_eq!(err.kind(), StorageErrorKind::InvariantViolation);
-}
-
-#[test]
-fn prune_with_hold_roundtrip_and_reopen() {
-    let root = TestRoot::new("prune-hold");
-    initialize(&root.db());
-    let maint = RedbOfflineRetention::bind(root.db());
-    maint.add_hold("allow", 5, "cap at 5").expect("hold");
-    let status = maint.prune_to(1).expect("prune empty range");
-    assert_eq!(status.watermark_sequence, 1);
-    assert_eq!(status.tombstone_count, 1);
-
-    let store = RedbStore::open(root.db()).expect("reopen after prune");
-    drop(store);
-
-    let status = RedbOfflineRetention::bind(root.db())
-        .status()
-        .expect("status");
-    assert_eq!(status.watermark_sequence, 1);
-    assert_eq!(status.tombstone_count, 1);
-}
-
-#[test]
-fn prune_never_exceeds_hold_fence() {
-    let root = TestRoot::new("hold-cap");
-    initialize(&root.db());
-    let maint = RedbOfflineRetention::bind(root.db());
-    maint.add_hold("cap", 2, "cap").expect("hold");
-    let err = maint.prune_to(3).expect_err("over fence");
+    maintenance.add_hold("allow", 5, "cap at 5").expect("hold");
+    let err = maintenance.prune_to(1).expect_err("must still refuse");
     assert_eq!(err.kind(), StorageErrorKind::InvariantViolation);
-    let status = maint.prune_to(2).expect("at fence");
-    assert_eq!(status.watermark_sequence, 2);
-}
-
-#[test]
-fn crash_before_subrange_reopens_valid() {
-    let root = TestRoot::new("crash");
-    initialize(&root.db());
-    let controller =
-        RedbTestController::return_before_commit(RedbTestOperation::RetentionPruneSubrange);
-    let maint = RedbOfflineRetention::bind_with_test_controller(root.db(), controller);
-    maint.add_hold("cap", 10, "cap").expect("hold");
-    let err = maint.prune_to(10).expect_err("failpoint");
-    assert_eq!(err.kind(), StorageErrorKind::Unavailable);
-
-    let store = RedbStore::open(root.db()).expect("reopen after abort");
-    drop(store);
-    let status = RedbOfflineRetention::bind(root.db())
-        .status()
-        .expect("status");
+    let status = maintenance.status().expect("status");
     assert_eq!(status.watermark_sequence, 0);
+    assert_eq!(status.tombstone_count, 0);
 }
 
 #[test]
@@ -183,16 +155,33 @@ fn watermark_holds_tombstone_codec_roundtrip() {
         decode_retention_holds_v1, decode_retention_watermark_v1, encode_history_tombstone_v1,
         encode_retention_holds_v1, encode_retention_watermark_v1,
     };
+    use riffdb_types::SchemaHash;
 
-    let wm = StoredRetentionWatermarkV1::new(42, 1).expect("wm");
+    // Pruned watermark carries the recorded chain-root registry digest.
+    let wm = StoredRetentionWatermarkV1::new(42, 1, Some(SchemaHash::from_bytes([0x5a; 32])))
+        .expect("wm");
     let enc = encode_retention_watermark_v1(&wm).expect("enc");
     let dec = decode_retention_watermark_v1(enc.as_bytes())
         .expect("dec")
         .into_parts()
         .0;
     assert_eq!(dec, wm);
+    assert_eq!(
+        dec.chain_root_registry_digest(),
+        Some(SchemaHash::from_bytes([0x5a; 32]))
+    );
+    // Unpruned watermark has no chain and no rooting digest.
+    let zero = StoredRetentionWatermarkV1::new(0, 1, None).expect("zero wm");
+    let enc = encode_retention_watermark_v1(&zero).expect("enc");
+    let dec = decode_retention_watermark_v1(enc.as_bytes())
+        .expect("dec")
+        .into_parts()
+        .0;
+    assert_eq!(dec, zero);
 
     let holds = StoredRetentionHoldsV1::new(vec![
+        RetentionHoldV1::new_projection_detach(ProjectionId::new(7).expect("id"), "budget")
+            .expect("detach hold"),
         RetentionHoldV1::new("a", 1, "r").expect("a"),
         RetentionHoldV1::new("b", 2, "r").expect("b"),
     ])
@@ -203,6 +192,8 @@ fn watermark_holds_tombstone_codec_roundtrip() {
         .into_parts()
         .0;
     assert_eq!(dec, holds);
+    assert_eq!(dec.holds()[0].kind(), RetentionHoldKind::ProjectionDetach);
+    assert_eq!(dec.holds()[1].kind(), RetentionHoldKind::Operator);
 
     let ts = StoredHistoryTombstoneV1::new(
         1,
@@ -225,25 +216,27 @@ fn watermark_holds_tombstone_codec_roundtrip() {
 }
 
 #[test]
-fn crash_after_subrange_commit_resumes() {
-    // After-commit uncertainty still leaves a durable subrange; reopen and
-    // re-status must see the advanced watermark (atomic delete+tombstone+wm).
-    let root = TestRoot::new("crash-after");
-    initialize(&root.db());
-    let controller =
-        RedbTestController::return_unknown_after_commit(RedbTestOperation::RetentionPruneSubrange);
-    let maint = RedbOfflineRetention::bind_with_test_controller(root.db(), controller);
-    maint.add_hold("cap", 10, "cap").expect("hold");
-    let err = maint.prune_to(1).expect_err("failpoint after commit");
-    assert_eq!(err.kind(), StorageErrorKind::CommitStatusUnknown);
+fn retention_administration_codec_roundtrip() {
+    use riffdb_storage_api::{
+        StoredRetentionAdministrationV1, decode_retention_administration_v1,
+        encode_retention_administration_v1,
+    };
+    use riffdb_types::AdministrationSequence;
 
-    let store = RedbStore::open(root.db()).expect("reopen after after-commit uncertainty");
-    drop(store);
-    let status = RedbOfflineRetention::bind(root.db())
-        .status()
-        .expect("status");
-    assert_eq!(status.watermark_sequence, 1);
-    assert_eq!(status.tombstone_count, 1);
+    let record = StoredRetentionAdministrationV1::new(
+        AdministrationSequence::new(5).expect("sequence"),
+        RetentionAdministrationAction::ProjectionDetach,
+        ProjectionId::new(9).expect("projection"),
+        "replay budget accepted",
+        timestamp(),
+    )
+    .expect("record");
+    let enc = encode_retention_administration_v1(&record).expect("enc");
+    let dec = decode_retention_administration_v1(enc.as_bytes())
+        .expect("dec")
+        .into_parts()
+        .0;
+    assert_eq!(dec, record);
 }
 
 #[test]
@@ -283,164 +276,86 @@ fn pre_retention_registry_migrates_on_open() {
     assert_eq!(status.watermark_sequence, 0);
 }
 
-#[test]
-fn tombstone_chain_corruption_refuses_open() {
-    let root = TestRoot::new("tombstone-corrupt");
-    initialize(&root.db());
-    let maint = RedbOfflineRetention::bind(root.db());
-    maint.add_hold("cap", 5, "cap").expect("hold");
-    maint.prune_to(1).expect("prune");
-
-    // Flip one byte in the only tombstone row.
-    {
-        let database = Database::open(root.db()).expect("open");
-        let write = database.begin_write().expect("write");
-        {
-            let mut table = write
-                .open_table(TableDefinition::<&[u8], &[u8]>::new("history_tombstones"))
-                .expect("tombstones");
-            let (key_bytes, mut bytes) = {
-                let (key, value) = table
-                    .iter()
-                    .expect("iter")
-                    .next()
-                    .expect("row")
-                    .expect("entry");
-                (key.value().to_vec(), value.value().to_vec())
-            };
-            let last = bytes.len() - 1;
-            bytes[last] ^= 0xff;
-            table
-                .insert(key_bytes.as_slice(), bytes.as_slice())
-                .expect("rewrite");
-        }
-        write.commit().expect("commit");
-    }
-
-    let err = RedbStore::open(root.db()).expect_err("corrupt chain must refuse open");
-    assert_eq!(err.kind(), StorageErrorKind::CorruptData);
+fn retention_audit_records(
+    path: &Path,
+) -> Vec<riffdb_storage_api::StoredRetentionAdministrationV1> {
+    let database = Database::open(path).expect("open raw");
+    let read = database.begin_read().expect("read");
+    let table = read
+        .open_table(TableDefinition::<&[u8], &[u8]>::new("audit"))
+        .expect("audit");
+    table
+        .iter()
+        .expect("iter")
+        .filter_map(|entry| {
+            let (_, value) = entry.expect("entry");
+            riffdb_storage_api::proto_codec::decode_retention_administration_v1(value.value())
+                .ok()
+                .map(|item| item.into_parts().0)
+        })
+        .collect()
 }
 
 #[test]
-fn checkpoint_meta_with_wrong_watermark_is_ignored_on_open() {
-    // Prune deletes the live checkpoint; write a garbage checkpoint binding
-    // a wrong watermark. Open must ignore it (full validation) and succeed.
-    let root = TestRoot::new("bad-checkpoint");
+fn projection_detach_and_reattach_are_audited() {
+    let root = TestRoot::new("detach-audit");
     initialize(&root.db());
-    let maint = RedbOfflineRetention::bind(root.db());
-    maint.add_hold("cap", 5, "cap").expect("hold");
-    maint.prune_to(1).expect("prune");
+    let maintenance = RedbOfflineRetention::bind(root.db());
+    let projection = ProjectionId::new(9).expect("projection");
 
-    {
-        let database = Database::open(root.db()).expect("open");
-        let write = database.begin_write().expect("write");
-        {
-            let mut meta = write
-                .open_table(TableDefinition::<&str, &[u8]>::new("meta"))
-                .expect("meta");
-            // Non-decodable / wrong-shape bytes → load_active_checkpoint ignores.
-            meta.insert(
-                "validated_prefix_checkpoint/v1",
-                b"not-a-checkpoint".as_slice(),
-            )
-            .expect("insert bad checkpoint");
-        }
-        write.commit().expect("commit");
-    }
+    maintenance
+        .detach_projection(projection, "replay budget accepted", timestamp())
+        .expect("detach");
+    let status = maintenance.status().expect("status");
+    let holds = status.holds.holds();
+    assert_eq!(holds.len(), 1);
+    assert_eq!(holds[0].kind(), RetentionHoldKind::ProjectionDetach);
+    assert_eq!(holds[0].hold_id(), "9");
+    assert_eq!(holds[0].sequence(), 0);
+    let records = retention_audit_records(&root.db());
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].action(),
+        RetentionAdministrationAction::ProjectionDetach
+    );
+    assert_eq!(records[0].projection_id(), projection);
+    assert_eq!(records[0].reason(), "replay budget accepted");
 
-    let store = RedbStore::open(root.db()).expect("open ignores bad checkpoint");
-    drop(store);
-}
+    // Idempotent re-detach appends NO second audit record.
+    maintenance
+        .detach_projection(projection, "again", timestamp())
+        .expect("idempotent detach");
+    assert_eq!(retention_audit_records(&root.db()).len(), 1);
 
-#[test]
-fn backup_pruned_db_restores_and_validates() {
-    let root = TestRoot::new("backup-pruned");
-    initialize(&root.db());
-    let maint = RedbOfflineRetention::bind(root.db());
-    maint.add_hold("cap", 5, "cap").expect("hold");
-    let status = maint.prune_to(2).expect("prune");
-    assert_eq!(status.watermark_sequence, 2);
-
-    let backup_dir = root.0.join("backup");
-    let build = BackupBuildMetadataV1::new(
-        "0.1.0",
-        "0123456789abcdef",
-        "rustc-1.97.0",
-        1,
-        vec!["retention".to_owned()],
-    )
-    .expect("build");
-    let mut backup = RedbOfflineBackup::bind(root.db(), &backup_dir);
-    let manifest = backup.create_offline_backup(&build).expect("backup");
-    assert_eq!(manifest.retention_watermark_sequence(), Some(2));
-
-    let restore_dir = root.0.join("restored");
-    std::fs::create_dir_all(&restore_dir).expect("restore dir");
-    let mut restore = RedbOfflineRestore::bind(&backup_dir, &restore_dir);
-    let result = restore
-        .restore_offline_backup(OfflineRestoreOverwritePolicyV1::RefuseNonEmpty)
-        .expect("restore");
-    assert!(matches!(result, OfflineRestoreResultV1::Restored { .. }));
-
-    let restored_db = restore_dir.join("database.redb");
-    let store = RedbStore::open(&restored_db).expect("open restored");
-    drop(store);
-    let restored_status = RedbOfflineRetention::bind(&restored_db)
-        .status()
-        .expect("status");
-    assert_eq!(restored_status.watermark_sequence, 2);
-    assert_eq!(restored_status.tombstone_count, 1);
-}
-
-#[test]
-fn outbox_undelivered_fence_blocks_prune() {
-    // Insert a non-terminal outbox_status row at sequence 3 so low-water is 2.
-    // Prune to 3 must refuse; prune to 2 may proceed under an operator hold.
-    use std::num::NonZeroU32;
-
-    use riffdb_storage_api::{
-        OutboxDestinationIdV1, OutboxRetryMetadataV1, StoredOutboxStatusV1,
-        proto_codec::encode_outbox_status_v1,
-    };
-    use riffdb_types::{EventId, Timestamp};
-
-    let root = TestRoot::new("outbox-fence");
-    initialize(&root.db());
-
-    {
-        let database = Database::open(root.db()).expect("open");
-        let write = database.begin_write().expect("write");
-        {
-            let mut statuses = write
-                .open_table(TableDefinition::<&[u8], &[u8]>::new("outbox_status"))
-                .expect("outbox_status");
-            let event_id = EventId::new(riffdb_types::CommitSequence::new(3).expect("seq"), 0);
-            let mut key = [0u8; 12];
-            key[..8].copy_from_slice(&3u64.to_be_bytes());
-            key[8..].copy_from_slice(&0u32.to_be_bytes());
-            let destination = OutboxDestinationIdV1::new("dest-1").expect("dest");
-            let metadata = OutboxRetryMetadataV1::new(
-                NonZeroU32::new(1).expect("attempts"),
-                Timestamp::new(1, 0).expect("ts"),
-                None,
-                destination,
-                None,
-            );
-            let status = StoredOutboxStatusV1::pending(event_id, metadata);
-            let encoded = encode_outbox_status_v1(&status).expect("encode");
-            statuses
-                .insert(key.as_slice(), encoded.as_bytes())
-                .expect("insert");
-        }
-        write.commit().expect("commit");
-    }
-
-    let maint = RedbOfflineRetention::bind(root.db());
-    maint.add_hold("cap", 10, "cap").expect("hold");
-    let err = maint
-        .prune_to(3)
-        .expect_err("must not pass undelivered low-water");
+    // The detach row is not a plain hold: replace and removal refuse.
+    let err = maintenance
+        .add_hold("9", 3, "collide")
+        .expect_err("operator hold must not replace a detach row");
     assert_eq!(err.kind(), StorageErrorKind::InvariantViolation);
-    let status = maint.prune_to(2).expect("at undelivered fence");
-    assert_eq!(status.watermark_sequence, 2);
+    let err = maintenance
+        .remove_hold("9")
+        .expect_err("plain removal must not silently reattach");
+    assert_eq!(err.kind(), StorageErrorKind::InvariantViolation);
+
+    // Audited reattach removes the detach row and appends its own record.
+    maintenance
+        .reattach_projection(projection, "budget restored", timestamp())
+        .expect("reattach");
+    let status = maintenance.status().expect("status after reattach");
+    assert!(status.holds.holds().is_empty());
+    let records = retention_audit_records(&root.db());
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        records[1].action(),
+        RetentionAdministrationAction::ProjectionReattach
+    );
+
+    // Reattaching a non-detached projection refuses.
+    let err = maintenance
+        .reattach_projection(projection, "twice", timestamp())
+        .expect_err("must refuse");
+    assert_eq!(err.kind(), StorageErrorKind::InvariantViolation);
+
+    // The audited administration stream keeps the database valid on reopen.
+    drop(RedbStore::open(root.db()).expect("reopen after audited actions"));
 }

@@ -31,9 +31,7 @@ mod transient;
 mod validated_prefix;
 
 pub use backup::{
-    RedbOfflineBackup, RedbOfflineRestore, apply_restored_retention_watermark,
-    read_history_incarnation, read_retention_watermark_sequence,
-    rebind_retention_watermark_incarnation, stamp_history_incarnation, stamp_retention_watermark,
+    RedbOfflineBackup, RedbOfflineRestore, read_history_incarnation, stamp_history_incarnation,
 };
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
@@ -61,10 +59,7 @@ pub use migration_stage::{
     RedbContractMigrationContext, RedbContractMigrationImmutableWitness,
     RedbContractMigrationPreflight, RedbContractMigrationStage, RedbMigrationProjectionPorts,
 };
-pub use retention::{
-    PROJECTION_DETACH_HOLD_PREFIX, RETENTION_PRUNE_SUBRANGE_SEQUENCES, RedbOfflineRetention,
-    RetentionStatusV1,
-};
+pub use retention::{RedbOfflineRetention, RetentionStatusV1};
 pub use shared_ports::RedbSharedPorts;
 pub use startup::{
     RedbCompletionAuthority, RedbHistoricalEvidenceEnd, RedbStartupIndexMigrationPort,

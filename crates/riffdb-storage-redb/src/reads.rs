@@ -143,9 +143,9 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         sequence: CommitSequence,
     ) -> Result<Option<StoredCommitRecordV1>, StorageError> {
         let transaction = self.begin_read()?;
-        let watermark = crate::retention::load_watermark(&transaction)?
-            .map(|w| w.watermark_sequence())
-            .unwrap_or(0);
+        // Verified once at open; prune runs only under exclusive OFFLINE
+        // access, so the watermark cannot change under a live handle.
+        let watermark = self.shared.retention_watermark();
         let table = transaction.open_table(COMMITS).map_err(table_error)?;
         let encoded_key = encode_application_sequence_key(sequence);
         let Some(encoded) = table
@@ -191,9 +191,8 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         event_id: EventId,
     ) -> Result<Option<StoredDurableEventV1>, StorageError> {
         let transaction = self.begin_read()?;
-        let watermark = crate::retention::load_watermark(&transaction)?
-            .map(|w| w.watermark_sequence())
-            .unwrap_or(0);
+        // Verified once at open (see read_commit).
+        let watermark = self.shared.retention_watermark();
         let table = transaction.open_table(EVENTS).map_err(table_error)?;
         let encoded_key = encode_event_key(event_id);
         let Some(encoded) = table
@@ -304,10 +303,21 @@ impl PartitionEventRouteReader for RedbOperationalPorts {
                 return Err(corrupt());
             }
             let event_key = encode_event_key(event_id);
-            let event = events
+            let Some(event) = events
                 .get(event_key.as_slice())
                 .map_err(precommit_storage_error)?
-                .ok_or_else(corrupt)?;
+            else {
+                // Routes are RETAINED under prune; a route resolving below
+                // the watermark is history that existed and was retired —
+                // the typed pruned outcome, never corruption (ADR-0085 A2).
+                if crate::retention::sequence_covered_by_watermark(
+                    event_id.commit_sequence().get(),
+                    self.shared.retention_watermark(),
+                ) {
+                    return Err(storage_error(StorageErrorKind::HistoryPruned));
+                }
+                return Err(corrupt());
+            };
             let event = decode_durable_event_v1(event.value())?.into_parts().0;
             if event.event_id() != event_id
                 || event.event_type_id() != decoded.value().event_type_id()

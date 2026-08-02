@@ -2074,6 +2074,8 @@ pub struct StoredRetentionWatermarkV1 {
     pub history_incarnation: u64,
     #[prost(bytes = "vec", tag = "3")]
     pub watermark_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", optional, tag = "4")]
+    pub chain_root_registry_digest: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StoredRetentionHoldsV1 {
@@ -2088,6 +2090,21 @@ pub struct RetentionHoldV1 {
     pub sequence: u64,
     #[prost(string, tag = "3")]
     pub reason: ::prost::alloc::string::String,
+    #[prost(enumeration = "RetentionHoldKindV1", tag = "4")]
+    pub kind: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredRetentionAdministrationV1 {
+    #[prost(uint64, tag = "1")]
+    pub administration_sequence: u64,
+    #[prost(enumeration = "RetentionAdministrationActionV1", tag = "2")]
+    pub action: i32,
+    #[prost(uint64, tag = "3")]
+    pub projection_id: u64,
+    #[prost(string, tag = "4")]
+    pub reason: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "5")]
+    pub timestamp: ::core::option::Option<TimestampV1>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredHistoryTombstoneV1 {
@@ -2111,6 +2128,72 @@ pub struct StoredHistoryTombstoneV1 {
     pub tombstone_hash: ::prost::alloc::vec::Vec<u8>,
     #[prost(uint64, tag = "10")]
     pub history_incarnation: u64,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum RetentionHoldKindV1 {
+    Unspecified = 0,
+    Operator = 1,
+    ProjectionDetach = 2,
+}
+impl RetentionHoldKindV1 {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "RETENTION_HOLD_KIND_V1_UNSPECIFIED",
+            Self::Operator => "RETENTION_HOLD_KIND_V1_OPERATOR",
+            Self::ProjectionDetach => "RETENTION_HOLD_KIND_V1_PROJECTION_DETACH",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "RETENTION_HOLD_KIND_V1_UNSPECIFIED" => Some(Self::Unspecified),
+            "RETENTION_HOLD_KIND_V1_OPERATOR" => Some(Self::Operator),
+            "RETENTION_HOLD_KIND_V1_PROJECTION_DETACH" => Some(Self::ProjectionDetach),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum RetentionAdministrationActionV1 {
+    Unspecified = 0,
+    ProjectionDetach = 1,
+    ProjectionReattach = 2,
+}
+impl RetentionAdministrationActionV1 {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "RETENTION_ADMINISTRATION_ACTION_V1_UNSPECIFIED",
+            Self::ProjectionDetach => {
+                "RETENTION_ADMINISTRATION_ACTION_V1_PROJECTION_DETACH"
+            }
+            Self::ProjectionReattach => {
+                "RETENTION_ADMINISTRATION_ACTION_V1_PROJECTION_REATTACH"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "RETENTION_ADMINISTRATION_ACTION_V1_UNSPECIFIED" => Some(Self::Unspecified),
+            "RETENTION_ADMINISTRATION_ACTION_V1_PROJECTION_DETACH" => {
+                Some(Self::ProjectionDetach)
+            }
+            "RETENTION_ADMINISTRATION_ACTION_V1_PROJECTION_REATTACH" => {
+                Some(Self::ProjectionReattach)
+            }
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredServiceAuditRequestIndexV1 {

@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package riffdb.storage.v1;
 
+import "riffdb/storage/v1/common.proto";
+
 // Bound retention watermark (ADR-0085 Amendment 2).
 // Advances only during offline retention maintenance; re-validated (never
 // advanced) at startup. Sequence 0 means no history has been pruned.
@@ -12,12 +14,28 @@ message StoredRetentionWatermarkV1 {
   uint64 history_incarnation = 2;
   // Self-hash over the bound fields (32 bytes).
   bytes watermark_hash = 3;
+  // Registry digest CURRENT AT CHAIN ROOTING (32 bytes): the tombstone chain
+  // root binds this recorded value, never the process's current digest, so
+  // registry migrations cannot invalidate an existing chain. Present exactly
+  // when watermark_sequence > 0 (a chain exists).
+  optional bytes chain_root_registry_digest = 4;
 }
 
 // Operator holds that bind the fencing minimum (ADR-0085 Amendment 2).
 // Bounded list of named holds; managed by offline maintenance verbs.
 message StoredRetentionHoldsV1 {
   repeated RetentionHoldV1 holds = 1;
+}
+
+enum RetentionHoldKindV1 {
+  RETENTION_HOLD_KIND_V1_UNSPECIFIED = 0;
+  // Operator sequence floor: binds the fencing minimum.
+  RETENTION_HOLD_KIND_V1_OPERATOR = 1;
+  // Projection detached from the fencing minimum (hold_id is the decimal
+  // projection ID; sequence carries no meaning and is stored as 0). Removed
+  // only by the audited projection-reattach administration action, never by
+  // plain hold removal.
+  RETENTION_HOLD_KIND_V1_PROJECTION_DETACH = 2;
 }
 
 message RetentionHoldV1 {
@@ -27,6 +45,29 @@ message RetentionHoldV1 {
   uint64 sequence = 2;
   // Human-readable reason for the hold.
   string reason = 3;
+  // Typed hold kind (never inferred from hold_id shape).
+  RetentionHoldKindV1 kind = 4;
+}
+
+enum RetentionAdministrationActionV1 {
+  RETENTION_ADMINISTRATION_ACTION_V1_UNSPECIFIED = 0;
+  RETENTION_ADMINISTRATION_ACTION_V1_PROJECTION_DETACH = 1;
+  RETENTION_ADMINISTRATION_ACTION_V1_PROJECTION_REATTACH = 2;
+}
+
+// Audited offline retention administration action (ADR-0085 Amendment 2):
+// one record in the shared administration audit sequence space for every
+// projection detach/reattach performed by the offline maintenance verbs.
+message StoredRetentionAdministrationV1 {
+  uint64 administration_sequence = 1;
+  RetentionAdministrationActionV1 action = 2;
+  // Stable nonzero projection ID the action targeted.
+  uint64 projection_id = 3;
+  // Operator-supplied reason.
+  string reason = 4;
+  // Operator-supplied wall-clock timestamp (the offline storage layer holds
+  // no clock; the maintenance verb provides it).
+  TimestampV1 timestamp = 5;
 }
 
 // Per-range history tombstone (ADR-0085 Amendment 2).

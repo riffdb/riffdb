@@ -471,6 +471,9 @@ pub(crate) fn encode_administration_audit_record_v1(
         storage::StoredAdministrationAuditRecordV1::Service(value) => {
             encode_service_audit_record_v1(value)
         }
+        storage::StoredAdministrationAuditRecordV1::Retention(value) => {
+            storage::encode_retention_administration_v1(value).map_err(codec_error)
+        }
     }
 }
 
@@ -504,9 +507,20 @@ pub(crate) fn decode_administration_audit_record_v1(
     }
 
     match storage::decode_query_module_administration_v1(encoded) {
+        Ok(item) => {
+            return Ok(map_item(
+                item,
+                storage::StoredAdministrationAuditRecordV1::QueryModule,
+            ));
+        }
+        Err(error) if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType => {}
+        Err(error) => return Err(codec_error(error)),
+    }
+
+    match storage::decode_retention_administration_v1(encoded) {
         Ok(item) => Ok(map_item(
             item,
-            storage::StoredAdministrationAuditRecordV1::QueryModule,
+            storage::StoredAdministrationAuditRecordV1::Retention,
         )),
         Err(error) if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType => {
             storage::decode_service_audit_record_v1(encoded)

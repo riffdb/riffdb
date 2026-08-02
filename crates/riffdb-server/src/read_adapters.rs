@@ -900,8 +900,10 @@ fn map_storage_kind(kind: StorageErrorKind) -> AuthoritativeReadError {
         | StorageErrorKind::IncompatibleFormat
         | StorageErrorKind::LimitExceeded
         | StorageErrorKind::InvariantViolation
-        | StorageErrorKind::SequenceExhausted
-        | StorageErrorKind::HistoryPruned => AuthoritativeReadError::Integrity,
+        | StorageErrorKind::SequenceExhausted => AuthoritativeReadError::Integrity,
+        // Retired-history reads surface the typed pruned outcome
+        // (RDB-HISTORY-0102), never a corruption classification.
+        StorageErrorKind::HistoryPruned => AuthoritativeReadError::HistoryPruned,
     }
 }
 
