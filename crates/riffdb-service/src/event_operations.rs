@@ -1415,6 +1415,7 @@ fn map_authoritative(
         AuthoritativeReadError::Unavailable => PublicError::storage_unavailable().into(),
         AuthoritativeReadError::Cancelled => ServiceFailure::Cancelled,
         AuthoritativeReadError::DeadlineExceeded => ServiceFailure::DeadlineExceeded,
+        AuthoritativeReadError::HistoryPruned => PublicError::history_pruned().into(),
         AuthoritativeReadError::Integrity | AuthoritativeReadError::InvalidContinuation => {
             service
                 .providers
