@@ -104,6 +104,12 @@ pub struct ColumnarQueryRequest {
     /// Exactly one organization scope value (ADR-0086 §9 / ADR-0087).
     pub org_scope: CanonicalValue,
     /// Selected projected fields. Empty means all projected fields (CP1 compat).
+    ///
+    /// Select narrowing applies to [`QueryResult::Rows`] only. For requests
+    /// with `aggregate` or `group_by` set, the select list is still validated
+    /// (duplicates and unprojected fields are rejected typed) but otherwise
+    /// ignored by design: aggregate and group results carry no row cells, so
+    /// there is nothing for the select list to narrow.
     pub select: Vec<FieldId>,
     /// Conjunctive predicates over projected columns.
     pub predicates: Vec<ColumnPredicate>,
@@ -599,6 +605,14 @@ fn primary_key_field_index(
 /// Length-prefixed string/bytes do **not**: `u32_be length || payload` sorts by
 /// length first, which disagrees with lexicographic CanonicalValue order.
 ///
+/// Enum ordering sense: a key component encodes **only** the variant id
+/// (u32 BE), while [`CanonicalValue`] comparison falls back to canonical
+/// bytes `(tag, type_id BE, variant_id BE)`. The two agree exactly because a
+/// key column's enum type is constant across every row of the entity, so
+/// both reduce to variant-id order — the sense an OrderSpec needs. This is
+/// proven against the real encoder in
+/// `order_proof_tests::enum_key_encoding_preserves_variant_order_at_constant_type`.
+///
 /// Extracted so falsifiability can neuter the order-proof validation.
 #[inline]
 pub(crate) fn key_type_preserves_value_order(value_type: &ValueType) -> bool {
@@ -750,71 +764,239 @@ fn encode_group_key(cells: &[CanonicalValue]) -> Result<Vec<u8>, QueryError> {
 
 #[cfg(test)]
 mod order_proof_tests {
-    use super::key_type_preserves_value_order;
+    use super::{compare_values, key_type_preserves_value_order};
     use riffdb_contract_ir::ValueType;
-    use riffdb_types::{CanonicalValue, EntityKeyBuilder, EntityTypeId};
+    use riffdb_types::{
+        CanonicalValue, Date, EntityKeyBuilder, EntityTypeId, EnumTypeId, EnumVariantId, Timestamp,
+    };
     use std::cmp::Ordering;
 
-    /// Proof shape for A3: for each fixed-width key component type used in
-    /// entity keys, lexicographic order of the encoded component payload equals
-    /// CanonicalValue order of the decoded values. Length-prefixed string/bytes
-    /// are excluded (and rejected at OrderSpec validation).
+    /// Encodes one component into an entity key and returns the key bytes.
+    ///
+    /// The envelope prefix is constant across calls, so lexicographic
+    /// comparison of the returned bytes is comparison of the component
+    /// encoding alone.
+    fn encoded_component(push: impl FnOnce(&mut EntityKeyBuilder)) -> Vec<u8> {
+        let mut builder = EntityKeyBuilder::new(EntityTypeId::first());
+        push(&mut builder);
+        builder.as_bytes().to_vec()
+    }
+
+    /// Core A3 proof obligation: for every ordered pair of values, the
+    /// lexicographic order of the REAL `EntityKeyBuilder` encoding equals the
+    /// [`CanonicalValue`] order used by `compare_order_field`.
+    fn assert_key_bytes_track_value_order(encoded: &[(Vec<u8>, CanonicalValue)], context: &str) {
+        for (i, (left_bytes, left_value)) in encoded.iter().enumerate() {
+            for (j, (right_bytes, right_value)) in encoded.iter().enumerate() {
+                assert_eq!(
+                    left_bytes.cmp(right_bytes),
+                    compare_values(left_value, right_value),
+                    "{context}: key byte order diverges from value order at pair ({i}, {j})"
+                );
+                // The list is given in ascending value order; pin that too so
+                // a broken compare_values cannot vacuously agree with broken
+                // byte order.
+                assert_eq!(
+                    compare_values(left_value, right_value),
+                    i.cmp(&j),
+                    "{context}: value order diverges from the declared ascending order at ({i}, {j})"
+                );
+            }
+        }
+    }
+
     #[test]
-    fn fixed_width_key_components_preserve_value_order() {
-        assert!(key_type_preserves_value_order(&ValueType::uuid()));
+    fn bool_key_encoding_preserves_value_order() {
+        assert!(
+            key_type_preserves_value_order(&ValueType::bool()),
+            "classifier must admit bool so the encoder proof below is the load-bearing check"
+        );
+        let encoded: Vec<(Vec<u8>, CanonicalValue)> = [false, true]
+            .into_iter()
+            .map(|value| {
+                (
+                    encoded_component(|builder| {
+                        builder.push_bool(value).expect("push");
+                    }),
+                    CanonicalValue::Bool(value),
+                )
+            })
+            .collect();
+        assert_key_bytes_track_value_order(&encoded, "bool");
+    }
+
+    #[test]
+    fn u64_key_encoding_preserves_value_order() {
         assert!(key_type_preserves_value_order(&ValueType::u64()));
+        let encoded: Vec<(Vec<u8>, CanonicalValue)> = [0u64, 1, 7, 9, 256, u64::MAX]
+            .into_iter()
+            .map(|value| {
+                (
+                    encoded_component(|builder| {
+                        builder.push_u64(value).expect("push");
+                    }),
+                    CanonicalValue::U64(value),
+                )
+            })
+            .collect();
+        assert_key_bytes_track_value_order(&encoded, "u64");
+    }
+
+    #[test]
+    fn i64_key_encoding_preserves_value_order_across_sign() {
         assert!(key_type_preserves_value_order(&ValueType::i64()));
-        assert!(key_type_preserves_value_order(&ValueType::bool()));
+        let encoded: Vec<(Vec<u8>, CanonicalValue)> = [i64::MIN, -3, -1, 0, 1, i64::MAX]
+            .into_iter()
+            .map(|value| {
+                (
+                    encoded_component(|builder| {
+                        builder.push_i64(value).expect("push");
+                    }),
+                    CanonicalValue::I64(value),
+                )
+            })
+            .collect();
+        assert_key_bytes_track_value_order(&encoded, "i64");
+    }
+
+    /// Timestamp keys sign-flip the seconds and append nanos BE; the proof
+    /// includes negative seconds and nano tie-breaks around the epoch, where
+    /// a naive two's-complement encoding would invert the order.
+    #[test]
+    fn timestamp_key_encoding_preserves_value_order_including_negative_seconds() {
+        assert!(key_type_preserves_value_order(&ValueType::timestamp()));
+        let ascending = [
+            (-5i64, 0u32),
+            (-5, 999_999_999),
+            (-4, 0),
+            (-1, 999_999_999),
+            (0, 0),
+            (0, 1),
+            (3, 500),
+            (i64::MAX, 999_999_999),
+        ];
+        let encoded: Vec<(Vec<u8>, CanonicalValue)> = ascending
+            .into_iter()
+            .map(|(seconds, nanoseconds)| {
+                let timestamp = Timestamp::new(seconds, nanoseconds).expect("canonical nanos");
+                (
+                    encoded_component(|builder| {
+                        builder.push_timestamp(timestamp).expect("push");
+                    }),
+                    CanonicalValue::Timestamp(timestamp),
+                )
+            })
+            .collect();
+        assert_key_bytes_track_value_order(&encoded, "timestamp");
+    }
+
+    #[test]
+    fn date_key_encoding_preserves_value_order_including_pre_epoch() {
+        assert!(key_type_preserves_value_order(&ValueType::date()));
+        let encoded: Vec<(Vec<u8>, CanonicalValue)> = [i32::MIN, -400, -1, 0, 1, 400, i32::MAX]
+            .into_iter()
+            .map(|days| {
+                let date = Date::from_days_since_unix_epoch(days);
+                (
+                    encoded_component(|builder| {
+                        builder.push_date(date).expect("push");
+                    }),
+                    CanonicalValue::Date(date),
+                )
+            })
+            .collect();
+        assert_key_bytes_track_value_order(&encoded, "date");
+    }
+
+    /// Enum keys encode only the variant id (u32 BE); CanonicalValue
+    /// comparison falls back to canonical bytes `(tag, type_id, variant_id)`.
+    /// With the type id held constant — always true for a key column — both
+    /// reduce to variant-id order, which is the sense OrderSpec relies on.
+    #[test]
+    fn enum_key_encoding_preserves_variant_order_at_constant_type() {
+        let type_id = EnumTypeId::new(7).expect("nonzero");
+        assert!(key_type_preserves_value_order(&ValueType::enumeration(
+            type_id
+        )));
+        let encoded: Vec<(Vec<u8>, CanonicalValue)> = [1u32, 2, 300, 70_000]
+            .into_iter()
+            .map(|raw| {
+                let variant_id = EnumVariantId::new(raw).expect("nonzero");
+                (
+                    encoded_component(|builder| {
+                        builder.push_enum_variant(variant_id).expect("push");
+                    }),
+                    CanonicalValue::Enum {
+                        type_id,
+                        variant_id,
+                    },
+                )
+            })
+            .collect();
+        assert_key_bytes_track_value_order(&encoded, "enum");
+    }
+
+    #[test]
+    fn uuid_key_encoding_preserves_value_order() {
+        fn uuid_with(first: u8, last: u8) -> [u8; 16] {
+            let mut bytes = [0u8; 16];
+            bytes[0] = first;
+            bytes[15] = last;
+            bytes
+        }
+        assert!(key_type_preserves_value_order(&ValueType::uuid()));
+        // Ascending network-order byte patterns exercising both ends of the
+        // 16-byte width (first byte dominates; last byte tie-breaks).
+        let ascending = [
+            uuid_with(0x00, 0x00),
+            uuid_with(0x00, 0x01),
+            uuid_with(0x01, 0x00),
+            uuid_with(0x01, 0x02),
+            [0xff; 16],
+        ];
+        let encoded: Vec<(Vec<u8>, CanonicalValue)> = ascending
+            .into_iter()
+            .map(|value| {
+                (
+                    encoded_component(|builder| {
+                        builder.push_uuid(&value).expect("push");
+                    }),
+                    CanonicalValue::Uuid(value),
+                )
+            })
+            .collect();
+        assert_key_bytes_track_value_order(&encoded, "uuid");
+    }
+
+    /// Length-prefixed string counterexample: "b" < "aa" in key bytes (length
+    /// first) but "aa" < "b" lexicographically — the divergence class that
+    /// forces the OrderSpec rejection. Bytes share the same encoding shape.
+    #[test]
+    fn string_key_encoding_is_not_value_order_preserving() {
         assert!(!key_type_preserves_value_order(
             &ValueType::string(32).expect("bound")
         ));
         assert!(!key_type_preserves_value_order(
             &ValueType::bytes(32).expect("bound")
         ));
-
-        // UUID: network-order 16 bytes — byte cmp == array cmp used by
-        // CanonicalValue::Uuid equality/ordering paths.
-        let u_lo = [0x01u8; 16];
-        let u_hi = [0x02u8; 16];
-        assert_eq!(u_lo.cmp(&u_hi), Ordering::Less);
-        assert!(matches!(
-            (CanonicalValue::Uuid(u_lo), CanonicalValue::Uuid(u_hi)),
-            (CanonicalValue::Uuid(a), CanonicalValue::Uuid(b)) if a < b
-        ));
-
-        // U64: big-endian fixed width — key byte order tracks numeric order.
-        let u_values = [7u64, 9u64];
-        let mut builder_lo = EntityKeyBuilder::new(EntityTypeId::first());
-        builder_lo.push_u64(u_values[0]).expect("push");
-        let mut builder_hi = EntityKeyBuilder::new(EntityTypeId::first());
-        builder_hi.push_u64(u_values[1]).expect("push");
+        let short = encoded_component(|builder| {
+            builder.push_str("b").expect("push");
+        });
+        let long = encoded_component(|builder| {
+            builder.push_str("aa").expect("push");
+        });
         assert_eq!(
-            builder_lo.as_bytes().cmp(builder_hi.as_bytes()),
-            u_values[0].cmp(&u_values[1])
+            short.cmp(&long),
+            Ordering::Less,
+            "length prefix sorts first"
         );
-
-        // I64: sign-bit flip preserves numeric order in key bytes.
-        let i_values = [-3i64, 1i64];
-        let mut neg = EntityKeyBuilder::new(EntityTypeId::first());
-        neg.push_i64(i_values[0]).expect("push");
-        let mut pos = EntityKeyBuilder::new(EntityTypeId::first());
-        pos.push_i64(i_values[1]).expect("push");
         assert_eq!(
-            neg.as_bytes().cmp(pos.as_bytes()),
-            i_values[0].cmp(&i_values[1])
-        );
-
-        // String length-prefix counterexample: "b" < "aa" by length, but "aa" < "b" lex.
-        let s_left = "b";
-        let s_right = "aa";
-        let mut s_b = EntityKeyBuilder::new(EntityTypeId::first());
-        s_b.push_str(s_left).expect("push");
-        let mut s_aa = EntityKeyBuilder::new(EntityTypeId::first());
-        s_aa.push_str(s_right).expect("push");
-        assert_ne!(
-            s_b.as_bytes().cmp(s_aa.as_bytes()),
-            s_left.cmp(s_right),
-            "length-prefix key order disagrees with lexicographic string order"
+            compare_values(
+                &CanonicalValue::string("b").expect("value"),
+                &CanonicalValue::string("aa").expect("value"),
+            ),
+            Ordering::Greater,
+            "lexicographic value order disagrees with the key byte order above"
         );
     }
 }

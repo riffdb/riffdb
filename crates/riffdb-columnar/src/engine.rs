@@ -196,19 +196,13 @@ impl ColumnarEngine {
     /// Lifecycle status for the current published state vs `head`.
     #[must_use]
     pub fn outcome(&self, head: FrontierPosition) -> ColumnarOutcome {
-        if !self.has_published
-            && self.apply.published.visible_frontier == FrontierPosition::BeforeFirst
-            && self.apply.working.processed == FrontierPosition::BeforeFirst
-        {
-            return ColumnarOutcome::Building(ProjectionBuilding {
-                applied_through: self.apply.working.processed,
-                head,
-            });
-        }
         if !self.has_published {
             return ColumnarOutcome::Building(ProjectionBuilding {
-                applied_through: self.apply.working.processed,
-                head,
+                applied_through: ProjectionFrontier::new(
+                    self.history_incarnation,
+                    self.apply.working.processed,
+                ),
+                head: ProjectionFrontier::new(self.history_incarnation, head),
             });
         }
         ColumnarOutcome::Ready(ProjectionReady {

@@ -6955,7 +6955,7 @@ work_packages:
   deliverables:
   - riffdb-types freshness module (CommitToken, ProjectionFrontier, FreshnessPolicy) with
     incarnation binding and redacted opaque bytes
-  - select: Vec<FieldId> on ColumnarQueryRequest (empty = all projected fields)
+  - "select: Vec<FieldId> on ColumnarQueryRequest (empty = all projected fields)"
   - Decoded primary-key values on QueryRow; PK components addressable in OrderSpec with
     typed rejection for non-value-order-preserving key types
   - Public query_snapshot entry; engine.query as thin wrapper

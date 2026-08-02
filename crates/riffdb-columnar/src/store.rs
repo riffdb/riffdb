@@ -32,8 +32,11 @@ impl OrgKey {
 
     /// Reconstructs an org key from already-encoded canonical bytes.
     ///
-    /// Does not re-validate the payload shape; intended for tests that compare
-    /// encodings byte-for-byte against partition codecs.
+    /// Does not re-validate the payload shape; intended solely for CP2b's
+    /// cross-crate partition-encoding equivalence proof, which must compare
+    /// byte-for-byte against partition codecs. Hidden from the documented API
+    /// so [`OrgKey::from_value`] stays the only advertised constructor.
+    #[doc(hidden)]
     #[must_use]
     pub fn from_encoded_bytes(bytes: impl Into<Vec<u8>>) -> Self {
         Self(bytes.into())

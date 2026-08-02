@@ -3,6 +3,7 @@
 
 mod common;
 
+use riffdb_contract_ir::ValueTypeTag;
 use riffdb_storage_api::{StorageError, StorageErrorKind};
 use riffdb_types::{
     CanonicalValue, CommitSequence, CommitToken, FrontierPosition, ProjectionFrontier,
@@ -103,6 +104,10 @@ fn a1_select_empty_is_all_projected_and_narrowing_cannot_widen() {
 }
 
 /// A2: every row exposes decoded primary-key values, field-id addressable.
+///
+/// Runs on the CP1 harness contract's `(organization_id: uuid, ticket_id: u64)`
+/// key. The REAL ticketdesk board key shape `(uuid, uuid)` is proven separately
+/// in [`a2_a3_real_board_key_uuid_uuid_decode_and_order_equivalence`].
 #[test]
 fn a2_primary_key_values_on_rows_field_id_addressable() {
     let (bundle, engine, org) = seed_board_three_tickets();
@@ -134,7 +139,7 @@ fn a2_primary_key_values_on_rows_field_id_addressable() {
     assert_eq!(
         ids,
         vec![10, 20, 30],
-        "board-shaped rows carry ticket_id in PK order"
+        "harness-contract rows carry ticket_id in PK order"
     );
     for row in &rows.rows {
         assert_eq!(
@@ -145,7 +150,10 @@ fn a2_primary_key_values_on_rows_field_id_addressable() {
 }
 
 /// A3: PK OrderSpec works for order-preserving components; proves ticket_id
-/// ASC matches PrimaryKeyBytes order (uuid+u64 key; uuid fixed within org).
+/// ASC matches PrimaryKeyBytes order on the CP1 harness contract's
+/// `(uuid, u64)` key (uuid fixed within org). The real board's `(uuid, uuid)`
+/// shape is proven in
+/// [`a2_a3_real_board_key_uuid_uuid_decode_and_order_equivalence`].
 #[test]
 fn a3_pk_order_spec_matches_primary_key_bytes_order() {
     let (bundle, engine, org) = seed_board_three_tickets();
@@ -208,6 +216,180 @@ fn a3_pk_order_spec_matches_primary_key_bytes_order() {
         })
         .collect();
     assert_eq!(ids_desc, vec![30, 20, 10]);
+}
+
+/// A2+A3 on the REAL ticketdesk board key shape:
+/// `key (organization_id: uuid, ticket_id: uuid)` (replicated in
+/// [`common::BOARD_KEY_CONTRACT`]). Proves (1) decode of (uuid, uuid) primary
+/// keys on returned rows, (2) OrderSpec asc/desc on the uuid ticket_id PK
+/// component, and (3) default PrimaryKeyBytes order == ticket_id ascending
+/// within an org (the D10 board assumption).
+///
+/// Falsifiable: corrupting the decoded field order in `decode_primary_key`
+/// (e.g. reversing the values) turns the org/ticket_id assertions red.
+#[test]
+fn a2_a3_real_board_key_uuid_uuid_decode_and_order_equivalence() {
+    let bundle = compile_board_key_bundle();
+    let definition = register_board_key_ticket_projection(&bundle);
+    let mut engine = open_engine(definition, "cp2a-board-key");
+    let mut source = HistorySource::default();
+    let org = uuid(0x0b);
+    let ticket_low = uuid(0x11);
+    let ticket_mid = uuid(0x22);
+    let ticket_high = uuid(0x33);
+    // Insertion (commit) order deliberately differs from ticket_id byte order.
+    push_board_key_ticket_create(&mut source, &bundle, 1, org, ticket_high, 3, "high");
+    push_board_key_ticket_create(&mut source, &bundle, 2, org, ticket_low, 1, "low");
+    push_board_key_ticket_create(&mut source, &bundle, 3, org, ticket_mid, 2, "mid");
+    // Different org partition must never leak into the board below.
+    push_board_key_ticket_create(&mut source, &bundle, 4, uuid(0x0c), uuid(0x01), 9, "other");
+    engine.apply_available(&source).expect("apply");
+
+    let org_field = field_id(&bundle, "Ticket", "organization_id");
+    let ticket_id = field_id(&bundle, "Ticket", "ticket_id");
+    let title = field_id(&bundle, "Ticket", "title");
+
+    // (1)+(3): default order is PrimaryKeyBytes order with decoded (uuid, uuid) keys.
+    let default_result = engine
+        .query(&board_query(CanonicalValue::Uuid(org)))
+        .expect("default");
+    let default_rows = match &default_result {
+        QueryResult::Rows(rows) => rows.clone(),
+        other => panic!("rows: {other:?}"),
+    };
+    assert_eq!(default_rows.primary_key_fields, vec![org_field, ticket_id]);
+    assert_eq!(default_rows.rows.len(), 3);
+    let ids_of = |rows: &riffdb_columnar::QueryRows| -> Vec<[u8; 16]> {
+        rows.rows
+            .iter()
+            .map(|row| {
+                match row
+                    .primary_key_value(&rows.primary_key_fields, ticket_id)
+                    .expect("ticket_id component")
+                {
+                    CanonicalValue::Uuid(id) => *id,
+                    other => panic!("uuid ticket_id decoded as {other:?}"),
+                }
+            })
+            .collect()
+    };
+    assert_eq!(
+        ids_of(&default_rows),
+        vec![ticket_low, ticket_mid, ticket_high],
+        "default PrimaryKeyBytes order must equal ticket_id asc within org"
+    );
+    for row in &default_rows.rows {
+        assert_eq!(
+            row.primary_key_value(&default_rows.primary_key_fields, org_field),
+            Some(&CanonicalValue::Uuid(org)),
+            "org component must decode to the partition org uuid"
+        );
+    }
+    // Cells travel with their keys (row identity, not just key decode).
+    let titles: Vec<_> = default_rows
+        .rows
+        .iter()
+        .map(|row| row.cell_value(&default_rows.fields, title).expect("title"))
+        .collect();
+    assert_eq!(
+        titles,
+        vec![
+            &CanonicalValue::string("low").expect("low"),
+            &CanonicalValue::string("mid").expect("mid"),
+            &CanonicalValue::string("high").expect("high"),
+        ]
+    );
+
+    // (2): explicit OrderSpec on the uuid PK component.
+    let order_query = |direction: SortDirection| ColumnarQueryRequest {
+        org_scope: CanonicalValue::Uuid(org),
+        select: Vec::new(),
+        predicates: Vec::new(),
+        order: vec![OrderSpec {
+            field: ticket_id,
+            direction,
+        }],
+        limit: None,
+        group_by: None,
+        aggregate: None,
+        budget: QueryBudget::default(),
+    };
+    let asc_result = engine
+        .query(&order_query(SortDirection::Asc))
+        .expect("order asc on uuid pk component");
+    assert_eq!(
+        asc_result, default_result,
+        "OrderSpec ticket_id asc must be byte-for-byte the default PrimaryKeyBytes order"
+    );
+    let desc_rows = match engine
+        .query(&order_query(SortDirection::Desc))
+        .expect("order desc on uuid pk component")
+    {
+        QueryResult::Rows(rows) => rows,
+        other => panic!("rows: {other:?}"),
+    };
+    assert_eq!(
+        ids_of(&desc_rows),
+        vec![ticket_high, ticket_mid, ticket_low],
+        "OrderSpec ticket_id desc must reverse the uuid order"
+    );
+}
+
+/// A3 rejection: an OrderSpec on a non-order-preserving PK component
+/// (length-prefixed string) is rejected with
+/// `QueryError::OrderNotValueOrderPreserving`, typed with the field and tag.
+///
+/// Falsifiable: deleting the `key_type_preserves_value_order` rejection
+/// branch in `validate_order_field` makes the query succeed and both
+/// `expect_err` calls below panic.
+#[test]
+fn a3_string_pk_order_spec_rejected_typed() {
+    let bundle = compile_board_key_bundle();
+    let definition = register_string_key_tag_projection(&bundle);
+    let mut engine = open_engine(definition, "cp2a-string-pk");
+    let mut source = HistorySource::default();
+    let org = uuid(0x5f);
+    // "b" sorts before "aa" in length-prefixed key bytes but after it
+    // lexicographically — the exact divergence the validation must refuse to
+    // serve instead of returning misordered rows.
+    push_tag_create(&mut source, &bundle, 1, org, "b", 1);
+    push_tag_create(&mut source, &bundle, 2, org, "aa", 2);
+    engine.apply_available(&source).expect("apply");
+
+    // Sanity: the same query without the OrderSpec serves both rows, so the
+    // rejection below is attributable to the order field alone.
+    let rows = rows_of(
+        engine
+            .query(&board_query(CanonicalValue::Uuid(org)))
+            .expect("unordered query serves"),
+    );
+    assert_eq!(rows.len(), 2);
+
+    let label = field_id(&bundle, "Tag", "label");
+    for direction in [SortDirection::Asc, SortDirection::Desc] {
+        let err = engine
+            .query(&ColumnarQueryRequest {
+                org_scope: CanonicalValue::Uuid(org),
+                select: Vec::new(),
+                predicates: Vec::new(),
+                order: vec![OrderSpec {
+                    field: label,
+                    direction,
+                }],
+                limit: None,
+                group_by: None,
+                aggregate: None,
+                budget: QueryBudget::default(),
+            })
+            .expect_err("string PK OrderSpec must be rejected typed");
+        assert_eq!(
+            err,
+            ColumnarError::Query(QueryError::OrderNotValueOrderPreserving {
+                field_id: label,
+                tag: ValueTypeTag::String,
+            })
+        );
+    }
 }
 
 /// A4: query_snapshot serves the same results as engine.query without the engine.

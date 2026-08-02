@@ -90,10 +90,10 @@ pub struct ProjectionReady {
 /// Initial catch-up has not yet produced a published snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectionBuilding {
-    /// Processed position during catch-up.
-    pub applied_through: FrontierPosition,
-    /// Known application head.
-    pub head: FrontierPosition,
+    /// Processed position during catch-up (incarnation-bound).
+    pub applied_through: ProjectionFrontier,
+    /// Known application head under the same incarnation.
+    pub head: ProjectionFrontier,
 }
 
 /// Definition fingerprint mismatch at open.
@@ -106,14 +106,17 @@ pub struct ProjectionInvalid {
 }
 
 /// Causal/bounded freshness lag (shape only in CP1; wiring is CP2).
+///
+/// All frontiers are incarnation-bound [`ProjectionFrontier`]s so the CP2b §7
+/// wire mapping can carry the Lagging arm without retrofitting incarnations.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectionLagging {
-    /// Required frontier token / sequence.
-    pub required: FrontierPosition,
+    /// Required frontier (from the causal token / bounded policy).
+    pub required: ProjectionFrontier,
     /// Current projection frontier.
-    pub current: FrontierPosition,
+    pub current: ProjectionFrontier,
     /// Application head.
-    pub head: FrontierPosition,
+    pub head: ProjectionFrontier,
     /// Sequence distance backlog (head - current), when both are sequenced.
     pub lag_sequences: Option<u64>,
     /// Optional retry hint in milliseconds (data shape only).
@@ -136,8 +139,8 @@ pub struct ProjectionRebuilding {
 pub struct ProjectionDegraded {
     /// Closed reason code.
     pub reason: DegradedReason,
-    /// Current frontier while degraded.
-    pub current_frontier: FrontierPosition,
+    /// Current frontier while degraded (incarnation-bound).
+    pub current_frontier: ProjectionFrontier,
 }
 
 /// Engine-level lifecycle outcome enum.
@@ -186,17 +189,21 @@ pub fn frontier_lag_sequences(current: FrontierPosition, head: FrontierPosition)
     }
 }
 
-/// Helper for shape tests constructing a lagging outcome.
+/// Helper for shape tests constructing a lagging outcome under one incarnation.
 #[must_use]
 pub fn lagging_for(
+    history_incarnation: u64,
     required: CommitSequence,
     current: FrontierPosition,
     head: FrontierPosition,
 ) -> ColumnarOutcome {
     ColumnarOutcome::Lagging(ProjectionLagging {
-        required: FrontierPosition::AppliedThrough(required),
-        current,
-        head,
+        required: ProjectionFrontier::new(
+            history_incarnation,
+            FrontierPosition::AppliedThrough(required),
+        ),
+        current: ProjectionFrontier::new(history_incarnation, current),
+        head: ProjectionFrontier::new(history_incarnation, head),
         lag_sequences: frontier_lag_sequences(current, head),
         retry_after_ms: Some(50),
     })
@@ -209,16 +216,20 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
-    fn lagging_shape_carries_required_current_head() {
+    fn lagging_shape_carries_incarnation_bound_required_current_head() {
         let required = CommitSequence::new(10).expect("seq");
         let current = FrontierPosition::AppliedThrough(CommitSequence::new(7).expect("seq"));
         let head = FrontierPosition::AppliedThrough(CommitSequence::new(12).expect("seq"));
-        let outcome = lagging_for(required, current, head);
+        let outcome = lagging_for(3, required, current, head);
         match outcome {
             ColumnarOutcome::Lagging(lag) => {
-                assert_eq!(lag.required, FrontierPosition::AppliedThrough(required));
-                assert_eq!(lag.current, current);
-                assert_eq!(lag.head, head);
+                assert_eq!(
+                    lag.required,
+                    ProjectionFrontier::new(3, FrontierPosition::AppliedThrough(required))
+                );
+                assert_eq!(lag.current, ProjectionFrontier::new(3, current));
+                assert_eq!(lag.head, ProjectionFrontier::new(3, head));
+                assert_eq!(lag.current.history_incarnation(), 3);
                 assert_eq!(lag.lag_sequences, Some(5));
             }
             _ => panic!("expected lagging"),
@@ -241,7 +252,7 @@ mod tests {
         ));
         let degraded = ColumnarOutcome::Degraded(ProjectionDegraded {
             reason: DegradedReason::ApplyLagSlo,
-            current_frontier: FrontierPosition::BeforeFirst,
+            current_frontier: ProjectionFrontier::new(1, FrontierPosition::BeforeFirst),
         });
         assert!(matches!(
             degraded,

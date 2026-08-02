@@ -693,9 +693,10 @@ fn acceptance_lifecycle_outcomes_shapes() {
     let required = CommitSequence::new(5).expect("5");
     let current = FrontierPosition::AppliedThrough(CommitSequence::new(2).expect("2"));
     let head = FrontierPosition::AppliedThrough(CommitSequence::new(9).expect("9"));
-    match lagging_for(required, current, head) {
+    match lagging_for(1, required, current, head) {
         ColumnarOutcome::Lagging(lag) => {
             assert_eq!(lag.lag_sequences, Some(7));
+            assert_eq!(lag.current.history_incarnation(), 1);
             assert_eq!(frontier_lag_sequences(current, head), Some(7));
         }
         _ => panic!("lagging"),
@@ -711,7 +712,10 @@ fn acceptance_lifecycle_outcomes_shapes() {
     assert!(matches!(
         ColumnarOutcome::Degraded(ProjectionDegraded {
             reason: riffdb_columnar::DegradedReason::ApplyLagSlo,
-            current_frontier: FrontierPosition::BeforeFirst,
+            current_frontier: riffdb_types::ProjectionFrontier::new(
+                1,
+                FrontierPosition::BeforeFirst
+            ),
         }),
         ColumnarOutcome::Degraded(_)
     ));
