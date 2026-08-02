@@ -12,8 +12,8 @@ use riffdb_invariant::{
     EvaluationError, ExpressionValueSource, evaluate_expression, evaluate_predicate,
 };
 use riffdb_storage_api::{
-    DurableKeySchemaBindingV1, EntityTarget, MigrationScanCursor, MigrationStageError,
-    MigrationStagePort, StoredEntityRecordV1, StoredIndexEntryV2,
+    CatalogRepository, DurableKeySchemaBindingV1, EntityTarget, MigrationScanCursor,
+    MigrationStageError, MigrationStagePort, StoredEntityRecordV1, StoredIndexEntryV2,
 };
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, ContractBundleHash, ContractMigrationValidationDigest,
@@ -307,6 +307,23 @@ pub struct ValidatedMigrationPlan {
 }
 
 impl ValidatedMigrationPlan {
+    /// Rebuilds the bounded current lineage from repository evidence before
+    /// sealing one executable migration plan.
+    pub fn from_current_catalog_artifacts<R: CatalogRepository>(
+        repository: &R,
+        candidate: ValidatedContractBundle,
+        migration: MigrationBundleV1,
+    ) -> Result<Self, MigrationFinding> {
+        let active = repository
+            .read_active_catalog()
+            .map_err(|_| MigrationFinding::new(migration_finding_code::ARTIFACT_MISMATCH))?
+            .ok_or_else(|| MigrationFinding::new(migration_finding_code::ARTIFACT_MISMATCH))?;
+        let proof = LineageMaterializationProof::load_active(repository, &active)
+            .map_err(|_| MigrationFinding::new(migration_finding_code::ARTIFACT_MISMATCH))?;
+        let parent = proof.terminal().clone();
+        Self::from_artifacts_with_lineage(parent, Some(proof), candidate, migration)
+    }
+
     /// Revalidates exact artifacts and seals one complete executable Gate-A plan.
     pub fn from_artifacts(
         parent: ValidatedContractBundle,

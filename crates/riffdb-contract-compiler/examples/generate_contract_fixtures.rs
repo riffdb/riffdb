@@ -332,6 +332,157 @@ fn generate_migration_fixtures(output_root: &std::path::Path) -> Result<(), Box<
         compatibility_root.join("required-field.txt"),
         render_compatibility(&candidate)?,
     )?;
+    generate_gate_a_application_fixture(&root)?;
+    Ok(())
+}
+
+fn generate_gate_a_application_fixture(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
+    const PARENT: &str = r#"contract TicketDeskGateA version 1 {
+  entity Organization {
+    key (organization_id: uuid)
+    field name: string<64>
+  }
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field title: string<64>
+    field amount: i64
+  }
+  entity Policy {
+    key (organization_id: uuid)
+    field floor: i64
+  }
+  event TicketCreated { organization_id: uuid amount: i64 }
+  aggregate Organizations { root Organization partition_by organization_id conflict_key (organization_id) }
+  aggregate Tickets { root Ticket partition_by organization_id conflict_key (organization_id, ticket_id) }
+  aggregate Policies { root Policy partition_by organization_id conflict_key (organization_id) }
+  command CreateOrganization {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input name: string<64>
+    idempotency_key idempotency_key
+    create Organization(organization_id) as organization else OrganizationExists {}
+    set organization.name = name
+    return Created { organization_id: organization_id }
+  }
+  command CreateTicket {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input ticket_id: uuid
+    input title: string<64>
+    input amount: i64
+    idempotency_key idempotency_key
+    read Organization(organization_id) as organization else OrganizationMissing {}
+    create Ticket(organization_id, ticket_id) as ticket else TicketExists {}
+    set ticket.title = title
+    set ticket.amount = amount
+    emit TicketCreated { organization_id: organization_id, amount: amount }
+    return Created { ticket_id: ticket_id }
+  }
+}
+"#;
+    const CANDIDATE: &str = r#"contract TicketDeskGateA version 2 {
+  entity Organization {
+    key (organization_id: uuid)
+    field name: string<64>
+  }
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field title: string<64>
+    field amount: i64
+    field priority: i64
+    index by_priority (organization_id, priority, ticket_id)
+    unique ticket_title (organization_id, title)
+    reference organization (organization_id) -> Organization(organization_id)
+    invariant nonnegative_amount: amount >= 0
+  }
+  entity Policy {
+    key (organization_id: uuid)
+    field floor: i64
+    invariant nonnegative_floor: floor >= 0
+  }
+  event TicketCreated { organization_id: uuid amount: i64 }
+  aggregate Organizations { root Organization partition_by organization_id conflict_key (organization_id) }
+  aggregate Tickets { root Ticket partition_by organization_id conflict_key (organization_id, ticket_id) }
+  aggregate Policies { root Policy partition_by organization_id conflict_key (organization_id) }
+  command CreateOrganization {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input name: string<64>
+    idempotency_key idempotency_key
+    create Organization(organization_id) as organization else OrganizationExists {}
+    set organization.name = name
+    return Created { organization_id: organization_id }
+  }
+  command CreateTicket {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input ticket_id: uuid
+    input title: string<64>
+    input amount: i64
+    idempotency_key idempotency_key
+    read Organization(organization_id) as organization else OrganizationMissing {}
+    create Ticket(organization_id, ticket_id) as ticket else TicketExists {}
+    set ticket.title = title
+    set ticket.amount = amount
+    set ticket.priority = amount + 1
+    emit TicketCreated { organization_id: organization_id, amount: amount }
+    return Created { ticket_id: ticket_id }
+  }
+  projection TicketTotals {
+    source event TicketCreated
+    key (organization_id)
+    measure total = sum(amount)
+    frontier transactionally_ordered
+  }
+}
+"#;
+    const MIGRATION: &str = r#"migration TicketDeskGateA from 1 to 2 {
+  transform Ticket {
+    set priority = old.amount + 1
+  }
+}
+"#;
+
+    let parent = compile_contract_source(PARENT)?;
+    let candidate = compile_contract_successor(CANDIDATE, &parent)?;
+    let migration = compile_migration_source(MIGRATION, &parent, &candidate)?;
+    let fixture = root.join("gate-a/ticketdesk");
+    fs::create_dir_all(&fixture)?;
+    fs::write(fixture.join("parent.riff"), PARENT)?;
+    fs::write(fixture.join("successor.riff"), CANDIDATE)?;
+    fs::write(fixture.join("v1-to-v2.riffm"), MIGRATION)?;
+    fs::write(
+        fixture.join("parent.contract.bundle"),
+        parent.canonical_bytes(),
+    )?;
+    fs::write(
+        fixture.join("successor.contract.bundle"),
+        candidate.canonical_bytes(),
+    )?;
+    fs::write(
+        fixture.join("v1-to-v2.migration.bundle"),
+        migration.canonical_bytes(),
+    )?;
+    fs::write(
+        fixture.join("exact-artifacts.txt"),
+        format!(
+            concat!(
+                "schema=riffdb.gate-a-exact-artifacts/v1\n",
+                "lineage={}\n",
+                "parent_version={}\n",
+                "parent_bundle_hash={}\n",
+                "successor_version={}\n",
+                "successor_bundle_hash={}\n",
+                "migration_bundle_hash={}\n"
+            ),
+            migration.lineage().as_str(),
+            migration.parent_version().get(),
+            hex(migration.parent_bundle_hash().as_bytes()),
+            migration.candidate_version().get(),
+            hex(migration.candidate_bundle_hash().as_bytes()),
+            hex(migration.bundle_hash().as_bytes()),
+        ),
+    )?;
     Ok(())
 }
 

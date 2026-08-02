@@ -69,7 +69,21 @@ fn required_field_matches_reference_model_across_page_and_batch_boundaries() {
     assert_eq!(stage.history_witness(), &before);
     assert_eq!(stage.active_bundle_hash(), plan.candidate_bundle_hash());
     assert!(stage.predecessor_writes_retired());
-    assert!(stage.retained_archive().is_empty());
+    assert_eq!(stage.retained_archive().len(), 300);
+    for predecessor in stage.retained_archive() {
+        assert_eq!(predecessor.entity_version(), EntityVersion::first());
+        assert_eq!(
+            predecessor.schema_binding().bundle_hash(),
+            plan.parent_bundle_hash()
+        );
+        assert!(
+            predecessor
+                .fields()
+                .fields()
+                .iter()
+                .all(|(field, _)| *field != FieldId::new(3).unwrap())
+        );
+    }
     assert!(stage.journal().is_some_and(|journal| journal.is_complete()));
     let record = stage
         .migration_record()

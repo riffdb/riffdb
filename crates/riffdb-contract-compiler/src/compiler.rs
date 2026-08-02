@@ -197,6 +197,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+    use crate::compile_migration_source;
     use crate::diagnostic::CompilerDiagnosticCode;
     use riffdb_contract_ir::{
         CommandExplain, CompatibilityClass, CompatibilityCode, ContractBundle, ExpressionKind,
@@ -286,6 +287,65 @@ mod tests {
         assert_eq!(
             include_str!("../../../contracts/examples/budget.riff"),
             include_str!("../../../contracts/parser-fixtures/valid/legal_spend.riff"),
+        );
+    }
+
+    #[test]
+    fn migration_allows_only_the_required_initializer_added_to_an_existing_command() {
+        let parent_source = r#"contract RequiredInitializer version 1 {
+  entity Row { key (id: uuid) field value: i64 }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  command Create {
+    input idempotency_key: string<128>
+    input id: uuid
+    input value: i64
+    idempotency_key idempotency_key
+    create Row(id) as row else Exists {}
+    set row.value = value
+    return Created { id: id }
+  }
+}
+"#;
+        let candidate_source = parent_source
+            .replacen("version 1", "version 2", 1)
+            .replace(
+                "field value: i64 }",
+                "field value: i64 field required_value: i64 }",
+            )
+            .replace(
+                "set row.value = value",
+                "set row.value = value\n    set row.required_value = value + 1",
+            );
+        let parent = compile_contract_source(parent_source).expect("parent");
+        let candidate = compile_contract_successor(&candidate_source, &parent).expect("candidate");
+        assert_eq!(
+            candidate.compatibility().overall(),
+            CompatibilityClass::RequiresMigration
+        );
+        assert!(
+            candidate
+                .compatibility()
+                .entries()
+                .iter()
+                .all(|entry| { entry.code() != CompatibilityCode::ExistingPlanChange })
+        );
+        compile_migration_source(
+            "migration RequiredInitializer from 1 to 2 { transform Row { set required_value = old.value + 1 } }",
+            &parent,
+            &candidate,
+        )
+        .expect("required initializer is covered by the exact migration");
+
+        let unrelated_source =
+            candidate_source.replace("set row.value = value", "set row.value = value + 1");
+        let unrelated =
+            compile_contract_successor(&unrelated_source, &parent).expect("unrelated candidate");
+        assert!(
+            unrelated
+                .compatibility()
+                .entries()
+                .iter()
+                .any(|entry| { entry.code() == CompatibilityCode::ExistingPlanChange })
         );
     }
 

@@ -12,7 +12,7 @@ use riffdb_storage_api::{
     MigrationStageError, MigrationStagePort, OfflineBackupManifestIdentityV1,
     ServiceAuditAppendIntentV1, StorageError, StorageErrorKind, StorageValueError,
     StoredAdministrationAuditRecordV1, StoredContractMigrationJournalV1,
-    StoredContractMigrationRecordV1, StoredContractWriteRetirementV1,
+    StoredContractMigrationRecordV1, StoredContractWriteRetirementV1, StoredRetiredEntityRecordV1,
 };
 use riffdb_types::{
     ApprovalId, BackupNameV1, ContractMigrationInputHash, ContractMigrationOperationId,
@@ -33,12 +33,13 @@ use crate::hooks::RedbTestOperation;
 use crate::keys::{
     encode_contract_bundle_key, encode_contract_migration_operation_key,
     encode_contract_write_retirement_key, encode_entity_key, encode_index_entry_key,
+    encode_retired_entity_key,
 };
 use crate::layout::{
     CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS, CONTRACT_BUNDLES,
     CONTRACT_MIGRATION_JOURNAL, CONTRACT_MIGRATIONS, CONTRACT_WRITE_RETIREMENTS, ENTITIES,
     EVENT_ROUTES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING, META, OUTBOX, OUTBOX_STATUS,
-    PROVENANCE, QUERY_MODULE_ACTIVE, QUERY_MODULES, SECONDARY_INDEXES,
+    PROVENANCE, QUERY_MODULE_ACTIVE, QUERY_MODULES, RETIRED_ENTITIES, SECONDARY_INDEXES,
 };
 use crate::store::{RedbOperationalPorts, RedbStore};
 
@@ -444,6 +445,9 @@ impl MigrationStagePort for RedbContractMigrationStage {
         let mut indexes = transaction
             .open_table(SECONDARY_INDEXES)
             .map_err(|_| MigrationStageError::Integrity)?;
+        let mut retained = transaction
+            .open_table(RETIRED_ENTITIES)
+            .map_err(|_| MigrationStageError::Integrity)?;
         for mutation in batch.mutations() {
             let key = encode_entity_key(mutation.expected().source().target().key());
             let current = entities
@@ -454,8 +458,33 @@ impl MigrationStagePort for RedbContractMigrationStage {
             if !mutation.expected().matches(decoded.value()) {
                 return Err(MigrationStageError::RowChanged);
             }
+            let predecessor_envelope = current.value().to_vec();
             drop(current);
             if let Some(post_image) = mutation.post_image() {
+                let retained_record = StoredRetiredEntityRecordV1::new(
+                    self.context.operation_id,
+                    batch.migration(),
+                    mutation.expected().source().target().clone(),
+                    predecessor_envelope,
+                )
+                .map_err(|_| MigrationStageError::Integrity)?;
+                let retained_envelope =
+                    riffdb_storage_api::proto_codec::encode_retired_entity_record_v1(
+                        &retained_record,
+                    )
+                    .map_err(|_| MigrationStageError::Integrity)?;
+                let retained_key = encode_retired_entity_key(
+                    self.context.operation_id,
+                    mutation.expected().source().target(),
+                )
+                .map_err(|_| MigrationStageError::Integrity)?;
+                if retained
+                    .insert(retained_key.as_slice(), retained_envelope.as_bytes())
+                    .map_err(|_| MigrationStageError::Integrity)?
+                    .is_some()
+                {
+                    return Err(MigrationStageError::Integrity);
+                }
                 let encoded = encode_entity_record_v1(post_image).map_err(stage_error)?;
                 entities
                     .insert(key, encoded.as_bytes())
@@ -472,6 +501,7 @@ impl MigrationStagePort for RedbContractMigrationStage {
                 }
             }
         }
+        drop(retained);
         drop(indexes);
         drop(entities);
         let next = StoredContractMigrationJournalV1::new(

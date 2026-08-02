@@ -230,7 +230,7 @@ impl ProductionGraphBuilder {
         let (
             database_id,
             retained_metadata,
-            validated_catalog_history,
+            _validated_catalog_history,
             startup_lifecycle,
             allocator_capacity,
             operational_ports,
@@ -252,9 +252,6 @@ impl ProductionGraphBuilder {
         let health: Arc<dyn ServiceHealthHooks> = Arc::new(runtime.clone());
         let storage = SharedRedbOperationalPorts::new(operational_ports, Some(health))
             .map_err(|_| ProductionGraphBuildError::CurrentView)?;
-        let active_lineage = validated_catalog_history
-            .active_lineage_bundles()
-            .unwrap_or_default();
         let outbox_recovery = recover_outbox(storage.clone(), clocks.outbox());
         let outbox_health = NoDestinationOutboxHealth::new(outbox_recovery);
         outbox_health.refresh(&storage);
@@ -431,8 +428,7 @@ impl ProductionGraphBuilder {
             Arc::new(ProductionCursorTokenGenerator::new());
         let cursor_clock: Arc<dyn CursorMonotonicClock> =
             Arc::new(ProductionCursorMonotonicClock::new());
-        let migration =
-            maintenance.migration_coordinator(&blocking, storage.clone(), active_lineage);
+        let migration = maintenance.migration_coordinator(&blocking, storage.clone());
         let offline_maintenance = maintenance.coordinator(&blocking);
         let providers = ServiceProviders::new(
             catalog,

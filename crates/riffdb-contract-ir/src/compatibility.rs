@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-use riffdb_types::{EntityTypeId, FieldId};
+use riffdb_types::{EntityTypeId, FieldId, InvariantId};
 
 use crate::format_registry::{
     enum_variant_owner as variant_owner_tag, index_owner as index_owner_tag,
@@ -11,10 +11,10 @@ use crate::format_registry::{
     record_owner as record_owner_tag,
 };
 use crate::{
-    BindingPlan, CommandPlan, ContractBundle, EventConstruction, ExpressionArena, ExpressionKind,
-    FieldExpression, Instruction, IrValidationError, LineageEntryState, McpCommandNameRegistryV2,
-    OutcomeConstruction, ProjectionPlan, RecordSchema, RecordTypeRef, SchemaIr, StableIdNamespace,
-    StableIdNamespaceTag, StableIdentity, ValueType, checked_len,
+    BindingPlan, CommandPlan, CommitCheckPlan, ContractBundle, EventConstruction, ExpressionArena,
+    ExpressionKind, FieldExpression, Instruction, IrValidationError, LineageEntryState,
+    McpCommandNameRegistryV2, OutcomeConstruction, ProjectionPlan, RecordSchema, RecordTypeRef,
+    SchemaIr, StableIdNamespace, StableIdNamespaceTag, StableIdentity, ValueType, checked_len,
 };
 
 /// Closed compatibility classes from least to most restrictive.
@@ -600,6 +600,8 @@ struct CompatibleSchemaChanges {
     added_entities: BTreeSet<EntityTypeId>,
     optional_entities: BTreeSet<EntityTypeId>,
     optional_events: BTreeSet<riffdb_types::EventTypeId>,
+    required_fields: BTreeMap<EntityTypeId, BTreeSet<FieldId>>,
+    added_entity_invariants: BTreeMap<EntityTypeId, BTreeSet<InvariantId>>,
 }
 
 fn compare_schema(
@@ -624,6 +626,40 @@ fn compare_schema(
             findings,
         ) {
             compatible.optional_entities.insert(entity.id());
+        }
+        let old_fields = old
+            .record()
+            .fields()
+            .iter()
+            .map(|field| field.id())
+            .collect::<BTreeSet<_>>();
+        let required_fields = entity
+            .record()
+            .fields()
+            .iter()
+            .filter(|field| !old_fields.contains(&field.id()) && !field.value_type().is_optional())
+            .map(|field| field.id())
+            .collect::<BTreeSet<_>>();
+        if !required_fields.is_empty() {
+            compatible
+                .required_fields
+                .insert(entity.id(), required_fields);
+        }
+        let old_invariants = old
+            .invariants()
+            .iter()
+            .map(|invariant| invariant.id())
+            .collect::<BTreeSet<_>>();
+        let added_invariants = entity
+            .invariants()
+            .iter()
+            .filter(|invariant| !old_invariants.contains(&invariant.id()))
+            .map(|invariant| invariant.id())
+            .collect::<BTreeSet<_>>();
+        if !added_invariants.is_empty() {
+            compatible
+                .added_entity_invariants
+                .insert(entity.id(), added_invariants);
         }
         if old.primary_key_fields() != entity.primary_key_fields()
             || old.primary_key() != entity.primary_key()
@@ -1016,7 +1052,6 @@ fn command_semantics_compatible(
         || old.required_capability() != next.required_capability()
         || old.bindings().len() != next.bindings().len()
         || old.root_validation_reads().len() != next.root_validation_reads().len()
-        || old.commit_checks().len() != next.commit_checks().len()
     {
         return Ok(false);
     }
@@ -1025,8 +1060,20 @@ fn command_semantics_compatible(
     else {
         return Ok(false);
     };
-    let (allowed_fields, allowed_complete) =
+    let Some(added_commit_checks) = added_commit_checks(old, next, compatible_schema)? else {
+        return Ok(false);
+    };
+    let (mut allowed_fields, mut allowed_complete) =
         added_requirement_dependencies(next, &added_requirements)?;
+    for check in added_commit_checks {
+        let dependencies = next.expressions().dependencies(check.predicate())?;
+        for binding in dependencies.complete_bindings() {
+            allowed_complete[binding.get() as usize] = true;
+        }
+        for (binding, field) in dependencies.bound_fields() {
+            allowed_fields[binding.get() as usize].insert(*field);
+        }
+    }
     for (left, right) in old.bindings().iter().zip(next.bindings()) {
         let index = right.id().get() as usize;
         if !bindings_compatible(
@@ -1070,21 +1117,61 @@ fn command_semantics_compatible(
             }
         }
     }
-    for (left, right) in old.commit_checks().iter().zip(next.commit_checks()) {
-        if left.invariant_id() != right.invariant_id()
-            || left.source_bindings() != right.source_bindings()
-            || left.root_validation_reads() != right.root_validation_reads()
-            || !expression_trees_equal(
-                old.expressions(),
-                left.predicate(),
-                next.expressions(),
-                right.predicate(),
-            )?
-        {
-            return Ok(false);
-        }
-    }
     Ok(true)
+}
+
+fn added_commit_checks<'a>(
+    old: &CommandPlan,
+    next: &'a CommandPlan,
+    compatible_schema: &CompatibleSchemaChanges,
+) -> Result<Option<Vec<&'a CommitCheckPlan>>, IrValidationError> {
+    let mut old_index = 0usize;
+    let mut added = Vec::new();
+    for check in next.commit_checks() {
+        if let Some(prior) = old.commit_checks().get(old_index)
+            && commit_checks_equal(old, prior, next, check)?
+        {
+            old_index += 1;
+            continue;
+        }
+        let owner = check
+            .source_bindings()
+            .first()
+            .and_then(|binding| next.bindings().get(binding.get() as usize))
+            .map(BindingPlan::entity_type);
+        let allowed = owner.is_some_and(|entity| {
+            check.source_bindings().iter().all(|binding| {
+                next.bindings()
+                    .get(binding.get() as usize)
+                    .is_some_and(|binding| binding.entity_type() == entity)
+            }) && compatible_schema
+                .added_entity_invariants
+                .get(&entity)
+                .is_some_and(|invariants| invariants.contains(&check.invariant_id()))
+        });
+        if !allowed {
+            return Ok(None);
+        }
+        added.push(check);
+    }
+    Ok((old_index == old.commit_checks().len()).then_some(added))
+}
+
+fn commit_checks_equal(
+    old_plan: &CommandPlan,
+    old: &CommitCheckPlan,
+    next_plan: &CommandPlan,
+    next: &CommitCheckPlan,
+) -> Result<bool, IrValidationError> {
+    Ok(old.invariant_id() == next.invariant_id()
+        && old.source_bindings() == next.source_bindings()
+        && old.root_validation_reads() == next.root_validation_reads()
+        && expression_trees_equal(
+            old_plan.expressions(),
+            old.predicate(),
+            next_plan.expressions(),
+            next.predicate(),
+        )?)
 }
 
 fn instructions_compatible<'a>(
@@ -1103,9 +1190,21 @@ fn instructions_compatible<'a>(
     let mut added = Vec::new();
     while next_index < next.instructions().len() {
         let next_instruction = &next.instructions()[next_index];
-        if matches!(next_instruction, Instruction::Require { reject, .. }
-            if !old_outcomes.contains(&reject.outcome_id()))
-        {
+        let added_requirement = matches!(next_instruction, Instruction::Require { reject, .. }
+            if !old_outcomes.contains(&reject.outcome_id()));
+        let added_required_field_initializer = match next_instruction {
+            Instruction::SetField { binding, field, .. } => next
+                .bindings()
+                .get(binding.get() as usize)
+                .and_then(|binding| {
+                    compatible_schema
+                        .required_fields
+                        .get(&binding.entity_type())
+                })
+                .is_some_and(|fields| fields.contains(field)),
+            _ => false,
+        };
+        if added_requirement || added_required_field_initializer {
             added.push(next_instruction);
             next_index += 1;
             continue;
@@ -1216,17 +1315,21 @@ fn added_requirement_dependencies(
         Ok(())
     };
     for instruction in added {
-        let Instruction::Require {
-            predicate, reject, ..
-        } = instruction
-        else {
-            return Err(IrValidationError::InvalidInstructionStream {
-                reason: "compatibility-added instruction is not a requirement",
-            });
-        };
-        include(*predicate)?;
-        for field in reject.payload().fields() {
-            include(field.expression())?;
+        match instruction {
+            Instruction::Require {
+                predicate, reject, ..
+            } => {
+                include(*predicate)?;
+                for field in reject.payload().fields() {
+                    include(field.expression())?;
+                }
+            }
+            Instruction::SetField { value, .. } => include(*value)?,
+            _ => {
+                return Err(IrValidationError::InvalidInstructionStream {
+                    reason: "compatibility-added instruction is not an approved addition",
+                });
+            }
         }
     }
     Ok((fields, complete))

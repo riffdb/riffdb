@@ -6,13 +6,13 @@ The latter is `RequiresMigration`: the candidate is valid, but deployment does
 not activate it without an exact migration artifact for the active parent.
 
 The current implementation compiles and locks Gate A migration artifacts,
-checks them through the public administration service, and can apply them
-through the internal redb execution and startup-recovery path: complete
+checks and applies them through the public administration service, and drives
+the internal redb execution and startup-recovery path: complete
 preflight, an immutable automatic backup, bounded staged transforms, projection
 rebuild, complete validation, atomic publication, and automatic
 post-publication rollback. `riffdb migration plan` remains a local read-only
-inspection. WP-410 supplies the populated installed-application proof for the
-complete Gate-A workflow; that gate is not yet complete.
+inspection. The retained TicketDesk Gate-A fixture proves the populated
+installed-application workflow across every additive change class.
 
 ## Semantic execution boundary
 
@@ -34,6 +34,14 @@ work does not advance entity versions. Migration never assigns an application
 commit sequence or rewrites command, outcome, event, provenance, idempotency,
 outbox, or retained history bytes. Only successful final cutover assigns one
 administration sequence in the reference model.
+
+Every transformed row archives its exact displaced predecessor envelope under
+the migration operation identity in the successor database. Startup accepts a
+version transition without an application commit only when that archive row,
+the permanent migration record, the migration hash, the predecessor chain tip,
+and the successor schema binding all agree. Missing or inconsistent evidence
+fails closed. These archives preserve historical continuity; they are not a
+second writable entity store.
 
 These semantics are not a hidden storage-edit API. The memory stage remains the
 reference model. The redb implementation realizes the same sealed ports; only

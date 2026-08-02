@@ -29,8 +29,9 @@ use riffdb_storage_api::{
     UniqueIndexTarget, UniqueOccupancyKind,
 };
 use riffdb_types::{
-    CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId,
-    FrontierPosition, hash_contract_bundle, hash_query_module,
+    CommitSequence, ContractBundleHash, ContractLineage, ContractMigrationOperationId,
+    ContractVersion, DatabaseId, FrontierPosition, MigrationBundleHash, hash_contract_bundle,
+    hash_query_module,
 };
 
 use crate::codec::{self, IdempotencyRecordV1};
@@ -117,7 +118,12 @@ struct StructuralCursors {
 /// One entity's continuity state built from a single forward COMMITS pass.
 struct EntityChain {
     version: riffdb_types::EntityVersion,
-    hash: riffdb_types::EntityRecordHash,
+    /// Known after a command commit; absent after an archive-proven migration transition.
+    hash: Option<riffdb_types::EntityRecordHash>,
+    /// Exact successor bundle expected while the terminal hash is not commit-derived.
+    expected_bundle: Option<ContractBundleHash>,
+    /// Next ordered migration that may affect this entity.
+    migration_cursor: usize,
     intact: bool,
     /// Set when an ENTITIES structural row claims this chain.
     consumed: bool,
@@ -205,6 +211,7 @@ pub struct RedbStructuralEvidenceSession {
 /// Cached single-pass entity history state for the ENTITIES structural phase.
 struct EntityChainState {
     chains: std::collections::BTreeMap<riffdb_storage_api::EntityTarget, EntityChain>,
+    migrations: Vec<EntityMigrationEvidence>,
     /// Bounded sample of commit-referenced targets with no ENTITIES slot left.
     orphan_targets: Vec<riffdb_storage_api::EntityTarget>,
     /// True once any target was rejected from the map (capacity = entity_count).
@@ -212,6 +219,16 @@ struct EntityChainState {
     /// [`RedbStructuralEvidenceSession::queue_entity_orphan_findings`].
     overflow: bool,
     orphans_queued: bool,
+}
+
+/// Bounded permanent evidence for one successful catalog migration.
+#[derive(Clone, Copy)]
+struct EntityMigrationEvidence {
+    operation_id: ContractMigrationOperationId,
+    migration: MigrationBundleHash,
+    candidate: ContractBundleHash,
+    successor_frontier: Option<CommitSequence>,
+    administration_sequence: riffdb_types::AdministrationSequence,
 }
 
 impl fmt::Debug for RedbStructuralEvidenceSession {
@@ -1047,9 +1064,25 @@ impl RedbStructuralEvidenceSession {
         }
         // Per-entity verdict only — overflow/orphans do not mask intact rows.
         let history_ok = {
-            let state = self.entity_chains.as_ref().ok_or_else(invariant)?;
-            match state.chains.get(record.target()) {
-                Some(chain) => entity_row_matches_chain(chain, &record),
+            let state = self.entity_chains.as_mut().ok_or_else(invariant)?;
+            let migrations = &state.migrations;
+            match state.chains.get_mut(record.target()) {
+                Some(chain) => {
+                    while chain.intact && chain.migration_cursor < migrations.len() {
+                        match advance_entity_chain_through_migration(
+                            transaction,
+                            migrations,
+                            record.target(),
+                            chain,
+                            None,
+                        )? {
+                            MigrationAdvance::Advanced | MigrationAdvance::Skipped => {}
+                            MigrationAdvance::Invalid => chain.intact = false,
+                            MigrationAdvance::Exhausted => break,
+                        }
+                    }
+                    entity_row_matches_chain(chain, &record)
+                }
                 None => false,
             }
         };
@@ -1268,7 +1301,7 @@ fn inspect_table_row_from_bytes(
         23 => inspect_contract_migration_journal_row(key, value),
         24 => inspect_contract_migration_record_row(key, value),
         25 => inspect_contract_write_retirement_row(key, value),
-        26 => inspect_retired_entity_row(key, value),
+        26 => inspect_retired_entity_row(transaction, key, value),
         _ => Err(invariant()),
     }
 }
@@ -1313,6 +1346,7 @@ fn inspect_contract_write_retirement_row(
 }
 
 fn inspect_retired_entity_row(
+    transaction: &ReadTransaction,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -1321,6 +1355,26 @@ fn inspect_retired_entity_row(
         .map_err(crate::error::codec_error)?;
     if decoded.value().operation_id() != operation || decoded.value().original_target() != &target {
         return Err(corrupt());
+    }
+    let migrations = transaction
+        .open_table(CONTRACT_MIGRATIONS)
+        .map_err(table_error)?;
+    let operation_key = keys::encode_contract_migration_operation_key(operation);
+    let Some(migration) = migrations
+        .get(operation_key.as_slice())
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+    };
+    let migration =
+        riffdb_storage_api::proto_codec::decode_contract_migration_record_v1(migration.value())
+            .map_err(crate::error::codec_error)?;
+    if migration.value().operation_id() != operation
+        || migration.value().artifacts().migration() != decoded.value().migration()
+    {
+        return Ok(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        )));
     }
     Ok(None)
 }
@@ -3592,6 +3646,7 @@ fn build_entity_chains(
     transaction: &ReadTransaction,
     entity_count: u64,
 ) -> Result<EntityChainState, StorageError> {
+    let migrations = load_entity_migration_evidence(transaction)?;
     let table = transaction.open_table(COMMITS).map_err(table_error)?;
     let mut chains: std::collections::BTreeMap<riffdb_storage_api::EntityTarget, EntityChain> =
         std::collections::BTreeMap::new();
@@ -3599,7 +3654,11 @@ fn build_entity_chains(
     let mut overflow = false;
     let entity_count_usize = usize::try_from(entity_count).unwrap_or(usize::MAX);
     for entry in table.iter().map_err(precommit_storage_error)? {
-        let (_physical_key, value) = entry.map_err(precommit_storage_error)?;
+        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
+        let Ok(commit_sequence) = keys::decode_application_sequence_key(physical_key.value())
+        else {
+            continue;
+        };
         // Decode failures are covered by inspect_commit_row (MalformedRecord /
         // CrossLinkMismatch). Continue so sibling entities still validate.
         let Ok(references) = decoded(codec::decode_commit_entity_references(value.value())) else {
@@ -3620,7 +3679,9 @@ fn build_entity_chains(
                         target_key,
                         EntityChain {
                             version: reference.entity_version(),
-                            hash: reference.post_image_hash(),
+                            hash: Some(reference.post_image_hash()),
+                            expected_bundle: None,
+                            migration_cursor: 0,
                             intact: false,
                             consumed: false,
                         },
@@ -3631,12 +3692,30 @@ fn build_entity_chains(
                 continue;
             }
             if let Some(chain) = chains.get_mut(&target_key) {
-                let expected_next = chain.version.checked_next();
+                let mut expected_next = chain.version.checked_next();
+                while chain.intact && expected_next != Some(reference.entity_version()) {
+                    match advance_entity_chain_through_migration(
+                        transaction,
+                        &migrations,
+                        &target_key,
+                        chain,
+                        Some(commit_sequence),
+                    )? {
+                        MigrationAdvance::Advanced | MigrationAdvance::Skipped => {
+                            expected_next = chain.version.checked_next();
+                        }
+                        MigrationAdvance::Invalid => {
+                            chain.intact = false;
+                        }
+                        MigrationAdvance::Exhausted => break,
+                    }
+                }
                 if expected_next != Some(reference.entity_version()) {
                     chain.intact = false;
                 }
                 chain.version = reference.entity_version();
-                chain.hash = reference.post_image_hash();
+                chain.hash = Some(reference.post_image_hash());
+                chain.expected_bundle = None;
             } else if chains.len() < entity_count_usize {
                 // INVARIANT: slot allocation assumes ENTITIES rows are never
                 // removed (true today). If a removal path appears, a dead
@@ -3646,7 +3725,9 @@ fn build_entity_chains(
                     target_key,
                     EntityChain {
                         version: reference.entity_version(),
-                        hash: reference.post_image_hash(),
+                        hash: Some(reference.post_image_hash()),
+                        expected_bundle: None,
+                        migration_cursor: 0,
                         intact,
                         consumed: false,
                     },
@@ -3659,10 +3740,126 @@ fn build_entity_chains(
     }
     Ok(EntityChainState {
         chains,
+        migrations,
         orphan_targets,
         overflow,
         orphans_queued: false,
     })
+}
+
+fn load_entity_migration_evidence(
+    transaction: &ReadTransaction,
+) -> Result<Vec<EntityMigrationEvidence>, StorageError> {
+    let table = transaction
+        .open_table(CONTRACT_MIGRATIONS)
+        .map_err(table_error)?;
+    let mut migrations = Vec::new();
+    for entry in table.iter().map_err(precommit_storage_error)? {
+        let (key, value) = entry.map_err(precommit_storage_error)?;
+        let Ok(operation_id) = keys::decode_contract_migration_operation_key(key.value()) else {
+            continue;
+        };
+        let Ok(record) =
+            riffdb_storage_api::proto_codec::decode_contract_migration_record_v1(value.value())
+        else {
+            continue;
+        };
+        if record.value().operation_id() != operation_id {
+            continue;
+        }
+        migrations.push(EntityMigrationEvidence {
+            operation_id,
+            migration: record.value().artifacts().migration(),
+            candidate: record.value().artifacts().candidate(),
+            successor_frontier: record.value().successor_frontier(),
+            administration_sequence: record.value().administration_sequence(),
+        });
+    }
+    migrations.sort_unstable_by_key(|migration| migration.administration_sequence);
+    if migrations
+        .windows(2)
+        .any(|pair| pair[0].administration_sequence == pair[1].administration_sequence)
+    {
+        migrations.clear();
+    }
+    Ok(migrations)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MigrationAdvance {
+    Advanced,
+    Skipped,
+    Invalid,
+    Exhausted,
+}
+
+fn advance_entity_chain_through_migration(
+    transaction: &ReadTransaction,
+    migrations: &[EntityMigrationEvidence],
+    target: &riffdb_storage_api::EntityTarget,
+    chain: &mut EntityChain,
+    before_commit: Option<CommitSequence>,
+) -> Result<MigrationAdvance, StorageError> {
+    let Some(migration) = migrations.get(chain.migration_cursor).copied() else {
+        return Ok(MigrationAdvance::Exhausted);
+    };
+    if before_commit.is_some_and(|commit| {
+        migration
+            .successor_frontier
+            .is_some_and(|frontier| frontier >= commit)
+    }) {
+        return Ok(MigrationAdvance::Exhausted);
+    }
+    chain.migration_cursor = chain
+        .migration_cursor
+        .checked_add(1)
+        .ok_or_else(limit_exceeded)?;
+
+    let retained = transaction
+        .open_table(RETIRED_ENTITIES)
+        .map_err(table_error)?;
+    let retained_key =
+        keys::encode_retired_entity_key(migration.operation_id, target).map_err(|_| invariant())?;
+    let Some(encoded) = retained
+        .get(retained_key.as_slice())
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(MigrationAdvance::Skipped);
+    };
+    let Ok(retired) =
+        riffdb_storage_api::proto_codec::decode_retired_entity_record_v1(encoded.value())
+    else {
+        return Ok(MigrationAdvance::Invalid);
+    };
+    if retired.value().operation_id() != migration.operation_id
+        || retired.value().migration() != migration.migration
+        || retired.value().original_target() != target
+    {
+        return Ok(MigrationAdvance::Invalid);
+    }
+    let Ok(source) = codec::decode_entity_record_v1(retired.value().original_entity_envelope())
+    else {
+        return Ok(MigrationAdvance::Invalid);
+    };
+    if source.value().target() != target || source.value().entity_version() != chain.version {
+        return Ok(MigrationAdvance::Invalid);
+    }
+    let predecessor_matches = match (chain.hash, chain.expected_bundle) {
+        (Some(hash), _) => riffdb_storage_api::derive_entity_record_hash_v1(source.value())
+            .is_ok_and(|actual| actual == hash),
+        (None, Some(bundle)) => source.value().schema_binding().bundle_hash() == bundle,
+        (None, None) => false,
+    };
+    if !predecessor_matches {
+        return Ok(MigrationAdvance::Invalid);
+    }
+    let Some(next_version) = chain.version.checked_next() else {
+        return Ok(MigrationAdvance::Invalid);
+    };
+    chain.version = next_version;
+    chain.hash = None;
+    chain.expected_bundle = Some(migration.candidate);
+    Ok(MigrationAdvance::Advanced)
 }
 
 fn record_orphan_target(
@@ -3702,8 +3899,12 @@ fn entity_row_matches_chain(
 ) -> bool {
     chain.intact
         && chain.version == current.entity_version()
-        && riffdb_storage_api::derive_entity_record_hash_v1(current)
-            .is_ok_and(|hash| hash == chain.hash)
+        && match (chain.hash, chain.expected_bundle) {
+            (Some(expected), _) => riffdb_storage_api::derive_entity_record_hash_v1(current)
+                .is_ok_and(|hash| hash == expected),
+            (None, Some(expected)) => current.schema_binding().bundle_hash() == expected,
+            (None, None) => false,
+        }
 }
 
 #[cfg(test)]
@@ -6635,7 +6836,9 @@ contract RedbMigration version 1 {
                 target,
                 EntityChain {
                     version: EntityVersion::first(),
-                    hash: riffdb_types::EntityRecordHash::from_bytes([0xab; 32]),
+                    hash: Some(riffdb_types::EntityRecordHash::from_bytes([0xab; 32])),
+                    expected_bundle: None,
+                    migration_cursor: 0,
                     intact: true,
                     consumed: false,
                 },
