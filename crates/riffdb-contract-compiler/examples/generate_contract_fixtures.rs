@@ -334,6 +334,103 @@ fn generate_migration_fixtures(output_root: &std::path::Path) -> Result<(), Box<
     )?;
     generate_gate_a_application_fixture(&root)?;
     generate_gate_b_application_fixture(&root)?;
+    generate_gate_c_application_fixture(&root)?;
+    Ok(())
+}
+
+fn generate_gate_c_application_fixture(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
+    const PARENT: &str = r#"contract KeyOwnershipRows version 1 {
+  entity Organization {
+    key (tenant_id: uuid, organization_id: uuid)
+    field name: string<64>
+    index by_name (tenant_id, name, organization_id)
+    unique organization_name (tenant_id, name)
+  }
+  entity Ticket {
+    key (tenant_id: uuid, ticket_id: uuid)
+    field organization_id: uuid
+    field title: string<64>
+    reference organization (tenant_id, organization_id) -> Organization(tenant_id, organization_id)
+  }
+  aggregate Organizations { root Organization partition_by tenant_id conflict_key (tenant_id, organization_id) }
+  aggregate Tickets { root Ticket partition_by tenant_id conflict_key (tenant_id, ticket_id) }
+}
+"#;
+    const CANDIDATE: &str = r#"contract KeyOwnershipRows version 2 {
+  entity Organization {
+    key (tenant_id: uuid, region: string<16>, organization_id: uuid)
+    field name: string<64>
+    index by_name (region, name, tenant_id, organization_id)
+    unique organization_name (region, name)
+  }
+  entity Ticket {
+    key (tenant_id: uuid, organization_region: string<16>, ticket_id: uuid)
+    field organization_id: uuid
+    field title: string<64>
+    reference organization (tenant_id, organization_region, organization_id) -> Organization(tenant_id, region, organization_id)
+  }
+  aggregate Organizations { root Organization partition_by region conflict_key (region, organization_id) }
+  aggregate Tickets { root Ticket partition_by organization_region conflict_key (organization_region, ticket_id) }
+}
+"#;
+    const MIGRATION: &str = r#"migration KeyOwnershipRows from 1 to 2 {
+  transform Organization {
+    set region = "global"
+    rekey (old.tenant_id, "global", old.organization_id)
+  }
+  transform Ticket {
+    set organization_region = "global"
+    rekey (old.tenant_id, "global", old.ticket_id)
+  }
+  acknowledge repartition Organizations
+  acknowledge conflict Organizations
+  acknowledge repartition Tickets
+  acknowledge conflict Tickets
+}
+"#;
+
+    let parent = compile_contract_source(PARENT)?;
+    let (candidate, migration) =
+        compile_contract_migration_successor(CANDIDATE, MIGRATION, &parent)?;
+    let fixture = root.join("gate-c/key-ownership");
+    fs::create_dir_all(&fixture)?;
+    fs::write(fixture.join("parent.riff"), PARENT)?;
+    fs::write(fixture.join("successor.riff"), CANDIDATE)?;
+    fs::write(fixture.join("v1-to-v2.riffm"), MIGRATION)?;
+    fs::write(
+        fixture.join("parent.contract.bundle"),
+        parent.canonical_bytes(),
+    )?;
+    fs::write(
+        fixture.join("successor.contract.bundle"),
+        candidate.canonical_bytes(),
+    )?;
+    fs::write(
+        fixture.join("v1-to-v2.migration.bundle"),
+        migration.canonical_bytes(),
+    )?;
+    fs::write(
+        fixture.join("exact-artifacts.txt"),
+        format!(
+            concat!(
+                "schema=riffdb.gate-c-exact-artifacts/v1\n",
+                "lineage={}\n",
+                "parent_version={}\n",
+                "parent_bundle_hash={}\n",
+                "successor_version={}\n",
+                "successor_bundle_hash={}\n",
+                "migration_bundle_hash={}\n",
+                "step_count={}\n"
+            ),
+            migration.lineage().as_str(),
+            migration.parent_version().get(),
+            hex(migration.parent_bundle_hash().as_bytes()),
+            migration.candidate_version().get(),
+            hex(migration.candidate_bundle_hash().as_bytes()),
+            hex(migration.bundle_hash().as_bytes()),
+            migration.steps().len(),
+        ),
+    )?;
     Ok(())
 }
 

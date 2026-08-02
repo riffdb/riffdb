@@ -294,7 +294,7 @@ impl MigrationRowMutation {
         rebuilt_indexes: Vec<StoredIndexEntryV2>,
     ) -> Result<Self, MigrationStageError> {
         if post_image.as_ref().is_some_and(|post_image| {
-            expected.source().target() != post_image.target()
+            expected.source().target().entity_type_id() != post_image.target().entity_type_id()
                 || expected.source().entity_version().checked_next()
                     != Some(post_image.entity_version())
         }) || post_image.is_none() && rebuilt_indexes.is_empty()
@@ -335,6 +335,12 @@ impl MigrationRowMutation {
     #[must_use]
     pub const fn retires_source(&self) -> bool {
         self.retire_source
+    }
+
+    /// Whether every predecessor index entry for the source target is removed.
+    #[must_use]
+    pub const fn removes_source_indexes(&self) -> bool {
+        self.post_image.is_some() || self.retire_source
     }
 
     /// Borrows complete successor index post-images.

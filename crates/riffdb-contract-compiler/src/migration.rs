@@ -3,16 +3,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_contract_ir::{
-    CompatibilityClass, CompatibilityCode, ContractBundle, ContractCandidateV1, EntitySchema,
-    ExpressionArena, FieldSchema, MigrationBundleV1, MigrationConversionV1, MigrationEnumMappingV1,
-    MigrationExpressionV1, MigrationResourceBoundsV1, MigrationStepId, MigrationStepKindV1,
-    MigrationStepV1, StableIdNamespaceTag, StableIdentity, StableIdentityRename, ValueType,
-    compare_successor,
+    CompatibilityClass, CompatibilityCode, CompatibilityEntry, ContractBundle, ContractCandidateV1,
+    EntitySchema, ExpressionArena, FieldSchema, MigrationBundleV1, MigrationConversionV1,
+    MigrationEnumMappingV1, MigrationExpressionV1, MigrationResourceBoundsV1, MigrationStepId,
+    MigrationStepKindV1, MigrationStepV1, StableIdNamespaceTag, StableIdentity,
+    StableIdentityRename, ValueType, compare_successor,
 };
 use riffdb_contract_syntax::ast::Expression;
 use riffdb_contract_syntax::{
-    MigrationDeclaration, MigrationDocument, MigrationEnumMap, MigrationIdentityKind,
-    MigrationTransformClause,
+    MigrationAcknowledgementKind, MigrationDeclaration, MigrationDocument, MigrationEnumMap,
+    MigrationIdentityKind, MigrationTransformClause,
 };
 use riffdb_contract_syntax::{Span, Spanned, parse_migration};
 use riffdb_types::{ContractVersion, EntityTypeId, FieldId, hash_migration_source};
@@ -83,10 +83,12 @@ pub fn compile_migration_source(
     )
     .and_then(|direct| compare_successor(parent, direct))
     .map_err(|_| semantic_error(CompilerDiagnosticCode::InvalidIr, document.migration.span))?;
-    if direct_compatibility.entries().iter().any(|entry| {
-        entry.class() == CompatibilityClass::Incompatible
-            && entry.code() != CompatibilityCode::RemovedIdentity
-    }) {
+    if !supported_gate_c_schema_diff(parent, candidate)
+        || direct_compatibility
+            .entries()
+            .iter()
+            .any(|entry| !migration_compatible_finding(entry, parent, candidate))
+    {
         return Err(semantic_error(
             CompilerDiagnosticCode::UnsupportedMigrationStep,
             document.migration.span,
@@ -94,9 +96,13 @@ pub fn compile_migration_source(
     }
 
     let required_fields = required_field_additions(parent, candidate);
+    let required_rekeys = required_rekey_entities(parent, candidate);
+    let required_acknowledgements = required_aggregate_acknowledgements(parent, candidate);
     let symbols = migration_symbols(candidate);
     let mut proofs = BTreeMap::<(EntityTypeId, FieldId), (Span, MigrationStepKindV1)>::new();
     let mut declaration_steps = Vec::<(String, MigrationStepKindV1)>::new();
+    let mut rekeys = BTreeMap::<EntityTypeId, Span>::new();
+    let mut acknowledgements = BTreeMap::<(AggregateAcknowledgement, u32), Span>::new();
     let mut covered_removed = BTreeSet::<StableIdentity>::new();
     let mut diagnostics = Vec::new();
 
@@ -217,6 +223,63 @@ pub fn compile_migration_source(
             }
             continue;
         }
+        if let MigrationDeclaration::Acknowledge(acknowledgement) = &declaration.value {
+            let Some(aggregate) = candidate
+                .schema()
+                .aggregates()
+                .iter()
+                .find(|aggregate| aggregate.name() == acknowledgement.aggregate.value)
+            else {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::UnnecessaryMigrationProof,
+                    acknowledgement.aggregate.span,
+                ));
+                continue;
+            };
+            let key = (
+                AggregateAcknowledgement::from(acknowledgement.kind.value),
+                aggregate.id().get(),
+            );
+            if !required_acknowledgements.contains(&key) {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::UnnecessaryMigrationProof,
+                    declaration.span,
+                ));
+                continue;
+            }
+            if let Some(first) = acknowledgements.insert(key, declaration.span) {
+                diagnostics.push(
+                    CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::DuplicateMigrationProof,
+                        declaration.span,
+                    )
+                    .with_related_span(first),
+                );
+                continue;
+            }
+            let (order, kind) = match acknowledgement.kind.value {
+                MigrationAcknowledgementKind::Repartition => (
+                    "70",
+                    MigrationStepKindV1::AcknowledgeRepartition {
+                        aggregate: aggregate.id(),
+                    },
+                ),
+                MigrationAcknowledgementKind::Aggregate => (
+                    "71",
+                    MigrationStepKindV1::AcknowledgeAggregate {
+                        aggregate: aggregate.id(),
+                    },
+                ),
+                MigrationAcknowledgementKind::Conflict => (
+                    "72",
+                    MigrationStepKindV1::AcknowledgeConflict {
+                        aggregate: aggregate.id(),
+                    },
+                ),
+            };
+            declaration_steps.push((format!("{order}:{:010}", aggregate.id().get()), kind));
+            continue;
+        }
         let MigrationDeclaration::Transform(transform) = &declaration.value else {
             diagnostics.push(CompilerDiagnostic::new(
                 CompilerDiagnosticCode::UnsupportedMigrationStep,
@@ -334,6 +397,54 @@ pub fn compile_migration_source(
                 }
                 continue;
             }
+            if let MigrationTransformClause::Rekey(expressions) = &clause.value {
+                if !required_rekeys.contains(&candidate_entity.id()) {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::UnnecessaryMigrationProof,
+                        clause.span,
+                    ));
+                    continue;
+                }
+                if let Some(first) = rekeys.insert(candidate_entity.id(), clause.span) {
+                    diagnostics.push(
+                        CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::DuplicateMigrationProof,
+                            clause.span,
+                        )
+                        .with_related_span(first),
+                    );
+                    continue;
+                }
+                if expressions.len() != candidate_entity.primary_key_fields().len() {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::InvalidMigrationExpression,
+                        clause.span,
+                    ));
+                    continue;
+                }
+                let lowered = expressions
+                    .iter()
+                    .zip(candidate_entity.primary_key_fields())
+                    .map(|(expression, field)| {
+                        let expected = candidate_entity
+                            .record()
+                            .field(*field)
+                            .expect("checked candidate primary-key field");
+                        lower_set_expression(expression, parent_entity, expected, &symbols)
+                    })
+                    .collect::<Result<Vec<_>, _>>();
+                match lowered {
+                    Ok(components) => declaration_steps.push((
+                        format!("14:{:010}", candidate_entity.id().get()),
+                        MigrationStepKindV1::RekeyEntity {
+                            entity: candidate_entity.id(),
+                            components,
+                        },
+                    )),
+                    Err(diagnostic) => diagnostics.push(diagnostic),
+                }
+                continue;
+            }
             let MigrationTransformClause::Set { field, expression } = &clause.value else {
                 diagnostics.push(CompilerDiagnostic::new(
                     CompilerDiagnosticCode::UnsupportedMigrationStep,
@@ -398,6 +509,22 @@ pub fn compile_migration_source(
             ));
         }
     }
+    for entity in &required_rekeys {
+        if !rekeys.contains_key(entity) {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::MissingMigrationProof,
+                document.migration.span,
+            ));
+        }
+    }
+    for required in &required_acknowledgements {
+        if !acknowledgements.contains_key(required) {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::MissingMigrationProof,
+                document.migration.span,
+            ));
+        }
+    }
     for identity in removed_identities(parent, candidate) {
         if !covered_removed.contains(&identity) {
             diagnostics.push(CompilerDiagnostic::new(
@@ -456,6 +583,232 @@ pub fn compile_migration_source(
         MigrationResourceBoundsV1::fixed(),
     )
     .map_err(|_| semantic_error(CompilerDiagnosticCode::InvalidIr, document.migration.span))
+}
+
+fn supported_gate_c_schema_diff(parent: &ContractBundle, candidate: &ContractBundle) -> bool {
+    for old in parent.schema().entities() {
+        let Some(next) = candidate.schema().entity(old.id()) else {
+            continue;
+        };
+        if old.invariants().iter().any(|invariant| {
+            next.invariants()
+                .iter()
+                .find(|candidate| candidate.id() == invariant.id())
+                != Some(invariant)
+        }) || old.indexes().iter().any(|index| {
+            next.indexes()
+                .iter()
+                .all(|candidate| candidate.id() != index.id())
+        }) {
+            return false;
+        }
+    }
+    for old in parent.schema().aggregates() {
+        let Some(next) = candidate.schema().aggregate(old.id()) else {
+            if candidate.schema().entity(old.root()).is_some() {
+                return false;
+            }
+            continue;
+        };
+        if old.invariants().iter().any(|invariant| {
+            next.invariants()
+                .iter()
+                .find(|candidate| candidate.id() == invariant.id())
+                != Some(invariant)
+        }) {
+            return false;
+        }
+    }
+    let relationship_retired = parent.schema().relationships().iter().any(|old| {
+        candidate.schema().entity(old.source_entity()).is_some()
+            && candidate.schema().relationships().iter().all(|next| {
+                next.source_entity() != old.source_entity() || next.name() != old.name()
+            })
+    });
+    let unique_retired = parent.schema().unique_keys().iter().any(|old| {
+        candidate.schema().entity(old.source_entity()).is_some()
+            && candidate.schema().unique_keys().iter().all(|next| {
+                next.source_entity() != old.source_entity() || next.name() != old.name()
+            })
+    });
+    !relationship_retired && !unique_retired
+}
+
+fn migration_compatible_finding(
+    entry: &CompatibilityEntry,
+    parent: &ContractBundle,
+    candidate: &ContractBundle,
+) -> bool {
+    entry.class() != CompatibilityClass::Incompatible
+        || matches!(
+            entry.code(),
+            CompatibilityCode::RemovedIdentity
+                | CompatibilityCode::KeyLayoutChange
+                | CompatibilityCode::PartitionConflictChange
+                | CompatibilityCode::InvariantChange
+        )
+        || (entry.code() == CompatibilityCode::ExistingPlanChange
+            && migration_coupled_command(entry.affected_path(), parent, candidate))
+}
+
+fn migration_coupled_command(
+    affected_path: &str,
+    parent: &ContractBundle,
+    candidate: &ContractBundle,
+) -> bool {
+    let Some(command) = candidate
+        .commands()
+        .iter()
+        .find(|command| affected_path == format!("command:{}", command.command_id().get()))
+    else {
+        return false;
+    };
+    let Some(old_command) = parent.command(command.command_id()) else {
+        return false;
+    };
+    if old_command.locality().aggregate_id() != command.locality().aggregate_id() {
+        return true;
+    }
+    let aggregate_id = command.locality().aggregate_id();
+    if parent.schema().aggregate(aggregate_id) != candidate.schema().aggregate(aggregate_id) {
+        return true;
+    }
+    old_command
+        .bindings()
+        .iter()
+        .chain(command.bindings())
+        .any(|binding| migration_changes_entity_semantics(parent, candidate, binding.entity_type()))
+}
+
+fn migration_changes_entity_semantics(
+    parent: &ContractBundle,
+    candidate: &ContractBundle,
+    entity: EntityTypeId,
+) -> bool {
+    let Some(old) = parent.schema().entity(entity) else {
+        return false;
+    };
+    let Some(next) = candidate.schema().entity(entity) else {
+        return true;
+    };
+    if old.primary_key_fields() != next.primary_key_fields()
+        || old.primary_key() != next.primary_key()
+        || parent
+            .schema()
+            .aggregate_for_entity(entity)
+            .map(|value| value.id())
+            != candidate
+                .schema()
+                .aggregate_for_entity(entity)
+                .map(|value| value.id())
+    {
+        return true;
+    }
+    let relationship_changed = parent
+        .schema()
+        .relationships()
+        .iter()
+        .filter(|value| value.source_entity() == entity || value.target_entity() == entity)
+        .any(|old| {
+            candidate.schema().relationships().iter().all(|next| {
+                next.source_entity() != old.source_entity()
+                    || next.name() != old.name()
+                    || next != old
+            })
+        })
+        || candidate
+            .schema()
+            .relationships()
+            .iter()
+            .filter(|value| value.source_entity() == entity || value.target_entity() == entity)
+            .any(|next| {
+                parent.schema().relationships().iter().all(|old| {
+                    old.source_entity() != next.source_entity()
+                        || old.name() != next.name()
+                        || old != next
+                })
+            });
+    let unique_changed = parent
+        .schema()
+        .unique_keys()
+        .iter()
+        .filter(|value| value.source_entity() == entity)
+        .any(|old| {
+            candidate.schema().unique_keys().iter().all(|next| {
+                next.source_entity() != old.source_entity()
+                    || next.name() != old.name()
+                    || next != old
+            })
+        })
+        || candidate
+            .schema()
+            .unique_keys()
+            .iter()
+            .filter(|value| value.source_entity() == entity)
+            .any(|next| {
+                parent.schema().unique_keys().iter().all(|old| {
+                    old.source_entity() != next.source_entity()
+                        || old.name() != next.name()
+                        || old != next
+                })
+            });
+    relationship_changed || unique_changed
+}
+
+fn required_rekey_entities(
+    parent: &ContractBundle,
+    candidate: &ContractBundle,
+) -> BTreeSet<EntityTypeId> {
+    candidate
+        .schema()
+        .entities()
+        .iter()
+        .filter_map(|entity| {
+            let old = parent.schema().entity(entity.id())?;
+            (old.primary_key_fields() != entity.primary_key_fields()
+                || old.primary_key() != entity.primary_key())
+            .then_some(entity.id())
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+enum AggregateAcknowledgement {
+    Repartition,
+    Aggregate,
+    Conflict,
+}
+
+impl From<MigrationAcknowledgementKind> for AggregateAcknowledgement {
+    fn from(value: MigrationAcknowledgementKind) -> Self {
+        match value {
+            MigrationAcknowledgementKind::Repartition => Self::Repartition,
+            MigrationAcknowledgementKind::Aggregate => Self::Aggregate,
+            MigrationAcknowledgementKind::Conflict => Self::Conflict,
+        }
+    }
+}
+
+fn required_aggregate_acknowledgements(
+    parent: &ContractBundle,
+    candidate: &ContractBundle,
+) -> BTreeSet<(AggregateAcknowledgement, u32)> {
+    let mut required = BTreeSet::new();
+    for aggregate in candidate.schema().aggregates() {
+        let Some(old) = parent.schema().aggregate(aggregate.id()) else {
+            continue;
+        };
+        if old.root() != aggregate.root() || old.children() != aggregate.children() {
+            required.insert((AggregateAcknowledgement::Aggregate, aggregate.id().get()));
+        }
+        if old.keys() != aggregate.keys() {
+            // The v1 aggregate key arena is shared by partition and conflict
+            // derivation, so an exact key-template change acknowledges both.
+            required.insert((AggregateAcknowledgement::Repartition, aggregate.id().get()));
+            required.insert((AggregateAcknowledgement::Conflict, aggregate.id().get()));
+        }
+    }
+    required
 }
 
 fn validate_identity(
@@ -800,6 +1153,21 @@ fn derive_successor_steps(
     candidate: &ContractBundle,
     ordered: &mut Vec<(String, MigrationStepKindV1)>,
 ) {
+    let rekeyed = required_rekey_entities(parent, candidate);
+    let mut reindexed = rekeyed.clone();
+    for aggregate in candidate.schema().aggregates() {
+        let Some(old) = parent.schema().aggregate(aggregate.id()) else {
+            continue;
+        };
+        if old.root() != aggregate.root()
+            || old.children() != aggregate.children()
+            || old.keys() != aggregate.keys()
+        {
+            reindexed.extend(
+                std::iter::once(aggregate.root()).chain(aggregate.children().iter().copied()),
+            );
+        }
+    }
     for entity in candidate.schema().entities() {
         let Some(old) = parent.schema().entity(entity.id()) else {
             continue;
@@ -807,10 +1175,12 @@ fn derive_successor_steps(
         let old_indexes = old
             .indexes()
             .iter()
-            .map(|index| index.id())
-            .collect::<BTreeSet<_>>();
+            .map(|index| (index.id(), index))
+            .collect::<BTreeMap<_, _>>();
         for index in entity.indexes() {
-            if !old_indexes.contains(&index.id()) {
+            if reindexed.contains(&entity.id())
+                || old_indexes.get(&index.id()).is_none_or(|old| *old != index)
+            {
                 ordered.push((
                     format!("20:{:010}:{:010}", entity.id().get(), index.id().get()),
                     MigrationStepKindV1::RebuildIndex {
@@ -847,14 +1217,18 @@ fn derive_successor_steps(
         .schema()
         .relationships()
         .iter()
-        .map(|value| (value.source_entity(), value.name()))
-        .collect::<BTreeSet<_>>();
+        .map(|value| ((value.source_entity(), value.name()), value))
+        .collect::<BTreeMap<_, _>>();
     for relationship in candidate.schema().relationships() {
         if parent
             .schema()
             .entity(relationship.source_entity())
             .is_some()
-            && !old_relationships.contains(&(relationship.source_entity(), relationship.name()))
+            && (old_relationships
+                .get(&(relationship.source_entity(), relationship.name()))
+                .is_none_or(|old| *old != relationship)
+                || rekeyed.contains(&relationship.source_entity())
+                || rekeyed.contains(&relationship.target_entity()))
         {
             ordered.push((
                 format!(
@@ -874,11 +1248,14 @@ fn derive_successor_steps(
         .schema()
         .unique_keys()
         .iter()
-        .map(|value| (value.source_entity(), value.name()))
-        .collect::<BTreeSet<_>>();
+        .map(|value| ((value.source_entity(), value.name()), value))
+        .collect::<BTreeMap<_, _>>();
     for unique in candidate.schema().unique_keys() {
         if parent.schema().entity(unique.source_entity()).is_some()
-            && !old_unique.contains(&(unique.source_entity(), unique.name()))
+            && (rekeyed.contains(&unique.source_entity())
+                || old_unique
+                    .get(&(unique.source_entity(), unique.name()))
+                    .is_none_or(|old| *old != unique))
         {
             ordered.push((
                 format!(

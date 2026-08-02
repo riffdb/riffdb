@@ -53,5 +53,9 @@ harness = false
 name = "contract_migration_gate_b"
 path = "../../tests/migrations/contract_migration_gate_b.rs"
 
+[[test]]
+name = "contract_migration_gate_c"
+path = "../../tests/migrations/contract_migration_gate_c.rs"
+
 [lints]
 workspace = true

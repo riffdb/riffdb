@@ -1,0 +1,16 @@
+contract KeyOwnershipRows version 2 {
+  entity Organization {
+    key (tenant_id: uuid, region: string<16>, organization_id: uuid)
+    field name: string<64>
+    index by_name (region, name, tenant_id, organization_id)
+    unique organization_name (region, name)
+  }
+  entity Ticket {
+    key (tenant_id: uuid, organization_region: string<16>, ticket_id: uuid)
+    field organization_id: uuid
+    field title: string<64>
+    reference organization (tenant_id, organization_region, organization_id) -> Organization(tenant_id, region, organization_id)
+  }
+  aggregate Organizations { root Organization partition_by region conflict_key (region, organization_id) }
+  aggregate Tickets { root Ticket partition_by organization_region conflict_key (organization_region, ticket_id) }
+}

@@ -47,8 +47,11 @@ descriptor, wire, SDK, CLI JSONL, authorization, redaction, and negative MCP
 fixtures. WP-411 adds `gate-b/structural-rows/`, including exact ledger-v2
 rename aliases, fresh-ID replacement, checked conversion, exhaustive enum map,
 and their generated artifact identities. Its incomplete-map diagnostic is under
-`source/invalid/`. WP-412 adds Gate-C cases without changing an existing V1 tag
-or fixture meaning. WP-413 freezes the installed upgrade matrix.
+`source/invalid/`. WP-412 adds `gate-c/key-ownership/`, whose exact artifacts
+combine two rekeys, repartition and conflict acknowledgements, a relationship
+target change, unique validation, and complete index rematerialization without
+changing an existing V1 tag or fixture meaning. WP-413 freezes the installed
+upgrade matrix.
 
 ## Change-Class Gates
 

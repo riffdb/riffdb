@@ -6570,8 +6570,8 @@ work_packages:
   allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
     crates/riffdb-contract-compiler/**, crates/riffdb-catalog/**, crates/riffdb-storage-api/**,
     crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**, crates/riffdb-commit/**,
-    crates/riffdb-service/**, crates/riffdb-cli/**, fixtures/migrations/**, tests/migrations/**, fuzz/**,
-    scripts/**, docs/**, examples/**]
+    crates/riffdb-service/**, crates/riffdb-cli/**, crates/riffdb-testkit/Cargo.toml,
+    fixtures/migrations/**, tests/migrations/**, fuzz/**, scripts/**, docs/**, examples/**]
   deliverables:
   - Deterministic rekey/repartition plans, dependency DAG, new authoritative index/key materialization, and old-key archive
   - Complete target collision, relationship, aggregate, partition, conflict, and old-plan compatibility validation
