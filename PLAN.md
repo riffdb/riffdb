@@ -1057,6 +1057,14 @@ P8 is owned by WP-414 through WP-421 under accepted ADR-0080. It extends the
 existing authoritative event and named-query model rather than adding a second
 broker, raw CDC surface, or event-sourcing requirement.
 
+The dependency sequence is fixed. WP-415 completes the partitioned-event
+catalog and replay base. WP-416 then joins that base with migration-owned
+Application Source V3/Lock V4 and introduces Source V4/Lock V5. WP-417 durable
+consumers and WP-418 live queries may proceed in parallel only after WP-416.
+WP-419 joins both public models for generation and adapters, WP-420 adds
+contextual work and causal reaction, and WP-421 alone closes P8. The rendered
+dependency graph is sourced from `diagrams/reactive_work_package_dag.dot`.
+
 - Contract events may opt into application streaming with compiler-proved
   partition fields. A generic integrity-checked route index provides bounded
   partition-order replay while catalog remains the sole historical payload
@@ -1078,6 +1086,23 @@ broker, raw CDC surface, or event-sourcing requirement.
 - Rust, TypeScript, Python, CLI, and MCP share one API-neutral model. Browsers
   connect through generated application-owned SSE relay code and never receive
   database capabilities.
+
+Shared semantic and format ownership is frozen in
+`fixtures/reactive/FORMAT-FREEZE.md`. In particular, storage owns operational
+consumer records but not payload materialization or policy; catalog owns
+historical event materialization but not transport presentation; service owns
+safe envelopes, cursors, causation tokens, and transition coordination; query
+compiler/module crates own reactive plans and generated identity; and commit
+alone may append causal provenance with an application command. Every EVT,
+CON, LIVE, and CTX requirement has one accountable implementation package and
+WP-421 final evidence in that manifest.
+
+WP-417 and WP-418 are safe to develop concurrently only after their shared
+WP-416 identities, permissions, module hashes, partition model, and API-neutral
+error vocabulary are merged. Their branches must not independently add public
+Proto fields, cursor framing, or duplicate operation/principal types. WP-419
+must consume both service models as a join package rather than normalize
+differences in generated clients.
 
 RT-1 through RT-5 close in WP-421 with TicketDesk browser, worker, and agent
 acceptance. Connectors, declarative reactions, cross-partition streams, physical
