@@ -1,0 +1,27 @@
+contract EaMigrationDogfood version 2 {
+  enum AttentionOrigin { Linear, GitHub, Email, AttentionOther }
+  enum EmailDraftStatus { Proposed, Approved, Discarded, Sent }
+  entity AttentionItem {
+    key (workspace_id: uuid, attention_id: uuid)
+    field origin: AttentionOrigin
+    field external_id: string<128>
+    field source_channel: string<32>
+    index by_origin (workspace_id, origin, attention_id)
+  }
+  entity EmailDraft {
+    key (workspace_id: uuid, draft_id: uuid)
+    field thread_external_id: string<128>
+    field body: string<4096>
+    field status: EmailDraftStatus
+  }
+  aggregate AttentionItems {
+    root AttentionItem
+    partition_by workspace_id
+    conflict_key (workspace_id, attention_id)
+  }
+  aggregate EmailDrafts {
+    root EmailDraft
+    partition_by workspace_id
+    conflict_key (workspace_id, draft_id)
+  }
+}

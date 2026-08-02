@@ -1,0 +1,13 @@
+contract EaMigrationDogfood version 1 {
+  enum AttentionOrigin { Linear, GitHub, AttentionOther }
+  entity AttentionItem {
+    key (workspace_id: uuid, attention_id: uuid)
+    field origin: AttentionOrigin
+    field external_id: string<128>
+  }
+  aggregate AttentionItems {
+    root AttentionItem
+    partition_by workspace_id
+    conflict_key (workspace_id, attention_id)
+  }
+}

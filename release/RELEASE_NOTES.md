@@ -20,6 +20,16 @@ Public protocol, durable records, storage, contract IR, generated schema, MCP,
 CLI output, backup manifest, and maintenance receipt formats are versioned.
 Downgrade is unsupported. See `docs/compatibility.md`.
 
+## Offline Contract Migration
+
+P7 supports exact direct-parent offline migration through additive, structural,
+and key/ownership gates. The operator workflow is available only through the
+shared gRPC administration service, Rust SDK, and CLI with dedicated
+`MigrateContract` authority. It retains an immutable pre-migration backup,
+publishes a fully validated same-filesystem stage atomically, fences predecessor
+writes, and recovers or rolls back before readiness. MCP and application
+drivers intentionally expose no migration operation.
+
 ## License
 
 RiffDB is offered under either the MIT License or the Apache License, Version

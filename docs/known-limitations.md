@@ -41,9 +41,9 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - Contract migration source, canonical artifacts, Application Source V3, Lock
   V4, read-only planning, dedicated authorization, public check/apply/status,
   Gate-A through Gate-C memory semantics, redb staged execution, crash recovery,
-  and automatic rollback are implemented. Gate C deliberately rejects key
-  swaps and predecessor-occupied rekey chains. The populated installed-
-  application proof and migration performance baseline are not yet complete.
+  automatic rollback, populated public workflow, direct-parent compatibility
+  matrix, and bounded migration baseline are implemented. Gate C deliberately
+  rejects key swaps and predecessor-occupied rekey chains.
   Migration administration is intentionally absent from MCP,
   TypeScript, Python, and generated application clients.
 - The POC authorization model uses opaque local capability tokens, not a

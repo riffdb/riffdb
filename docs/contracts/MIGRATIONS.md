@@ -1,5 +1,8 @@
 # Contract migrations
 
+The complete P7 operational and compatibility evidence is indexed in
+[Contract Migration Acceptance](../operations/CONTRACT-MIGRATION-ACCEPTANCE.md).
+
 RiffDB distinguishes a compatible contract successor from one that requires
 existing authoritative rows or derived state to be checked or transformed.
 The latter is `RequiresMigration`: the candidate is valid, but deployment does

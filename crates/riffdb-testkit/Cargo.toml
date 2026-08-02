@@ -25,6 +25,7 @@ riffdb-cli = { path = "../riffdb-cli", version = "0.1.0", default-features = fal
 riffdb-client-rust = { path = "../riffdb-client-rust", version = "0.1.0", default-features = false }
 riffdb-commit = { path = "../riffdb-commit", version = "0.1.0", default-features = false }
 riffdb-proto = { path = "../riffdb-proto", version = "0.1.0", default-features = false }
+riffdb-query-module = { path = "../riffdb-query-module", version = "0.1.0", default-features = false }
 riffdb-server = { path = "../riffdb-server", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
 riffdb-storage-memory = { path = "../riffdb-storage-memory", version = "0.1.0", default-features = false }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
@@ -56,6 +57,10 @@ path = "../../tests/migrations/contract_migration_gate_b.rs"
 [[test]]
 name = "contract_migration_gate_c"
 path = "../../tests/migrations/contract_migration_gate_c.rs"
+
+[[test]]
+name = "contract_migration_acceptance"
+path = "../../tests/migrations/contract_migration_acceptance.rs"
 
 [lints]
 workspace = true
