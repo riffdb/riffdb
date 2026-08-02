@@ -4,6 +4,8 @@
 
 mod auth_adapters;
 mod clocks;
+mod columnar_adapter;
+mod columnar_worker;
 mod config;
 mod cursor;
 mod daemon;

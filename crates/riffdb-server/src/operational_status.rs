@@ -14,6 +14,7 @@ use riffdb_service::{
     RequestControl, port_completion_channel,
 };
 
+use crate::columnar_worker::{ColumnarWorkerReadiness, ColumnarWorkerStatus};
 use crate::notifications::{FirstCommitNotificationHub, NotificationStatusError};
 use crate::outbox_adapter::{NoDestinationOutboxHealth, OutboxDerivedReadiness};
 use crate::projection_worker::{ProjectionWorkerReadiness, ProjectionWorkerStatus};
@@ -35,6 +36,7 @@ pub(crate) struct ProductionOperationalStatusPort {
     notifications: FirstCommitNotificationHub,
     outbox: NoDestinationOutboxHealth,
     projection: ProjectionWorkerStatus,
+    columnar: ColumnarWorkerStatus,
 }
 
 impl ProductionOperationalStatusPort {
@@ -44,6 +46,7 @@ impl ProductionOperationalStatusPort {
         notifications: FirstCommitNotificationHub,
         outbox: NoDestinationOutboxHealth,
         projection: ProjectionWorkerStatus,
+        columnar: ColumnarWorkerStatus,
     ) -> Self {
         Self {
             allocator_capacity,
@@ -51,6 +54,7 @@ impl ProductionOperationalStatusPort {
             notifications,
             outbox,
             projection,
+            columnar,
         }
     }
 }
@@ -70,6 +74,7 @@ impl OperationalStatusPort for ProductionOperationalStatusPort {
                 runtime: self.runtime.clone(),
                 outbox: self.outbox.clone(),
                 projection: self.projection.clone(),
+                columnar: self.columnar.clone(),
             })
                 as BoxPortCapacityPermit<(), OperationalHealthSnapshot, OperationalStatusError>
         });
@@ -115,6 +120,7 @@ struct OperationalHealthPermit {
     runtime: RuntimeRoutingState,
     outbox: NoDestinationOutboxHealth,
     projection: ProjectionWorkerStatus,
+    columnar: ColumnarWorkerStatus,
 }
 
 impl PortCapacityPermit<(), OperationalHealthSnapshot, OperationalStatusError>
@@ -130,6 +136,7 @@ impl PortCapacityPermit<(), OperationalHealthSnapshot, OperationalStatusError>
             self.runtime.stop_reason(),
             self.outbox.readiness(),
             self.projection.readiness(),
+            self.columnar.readiness(),
         );
         let (completion, receipt) = port_completion_channel();
         completion.complete(result);
@@ -142,6 +149,7 @@ fn required_health_snapshot(
     runtime_stop: Option<RuntimeStopReason>,
     outbox: OutboxDerivedReadiness,
     projection: ProjectionWorkerReadiness,
+    columnar: ColumnarWorkerReadiness,
 ) -> Result<OperationalHealthSnapshot, OperationalStatusError> {
     let runtime_running = runtime_stop.is_none();
     let storage_status = required_component_status(runtime_running);
@@ -156,6 +164,8 @@ fn required_health_snapshot(
     } else {
         HealthComponentStatus::Degraded
     };
+    // The Projection component reports the worst of the two projection-family
+    // workers: the durable projection worker and the columnar apply worker.
     let projection_status = match (runtime_running, projection) {
         (false, _) | (true, ProjectionWorkerReadiness::Stopped) => {
             HealthComponentStatus::Unavailable
@@ -165,6 +175,14 @@ fn required_health_snapshot(
             HealthComponentStatus::Degraded
         }
     };
+    let columnar_status = match (runtime_running, columnar) {
+        (false, _) | (true, ColumnarWorkerReadiness::Stopped) => HealthComponentStatus::Unavailable,
+        (true, ColumnarWorkerReadiness::Ready) => HealthComponentStatus::Healthy,
+        (true, ColumnarWorkerReadiness::Starting | ColumnarWorkerReadiness::Degraded) => {
+            HealthComponentStatus::Degraded
+        }
+    };
+    let projection_status = worst_component_status(projection_status, columnar_status);
 
     OperationalHealthSnapshot::new(vec![
         ComponentHealth::new(HealthComponentKind::AuthoritativeStorage, storage_status),
@@ -181,6 +199,21 @@ const fn required_component_status(healthy: bool) -> HealthComponentStatus {
         HealthComponentStatus::Healthy
     } else {
         HealthComponentStatus::Unavailable
+    }
+}
+
+const fn worst_component_status(
+    left: HealthComponentStatus,
+    right: HealthComponentStatus,
+) -> HealthComponentStatus {
+    match (left, right) {
+        (HealthComponentStatus::Unavailable, _) | (_, HealthComponentStatus::Unavailable) => {
+            HealthComponentStatus::Unavailable
+        }
+        (HealthComponentStatus::Degraded, _) | (_, HealthComponentStatus::Degraded) => {
+            HealthComponentStatus::Degraded
+        }
+        _ => HealthComponentStatus::Healthy,
     }
 }
 
@@ -264,6 +297,12 @@ mod tests {
         NoDestinationOutboxHealth::new(OutboxRecoveryReadiness::Ready)
     }
 
+    fn ready_columnar() -> ColumnarWorkerStatus {
+        let status = ColumnarWorkerStatus::new();
+        status.publish(ColumnarWorkerReadiness::Ready);
+        status
+    }
+
     #[test]
     fn every_allocator_state_has_the_required_canonical_health_shape() {
         for (capacity, coordinator_status) in [
@@ -289,6 +328,7 @@ mod tests {
                 None,
                 OutboxDerivedReadiness::Ready,
                 ProjectionWorkerReadiness::Ready,
+                ColumnarWorkerReadiness::Ready,
             )
             .expect("fixed health shape");
             assert_eq!(snapshot.components().len(), 5);
@@ -335,6 +375,62 @@ mod tests {
         }
     }
 
+    /// Falsifiability: drop the `worst_component_status` fold (report only the
+    /// durable projection worker) and every non-Ready columnar row below fails.
+    #[test]
+    fn columnar_worker_readiness_folds_into_the_projection_component() {
+        for (columnar, expected) in [
+            (
+                ColumnarWorkerReadiness::Ready,
+                HealthComponentStatus::Healthy,
+            ),
+            (
+                ColumnarWorkerReadiness::Starting,
+                HealthComponentStatus::Degraded,
+            ),
+            (
+                ColumnarWorkerReadiness::Degraded,
+                HealthComponentStatus::Degraded,
+            ),
+            (
+                ColumnarWorkerReadiness::Stopped,
+                HealthComponentStatus::Unavailable,
+            ),
+        ] {
+            let snapshot = required_health_snapshot(
+                ValidatedAllocatorCapacity::Available,
+                None,
+                OutboxDerivedReadiness::Ready,
+                ProjectionWorkerReadiness::Ready,
+                columnar,
+            )
+            .expect("fixed health shape");
+            assert_eq!(
+                status(&snapshot, HealthComponentKind::Projection),
+                expected,
+                "columnar readiness {columnar:?} must fold into the Projection component"
+            );
+            assert_eq!(
+                status(&snapshot, HealthComponentKind::AuthoritativeStorage),
+                HealthComponentStatus::Healthy,
+                "the fold stays confined to the Projection component"
+            );
+        }
+        // The fold is worst-of in both directions.
+        let snapshot = required_health_snapshot(
+            ValidatedAllocatorCapacity::Available,
+            None,
+            OutboxDerivedReadiness::Ready,
+            ProjectionWorkerReadiness::Degraded,
+            ColumnarWorkerReadiness::Ready,
+        )
+        .expect("fixed health shape");
+        assert_eq!(
+            status(&snapshot, HealthComponentKind::Projection),
+            HealthComponentStatus::Degraded
+        );
+    }
+
     #[test]
     fn every_runtime_stop_reason_fails_all_required_components_closed() {
         for reason in [
@@ -351,6 +447,7 @@ mod tests {
                 Some(reason),
                 OutboxDerivedReadiness::Ready,
                 ProjectionWorkerReadiness::Ready,
+                ColumnarWorkerReadiness::Ready,
             )
             .expect("fixed health shape");
             assert!(
@@ -372,6 +469,7 @@ mod tests {
             FirstCommitNotificationHub::new(None, runtime.clone()),
             ready_outbox(),
             ready_projection(),
+            ready_columnar(),
         );
         let permit = port
             .reserve_health(&live_control())
@@ -418,6 +516,7 @@ mod tests {
             FirstCommitNotificationHub::new(None, runtime),
             ready_outbox(),
             ready_projection(),
+            ready_columnar(),
         );
         let permit = port
             .reserve_statistics(&live_control())
@@ -445,6 +544,7 @@ mod tests {
             notifications.clone(),
             ready_outbox(),
             ready_projection(),
+            ready_columnar(),
         );
         let permit = port
             .reserve_statistics(&live_control())
@@ -486,6 +586,7 @@ mod tests {
             notifications.clone(),
             ready_outbox(),
             ready_projection(),
+            ready_columnar(),
         );
         let permit = port
             .reserve_statistics(&live_control())
@@ -511,6 +612,7 @@ mod tests {
             FirstCommitNotificationHub::new(None, runtime),
             ready_outbox(),
             ready_projection(),
+            ready_columnar(),
         );
         let (cancelled, cancellation) =
             RequestControl::new(Instant::now() + Duration::from_secs(30));
@@ -551,6 +653,7 @@ mod tests {
             FirstCommitNotificationHub::new(None, runtime),
             ready_outbox(),
             ready_projection(),
+            ready_columnar(),
         );
         assert_eq!(
             format!("{port:?}"),

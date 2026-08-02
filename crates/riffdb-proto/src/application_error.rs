@@ -214,6 +214,9 @@ const fn proto_operation(value: DomainOperation) -> app_v1::ApplicationOperation
         DomainOperation::GetQueryModule => app_v1::ApplicationOperation::GetQueryModule,
         DomainOperation::ExecuteCommand => app_v1::ApplicationOperation::ExecuteCommand,
         DomainOperation::BatchCommand => app_v1::ApplicationOperation::BatchCommand,
+        DomainOperation::ExecuteProjectedQuery => {
+            app_v1::ApplicationOperation::ExecuteProjectedQuery
+        }
     }
 }
 
@@ -229,6 +232,9 @@ fn domain_operation(value: i32) -> Result<DomainOperation, ApplicationErrorWireE
         Ok(app_v1::ApplicationOperation::GetQueryModule) => Ok(DomainOperation::GetQueryModule),
         Ok(app_v1::ApplicationOperation::ExecuteCommand) => Ok(DomainOperation::ExecuteCommand),
         Ok(app_v1::ApplicationOperation::BatchCommand) => Ok(DomainOperation::BatchCommand),
+        Ok(app_v1::ApplicationOperation::ExecuteProjectedQuery) => {
+            Ok(DomainOperation::ExecuteProjectedQuery)
+        }
         Ok(app_v1::ApplicationOperation::Unspecified) | Err(_) => {
             Err(ApplicationErrorWireError::UnknownOperation)
         }

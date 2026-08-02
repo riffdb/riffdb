@@ -457,7 +457,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 38);
+    assert_eq!(methods.len(), 39);
     let descriptor_order = descriptors
         .file
         .iter()
@@ -482,6 +482,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "ExecuteQuery",
             "DeployQueryModule",
             "GetQueryModule",
+            "ExecuteProjectedQuery",
         ]
     );
     assert_eq!(

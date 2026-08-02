@@ -546,3 +546,36 @@ app_message!(
         }
     }
 );
+app_message!(
+    app_v1::ExecuteProjectedQueryRequest,
+    Some(riffdb_errors::ApplicationOperation::ExecuteProjectedQuery),
+    MAX_PUBLIC_REQUEST_BYTES,
+    100,
+    &[],
+    &[],
+    |value: &app_v1::ExecuteProjectedQueryRequest| {
+        validate_request_id(&value.request_id)?;
+        value.contract.as_ref().map_or(Ok(()), validate_selector)?;
+        if !valid_name(&value.projection_name) {
+            return Err(PublicWireError::InvalidBytes);
+        }
+        if value.request.is_none() {
+            return Err(PublicWireError::MissingRequiredField);
+        }
+        Ok(())
+    }
+);
+app_message!(
+    app_v1::ExecuteProjectedQueryResponse,
+    None,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    6,
+    &[],
+    &[1, 2, 3, 4, 5, 6],
+    |value: &app_v1::ExecuteProjectedQueryResponse| {
+        if value.outcome.is_none() {
+            return Err(PublicWireError::MissingRequiredField);
+        }
+        Ok(())
+    }
+);

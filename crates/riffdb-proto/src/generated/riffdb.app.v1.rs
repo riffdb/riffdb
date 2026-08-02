@@ -290,6 +290,191 @@ pub struct GetQueryModuleResponse {
     #[prost(message, repeated, tag = "2")]
     pub queries: ::prost::alloc::vec::Vec<NamedQuerySource>,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FreshnessPolicyProto {
+    #[prost(oneof = "freshness_policy_proto::Policy", tags = "1, 2, 3")]
+    pub policy: ::core::option::Option<freshness_policy_proto::Policy>,
+}
+/// Nested message and enum types in `FreshnessPolicyProto`.
+pub mod freshness_policy_proto {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Policy {
+        #[prost(message, tag = "1")]
+        Causal(super::FreshnessCausal),
+        #[prost(message, tag = "2")]
+        Bounded(super::FreshnessBounded),
+        #[prost(message, tag = "3")]
+        Available(super::FreshnessAvailable),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FreshnessCausal {
+    #[prost(bytes = "vec", tag = "1")]
+    pub commit_token: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub max_wait_nanos: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FreshnessBounded {
+    #[prost(uint64, tag = "1")]
+    pub max_lag_sequences: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FreshnessAvailable {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProjectedPredicate {
+    #[prost(string, tag = "1")]
+    pub field: ::prost::alloc::string::String,
+    #[prost(oneof = "projected_predicate::Kind", tags = "2, 3")]
+    pub kind: ::core::option::Option<projected_predicate::Kind>,
+}
+/// Nested message and enum types in `ProjectedPredicate`.
+pub mod projected_predicate {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Kind {
+        #[prost(message, tag = "2")]
+        Eq(super::super::super::v1::Value),
+        #[prost(message, tag = "3")]
+        Range(super::ProjectedRange),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProjectedRange {
+    #[prost(message, optional, tag = "1")]
+    pub lower: ::core::option::Option<super::super::v1::Value>,
+    #[prost(message, optional, tag = "2")]
+    pub upper: ::core::option::Option<super::super::v1::Value>,
+    #[prost(bool, tag = "3")]
+    pub lower_inclusive: bool,
+    #[prost(bool, tag = "4")]
+    pub upper_inclusive: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProjectedOrder {
+    #[prost(string, tag = "1")]
+    pub field: ::prost::alloc::string::String,
+    #[prost(bool, tag = "2")]
+    pub descending: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProjectedAggregate {
+    #[prost(string, tag = "1")]
+    pub field: ::prost::alloc::string::String,
+    #[prost(enumeration = "ProjectedAggregateOp", tag = "2")]
+    pub op: i32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProjectedQueryBody {
+    #[prost(string, repeated, tag = "1")]
+    pub select: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "2")]
+    pub org_scope: ::core::option::Option<super::super::v1::Value>,
+    #[prost(message, repeated, tag = "3")]
+    pub predicates: ::prost::alloc::vec::Vec<ProjectedPredicate>,
+    #[prost(message, repeated, tag = "4")]
+    pub order: ::prost::alloc::vec::Vec<ProjectedOrder>,
+    #[prost(uint32, optional, tag = "5")]
+    pub limit: ::core::option::Option<u32>,
+    #[prost(string, repeated, tag = "6")]
+    pub group_by: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "7")]
+    pub aggregate: ::core::option::Option<ProjectedAggregate>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecuteProjectedQueryRequest {
+    #[prost(message, optional, tag = "1")]
+    pub contract: ::core::option::Option<ContractSelector>,
+    #[prost(string, tag = "2")]
+    pub projection_name: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "3")]
+    pub request: ::core::option::Option<ProjectedQueryBody>,
+    #[prost(message, optional, tag = "4")]
+    pub freshness: ::core::option::Option<FreshnessPolicyProto>,
+    #[prost(bytes = "vec", tag = "100")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProjectedQueryReady {
+    #[prost(string, repeated, tag = "1")]
+    pub fields: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag = "2")]
+    pub rows: ::prost::alloc::vec::Vec<ResultRecord>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub frontier: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub head: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub commit_token: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProjectedQueryLagging {
+    #[prost(bytes = "vec", tag = "1")]
+    pub required: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub current: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub head: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, optional, tag = "4")]
+    pub lag_sequences: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "5")]
+    pub retry_after_nanos: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProjectedQueryBuilding {
+    #[prost(bytes = "vec", tag = "1")]
+    pub applied_through: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub head: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProjectedQueryRebuilding {
+    #[prost(enumeration = "ProjectedRebuildingReason", tag = "1")]
+    pub reason: i32,
+    #[prost(uint64, tag = "2")]
+    pub progress_applied: u64,
+    #[prost(uint64, tag = "3")]
+    pub progress_total: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProjectedQueryDegraded {
+    #[prost(enumeration = "ProjectedDegradedReason", tag = "1")]
+    pub reason: i32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub current: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProjectedQueryInvalid {
+    #[prost(bytes = "vec", tag = "1")]
+    pub expected_fingerprint: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub found_fingerprint: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecuteProjectedQueryResponse {
+    #[prost(
+        oneof = "execute_projected_query_response::Outcome",
+        tags = "1, 2, 3, 4, 5, 6"
+    )]
+    pub outcome: ::core::option::Option<execute_projected_query_response::Outcome>,
+}
+/// Nested message and enum types in `ExecuteProjectedQueryResponse`.
+pub mod execute_projected_query_response {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Outcome {
+        #[prost(message, tag = "1")]
+        Ready(super::ProjectedQueryReady),
+        #[prost(message, tag = "2")]
+        Lagging(super::ProjectedQueryLagging),
+        #[prost(message, tag = "3")]
+        Building(super::ProjectedQueryBuilding),
+        #[prost(message, tag = "4")]
+        Rebuilding(super::ProjectedQueryRebuilding),
+        #[prost(message, tag = "5")]
+        Degraded(super::ProjectedQueryDegraded),
+        #[prost(message, tag = "6")]
+        Invalid(super::ProjectedQueryInvalid),
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ApplicationOperation {
@@ -302,6 +487,7 @@ pub enum ApplicationOperation {
     GetQueryModule = 6,
     ExecuteCommand = 7,
     BatchCommand = 8,
+    ExecuteProjectedQuery = 9,
 }
 impl ApplicationOperation {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -319,6 +505,9 @@ impl ApplicationOperation {
             Self::GetQueryModule => "APPLICATION_OPERATION_GET_QUERY_MODULE",
             Self::ExecuteCommand => "APPLICATION_OPERATION_EXECUTE_COMMAND",
             Self::BatchCommand => "APPLICATION_OPERATION_BATCH_COMMAND",
+            Self::ExecuteProjectedQuery => {
+                "APPLICATION_OPERATION_EXECUTE_PROJECTED_QUERY"
+            }
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -333,6 +522,9 @@ impl ApplicationOperation {
             "APPLICATION_OPERATION_GET_QUERY_MODULE" => Some(Self::GetQueryModule),
             "APPLICATION_OPERATION_EXECUTE_COMMAND" => Some(Self::ExecuteCommand),
             "APPLICATION_OPERATION_BATCH_COMMAND" => Some(Self::BatchCommand),
+            "APPLICATION_OPERATION_EXECUTE_PROJECTED_QUERY" => {
+                Some(Self::ExecuteProjectedQuery)
+            }
             _ => None,
         }
     }
@@ -700,6 +892,115 @@ impl QueryModuleDeploymentOutcome {
             "QUERY_MODULE_DEPLOYMENT_OUTCOME_CONTRACT_UNAVAILABLE" => {
                 Some(Self::ContractUnavailable)
             }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ProjectedAggregateOp {
+    Unspecified = 0,
+    Count = 1,
+    Sum = 2,
+    Min = 3,
+    Max = 4,
+}
+impl ProjectedAggregateOp {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PROJECTED_AGGREGATE_OP_UNSPECIFIED",
+            Self::Count => "PROJECTED_AGGREGATE_OP_COUNT",
+            Self::Sum => "PROJECTED_AGGREGATE_OP_SUM",
+            Self::Min => "PROJECTED_AGGREGATE_OP_MIN",
+            Self::Max => "PROJECTED_AGGREGATE_OP_MAX",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PROJECTED_AGGREGATE_OP_UNSPECIFIED" => Some(Self::Unspecified),
+            "PROJECTED_AGGREGATE_OP_COUNT" => Some(Self::Count),
+            "PROJECTED_AGGREGATE_OP_SUM" => Some(Self::Sum),
+            "PROJECTED_AGGREGATE_OP_MIN" => Some(Self::Min),
+            "PROJECTED_AGGREGATE_OP_MAX" => Some(Self::Max),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ProjectedRebuildingReason {
+    Unspecified = 0,
+    ReplayBudgetExceeded = 1,
+    ExplicitRebuild = 2,
+    StateIntegrityFailure = 3,
+}
+impl ProjectedRebuildingReason {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PROJECTED_REBUILDING_REASON_UNSPECIFIED",
+            Self::ReplayBudgetExceeded => {
+                "PROJECTED_REBUILDING_REASON_REPLAY_BUDGET_EXCEEDED"
+            }
+            Self::ExplicitRebuild => "PROJECTED_REBUILDING_REASON_EXPLICIT_REBUILD",
+            Self::StateIntegrityFailure => {
+                "PROJECTED_REBUILDING_REASON_STATE_INTEGRITY_FAILURE"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PROJECTED_REBUILDING_REASON_UNSPECIFIED" => Some(Self::Unspecified),
+            "PROJECTED_REBUILDING_REASON_REPLAY_BUDGET_EXCEEDED" => {
+                Some(Self::ReplayBudgetExceeded)
+            }
+            "PROJECTED_REBUILDING_REASON_EXPLICIT_REBUILD" => Some(Self::ExplicitRebuild),
+            "PROJECTED_REBUILDING_REASON_STATE_INTEGRITY_FAILURE" => {
+                Some(Self::StateIntegrityFailure)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ProjectedDegradedReason {
+    Unspecified = 0,
+    ApplyLagSlo = 1,
+    MaintenanceBacklog = 2,
+    PartialInventory = 3,
+}
+impl ProjectedDegradedReason {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PROJECTED_DEGRADED_REASON_UNSPECIFIED",
+            Self::ApplyLagSlo => "PROJECTED_DEGRADED_REASON_APPLY_LAG_SLO",
+            Self::MaintenanceBacklog => "PROJECTED_DEGRADED_REASON_MAINTENANCE_BACKLOG",
+            Self::PartialInventory => "PROJECTED_DEGRADED_REASON_PARTIAL_INVENTORY",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PROJECTED_DEGRADED_REASON_UNSPECIFIED" => Some(Self::Unspecified),
+            "PROJECTED_DEGRADED_REASON_APPLY_LAG_SLO" => Some(Self::ApplyLagSlo),
+            "PROJECTED_DEGRADED_REASON_MAINTENANCE_BACKLOG" => {
+                Some(Self::MaintenanceBacklog)
+            }
+            "PROJECTED_DEGRADED_REASON_PARTIAL_INVENTORY" => Some(Self::PartialInventory),
             _ => None,
         }
     }

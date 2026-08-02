@@ -74,11 +74,13 @@ pub enum ServiceOperationV1 {
     ReplayEvents,
     /// Wait for and return one bounded symbolic event page.
     TailEvents,
+    /// Execute one projected columnar query under a freshness policy.
+    ExecuteProjectedQuery,
 }
 
 impl ServiceOperationV1 {
     /// Every accepted v1 service operation, in tag order.
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 32] = [
         Self::ValidateContract,
         Self::ExplainCommand,
         Self::DeployContract,
@@ -110,6 +112,7 @@ impl ServiceOperationV1 {
         Self::DescribeEvent,
         Self::ReplayEvents,
         Self::TailEvents,
+        Self::ExecuteProjectedQuery,
     ];
 
     /// Returns the stable v1 semantic tag.
@@ -147,6 +150,7 @@ impl ServiceOperationV1 {
             Self::DescribeEvent => 0x1d,
             Self::ReplayEvents => 0x1e,
             Self::TailEvents => 0x1f,
+            Self::ExecuteProjectedQuery => 0x20,
         }
     }
 
@@ -185,6 +189,7 @@ impl ServiceOperationV1 {
             0x1d => Some(Self::DescribeEvent),
             0x1e => Some(Self::ReplayEvents),
             0x1f => Some(Self::TailEvents),
+            0x20 => Some(Self::ExecuteProjectedQuery),
             _ => None,
         }
     }
@@ -593,7 +598,7 @@ mod tests {
 
     #[test]
     fn service_operation_registry_is_exact_and_closed() {
-        let expected: Vec<u8> = (0x01..=0x1f).collect();
+        let expected: Vec<u8> = (0x01..=0x20).collect();
         assert_eq!(
             ServiceOperationV1::ALL
                 .into_iter()
@@ -608,7 +613,7 @@ mod tests {
             );
         }
         assert_eq!(ServiceOperationV1::from_tag(0), None);
-        assert_eq!(ServiceOperationV1::from_tag(0x20), None);
+        assert_eq!(ServiceOperationV1::from_tag(0x21), None);
         assert_eq!(ServiceOperationV1::from_tag(u8::MAX), None);
     }
 

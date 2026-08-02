@@ -20,6 +20,8 @@ mod conversion;
 #[cfg(feature = "server")]
 mod error;
 #[cfg(feature = "server")]
+mod projected_query_conversion;
+#[cfg(feature = "server")]
 mod server;
 
 /// Generated Tonic clients, server traits, and server adapters for `riffdb.v1`.
@@ -43,5 +45,7 @@ pub use authentication::*;
 pub use conversion::*;
 #[cfg(feature = "server")]
 pub use error::*;
+#[cfg(feature = "server")]
+pub use projected_query_conversion::*;
 #[cfg(feature = "server")]
 pub use server::*;
