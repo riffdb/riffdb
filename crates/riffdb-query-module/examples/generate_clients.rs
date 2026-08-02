@@ -208,6 +208,9 @@ fn main() {
             "kind": match operation.kind() {
                 riffdb_query_module::ApplicationRoleOperationKind::Query => "query",
                 riffdb_query_module::ApplicationRoleOperationKind::Command => "command",
+                riffdb_query_module::ApplicationRoleOperationKind::EventStream => "event_stream",
+                riffdb_query_module::ApplicationRoleOperationKind::QueryWatch => "watch_query",
+                riffdb_query_module::ApplicationRoleOperationKind::AgentSubscription => "agent_subscription",
             },
             "name": operation.name(),
         })).collect::<Vec<_>>(),

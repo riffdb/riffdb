@@ -64,8 +64,9 @@ use riffdb_types::{
     EntityKey, EntityTypeId, EnumTypeId, EnumVariantId, FieldId, FrontierPosition, IdempotencyKey,
     IndexEpochPosition, IndexId, MigrationBundleHash, OfflineMaintenanceOperationId,
     OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation, PartitionKey,
-    PartitionScopeV1, ProjectionId, ProvenanceId, QueryModuleHash, QueryOperationName, RequestId,
-    RevocationReasonCodeV1, SchemaHash, ScopedPartitionV1, TenantId, TenantScope, Timestamp,
+    PartitionScopeV1, ProjectionId, ProvenanceId, QueryModuleHash, QueryOperationName,
+    ReactiveModuleHash, ReactiveOperationName, RequestId, RevocationReasonCodeV1, SchemaHash,
+    ScopedPartitionV1, TenantId, TenantScope, Timestamp,
 };
 use tonic::Status;
 
@@ -3792,7 +3793,43 @@ fn capability_permission_from_proto(
                 ApplicationRoleHash::from_bytes(hash),
             ))
         }
+        Permission::ConsumeEventStream(value) => {
+            let (lineage, hash, name) = reactive_operation_permission(value)?;
+            Ok(CapabilityPermissionV1::ConsumeEventStream(
+                lineage, hash, name,
+            ))
+        }
+        Permission::SeekEventStreamConsumer(value) => {
+            let (lineage, hash, name) = reactive_operation_permission(value)?;
+            Ok(CapabilityPermissionV1::SeekEventStreamConsumer(
+                lineage, hash, name,
+            ))
+        }
+        Permission::WatchNamedQuery(value) => {
+            let (lineage, hash, name) = reactive_operation_permission(value)?;
+            Ok(CapabilityPermissionV1::WatchNamedQuery(lineage, hash, name))
+        }
+        Permission::ConsumeContextualSubscription(value) => {
+            let (lineage, hash, name) = reactive_operation_permission(value)?;
+            Ok(CapabilityPermissionV1::ConsumeContextualSubscription(
+                lineage, hash, name,
+            ))
+        }
     }
+}
+
+fn reactive_operation_permission(
+    value: v1::ReactiveOperationPermission,
+) -> Result<(ContractLineage, ReactiveModuleHash, ReactiveOperationName), Status> {
+    let hash: [u8; 32] = value
+        .reactive_module_hash
+        .try_into()
+        .map_err(|_| invalid_request())?;
+    Ok((
+        ContractLineage::new(value.contract_lineage).map_err(|_| invalid_request())?,
+        ReactiveModuleHash::from_bytes(hash),
+        ReactiveOperationName::new(value.operation_name).map_err(|_| invalid_request())?,
+    ))
 }
 
 fn named_query_permission(
@@ -3883,6 +3920,18 @@ fn capability_permission_kind_from_proto(value: i32) -> Result<CapabilityPermiss
         }
         v1::CapabilityPermissionKind::MigrateContract => {
             Ok(CapabilityPermissionKindV1::MigrateContract)
+        }
+        v1::CapabilityPermissionKind::ConsumeEventStream => {
+            Ok(CapabilityPermissionKindV1::ConsumeEventStream)
+        }
+        v1::CapabilityPermissionKind::SeekEventStreamConsumer => {
+            Ok(CapabilityPermissionKindV1::SeekEventStreamConsumer)
+        }
+        v1::CapabilityPermissionKind::WatchNamedQuery => {
+            Ok(CapabilityPermissionKindV1::WatchNamedQuery)
+        }
+        v1::CapabilityPermissionKind::ConsumeContextualSubscription => {
+            Ok(CapabilityPermissionKindV1::ConsumeContextualSubscription)
         }
         v1::CapabilityPermissionKind::Unspecified => Err(invalid_request()),
     }

@@ -130,6 +130,10 @@ enum CapabilityPermissionKind {
   CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY = 24;
   CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY = 25;
   CAPABILITY_PERMISSION_KIND_MIGRATE_CONTRACT = 26;
+  CAPABILITY_PERMISSION_KIND_CONSUME_EVENT_STREAM = 27;
+  CAPABILITY_PERMISSION_KIND_SEEK_EVENT_STREAM_CONSUMER = 28;
+  CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY = 29;
+  CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION = 30;
 }
 
 message LineageScopedStableId {
@@ -141,6 +145,12 @@ message NamedQueryPermission {
   string contract_lineage = 1;
   bytes query_module_hash = 2;
   string query_name = 3;
+}
+
+message ReactiveOperationPermission {
+  string contract_lineage = 1;
+  bytes reactive_module_hash = 2;
+  string operation_name = 3;
 }
 
 message CapabilityPermission {
@@ -171,6 +181,10 @@ message CapabilityPermission {
     NamedQueryPermission execute_named_query = 24;
     bytes application_role_identity = 25;
     string migrate_contract = 26;
+    ReactiveOperationPermission consume_event_stream = 27;
+    ReactiveOperationPermission seek_event_stream_consumer = 28;
+    ReactiveOperationPermission watch_named_query = 29;
+    ReactiveOperationPermission consume_contextual_subscription = 30;
   }
 }
 

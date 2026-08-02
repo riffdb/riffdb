@@ -4,7 +4,8 @@ use std::{error::Error, fmt, num::NonZeroU16};
 
 use crate::{
     ApplicationRoleHash, CommandId, ContractLineage, EntityTypeId, FieldId, IndexId, PartitionKey,
-    ProjectionId, QueryModuleHash, QueryOperationName, TenantScope,
+    ProjectionId, QueryModuleHash, QueryOperationName, ReactiveModuleHash, ReactiveOperationName,
+    TenantScope,
 };
 
 /// Maximum explicit partition entries retained by one grant.
@@ -100,6 +101,14 @@ pub enum CapabilityPermissionKindV1 {
     ApplicationRoleIdentity,
     /// Migrate one exact contract lineage.
     MigrateContract,
+    /// Consume one exact immutable event stream.
+    ConsumeEventStream,
+    /// Administratively seek one exact immutable event stream consumer.
+    SeekEventStreamConsumer,
+    /// Watch one exact immutable named-query projection.
+    WatchNamedQuery,
+    /// Consume one exact immutable contextual subscription.
+    ConsumeContextualSubscription,
 }
 
 impl CapabilityPermissionKindV1 {
@@ -133,6 +142,10 @@ impl CapabilityPermissionKindV1 {
             Self::ExecuteNamedQuery => 0x18,
             Self::ApplicationRoleIdentity => 0x19,
             Self::MigrateContract => 0x1a,
+            Self::ConsumeEventStream => 0x1b,
+            Self::SeekEventStreamConsumer => 0x1c,
+            Self::WatchNamedQuery => 0x1d,
+            Self::ConsumeContextualSubscription => 0x1e,
         }
     }
 
@@ -166,6 +179,10 @@ impl CapabilityPermissionKindV1 {
             0x18 => Some(Self::ExecuteNamedQuery),
             0x19 => Some(Self::ApplicationRoleIdentity),
             0x1a => Some(Self::MigrateContract),
+            0x1b => Some(Self::ConsumeEventStream),
+            0x1c => Some(Self::SeekEventStreamConsumer),
+            0x1d => Some(Self::WatchNamedQuery),
+            0x1e => Some(Self::ConsumeContextualSubscription),
             _ => None,
         }
     }
@@ -183,6 +200,10 @@ impl CapabilityPermissionKindV1 {
                 | Self::ExecuteNamedQuery
                 | Self::ApplicationRoleIdentity
                 | Self::MigrateContract
+                | Self::ConsumeEventStream
+                | Self::SeekEventStreamConsumer
+                | Self::WatchNamedQuery
+                | Self::ConsumeContextualSubscription
         )
     }
 }
@@ -212,6 +233,14 @@ pub enum CapabilityPermissionV1 {
     ApplicationRoleIdentity(ApplicationRoleHash),
     /// Migrate one exact contract lineage.
     MigrateContract(ContractLineage),
+    /// Consume an exact stream from one immutable reactive module.
+    ConsumeEventStream(ContractLineage, ReactiveModuleHash, ReactiveOperationName),
+    /// Seek a consumer of an exact stream from one immutable reactive module.
+    SeekEventStreamConsumer(ContractLineage, ReactiveModuleHash, ReactiveOperationName),
+    /// Watch an exact query watch from one immutable reactive module.
+    WatchNamedQuery(ContractLineage, ReactiveModuleHash, ReactiveOperationName),
+    /// Consume an exact contextual subscription from one immutable reactive module.
+    ConsumeContextualSubscription(ContractLineage, ReactiveModuleHash, ReactiveOperationName),
 }
 
 impl CapabilityPermissionV1 {
@@ -240,6 +269,14 @@ impl CapabilityPermissionV1 {
                 CapabilityPermissionKindV1::ApplicationRoleIdentity
             }
             Self::MigrateContract(..) => CapabilityPermissionKindV1::MigrateContract,
+            Self::ConsumeEventStream(..) => CapabilityPermissionKindV1::ConsumeEventStream,
+            Self::SeekEventStreamConsumer(..) => {
+                CapabilityPermissionKindV1::SeekEventStreamConsumer
+            }
+            Self::WatchNamedQuery(..) => CapabilityPermissionKindV1::WatchNamedQuery,
+            Self::ConsumeContextualSubscription(..) => {
+                CapabilityPermissionKindV1::ConsumeContextualSubscription
+            }
         }
     }
 
@@ -275,6 +312,14 @@ impl CapabilityPermissionV1 {
                 bytes.extend_from_slice(role_hash.as_bytes());
             }
             Self::MigrateContract(lineage) => append_lineage(&mut bytes, lineage),
+            Self::ConsumeEventStream(lineage, module_hash, operation_name)
+            | Self::SeekEventStreamConsumer(lineage, module_hash, operation_name)
+            | Self::WatchNamedQuery(lineage, module_hash, operation_name)
+            | Self::ConsumeContextualSubscription(lineage, module_hash, operation_name) => {
+                append_lineage(&mut bytes, lineage);
+                bytes.extend_from_slice(module_hash.as_bytes());
+                append_bytes(&mut bytes, operation_name.as_str().as_bytes());
+            }
         }
         bytes
     }
@@ -485,7 +530,7 @@ impl CapabilityGrantV1 {
     ) -> Result<Self, CapabilityGrantError> {
         if usize::from(max_scan_rows.get()) > 500
             || field_visibility.len() > MAX_CAPABILITY_FIELD_VISIBILITY
-            || approval_required.len() > 25
+            || approval_required.len() > 30
         {
             return Err(CapabilityGrantError::LimitExceeded);
         }
@@ -605,6 +650,12 @@ fn capability_permission_semantic_bytes(permission: &CapabilityPermissionV1) -> 
         }
         CapabilityPermissionV1::ApplicationRoleIdentity(_) => 1 + 32,
         CapabilityPermissionV1::MigrateContract(lineage) => 1 + 4 + lineage.as_bytes().len(),
+        CapabilityPermissionV1::ConsumeEventStream(lineage, _, name)
+        | CapabilityPermissionV1::SeekEventStreamConsumer(lineage, _, name)
+        | CapabilityPermissionV1::WatchNamedQuery(lineage, _, name)
+        | CapabilityPermissionV1::ConsumeContextualSubscription(lineage, _, name) => {
+            1 + 4 + lineage.as_bytes().len() + 32 + 4 + name.as_str().len()
+        }
     }
 }
 
@@ -707,12 +758,12 @@ mod tests {
 
     #[test]
     fn permission_tags_are_closed_and_stable() {
-        for tag in 1..=26 {
+        for tag in 1..=30 {
             let kind = CapabilityPermissionKindV1::from_tag(tag).expect("known tag");
             assert_eq!(kind.tag(), tag);
         }
         assert_eq!(CapabilityPermissionKindV1::from_tag(0), None);
-        assert_eq!(CapabilityPermissionKindV1::from_tag(27), None);
+        assert_eq!(CapabilityPermissionKindV1::from_tag(31), None);
     }
 
     #[test]
@@ -732,6 +783,10 @@ mod tests {
             CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::MigrateContract),
             Err(CapabilityGrantError::InvalidShape)
         );
+        assert_eq!(
+            CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ConsumeEventStream),
+            Err(CapabilityGrantError::InvalidShape)
+        );
         assert!(
             CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ExecuteAdHocQuery)
                 .is_ok()
@@ -746,6 +801,25 @@ mod tests {
         let mut expected = vec![0x1a, 0, 0, 0, 10];
         expected.extend_from_slice(b"ticketdesk");
         assert_eq!(permission.canonical_key(), expected);
+    }
+
+    #[test]
+    fn reactive_permissions_bind_lineage_module_and_operation() {
+        let lineage = ContractLineage::new("ticketdesk").expect("lineage");
+        let module = ReactiveModuleHash::from_bytes([7; 32]);
+        let operation = ReactiveOperationName::new("TicketActivity").expect("operation");
+        let consume =
+            CapabilityPermissionV1::ConsumeEventStream(lineage.clone(), module, operation.clone());
+        let seek = CapabilityPermissionV1::SeekEventStreamConsumer(lineage, module, operation);
+        assert_ne!(consume.canonical_key(), seek.canonical_key());
+        assert_eq!(consume.canonical_key()[0], 0x1b);
+        assert_eq!(seek.canonical_key()[0], 0x1c);
+        assert!(
+            consume
+                .canonical_key()
+                .windows(32)
+                .any(|window| window == [7; 32])
+        );
     }
 
     #[test]

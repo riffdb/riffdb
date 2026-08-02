@@ -110,10 +110,19 @@ pub struct NamedQueryPermission {
     pub query_name: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReactiveOperationPermission {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub reactive_module_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "3")]
+    pub operation_name: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CapabilityPermission {
     #[prost(
         oneof = "capability_permission::Permission",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
     )]
     pub permission: ::core::option::Option<capability_permission::Permission>,
 }
@@ -173,6 +182,14 @@ pub mod capability_permission {
         ApplicationRoleIdentity(::prost::alloc::vec::Vec<u8>),
         #[prost(string, tag = "26")]
         MigrateContract(::prost::alloc::string::String),
+        #[prost(message, tag = "27")]
+        ConsumeEventStream(super::ReactiveOperationPermission),
+        #[prost(message, tag = "28")]
+        SeekEventStreamConsumer(super::ReactiveOperationPermission),
+        #[prost(message, tag = "29")]
+        WatchNamedQuery(super::ReactiveOperationPermission),
+        #[prost(message, tag = "30")]
+        ConsumeContextualSubscription(super::ReactiveOperationPermission),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -733,6 +750,10 @@ pub enum CapabilityPermissionKind {
     ExecuteNamedQuery = 24,
     ApplicationRoleIdentity = 25,
     MigrateContract = 26,
+    ConsumeEventStream = 27,
+    SeekEventStreamConsumer = 28,
+    WatchNamedQuery = 29,
+    ConsumeContextualSubscription = 30,
 }
 impl CapabilityPermissionKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -774,6 +795,14 @@ impl CapabilityPermissionKind {
                 "CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY"
             }
             Self::MigrateContract => "CAPABILITY_PERMISSION_KIND_MIGRATE_CONTRACT",
+            Self::ConsumeEventStream => "CAPABILITY_PERMISSION_KIND_CONSUME_EVENT_STREAM",
+            Self::SeekEventStreamConsumer => {
+                "CAPABILITY_PERMISSION_KIND_SEEK_EVENT_STREAM_CONSUMER"
+            }
+            Self::WatchNamedQuery => "CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY",
+            Self::ConsumeContextualSubscription => {
+                "CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION"
+            }
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -830,6 +859,16 @@ impl CapabilityPermissionKind {
                 Some(Self::ApplicationRoleIdentity)
             }
             "CAPABILITY_PERMISSION_KIND_MIGRATE_CONTRACT" => Some(Self::MigrateContract),
+            "CAPABILITY_PERMISSION_KIND_CONSUME_EVENT_STREAM" => {
+                Some(Self::ConsumeEventStream)
+            }
+            "CAPABILITY_PERMISSION_KIND_SEEK_EVENT_STREAM_CONSUMER" => {
+                Some(Self::SeekEventStreamConsumer)
+            }
+            "CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY" => Some(Self::WatchNamedQuery),
+            "CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION" => {
+                Some(Self::ConsumeContextualSubscription)
+            }
             _ => None,
         }
     }

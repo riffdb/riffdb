@@ -15,8 +15,9 @@ use riffdb_query_module::{
     ApplicationSourceTenantScope, CONTRACT_BUNDLE_ARTIFACT_PATH, GeneratedApplicationArtifact,
     GeneratedApplicationArtifactKind, GeneratedMcpCommand, GeneratedMcpTool, NamedQuerySource,
     PythonGenerationError, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
-    compile_application_role, generate_mcp_commands, generate_mcp_tools, generate_python_client,
-    generate_rust_client, generate_typescript_client,
+    compile_application_role, compile_application_role_v2, compile_reactive_source,
+    generate_mcp_commands, generate_mcp_tools, generate_python_client, generate_rust_client,
+    generate_typescript_client,
 };
 use riffdb_types::{TenantId, hash_generated_artifact, hash_source};
 use serde_json::json;
@@ -66,6 +67,7 @@ pub(crate) enum ScaffoldError {
     InvalidApplicationName,
     CompileContract,
     CompileQuery,
+    CompileReactive,
     CompileRole,
     Manifest,
     ApplicationSource,
@@ -89,6 +91,7 @@ impl fmt::Display for ScaffoldError {
             }
             Self::CompileContract => "the built-in application contract did not compile",
             Self::CompileQuery => "the built-in application query did not compile",
+            Self::CompileReactive => "the application reactive module did not compile",
             Self::CompileRole => "the built-in application role did not compile",
             Self::Manifest => "the generated application manifest is invalid",
             Self::ApplicationSource => "the symbolic application source is invalid",
@@ -906,9 +909,28 @@ fn compile_symbolic_application_mode(
             query_diagnostic(path.unwrap_or("riffdb/queries"), &error)
         })?);
     }
-    let exact = source
-        .exact_manifest(&contract, &modules)
-        .map_err(|error| application_source_diagnostic(source_path, error.kind()))?;
+    let mut reactive_modules = Vec::with_capacity(source.reactive_modules().len());
+    let mut reactive_outputs = Vec::with_capacity(source.reactive_modules().len());
+    for declared in source.reactive_modules() {
+        let reactive_source = read_workspace_text(root, declared.source(), 1_048_576)?;
+        let module = compile_reactive_source(&reactive_source, &contract, &modules)
+            .map_err(|_| ScaffoldError::CompileReactive)?;
+        if module.name() != declared.name() || module.version() != declared.version() {
+            return Err(ScaffoldError::IdentityMismatch);
+        }
+        let path = format!(
+            "generated/reactive/{}.riffdb.reactive.module",
+            declared.name()
+        );
+        reactive_outputs.push((path, module.canonical_bytes().to_vec()));
+        reactive_modules.push(module);
+    }
+    let exact = if source.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V4 {
+        source.exact_manifest_v2(&contract, &modules, &reactive_modules)
+    } else {
+        source.exact_manifest(&contract, &modules)
+    }
+    .map_err(|error| application_source_diagnostic(source_path, error.kind()))?;
     for role in source.roles() {
         let tenant = match role.tenant_scope() {
             ApplicationSourceTenantScope::Global => None,
@@ -916,23 +938,34 @@ fn compile_symbolic_application_mode(
                 Some(TenantId::new("application-check").map_err(|_| ScaffoldError::CompileRole)?)
             }
         };
-        compile_application_role(&exact, role.name(), tenant, &contract, &modules).map_err(
-            |error| {
-                let over_budget_query = (error.kind()
-                    == riffdb_query_module::ApplicationRoleErrorKind::RequirementLimit)
-                    .then(|| {
-                        role.queries().iter().find_map(|query_name| {
-                            modules
-                                .iter()
-                                .find_map(|module| module.query(query_name))
-                                .filter(|query| query.program().cost().scanned_index_rows() > 500)
-                                .map(|query| query.name())
-                        })
+        let compiled_role = if source.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V4
+        {
+            compile_application_role_v2(
+                &exact,
+                role.name(),
+                tenant,
+                &contract,
+                &modules,
+                &reactive_modules,
+            )
+        } else {
+            compile_application_role(&exact, role.name(), tenant, &contract, &modules)
+        };
+        compiled_role.map_err(|error| {
+            let over_budget_query = (error.kind()
+                == riffdb_query_module::ApplicationRoleErrorKind::RequirementLimit)
+                .then(|| {
+                    role.queries().iter().find_map(|query_name| {
+                        modules
+                            .iter()
+                            .find_map(|module| module.query(query_name))
+                            .filter(|query| query.program().cost().scanned_index_rows() > 500)
+                            .map(|query| query.name())
                     })
-                    .flatten();
-                role_diagnostic(source_path, role.name(), over_budget_query, error.kind())
-            },
-        )?;
+                })
+                .flatten();
+            role_diagnostic(source_path, role.name(), over_budget_query, error.kind())
+        })?;
     }
     let [module] = modules.as_slice() else {
         return Err(ScaffoldError::Manifest);
@@ -980,6 +1013,7 @@ fn compile_symbolic_application_mode(
             contract.canonical_bytes().to_vec(),
         ));
     }
+    outputs.extend(reactive_outputs);
     let artifacts = outputs
         .iter()
         .map(|(path, bytes)| {
@@ -993,6 +1027,8 @@ fn compile_symbolic_application_mode(
                 GeneratedApplicationArtifactKind::Python
             } else if path == CONTRACT_BUNDLE_ARTIFACT_PATH {
                 GeneratedApplicationArtifactKind::ContractBundle
+            } else if path.ends_with(".riffdb.reactive.module") {
+                GeneratedApplicationArtifactKind::ReactiveModule
             } else {
                 GeneratedApplicationArtifactKind::Mcp
             };
@@ -1000,7 +1036,17 @@ fn compile_symbolic_application_mode(
                 .map_err(|error| lock_diagnostic(Path::new(DEFAULT_LOCK_PATH), error.kind()))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let lock = if source.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V3 {
+    let lock = if source.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V4 {
+        ApplicationLock::compile_v5(
+            &source,
+            &exact,
+            &contract,
+            &modules,
+            &reactive_modules,
+            &artifacts,
+            &migration_inputs,
+        )
+    } else if source.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V3 {
         ApplicationLock::compile_v4(
             &source,
             &exact,

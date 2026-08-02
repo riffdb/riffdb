@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use riffdb_contract_ir::ContractBundle;
+use riffdb_query_ir::ReactiveModulePlanV1;
 use riffdb_types::{ApplicationSourceHash, hash_application_source};
 use serde_json::{Map, Value, json};
 
@@ -15,11 +16,14 @@ pub const APPLICATION_SOURCE_SCHEMA_V1: &str = "riffdb.application-source/v1";
 pub const APPLICATION_SOURCE_SCHEMA_V2: &str = "riffdb.application-source/v2";
 /// Symbolic application-source schema with direct-parent migration declarations.
 pub const APPLICATION_SOURCE_SCHEMA_V3: &str = "riffdb.application-source/v3";
+/// Symbolic source schema binding exact reactive modules and role operations.
+pub const APPLICATION_SOURCE_SCHEMA_V4: &str = "riffdb.application-source/v4";
 /// Maximum accepted application-source bytes.
 pub const MAX_APPLICATION_SOURCE_BYTES: usize = 1_048_576;
 const MAX_NAME_BYTES: usize = 256;
 const MAX_PATH_BYTES: usize = 512;
 const MAX_QUERY_MODULES: usize = 32;
+const MAX_REACTIVE_MODULES: usize = 32;
 const MAX_QUERY_SOURCES: usize = 4_096;
 const MAX_ROLES: usize = 128;
 const MAX_ROLE_OPERATIONS: usize = 4_096;
@@ -105,6 +109,32 @@ pub struct ApplicationSourceQueryModule {
     queries: Vec<ApplicationSourceQuery>,
 }
 
+/// One symbolic `.riffr` module declaration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationSourceReactiveModule {
+    name: String,
+    version: u64,
+    source: String,
+}
+
+impl ApplicationSourceReactiveModule {
+    /// Module name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// Positive module version.
+    #[must_use]
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+    /// Workspace-relative `.riffr` source.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+}
+
 impl ApplicationSourceQueryModule {
     /// Module name.
     #[must_use]
@@ -151,6 +181,9 @@ pub struct ApplicationSourceRole {
     tenant_scope: ApplicationSourceTenantScope,
     queries: Vec<String>,
     commands: Vec<String>,
+    event_streams: Vec<String>,
+    watch_queries: Vec<String>,
+    agent_subscriptions: Vec<String>,
 }
 
 impl ApplicationSourceRole {
@@ -182,6 +215,21 @@ impl ApplicationSourceRole {
     #[must_use]
     pub fn commands(&self) -> &[String] {
         &self.commands
+    }
+    /// Named event-stream allowlist.
+    #[must_use]
+    pub fn event_streams(&self) -> &[String] {
+        &self.event_streams
+    }
+    /// Named query-watch allowlist.
+    #[must_use]
+    pub fn watch_queries(&self) -> &[String] {
+        &self.watch_queries
+    }
+    /// Named contextual-subscription allowlist.
+    #[must_use]
+    pub fn agent_subscriptions(&self) -> &[String] {
+        &self.agent_subscriptions
     }
 }
 
@@ -227,6 +275,7 @@ pub struct ApplicationSourceManifest {
     application_name: String,
     contract: ApplicationSourceContract,
     query_modules: Vec<ApplicationSourceQueryModule>,
+    reactive_modules: Vec<ApplicationSourceReactiveModule>,
     roles: Vec<ApplicationSourceRole>,
     generation: ApplicationSourceGeneration,
     seed_inputs: Vec<String>,
@@ -250,7 +299,19 @@ impl ApplicationSourceManifest {
             .and_then(|root| root.get("schema"))
             .and_then(Value::as_str)
             .ok_or_else(|| ApplicationSourceError::new(ApplicationSourceErrorKind::InvalidShape))?;
-        let root_keys = if schema_value == APPLICATION_SOURCE_SCHEMA_V3 {
+        let root_keys = if schema_value == APPLICATION_SOURCE_SCHEMA_V4 {
+            &[
+                "application",
+                "contract",
+                "generation",
+                "migrations",
+                "query_modules",
+                "reactive_modules",
+                "roles",
+                "schema",
+                "seed_inputs",
+            ][..]
+        } else if schema_value == APPLICATION_SOURCE_SCHEMA_V3 {
             &[
                 "application",
                 "contract",
@@ -277,6 +338,7 @@ impl ApplicationSourceManifest {
             APPLICATION_SOURCE_SCHEMA_V1 => APPLICATION_SOURCE_SCHEMA_V1,
             APPLICATION_SOURCE_SCHEMA_V2 => APPLICATION_SOURCE_SCHEMA_V2,
             APPLICATION_SOURCE_SCHEMA_V3 => APPLICATION_SOURCE_SCHEMA_V3,
+            APPLICATION_SOURCE_SCHEMA_V4 => APPLICATION_SOURCE_SCHEMA_V4,
             _ => {
                 return Err(ApplicationSourceError::new(
                     ApplicationSourceErrorKind::UnsupportedVersion,
@@ -286,10 +348,18 @@ impl ApplicationSourceManifest {
         let application_name = checked_name(string(root, "application")?)?;
         let contract = parse_contract(required(root, "contract")?)?;
         let query_modules = parse_modules(required(root, "query_modules")?)?;
-        let roles = parse_roles(required(root, "roles")?, &query_modules)?;
+        let reactive_modules = if schema == APPLICATION_SOURCE_SCHEMA_V4 {
+            parse_reactive_modules(required(root, "reactive_modules")?)?
+        } else {
+            Vec::new()
+        };
+        let roles = parse_roles(required(root, "roles")?, &query_modules, schema)?;
         let generation = parse_generation(required(root, "generation")?, schema)?;
         let seed_inputs = parse_paths(required(root, "seed_inputs")?, MAX_SEED_INPUTS)?;
-        let migrations = if schema == APPLICATION_SOURCE_SCHEMA_V3 {
+        let migrations = if matches!(
+            schema,
+            APPLICATION_SOURCE_SCHEMA_V3 | APPLICATION_SOURCE_SCHEMA_V4
+        ) {
             parse_migrations(required(root, "migrations")?)?
         } else {
             Vec::new()
@@ -298,6 +368,7 @@ impl ApplicationSourceManifest {
             application: &application_name,
             contract: &contract,
             modules: &query_modules,
+            reactive_modules: &reactive_modules,
             roles: &roles,
             generation: &generation,
             seeds: &seed_inputs,
@@ -318,6 +389,7 @@ impl ApplicationSourceManifest {
             application_name,
             contract,
             query_modules,
+            reactive_modules,
             roles,
             generation,
             seed_inputs,
@@ -363,6 +435,11 @@ impl ApplicationSourceManifest {
     pub fn query_modules(&self) -> &[ApplicationSourceQueryModule] {
         &self.query_modules
     }
+    /// Reactive modules in canonical name order.
+    #[must_use]
+    pub fn reactive_modules(&self) -> &[ApplicationSourceReactiveModule] {
+        &self.reactive_modules
+    }
 
     /// Symbolic roles in canonical name order.
     #[must_use]
@@ -403,6 +480,19 @@ impl ApplicationSourceManifest {
     /// Produces the compatible exact V1 manifest after every compiled identity
     /// is known. This operation performs no I/O or deployment.
     pub fn exact_manifest(
+        &self,
+        contract: &ContractBundle,
+        modules: &[QueryModule],
+    ) -> Result<ApplicationManifest, ApplicationSourceError> {
+        if self.schema == APPLICATION_SOURCE_SCHEMA_V4 {
+            return Err(ApplicationSourceError::new(
+                ApplicationSourceErrorKind::IdentityMismatch,
+            ));
+        }
+        self.exact_manifest_legacy(contract, modules)
+    }
+
+    fn exact_manifest_legacy(
         &self,
         contract: &ContractBundle,
         modules: &[QueryModule],
@@ -473,6 +563,72 @@ impl ApplicationSourceManifest {
             .map_err(|_| ApplicationSourceError::new(ApplicationSourceErrorKind::InvalidJson))?;
         ApplicationManifest::parse(&source)
             .map_err(|_| ApplicationSourceError::new(ApplicationSourceErrorKind::IdentityMismatch))
+    }
+
+    /// Produces the exact V2 manifest binding reactive module identities.
+    pub fn exact_manifest_v2(
+        &self,
+        contract: &ContractBundle,
+        modules: &[QueryModule],
+        reactive: &[ReactiveModulePlanV1],
+    ) -> Result<ApplicationManifest, ApplicationSourceError> {
+        if self.schema != APPLICATION_SOURCE_SCHEMA_V4
+            || reactive.len() != self.reactive_modules.len()
+        {
+            return Err(ApplicationSourceError::new(
+                ApplicationSourceErrorKind::IdentityMismatch,
+            ));
+        }
+        let base = self.exact_manifest_value(contract, modules)?;
+        let mut value = base;
+        let root = value
+            .as_object_mut()
+            .expect("compiler-created manifest object");
+        root.insert(
+            "schema".to_owned(),
+            json!(crate::APPLICATION_MANIFEST_SCHEMA_V2),
+        );
+        root.insert(
+            "generation".to_owned(),
+            json!({
+                "mcp": self.generation.mcp,
+                "python": self.generation.python,
+                "rust": self.generation.rust,
+                "typescript": self.generation.typescript,
+            }),
+        );
+        root.insert("reactive_modules".to_owned(), json!(self.reactive_modules.iter().map(|declared| {
+            let module = reactive.iter().find(|module| module.name() == declared.name)
+                .ok_or(ApplicationSourceError::new(ApplicationSourceErrorKind::IdentityMismatch))?;
+            if module.version() != declared.version || module.contract_hash() != contract.bundle_hash() {
+                return Err(ApplicationSourceError::new(ApplicationSourceErrorKind::IdentityMismatch));
+            }
+            Ok(json!({"module_hash": hex(module.identity().as_bytes()), "name": declared.name,
+                "source": declared.source, "version": declared.version}))
+        }).collect::<Result<Vec<_>, ApplicationSourceError>>()?));
+        root.insert(
+            "roles".to_owned(),
+            json!(self.roles.iter().map(|role| json!({
+            "agent_subscriptions": role.agent_subscriptions,
+            "commands": role.commands, "environment": role.environment,
+            "event_streams": role.event_streams, "name": role.name, "queries": role.queries,
+            "tenant_scope": role.tenant_scope.as_str(), "watch_queries": role.watch_queries,
+        })).collect::<Vec<_>>()),
+        );
+        let encoded = serde_json::to_string(&value)
+            .map_err(|_| ApplicationSourceError::new(ApplicationSourceErrorKind::InvalidJson))?;
+        ApplicationManifest::parse(&encoded)
+            .map_err(|_| ApplicationSourceError::new(ApplicationSourceErrorKind::IdentityMismatch))
+    }
+
+    fn exact_manifest_value(
+        &self,
+        contract: &ContractBundle,
+        modules: &[QueryModule],
+    ) -> Result<Value, ApplicationSourceError> {
+        let compatible = self.exact_manifest_legacy(contract, modules)?;
+        serde_json::from_slice(compatible.canonical_bytes())
+            .map_err(|_| ApplicationSourceError::new(ApplicationSourceErrorKind::InvalidJson))
     }
 }
 
@@ -552,6 +708,7 @@ struct CanonicalApplicationSource<'a> {
     application: &'a str,
     contract: &'a ApplicationSourceContract,
     modules: &'a [ApplicationSourceQueryModule],
+    reactive_modules: &'a [ApplicationSourceReactiveModule],
     roles: &'a [ApplicationSourceRole],
     generation: &'a ApplicationSourceGeneration,
     seeds: &'a [String],
@@ -564,6 +721,7 @@ fn canonical_value(source: CanonicalApplicationSource<'_>) -> Value {
         application,
         contract,
         modules,
+        reactive_modules,
         roles,
         generation,
         seeds,
@@ -588,7 +746,10 @@ fn canonical_value(source: CanonicalApplicationSource<'_>) -> Value {
         }),
     );
     root.insert("generation".to_owned(), Value::Object(generation_value));
-    if schema == APPLICATION_SOURCE_SCHEMA_V3 {
+    if matches!(
+        schema,
+        APPLICATION_SOURCE_SCHEMA_V3 | APPLICATION_SOURCE_SCHEMA_V4
+    ) {
         root.insert(
             "migrations".to_owned(),
             json!(
@@ -618,18 +779,37 @@ fn canonical_value(source: CanonicalApplicationSource<'_>) -> Value {
                 .collect::<Vec<_>>()
         ),
     );
+    if schema == APPLICATION_SOURCE_SCHEMA_V4 {
+        root.insert(
+            "reactive_modules".to_owned(),
+            json!(
+                reactive_modules
+                    .iter()
+                    .map(|module| json!({
+                        "name": module.name, "source": module.source, "version": module.version,
+                    }))
+                    .collect::<Vec<_>>()
+            ),
+        );
+    }
     root.insert(
         "roles".to_owned(),
         json!(
             roles
                 .iter()
-                .map(|role| json!({
+                .map(|role| if schema == APPLICATION_SOURCE_SCHEMA_V4 { json!({
+                    "agent_subscriptions": role.agent_subscriptions,
                     "commands": role.commands,
                     "environment": role.environment,
+                    "event_streams": role.event_streams,
                     "name": role.name,
                     "queries": role.queries,
                     "tenant_scope": role.tenant_scope.as_str(),
-                }))
+                    "watch_queries": role.watch_queries,
+                }) } else { json!({
+                    "commands": role.commands, "environment": role.environment, "name": role.name,
+                    "queries": role.queries, "tenant_scope": role.tenant_scope.as_str(),
+                }) })
                 .collect::<Vec<_>>()
         ),
     );
@@ -703,9 +883,31 @@ fn parse_modules(
     Ok(modules)
 }
 
+fn parse_reactive_modules(
+    value: &Value,
+) -> Result<Vec<ApplicationSourceReactiveModule>, ApplicationSourceError> {
+    let values = array(value, 1, MAX_REACTIVE_MODULES)?;
+    let mut modules = values
+        .iter()
+        .map(|value| {
+            let object = object(value, &["name", "source", "version"])?;
+            Ok(ApplicationSourceReactiveModule {
+                name: checked_name(string(object, "name")?)?,
+                source: checked_path(string(object, "source")?)?,
+                version: positive_u64(object, "version")?,
+            })
+        })
+        .collect::<Result<Vec<_>, ApplicationSourceError>>()?;
+    modules.sort_by(|left, right| left.name.cmp(&right.name));
+    ensure_unique(modules.iter().map(|module| module.name.as_str()))?;
+    ensure_unique(modules.iter().map(|module| module.source.as_str()))?;
+    Ok(modules)
+}
+
 fn parse_roles(
     value: &Value,
     modules: &[ApplicationSourceQueryModule],
+    schema: &str,
 ) -> Result<Vec<ApplicationSourceRole>, ApplicationSourceError> {
     let values = array(value, 1, MAX_ROLES)?;
     let available = modules
@@ -714,16 +916,56 @@ fn parse_roles(
         .collect::<BTreeSet<_>>();
     let mut roles = Vec::with_capacity(values.len());
     for value in values {
-        let object = object(
-            value,
-            &["commands", "environment", "name", "queries", "tenant_scope"],
-        )?;
+        let object = if schema == APPLICATION_SOURCE_SCHEMA_V4 {
+            object(
+                value,
+                &[
+                    "agent_subscriptions",
+                    "commands",
+                    "environment",
+                    "event_streams",
+                    "name",
+                    "queries",
+                    "tenant_scope",
+                    "watch_queries",
+                ],
+            )?
+        } else {
+            object(
+                value,
+                &["commands", "environment", "name", "queries", "tenant_scope"],
+            )?
+        };
         let mut queries = parse_names(required(object, "queries")?, MAX_ROLE_OPERATIONS)?;
         let mut commands = parse_names(required(object, "commands")?, MAX_ROLE_OPERATIONS)?;
         queries.sort();
         commands.sort();
+        let mut event_streams = if schema == APPLICATION_SOURCE_SCHEMA_V4 {
+            parse_names(required(object, "event_streams")?, MAX_ROLE_OPERATIONS)?
+        } else {
+            Vec::new()
+        };
+        let mut watch_queries = if schema == APPLICATION_SOURCE_SCHEMA_V4 {
+            parse_names(required(object, "watch_queries")?, MAX_ROLE_OPERATIONS)?
+        } else {
+            Vec::new()
+        };
+        let mut agent_subscriptions = if schema == APPLICATION_SOURCE_SCHEMA_V4 {
+            parse_names(
+                required(object, "agent_subscriptions")?,
+                MAX_ROLE_OPERATIONS,
+            )?
+        } else {
+            Vec::new()
+        };
+        event_streams.sort();
+        watch_queries.sort();
+        agent_subscriptions.sort();
         ensure_unique(queries.iter().map(String::as_str))?;
         ensure_unique(commands.iter().map(String::as_str))?;
+        ensure_unique(event_streams.iter().map(String::as_str))?;
+        ensure_unique(watch_queries.iter().map(String::as_str))?;
+        ensure_unique(agent_subscriptions.iter().map(String::as_str))?;
         if queries
             .iter()
             .any(|query| !available.contains(query.as_str()))
@@ -746,6 +988,9 @@ fn parse_roles(
             },
             queries,
             commands,
+            event_streams,
+            watch_queries,
+            agent_subscriptions,
         });
     }
     roles.sort_by(|left, right| left.name.cmp(&right.name));

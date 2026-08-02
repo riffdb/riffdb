@@ -2,6 +2,10 @@
 
 //! Deterministic type checking, authorization analysis, and bounded planning for RiffQL v1.
 
+mod reactive;
+
+pub use reactive::*;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_contract_ir::{ValueType, ValueTypeTag};

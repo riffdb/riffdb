@@ -1,0 +1,6 @@
+reactive RowActivity version 1 {
+  stream RowChanges($organization_id: Row.organization_id) {
+    partition (organization_id = $organization_id);
+    event RowChanged select (organization_id, row_id, value);
+  }
+}

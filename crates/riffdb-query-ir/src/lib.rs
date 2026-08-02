@@ -5,6 +5,7 @@
 mod catalog;
 mod diagnostic;
 mod plan;
+mod reactive;
 mod resolver;
 mod schema;
 
@@ -17,6 +18,7 @@ pub use plan::{
     QueryAccessStep, QueryLiteral, QueryPlanExplain, QueryPlanIdentity, QueryPredicate,
     QueryPredicateOperator, QueryPredicateValue, QueryRowLimit,
 };
+pub use reactive::*;
 pub use resolver::{
     BindingSymbol, ExactContractIdentity, QuerySourceMap, ResolvedQueryV1, SourceMapEntry,
     SourceSymbolKind, resolve_query_surface,

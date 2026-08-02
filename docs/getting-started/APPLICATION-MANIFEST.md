@@ -64,6 +64,42 @@ source-format V1-to-V2 helper and does not create V3.
 See [Contract Migrations](../contracts/MIGRATIONS.md) for the complete identity
 model, supported Gate A changes, and read-only planning workflow.
 
+Application Source V4 adds declared `.riffr` reactive modules and three closed
+role allowlists: `event_streams`, `watch_queries`, and `agent_subscriptions`.
+The compiler emits exact Application Manifest V2 and Lock V5 artifacts. Lock V5
+pins separate reactive source, operation, and module hashes and retains the V4
+migration and canonical contract-bundle closure.
+
+```json
+{
+  "schema": "riffdb.application-source/v4",
+  "reactive_modules": [
+    {
+      "name": "TicketActivity",
+      "source": "riffdb/reactive/ticket_activity.riffr",
+      "version": 1
+    }
+  ],
+  "roles": [
+    {
+      "agent_subscriptions": ["TicketAgent"],
+      "commands": [],
+      "environment": "development",
+      "event_streams": ["TicketEvents"],
+      "name": "TicketDeskAgent",
+      "queries": [],
+      "tenant_scope": "tenant",
+      "watch_queries": ["TicketWatch"]
+    }
+  ]
+}
+```
+
+These members are required arrays in V4, including when a particular role has
+no operations of that kind. Consume authority never implies stream seek
+authority. See [Reactive Modules](../reactive/MODULES.md) for grammar and fixed
+bounds.
+
 The source document is closed JSON with exactly these top-level members:
 
 ```json
@@ -148,7 +184,7 @@ riffdb application generate --locked
 ```
 
 Generated Rust and TypeScript facades are present in V1; V2 also requires the
-generated Python facade. V3 retains all four generation targets. They own
+generated Python facade. V3 and V4 retain all four generation targets. They own
 parameter serialization, response decoding,
 exact identity checks, opaque cursors, read-after-commit fences, typed command
 outcomes, and retry-safe uncertainty recovery. Generated MCP schemas come from

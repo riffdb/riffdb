@@ -9,6 +9,7 @@
 - **Amends:** ADR-0013, ADR-0017, ADR-0049, ADR-0055, ADR-0056, ADR-0057,
   ADR-0063, ADR-0064, ADR-0072, and ADR-0075
 - **WP-415 public-inspection clarification accepted:** 2026-08-02
+- **WP-416 reactive-module clarification accepted:** 2026-08-02
 
 ## Context
 
@@ -212,6 +213,33 @@ WP-416 remains the sole owner of least-authority application roles bound to
 named streams and reactive module identity. An application must not receive
 `ReadCommit` merely to consume a named stream. WP-419 remains the owner of MCP
 event tools and payload-free notification presentation.
+
+### WP-416 reactive module and permission boundary
+
+The maintainer accepted this exact clarification on 2026-08-02. Grammar V1
+uses bounded `.riffr` sources containing named partition-local event streams,
+named query watches, and contextual subscriptions. Streams select explicit
+event types and fields and permit only checked bounded predicates. Watches
+select `patch` or `reset`; patch mode requires the complete authorized primary
+key. Contextual subscriptions bind one exact stream, bounded named hydration
+queries, named command reactions, and explicit delivery limits.
+
+Reactive source, operation, and module hashes use separate domain-separated
+identities. Application Source V4, exact Application Manifest V2, and Lock V5
+are additive successors. Existing Source V1 through V3, Manifest V1, and Lock
+V1 through V4 bytes and meanings remain unchanged.
+
+Capability permission tags `0x1b` through `0x1e` are respectively
+`ConsumeEventStream`, `SeekEventStreamConsumer`, `WatchNamedQuery`, and
+`ConsumeContextualSubscription`. Each binds exact contract lineage, reactive
+module hash, and operation name. Ordinary generated roles never receive seek
+authority automatically.
+
+The fixed grammar-V1 ceilings are one partition, 32 selected event types, 256
+selected fields, 16 hydration queries, 32 reactions, contextual batch and
+in-flight maxima of eight, lease duration from five through 900 seconds, the
+existing four-MiB public response ceiling, and the existing 500-row aggregate
+query-work ceiling.
 
 ## Rejected alternatives
 

@@ -3591,6 +3591,9 @@ fn role_description(role: &CompiledApplicationRole) -> serde_json::Value {
             "kind": match operation.kind() {
                 riffdb_query_module::ApplicationRoleOperationKind::Query => "query",
                 riffdb_query_module::ApplicationRoleOperationKind::Command => "command",
+                riffdb_query_module::ApplicationRoleOperationKind::EventStream => "event_stream",
+                riffdb_query_module::ApplicationRoleOperationKind::QueryWatch => "watch_query",
+                riffdb_query_module::ApplicationRoleOperationKind::AgentSubscription => "agent_subscription",
             },
             "name": operation.name(),
         })).collect::<Vec<_>>(),
@@ -3661,6 +3664,30 @@ fn application_role_permission_to_proto(
         }
         CapabilityPermissionV1::ApplicationRoleIdentity(role_hash) => {
             Permission::ApplicationRoleIdentity(role_hash.as_bytes().to_vec())
+        }
+        CapabilityPermissionV1::ConsumeEventStream(lineage, hash, name) => {
+            Permission::ConsumeEventStream(v1::ReactiveOperationPermission {
+                contract_lineage: lineage.as_str().to_owned(),
+                reactive_module_hash: hash.as_bytes().to_vec(),
+                operation_name: name.as_str().to_owned(),
+            })
+        }
+        CapabilityPermissionV1::WatchNamedQuery(lineage, hash, name) => {
+            Permission::WatchNamedQuery(v1::ReactiveOperationPermission {
+                contract_lineage: lineage.as_str().to_owned(),
+                reactive_module_hash: hash.as_bytes().to_vec(),
+                operation_name: name.as_str().to_owned(),
+            })
+        }
+        CapabilityPermissionV1::ConsumeContextualSubscription(lineage, hash, name) => {
+            Permission::ConsumeContextualSubscription(v1::ReactiveOperationPermission {
+                contract_lineage: lineage.as_str().to_owned(),
+                reactive_module_hash: hash.as_bytes().to_vec(),
+                operation_name: name.as_str().to_owned(),
+            })
+        }
+        CapabilityPermissionV1::SeekEventStreamConsumer(..) => {
+            unreachable!("application roles never infer seek authority")
         }
         _ => unreachable!("application role compiler emitted kernel authority"),
     };
@@ -3886,6 +3913,26 @@ enum CapabilityPermissionInput {
         query_module_hash: String,
         query_name: String,
     },
+    ConsumeEventStream {
+        contract_lineage: String,
+        reactive_module_hash: String,
+        operation_name: String,
+    },
+    SeekEventStreamConsumer {
+        contract_lineage: String,
+        reactive_module_hash: String,
+        operation_name: String,
+    },
+    WatchNamedQuery {
+        contract_lineage: String,
+        reactive_module_hash: String,
+        operation_name: String,
+    },
+    ConsumeContextualSubscription {
+        contract_lineage: String,
+        reactive_module_hash: String,
+        operation_name: String,
+    },
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -3916,6 +3963,10 @@ enum CapabilityPermissionKindInput {
     ExplainNamedQuery,
     ExecuteNamedQuery,
     MigrateContract,
+    ConsumeEventStream,
+    SeekEventStreamConsumer,
+    WatchNamedQuery,
+    ConsumeContextualSubscription,
 }
 
 #[derive(Deserialize)]
@@ -4284,6 +4335,42 @@ fn capability_permission(input: CapabilityPermissionInput) -> Result<v1::Capabil
             query_module_hash,
             query_name,
         )?),
+        CapabilityPermissionInput::ConsumeEventStream {
+            contract_lineage,
+            reactive_module_hash,
+            operation_name,
+        } => Permission::ConsumeEventStream(reactive_operation_permission(
+            contract_lineage,
+            reactive_module_hash,
+            operation_name,
+        )?),
+        CapabilityPermissionInput::SeekEventStreamConsumer {
+            contract_lineage,
+            reactive_module_hash,
+            operation_name,
+        } => Permission::SeekEventStreamConsumer(reactive_operation_permission(
+            contract_lineage,
+            reactive_module_hash,
+            operation_name,
+        )?),
+        CapabilityPermissionInput::WatchNamedQuery {
+            contract_lineage,
+            reactive_module_hash,
+            operation_name,
+        } => Permission::WatchNamedQuery(reactive_operation_permission(
+            contract_lineage,
+            reactive_module_hash,
+            operation_name,
+        )?),
+        CapabilityPermissionInput::ConsumeContextualSubscription {
+            contract_lineage,
+            reactive_module_hash,
+            operation_name,
+        } => Permission::ConsumeContextualSubscription(reactive_operation_permission(
+            contract_lineage,
+            reactive_module_hash,
+            operation_name,
+        )?),
     };
     Ok(v1::CapabilityPermission {
         permission: Some(permission),
@@ -4365,6 +4452,18 @@ const fn permission_kind(input: CapabilityPermissionKindInput) -> i32 {
         CapabilityPermissionKindInput::MigrateContract => {
             v1::CapabilityPermissionKind::MigrateContract as i32
         }
+        CapabilityPermissionKindInput::ConsumeEventStream => {
+            v1::CapabilityPermissionKind::ConsumeEventStream as i32
+        }
+        CapabilityPermissionKindInput::SeekEventStreamConsumer => {
+            v1::CapabilityPermissionKind::SeekEventStreamConsumer as i32
+        }
+        CapabilityPermissionKindInput::WatchNamedQuery => {
+            v1::CapabilityPermissionKind::WatchNamedQuery as i32
+        }
+        CapabilityPermissionKindInput::ConsumeContextualSubscription => {
+            v1::CapabilityPermissionKind::ConsumeContextualSubscription as i32
+        }
     }
 }
 
@@ -4384,6 +4483,25 @@ fn named_query_permission(
         contract_lineage,
         query_module_hash: parse_hash(&query_module_hash)?,
         query_name,
+    })
+}
+
+fn reactive_operation_permission(
+    contract_lineage: String,
+    reactive_module_hash: String,
+    operation_name: String,
+) -> Result<v1::ReactiveOperationPermission, ()> {
+    if contract_lineage.is_empty()
+        || contract_lineage.len() > 256
+        || operation_name.is_empty()
+        || operation_name.len() > 256
+    {
+        return Err(());
+    }
+    Ok(v1::ReactiveOperationPermission {
+        contract_lineage,
+        reactive_module_hash: parse_hash(&reactive_module_hash)?,
+        operation_name,
     })
 }
 

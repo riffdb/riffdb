@@ -784,6 +784,10 @@ pub struct CapabilityPermissionV1 {
     pub query_name: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bytes = "vec", optional, tag = "6")]
     pub application_role_hash: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", optional, tag = "7")]
+    pub reactive_module_hash: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(string, optional, tag = "8")]
+    pub reactive_operation_name: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CapabilityPermissionsV1 {
@@ -960,6 +964,10 @@ pub enum CapabilityPermissionKindV1 {
     CapabilityPermissionKindExplainNamedQuery = 23,
     CapabilityPermissionKindExecuteNamedQuery = 24,
     CapabilityPermissionKindApplicationRoleIdentity = 25,
+    CapabilityPermissionKindConsumeEventStream = 27,
+    CapabilityPermissionKindSeekEventStreamConsumer = 28,
+    CapabilityPermissionKindWatchNamedQuery = 29,
+    CapabilityPermissionKindConsumeContextualSubscription = 30,
 }
 impl CapabilityPermissionKindV1 {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1046,6 +1054,18 @@ impl CapabilityPermissionKindV1 {
             Self::CapabilityPermissionKindApplicationRoleIdentity => {
                 "CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY"
             }
+            Self::CapabilityPermissionKindConsumeEventStream => {
+                "CAPABILITY_PERMISSION_KIND_CONSUME_EVENT_STREAM"
+            }
+            Self::CapabilityPermissionKindSeekEventStreamConsumer => {
+                "CAPABILITY_PERMISSION_KIND_SEEK_EVENT_STREAM_CONSUMER"
+            }
+            Self::CapabilityPermissionKindWatchNamedQuery => {
+                "CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY"
+            }
+            Self::CapabilityPermissionKindConsumeContextualSubscription => {
+                "CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION"
+            }
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1128,6 +1148,18 @@ impl CapabilityPermissionKindV1 {
             }
             "CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY" => {
                 Some(Self::CapabilityPermissionKindApplicationRoleIdentity)
+            }
+            "CAPABILITY_PERMISSION_KIND_CONSUME_EVENT_STREAM" => {
+                Some(Self::CapabilityPermissionKindConsumeEventStream)
+            }
+            "CAPABILITY_PERMISSION_KIND_SEEK_EVENT_STREAM_CONSUMER" => {
+                Some(Self::CapabilityPermissionKindSeekEventStreamConsumer)
+            }
+            "CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY" => {
+                Some(Self::CapabilityPermissionKindWatchNamedQuery)
+            }
+            "CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION" => {
+                Some(Self::CapabilityPermissionKindConsumeContextualSubscription)
             }
             _ => None,
         }

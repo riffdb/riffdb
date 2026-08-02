@@ -257,13 +257,15 @@ messages
   riffdb.storage.v1.CapabilityMigrationGrantExtensionV1 fields=2
     1 contract_lineages repeated string
     2 approval_required optional bool
-  riffdb.storage.v1.CapabilityPermissionV1 fields=6
+  riffdb.storage.v1.CapabilityPermissionV1 fields=8
     1 kind optional .riffdb.storage.v1.CapabilityPermissionKindV1
     2 contract_lineage optional string proto3-optional oneof=_contract_lineage
     3 stable_id optional uint32 proto3-optional oneof=_stable_id
     4 query_module_hash optional bytes proto3-optional oneof=_query_module_hash
     5 query_name optional string proto3-optional oneof=_query_name
     6 application_role_hash optional bytes proto3-optional oneof=_application_role_hash
+    7 reactive_module_hash optional bytes proto3-optional oneof=_reactive_module_hash
+    8 reactive_operation_name optional string proto3-optional oneof=_reactive_operation_name
   riffdb.storage.v1.CapabilityPermissionsV1 fields=1
     1 values repeated .riffdb.storage.v1.CapabilityPermissionV1
   riffdb.storage.v1.CapabilityRecordV1 fields=14
@@ -817,7 +819,7 @@ messages
   riffdb.v1.CapabilityIdentity fields=2
     1 capability_id optional bytes
     2 revision optional uint64
-  riffdb.v1.CapabilityPermission fields=26
+  riffdb.v1.CapabilityPermission fields=30
     1 validate_contract optional .riffdb.v1.Unit oneof=permission
     2 read_contract optional .riffdb.v1.Unit oneof=permission
     3 explain_command optional .riffdb.v1.LineageScopedStableId oneof=permission
@@ -844,6 +846,10 @@ messages
     24 execute_named_query optional .riffdb.v1.NamedQueryPermission oneof=permission
     25 application_role_identity optional bytes oneof=permission
     26 migrate_contract optional string oneof=permission
+    27 consume_event_stream optional .riffdb.v1.ReactiveOperationPermission oneof=permission
+    28 seek_event_stream_consumer optional .riffdb.v1.ReactiveOperationPermission oneof=permission
+    29 watch_named_query optional .riffdb.v1.ReactiveOperationPermission oneof=permission
+    30 consume_contextual_subscription optional .riffdb.v1.ReactiveOperationPermission oneof=permission
   riffdb.v1.CapabilityTransition fields=2
     1 identity optional .riffdb.v1.CapabilityIdentity
     2 administration_sequence optional uint64
@@ -1447,6 +1453,10 @@ messages
   riffdb.v1.QueryProjectionWaitTimedOut fields=2
     1 required_sequence optional uint64
     2 current optional .riffdb.v1.FrontierPosition
+  riffdb.v1.ReactiveOperationPermission fields=3
+    1 contract_lineage optional string
+    2 reactive_module_hash optional bytes
+    3 operation_name optional string
   riffdb.v1.ReplayEventsRequest fields=5
     1 request_id optional bytes
     2 selection optional .riffdb.v1.EventSelection
@@ -1717,7 +1727,7 @@ enums
     1 CAPABILITY_ADMINISTRATION_OPERATION_BOOTSTRAP
     2 CAPABILITY_ADMINISTRATION_OPERATION_CREATE
     3 CAPABILITY_ADMINISTRATION_OPERATION_REVOKE
-  riffdb.storage.v1.CapabilityPermissionKindV1 values=26
+  riffdb.storage.v1.CapabilityPermissionKindV1 values=30
     0 CAPABILITY_PERMISSION_KIND_UNSPECIFIED
     1 CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT
     2 CAPABILITY_PERMISSION_KIND_READ_CONTRACT
@@ -1744,6 +1754,10 @@ enums
     23 CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY
     24 CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY
     25 CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY
+    27 CAPABILITY_PERMISSION_KIND_CONSUME_EVENT_STREAM
+    28 CAPABILITY_PERMISSION_KIND_SEEK_EVENT_STREAM_CONSUMER
+    29 CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY
+    30 CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION
   riffdb.storage.v1.ContractMigrationJournalStepV1 values=6
     0 CONTRACT_MIGRATION_JOURNAL_STEP_UNSPECIFIED
     1 CONTRACT_MIGRATION_JOURNAL_STEP_TRANSFORMING
@@ -1846,7 +1860,7 @@ enums
     0 CAPABILITY_CREATE_MODE_UNSPECIFIED
     1 CAPABILITY_CREATE_MODE_NORMAL
     2 CAPABILITY_CREATE_MODE_BOOTSTRAP
-  riffdb.v1.CapabilityPermissionKind values=27
+  riffdb.v1.CapabilityPermissionKind values=31
     0 CAPABILITY_PERMISSION_KIND_UNSPECIFIED
     1 CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT
     2 CAPABILITY_PERMISSION_KIND_READ_CONTRACT
@@ -1874,6 +1888,10 @@ enums
     24 CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY
     25 CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY
     26 CAPABILITY_PERMISSION_KIND_MIGRATE_CONTRACT
+    27 CAPABILITY_PERMISSION_KIND_CONSUME_EVENT_STREAM
+    28 CAPABILITY_PERMISSION_KIND_SEEK_EVENT_STREAM_CONSUMER
+    29 CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY
+    30 CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION
   riffdb.v1.CommandDurability values=3
     0 COMMAND_DURABILITY_UNSPECIFIED
     1 COMMAND_DURABILITY_SYNCHRONOUS

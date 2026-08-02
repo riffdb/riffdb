@@ -13,7 +13,8 @@ use crate::{
     DigestKey, DigestKeyId, EntityKeyHash, EntityRecordHash, EventHash, GeneratedArtifactHash,
     MigrationBundleHash, MigrationSourceHash, OfflineMaintenanceInputHash, PartitionKeyHash,
     PlanHash, ProjectionApplyHash, ProjectionPlanHash, QueryModuleHash, QueryParameterHash,
-    QueryPlanHash, QuerySourceHash, SchemaHash, SourceHash,
+    QueryPlanHash, QuerySourceHash, ReactiveModuleHash, ReactiveOperationHash, ReactiveSourceHash,
+    SchemaHash, SourceHash,
 };
 
 /// Hash framing and algorithm scheme defined by ADR-0011.
@@ -43,6 +44,12 @@ pub enum HashDomain {
     QueryPlan,
     /// Canonical immutable query module.
     QueryModule,
+    /// Exact reactive source document.
+    ReactiveSource,
+    /// Canonical reactive operation plan.
+    ReactiveOperation,
+    /// Canonical immutable reactive module.
+    ReactiveModule,
     /// Canonical application manifest.
     ApplicationManifest,
     /// Author-owned symbolic application source manifest.
@@ -91,7 +98,7 @@ pub enum HashDomain {
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 34] = [
         Self::CanonicalValue,
         Self::Source,
         Self::MigrationSource,
@@ -101,6 +108,9 @@ impl HashDomain {
         Self::ProjectionPlan,
         Self::QueryPlan,
         Self::QueryModule,
+        Self::ReactiveSource,
+        Self::ReactiveOperation,
+        Self::ReactiveModule,
         Self::ApplicationManifest,
         Self::ApplicationSource,
         Self::ApplicationLock,
@@ -137,6 +147,9 @@ impl HashDomain {
             Self::ProjectionPlan => "riffdb.projection-plan/v1",
             Self::QueryPlan => "riffdb.query-plan/v1",
             Self::QueryModule => "riffdb.query-module/v1",
+            Self::ReactiveSource => "riffdb.reactive-source/v1",
+            Self::ReactiveOperation => "riffdb.reactive-operation/v1",
+            Self::ReactiveModule => "riffdb.reactive-module/v1",
             Self::ApplicationManifest => "riffdb.application-manifest/v1",
             Self::ApplicationSource => "riffdb.application-source/v1",
             Self::ApplicationLock => "riffdb.application-lock/v1",
@@ -351,6 +364,24 @@ typed_hash_function!(
     hash_query_module,
     QueryModule,
     QueryModuleHash
+);
+typed_hash_function!(
+    /// Hashes one exact reactive source document.
+    hash_reactive_source,
+    ReactiveSource,
+    ReactiveSourceHash
+);
+typed_hash_function!(
+    /// Hashes one canonical reactive operation plan.
+    hash_reactive_operation,
+    ReactiveOperation,
+    ReactiveOperationHash
+);
+typed_hash_function!(
+    /// Hashes one canonical immutable reactive module.
+    hash_reactive_module,
+    ReactiveModule,
+    ReactiveModuleHash
 );
 typed_hash_function!(
     /// Hashes one canonical application manifest in its immutable v1 domain.

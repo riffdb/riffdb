@@ -2519,6 +2519,34 @@ fn permission_key(
         v1::capability_permission::Permission::MigrateContract(lineage) => {
             (26, lineage.as_str(), 0, &[], "")
         }
+        v1::capability_permission::Permission::ConsumeEventStream(value) => (
+            27,
+            value.contract_lineage.as_str(),
+            0,
+            value.reactive_module_hash.as_slice(),
+            value.operation_name.as_str(),
+        ),
+        v1::capability_permission::Permission::SeekEventStreamConsumer(value) => (
+            28,
+            value.contract_lineage.as_str(),
+            0,
+            value.reactive_module_hash.as_slice(),
+            value.operation_name.as_str(),
+        ),
+        v1::capability_permission::Permission::WatchNamedQuery(value) => (
+            29,
+            value.contract_lineage.as_str(),
+            0,
+            value.reactive_module_hash.as_slice(),
+            value.operation_name.as_str(),
+        ),
+        v1::capability_permission::Permission::ConsumeContextualSubscription(value) => (
+            30,
+            value.contract_lineage.as_str(),
+            0,
+            value.reactive_module_hash.as_slice(),
+            value.operation_name.as_str(),
+        ),
     };
     if key.0 >= 3
         && matches!(key.0, 3 | 5 | 6 | 7 | 8 | 9)
@@ -2537,6 +2565,13 @@ fn permission_key(
         return Err(PublicWireError::InvalidIdentity);
     }
     if key.0 == 26 && !valid_bounded_text(key.1, MAX_CONTRACT_LINEAGE_BYTES) {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    if matches!(key.0, 27..=30)
+        && (!valid_bounded_text(key.1, MAX_CONTRACT_LINEAGE_BYTES)
+            || key.3.len() != 32
+            || !valid_bounded_text(key.4, 256))
+    {
         return Err(PublicWireError::InvalidIdentity);
     }
     Ok(key)

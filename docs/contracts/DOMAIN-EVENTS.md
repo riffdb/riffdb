@@ -1,5 +1,10 @@
 # Domain events
 
+Application-facing consumption is defined with bounded `.riffr` reactive
+modules, not raw commit-log access. See [Reactive Modules](../reactive/MODULES.md)
+for partition proofs, selected payload fields, exact identities, and role
+permissions.
+
 RiffDB domain events are immutable facts committed atomically with the command's
 state changes, declared outcome, idempotency result, provenance, and commit
 record. They are not a second event store and do not require reconstructing

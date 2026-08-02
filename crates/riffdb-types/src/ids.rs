@@ -337,6 +337,18 @@ hash_id!(
     QueryModuleHash
 );
 hash_id!(
+    /// The hash of one exact reactive source document.
+    ReactiveSourceHash
+);
+hash_id!(
+    /// The identity of one canonical reactive operation plan.
+    ReactiveOperationHash
+);
+hash_id!(
+    /// The identity of one canonical immutable reactive module.
+    ReactiveModuleHash
+);
+hash_id!(
     /// The identity of one canonical application manifest.
     ApplicationManifestHash
 );
@@ -777,6 +789,57 @@ impl fmt::Debug for QueryOperationName {
 }
 
 impl fmt::Display for QueryOperationName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Checked exact name of one reactive application operation.
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ReactiveOperationName(String);
+
+impl ReactiveOperationName {
+    /// Maximum encoded bytes in one reactive operation name.
+    pub const MAX_BYTES: usize = 256;
+
+    /// Checks one nonempty source identifier without normalization.
+    pub fn new(value: impl Into<String>) -> Result<Self, TextIdError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(TextIdError::Empty);
+        }
+        if value.len() > Self::MAX_BYTES {
+            return Err(TextIdError::TooLong {
+                maximum: Self::MAX_BYTES,
+                actual: value.len(),
+            });
+        }
+        if let Some(index) = value.bytes().enumerate().find_map(|(index, byte)| {
+            (!(byte == b'_' || byte.is_ascii_alphabetic() || index > 0 && byte.is_ascii_digit()))
+                .then_some(index)
+        }) {
+            return Err(TextIdError::InvalidCharacter { index });
+        }
+        Ok(Self(value))
+    }
+
+    /// Borrows the exact operation name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ReactiveOperationName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("ReactiveOperationName")
+            .field(&self.0)
+            .finish()
+    }
+}
+
+impl fmt::Display for ReactiveOperationName {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)
     }
