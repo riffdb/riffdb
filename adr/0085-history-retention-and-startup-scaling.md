@@ -120,7 +120,7 @@ choice.
 
 Status: Accepted by the maintainer on 2026-08-02.
 
-## Amendment 2 — retention definitions (Proposed 2026-08-02)
+## Amendment 2 — retention definitions (Accepted 2026-08-02)
 
 Scoping approved by the maintainer 2026-08-02: hard-fence-only watermark
 with a manual detach verb (the ADR-0086 §8 automated replay budget follows
@@ -185,4 +185,4 @@ deliberate maintenance points, never in the hot write path.
   manifest watermark covers it; restore stamps the watermark and re-derives
   fencing before any subsequent prune.
 
-Status: Proposed. Acceptance is the maintainer's.
+Status: Accepted by the maintainer on 2026-08-02.
