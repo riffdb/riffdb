@@ -580,7 +580,308 @@ pub(crate) fn is_holdback_active(error: &ColumnarError) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    use riffdb_catalog::{
+        ActiveCatalogSnapshot as CatalogSnapshotReadback, CatalogHistoryOutcome,
+        ValidatedContractBundle, validate_catalog_history,
+    };
+    use riffdb_columnar::{ColumnarQueryRequest, QueryBudget, QueryResult, query_snapshot};
+    use riffdb_storage_api::{
+        AuditPrincipalV1, CatalogActivationIntentV1, CatalogActivationResult,
+        CatalogAdministrationRepository, DatabaseInitializationPort, DatabaseInitializationResult,
+        EvidencePageLimit, ReadableCapabilityDigestInventory, ReadableDigestKey,
+        ReadableIdempotencyDigestInventory, StartupValidationInputs, StructuralEvidenceCursor,
+        StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession,
+        StructuralOpenOutcome,
+    };
+    use riffdb_storage_redb::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
+    use riffdb_types::{
+        ActorId, ActorKind, CanonicalValue, CapabilityId, DatabaseId, DigestKeyId, RequestId,
+        Timestamp,
+    };
+
     use super::*;
+    use crate::config::ConfiguredProjection;
+
+    const ADAPTER_BOARD_CONTRACT: &str = r#"
+contract AdapterBoard version 1 {
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field status: u64
+    field title: string<64>
+  }
+
+  aggregate Tickets {
+    root Ticket
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+
+  command CreateTicket {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input ticket_id: uuid
+    input status: u64
+    input title: string<64>
+    idempotency_key idempotency_key
+    create Ticket(organization_id, ticket_id) as ticket
+      else TicketExists { ticket_id: ticket_id }
+    set ticket.status = status
+    set ticket.title = title
+    return Created { ticket: ticket }
+  }
+}
+"#;
+
+    static NEXT_ADAPTER_PATH: AtomicU64 = AtomicU64::new(1);
+
+    fn adapter_temp_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "riffdb-columnar-adapter-{label}-{}-{}",
+            std::process::id(),
+            NEXT_ADAPTER_PATH.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    fn uuid_bytes(seed: u8) -> [u8; 16] {
+        let mut bytes = [seed; 16];
+        bytes[6] = 0x70 | (seed & 0x0f);
+        bytes[8] = 0x80 | (seed & 0x3f);
+        bytes
+    }
+
+    fn open_operational(store: RedbStore) -> RedbOperationalPorts {
+        let key = ReadableDigestKey::v1(DigestKeyId::new(1).expect("digest key ID"));
+        let inputs = StartupValidationInputs::new(
+            Timestamp::new(1_700_200_000, 0).expect("timestamp"),
+            ReadableCapabilityDigestInventory::new(vec![key]).expect("capability digests"),
+            ReadableIdempotencyDigestInventory::new(vec![key]).expect("idempotency digests"),
+        );
+        let mut session = store
+            .begin_structural_evidence(inputs)
+            .expect("begin structural validation");
+        let database_id = session.database_id();
+        let open_session_id = session.open_session_id();
+        let limit = EvidencePageLimit::new(64).expect("evidence page limit");
+        let mut cursor = StructuralEvidenceCursor::start(database_id, open_session_id);
+        let structural_end = loop {
+            match session
+                .read_structural_evidence(cursor, limit)
+                .expect("read structural evidence")
+            {
+                StructuralEvidencePage::Page { findings, next, .. } => {
+                    assert!(findings.is_empty(), "fresh adapter store has no findings");
+                    cursor = next;
+                }
+                StructuralEvidencePage::ExactEnd(end) => break end,
+            }
+        };
+        let (history, historical_end) = validate_catalog_history(&mut session)
+            .expect("validate empty catalog history")
+            .into_parts();
+        let opened = session
+            .finish(structural_end, historical_end)
+            .expect("finish structural validation");
+        let CatalogHistoryOutcome::Ready(history) = history else {
+            panic!("fresh adapter store cannot require migration");
+        };
+        let StructuralOpenOutcome::Clean(opened) = opened else {
+            panic!("fresh adapter store cannot expose a migration port");
+        };
+        assert!(history.matches(opened.database_id(), opened.open_session_id()));
+        let (_, _, _, dormant): (_, _, _, RedbDormantPorts) = opened.into_parts();
+        dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate checked adapter ports")
+    }
+
+    fn board_runtime(label: &str) -> (Arc<ColumnarRuntime>, PathBuf, PathBuf) {
+        let database_path = adapter_temp_path(&format!("{label}-db"));
+        let projections_root = adapter_temp_path(&format!("{label}-proj"));
+        std::fs::create_dir_all(&projections_root).expect("create projections root");
+        let mut store = RedbStore::open(&database_path).expect("create adapter database");
+        let database_id = DatabaseId::from_bytes(uuid_bytes(0x11)).expect("database id");
+        assert_eq!(
+            store
+                .initialize_database(database_id)
+                .expect("initialize adapter database"),
+            DatabaseInitializationResult::Installed(database_id)
+        );
+        let checked = ValidatedContractBundle::from_compiler_bundle(
+            riffdb_contract_compiler::compile_contract_source(ADAPTER_BOARD_CONTRACT)
+                .expect("compile adapter board contract"),
+        )
+        .expect("validate adapter board contract");
+        let mut ports = open_operational(store);
+        let stored = checked.to_stored().expect("encode adapter bundle");
+        let activation = ports
+            .activate_catalog(&CatalogActivationIntentV1::new(
+                None,
+                stored,
+                RequestId::from_bytes(uuid_bytes(0x21)).expect("request id"),
+                AuditPrincipalV1::new(
+                    ActorId::new("adapter-test").expect("actor"),
+                    ActorKind::Human,
+                    CapabilityId::from_bytes(uuid_bytes(0x31)).expect("capability"),
+                    std::num::NonZeroU64::MIN,
+                ),
+                Timestamp::new(1_700_200_001, 0).expect("timestamp"),
+                None,
+            ))
+            .expect("activate adapter board catalog");
+        assert!(matches!(
+            activation,
+            CatalogActivationResult::Activated { .. }
+        ));
+        let storage =
+            SharedRedbOperationalPorts::new(ports, None).expect("share adapter operational ports");
+        // Sanity: the catalog readback the runtime performs must succeed.
+        assert!(
+            CatalogSnapshotReadback::read(&storage)
+                .expect("read active adapter catalog")
+                .is_some()
+        );
+        let projection = ConfiguredProjection::for_test(
+            "ticket_board",
+            "Ticket",
+            &["status", "title"],
+            "organization_id",
+        );
+        let runtime = ColumnarRuntime::open(storage, &[projection], &projections_root, 1)
+            .expect("open adapter columnar runtime");
+        (runtime, database_path, projections_root)
+    }
+
+    fn board_query() -> ColumnarQueryRequest {
+        ColumnarQueryRequest {
+            org_scope: CanonicalValue::Uuid(uuid_bytes(0x41)),
+            select: Vec::new(),
+            predicates: Vec::new(),
+            order: Vec::new(),
+            limit: None,
+            group_by: None,
+            aggregate: None,
+            budget: QueryBudget::default(),
+        }
+    }
+
+    /// Transcript (b) — serve-under-lock is impossible, proven live in both
+    /// directions against the REAL adapter and engine:
+    ///
+    /// 1. queries against a held [`ColumnarObservation`] complete WHILE the
+    ///    worker path holds the engine lock (query execution needs no engine
+    ///    access), and
+    /// 2. the worker path acquires the engine lock and completes a full
+    ///    apply + checkpoint pass WHILE an observation is held and being
+    ///    queried (observations retain no lock).
+    ///
+    /// A re-ordered implementation that served from the engine under lock (or
+    /// returned observations retaining the lock) deadlocks one of the two
+    /// bounded handshakes below and fails on `recv_timeout`.
+    #[test]
+    fn held_observation_and_running_queries_never_block_apply_or_checkpoint() {
+        let (runtime, database_path, projections_root) = board_runtime("lockfree");
+        // First worker pass publishes the (empty) snapshot.
+        {
+            let slot = runtime.engines().get("ticket_board").expect("board slot");
+            let mut engine = slot.lock_engine().expect("engine lock");
+            engine
+                .apply_available(runtime.apply_source())
+                .expect("initial apply pass");
+        }
+        let port = ServerColumnarProjectionPort::new(Arc::clone(&runtime));
+        let observation = port.observe("ticket_board").expect("board observation");
+        assert!(observation.has_published());
+
+        // Continuous query load against the held observation.
+        let query_cycles = Arc::new(AtomicU64::new(0));
+        let keep_querying = Arc::new(AtomicBool::new(true));
+        let query_thread = {
+            let observation = observation.clone();
+            let query_cycles = Arc::clone(&query_cycles);
+            let keep_querying = Arc::clone(&keep_querying);
+            thread::spawn(move || {
+                while keep_querying.load(Ordering::Acquire) {
+                    let result = query_snapshot(
+                        observation.definition(),
+                        observation.snapshot(),
+                        &board_query(),
+                    )
+                    .expect("query over held observation");
+                    assert!(matches!(result, QueryResult::Rows(_)));
+                    query_cycles.fetch_add(1, Ordering::AcqRel);
+                }
+            })
+        };
+
+        // Worker pass that holds the engine lock across a handshake window.
+        let (locked_sender, locked_receiver) = mpsc::channel();
+        let (proceed_sender, proceed_receiver) = mpsc::channel();
+        let (done_sender, done_receiver) = mpsc::channel();
+        let worker = {
+            let runtime = Arc::clone(&runtime);
+            thread::spawn(move || {
+                let slot = runtime.engines().get("ticket_board").expect("board slot");
+                let mut engine = slot.lock_engine().expect("worker engine lock");
+                locked_sender.send(()).expect("report lock acquisition");
+                proceed_receiver
+                    .recv_timeout(Duration::from_secs(30))
+                    .expect("queries must complete while the engine lock is held");
+                engine
+                    .apply_available(runtime.apply_source())
+                    .expect("apply under held observation");
+                match engine.checkpoint() {
+                    Ok(_) => {}
+                    Err(error) => assert!(is_holdback_active(&error), "checkpoint failed"),
+                }
+                drop(engine);
+                done_sender.send(()).expect("report pass completion");
+            })
+        };
+
+        // Direction 2: the worker acquired the lock while the observation is
+        // held and queried.
+        locked_receiver
+            .recv_timeout(Duration::from_secs(30))
+            .expect("a held observation must not retain the engine lock");
+        // Direction 1: at least two full query cycles complete while the
+        // engine lock is held by the worker.
+        let baseline = query_cycles.load(Ordering::Acquire);
+        let spin_deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while query_cycles.load(Ordering::Acquire) < baseline + 2 {
+            assert!(
+                std::time::Instant::now() < spin_deadline,
+                "queries over a held observation stalled while the engine lock was held"
+            );
+            thread::yield_now();
+        }
+        proceed_sender.send(()).expect("release the worker");
+        done_receiver
+            .recv_timeout(Duration::from_secs(30))
+            .expect("apply/checkpoint must complete while queries execute");
+        worker.join().expect("worker thread");
+        keep_querying.store(false, Ordering::Release);
+        query_thread.join().expect("query thread");
+
+        // The held observation stays valid after the pass.
+        let result = query_snapshot(
+            observation.definition(),
+            observation.snapshot(),
+            &board_query(),
+        )
+        .expect("query after apply pass");
+        assert!(matches!(result, QueryResult::Rows(_)));
+
+        drop(port);
+        drop(observation);
+        drop(runtime);
+        let _ = std::fs::remove_file(&database_path);
+        let _ = std::fs::remove_dir_all(&projections_root);
+    }
 
     #[test]
     fn registration_error_names_the_projection() {

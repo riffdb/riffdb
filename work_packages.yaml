@@ -6974,3 +6974,42 @@ work_packages:
     cannot widen; PK-order proof holds for fixed-width key components; frontiers never satisfy
     cross-incarnation tokens; structured storage errors expose only closed kinds.
   human_review_triggers: *id001
+- id: WP-432
+  name: Columnar projected-read surface wiring and acceptance spine (CP2b)
+  depends_on: [WP-431]
+  objective: Wire the ADR-0086 projected read surface end to end — config registration,
+    columnar apply worker and notifier, freshness wait loop with post-wake reauthorization,
+    authorization composition with single-source org/partition derivation, typed §7 outcomes,
+    ExecuteProjectedQuery RPC — and ship the acceptance spine (live cross-path board
+    equivalence gate, freshness matrix, real-revocation mid-wait denial).
+  requirements: []
+  required_adrs: [ADR-0086, ADR-0087, ADR-0072]
+  allowed_paths: [work_packages.yaml, Cargo.lock, proto/riffdb/app/v1/application.proto,
+    crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-service/**,
+    crates/riffdb-server/**, crates/riffdb-policy/**, crates/riffdb-types/src/service.rs,
+    crates/riffdb-observability/**, crates/riffdb-errors/**, fixtures/proto/**, tests/**]
+  deliverables:
+  - Config-registered board projection with ProjectionsRoot path role and typed startup errors
+  - RunningColumnarWorker apply/checkpoint thread, ColumnarNotifier, and server adapter keeping
+    engine co-location behind one port (no storage handle in riffdb-service)
+  - projected_query service module with begin/pre-execute/post-wake/pre-release safe points,
+    Causal/Bounded/Available freshness, and typed Ready/Lagging/Building/Rebuilding/Degraded/Invalid outcomes
+  - ExecuteProjectedQuery on ApplicationQueryService with opaque token/frontier wire carriage
+  - Live cross-path equivalence gate; the projected board query is byte-identical to the
+    compiled board_page rows at the same frontier over real commands and real apply
+  - Freshness matrix acceptance including stale-incarnation refusal and real revocation
+    mid-wait denied at the post-wake safe point; columnar worker readiness folded into health
+  acceptance_commands:
+  - cargo test -p riffdb-service --test projected_read_acceptance
+  - cargo test -p riffdb-server --lib
+  - cargo test --workspace --all-features
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/generate-proto --check
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  exit_gate: Projected and compiled board reads are byte-identical at the same frontier under
+    real writes and real apply; every freshness policy resolves to its typed outcome; a stale
+    incarnation token never serves; a capability revoked mid-wait is denied at the post-wake
+    safe point without serving rows.
+  human_review_triggers: *id001
