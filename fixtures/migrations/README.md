@@ -44,8 +44,11 @@ key, registry, and impossible-pair fixtures. The redb-owned generator is
 `scripts/generate-migration-durable-fixtures`; the process recovery matrix lives
 under `tests/recovery/`. WP-409 creates `public/v1/`
 descriptor, wire, SDK, CLI JSONL, authorization, redaction, and negative MCP
-fixtures. WP-411 and WP-412 add Gate-B and Gate-C cases without changing an
-existing V1 tag or fixture meaning. WP-413 freezes the installed upgrade matrix.
+fixtures. WP-411 adds `gate-b/structural-rows/`, including exact ledger-v2
+rename aliases, fresh-ID replacement, checked conversion, exhaustive enum map,
+and their generated artifact identities. Its incomplete-map diagnostic is under
+`source/invalid/`. WP-412 adds Gate-C cases without changing an existing V1 tag
+or fixture meaning. WP-413 freezes the installed upgrade matrix.
 
 ## Change-Class Gates
 

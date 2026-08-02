@@ -20,7 +20,9 @@ use crate::projection_lowering::lower_projections;
 use crate::schema_lowering::{
     lower_schema, validate_relationship_declarations, validate_unique_declarations,
 };
-use crate::symbols::{allocate_genesis_symbols, allocate_successor_symbols};
+use crate::symbols::{
+    allocate_genesis_symbols, allocate_successor_symbols, allocate_successor_symbols_with_renames,
+};
 use crate::typecheck::resolve_declared_types;
 
 /// A total parsing or semantic-compilation failure.
@@ -92,7 +94,7 @@ pub fn validate_contract_source(source: &str) -> Result<(), CompilationError> {
 
 /// Compiles a lineage genesis source into one immutable checked bundle.
 pub fn compile_contract_source(source: &str) -> Result<ContractBundle, CompilationError> {
-    compile(source, None)
+    compile(source, None, Vec::new())
 }
 
 /// Compiles an exact-parent successor while retaining lineage IDs and tombstones.
@@ -100,12 +102,28 @@ pub fn compile_contract_successor(
     source: &str,
     parent: &ContractBundle,
 ) -> Result<ContractBundle, CompilationError> {
-    compile(source, Some(parent))
+    compile(source, Some(parent), Vec::new())
+}
+
+/// Compiles an exact-parent successor and its migration as one sealed operation.
+pub fn compile_contract_migration_successor(
+    contract_source: &str,
+    migration_source: &str,
+    parent: &ContractBundle,
+) -> Result<(ContractBundle, riffdb_contract_ir::MigrationBundleV1), CompilationError> {
+    let migration_document = riffdb_contract_syntax::parse_migration(migration_source)
+        .map_err(CompilationError::Syntax)?;
+    let renames = crate::migration::bind_identity_renames(&migration_document, parent)?;
+    let candidate = compile(contract_source, Some(parent), renames)?;
+    let migration =
+        crate::migration::compile_migration_source(migration_source, parent, &candidate)?;
+    Ok((candidate, migration))
 }
 
 fn compile(
     source: &str,
     parent: Option<&ContractBundle>,
+    renames: Vec<riffdb_contract_ir::StableIdentityRename>,
 ) -> Result<ContractBundle, CompilationError> {
     let document = parse_contract(source).map_err(CompilationError::Syntax)?;
     let symbols = match parent {
@@ -116,8 +134,12 @@ fn compile(
                     document.contract.value.name.span,
                 ));
             }
-            let symbols = allocate_successor_symbols(&document, parent.ledger())
-                .map_err(CompilationError::Semantic)?;
+            let symbols = if renames.is_empty() {
+                allocate_successor_symbols(&document, parent.ledger())
+            } else {
+                allocate_successor_symbols_with_renames(&document, parent.ledger(), renames)
+            }
+            .map_err(CompilationError::Semantic)?;
             if symbols.contract_version <= parent.contract_version() {
                 return Err(semantic_error(
                     crate::diagnostic::CompilerDiagnosticCode::InvalidParent,
@@ -204,6 +226,24 @@ mod tests {
         LineageEntryState, UnaryOperator, ValueType, ValueTypeTag,
     };
     use riffdb_types::CanonicalValue;
+
+    #[test]
+    fn migration_aware_global_enum_rename_allocates_one_alias() {
+        let parent = compile_contract_source("contract EnumRename version 1 { enum Old { One } }")
+            .expect("parent");
+        let source = "contract EnumRename version 2 { enum New { One } }";
+        let migration = "migration EnumRename from 1 to 2 { rename enum Old to New }";
+        let document = riffdb_contract_syntax::parse_migration(migration).expect("migration");
+        let renames = crate::migration::bind_identity_renames(&document, &parent).expect("binding");
+        let candidate = compile(source, Some(&parent), renames).expect("candidate");
+
+        assert_eq!(candidate.ledger().aliases().len(), 1);
+        assert_eq!(
+            candidate.schema().enums()[0].id(),
+            parent.schema().enums()[0].id()
+        );
+        compile_migration_source(migration, &parent, &candidate).expect("migration proof");
+    }
 
     fn assert_semantic_diagnostic_at(
         source: &str,

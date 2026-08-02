@@ -1,0 +1,9 @@
+contract StructuralRows version 2 {
+  enum WorkflowStatus { Open, Archived }
+  entity Record {
+    key (id: uuid)
+    field amount: u64
+    field status: WorkflowStatus
+  }
+  aggregate Rows { root Record partition_by id conflict_key (id) }
+}

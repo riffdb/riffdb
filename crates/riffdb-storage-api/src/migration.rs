@@ -282,6 +282,7 @@ impl fmt::Debug for MigrationRowEvidence {
 pub struct MigrationRowMutation {
     expected: MigrationRowEvidence,
     post_image: Option<StoredEntityRecordV1>,
+    retire_source: bool,
     rebuilt_indexes: Vec<StoredIndexEntryV2>,
 }
 
@@ -303,8 +304,19 @@ impl MigrationRowMutation {
         Ok(Self {
             expected,
             post_image,
+            retire_source: false,
             rebuilt_indexes,
         })
+    }
+
+    /// Constructs a logical retirement that archives and removes the authoritative row.
+    pub fn retire(expected: MigrationRowEvidence) -> Self {
+        Self {
+            expected,
+            post_image: None,
+            retire_source: true,
+            rebuilt_indexes: Vec::new(),
+        }
     }
 
     /// Borrows exact source evidence.
@@ -317,6 +329,12 @@ impl MigrationRowMutation {
     #[must_use]
     pub const fn post_image(&self) -> Option<&StoredEntityRecordV1> {
         self.post_image.as_ref()
+    }
+
+    /// Whether the source row is archived and removed instead of replaced.
+    #[must_use]
+    pub const fn retires_source(&self) -> bool {
+        self.retire_source
     }
 
     /// Borrows complete successor index post-images.
@@ -332,11 +350,12 @@ impl MigrationRowMutation {
             .as_ref()
             .map_or(Ok(0), StoredEntityRecordV1::semantic_bytes)
             .map_err(|_| MigrationStageError::LimitExceeded)?;
-        let retained_predecessor_bytes = self
-            .post_image
-            .as_ref()
-            .map_or(Ok(0), |_| self.expected.source().semantic_bytes())
-            .map_err(|_| MigrationStageError::LimitExceeded)?;
+        let retained_predecessor_bytes = if self.post_image.is_some() || self.retire_source {
+            self.expected.source().semantic_bytes()
+        } else {
+            Ok(0)
+        }
+        .map_err(|_| MigrationStageError::LimitExceeded)?;
         let entity_bytes = entity_bytes
             .checked_add(retained_predecessor_bytes)
             .filter(|bytes| *bytes <= MAX_MIGRATION_BATCH_WRITE_BYTES)
@@ -365,6 +384,7 @@ impl fmt::Debug for MigrationRowMutation {
                 "post_image",
                 &self.post_image.as_ref().map(StoredEntityRecordV1::target),
             )
+            .field("retire_source", &self.retire_source)
             .field("rebuilt_index_count", &self.rebuilt_indexes.len())
             .finish()
     }
@@ -601,6 +621,15 @@ pub trait MigrationStagePort {
     /// Returns the immutable application frontier captured before staging.
     fn migration_frozen_frontier(&self) -> Option<CommitSequence> {
         None
+    }
+
+    /// Counts predecessor images retained for logically retired entity types.
+    fn retained_migration_entity_count(
+        &self,
+        _migration: MigrationBundleHash,
+        _entity_types: &[EntityTypeId],
+    ) -> Result<u64, MigrationStageError> {
+        Ok(0)
     }
 
     /// Applies row/index mutations and journal advancement atomically.

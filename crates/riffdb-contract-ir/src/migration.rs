@@ -163,6 +163,56 @@ pub enum MigrationConversionV1 {
     StringToUuid = conversion_tag::STRING_TO_UUID,
 }
 
+impl MigrationConversionV1 {
+    /// Whether this closed conversion accepts the exact predecessor and successor types.
+    #[must_use]
+    pub fn accepts(self, old: &crate::ValueType, new: &crate::ValueType) -> bool {
+        use crate::ValueTypeTag as Tag;
+        match self {
+            Self::Identity => old == new,
+            Self::WrapOptional => new.optional_inner() == Some(old),
+            Self::AssertUnwrapOptional => old.optional_inner() == Some(new),
+            Self::CheckedI64ToU64 => old.tag() == Tag::I64 && new.tag() == Tag::U64,
+            Self::CheckedU64ToI64 => old.tag() == Tag::U64 && new.tag() == Tag::I64,
+            Self::ExactDecimal => old.decimal_spec().is_some() && new.decimal_spec().is_some(),
+            Self::AssertBoundedNarrow => match (old.tag(), new.tag()) {
+                (Tag::String, Tag::String) | (Tag::Bytes, Tag::Bytes) => old
+                    .byte_bound()
+                    .zip(new.byte_bound())
+                    .is_some_and(|(old, new)| new <= old),
+                (Tag::List, Tag::List) => old.list_parts().zip(new.list_parts()).is_some_and(
+                    |((old_element, old_max), (new_element, new_max))| {
+                        old_element == new_element && new_max <= old_max
+                    },
+                ),
+                _ => false,
+            },
+            Self::ListElements => old.list_parts().zip(new.list_parts()).is_some_and(
+                |((old_element, old_max), (new_element, new_max))| {
+                    old_max <= new_max && inferred_element_conversion(old_element, new_element)
+                },
+            ),
+            Self::UuidToString => {
+                old.tag() == Tag::Uuid
+                    && new.tag() == Tag::String
+                    && new.byte_bound().is_some_and(|bound| bound >= 36)
+            }
+            Self::StringToUuid => old.tag() == Tag::String && new.tag() == Tag::Uuid,
+        }
+    }
+}
+
+fn inferred_element_conversion(old: &crate::ValueType, new: &crate::ValueType) -> bool {
+    old == new
+        || MigrationConversionV1::WrapOptional.accepts(old, new)
+        || MigrationConversionV1::AssertUnwrapOptional.accepts(old, new)
+        || MigrationConversionV1::CheckedI64ToU64.accepts(old, new)
+        || MigrationConversionV1::CheckedU64ToI64.accepts(old, new)
+        || MigrationConversionV1::ExactDecimal.accepts(old, new)
+        || MigrationConversionV1::UuidToString.accepts(old, new)
+        || MigrationConversionV1::StringToUuid.accepts(old, new)
+}
+
 /// One enum-variant mapping in stable predecessor-ID order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MigrationEnumMappingV1 {
@@ -197,6 +247,10 @@ pub enum MigrationStepKindV1 {
     RenameIdentity {
         /// Stable namespace.
         namespace: StableIdNamespaceTag,
+        /// Closed identity owner-kind tag.
+        owner_kind: u8,
+        /// Exact stable owner path.
+        owner_ids: Vec<u32>,
         /// Stable numeric ID.
         stable_id: u32,
         /// Successor display name.
@@ -206,6 +260,10 @@ pub enum MigrationStepKindV1 {
     RetireIdentity {
         /// Stable namespace.
         namespace: StableIdNamespaceTag,
+        /// Closed identity owner-kind tag.
+        owner_kind: u8,
+        /// Exact stable owner path.
+        owner_ids: Vec<u32>,
         /// Stable numeric ID.
         stable_id: u32,
     },
@@ -596,18 +654,31 @@ impl MigrationBundleV1 {
 fn validate_step_kind(kind: &MigrationStepKindV1) -> Result<(), IrValidationError> {
     match kind {
         MigrationStepKindV1::RenameIdentity {
+            namespace,
+            owner_kind,
+            owner_ids,
             stable_id,
             new_name,
-            ..
         } => {
-            if *stable_id == 0 {
+            if *stable_id == 0
+                || crate::StableIdNamespace::new(*namespace, *owner_kind, owner_ids.clone())
+                    .is_err()
+            {
                 return Err(IrValidationError::InvalidReference {
                     kind: "migration stable identity",
                 });
             }
             validate_source_name(new_name, "migration rename")?;
         }
-        MigrationStepKindV1::RetireIdentity { stable_id, .. } if *stable_id == 0 => {
+        MigrationStepKindV1::RetireIdentity {
+            namespace,
+            owner_kind,
+            owner_ids,
+            stable_id,
+        } if *stable_id == 0
+            || crate::StableIdNamespace::new(*namespace, *owner_kind, owner_ids.clone())
+                .is_err() =>
+        {
             return Err(IrValidationError::InvalidReference {
                 kind: "migration stable identity",
             });
@@ -677,18 +748,32 @@ fn encode_step(writer: &mut Writer, step: &MigrationStepV1) -> Result<(), IrVali
     match &step.kind {
         MigrationStepKindV1::RenameIdentity {
             namespace,
+            owner_kind,
+            owner_ids,
             stable_id,
             new_name,
         } => {
             writer.u8(*namespace as u8)?;
+            writer.u8(*owner_kind)?;
+            writer.u8(owner_ids.len() as u8)?;
+            for owner in owner_ids {
+                writer.u32(*owner)?;
+            }
             writer.u32(*stable_id)?;
             writer.string(new_name)?;
         }
         MigrationStepKindV1::RetireIdentity {
             namespace,
+            owner_kind,
+            owner_ids,
             stable_id,
         } => {
             writer.u8(*namespace as u8)?;
+            writer.u8(*owner_kind)?;
+            writer.u8(owner_ids.len() as u8)?;
+            for owner in owner_ids {
+                writer.u32(*owner)?;
+            }
             writer.u32(*stable_id)?;
         }
         MigrationStepKindV1::SetField {
@@ -795,11 +880,15 @@ fn decode_step(reader: &mut Reader<'_>) -> Result<MigrationStepV1, IrValidationE
     let kind = match reader.u8()? {
         step_tag::RENAME_IDENTITY => MigrationStepKindV1::RenameIdentity {
             namespace: decode_namespace(reader.u8()?)?,
+            owner_kind: reader.u8()?,
+            owner_ids: decode_owner_ids(reader)?,
             stable_id: reader.u32()?,
             new_name: reader.string(256)?,
         },
         step_tag::RETIRE_IDENTITY => MigrationStepKindV1::RetireIdentity {
             namespace: decode_namespace(reader.u8()?)?,
+            owner_kind: reader.u8()?,
+            owner_ids: decode_owner_ids(reader)?,
             stable_id: reader.u32()?,
         },
         step_tag::SET_FIELD => MigrationStepKindV1::SetField {
@@ -885,6 +974,18 @@ fn decode_step(reader: &mut Reader<'_>) -> Result<MigrationStepV1, IrValidationE
 fn decode_expression(reader: &mut Reader<'_>) -> Result<MigrationExpressionV1, IrValidationError> {
     let arena = decode_expression_arena(reader)?;
     MigrationExpressionV1::new(arena, ExprId::new(reader.u32()?))
+}
+
+fn decode_owner_ids(reader: &mut Reader<'_>) -> Result<Vec<u32>, IrValidationError> {
+    let count = reader.u8()? as usize;
+    if count > 2 {
+        return Err(IrValidationError::LimitExceeded {
+            kind: "migration identity owner path",
+            maximum: 2,
+            actual: count,
+        });
+    }
+    (0..count).map(|_| reader.u32()).collect()
 }
 
 const fn decode_conversion(tag: u8) -> Result<MigrationConversionV1, IrValidationError> {

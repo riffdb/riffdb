@@ -5,14 +5,15 @@ existing authoritative rows or derived state to be checked or transformed.
 The latter is `RequiresMigration`: the candidate is valid, but deployment does
 not activate it without an exact migration artifact for the active parent.
 
-The current implementation compiles and locks Gate A migration artifacts,
-checks and applies them through the public administration service, and drives
+The current implementation compiles and locks Gate A additive and Gate B
+structural migration artifacts, checks and applies them through the public
+administration service, and drives
 the internal redb execution and startup-recovery path: complete
 preflight, an immutable automatic backup, bounded staged transforms, projection
 rebuild, complete validation, atomic publication, and automatic
 post-publication rollback. `riffdb migration plan` remains a local read-only
-inspection. The retained TicketDesk Gate-A fixture proves the populated
-installed-application workflow across every additive change class.
+inspection. The retained TicketDesk Gate-A and StructuralRows Gate-B fixtures
+freeze the additive and structural artifact boundaries.
 
 ## Semantic execution boundary
 
@@ -132,7 +133,7 @@ At most 32 parent migrations may be retained in one Application Source V3.
 Every source path, parent artifact path, parent version, and generated
 migration artifact path must be unique.
 
-## Author a Gate A migration
+## Author a migration
 
 Retain the canonical parent bundle before changing the contract. Add the
 successor contract source, bump its version, and declare the exact parent and
@@ -190,9 +191,84 @@ migration TicketDesk from 1 to 2 {}
 ```
 
 Missing, duplicate, stale, or unnecessary proofs fail with bounded source-span
-diagnostics. Gate B rename, retirement, replacement, and enum-map syntax and
-Gate C rekey or ownership acknowledgements are reserved in the V1 grammar but
-fail closed until their owning work packages implement them.
+diagnostics.
+
+### Structural Gate B
+
+A semantic rename keeps the original numeric stable ID only when the exact type
+and semantic role remain unchanged. The predecessor name becomes a permanent
+lineage alias and can never be allocated again. Use the fully qualified owner
+for scoped identities:
+
+```riffm
+migration StructuralRows from 1 to 2 {
+  rename entity Row to Record
+  rename field Row.status to workflow_status
+}
+```
+
+Renaming an entity, field, enum variant, command, event, outcome, or projection
+uses the migration-aware successor compiler. Ordinary successor compilation
+does not infer a rename and continues to reject stable-ID reuse. The generated
+application lock pins the migration-aware successor, so lock checks and deploy
+preview agree on one exact bundle identity.
+
+Changing a field's type or meaning is a replacement, not a rename. The old
+identity is tombstoned, the replacement receives a fresh field ID, and every
+predecessor row is checked before staging begins:
+
+```riffm
+migration StructuralRows from 1 to 2 {
+  transform Row {
+    require old.value >= 0
+    replace value with amount using checked_i64_to_u64
+  }
+}
+```
+
+The closed Gate-B conversion names are:
+
+- `identity` and `wrap_optional`;
+- `assert_unwrap_optional`;
+- `checked_i64_to_u64` and `checked_u64_to_i64`;
+- `decimal_exact`;
+- `assert_bounded_narrow` for strings, bytes, and lists;
+- `list_elements` for the closed element-conversion set; and
+- `uuid_to_string` and `string_to_uuid` using lowercase hyphenated UUID text.
+
+The complete migration fails preflight on a failed `require`, null optional
+unwrap, integer overflow or sign error, inexact decimal rescale, bound
+violation, invalid list element, or noncanonical UUID string. It never rounds,
+truncates, clamps, substitutes a fallback, or skips a row.
+
+Enum changes require one exhaustive mapping entry for every predecessor
+variant. Mapping targets must exist in the successor enum:
+
+```riffm
+map enum WorkflowStatus {
+  Open -> Open
+  Closed -> Archived
+}
+```
+
+`retire` logically removes an entity, command, event, outcome, enum variant, or
+projection identity. Entity rows move to the migration archive; historical
+bundles and committed events, outcomes, provenance, and idempotency evidence
+remain byte-exact. Retiring a command or entity also closes its owned identity
+tree. There is no physical purge. A replacement projection uses a fresh
+projection identity; retire the old projection and let the compiler derive the
+new projection rebuild through the frozen frontier.
+
+```riffm
+migration Surface from 4 to 5 {
+  retire command LegacyWrite
+  retire projection OldTotals
+}
+```
+
+Primary-key replacement, rekeying, repartitioning, aggregate-membership
+changes, relationship-target changes, and conflict-domain changes belong to
+Gate C and still fail closed.
 
 ## Lock and inspect
 

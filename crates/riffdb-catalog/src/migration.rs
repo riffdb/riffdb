@@ -1,12 +1,13 @@
-//! Catalog-sealed contract migration plans and pure Gate-A row evaluation.
+//! Catalog-sealed contract migration plans and pure Gate-A/Gate-B row evaluation.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
 use riffdb_contract_ir::{
-    CompatibilityClass, ContractCandidateV1, EntitySchema, MigrationBundleV1,
-    MigrationExpressionV1, MigrationStepKindV1, StableIdNamespaceTag, compare_successor,
+    CompatibilityClass, CompatibilityCode, ContractCandidateV1, EntitySchema, LineageEntryState,
+    MigrationBundleV1, MigrationConversionV1, MigrationExpressionV1, MigrationStepKindV1,
+    StableIdNamespace, StableIdNamespaceTag, StableIdentity, ValueType, compare_successor,
 };
 use riffdb_invariant::{
     EvaluationError, ExpressionValueSource, evaluate_expression, evaluate_predicate,
@@ -16,8 +17,9 @@ use riffdb_storage_api::{
     MigrationStageError, MigrationStagePort, StoredEntityRecordV1, StoredIndexEntryV2,
 };
 use riffdb_types::{
-    CanonicalRecord, CanonicalValue, ContractBundleHash, ContractMigrationValidationDigest,
-    EntityTypeId, FieldId, IndexId, MigrationBundleHash, hash_contract_migration_validation,
+    CanonicalList, CanonicalRecord, CanonicalValue, ContractBundleHash,
+    ContractMigrationValidationDigest, EntityTypeId, EnumTypeId, EnumVariantId, FieldId, IndexId,
+    MigrationBundleHash, hash_contract_migration_validation,
 };
 
 use crate::ValidatedContractBundle;
@@ -224,6 +226,7 @@ pub struct PreparedMigrationRow {
     rebuilt_indexes: Vec<StoredIndexEntryV2>,
     relationships: Vec<MigrationRelationshipFact>,
     unique_keys: Vec<MigrationUniqueFact>,
+    retired: bool,
 }
 
 /// Move-only catalog proof that every staged row has valid successor meaning.
@@ -286,6 +289,21 @@ impl PreparedMigrationRow {
     pub fn unique_keys(&self) -> &[MigrationUniqueFact] {
         &self.unique_keys
     }
+
+    /// Whether this authoritative row is logically retired from current state.
+    #[must_use]
+    pub const fn is_retired(&self) -> bool {
+        self.retired
+    }
+}
+
+#[derive(Clone)]
+struct FieldReplacement {
+    old: FieldId,
+    new: FieldId,
+    conversion: MigrationConversionV1,
+    old_type: ValueType,
+    new_type: ValueType,
 }
 
 /// Catalog-owned exact Gate-A migration proof.
@@ -299,6 +317,10 @@ pub struct ValidatedMigrationPlan {
     candidate: ValidatedContractBundle,
     migration: MigrationBundleV1,
     set_fields: BTreeMap<EntityTypeId, Vec<(FieldId, MigrationExpressionV1)>>,
+    replacements: BTreeMap<EntityTypeId, Vec<FieldReplacement>>,
+    requirements: BTreeMap<EntityTypeId, Vec<MigrationExpressionV1>>,
+    enum_maps: BTreeMap<EnumTypeId, BTreeMap<EnumVariantId, EnumVariantId>>,
+    retired_entities: BTreeSet<EntityTypeId>,
     rebuilt_indexes: BTreeMap<EntityTypeId, Vec<IndexId>>,
     added_invariants: BTreeMap<EntityTypeId, BTreeSet<riffdb_types::InvariantId>>,
     added_relationships: BTreeSet<(EntityTypeId, String)>,
@@ -382,20 +404,25 @@ impl ValidatedMigrationPlan {
         )
         .and_then(|candidate| compare_successor(parent.bundle(), candidate))
         .map_err(|_| MigrationFinding::new(migration_finding_code::ARTIFACT_MISMATCH))?;
-        if direct.overall() != CompatibilityClass::RequiresMigration
-            || direct
-                .entries()
-                .iter()
-                .any(|entry| entry.class() == CompatibilityClass::Incompatible)
+        if direct.entries().is_empty()
+            || direct.entries().iter().any(|entry| {
+                entry.class() == CompatibilityClass::Incompatible
+                    && entry.code() != CompatibilityCode::RemovedIdentity
+            })
         {
             return Err(MigrationFinding::new(
                 migration_finding_code::ARTIFACT_MISMATCH,
             ));
         }
 
-        let expected = expected_gate_a_steps(&parent, &candidate)?;
+        let mut expected = expected_gate_a_steps(&parent, &candidate)?;
         let mut actual = BTreeSet::new();
         let mut set_fields = BTreeMap::<EntityTypeId, Vec<(FieldId, MigrationExpressionV1)>>::new();
+        let mut replacements = BTreeMap::<EntityTypeId, Vec<FieldReplacement>>::new();
+        let mut requirements = BTreeMap::<EntityTypeId, Vec<MigrationExpressionV1>>::new();
+        let mut enum_maps = BTreeMap::<EnumTypeId, BTreeMap<EnumVariantId, EnumVariantId>>::new();
+        let mut retired_entities = BTreeSet::new();
+        let mut covered_removed = BTreeSet::new();
         let mut rebuilt_indexes = BTreeMap::<EntityTypeId, Vec<IndexId>>::new();
         let mut added_invariants =
             BTreeMap::<EntityTypeId, BTreeSet<riffdb_types::InvariantId>>::new();
@@ -404,6 +431,49 @@ impl ValidatedMigrationPlan {
         let mut rebuilt_projections = BTreeSet::new();
         for step in migration.steps() {
             let key = match step.kind() {
+                MigrationStepKindV1::RenameIdentity {
+                    namespace,
+                    owner_kind,
+                    owner_ids,
+                    stable_id,
+                    new_name,
+                } => {
+                    let identity = migration_identity(
+                        &parent,
+                        *namespace,
+                        *owner_kind,
+                        owner_ids,
+                        *stable_id,
+                    )?;
+                    validate_rename_step(&parent, &candidate, &identity, new_name)?;
+                    covered_removed.insert(identity.clone());
+                    let key = GateAStepKey::Rename(identity);
+                    expected.insert(key.clone());
+                    key
+                }
+                MigrationStepKindV1::RetireIdentity {
+                    namespace,
+                    owner_kind,
+                    owner_ids,
+                    stable_id,
+                } => {
+                    let identity = migration_identity(
+                        &parent,
+                        *namespace,
+                        *owner_kind,
+                        owner_ids,
+                        *stable_id,
+                    )?;
+                    validate_retire_step(&parent, &candidate, &identity)?;
+                    covered_removed.extend(retirement_identity_keys(&parent, &identity));
+                    if *namespace == StableIdNamespaceTag::Entity {
+                        retired_entities
+                            .insert(EntityTypeId::new(*stable_id).ok_or_else(artifact_mismatch)?);
+                    }
+                    let key = GateAStepKey::Retire(identity);
+                    expected.insert(key.clone());
+                    key
+                }
                 MigrationStepKindV1::SetField {
                     entity,
                     field,
@@ -431,6 +501,79 @@ impl ValidatedMigrationPlan {
                         .or_default()
                         .push((*field, expression.clone()));
                     GateAStepKey::SetField(*entity, *field)
+                }
+                MigrationStepKindV1::ReplaceField {
+                    entity,
+                    old_field,
+                    new_field,
+                    conversion,
+                } => {
+                    let old = parent
+                        .bundle()
+                        .schema()
+                        .entity(*entity)
+                        .and_then(|schema| schema.record().field(*old_field))
+                        .ok_or_else(artifact_mismatch)?;
+                    let new = candidate
+                        .bundle()
+                        .schema()
+                        .entity(*entity)
+                        .and_then(|schema| schema.record().field(*new_field))
+                        .ok_or_else(artifact_mismatch)?;
+                    if old_field == new_field
+                        || !conversion.accepts(old.value_type(), new.value_type())
+                    {
+                        return Err(artifact_mismatch());
+                    }
+                    replacements
+                        .entry(*entity)
+                        .or_default()
+                        .push(FieldReplacement {
+                            old: *old_field,
+                            new: *new_field,
+                            conversion: *conversion,
+                            old_type: old.value_type().clone(),
+                            new_type: new.value_type().clone(),
+                        });
+                    expected.remove(&GateAStepKey::SetField(*entity, *new_field));
+                    covered_removed.insert(field_identity_key(*entity, *old_field, old.name())?);
+                    let key = GateAStepKey::Replace(*entity, *old_field, *new_field);
+                    expected.insert(key.clone());
+                    key
+                }
+                MigrationStepKindV1::RequireEntity { entity, predicate } => {
+                    let valid = parent.bundle().schema().entity(*entity).is_some()
+                        && predicate
+                            .arena()
+                            .get(predicate.result())
+                            .is_some_and(|node| {
+                                node.result_type().tag() == riffdb_contract_ir::ValueTypeTag::Bool
+                            });
+                    if !valid {
+                        return Err(artifact_mismatch());
+                    }
+                    requirements
+                        .entry(*entity)
+                        .or_default()
+                        .push(predicate.clone());
+                    let key = GateAStepKey::Require(*entity, step.id().get());
+                    expected.insert(key.clone());
+                    key
+                }
+                MigrationStepKindV1::MapEnum {
+                    enumeration,
+                    mappings,
+                } => {
+                    let map = validate_enum_map(&parent, &candidate, *enumeration, mappings)?;
+                    covered_removed.extend(removed_enum_variant_keys(
+                        &parent,
+                        &candidate,
+                        *enumeration,
+                    )?);
+                    enum_maps.insert(*enumeration, map);
+                    let key = GateAStepKey::EnumMap(*enumeration);
+                    expected.insert(key.clone());
+                    key
                 }
                 MigrationStepKindV1::RebuildIndex { entity, index } => {
                     rebuilt_indexes.entry(*entity).or_default().push(*index);
@@ -485,6 +628,10 @@ impl ValidatedMigrationPlan {
                 ));
             }
         }
+        let removed = removed_identity_keys(&parent, &candidate)?;
+        if !removed.is_subset(&covered_removed) {
+            return Err(artifact_mismatch());
+        }
         if actual != expected {
             return Err(MigrationFinding::new(
                 migration_finding_code::ARTIFACT_MISMATCH,
@@ -503,6 +650,10 @@ impl ValidatedMigrationPlan {
             candidate,
             migration,
             set_fields,
+            replacements,
+            requirements,
+            enum_maps,
+            retired_entities,
             rebuilt_indexes,
             added_invariants,
             added_relationships,
@@ -584,6 +735,29 @@ impl ValidatedMigrationPlan {
                 MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity_id)
             })?;
         let parent_fields = self.materialize_parent_fields(&row, parent_entity)?;
+        if let Some(requirements) = self.requirements.get(&entity_id) {
+            let values = SchemaRowValues {
+                row: &parent_fields,
+            };
+            for predicate in requirements {
+                if !evaluate_predicate(predicate.arena(), predicate.result(), &values).map_err(
+                    |error| expression_finding(error, entity_id, FieldId::new(1).expect("nonzero")),
+                )? {
+                    return Err(MigrationFinding::new(migration_finding_code::INVALID_ROW)
+                        .entity(entity_id));
+                }
+            }
+        }
+        if self.retired_entities.contains(&entity_id) {
+            return Ok(PreparedMigrationRow {
+                source: row,
+                post_image: None,
+                rebuilt_indexes: Vec::new(),
+                relationships: Vec::new(),
+                unique_keys: Vec::new(),
+                retired: true,
+            });
+        }
         let candidate_entity = self
             .candidate
             .bundle()
@@ -599,6 +773,28 @@ impl ValidatedMigrationPlan {
             .cloned()
             .collect::<BTreeMap<_, _>>();
         let mut changed = false;
+        if let Some(replacements) = self.replacements.get(&entity_id) {
+            for replacement in replacements {
+                let value = output.remove(&replacement.old).ok_or_else(|| {
+                    MigrationFinding::new(migration_finding_code::INVALID_ROW)
+                        .entity(entity_id)
+                        .with_field(replacement.old)
+                })?;
+                let value = convert_value(
+                    replacement.conversion,
+                    value,
+                    &replacement.old_type,
+                    &replacement.new_type,
+                )
+                .ok_or_else(|| {
+                    MigrationFinding::new(migration_finding_code::INVALID_ROW)
+                        .entity(entity_id)
+                        .with_field(replacement.old)
+                })?;
+                output.insert(replacement.new, value);
+                changed = true;
+            }
+        }
         if let Some(fields) = self.set_fields.get(&entity_id) {
             let values = SchemaRowValues {
                 row: &parent_fields,
@@ -607,6 +803,11 @@ impl ValidatedMigrationPlan {
                 let value = evaluate_expression(expression.arena(), expression.result(), &values)
                     .map_err(|error| expression_finding(error, entity_id, *field))?;
                 output.insert(*field, value);
+                changed = true;
+            }
+        }
+        for value in output.values_mut() {
+            if apply_enum_maps(value, &self.enum_maps)? {
                 changed = true;
             }
         }
@@ -665,6 +866,7 @@ impl ValidatedMigrationPlan {
             rebuilt_indexes,
             relationships,
             unique_keys,
+            retired: false,
         })
     }
 
@@ -721,7 +923,13 @@ impl ValidatedMigrationPlan {
             };
             cursor = next.clone();
         }
-        if checked_rows != expected_rows {
+        let retired_rows = stage
+            .retained_migration_entity_count(
+                self.migration_bundle_hash(),
+                &self.retired_entities.iter().copied().collect::<Vec<_>>(),
+            )
+            .map_err(MigrationFinding::from_stage_error)?;
+        if checked_rows.checked_add(retired_rows) != Some(expected_rows) {
             return Err(MigrationFinding::from_stage_error(
                 MigrationStageError::RowChanged,
             ));
@@ -777,6 +985,7 @@ impl ValidatedMigrationPlan {
             rebuilt_indexes: Vec::new(),
             relationships,
             unique_keys,
+            retired: false,
         })
     }
 
@@ -891,15 +1100,433 @@ impl fmt::Debug for ValidatedMigrationPlan {
     }
 }
 
+fn convert_value(
+    conversion: MigrationConversionV1,
+    value: CanonicalValue,
+    old_type: &ValueType,
+    new_type: &ValueType,
+) -> Option<CanonicalValue> {
+    if !conversion.accepts(old_type, new_type) {
+        return None;
+    }
+    match conversion {
+        MigrationConversionV1::Identity
+        | MigrationConversionV1::WrapOptional
+        | MigrationConversionV1::AssertBoundedNarrow => Some(value),
+        MigrationConversionV1::AssertUnwrapOptional => {
+            (!matches!(value, CanonicalValue::Null)).then_some(value)
+        }
+        MigrationConversionV1::CheckedI64ToU64 => match value {
+            CanonicalValue::I64(value) => u64::try_from(value).ok().map(CanonicalValue::U64),
+            _ => None,
+        },
+        MigrationConversionV1::CheckedU64ToI64 => match value {
+            CanonicalValue::U64(value) => i64::try_from(value).ok().map(CanonicalValue::I64),
+            _ => None,
+        },
+        MigrationConversionV1::ExactDecimal => match value {
+            CanonicalValue::Decimal(value) => value
+                .rescale(new_type.decimal_spec()?)
+                .ok()
+                .map(CanonicalValue::Decimal),
+            _ => None,
+        },
+        MigrationConversionV1::ListElements => {
+            let CanonicalValue::List(values) = value else {
+                return None;
+            };
+            let (old_element, _) = old_type.list_parts()?;
+            let (new_element, _) = new_type.list_parts()?;
+            let element_conversion = inferred_conversion(old_element, new_element)?;
+            values
+                .into_values()
+                .into_iter()
+                .map(|value| convert_value(element_conversion, value, old_element, new_element))
+                .collect::<Option<Vec<_>>>()
+                .and_then(|values| CanonicalList::new(values).ok())
+                .map(CanonicalValue::List)
+        }
+        MigrationConversionV1::UuidToString => match value {
+            CanonicalValue::Uuid(value) => CanonicalValue::string(format_uuid(value)).ok(),
+            _ => None,
+        },
+        MigrationConversionV1::StringToUuid => match value {
+            CanonicalValue::String(value) => parse_uuid(value.as_str()).map(CanonicalValue::Uuid),
+            _ => None,
+        },
+    }
+}
+
+fn inferred_conversion(old: &ValueType, new: &ValueType) -> Option<MigrationConversionV1> {
+    [
+        MigrationConversionV1::Identity,
+        MigrationConversionV1::WrapOptional,
+        MigrationConversionV1::AssertUnwrapOptional,
+        MigrationConversionV1::CheckedI64ToU64,
+        MigrationConversionV1::CheckedU64ToI64,
+        MigrationConversionV1::ExactDecimal,
+        MigrationConversionV1::UuidToString,
+        MigrationConversionV1::StringToUuid,
+    ]
+    .into_iter()
+    .find(|conversion| conversion.accepts(old, new))
+}
+
+fn format_uuid(value: [u8; 16]) -> String {
+    let mut output = String::with_capacity(36);
+    for (index, byte) in value.into_iter().enumerate() {
+        if matches!(index, 4 | 6 | 8 | 10) {
+            output.push('-');
+        }
+        use std::fmt::Write as _;
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
+fn parse_uuid(value: &str) -> Option<[u8; 16]> {
+    if value.len() != 36
+        || value
+            .bytes()
+            .enumerate()
+            .any(|(index, byte)| matches!(index, 8 | 13 | 18 | 23) != (byte == b'-'))
+    {
+        return None;
+    }
+    let hex = value
+        .bytes()
+        .filter(|byte| *byte != b'-')
+        .collect::<Vec<_>>();
+    let mut output = [0_u8; 16];
+    for (slot, pair) in output.iter_mut().zip(hex.chunks_exact(2)) {
+        *slot = hex_nibble(pair[0])?
+            .checked_mul(16)?
+            .checked_add(hex_nibble(pair[1])?)?;
+    }
+    Some(output)
+}
+
+const fn hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        _ => None,
+    }
+}
+
+fn apply_enum_maps(
+    value: &mut CanonicalValue,
+    maps: &BTreeMap<EnumTypeId, BTreeMap<EnumVariantId, EnumVariantId>>,
+) -> Result<bool, MigrationFinding> {
+    match value {
+        CanonicalValue::Enum {
+            type_id,
+            variant_id,
+        } => {
+            let Some(map) = maps.get(type_id) else {
+                return Ok(false);
+            };
+            let target = map.get(variant_id).copied().ok_or_else(artifact_mismatch)?;
+            let changed = target != *variant_id;
+            *variant_id = target;
+            Ok(changed)
+        }
+        CanonicalValue::List(values) => {
+            let mut changed = false;
+            let mut output = values.values().to_vec();
+            for value in &mut output {
+                changed |= apply_enum_maps(value, maps)?;
+            }
+            if changed {
+                *values = CanonicalList::new(output).map_err(|_| artifact_mismatch())?;
+            }
+            Ok(changed)
+        }
+        CanonicalValue::Record(record) => {
+            let mut changed = false;
+            let mut output = record.fields().to_vec();
+            for (_, value) in &mut output {
+                changed |= apply_enum_maps(value, maps)?;
+            }
+            if changed {
+                *record = CanonicalRecord::new(output).map_err(|_| artifact_mismatch())?;
+            }
+            Ok(changed)
+        }
+        _ => Ok(false),
+    }
+}
+
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 enum GateAStepKey {
+    Rename(StableIdentity),
+    Retire(StableIdentity),
     SetField(EntityTypeId, FieldId),
+    Replace(EntityTypeId, FieldId, FieldId),
+    Require(EntityTypeId, u32),
+    EnumMap(EnumTypeId),
     RebuildIndex(EntityTypeId, IndexId),
     Relationship(EntityTypeId, String),
     Unique(EntityTypeId, IndexId),
     EntityInvariant(EntityTypeId, riffdb_types::InvariantId),
     AggregateInvariant(riffdb_types::AggregateTypeId, riffdb_types::InvariantId),
     Projection(riffdb_types::ProjectionId),
+}
+
+fn artifact_mismatch() -> MigrationFinding {
+    MigrationFinding::new(migration_finding_code::ARTIFACT_MISMATCH)
+}
+
+fn migration_identity(
+    parent: &ValidatedContractBundle,
+    namespace: StableIdNamespaceTag,
+    owner_kind: u8,
+    owner_ids: &[u32],
+    stable_id: u32,
+) -> Result<StableIdentity, MigrationFinding> {
+    let namespace = StableIdNamespace::new(namespace, owner_kind, owner_ids.to_vec())
+        .map_err(|_| artifact_mismatch())?;
+    parent
+        .bundle()
+        .ledger()
+        .allocations()
+        .iter()
+        .flat_map(|allocation| allocation.entries())
+        .find(|entry| entry.id() == stable_id && entry.identity().namespace() == &namespace)
+        .filter(|entry| entry.state() == LineageEntryState::Active)
+        .map(|entry| entry.identity().clone())
+        .filter(|identity| identity.namespace() == &namespace)
+        .ok_or_else(artifact_mismatch)
+}
+
+fn validate_rename_step(
+    parent: &ValidatedContractBundle,
+    candidate: &ValidatedContractBundle,
+    old: &StableIdentity,
+    new_name: &str,
+) -> Result<(), MigrationFinding> {
+    let id = parent
+        .bundle()
+        .ledger()
+        .active_id(old)
+        .ok_or_else(artifact_mismatch)?;
+    let new =
+        StableIdentity::new(old.namespace().clone(), new_name).map_err(|_| artifact_mismatch())?;
+    if candidate.bundle().ledger().active_id(&new) != Some(id)
+        || !candidate
+            .bundle()
+            .ledger()
+            .aliases()
+            .iter()
+            .any(|alias| alias.identity() == old && alias.id() == id)
+    {
+        return Err(artifact_mismatch());
+    }
+    Ok(())
+}
+
+fn validate_retire_step(
+    parent: &ValidatedContractBundle,
+    candidate: &ValidatedContractBundle,
+    identity: &StableIdentity,
+) -> Result<(), MigrationFinding> {
+    let id = parent
+        .bundle()
+        .ledger()
+        .active_id(identity)
+        .ok_or_else(artifact_mismatch)?;
+    let retired = candidate
+        .bundle()
+        .ledger()
+        .allocations()
+        .iter()
+        .flat_map(|allocation| allocation.entries())
+        .any(|entry| {
+            entry.id() == id
+                && entry.identity() == identity
+                && entry.state() == LineageEntryState::Tombstone
+        });
+    if !retired {
+        return Err(artifact_mismatch());
+    }
+    Ok(())
+}
+
+fn field_identity_key(
+    entity: EntityTypeId,
+    field: FieldId,
+    name: &str,
+) -> Result<StableIdentity, MigrationFinding> {
+    let _ = field;
+    StableIdentity::new(
+        StableIdNamespace::new(StableIdNamespaceTag::Field, 0x01, vec![entity.get()])
+            .map_err(|_| artifact_mismatch())?,
+        name,
+    )
+    .map_err(|_| artifact_mismatch())
+}
+
+fn removed_identity_keys(
+    parent: &ValidatedContractBundle,
+    candidate: &ValidatedContractBundle,
+) -> Result<BTreeSet<StableIdentity>, MigrationFinding> {
+    Ok(parent
+        .bundle()
+        .ledger()
+        .allocations()
+        .iter()
+        .flat_map(|allocation| allocation.entries())
+        .filter(|entry| entry.state() == LineageEntryState::Active)
+        .filter(|entry| {
+            candidate
+                .bundle()
+                .ledger()
+                .active_id(entry.identity())
+                .is_none()
+        })
+        .map(|entry| entry.identity().clone())
+        .collect())
+}
+
+fn retirement_identity_keys(
+    parent: &ValidatedContractBundle,
+    identity: &StableIdentity,
+) -> BTreeSet<StableIdentity> {
+    let id = parent.bundle().ledger().active_id(identity).unwrap_or(0);
+    let retired_aggregates = if identity.namespace().tag() == StableIdNamespaceTag::Entity {
+        parent
+            .bundle()
+            .schema()
+            .aggregates()
+            .iter()
+            .filter(|aggregate| {
+                aggregate.root().get() == id
+                    || aggregate.children().iter().any(|child| child.get() == id)
+            })
+            .map(|aggregate| aggregate.id().get())
+            .collect::<BTreeSet<_>>()
+    } else {
+        BTreeSet::new()
+    };
+    parent
+        .bundle()
+        .ledger()
+        .allocations()
+        .iter()
+        .flat_map(|allocation| allocation.entries())
+        .filter(|entry| entry.state() == LineageEntryState::Active)
+        .filter(|entry| {
+            entry.identity() == identity
+                || entry.identity().namespace().tag() == StableIdNamespaceTag::Aggregate
+                    && retired_aggregates.contains(&entry.id())
+                || entry.identity().namespace().tag() == StableIdNamespaceTag::Invariant
+                    && entry.identity().namespace().owner_kind() == 0x02
+                    && entry
+                        .identity()
+                        .namespace()
+                        .owner_ids()
+                        .first()
+                        .is_some_and(|owner| retired_aggregates.contains(owner))
+                || identity_descendant(identity.namespace().tag(), id, entry.identity())
+        })
+        .map(|entry| entry.identity().clone())
+        .collect()
+}
+
+fn identity_descendant(kind: StableIdNamespaceTag, id: u32, child: &StableIdentity) -> bool {
+    let namespace = child.namespace();
+    let owner_matches = namespace.owner_ids().first() == Some(&id);
+    owner_matches
+        && match kind {
+            StableIdNamespaceTag::Entity => matches!(
+                (namespace.tag(), namespace.owner_kind()),
+                (StableIdNamespaceTag::Field, 0x01)
+                    | (StableIdNamespaceTag::Index, 0x01)
+                    | (StableIdNamespaceTag::Invariant, 0x01)
+            ),
+            StableIdNamespaceTag::Event => {
+                namespace.tag() == StableIdNamespaceTag::Field && namespace.owner_kind() == 0x02
+            }
+            StableIdNamespaceTag::Enum => {
+                namespace.tag() == StableIdNamespaceTag::EnumVariant
+                    && namespace.owner_kind() == 0x01
+            }
+            StableIdNamespaceTag::Command => matches!(
+                (namespace.tag(), namespace.owner_kind()),
+                (StableIdNamespaceTag::Field, 0x03 | 0x04) | (StableIdNamespaceTag::Outcome, 0x01)
+            ),
+            StableIdNamespaceTag::Projection => {
+                namespace.tag() == StableIdNamespaceTag::Field && namespace.owner_kind() == 0x05
+            }
+            _ => false,
+        }
+}
+
+fn validate_enum_map(
+    parent: &ValidatedContractBundle,
+    candidate: &ValidatedContractBundle,
+    enumeration: EnumTypeId,
+    mappings: &[riffdb_contract_ir::MigrationEnumMappingV1],
+) -> Result<BTreeMap<EnumVariantId, EnumVariantId>, MigrationFinding> {
+    let old = parent
+        .bundle()
+        .schema()
+        .enumeration(enumeration)
+        .ok_or_else(artifact_mismatch)?;
+    let new = candidate
+        .bundle()
+        .schema()
+        .enumeration(enumeration)
+        .ok_or_else(artifact_mismatch)?;
+    let map = mappings
+        .iter()
+        .map(|mapping| (mapping.from(), mapping.to()))
+        .collect::<BTreeMap<_, _>>();
+    if map.len() != old.variants().len()
+        || old
+            .variants()
+            .iter()
+            .any(|variant| !map.contains_key(&variant.id()))
+        || map
+            .values()
+            .any(|target| new.variants().iter().all(|variant| variant.id() != *target))
+    {
+        return Err(artifact_mismatch());
+    }
+    Ok(map)
+}
+
+fn removed_enum_variant_keys(
+    parent: &ValidatedContractBundle,
+    candidate: &ValidatedContractBundle,
+    enumeration: EnumTypeId,
+) -> Result<BTreeSet<StableIdentity>, MigrationFinding> {
+    let old = parent
+        .bundle()
+        .schema()
+        .enumeration(enumeration)
+        .ok_or_else(artifact_mismatch)?;
+    let new = candidate
+        .bundle()
+        .schema()
+        .enumeration(enumeration)
+        .ok_or_else(artifact_mismatch)?;
+    old.variants()
+        .iter()
+        .filter(|variant| new.variants().iter().all(|next| next.id() != variant.id()))
+        .map(|variant| {
+            StableIdentity::new(
+                StableIdNamespace::new(
+                    StableIdNamespaceTag::EnumVariant,
+                    0x01,
+                    vec![enumeration.get()],
+                )
+                .map_err(|_| artifact_mismatch())?,
+                variant.name(),
+            )
+            .map_err(|_| artifact_mismatch())
+        })
+        .collect()
 }
 
 fn expected_gate_a_steps(
@@ -1315,5 +1942,154 @@ struct SchemaRowValues<'a> {
 impl ExpressionValueSource for SchemaRowValues<'_> {
     fn schema_field(&self, _entity_type: EntityTypeId, field: FieldId) -> Option<CanonicalValue> {
         field_value(self.row, field).cloned()
+    }
+}
+
+#[cfg(test)]
+mod conversion_tests {
+    use super::*;
+    use riffdb_types::{Decimal, DecimalSpec};
+
+    #[test]
+    fn checked_integer_conversions_cover_boundaries_without_fallback() {
+        for value in [0_i64, 1, i64::MAX] {
+            assert_eq!(
+                convert_value(
+                    MigrationConversionV1::CheckedI64ToU64,
+                    CanonicalValue::I64(value),
+                    &ValueType::i64(),
+                    &ValueType::u64(),
+                ),
+                Some(CanonicalValue::U64(value as u64))
+            );
+        }
+        assert!(
+            convert_value(
+                MigrationConversionV1::CheckedI64ToU64,
+                CanonicalValue::I64(-1),
+                &ValueType::i64(),
+                &ValueType::u64(),
+            )
+            .is_none()
+        );
+        for value in [0_u64, 1, i64::MAX as u64] {
+            assert_eq!(
+                convert_value(
+                    MigrationConversionV1::CheckedU64ToI64,
+                    CanonicalValue::U64(value),
+                    &ValueType::u64(),
+                    &ValueType::i64(),
+                ),
+                Some(CanonicalValue::I64(value as i64))
+            );
+        }
+        assert!(
+            convert_value(
+                MigrationConversionV1::CheckedU64ToI64,
+                CanonicalValue::U64(i64::MAX as u64 + 1),
+                &ValueType::u64(),
+                &ValueType::i64(),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn optional_decimal_and_list_assertions_are_exact() {
+        let optional_i64 = ValueType::optional(ValueType::i64()).expect("optional type");
+        assert!(
+            convert_value(
+                MigrationConversionV1::AssertUnwrapOptional,
+                CanonicalValue::Null,
+                &optional_i64,
+                &ValueType::i64(),
+            )
+            .is_none()
+        );
+        assert_eq!(
+            convert_value(
+                MigrationConversionV1::AssertUnwrapOptional,
+                CanonicalValue::I64(5),
+                &optional_i64,
+                &ValueType::i64(),
+            ),
+            Some(CanonicalValue::I64(5))
+        );
+
+        let old_spec = DecimalSpec::new(6, 2).expect("old decimal");
+        let new_spec = DecimalSpec::new(5, 1).expect("new decimal");
+        let exact = Decimal::new(old_spec, 1_230).expect("exact decimal");
+        let inexact = Decimal::new(old_spec, 1_231).expect("inexact decimal");
+        assert_eq!(
+            convert_value(
+                MigrationConversionV1::ExactDecimal,
+                CanonicalValue::Decimal(exact),
+                &ValueType::decimal(old_spec),
+                &ValueType::decimal(new_spec),
+            ),
+            Some(CanonicalValue::Decimal(
+                Decimal::new(new_spec, 123).expect("rescaled")
+            ))
+        );
+        assert!(
+            convert_value(
+                MigrationConversionV1::ExactDecimal,
+                CanonicalValue::Decimal(inexact),
+                &ValueType::decimal(old_spec),
+                &ValueType::decimal(new_spec),
+            )
+            .is_none()
+        );
+
+        let old_list = ValueType::list(ValueType::i64(), 2).expect("old list");
+        let new_list = ValueType::list(ValueType::u64(), 2).expect("new list");
+        let values = CanonicalList::new(vec![CanonicalValue::I64(0), CanonicalValue::I64(9)])
+            .expect("values");
+        assert!(matches!(
+            convert_value(
+                MigrationConversionV1::ListElements,
+                CanonicalValue::List(values),
+                &old_list,
+                &new_list,
+            ),
+            Some(CanonicalValue::List(values))
+                if values.values() == [CanonicalValue::U64(0), CanonicalValue::U64(9)]
+        ));
+    }
+
+    #[test]
+    fn canonical_uuid_text_round_trips_and_rejects_alternate_spellings() {
+        for seed in [0_u8, 1, 0x7f, 0xff] {
+            let mut uuid = [0_u8; 16];
+            for (index, byte) in uuid.iter_mut().enumerate() {
+                *byte = seed.wrapping_add(index as u8);
+            }
+            let text = convert_value(
+                MigrationConversionV1::UuidToString,
+                CanonicalValue::Uuid(uuid),
+                &ValueType::uuid(),
+                &ValueType::string(36).expect("UUID text type"),
+            )
+            .expect("format UUID");
+            assert_eq!(
+                convert_value(
+                    MigrationConversionV1::StringToUuid,
+                    text,
+                    &ValueType::string(36).expect("UUID text type"),
+                    &ValueType::uuid(),
+                ),
+                Some(CanonicalValue::Uuid(uuid))
+            );
+        }
+        assert!(
+            convert_value(
+                MigrationConversionV1::StringToUuid,
+                CanonicalValue::string("00112233-4455-6677-8899-AABBCCDDEEFF")
+                    .expect("bounded text"),
+                &ValueType::string(36).expect("UUID text type"),
+                &ValueType::uuid(),
+            )
+            .is_none()
+        );
     }
 }

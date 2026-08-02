@@ -36,6 +36,14 @@ pub(crate) fn assemble_bundle(
     let required =
         required_lineage_allocation_namespaces(&parts.schema, &parts.commands, &parts.projections)?;
     let ledger = match parent {
+        Some(parent) if !symbols.renames.is_empty() => {
+            LineageLedgerV1::successor_complete_with_renames(
+                parent.ledger(),
+                identities,
+                required,
+                symbols.renames.clone(),
+            )?
+        }
         Some(parent) => LineageLedgerV1::successor_complete(parent.ledger(), identities, required)?,
         None => LineageLedgerV1::genesis_complete(identities, required)?,
     };

@@ -20,7 +20,8 @@ mod symbols;
 mod typecheck;
 
 pub use compiler::{
-    CompilationError, compile_contract_source, compile_contract_successor, validate_contract_source,
+    CompilationError, compile_contract_migration_successor, compile_contract_source,
+    compile_contract_successor, validate_contract_source,
 };
 pub use diagnostic::{
     CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics, DiagnosticBoundsError,

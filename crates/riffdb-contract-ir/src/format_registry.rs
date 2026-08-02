@@ -790,6 +790,11 @@ pub(crate) const COMPATIBILITY_CODES: &[CompatibilityCodeFormat] = &[
         meaning: "added projection requiring historical backfill",
     },
     CompatibilityCodeFormat {
+        code: "RDB-K036",
+        class_tag: compatibility_class::REQUIRES_MIGRATION,
+        meaning: "semantic rename retaining stable ID",
+    },
+    CompatibilityCodeFormat {
         code: "RDB-K100",
         class_tag: compatibility_class::INCOMPATIBLE,
         meaning: "removed identity",
@@ -880,8 +885,9 @@ layout!(PARENT_LAYOUT, "ParentBundleRef", {
     "bundle_hash" => "32 bytes",
 });
 layout!(LEDGER_LAYOUT, "LineageLedgerV1", {
-    "version" => "u32 = 1",
+    "version" => "u32 = 1 or 2",
     "allocations" => "u32 count + LineageAllocation[]",
+    "aliases" => "ledger v2 only: u32 count + LineageAlias[]",
 });
 layout!(ALLOCATION_LAYOUT, "LineageAllocation", {
     "namespace_tag" => "Stable ID namespace tag",
@@ -896,6 +902,13 @@ layout!(LEDGER_ENTRY_LAYOUT, "LineageEntry", {
     "identity_owner_ids" => "u8 count + u32[]",
     "name" => "string",
     "state" => "Lineage entry state tag",
+});
+layout!(LEDGER_ALIAS_LAYOUT, "LineageAlias", {
+    "namespace_tag" => "Stable ID namespace tag",
+    "identity_owner_kind" => "contextual owner tag",
+    "identity_owner_ids" => "u8 count + u32[]",
+    "name" => "string",
+    "id" => "u32 existing allocation ID",
 });
 layout!(SCHEMA_LAYOUT, "StructuralSchema", {
     "entities" => "u32 count + EntitySchema[]",
@@ -1154,6 +1167,7 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     LEDGER_LAYOUT,
     ALLOCATION_LAYOUT,
     LEDGER_ENTRY_LAYOUT,
+    LEDGER_ALIAS_LAYOUT,
     SCHEMA_LAYOUT,
     RELATIONSHIP_LAYOUT,
     UNIQUE_KEY_LAYOUT,
@@ -2016,7 +2030,7 @@ mod tests {
     #[test]
     fn ordered_layout_registry_is_complete_and_canonical() {
         assert_eq!(FORMAT_LAYOUTS.first(), Some(&BUNDLE_LAYOUT));
-        assert_eq!(FORMAT_LAYOUTS.len(), 44);
+        assert_eq!(FORMAT_LAYOUTS.len(), 45);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(

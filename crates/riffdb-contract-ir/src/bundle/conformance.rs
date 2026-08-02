@@ -217,7 +217,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
             ],
         ),
         ("ParentBundleRef", vec!["contract_version", "bundle_hash"]),
-        ("LineageLedgerV1", vec!["version", "allocations"]),
+        ("LineageLedgerV1", vec!["version", "allocations", "aliases"]),
         (
             "LineageAllocation",
             vec![
@@ -236,6 +236,16 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "identity_owner_ids",
                 "name",
                 "state",
+            ],
+        ),
+        (
+            "LineageAlias",
+            vec![
+                "namespace_tag",
+                "identity_owner_kind",
+                "identity_owner_ids",
+                "name",
+                "id",
             ],
         ),
         (
@@ -492,6 +502,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ("LineageLedgerV1", "lineage ledger fixture"),
         ("LineageAllocation", "lineage ledger fixture"),
         ("LineageEntry", "lineage ledger fixture"),
+        ("LineageAlias", "lineage rename fixture"),
         ("StructuralSchema", "structural schema fixture"),
         ("RelationshipSchema", "relationship compiler fixture"),
         ("UniqueKeySchema", "uniqueness compiler fixture"),
