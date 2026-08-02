@@ -13,8 +13,9 @@ use riffdb_service::{
     CompileSymbolicQueryRequest, ContractApplication, ContractValidationResult,
     CreateCapabilityInvocation, CreateCapabilityResult, CreateOfflineBackupRequest,
     DeployContractRequest, DeployContractResult, DeployQueryModuleRequest, DeployQueryModuleResult,
-    DescribeSymbolicContractResult, DiscoverCommandToolsRequest, DiscoverCommandToolsResult,
-    DiscoverResourcesRequest, DiscoverResourcesResult, DiscoveryApplication, ExecuteCommandRequest,
+    DescribeEventRequest, DescribeEventResult, DescribeSymbolicContractResult,
+    DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverResourcesRequest,
+    DiscoverResourcesResult, DiscoveryApplication, EventServiceApplication, ExecuteCommandRequest,
     ExecuteCommandResult, ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult,
     ExplainCommandRequest, ExplainCommandResult, ExplainSymbolicQueryResult,
     GetActiveContractRequest, GetActiveContractResult, GetCommitRequest, GetCommitResult,
@@ -24,12 +25,13 @@ use riffdb_service::{
     HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest,
     ListPendingOutboxDeliveriesResult, NamedSymbolicQueryRequest, OfflineMaintenanceApplication,
     OfflineMaintenanceStartResult, QueryApplication, QueryModuleInspection, QueryProjectionRequest,
-    QueryProjectionResult, RequestContext, ResolveCommandOutcomeRequest,
-    ResolveCommandOutcomeResult, RestoreOfflineBackupInvocation, RevokeCapabilityRequest,
-    RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest,
-    ScanIndexResult, ServiceFuture, StatisticsRequest, StatisticsResult, SubscribeToCommitsRequest,
-    SubscribeToCommitsResult, SymbolicContractSelector, SymbolicQueryApplication,
-    TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
+    QueryProjectionResult, ReplayEventsRequest, ReplayEventsResult, RequestContext,
+    ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, RestoreOfflineBackupInvocation,
+    RevokeCapabilityRequest, RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult,
+    ScanIndexRequest, ScanIndexResult, ServiceFuture, StatisticsRequest, StatisticsResult,
+    SubscribeToCommitsRequest, SubscribeToCommitsResult, SymbolicContractSelector,
+    SymbolicQueryApplication, TailEventsRequest, TailEventsResult, TraceProvenanceRequest,
+    TraceProvenanceResult, ValidateContractRequest,
 };
 use riffdb_types::ServiceOperationV1;
 
@@ -204,6 +206,23 @@ delegate_operation! {
             context: RequestContext,
             request: TraceProvenanceRequest
         ) -> TraceProvenanceResult => TraceProvenance;
+    }
+}
+
+delegate_operation! {
+    EventServiceApplication {
+        describe_event(
+            context: RequestContext,
+            request: DescribeEventRequest
+        ) -> DescribeEventResult => DescribeEvent;
+        replay_events(
+            context: RequestContext,
+            request: ReplayEventsRequest
+        ) -> ReplayEventsResult => ReplayEvents;
+        tail_events(
+            context: RequestContext,
+            request: TailEventsRequest
+        ) -> TailEventsResult => TailEvents;
     }
 }
 

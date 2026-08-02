@@ -6902,6 +6902,242 @@ fn preflight_get_outcome_response(input: &[u8]) -> Result<(), PublicWireError> {
     )
 }
 
+fn validate_event_symbol(value: &str) -> Result<(), PublicWireError> {
+    if valid_bounded_text(value, MAX_PROTOCOL_NAME_BYTES) {
+        Ok(())
+    } else {
+        Err(PublicWireError::InvalidValue)
+    }
+}
+
+fn validate_event_selection(selection: Option<&v1::EventSelection>) -> Result<(), PublicWireError> {
+    let selection = selection.ok_or(PublicWireError::MissingRequiredField)?;
+    validate_event_symbol(&selection.event_name)?;
+    if selection.partition.is_empty()
+        || selection.partition.len() > 32
+        || selection.selected_fields.is_empty()
+        || selection.selected_fields.len() > 256
+    {
+        return Err(PublicWireError::TooManyItems);
+    }
+    let mut names = std::collections::BTreeSet::new();
+    for component in &selection.partition {
+        validate_event_symbol(&component.name)?;
+        if !names.insert(component.name.as_str()) {
+            return Err(PublicWireError::NonCanonical);
+        }
+        validate_value(
+            component
+                .value
+                .as_ref()
+                .ok_or(PublicWireError::MissingRequiredField)?,
+        )
+        .map_err(|_| PublicWireError::InvalidValue)?;
+    }
+    names.clear();
+    for field in &selection.selected_fields {
+        validate_event_symbol(field)?;
+        if !names.insert(field.as_str()) {
+            return Err(PublicWireError::NonCanonical);
+        }
+    }
+    Ok(())
+}
+
+fn validate_event_field_descriptor(
+    value: &v1::EventFieldDescriptor,
+) -> Result<(), PublicWireError> {
+    validate_event_symbol(&value.name)?;
+    validate_event_symbol(&value.value_type)
+}
+
+fn validate_event_descriptor(value: &v1::EventDescriptor) -> Result<(), PublicWireError> {
+    if !valid_bounded_text(&value.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+        || value.contract_version == 0
+        || value.partition_fields.len() > 32
+        || value.payload_fields.len() > 256
+        || value.application_streamable != !value.partition_fields.is_empty()
+    {
+        return Err(PublicWireError::InvalidValue);
+    }
+    hash(&value.contract_bundle_hash)?;
+    validate_event_symbol(&value.event_name)?;
+    let mut payload = std::collections::BTreeMap::new();
+    for field in &value.payload_fields {
+        validate_event_field_descriptor(field)?;
+        if payload
+            .insert(field.name.as_str(), field.value_type.as_str())
+            .is_some()
+        {
+            return Err(PublicWireError::NonCanonical);
+        }
+    }
+    let mut partition = std::collections::BTreeSet::new();
+    for field in &value.partition_fields {
+        validate_event_field_descriptor(field)?;
+        if !partition.insert(field.name.as_str()) {
+            return Err(PublicWireError::NonCanonical);
+        }
+        if payload.get(field.name.as_str()).copied() != Some(field.value_type.as_str()) {
+            return Err(PublicWireError::InconsistentFields);
+        }
+    }
+    Ok(())
+}
+
+fn validate_describe_event_request(
+    message: &v1::DescribeEventRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    validate_event_symbol(&message.event_name)
+}
+
+fn validate_describe_event_response(
+    message: &v1::DescribeEventResponse,
+) -> Result<(), PublicWireError> {
+    match message
+        .result
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        v1::describe_event_response::Result::NotFound(_) => Ok(()),
+        v1::describe_event_response::Result::Found(descriptor) => {
+            validate_event_descriptor(descriptor)
+        }
+    }
+}
+
+fn validate_symbolic_event(value: &v1::SymbolicEvent) -> Result<(), PublicWireError> {
+    validate_event_id_value(value.event_id.as_ref())?;
+    validate_event_symbol(&value.event_name)?;
+    if value.writer_contract_version == 0 || value.history_incarnation == 0 {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    hash(&value.writer_plan_hash)?;
+    validate_event_symbol(&value.command_name)?;
+    request_id(&value.request_id)?;
+    request_id(&value.root_request_id)?;
+    if value.causing_event_id.is_some() {
+        validate_event_id_value(value.causing_event_id.as_ref())?;
+    }
+    validate_timestamp(value.occurred_at.as_ref())?;
+    if value.actor_kind == v1::ActorKind::Unspecified as i32
+        || v1::ActorKind::try_from(value.actor_kind).is_err()
+        || value.provenance_uri.len() > 56
+        || !value.provenance_uri.starts_with("riffdb://provenance/")
+        || value.fields.len() > 256
+    {
+        return Err(PublicWireError::InvalidValue);
+    }
+    let mut names = std::collections::BTreeSet::new();
+    for field in &value.fields {
+        validate_event_symbol(&field.name)?;
+        if !names.insert(field.name.as_str()) {
+            return Err(PublicWireError::NonCanonical);
+        }
+        validate_value(
+            field
+                .value
+                .as_ref()
+                .ok_or(PublicWireError::MissingRequiredField)?,
+        )
+        .map_err(|_| PublicWireError::InvalidValue)?;
+    }
+    Ok(())
+}
+
+fn validate_event_page(page: Option<&v1::EventPage>) -> Result<(), PublicWireError> {
+    let page = page.ok_or(PublicWireError::MissingRequiredField)?;
+    if page.items.len() > MAX_PAGE_ITEMS || page.history_incarnation == 0 {
+        return Err(PublicWireError::TooManyItems);
+    }
+    if !page.next_cursor.is_empty() && page.next_cursor.len() != 16 {
+        return Err(PublicWireError::InvalidBytes);
+    }
+    // A partition route page may contain no selected event type while still
+    // advancing its opaque physical continuation.
+    let observed_upper = page
+        .observed_upper
+        .as_ref()
+        .map(|_| validate_event_id_value(page.observed_upper.as_ref()))
+        .transpose()?;
+    if observed_upper.is_none() && (!page.items.is_empty() || !page.next_cursor.is_empty()) {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    let mut prior = None;
+    for item in &page.items {
+        validate_symbolic_event(item)?;
+        let id = validate_event_id_value(item.event_id.as_ref())?;
+        if prior.is_some_and(|prior| prior >= id)
+            || observed_upper.is_some_and(|upper| id > upper)
+            || item.history_incarnation != page.history_incarnation
+        {
+            return Err(PublicWireError::NonCanonical);
+        }
+        prior = Some(id);
+    }
+    Ok(())
+}
+
+fn validate_replay_events_request(
+    message: &v1::ReplayEventsRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    validate_event_selection(message.selection.as_ref())?;
+    if message.after_event_id.is_some() {
+        validate_event_id_value(message.after_event_id.as_ref())?;
+    }
+    validate_page_request(message.page.as_ref())?;
+    if message.after_event_id.is_some()
+        && message
+            .page
+            .as_ref()
+            .and_then(|page| page.cursor.as_ref())
+            .is_some()
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
+fn validate_replay_events_response(
+    message: &v1::ReplayEventsResponse,
+) -> Result<(), PublicWireError> {
+    validate_event_page(message.page.as_ref())
+}
+
+fn validate_tail_events_request(message: &v1::TailEventsRequest) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    validate_event_selection(message.selection.as_ref())?;
+    if message.after_event_id.is_some() {
+        validate_event_id_value(message.after_event_id.as_ref())?;
+    }
+    validate_page_request(message.page.as_ref())?;
+    if !(1..=MAX_PROJECTION_WAIT_NANOS).contains(&message.maximum_wait_nanos)
+        || message
+            .page
+            .as_ref()
+            .and_then(|page| page.cursor.as_ref())
+            .is_some()
+    {
+        return Err(PublicWireError::InvalidValue);
+    }
+    Ok(())
+}
+
+fn validate_tail_events_response(message: &v1::TailEventsResponse) -> Result<(), PublicWireError> {
+    validate_event_page(message.page.as_ref())?;
+    if message.wait_timed_out
+        && message
+            .page
+            .as_ref()
+            .is_some_and(|page| !page.items.is_empty() || !page.next_cursor.is_empty())
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    Ok(())
+}
+
 macro_rules! impl_public_message {
     ($type:ty, $maximum:expr, $maximum_field:expr, $repeated:expr, $oneofs:expr, $preflight:path, $validate:path) => {
         impl PublicMessage for $type {
@@ -6927,6 +7163,60 @@ impl_public_message!(
     &[],
     preflight_noop,
     validate_validate_contract_request
+);
+impl_public_message!(
+    v1::DescribeEventRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_noop,
+    validate_describe_event_request
+);
+impl_public_message!(
+    v1::DescribeEventResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[&[1, 2]],
+    preflight_noop,
+    validate_describe_event_response
+);
+impl_public_message!(
+    v1::ReplayEventsRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    5,
+    &[],
+    &[],
+    preflight_noop,
+    validate_replay_events_request
+);
+impl_public_message!(
+    v1::ReplayEventsResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    1,
+    &[],
+    &[],
+    preflight_noop,
+    validate_replay_events_response
+);
+impl_public_message!(
+    v1::TailEventsRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    6,
+    &[],
+    &[],
+    preflight_noop,
+    validate_tail_events_request
+);
+impl_public_message!(
+    v1::TailEventsResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_noop,
+    validate_tail_events_response
 );
 impl_public_message!(
     v1::ValidateContractResponse,

@@ -962,7 +962,7 @@ fn index_scan_fence_is_closed_and_preserves_before_first() {
 }
 
 #[test]
-fn only_index_pages_allow_empty_bounded_progress() {
+fn index_and_event_route_pages_allow_empty_bounded_progress() {
     let cursor = Some(vec![0x55; 16]);
     let index = v1::ScanIndexResponse {
         page: Some(v1::IndexPage {
@@ -974,6 +974,19 @@ fn only_index_pages_allow_empty_bounded_progress() {
         }),
     };
     assert!(validate_public_message(&index).is_ok());
+
+    let events = v1::ReplayEventsResponse {
+        page: Some(v1::EventPage {
+            items: Vec::new(),
+            next_cursor: vec![0x44; 16],
+            observed_upper: Some(v1::EventId {
+                commit_sequence: 7,
+                event_ordinal: 0,
+            }),
+            history_incarnation: 1,
+        }),
+    };
+    assert!(validate_public_message(&events).is_ok());
 
     let projection = v1::QueryProjectionResponse {
         result: Some(v1::query_projection_response::Result::Ready(
@@ -1011,6 +1024,50 @@ fn only_index_pages_allow_empty_bounded_progress() {
     };
     assert_eq!(
         validate_public_message(&commits),
+        Err(PublicWireError::InconsistentFields)
+    );
+}
+
+#[test]
+fn event_descriptors_and_pages_reject_cross_field_and_fence_substitution() {
+    let descriptor = v1::DescribeEventResponse {
+        result: Some(v1::describe_event_response::Result::Found(
+            v1::EventDescriptor {
+                contract_lineage: "budget".to_owned(),
+                contract_version: 1,
+                contract_bundle_hash: vec![0x11; 32],
+                event_name: "BudgetAllocated".to_owned(),
+                application_streamable: true,
+                partition_fields: vec![v1::EventFieldDescriptor {
+                    name: "organization_id".to_owned(),
+                    value_type: "uuid".to_owned(),
+                }],
+                payload_fields: vec![v1::EventFieldDescriptor {
+                    name: "organization_id".to_owned(),
+                    value_type: "i64".to_owned(),
+                }],
+            },
+        )),
+    };
+    assert_eq!(
+        validate_public_message(&descriptor),
+        Err(PublicWireError::InconsistentFields)
+    );
+
+    let timed_out_with_progress = v1::TailEventsResponse {
+        page: Some(v1::EventPage {
+            items: Vec::new(),
+            next_cursor: vec![0x44; 16],
+            observed_upper: Some(v1::EventId {
+                commit_sequence: 7,
+                event_ordinal: 0,
+            }),
+            history_incarnation: 1,
+        }),
+        wait_timed_out: true,
+    };
+    assert_eq!(
+        validate_public_message(&timed_out_with_progress),
         Err(PublicWireError::InconsistentFields)
     );
 }

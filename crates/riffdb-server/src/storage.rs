@@ -23,13 +23,14 @@ use riffdb_storage_api::{
     CapabilityRevokeAwaitingDecision, CapabilityRevokeCandidateTransaction,
     CapabilityRevokeCandidateV1, CapabilityRevokeIntentV1, CapabilityRevokeResult,
     CatalogActivationIntentV1, CatalogActivationResult, CatalogAdministrationRepository,
-    CatalogRepository, CommitScanPageV1, CommitScanRequest, ExecutionFailureAdmissionResult,
-    ExecutionFailureTransitionPort, ExecutionFailureTransitionRequestV1,
-    FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
-    FilteredAuthoritativeScanReader, IdempotencyIdentity, IdempotencyLookupCandidatesV1,
-    OutboxClaimV1, OutboxDeadLetterV1, OutboxPageLimit, OutboxRenewV1, OutboxRepository,
-    OutboxRetryV1, OutboxStatusReadResultV1, OutboxSucceedV1, OutboxTransitionResultV1,
-    PendingOutboxScanV1, ProjectionApplyRequestV1, ProjectionApplyResult, ProjectionApplySnapshot,
+    CatalogRepository, CommitScanPageV1, CommitScanRequest, EventRouteScanRequestV1,
+    EventRouteScanV1, ExecutionFailureAdmissionResult, ExecutionFailureTransitionPort,
+    ExecutionFailureTransitionRequestV1, FilteredAuthoritativeIndexScanPage,
+    FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader, IdempotencyIdentity,
+    IdempotencyLookupCandidatesV1, OutboxClaimV1, OutboxDeadLetterV1, OutboxPageLimit,
+    OutboxRenewV1, OutboxRepository, OutboxRetryV1, OutboxStatusReadResultV1, OutboxSucceedV1,
+    OutboxTransitionResultV1, PartitionEventRouteReader, PendingOutboxScanV1,
+    ProjectionApplyRequestV1, ProjectionApplyResult, ProjectionApplySnapshot,
     ProjectionApplySnapshotReader, ProjectionApplySnapshotRequest, ProjectionControlOperation,
     ProjectionControlResult, ProjectionControlScanV1, ProjectionMutationRepository,
     ProjectionQueryReader, ProjectionQueryRequest, ProjectionQueryResult,
@@ -1189,6 +1190,15 @@ impl AuthoritativePointReader for SharedRedbOperationalPorts {
         event_id: EventId,
     ) -> Result<Option<StoredDurableEventV1>, StorageError> {
         AuthoritativePointReader::read_durable_event(&self.shared, event_id)
+    }
+}
+
+impl PartitionEventRouteReader for SharedRedbOperationalPorts {
+    fn scan_partition_event_routes(
+        &self,
+        request: EventRouteScanRequestV1,
+    ) -> Result<EventRouteScanV1, StorageError> {
+        PartitionEventRouteReader::scan_partition_event_routes(&self.shared, request)
     }
 }
 

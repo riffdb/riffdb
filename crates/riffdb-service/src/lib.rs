@@ -12,6 +12,7 @@ mod context;
 mod contract_operations;
 mod cursor;
 mod dto;
+mod event_operations;
 mod failure;
 mod maintenance_operations;
 mod migration_operations;
@@ -31,6 +32,7 @@ pub use audit::*;
 pub use context::*;
 pub use cursor::*;
 pub use dto::*;
+pub use event_operations::*;
 pub use failure::*;
 pub use maintenance_operations::{
     RecoveryOfflineMaintenanceService, RestoreRetryOfflineMaintenanceService,

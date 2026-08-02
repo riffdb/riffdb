@@ -705,6 +705,20 @@ enum OperationKind {
         version: ContractVersion,
         bundle_hash: ContractBundleHash,
     },
+    DescribeEvent {
+        lineage: ContractLineage,
+        version: ContractVersion,
+    },
+    ReplayEvents {
+        lineage: ContractLineage,
+        version: ContractVersion,
+        requested_rows: NonZeroU16,
+    },
+    TailEvents {
+        lineage: ContractLineage,
+        version: ContractVersion,
+        requested_rows: NonZeroU16,
+    },
 }
 
 /// Checked policy facts for exactly one closed application-service operation.
@@ -1065,6 +1079,40 @@ impl OperationRequest {
         })
     }
 
+    /// Constructs one active symbolic event-description request.
+    #[must_use]
+    pub const fn describe_event(lineage: ContractLineage, version: ContractVersion) -> Self {
+        Self(OperationKind::DescribeEvent { lineage, version })
+    }
+
+    /// Constructs one bounded operator event-replay request.
+    #[must_use]
+    pub const fn replay_events(
+        lineage: ContractLineage,
+        version: ContractVersion,
+        requested_rows: NonZeroU16,
+    ) -> Self {
+        Self(OperationKind::ReplayEvents {
+            lineage,
+            version,
+            requested_rows,
+        })
+    }
+
+    /// Constructs one bounded operator event-tail request.
+    #[must_use]
+    pub const fn tail_events(
+        lineage: ContractLineage,
+        version: ContractVersion,
+        requested_rows: NonZeroU16,
+    ) -> Self {
+        Self(OperationKind::TailEvents {
+            lineage,
+            version,
+            requested_rows,
+        })
+    }
+
     /// Returns the exact closed service operation.
     #[must_use]
     pub const fn operation(&self) -> ServiceOperationV1 {
@@ -1106,6 +1154,9 @@ impl OperationRequest {
                 ServiceOperationV1::ExecuteQuery
             }
             OperationKind::DeployQueryModule { .. } => ServiceOperationV1::DeployQueryModule,
+            OperationKind::DescribeEvent { .. } => ServiceOperationV1::DescribeEvent,
+            OperationKind::ReplayEvents { .. } => ServiceOperationV1::ReplayEvents,
+            OperationKind::TailEvents { .. } => ServiceOperationV1::TailEvents,
         }
     }
 
@@ -1150,7 +1201,10 @@ impl OperationRequest {
             }
             OperationKind::GetActiveContract
             | OperationKind::GetContractVersion { .. }
-            | OperationKind::DescribeContract => PermissionRequirement::Kind(Kind::ReadContract),
+            | OperationKind::DescribeContract
+            | OperationKind::DescribeEvent { .. } => {
+                PermissionRequirement::Kind(Kind::ReadContract)
+            }
             OperationKind::CheckAdHocQuery => PermissionRequirement::Kind(Kind::CheckAdHocQuery),
             OperationKind::ExplainAdHocQuery => {
                 PermissionRequirement::Kind(Kind::ExplainAdHocQuery)
@@ -1229,6 +1283,9 @@ impl OperationRequest {
             OperationKind::SubscribeToCommits => {
                 PermissionRequirement::Kind(Kind::SubscribeCommits)
             }
+            OperationKind::ReplayEvents { .. } | OperationKind::TailEvents { .. } => {
+                PermissionRequirement::Kind(Kind::ReadCommit)
+            }
             OperationKind::TraceProvenance { .. } => {
                 PermissionRequirement::Kind(Kind::ReadProvenance)
             }
@@ -1262,6 +1319,8 @@ impl OperationRequest {
             OperationKind::GetCommit { .. }
             | OperationKind::ScanCommits { .. }
             | OperationKind::SubscribeToCommits
+            | OperationKind::ReplayEvents { .. }
+            | OperationKind::TailEvents { .. }
             | OperationKind::TraceProvenance { .. }
             | OperationKind::GetStatistics
             | OperationKind::ListPendingOutboxDeliveries { .. } => {
@@ -1308,6 +1367,8 @@ impl OperationRequest {
             OperationKind::GetCommit { .. }
             | OperationKind::ScanCommits { .. }
             | OperationKind::SubscribeToCommits
+            | OperationKind::ReplayEvents { .. }
+            | OperationKind::TailEvents { .. }
             | OperationKind::TraceProvenance { .. }
             | OperationKind::ListPendingOutboxDeliveries { .. } => PartitionRequirement::AllOnly,
             _ => PartitionRequirement::None,
@@ -1332,6 +1393,8 @@ impl OperationRequest {
             OperationKind::ScanIndex { requested_rows, .. }
             | OperationKind::QueryProjection { requested_rows, .. }
             | OperationKind::ScanCommits { requested_rows }
+            | OperationKind::ReplayEvents { requested_rows, .. }
+            | OperationKind::TailEvents { requested_rows, .. }
             | OperationKind::ListPendingOutboxDeliveries { requested_rows } => {
                 Some(*requested_rows)
             }
@@ -1355,6 +1418,8 @@ impl OperationRequest {
             OperationKind::GetCommit { .. }
             | OperationKind::ScanCommits { .. }
             | OperationKind::SubscribeToCommits
+            | OperationKind::ReplayEvents { .. }
+            | OperationKind::TailEvents { .. }
             | OperationKind::TraceProvenance { .. }
             | OperationKind::GetStatistics
             | OperationKind::ListPendingOutboxDeliveries { .. } => {
@@ -1381,6 +1446,8 @@ impl OperationRequest {
             | OperationKind::GetCommit { .. }
             | OperationKind::ScanCommits { .. }
             | OperationKind::SubscribeToCommits
+            | OperationKind::ReplayEvents { .. }
+            | OperationKind::TailEvents { .. }
             | OperationKind::TraceProvenance { .. }
             | OperationKind::GetStatistics
             | OperationKind::CreateCapability { .. }
@@ -1804,14 +1871,25 @@ mod tests {
                 application_query_target(),
             )
             .expect("matching query target"),
-            OperationRequest::deploy_query_module(lineage, version(), bundle_hash(2)),
+            OperationRequest::deploy_query_module(lineage.clone(), version(), bundle_hash(2)),
+            OperationRequest::describe_event(lineage.clone(), version()),
+            OperationRequest::replay_events(
+                lineage.clone(),
+                version(),
+                NonZeroU16::new(10).expect("nonzero"),
+            ),
+            OperationRequest::tail_events(
+                lineage,
+                version(),
+                NonZeroU16::new(10).expect("nonzero"),
+            ),
         ]
     }
 
     #[test]
     fn request_inventory_covers_every_shared_operation() {
         let requests = requests();
-        assert_eq!(requests.len(), 29);
+        assert_eq!(requests.len(), 32);
         // WP-408 needs the durable audit tag; WP-409 owns its public policy request.
         let policy_operations = ServiceOperationV1::ALL
             .into_iter()

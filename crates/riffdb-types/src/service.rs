@@ -68,11 +68,17 @@ pub enum ServiceOperationV1 {
     DeployQueryModule,
     /// Apply one accepted offline contract migration.
     ApplyContractMigration,
+    /// Describe one active symbolic domain event.
+    DescribeEvent,
+    /// Replay one bounded upper-fenced symbolic event page.
+    ReplayEvents,
+    /// Wait for and return one bounded symbolic event page.
+    TailEvents,
 }
 
 impl ServiceOperationV1 {
     /// Every accepted v1 service operation, in tag order.
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 31] = [
         Self::ValidateContract,
         Self::ExplainCommand,
         Self::DeployContract,
@@ -101,6 +107,9 @@ impl ServiceOperationV1 {
         Self::ExecuteQuery,
         Self::DeployQueryModule,
         Self::ApplyContractMigration,
+        Self::DescribeEvent,
+        Self::ReplayEvents,
+        Self::TailEvents,
     ];
 
     /// Returns the stable v1 semantic tag.
@@ -135,6 +144,9 @@ impl ServiceOperationV1 {
             Self::ExecuteQuery => 0x1a,
             Self::DeployQueryModule => 0x1b,
             Self::ApplyContractMigration => 0x1c,
+            Self::DescribeEvent => 0x1d,
+            Self::ReplayEvents => 0x1e,
+            Self::TailEvents => 0x1f,
         }
     }
 
@@ -170,6 +182,9 @@ impl ServiceOperationV1 {
             0x1a => Some(Self::ExecuteQuery),
             0x1b => Some(Self::DeployQueryModule),
             0x1c => Some(Self::ApplyContractMigration),
+            0x1d => Some(Self::DescribeEvent),
+            0x1e => Some(Self::ReplayEvents),
+            0x1f => Some(Self::TailEvents),
             _ => None,
         }
     }

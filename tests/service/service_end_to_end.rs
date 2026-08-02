@@ -12,22 +12,128 @@ use riffdb_service::{
     AdministrationApplication, AuthoritativeOutcomeSelectorRef, AuthoritativeReadinessFailure,
     CapacityRejectionStage, CommandApplication, CommandDurability, CommitApplication,
     CompactResourceDescriptorRef, ContractApplication, ContractValidationResult,
-    CreateCapabilityInvocation, DiscoverCommandToolsRequest, DiscoverCommandToolsResultRef,
-    DiscoverResourcesRequest, DiscoverResourcesResultRef, DiscoveryApplication,
-    DiscoveryCatalogStateRef, DiscoveryRepresentation, ExecuteCommandResult, ExplainCommandResult,
-    GetActiveContractRequest, GetActiveContractResult, GetCommitRequest, GetCommitResult,
-    GetContractVersionResult, GetEntityResult, GetProjectionStatusResult, HealthContext,
-    HealthRequest, HealthResult, HealthStatus, JournaledCompletion, PageLimit, PageRequest,
-    PreBootstrapLifecycle, QueryApplication, ResolveCommandOutcomeRequest,
-    ResolveCommandOutcomeResult, ResourceDescriptorRef, ResourceDiscoveryKind,
-    ServiceTelemetryEvent, StatisticsRequest, TraceProvenanceResult,
+    CreateCapabilityInvocation, DescribeEventRequest, DescribeEventResult,
+    DiscoverCommandToolsRequest, DiscoverCommandToolsResultRef, DiscoverResourcesRequest,
+    DiscoverResourcesResultRef, DiscoveryApplication, DiscoveryCatalogStateRef,
+    DiscoveryRepresentation, EventPartitionComponent, EventSelection, EventServiceApplication,
+    ExecuteCommandResult, ExplainCommandResult, GetActiveContractRequest, GetActiveContractResult,
+    GetCommitRequest, GetCommitResult, GetContractVersionResult, GetEntityResult,
+    GetProjectionStatusResult, HealthContext, HealthRequest, HealthResult, HealthStatus,
+    JournaledCompletion, PageLimit, PageRequest, PreBootstrapLifecycle, QueryApplication,
+    ReplayEventsRequest, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
+    ResourceDescriptorRef, ResourceDiscoveryKind, ServiceTelemetryEvent, StatisticsRequest,
+    TraceProvenanceResult,
 };
 use riffdb_types::{
-    PartitionScopeV1, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetV1,
-    ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1,
+    CanonicalValue, PartitionScopeV1, ServiceAuditLinkV1, ServiceAuditPhaseV1,
+    ServiceAuditTargetV1, ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1,
 };
 
 use support::{ReadCommitMode, ServiceHarness, run_async, sequence};
+
+// Covers: EVT-006, EVT-007, EVT-008.
+#[test]
+fn event_catalog_and_replay_use_current_operator_authority_and_symbolic_resolution() {
+    run_async(async move {
+        const DESCRIBE_SEED: u8 = 0x21;
+        const REPLAY_SEED: u8 = 0x22;
+        let mut harness = ServiceHarness::operations();
+
+        let (context, _cancellation) = harness.context(DESCRIBE_SEED);
+        let described = harness
+            .service
+            .describe_event(
+                context,
+                DescribeEventRequest::new("BudgetAllocated".to_owned())
+                    .expect("bounded event symbol"),
+            )
+            .await
+            .expect("ReadContract permits active event inspection");
+        let DescribeEventResult::Found(descriptor) = described else {
+            panic!("the active budget event is described symbolically");
+        };
+        assert_eq!(descriptor.event_name(), "BudgetAllocated");
+        assert!(!descriptor.application_streamable());
+        assert!(descriptor.partition_fields().is_empty());
+        assert!(
+            descriptor
+                .payload_fields()
+                .iter()
+                .any(|field| field.name() == "organization_id")
+        );
+
+        let selection = EventSelection::new(
+            "BudgetAllocated".to_owned(),
+            vec![
+                EventPartitionComponent::new(
+                    "organization_id".to_owned(),
+                    CanonicalValue::Uuid([0x21; 16]),
+                )
+                .expect("bounded partition component"),
+            ],
+            vec!["matter_id".to_owned()],
+        )
+        .expect("bounded symbolic event selection");
+        let request = ReplayEventsRequest::new(
+            selection,
+            None,
+            PageRequest::new(PageLimit::default(), None),
+        )
+        .expect("bounded replay request");
+        let (context, _cancellation) = harness.context(REPLAY_SEED);
+        let failure = harness
+            .service
+            .replay_events(context, request)
+            .await
+            .expect_err("an unpartitioned event has no application replay fallback");
+        assert_eq!(
+            failure.public_error().map(|error| error.kind()),
+            Some(PublicErrorKind::Validation)
+        );
+
+        harness.stop_coordinator();
+        assert!(
+            harness.audit_records(DESCRIBE_SEED).is_empty(),
+            "ReadContract metadata inspection retains its existing unaudited posture"
+        );
+        let records = harness.audit_records(REPLAY_SEED);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].phase(), ServiceAuditPhaseV1::Started);
+        assert_eq!(records[1].phase(), ServiceAuditPhaseV1::Failed);
+        assert!(
+            records
+                .iter()
+                .all(|record| record.operation() == ServiceOperationV1::ReplayEvents)
+        );
+    });
+}
+
+// Covers: EVT-007.
+#[test]
+fn event_description_without_read_contract_fails_before_catalog_disclosure() {
+    run_async(async move {
+        let mut harness = ServiceHarness::command();
+        let (context, _cancellation) = harness.context(0x23);
+        let failure = harness
+            .service
+            .describe_event(
+                context,
+                DescribeEventRequest::new("BudgetAllocated".to_owned())
+                    .expect("bounded event symbol"),
+            )
+            .await
+            .expect_err("command-only authority cannot inspect the event catalog");
+        assert_eq!(
+            failure.public_error().map(|error| error.kind()),
+            Some(PublicErrorKind::AuthorizationDenied)
+        );
+        harness.stop_coordinator();
+        let records = harness.audit_records(0x23);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].operation(), ServiceOperationV1::DescribeEvent);
+        assert_eq!(records[0].phase(), ServiceAuditPhaseV1::Denied);
+    });
+}
 
 #[test]
 fn pre_bootstrap_health_is_restricted_and_bypasses_policy_storage_and_audit() {

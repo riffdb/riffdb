@@ -81,6 +81,11 @@ pub(crate) enum TopLevel {
         #[command(subcommand)]
         command: CommitCommand,
     },
+    /// Describes and reads partitioned domain events.
+    Event {
+        #[command(subcommand)]
+        command: EventCommand,
+    },
     Projection {
         #[command(subcommand)]
         command: ProjectionCommand,
@@ -513,6 +518,49 @@ pub(crate) enum CommitCommand {
         #[arg(value_name = "COMMIT_SEQUENCE")]
         commit_sequence: String,
         /// Observed history incarnation fence (ADR-0072). Stale values fail closed.
+        #[arg(long = "observed-history-incarnation", value_name = "INCARNATION")]
+        observed_history_incarnation: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum EventCommand {
+    /// Describes one event in the active contract.
+    Describe {
+        #[arg(value_name = "EVENT")]
+        event: String,
+    },
+    /// Replays one exact event partition.
+    Replay {
+        #[arg(value_name = "EVENT")]
+        event: String,
+        #[arg(long = "partition", value_name = "FIELD=JSON_VALUE")]
+        partition: Vec<String>,
+        #[arg(long = "field", value_name = "FIELD")]
+        fields: Vec<String>,
+        #[arg(long, value_name = "COMMIT:ORDINAL")]
+        after: Option<String>,
+        #[arg(long, value_name = "ROWS")]
+        limit: Option<String>,
+        #[arg(long, value_name = "BASE64_CURSOR")]
+        cursor: Option<String>,
+        #[arg(long = "observed-history-incarnation", value_name = "INCARNATION")]
+        observed_history_incarnation: Option<String>,
+    },
+    /// Waits for events after one exact partition position.
+    Tail {
+        #[arg(value_name = "EVENT")]
+        event: String,
+        #[arg(long = "partition", value_name = "FIELD=JSON_VALUE")]
+        partition: Vec<String>,
+        #[arg(long = "field", value_name = "FIELD")]
+        fields: Vec<String>,
+        #[arg(long, value_name = "COMMIT:ORDINAL")]
+        after: Option<String>,
+        #[arg(long, value_name = "ROWS")]
+        limit: Option<String>,
+        #[arg(long, default_value = "30000000000", value_name = "NANOSECONDS")]
+        wait_nanos: String,
         #[arg(long = "observed-history-incarnation", value_name = "INCARNATION")]
         observed_history_incarnation: Option<String>,
     },

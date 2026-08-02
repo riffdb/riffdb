@@ -61,6 +61,10 @@ files
     import riffdb/v1/common.proto
     import riffdb/v1/contract.proto
   riffdb/v1/error.proto
+  riffdb/v1/event.proto
+    import riffdb/v1/commit.proto
+    import riffdb/v1/common.proto
+    import riffdb/v1/value.proto
   riffdb/v1/projection.proto
     import riffdb/v1/common.proto
     import riffdb/v1/value.proto
@@ -73,6 +77,7 @@ files
     import riffdb/v1/commit.proto
     import riffdb/v1/contract.proto
     import riffdb/v1/discovery.proto
+    import riffdb/v1/event.proto
     import riffdb/v1/projection.proto
     import riffdb/v1/query.proto
   riffdb/v1/value.proto
@@ -1023,6 +1028,12 @@ messages
     6 incompatible_candidate optional .riffdb.v1.ContractDescriptor oneof=result
     7 expected_application_identity_mismatch optional .riffdb.v1.ExpectedApplicationIdentityMismatch oneof=result
     8 migration_required optional .riffdb.v1.ContractDescriptor oneof=result
+  riffdb.v1.DescribeEventRequest fields=2
+    1 request_id optional bytes
+    2 event_name optional string
+  riffdb.v1.DescribeEventResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.EventDescriptor oneof=result
   riffdb.v1.DiscoverCommandToolsRequest fields=4
     1 request_id optional bytes
     2 page optional .riffdb.v1.PageRequest
@@ -1069,9 +1080,32 @@ messages
     1 type_id optional uint32
     2 variant_id optional uint32
     3 name optional string
+  riffdb.v1.EventDescriptor fields=7
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+    3 contract_bundle_hash optional bytes
+    4 event_name optional string
+    5 application_streamable optional bool
+    6 partition_fields repeated .riffdb.v1.EventFieldDescriptor
+    7 payload_fields repeated .riffdb.v1.EventFieldDescriptor
+  riffdb.v1.EventFieldDescriptor fields=2
+    1 name optional string
+    2 value_type optional string
   riffdb.v1.EventId fields=2
     1 commit_sequence optional uint64
     2 event_ordinal optional uint32
+  riffdb.v1.EventPage fields=4
+    1 items repeated .riffdb.v1.SymbolicEvent
+    2 next_cursor optional bytes
+    3 observed_upper optional .riffdb.v1.EventId
+    4 history_incarnation optional uint64
+  riffdb.v1.EventPartitionComponent fields=2
+    1 name optional string
+    2 value optional .riffdb.v1.Value
+  riffdb.v1.EventSelection fields=3
+    1 event_name optional string
+    2 partition repeated .riffdb.v1.EventPartitionComponent
+    3 selected_fields repeated string
   riffdb.v1.ExactContractSelection fields=2
     1 contract_lineage optional string
     2 contract_version optional uint64
@@ -1381,6 +1415,14 @@ messages
   riffdb.v1.QueryProjectionWaitTimedOut fields=2
     1 required_sequence optional uint64
     2 current optional .riffdb.v1.FrontierPosition
+  riffdb.v1.ReplayEventsRequest fields=5
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventSelection
+    3 after_event_id optional .riffdb.v1.EventId
+    4 page optional .riffdb.v1.PageRequest
+    5 observed_history_incarnation optional uint64
+  riffdb.v1.ReplayEventsResponse fields=1
+    1 page optional .riffdb.v1.EventPage
   riffdb.v1.ResourceDescriptor fields=10
     1 active_contract optional .riffdb.v1.Unit oneof=resource
     2 contract_version optional .riffdb.v1.ContractVersionResource oneof=resource
@@ -1461,6 +1503,23 @@ messages
     2 after_sequence optional uint64 proto3-optional oneof=_after_sequence
     3 maximum_lifetime_nanos optional uint64
     4 observed_history_incarnation optional uint64 proto3-optional oneof=_observed_history_incarnation
+  riffdb.v1.SymbolicEvent fields=13
+    1 event_id optional .riffdb.v1.EventId
+    2 event_name optional string
+    3 writer_contract_version optional uint64
+    4 writer_plan_hash optional bytes
+    5 command_name optional string
+    6 request_id optional bytes
+    7 root_request_id optional bytes
+    8 causing_event_id optional .riffdb.v1.EventId
+    9 occurred_at optional .riffdb.v1.Timestamp
+    10 actor_kind optional .riffdb.v1.ActorKind
+    11 provenance_uri optional string
+    12 history_incarnation optional uint64
+    13 fields repeated .riffdb.v1.SymbolicEventField
+  riffdb.v1.SymbolicEventField fields=2
+    1 name optional string
+    2 value optional .riffdb.v1.Value
   riffdb.v1.SyntaxDiagnostic fields=5
     1 code optional string
     2 summary optional string
@@ -1469,6 +1528,16 @@ messages
     5 expected repeated string
   riffdb.v1.SyntaxDiagnosticList fields=1
     1 diagnostics repeated .riffdb.v1.SyntaxDiagnostic
+  riffdb.v1.TailEventsRequest fields=6
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventSelection
+    3 after_event_id optional .riffdb.v1.EventId
+    4 page optional .riffdb.v1.PageRequest
+    5 maximum_wait_nanos optional uint64
+    6 observed_history_incarnation optional uint64
+  riffdb.v1.TailEventsResponse fields=2
+    1 page optional .riffdb.v1.EventPage
+    2 wait_timed_out optional bool
   riffdb.v1.TenantScope fields=2
     1 global optional .riffdb.v1.Unit oneof=scope
     2 tenant_id optional string oneof=scope
@@ -2023,6 +2092,10 @@ services
     GetContractVersion .riffdb.v1.GetContractVersionRequest -> .riffdb.v1.GetContractVersionResponse (unary)
     DiscoverCommandTools .riffdb.v1.DiscoverCommandToolsRequest -> .riffdb.v1.DiscoverCommandToolsResponse (unary)
     DiscoverResources .riffdb.v1.DiscoverResourcesRequest -> .riffdb.v1.DiscoverResourcesResponse (unary)
+  riffdb.v1.EventService
+    DescribeEvent .riffdb.v1.DescribeEventRequest -> .riffdb.v1.DescribeEventResponse (unary)
+    ReplayEvents .riffdb.v1.ReplayEventsRequest -> .riffdb.v1.ReplayEventsResponse (unary)
+    TailEvents .riffdb.v1.TailEventsRequest -> .riffdb.v1.TailEventsResponse (unary)
   riffdb.v1.QueryService
     GetEntity .riffdb.v1.GetEntityRequest -> .riffdb.v1.GetEntityResponse (unary)
     ScanIndex .riffdb.v1.ScanIndexRequest -> .riffdb.v1.ScanIndexResponse (unary)

@@ -6,7 +6,8 @@ use std::fmt;
 
 use prost::Message;
 use riffdb_types::{
-    CanonicalValue, CurrencyCode, Decimal as CanonicalDecimal, DecimalSpec, FieldId,
+    CanonicalBytes, CanonicalList, CanonicalRecord, CanonicalString, CanonicalValue, CurrencyCode,
+    Date, Decimal as CanonicalDecimal, DecimalSpec, EnumTypeId, EnumVariantId, FieldId,
     MAX_BYTES_VALUE_BYTES, MAX_CANONICAL_DOCUMENT_BYTES, MAX_LIST_ENTRIES, MAX_NESTING_DEPTH,
     MAX_RECORD_FIELDS, MAX_STRING_BYTES, Money as CanonicalMoney, Timestamp,
 };
@@ -55,6 +56,117 @@ pub fn canonical_value_to_proto(value: &CanonicalValue) -> Result<v1::Value, Val
     let wire = canonical_value_to_proto_unchecked(value);
     validate_value(&wire)?;
     Ok(wire)
+}
+
+/// Converts one structurally checked, fully identified public value to its
+/// canonical semantic form without contract-specific coercion.
+pub fn canonical_value_from_proto(
+    value: v1::Value,
+) -> Result<CanonicalValue, ValueValidationError> {
+    validate_value(&value)?;
+    canonical_value_from_proto_unchecked(value)
+}
+
+fn canonical_value_from_proto_unchecked(
+    value: v1::Value,
+) -> Result<CanonicalValue, ValueValidationError> {
+    use v1::value::Kind;
+
+    match value.kind.ok_or(ValueValidationError::MissingKind)? {
+        Kind::NullValue(_) => Ok(CanonicalValue::Null),
+        Kind::BoolValue(value) => Ok(CanonicalValue::Bool(value)),
+        Kind::I64Value(value) => Ok(CanonicalValue::I64(value)),
+        Kind::U64Value(value) => Ok(CanonicalValue::U64(value)),
+        Kind::DecimalValue(value) => {
+            let precision = value
+                .precision
+                .ok_or(ValueValidationError::DecimalTypeMismatch)?;
+            let spec = DecimalSpec::new(
+                u8::try_from(precision)
+                    .map_err(|_| ValueValidationError::DecimalPrecisionOutOfRange)?,
+                u8::try_from(value.scale)
+                    .map_err(|_| ValueValidationError::DecimalScaleOutOfRange)?,
+            )
+            .map_err(|_| ValueValidationError::DecimalPrecisionOutOfRange)?;
+            decimal_from_proto(&value, spec).map(CanonicalValue::Decimal)
+        }
+        Kind::MoneyValue(value) => {
+            let currency = CurrencyCode::new(value.currency.as_bytes())
+                .map_err(|_| ValueValidationError::InvalidCurrency)?;
+            let amount = value
+                .amount
+                .as_ref()
+                .ok_or(ValueValidationError::MissingNestedValue)?;
+            let precision = amount
+                .precision
+                .ok_or(ValueValidationError::DecimalTypeMismatch)?;
+            let spec = DecimalSpec::new(
+                u8::try_from(precision)
+                    .map_err(|_| ValueValidationError::DecimalPrecisionOutOfRange)?,
+                u8::try_from(amount.scale)
+                    .map_err(|_| ValueValidationError::DecimalScaleOutOfRange)?,
+            )
+            .map_err(|_| ValueValidationError::DecimalPrecisionOutOfRange)?;
+            money_from_proto(&value, spec, currency).map(CanonicalValue::Money)
+        }
+        Kind::StringValue(value) => CanonicalString::new(value)
+            .map(CanonicalValue::String)
+            .map_err(|_| ValueValidationError::StringTooLong),
+        Kind::BytesValue(value) => CanonicalBytes::new(value)
+            .map(CanonicalValue::Bytes)
+            .map_err(|_| ValueValidationError::BytesTooLong),
+        Kind::UuidValue(value) => Ok(CanonicalValue::Uuid(
+            value
+                .try_into()
+                .map_err(|_| ValueValidationError::InvalidUuid)?,
+        )),
+        Kind::DateValue(value) => Ok(CanonicalValue::Date(Date::new(value.days_since_unix_epoch))),
+        Kind::TimestampValue(value) => Timestamp::new(value.seconds, value.nanos)
+            .map(CanonicalValue::Timestamp)
+            .map_err(|_| ValueValidationError::InvalidTimestamp),
+        Kind::EnumValue(value) => Ok(CanonicalValue::Enum {
+            type_id: EnumTypeId::new(value.type_id)
+                .ok_or(ValueValidationError::InvalidEnumIdentity)?,
+            variant_id: EnumVariantId::new(value.variant_id)
+                .ok_or(ValueValidationError::InvalidEnumIdentity)?,
+        }),
+        Kind::ListValue(value) => CanonicalList::new(
+            value
+                .values
+                .into_iter()
+                .map(canonical_value_from_proto_unchecked)
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+        .map(CanonicalValue::List)
+        .map_err(|_| ValueValidationError::TooManyItems),
+        Kind::RecordValue(value) => {
+            let fields = value
+                .fields
+                .into_iter()
+                .map(|field| {
+                    if !field.name.is_empty() {
+                        return Err(ValueValidationError::InvalidFieldIdentity);
+                    }
+                    Ok((
+                        FieldId::new(
+                            field
+                                .field_id
+                                .ok_or(ValueValidationError::InvalidFieldIdentity)?,
+                        )
+                        .ok_or(ValueValidationError::InvalidFieldIdentity)?,
+                        canonical_value_from_proto_unchecked(
+                            field
+                                .value
+                                .ok_or(ValueValidationError::MissingNestedValue)?,
+                        )?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            CanonicalRecord::new(fields)
+                .map(CanonicalValue::Record)
+                .map_err(|_| ValueValidationError::InvalidFieldIdentity)
+        }
+    }
 }
 
 fn canonical_value_to_proto_unchecked(value: &CanonicalValue) -> v1::Value {
@@ -541,6 +653,46 @@ mod tests {
         };
         assert_eq!((value.type_id, value.variant_id), (7, 11));
         assert!(value.name.is_empty());
+    }
+
+    #[test]
+    fn fully_identified_public_values_raise_to_canonical_values_without_schema_guessing() {
+        let values = [
+            CanonicalValue::Uuid([0x41; 16]),
+            CanonicalValue::I64(-9),
+            CanonicalValue::Enum {
+                type_id: EnumTypeId::new(7).expect("enum type ID is nonzero"),
+                variant_id: EnumVariantId::new(11).expect("enum variant ID is nonzero"),
+            },
+        ];
+        for expected in values {
+            let wire = canonical_value_to_proto(&expected).expect("canonical outbound value");
+            assert_eq!(canonical_value_from_proto(wire), Ok(expected));
+        }
+
+        let name_only_enum = v1::Value {
+            kind: Some(v1::value::Kind::EnumValue(v1::EnumValue {
+                type_id: 0,
+                variant_id: 0,
+                name: "Approved".to_owned(),
+            })),
+        };
+        assert_eq!(
+            canonical_value_from_proto(name_only_enum),
+            Err(ValueValidationError::InvalidEnumIdentity)
+        );
+
+        let decimal_without_precision = v1::Value {
+            kind: Some(v1::value::Kind::DecimalValue(v1::Decimal {
+                coefficient_twos_complement: vec![1],
+                scale: 2,
+                precision: None,
+            })),
+        };
+        assert_eq!(
+            canonical_value_from_proto(decimal_without_precision),
+            Err(ValueValidationError::DecimalTypeMismatch)
+        );
     }
 
     #[test]

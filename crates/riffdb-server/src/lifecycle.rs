@@ -687,9 +687,9 @@ mod tests {
     use riffdb_service::{
         AdministrationApplication, CommandApplication, CommitApplication, ContractApplication,
         CreateCapabilityInvocation, CreateCapabilityResult, DiscoveryApplication,
-        OfflineMaintenanceApplication, QueryApplication, RecoveryOfflineMaintenanceApplication,
-        RequestContext, RestoreRetryOfflineMaintenanceApplication, ServiceFailure,
-        SymbolicQueryApplication,
+        EventServiceApplication, OfflineMaintenanceApplication, QueryApplication,
+        RecoveryOfflineMaintenanceApplication, RequestContext,
+        RestoreRetryOfflineMaintenanceApplication, ServiceFailure, SymbolicQueryApplication,
     };
     use riffdb_types::{Audience, DatabaseId, Environment};
 
@@ -793,6 +793,27 @@ mod tests {
             RequestContext,
             riffdb_service::GetProjectionStatusRequest,
             riffdb_service::GetProjectionStatusResult
+        );
+    }
+
+    impl EventServiceApplication for ClosedApplicationService {
+        denied_operation!(
+            describe_event,
+            RequestContext,
+            riffdb_service::DescribeEventRequest,
+            riffdb_service::DescribeEventResult
+        );
+        denied_operation!(
+            replay_events,
+            RequestContext,
+            riffdb_service::ReplayEventsRequest,
+            riffdb_service::ReplayEventsResult
+        );
+        denied_operation!(
+            tail_events,
+            RequestContext,
+            riffdb_service::TailEventsRequest,
+            riffdb_service::TailEventsResult
         );
     }
 

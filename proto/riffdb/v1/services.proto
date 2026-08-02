@@ -7,6 +7,7 @@ import "riffdb/v1/command.proto";
 import "riffdb/v1/commit.proto";
 import "riffdb/v1/contract.proto";
 import "riffdb/v1/discovery.proto";
+import "riffdb/v1/event.proto";
 import "riffdb/v1/projection.proto";
 import "riffdb/v1/query.proto";
 service ContractService {
@@ -37,6 +38,12 @@ service CommitService {
   rpc ScanCommits(ScanCommitsRequest) returns (ScanCommitsResponse);
   rpc SubscribeCommits(SubscribeCommitsRequest) returns (stream CommitNotification);
   rpc TraceProvenance(TraceProvenanceRequest) returns (TraceProvenanceResponse);
+}
+
+service EventService {
+  rpc DescribeEvent(DescribeEventRequest) returns (DescribeEventResponse);
+  rpc ReplayEvents(ReplayEventsRequest) returns (ReplayEventsResponse);
+  rpc TailEvents(TailEventsRequest) returns (TailEventsResponse);
 }
 
 service AdminService {

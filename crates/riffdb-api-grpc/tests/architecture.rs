@@ -87,7 +87,7 @@ fn generated_servers_are_wrapped_with_exact_public_message_limits() {
         source
             .matches(".max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)")
             .count(),
-        5
+        6
     );
     assert_eq!(
         source
@@ -99,7 +99,7 @@ fn generated_servers_are_wrapped_with_exact_public_message_limits() {
         source
             .matches(".max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)")
             .count(),
-        6
+        7
     );
     assert!(!source.contains("accept_compressed"));
     assert!(!source.contains("send_compressed"));
@@ -210,14 +210,14 @@ fn maintenance_and_migration_are_additive_and_never_an_mcp_surface() {
             .lines()
             .filter(|line| line.starts_with("service "))
             .count(),
-        5
+        6
     );
     assert_eq!(
         services
             .lines()
             .filter(|line| line.trim_start().starts_with("rpc "))
             .count(),
-        29
+        32
     );
     assert_eq!(services.matches("rpc ExecuteBatch(").count(), 1);
     for rpc in [

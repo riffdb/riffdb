@@ -1,0 +1,99 @@
+syntax = "proto3";
+
+package riffdb.v1;
+
+import "riffdb/v1/commit.proto";
+import "riffdb/v1/common.proto";
+import "riffdb/v1/value.proto";
+
+message EventFieldDescriptor {
+  string name = 1;
+  string value_type = 2;
+}
+
+message EventDescriptor {
+  string contract_lineage = 1;
+  uint64 contract_version = 2;
+  bytes contract_bundle_hash = 3;
+  string event_name = 4;
+  bool application_streamable = 5;
+  repeated EventFieldDescriptor partition_fields = 6;
+  repeated EventFieldDescriptor payload_fields = 7;
+}
+
+message DescribeEventRequest {
+  bytes request_id = 1;
+  string event_name = 2;
+}
+
+message DescribeEventResponse {
+  oneof result {
+    Unit not_found = 1;
+    EventDescriptor found = 2;
+  }
+}
+
+message EventPartitionComponent {
+  string name = 1;
+  Value value = 2;
+}
+
+message EventSelection {
+  string event_name = 1;
+  repeated EventPartitionComponent partition = 2;
+  repeated string selected_fields = 3;
+}
+
+message SymbolicEventField {
+  string name = 1;
+  Value value = 2;
+}
+
+message SymbolicEvent {
+  EventId event_id = 1;
+  string event_name = 2;
+  uint64 writer_contract_version = 3;
+  bytes writer_plan_hash = 4;
+  string command_name = 5;
+  bytes request_id = 6;
+  bytes root_request_id = 7;
+  EventId causing_event_id = 8;
+  Timestamp occurred_at = 9;
+  ActorKind actor_kind = 10;
+  string provenance_uri = 11;
+  uint64 history_incarnation = 12;
+  repeated SymbolicEventField fields = 13;
+}
+
+message EventPage {
+  repeated SymbolicEvent items = 1;
+  bytes next_cursor = 2;
+  EventId observed_upper = 3;
+  uint64 history_incarnation = 4;
+}
+
+message ReplayEventsRequest {
+  bytes request_id = 1;
+  EventSelection selection = 2;
+  EventId after_event_id = 3;
+  PageRequest page = 4;
+  uint64 observed_history_incarnation = 5;
+}
+
+message ReplayEventsResponse {
+  EventPage page = 1;
+}
+
+message TailEventsRequest {
+  bytes request_id = 1;
+  EventSelection selection = 2;
+  EventId after_event_id = 3;
+  PageRequest page = 4;
+  uint64 maximum_wait_nanos = 5;
+  uint64 observed_history_incarnation = 6;
+}
+
+message TailEventsResponse {
+  EventPage page = 1;
+  bool wait_timed_out = 2;
+}

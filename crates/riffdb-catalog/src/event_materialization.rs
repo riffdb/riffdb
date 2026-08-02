@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
-use riffdb_contract_ir::{FieldSchema, Instruction};
+use riffdb_contract_ir::{FieldSchema, Instruction, SchemaIr, ValueType, ValueTypeTag};
 use riffdb_storage_api::{
     DurableKeySchemaBindingV1, ExecutablePlanRef, StoredDurableEventV1, StoredEventRouteV1,
 };
@@ -18,6 +18,61 @@ use crate::{ActiveCatalogSnapshot, ValidatedContractBundle};
 
 /// Maximum explicitly selected payload fields in one application event view.
 pub const MAX_EVENT_MATERIALIZATION_FIELDS: usize = 256;
+
+/// One symbolic event field without a stable numeric identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SymbolicEventFieldDescriptor {
+    name: String,
+    value_type: String,
+}
+
+impl SymbolicEventFieldDescriptor {
+    /// Borrows the exact contract field name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Borrows the canonical contract-language type spelling.
+    #[must_use]
+    pub fn value_type(&self) -> &str {
+        &self.value_type
+    }
+}
+
+/// One active symbolic event descriptor safe for public service shaping.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SymbolicEventDescriptor {
+    event_name: String,
+    partition_fields: Vec<SymbolicEventFieldDescriptor>,
+    payload_fields: Vec<SymbolicEventFieldDescriptor>,
+}
+
+impl SymbolicEventDescriptor {
+    /// Borrows the exact event name.
+    #[must_use]
+    pub fn event_name(&self) -> &str {
+        &self.event_name
+    }
+
+    /// Returns whether compiler-proved application routing is available.
+    #[must_use]
+    pub fn application_streamable(&self) -> bool {
+        !self.partition_fields.is_empty()
+    }
+
+    /// Borrows the ordered compiler-proved partition field tuple.
+    #[must_use]
+    pub fn partition_fields(&self) -> &[SymbolicEventFieldDescriptor] {
+        &self.partition_fields
+    }
+
+    /// Borrows every payload field in stable schema order.
+    #[must_use]
+    pub fn payload_fields(&self) -> &[SymbolicEventFieldDescriptor] {
+        &self.payload_fields
+    }
+}
 
 /// Stable classification for symbolic event-materialization failures.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -423,6 +478,40 @@ impl fmt::Debug for SymbolicEventView {
 }
 
 impl ActiveCatalogSnapshot {
+    /// Describes one active event using only symbolic names and type spellings.
+    #[must_use]
+    pub fn describe_event(&self, event_name: &str) -> Option<SymbolicEventDescriptor> {
+        let schema = self.bundle().bundle().schema();
+        let event = schema
+            .events()
+            .iter()
+            .find(|event| event.name() == event_name)?;
+        let payload_fields = event
+            .payload()
+            .fields()
+            .iter()
+            .map(|field| symbolic_field_descriptor(schema, field))
+            .collect::<Option<Vec<_>>>()?;
+        let partition_fields = match event.partition() {
+            Some(partition) => partition
+                .fields()
+                .iter()
+                .map(|field_id| {
+                    event
+                        .payload()
+                        .field(*field_id)
+                        .and_then(|field| symbolic_field_descriptor(schema, field))
+                })
+                .collect::<Option<Vec<_>>>()?,
+            None => Vec::new(),
+        };
+        Some(SymbolicEventDescriptor {
+            event_name: event.name().to_owned(),
+            partition_fields,
+            payload_fields,
+        })
+    }
+
     /// Resolves one event and an explicit nonempty payload selection by symbol.
     pub fn resolve_event_materializer<'a>(
         &self,
@@ -469,6 +558,43 @@ impl ActiveCatalogSnapshot {
             active_ordinal,
         })
     }
+}
+
+fn symbolic_field_descriptor(
+    schema: &SchemaIr,
+    field: &FieldSchema,
+) -> Option<SymbolicEventFieldDescriptor> {
+    Some(SymbolicEventFieldDescriptor {
+        name: field.name().to_owned(),
+        value_type: render_value_type(schema, field.value_type())?,
+    })
+}
+
+fn render_value_type(schema: &SchemaIr, value: &ValueType) -> Option<String> {
+    Some(match value.tag() {
+        ValueTypeTag::Bool => "bool".to_owned(),
+        ValueTypeTag::I64 => "i64".to_owned(),
+        ValueTypeTag::U64 => "u64".to_owned(),
+        ValueTypeTag::Decimal => {
+            let spec = value.decimal_spec()?;
+            format!("decimal<{},{}>", spec.precision(), spec.scale())
+        }
+        ValueTypeTag::Money => format!("money<{}>", value.currency()?),
+        ValueTypeTag::String => format!("string<{}>", value.byte_bound()?),
+        ValueTypeTag::Bytes => format!("bytes<{}>", value.byte_bound()?),
+        ValueTypeTag::Timestamp => "timestamp".to_owned(),
+        ValueTypeTag::Date => "date".to_owned(),
+        ValueTypeTag::Uuid => "uuid".to_owned(),
+        ValueTypeTag::Enum => schema.enumeration(value.enum_type_id()?)?.name().to_owned(),
+        ValueTypeTag::Optional => {
+            format!("{}?", render_value_type(schema, value.optional_inner()?)?)
+        }
+        ValueTypeTag::List => {
+            let (element, maximum) = value.list_parts()?;
+            format!("[{}; {maximum}]", render_value_type(schema, element)?)
+        }
+        ValueTypeTag::Record => "record".to_owned(),
+    })
 }
 
 fn validate_complete_event_payload(

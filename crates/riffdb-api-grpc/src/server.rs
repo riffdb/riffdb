@@ -50,6 +50,7 @@ use crate::generated::admin_service_server::{AdminService, AdminServiceServer};
 use crate::generated::command_service_server::{CommandService, CommandServiceServer};
 use crate::generated::commit_service_server::{CommitService, CommitServiceServer};
 use crate::generated::contract_service_server::{ContractService, ContractServiceServer};
+use crate::generated::event_service_server::{EventService, EventServiceServer};
 use crate::generated::query_service_server::{QueryService, QueryServiceServer};
 use crate::generated_app::application_query_service_server::{
     ApplicationQueryService, ApplicationQueryServiceServer,
@@ -520,6 +521,14 @@ impl GrpcApplication {
     #[must_use]
     pub fn commit_server(&self) -> CommitServiceServer<Self> {
         CommitServiceServer::new(self.clone())
+            .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
+            .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
+    }
+
+    /// Builds the bounded symbolic event service.
+    #[must_use]
+    pub fn event_server(&self) -> EventServiceServer<Self> {
+        EventServiceServer::new(self.clone())
             .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
             .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
     }
@@ -1647,6 +1656,45 @@ impl CommitService for GrpcApplication {
             self.normal_invocation(ServiceOperationV1::TraceProvenance, &metadata, request_id)?;
         let result = map_service(service.trace_provenance(context, request).await)?;
         Ok(Response::new(trace_provenance_result_to_proto(&result)?))
+    }
+}
+
+#[tonic::async_trait]
+impl EventService for GrpcApplication {
+    async fn describe_event(
+        &self,
+        request: Request<v1::DescribeEventRequest>,
+    ) -> Result<Response<v1::DescribeEventResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = describe_event_request_from_proto(message)?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::DescribeEvent, &metadata, request_id)?;
+        let result = map_service(service.describe_event(context, request).await)?;
+        Ok(Response::new(describe_event_result_to_proto(&result)))
+    }
+
+    async fn replay_events(
+        &self,
+        request: Request<v1::ReplayEventsRequest>,
+    ) -> Result<Response<v1::ReplayEventsResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = replay_events_request_from_proto(message)?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::ReplayEvents, &metadata, request_id)?;
+        let result = map_service(service.replay_events(context, request).await)?;
+        Ok(Response::new(replay_events_result_to_proto(&result)?))
+    }
+
+    async fn tail_events(
+        &self,
+        request: Request<v1::TailEventsRequest>,
+    ) -> Result<Response<v1::TailEventsResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = tail_events_request_from_proto(message)?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::TailEvents, &metadata, request_id)?;
+        let result = map_service(service.tail_events(context, request).await)?;
+        Ok(Response::new(tail_events_result_to_proto(&result)?))
     }
 }
 

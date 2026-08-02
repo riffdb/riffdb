@@ -6650,11 +6650,14 @@ work_packages:
   requirements: [EVT-001, EVT-002, EVT-003, EVT-004, EVT-005, EVT-006, EVT-007, EVT-008]
   required_adrs: [ADR-0013, ADR-0049, ADR-0063, ADR-0072, ADR-0073, ADR-0080]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/riffdb/storage/**,
+    proto/riffdb/v1/**, fixtures/proto/**,
     crates/riffdb-types/**, crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
     crates/riffdb-contract-compiler/**, crates/riffdb-catalog/**, crates/riffdb-storage-api/**,
     crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**, crates/riffdb-commit/**,
-    crates/riffdb-service/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
-    crates/riffdb-cli/**, fixtures/reactive/**, fixtures/storage/**, tests/**, scripts/**, docs/**]
+    crates/riffdb-policy/**, crates/riffdb-service/**, crates/riffdb-proto/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**, crates/riffdb-server/**,
+    crates/riffdb-observability/**, crates/riffdb-cli/**, fixtures/reactive/**,
+    fixtures/storage/**, tests/**, scripts/**, docs/**]
   deliverables:
   - Optional event partition grammar, IR/codec/hash successors, compiler emit-equivalence proof, compatibility, and spans
   - Versioned event-route record/key, atomic maintenance, resumable historical backfill, startup validation, and recovery

@@ -512,6 +512,29 @@ impl CommitApplication for ProjectionService {
     }
 }
 
+impl riffdb_service::EventServiceApplication for ProjectionService {
+    fn describe_event(
+        &self,
+        context: RequestContext,
+        _request: riffdb_service::DescribeEventRequest,
+    ) -> ServiceFuture<'_, riffdb_service::DescribeEventResult> {
+        self.observe(&context, ServiceOperationV1::DescribeEvent);
+        Box::pin(async { Ok(riffdb_service::DescribeEventResult::NotFound) })
+    }
+    denied_operation!(
+        replay_events,
+        RequestContext,
+        riffdb_service::ReplayEventsRequest,
+        riffdb_service::ReplayEventsResult
+    );
+    denied_operation!(
+        tail_events,
+        RequestContext,
+        riffdb_service::TailEventsRequest,
+        riffdb_service::TailEventsResult
+    );
+}
+
 impl AdministrationApplication for ProjectionService {
     denied_operation!(health, HealthContext, HealthRequest, HealthResult);
     denied_operation!(
@@ -996,6 +1019,7 @@ impl GrpcLifecycleRoute for ActiveRoute {
                 | ServiceOperationV1::ListPendingOutboxDeliveries
                 | ServiceOperationV1::DiscoverCommandTools
                 | ServiceOperationV1::DiscoverResources
+                | ServiceOperationV1::DescribeEvent
                 | ServiceOperationV1::ExecuteQuery
         )
         .then(|| Arc::clone(&self.service))
@@ -1703,6 +1727,7 @@ async fn wp137_unary_surface_crosses_authenticated_loopback_grpc() {
             .add_service(application.command_server())
             .add_service(application.query_server())
             .add_service(application.commit_server())
+            .add_service(application.event_server())
             .add_service(application.admin_server())
             .serve_with_incoming_shutdown(incoming, async move {
                 let _ = shutdown_receiver.await;
@@ -1716,7 +1741,7 @@ async fn wp137_unary_surface_crosses_authenticated_loopback_grpc() {
     let metadata = CallMetadata::authenticated(
         BearerCredential::new(CAPABILITY_TOKEN).expect("valid credential presentation"),
     );
-    let request_ids = (10_u8..=18).map(request_id).collect::<Vec<_>>();
+    let request_ids = (10_u8..=19).map(request_id).collect::<Vec<_>>();
 
     let contract = client
         .get_contract_version(
@@ -1915,6 +1940,21 @@ async fn wp137_unary_surface_crosses_authenticated_loopback_grpc() {
         Some(v1::get_outcome_response::Result::NotFound(_))
     ));
 
+    let event = client
+        .describe_event(
+            v1::DescribeEventRequest {
+                request_id: request_ids[9].into_bytes().to_vec(),
+                event_name: "BudgetAllocated".to_owned(),
+            },
+            &metadata,
+        )
+        .await
+        .expect("event description response");
+    assert!(matches!(
+        event.result,
+        Some(v1::describe_event_response::Result::NotFound(_))
+    ));
+
     assert_eq!(service.command_discovery_prior(), vec![false, true, false]);
     assert_eq!(service.outcome_locators(), vec![OUTCOME_LOCATOR]);
     let expected_operations = [
@@ -1927,6 +1967,7 @@ async fn wp137_unary_surface_crosses_authenticated_loopback_grpc() {
         ServiceOperationV1::DiscoverCommandTools,
         ServiceOperationV1::DiscoverCommandTools,
         ServiceOperationV1::ResolveCommandOutcome,
+        ServiceOperationV1::DescribeEvent,
     ];
     let observed = service.observed();
     assert_eq!(observed.len(), expected_operations.len());

@@ -7,6 +7,7 @@ use std::num::{NonZeroU16, NonZeroU64};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use riffdb_catalog::EventReplayPosition;
 use riffdb_contract_ir::{IndexScanPrefix, MAX_DECLARATIONS_PER_KIND};
 use riffdb_policy::{FixedToolCandidate, PartitionConstraint};
 use riffdb_query_executor::QueryContinuation;
@@ -17,6 +18,7 @@ use riffdb_types::{
     TenantScope,
 };
 
+use crate::EventSelection;
 use crate::dto::{
     DiscoveryCatalogFence, DiscoveryRepresentation, FieldSelection, MAX_PROJECTION_COMPONENTS,
     MAX_PROJECTION_WAIT, ProjectionContinuation, ProjectionPageFence, ResourceDiscoveryKind,
@@ -604,6 +606,63 @@ pub(crate) struct CursorContractIdentity {
     lineage: ContractLineage,
     version: ContractVersion,
     bundle_hash: ContractBundleHash,
+}
+
+/// Caller-reconstructible identity for one symbolic event replay.
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct EventReplayCursorLookup {
+    contract: CursorContractIdentity,
+    selection: EventSelection,
+    requested_limit: PageLimit,
+}
+
+impl EventReplayCursorLookup {
+    #[must_use]
+    pub(crate) fn new(
+        lineage: ContractLineage,
+        version: ContractVersion,
+        bundle_hash: ContractBundleHash,
+        selection: EventSelection,
+        requested_limit: PageLimit,
+    ) -> Self {
+        Self {
+            contract: CursorContractIdentity::new(lineage, version, bundle_hash),
+            selection,
+            requested_limit,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn requested_limit(&self) -> PageLimit {
+        self.requested_limit
+    }
+}
+
+/// Registry-only event route continuation and prior effective limit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct EventReplayCursorState {
+    position: EventReplayPosition,
+    effective_limit: PageLimit,
+}
+
+impl EventReplayCursorState {
+    #[must_use]
+    pub(crate) const fn new(position: EventReplayPosition, effective_limit: PageLimit) -> Self {
+        Self {
+            position,
+            effective_limit,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn position(&self) -> EventReplayPosition {
+        self.position
+    }
+
+    #[must_use]
+    pub(crate) const fn effective_limit(&self) -> PageLimit {
+        self.effective_limit
+    }
 }
 
 impl CursorContractIdentity {
@@ -1319,6 +1378,7 @@ impl QueryCursorState {
 
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) enum ServiceCursorLookup {
+    EventReplay(EventReplayCursorLookup),
     CommitScan(CommitScanCursorLookup),
     IndexScan(IndexScanCursorLookup),
     Projection(ProjectionCursorLookup),
@@ -1330,6 +1390,7 @@ pub(crate) enum ServiceCursorLookup {
 
 #[derive(Clone)]
 pub(crate) enum ServiceCursorState {
+    EventReplay(Arc<EventReplayCursorState>),
     CommitScan(Arc<CommitScanCursorState>),
     IndexScan(Arc<IndexScanCursorState>),
     Projection(Arc<ProjectionCursorState>),
@@ -1435,6 +1496,41 @@ impl ServiceCursorRegistries {
             CursorBinding::new(principal.clone(), ServiceCursorLookup::CommitScan(lookup)),
             ServiceCursorState::CommitScan(Arc::new(state)),
         )
+    }
+
+    pub(crate) fn register_event_replay_unpublished(
+        &self,
+        principal: &ActorId,
+        lookup: EventReplayCursorLookup,
+        state: EventReplayCursorState,
+    ) -> Result<CursorPublicationGuard<'_>, CursorUnavailable> {
+        if state.effective_limit() > lookup.requested_limit() {
+            return Err(CursorUnavailable);
+        }
+        let registration = self.registry.register(
+            CursorBinding::new(principal.clone(), ServiceCursorLookup::EventReplay(lookup)),
+            ServiceCursorState::EventReplay(Arc::new(state)),
+        )?;
+        Ok(self.publication_guard(registration))
+    }
+
+    pub(crate) fn resolve_event_replay(
+        &self,
+        token: CursorToken,
+        principal: &ActorId,
+        lookup: &EventReplayCursorLookup,
+    ) -> Result<Arc<EventReplayCursorState>, CursorAccessError> {
+        let state = self.registry.resolve(
+            token,
+            &CursorBinding::new(
+                principal.clone(),
+                ServiceCursorLookup::EventReplay(lookup.clone()),
+            ),
+        )?;
+        match state.as_ref() {
+            ServiceCursorState::EventReplay(state) => Ok(Arc::clone(state)),
+            _ => Err(CursorAccessError::Unavailable),
+        }
     }
 
     pub(crate) fn register_commit_scan_unpublished(
