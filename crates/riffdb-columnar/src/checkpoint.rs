@@ -12,9 +12,7 @@ use riffdb_types::{
 
 use crate::definition::{DefinitionFingerprint, LAYOUT_VERSION};
 use crate::hooks::{ColumnarTestBoundary, ColumnarTestController};
-use crate::store::{
-    LiveRow, OrgDelta, OrgKey, PrimaryKeyBytes, RowState, Segment, SegmentId, WorkingState,
-};
+use crate::store::{LiveRow, OrgDelta, OrgKey, PrimaryKeyBytes, Segment, SegmentId, WorkingState};
 
 /// Checkpoint / segment durability failures.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -27,6 +25,18 @@ pub enum CheckpointError {
         expected: DefinitionFingerprint,
         /// Fingerprint recorded in the manifest.
         found: DefinitionFingerprint,
+    },
+    /// Checkpoint or compaction refused while a supersession holdback window is
+    /// open: the working state contains applied-but-unpublished effects, so
+    /// flushing it would persist a half-applied commit (ADR-0086 §4). Retry
+    /// after the next apply pull resolves the race.
+    HoldbackActive {
+        /// Published (visible) frontier at refusal time.
+        published: FrontierPosition,
+        /// Processed frontier at refusal time (leads published during holdback).
+        processed: FrontierPosition,
+        /// Number of entities waiting for their superseding commit.
+        deferred: usize,
     },
     /// Segment file missing or checksum mismatch.
     SegmentIntegrity(&'static str),
@@ -44,6 +54,15 @@ impl std::fmt::Display for CheckpointError {
                     "fingerprint mismatch: expected {expected}, found {found}"
                 )
             }
+            Self::HoldbackActive {
+                published,
+                processed,
+                deferred,
+            } => write!(
+                f,
+                "holdback active: published {published:?} behind processed {processed:?} \
+                 with {deferred} deferred entities; retry after the next apply pull"
+            ),
             Self::SegmentIntegrity(message) => write!(f, "segment integrity: {message}"),
             Self::Io(message) => write!(f, "checkpoint I/O: {message}"),
         }
@@ -275,17 +294,28 @@ pub(crate) fn checksum_bytes(bytes: &[u8]) -> [u8; 32] {
 pub(crate) struct CheckpointDir {
     root: PathBuf,
     controller: Option<ColumnarTestController>,
-    /// Test-only: advance manifest frontier before segment sync (overclaim neuter).
-    pub(crate) test_manifest_before_segment_sync: bool,
+    /// Next segment-name generation. Seeded strictly above every generation
+    /// present in the directory at open (including orphans from torn
+    /// checkpoints), and bumped on every checkpoint attempt, so `create_new`
+    /// can never collide with a leftover file.
+    next_generation: u64,
 }
 
 impl CheckpointDir {
     pub(crate) fn new(root: PathBuf) -> Result<Self, CheckpointError> {
         fs::create_dir_all(&root)?;
+        let mut max_generation = 0u64;
+        for entry in fs::read_dir(&root)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            if let Some(generation) = parse_segment_generation(&name.to_string_lossy()) {
+                max_generation = max_generation.max(generation);
+            }
+        }
         Ok(Self {
             root,
             controller: None,
-            test_manifest_before_segment_sync: false,
+            next_generation: max_generation.saturating_add(1),
         })
     }
 
@@ -351,6 +381,12 @@ impl CheckpointDir {
         Ok(working)
     }
 
+    /// Sweeps stray files in a directory that has no manifest (fresh directory
+    /// after a checkpoint torn before the first manifest rename).
+    pub(crate) fn sweep_stray_files(&self) -> Result<(), CheckpointError> {
+        self.sweep_unreferenced(&BTreeSet::new())
+    }
+
     fn sweep_unreferenced(&self, referenced: &BTreeSet<String>) -> Result<(), CheckpointError> {
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
@@ -359,7 +395,9 @@ impl CheckpointDir {
             if name == MANIFEST_NAME || name.starts_with('.') {
                 continue;
             }
-            if name.starts_with("seg-") && !referenced.contains(name.as_ref()) {
+            let orphan_segment = name.starts_with("seg-") && !referenced.contains(name.as_ref());
+            let torn_manifest_temp = name.starts_with("MANIFEST.") && name.ends_with(".tmp");
+            if orphan_segment || torn_manifest_temp {
                 let _ = fs::remove_file(entry.path());
             }
         }
@@ -368,40 +406,29 @@ impl CheckpointDir {
 
     /// Flushes working delta into new segment files and publishes a new manifest
     /// at `durable_frontier` (must be the race-free visible frontier).
+    ///
+    /// Each org with delta rows is rewritten to exactly ONE segment holding its
+    /// full merged materialization; that org's prior segment references are
+    /// dropped (fully superseded), so segment count stays bounded at one per
+    /// org instead of growing with checkpoints. Superseded files are not
+    /// deleted here — the previous manifest may still reference them until the
+    /// rename lands — they are swept on the next open.
     pub(crate) fn checkpoint(
-        &self,
+        &mut self,
         working: &mut WorkingState,
         fingerprint: DefinitionFingerprint,
         durable_frontier: FrontierPosition,
     ) -> Result<ManifestV1, CheckpointError> {
-        // Build new segments from current delta (one segment per org with delta rows).
-        let mut new_segments: Vec<std::sync::Arc<Segment>> = working.segments.clone();
-        let mut next_ordinal = next_segment_ordinal(&new_segments);
-
-        if self.test_manifest_before_segment_sync {
-            // Neuter path (falsifiability): claim durable_frontier while leaving
-            // delta undurable and segment inventory pre-delta — classic overclaim.
-            let bogus = ManifestV1 {
-                layout_version: LAYOUT_VERSION,
-                fingerprint,
-                durable_frontier,
-                segments: inventory_from_segments(&new_segments),
-            };
-            self.write_manifest_atomic(&bogus)?;
-            // Do not flush delta to segments; leave working.delta as-is for the
-            // in-process engine, but durable reopen will see an empty projection
-            // at a non-zero frontier.
-            return Ok(bogus);
-        }
+        let generation = self.next_generation;
+        self.next_generation = self.next_generation.saturating_add(1);
 
         let delta = std::mem::take(&mut working.delta);
-        for (org, org_delta) in delta {
-            let rows = materialize_org_rows(&new_segments, &org, &org_delta);
-            if rows.is_empty() {
-                continue;
-            }
-            let file_name = format!("seg-{next_ordinal:08}.col");
-            next_ordinal += 1;
+        let touched: BTreeSet<OrgKey> = delta.keys().cloned().collect();
+
+        let mut new_segments: Vec<std::sync::Arc<Segment>> = Vec::new();
+        for (ordinal, (org, org_delta)) in delta.into_iter().enumerate() {
+            let rows = materialize_org_rows(&working.segments, &org, &org_delta);
+            let file_name = format!("seg-{generation:08}-{ordinal:04}.col");
             let bytes = encode_segment_rows(&rows)?;
             let checksum = checksum_bytes(&bytes);
             let path = self.root.join(&file_name);
@@ -427,8 +454,22 @@ impl CheckpointDir {
             }));
         }
 
-        working.segments = new_segments;
-        working.delta = BTreeMap::new();
+        // Directory fsync so newly created segment files are durable before the
+        // manifest names them (D5 write ordering).
+        if !new_segments.is_empty() {
+            File::open(&self.root)?.sync_all()?;
+        }
+
+        // Keep only segments of untouched orgs; each touched org's new
+        // materialization fully supersedes its prior segments.
+        let mut segments: Vec<std::sync::Arc<Segment>> = working
+            .segments
+            .iter()
+            .filter(|segment| !touched.contains(&segment.org))
+            .cloned()
+            .collect();
+        segments.extend(new_segments);
+        working.segments = segments;
 
         let manifest = ManifestV1 {
             layout_version: LAYOUT_VERSION,
@@ -482,20 +523,11 @@ fn inventory_from_segments(segments: &[std::sync::Arc<Segment>]) -> Vec<SegmentI
         .collect()
 }
 
-fn next_segment_ordinal(segments: &[std::sync::Arc<Segment>]) -> u64 {
-    segments
-        .iter()
-        .filter_map(|segment| {
-            segment
-                .id
-                .file_name()
-                .strip_prefix("seg-")
-                .and_then(|rest| rest.strip_suffix(".col"))
-                .and_then(|digits| digits.parse::<u64>().ok())
-        })
-        .max()
-        .map(|value| value + 1)
-        .unwrap_or(1)
+/// Parses the generation component of a `seg-{generation}-{ordinal}.col` name.
+fn parse_segment_generation(name: &str) -> Option<u64> {
+    let rest = name.strip_prefix("seg-")?.strip_suffix(".col")?;
+    let (generation, _ordinal) = rest.split_once('-')?;
+    generation.parse::<u64>().ok()
 }
 
 /// Materializes full org state: merge prior segments with delta, emit live rows.
@@ -513,27 +545,16 @@ fn materialize_org_rows(
             merged.insert(key.clone(), row.clone());
         }
     }
-    for (key, state) in delta {
-        match state {
-            RowState::Live(row) => {
-                let replace = match merged.get(key) {
-                    None => true,
-                    Some(existing) => crate::store::supersession_should_replace(
-                        existing.entity_version.get(),
-                        row.entity_version.get(),
-                    ),
-                };
-                if replace {
-                    merged.insert(key.clone(), row.clone());
-                }
-            }
-            RowState::Tombstone { entity_version } => {
-                if let Some(existing) = merged.get(key)
-                    && existing.entity_version.get() <= entity_version.get()
-                {
-                    merged.remove(key);
-                }
-            }
+    for (key, row) in delta {
+        let replace = match merged.get(key) {
+            None => true,
+            Some(existing) => crate::store::supersession_should_replace(
+                existing.entity_version.get(),
+                row.entity_version.get(),
+            ),
+        };
+        if replace {
+            merged.insert(key.clone(), row.clone());
         }
     }
     merged

@@ -28,20 +28,20 @@ pub struct ApplyProgress {
     pub caught_up: bool,
 }
 
+/// Unit-test callback observing every snapshot at the moment it is published.
+#[cfg(test)]
+pub(crate) type PublishObserver = Box<dyn FnMut(&ColumnarSnapshot)>;
+
 /// Mutable apply machinery shared with the engine.
 pub(crate) struct ApplyState {
     pub definition: RegisteredDefinition,
     pub working: WorkingState,
     pub published: Arc<ColumnarSnapshot>,
     pub deferred: BTreeMap<EntityTargetKey, EntityVersion>,
-    /// When true (tests only), publish after each entity inside a commit.
-    pub(crate) test_publish_mid_commit: bool,
-    /// When true (tests only), apply raced-ahead live records immediately.
-    pub(crate) test_skip_holdback: bool,
-    /// When true (tests only), skip supersession tombstone on replace.
-    pub(crate) test_skip_tombstone: bool,
-    /// Test observability: total live rows in each published snapshot (all orgs).
-    pub(crate) test_publish_row_counts: Vec<usize>,
+    /// Unit-test observer invoked with every snapshot at the moment it is
+    /// published. Never compiled into non-test builds.
+    #[cfg(test)]
+    pub(crate) publish_observer: Option<PublishObserver>,
 }
 
 /// Orderable wrapper for EntityTarget (keyed by entity key bytes).
@@ -67,10 +67,8 @@ impl ApplyState {
             working: WorkingState::default(),
             published: Arc::new(ColumnarSnapshot::empty()),
             deferred: BTreeMap::new(),
-            test_publish_mid_commit: false,
-            test_skip_holdback: false,
-            test_skip_tombstone: false,
-            test_publish_row_counts: Vec::new(),
+            #[cfg(test)]
+            publish_observer: None,
         }
     }
 
@@ -162,15 +160,11 @@ impl ApplyState {
                 continue;
             }
             self.apply_entity_reference(reader, reference)?;
-            if self.test_publish_mid_commit {
-                // Neuter path: publish between entity effects of one commit.
-                self.maybe_publish(FrontierPosition::AppliedThrough(sequence));
-            }
         }
         self.working.processed = FrontierPosition::AppliedThrough(sequence);
-        if !self.test_publish_mid_commit {
-            self.maybe_publish(FrontierPosition::AppliedThrough(sequence));
-        }
+        // Publication only at the commit boundary, after ALL of the commit's
+        // effects are in the working state (D4 all-or-none visibility).
+        self.maybe_publish(FrontierPosition::AppliedThrough(sequence));
         Ok(())
     }
 
@@ -199,11 +193,8 @@ impl ApplyState {
 
         let live_version = record.entity_version();
         if live_version.get() > reference.entity_version().get() {
-            if self.test_skip_holdback {
-                // Neuter: apply the raced-ahead record immediately.
-                self.apply_matched_record(&record)?;
-                return Ok(());
-            }
+            // Raced ahead: never apply the newer record at this commit. The
+            // commit that produced `live_version` will apply it when reached.
             self.deferred.insert(
                 EntityTargetKey::from_target(reference.target()),
                 live_version,
@@ -231,9 +222,10 @@ impl ApplyState {
             cells,
         };
 
-        // Idempotence: skip if an equal-or-newer version is already present in delta.
+        // Idempotence: skip when a strictly newer version is already present in
+        // the delta (equal-version replay is an identical overwrite).
         if let Some(org_delta) = self.working.delta.get(&org)
-            && let Some(RowState::Live(existing)) = org_delta.get(&key)
+            && let Some(existing) = org_delta.get(&key)
             && !crate::store::supersession_should_replace(
                 existing.entity_version.get(),
                 row.entity_version.get(),
@@ -242,24 +234,13 @@ impl ApplyState {
             // Existing is newer than incoming — idempotent skip.
             return Ok(());
         }
-        if let Some(org_delta) = self.working.delta.get(&org)
-            && let Some(RowState::Live(existing)) = org_delta.get(&key)
-            && existing.entity_version.get() == row.entity_version.get()
-        {
-            // Equal version replay.
-            return Ok(());
-        }
 
-        let mask_prior = !self.test_skip_tombstone;
-        self.working.upsert_live(org, key, row, mask_prior);
+        self.working.upsert_live(org, key, row);
         Ok(())
     }
 
     fn maybe_publish(&mut self, candidate: FrontierPosition) {
-        if self.test_skip_holdback {
-            self.publish(candidate);
-            return;
-        }
+        // Frontier holdback: publication lands only on race-free points.
         if self.deferred.is_empty() {
             self.publish(candidate);
         }
@@ -268,20 +249,13 @@ impl ApplyState {
 
     fn publish(&mut self, frontier: FrontierPosition) {
         let snapshot = self.working.to_snapshot(frontier);
-        let mut orgs: std::collections::BTreeSet<_> = snapshot.delta.keys().cloned().collect();
-        for segment in &snapshot.segments {
-            orgs.insert(segment.org.clone());
+        #[cfg(test)]
+        if let Some(observer) = self.publish_observer.as_mut() {
+            observer(&snapshot);
         }
-        let mut total = 0usize;
-        for org in &orgs {
-            total = total.saturating_add(snapshot.merged_org(org).len());
-        }
-        self.test_publish_row_counts.push(total);
         self.published = Arc::new(snapshot);
     }
 }
-
-use crate::store::RowState;
 
 const fn is_exact_successor(frontier: FrontierPosition, sequence: CommitSequence) -> bool {
     match frontier {
@@ -292,10 +266,6 @@ const fn is_exact_successor(frontier: FrontierPosition, sequence: CommitSequence
         },
     }
 }
-
-// FrontierPosition ordering for comparisons used above.
-// riffdb_types::FrontierPosition derives PartialOrd if listed — verify.
-// If not, we only use == and the storage API's PartialOrd on inclusive_upper.
 
 #[cfg(test)]
 mod successor_tests {
@@ -312,5 +282,253 @@ mod successor_tests {
             FrontierPosition::BeforeFirst,
             CommitSequence::new(2).expect("2")
         ));
+    }
+}
+
+// Publish-observer property test (same cfg(test)-hook shape as the clone probe
+// in riffdb-query-executor's pipeline_clone_tests): the observer sees every
+// snapshot at the instant it is published, so moving the publish call inside
+// the per-entity loop of `apply_commit` makes this test fail.
+#[cfg(test)]
+mod publish_observer_tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use riffdb_contract_compiler::compile_contract_source;
+    use riffdb_contract_ir::ContractBundle;
+    use riffdb_storage_api::{
+        DurableKeySchemaBindingV1, ExecutablePlanRef, IdempotencyIdentity, StorageError,
+        StoredCommitRecordV1, StoredDurableEventV1, StoredOutcomeV1, StoredProvenanceRecordV1,
+    };
+    use riffdb_types::{
+        CanonicalRecord, CanonicalValue, CommandId, CommitSequence, ContractBundleHash,
+        ContractLineage, ContractVersion, EntityKeyBuilder, EventId, PlanHash, ProvenanceId,
+    };
+
+    use super::*;
+    use crate::definition::ColumnarProjectionDefinition;
+    use crate::store::OrgKey;
+
+    const CONTRACT: &str = r#"
+contract ColumnarPublish version 1 {
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: u64)
+    field status: u64
+  }
+
+  event TicketCreated {
+    organization_id: uuid
+    ticket_id: u64
+  }
+
+  aggregate Tickets {
+    root Ticket
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+
+  command CreateTicket {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input ticket_id: u64
+    input status: u64
+
+    idempotency_key idempotency_key
+    create Ticket(organization_id, ticket_id) as ticket
+      else AlreadyExists { ticket_id: ticket_id }
+
+    set ticket.status = status
+
+    emit TicketCreated { organization_id: organization_id, ticket_id: ticket_id }
+    return Created { ticket: ticket }
+  }
+}
+"#;
+
+    struct PointState {
+        entities: BTreeMap<Vec<u8>, StoredEntityRecordV1>,
+    }
+
+    impl AuthoritativePointReader for PointState {
+        fn read_entity(
+            &self,
+            target: &EntityTarget,
+        ) -> Result<Option<StoredEntityRecordV1>, StorageError> {
+            Ok(self.entities.get(target.key().as_bytes()).cloned())
+        }
+
+        fn read_stored_outcome(
+            &self,
+            _identity: &IdempotencyIdentity,
+        ) -> Result<Option<StoredOutcomeV1>, StorageError> {
+            Ok(None)
+        }
+
+        fn read_commit(
+            &self,
+            _sequence: CommitSequence,
+        ) -> Result<Option<StoredCommitRecordV1>, StorageError> {
+            Ok(None)
+        }
+
+        fn read_provenance(
+            &self,
+            _provenance_id: ProvenanceId,
+        ) -> Result<Option<StoredProvenanceRecordV1>, StorageError> {
+            Ok(None)
+        }
+
+        fn read_durable_event(
+            &self,
+            _event_id: EventId,
+        ) -> Result<Option<StoredDurableEventV1>, StorageError> {
+            Ok(None)
+        }
+    }
+
+    fn plan_ref() -> ExecutablePlanRef {
+        ExecutablePlanRef::new(
+            ContractLineage::new("columnar-publish").expect("lineage"),
+            ContractVersion::new(1).expect("version"),
+            ContractBundleHash::from_bytes([0x21; 32]),
+            CommandId::new(1).expect("command"),
+            PlanHash::from_bytes([0x22; 32]),
+        )
+    }
+
+    fn ticket_entity(
+        bundle: &ContractBundle,
+        org: [u8; 16],
+        ticket_id: u64,
+        status: u64,
+    ) -> StoredEntityRecordV1 {
+        let entity = bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Ticket")
+            .expect("entity");
+        let field = |name: &str| {
+            entity
+                .record()
+                .fields()
+                .iter()
+                .find(|field| field.name() == name)
+                .map(riffdb_contract_ir::FieldSchema::id)
+                .expect("field")
+        };
+        let mut key = EntityKeyBuilder::new(entity.id());
+        key.push_uuid(&org).expect("uuid");
+        key.push_u64(ticket_id).expect("u64");
+        let target = EntityTarget::new(entity.id(), key.finish().expect("key")).expect("target");
+        let fields = CanonicalRecord::new(vec![
+            (field("organization_id"), CanonicalValue::Uuid(org)),
+            (field("ticket_id"), CanonicalValue::U64(ticket_id)),
+            (field("status"), CanonicalValue::U64(status)),
+        ])
+        .expect("fields");
+        let plan = plan_ref();
+        StoredEntityRecordV1::new(
+            target,
+            EntityVersion::first(),
+            plan.contract_version(),
+            DurableKeySchemaBindingV1::from_plan(&plan),
+            fields,
+        )
+        .expect("entity record")
+    }
+
+    #[test]
+    fn publish_is_all_or_nothing_for_multi_entity_commits() {
+        let bundle = compile_contract_source(CONTRACT).expect("compile");
+        let entity = bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Ticket")
+            .expect("entity");
+        let org_field = entity
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == "organization_id")
+            .map(riffdb_contract_ir::FieldSchema::id)
+            .expect("org");
+        let status_field = entity
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == "status")
+            .map(riffdb_contract_ir::FieldSchema::id)
+            .expect("status");
+        let definition = RegisteredDefinition::register(
+            ColumnarProjectionDefinition {
+                name: "publish-observer".into(),
+                entity_name: "Ticket".into(),
+                projected_fields: vec![status_field],
+                org_scope_field: org_field,
+            },
+            &bundle,
+        )
+        .expect("register");
+
+        let org = [0x77u8; 16];
+        let first = ticket_entity(&bundle, org, 1, 10);
+        let second = ticket_entity(&bundle, org, 2, 20);
+        let first_reference =
+            riffdb_storage_api::CommittedEntityReferenceV2::from_post_image(&first).expect("ref");
+        let second_reference =
+            riffdb_storage_api::CommittedEntityReferenceV2::from_post_image(&second).expect("ref");
+        let first_key =
+            PrimaryKeyBytes::from_entity_key_bytes(first.target().key().as_bytes().to_vec());
+        let second_key =
+            PrimaryKeyBytes::from_entity_key_bytes(second.target().key().as_bytes().to_vec());
+        let org_key = OrgKey::from_value(&CanonicalValue::Uuid(org)).expect("org key");
+
+        let reader = PointState {
+            entities: BTreeMap::from([
+                (first.target().key().as_bytes().to_vec(), first.clone()),
+                (second.target().key().as_bytes().to_vec(), second.clone()),
+            ]),
+        };
+
+        let mut state = ApplyState::new(definition);
+        let observed: Rc<RefCell<Vec<(bool, bool)>>> = Rc::new(RefCell::new(Vec::new()));
+        state.publish_observer = Some(Box::new({
+            let observed = Rc::clone(&observed);
+            let org_key = org_key.clone();
+            let first_key = first_key.clone();
+            let second_key = second_key.clone();
+            move |snapshot: &ColumnarSnapshot| {
+                let merged = snapshot.merged_org(&org_key);
+                observed.borrow_mut().push((
+                    merged.contains_key(&first_key),
+                    merged.contains_key(&second_key),
+                ));
+            }
+        }));
+
+        state
+            .apply_commit(
+                &reader,
+                &[first_reference, second_reference],
+                CommitSequence::new(1).expect("1"),
+            )
+            .expect("apply");
+
+        let observed = observed.borrow();
+        assert!(!observed.is_empty(), "commit publication must be observed");
+        for (has_first, has_second) in observed.iter() {
+            assert_eq!(
+                has_first, has_second,
+                "published snapshot must contain all-or-nothing of the \
+                 multi-entity commit (saw first={has_first}, second={has_second})"
+            );
+        }
+        assert_eq!(
+            observed.last(),
+            Some(&(true, true)),
+            "final publication must contain the complete commit"
+        );
     }
 }

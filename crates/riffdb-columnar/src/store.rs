@@ -67,20 +67,8 @@ pub struct LiveRow {
     pub cells: Vec<CanonicalValue>,
 }
 
-/// Delta row state: live image or tombstone that masks older versions.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RowState {
-    /// Visible projected row.
-    Live(LiveRow),
-    /// Masks all older live rows for the same primary key at or below `entity_version`.
-    Tombstone {
-        /// Version at which the row was superseded/removed for masking purposes.
-        entity_version: EntityVersion,
-    },
-}
-
-/// Per-org mutable delta map.
-pub type OrgDelta = BTreeMap<PrimaryKeyBytes, RowState>;
+/// Per-org mutable delta map (live rows only; deletes do not exist in CP1).
+pub type OrgDelta = BTreeMap<PrimaryKeyBytes, LiveRow>;
 
 /// One immutable on-disk segment for a single org partition.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -139,38 +127,26 @@ impl ColumnarSnapshot {
         }
 
         if let Some(delta) = self.delta.get(org) {
-            for (key, state) in delta {
-                match state {
-                    RowState::Live(row) => {
-                        let replace = match merged.get(key) {
-                            None => true,
-                            Some(existing) => {
-                                // Supersession / version mask: newer (or equal) wins.
-                                // Equal version is idempotent overwrite for replay.
-                                supersession_should_replace(
-                                    existing.entity_version.get(),
-                                    row.entity_version.get(),
-                                )
-                            }
-                        };
-                        if replace {
-                            merged.insert(
-                                key.clone(),
-                                MergedRow {
-                                    entity_version: row.entity_version,
-                                    cells: row.cells.clone(),
-                                },
-                            );
-                        }
+            for (key, row) in delta {
+                let replace = match merged.get(key) {
+                    None => true,
+                    Some(existing) => {
+                        // Supersession / version mask: newer (or equal) wins.
+                        // Equal version is idempotent overwrite for replay.
+                        supersession_should_replace(
+                            existing.entity_version.get(),
+                            row.entity_version.get(),
+                        )
                     }
-                    RowState::Tombstone { entity_version } => {
-                        // Tombstone masks any row at or below this version.
-                        if let Some(existing) = merged.get(key)
-                            && existing.entity_version.get() <= entity_version.get()
-                        {
-                            merged.remove(key);
-                        }
-                    }
+                };
+                if replace {
+                    merged.insert(
+                        key.clone(),
+                        MergedRow {
+                            entity_version: row.entity_version,
+                            cells: row.cells.clone(),
+                        },
+                    );
                 }
             }
         }
@@ -190,7 +166,7 @@ pub struct MergedRow {
 
 /// Working (unpublished) state mutated by apply; published via Arc swap.
 #[derive(Clone, Debug)]
-pub struct WorkingState {
+pub(crate) struct WorkingState {
     /// Segments referenced by the working set (includes published + pending merges).
     pub segments: Vec<Arc<Segment>>,
     /// Working delta including unpublished commit effects.
@@ -210,42 +186,17 @@ impl Default for WorkingState {
 }
 
 impl WorkingState {
-    /// Upserts a live row, writing a supersession tombstone when an older live
-    /// image for the same key is present in the delta or would be visible from
-    /// segments under the prior version.
-    pub fn upsert_live(
-        &mut self,
-        org: OrgKey,
-        key: PrimaryKeyBytes,
-        row: LiveRow,
-        mask_prior: bool,
-    ) {
-        let org_delta = self.delta.entry(org).or_default();
-        if mask_prior {
-            // Supersession: tombstone at prior version (if known) then live.
-            // When prior is only in segments, a tombstone at new_version-1 is
-            // insufficient without knowing prior; Live with higher version is
-            // enough for merge. We still emit an explicit tombstone at the
-            // previous delta version when replacing a Live delta entry so the
-            // supersession path is observable and testable.
-            if let Some(RowState::Live(prior)) = org_delta.get(&key)
-                && prior.entity_version.get() < row.entity_version.get()
-            {
-                let prior_version = prior.entity_version;
-                org_delta.insert(
-                    key.clone(),
-                    RowState::Tombstone {
-                        entity_version: prior_version,
-                    },
-                );
-            }
-        }
-        org_delta.insert(key, RowState::Live(row));
+    /// Upserts a live row into the delta. Superseded older images for the same
+    /// key are masked at read time by the version comparison in
+    /// [`supersession_should_replace`]; no tombstone state exists (deletes do
+    /// not exist in CP1 — see the crate root docs).
+    pub(crate) fn upsert_live(&mut self, org: OrgKey, key: PrimaryKeyBytes, row: LiveRow) {
+        self.delta.entry(org).or_default().insert(key, row);
     }
 
     /// Snapshot clone of segments + delta at a frontier (for publication).
     #[must_use]
-    pub fn to_snapshot(&self, visible_frontier: FrontierPosition) -> ColumnarSnapshot {
+    pub(crate) fn to_snapshot(&self, visible_frontier: FrontierPosition) -> ColumnarSnapshot {
         ColumnarSnapshot {
             segments: self.segments.clone(),
             delta: self.delta.clone(),
@@ -309,29 +260,6 @@ mod tests {
     }
 
     #[test]
-    fn tombstone_masks_segment_row() {
-        let org = OrgKey(vec![1]);
-        let segment = Arc::new(Segment {
-            id: SegmentId("s1".into()),
-            org: org.clone(),
-            rows: BTreeMap::from([(pk(1), live(1, 10))]),
-            checksum: [0; 32],
-        });
-        let mut snapshot = ColumnarSnapshot::empty();
-        snapshot.segments.push(segment);
-        snapshot.delta.insert(
-            org.clone(),
-            BTreeMap::from([(
-                pk(1),
-                RowState::Tombstone {
-                    entity_version: EntityVersion::new(1).expect("v"),
-                },
-            )]),
-        );
-        assert!(snapshot.merged_org(&org).is_empty());
-    }
-
-    #[test]
     fn newer_live_masks_older_segment_row() {
         let org = OrgKey(vec![1]);
         let segment = Arc::new(Segment {
@@ -342,12 +270,30 @@ mod tests {
         });
         let mut snapshot = ColumnarSnapshot::empty();
         snapshot.segments.push(segment);
-        snapshot.delta.insert(
-            org.clone(),
-            BTreeMap::from([(pk(1), RowState::Live(live(2, 20)))]),
-        );
+        snapshot
+            .delta
+            .insert(org.clone(), BTreeMap::from([(pk(1), live(2, 20))]));
         let merged = snapshot.merged_org(&org);
         assert_eq!(merged[&pk(1)].cells, vec![CanonicalValue::U64(20)]);
         assert_eq!(merged[&pk(1)].entity_version.get(), 2);
+    }
+
+    #[test]
+    fn older_delta_row_does_not_mask_newer_segment_row() {
+        let org = OrgKey(vec![1]);
+        let segment = Arc::new(Segment {
+            id: SegmentId("s1".into()),
+            org: org.clone(),
+            rows: BTreeMap::from([(pk(1), live(3, 30))]),
+            checksum: [0; 32],
+        });
+        let mut snapshot = ColumnarSnapshot::empty();
+        snapshot.segments.push(segment);
+        snapshot
+            .delta
+            .insert(org.clone(), BTreeMap::from([(pk(1), live(2, 20))]));
+        let merged = snapshot.merged_org(&org);
+        assert_eq!(merged[&pk(1)].cells, vec![CanonicalValue::U64(30)]);
+        assert_eq!(merged[&pk(1)].entity_version.get(), 3);
     }
 }
