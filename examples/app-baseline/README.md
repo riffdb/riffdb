@@ -175,6 +175,24 @@ Postgres is started with `max_connections=200` so the c=128 point is reachable.
 
 Default report path: `target/app-baseline/load-concurrency-sweep-v1.json`.
 
+**Backend isolation:** dual-backend load runs use **sequential exclusive phases**
+in `benchmarks/run-app-baseline`: finish every PostgreSQL measure point, then
+`docker rm` the harness Postgres (killing `docker-proxy`), then run RiffDB.
+The engines never load at the same time, so CPU/IO and docker-proxy do not
+compete. Reports are merged into one suite JSON with
+`comparison.backend_isolation = sequential_exclusive_phases`.
+
+**Docker leak hygiene:** harness Postgres containers are labeled
+`riffdb.app-baseline.postgres=1` and named `riffdb-app-baseline-*`. On every
+start (and stop), the runner sweeps **all** matching containers — including
+orphans left when a prior shell was `SIGKILL`ed and never ran its EXIT trap.
+Manual reclaim anytime:
+
+```bash
+docker ps -aq --filter label=riffdb.app-baseline.postgres=1 | xargs -r docker rm -f
+docker ps -aq --filter name=riffdb-app-baseline- | xargs -r docker rm -f
+```
+
 Follow-ups not in this increment: open-loop Poisson arrivals, history-growth
 curves, crash-under-load, deploy-under-load.
 

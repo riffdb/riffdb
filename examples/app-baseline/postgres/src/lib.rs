@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use postgres::{Client, Config, NoTls, Row, Statement};
 use riffdb_app_baseline_core::{
@@ -359,6 +359,109 @@ impl PostgresAppBackend {
             data_directory: row.get(5),
         })
     }
+
+    /// Counts other client backends on this database (excludes this control session).
+    ///
+    /// Used after each load point to prove worker connections closed and no
+    /// INSERT/UPDATE is still in flight before we claim measurement complete.
+    pub fn foreign_client_session_counts(
+        &mut self,
+    ) -> Result<PostgresClientSessionCounts, PostgresError> {
+        let row = self
+            .client()?
+            .query_one(
+                "SELECT \
+                    COUNT(*)::bigint AS client_backends, \
+                    COUNT(*) FILTER ( \
+                        WHERE state IS DISTINCT FROM 'idle' \
+                    )::bigint AS non_idle_client_backends \
+                 FROM pg_stat_activity \
+                 WHERE datname = current_database() \
+                   AND pid <> pg_backend_pid() \
+                   AND backend_type = 'client backend'",
+                &[],
+            )
+            .map_err(db_err)?;
+        let client_backends = i64_to_usize(row.get::<_, i64>(0))?;
+        let non_idle_client_backends = i64_to_usize(row.get::<_, i64>(1))?;
+        Ok(PostgresClientSessionCounts {
+            client_backends,
+            non_idle_client_backends,
+        })
+    }
+
+    /// Bounded snapshot of other client backends for failure diagnostics.
+    pub fn foreign_client_session_snapshot(
+        &mut self,
+        limit: i64,
+    ) -> Result<Vec<String>, PostgresError> {
+        let limit = limit.clamp(1, 64);
+        let rows = self
+            .client()?
+            .query(
+                "SELECT pid::text, coalesce(state, '?'), \
+                        left(coalesce(query, ''), 120) \
+                 FROM pg_stat_activity \
+                 WHERE datname = current_database() \
+                   AND pid <> pg_backend_pid() \
+                   AND backend_type = 'client backend' \
+                 ORDER BY pid \
+                 LIMIT $1",
+                &[&limit],
+            )
+            .map_err(db_err)?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                format!(
+                    "pid={} state={} query={}",
+                    row.get::<_, String>(0),
+                    row.get::<_, String>(1),
+                    row.get::<_, String>(2)
+                )
+            })
+            .collect())
+    }
+
+    /// Blocks until no other client backends remain on this database.
+    ///
+    /// Call after every Postgres load point (and after the full PG phase) so a
+    /// "phase complete" claim is server-verified, not just "worker threads joined".
+    pub fn wait_until_load_clients_gone(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(), PostgresError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let counts = self.foreign_client_session_counts()?;
+            if counts.client_backends == 0 && counts.non_idle_client_backends == 0 {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                let snapshot = self.foreign_client_session_snapshot(16).unwrap_or_default();
+                return Err(PostgresError::LoadNotQuiesced {
+                    client_backends: counts.client_backends,
+                    non_idle_client_backends: counts.non_idle_client_backends,
+                    sample: snapshot,
+                });
+            }
+            // Short poll: load workers should drop connections immediately on join.
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+}
+
+fn i64_to_usize(value: i64) -> Result<usize, PostgresError> {
+    usize::try_from(value).map_err(|_| PostgresError::Decode)
+}
+
+/// Live client-backend counts excluding the observing control session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PostgresClientSessionCounts {
+    /// Other `client backend` rows on this database.
+    pub client_backends: usize,
+    /// Subset of [`Self::client_backends`] whose `state` is not `idle`.
+    pub non_idle_client_backends: usize,
 }
 
 /// Durability-relevant PostgreSQL settings observed from a live connection.
@@ -432,7 +535,8 @@ impl AppBackend for PostgresAppBackend {
             },
             PostgresError::Database { sqlstate: None, .. }
             | PostgresError::InvalidConfiguration
-            | PostgresError::Decode => LoadErrorClass::Other,
+            | PostgresError::Decode
+            | PostgresError::LoadNotQuiesced { .. } => LoadErrorClass::Other,
         }
     }
 
@@ -1054,6 +1158,15 @@ pub enum PostgresError {
     },
     /// Row decode failed.
     Decode,
+    /// Load workers still have sessions after the harness claimed the point done.
+    LoadNotQuiesced {
+        /// Other client backends still connected.
+        client_backends: usize,
+        /// Subset not in `idle` state (active INSERT/UPDATE/SELECT/etc.).
+        non_idle_client_backends: usize,
+        /// Bounded `pid/state/query` sample for diagnosis.
+        sample: Vec<String>,
+    },
 }
 
 impl fmt::Display for PostgresError {
@@ -1072,6 +1185,15 @@ impl fmt::Display for PostgresError {
                 message,
             } => write!(formatter, "PostgreSQL database error: {message}"),
             Self::Decode => formatter.write_str("PostgreSQL row decode error"),
+            Self::LoadNotQuiesced {
+                client_backends,
+                non_idle_client_backends,
+                sample,
+            } => write!(
+                formatter,
+                "PostgreSQL load not quiesced: client_backends={client_backends} \
+                 non_idle={non_idle_client_backends} sample={sample:?}"
+            ),
         }
     }
 }
