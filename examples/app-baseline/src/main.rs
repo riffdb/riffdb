@@ -511,17 +511,22 @@ fn run_load(args: Args) -> Result<(), String> {
         "shared_daemon_accumulated_history"
     };
 
-    // Interleaved reps: for each rep, PG points then RiffDB points.
-    for rep in 0..args.reps {
-        if !skip_postgres {
-            let url = args
-                .postgres_url
-                .clone()
-                .or_else(|| env::var("RIFFDB_APP_BASELINE_POSTGRES_URL").ok())
-                .ok_or_else(|| {
-                    "PostgreSQL required: pass --postgres-url or set RIFFDB_APP_BASELINE_POSTGRES_URL"
-                        .to_owned()
-                })?;
+    // Sequential exclusive backends: complete every PostgreSQL rep/point first,
+    // then every RiffDB rep/point. Never interleave — concurrent dual load
+    // competes for CPU/IO (and with harness Docker, docker-proxy). Prefer the
+    // outer `run-app-baseline` dual-phase path, which also tears down Postgres
+    // before starting RiffDB.
+    if !skip_postgres {
+        eprintln!("load phase: PostgreSQL only (all reps/points before RiffDB)");
+        let url = args
+            .postgres_url
+            .clone()
+            .or_else(|| env::var("RIFFDB_APP_BASELINE_POSTGRES_URL").ok())
+            .ok_or_else(|| {
+                "PostgreSQL required: pass --postgres-url or set RIFFDB_APP_BASELINE_POSTGRES_URL"
+                    .to_owned()
+            })?;
+        for rep in 0..args.reps {
             let mut postgres = PostgresAppBackend::new(&url).map_err(|error| error.to_string())?;
             if rep == 0 {
                 let settings = postgres
@@ -545,7 +550,7 @@ fn run_load(args: Args) -> Result<(), String> {
             postgres.seed(&dataset).map_err(|error| error.to_string())?;
             let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
             drop(postgres);
-            let url = Arc::new(url);
+            let worker_url = Arc::new(url.clone());
             const SAMPLE_GAP: u64 = 1_000_000_000;
             for (point_index, &clients) in client_points.iter().enumerate() {
                 let mut config = base_config.clone();
@@ -553,7 +558,7 @@ fn run_load(args: Args) -> Result<(), String> {
                 config.sample_id_base = (point_index as u64)
                     .saturating_mul(SAMPLE_GAP)
                     .saturating_add((rep as u64).saturating_mul(SAMPLE_GAP / 16));
-                let url = Arc::clone(&url);
+                let factory_url = Arc::clone(&worker_url);
                 let report = run_closed_loop_load(
                     "postgres_sql",
                     config,
@@ -564,23 +569,39 @@ fn run_load(args: Args) -> Result<(), String> {
                     &dataset,
                     seed_ns,
                     move || {
-                        let mut backend = PostgresAppBackend::new(url.as_str())
+                        let mut backend = PostgresAppBackend::new(factory_url.as_str())
                             .map_err(|error| error.to_string())?;
                         backend.prewarm().map_err(|error| error.to_string())?;
                         Ok(backend)
                     },
                 )?;
+                // Join alone is not enough: prove the server sees zero load
+                // sessions before we record the point as complete.
+                assert_postgres_load_quiesced(&url, clients, rep)?;
                 print_load_summary(&report);
                 let mut point = concurrency_curve_point(&report);
                 point["rep"] = json!(rep);
+                point["postgres_quiesced"] = json!(true);
                 curve.push(point);
                 let mut json_report = report.to_json();
                 json_report["rep"] = json!(rep);
+                json_report["postgres_quiesced"] = json!(true);
                 reports.push(json_report);
             }
         }
+        // Final phase gate: no foreign clients before we hand off (or before the
+        // outer harness tears down Docker PG).
+        assert_postgres_load_quiesced(&url, 0, usize::MAX)?;
+        eprintln!(
+            "PostgreSQL load phase complete and server-verified quiesced \
+             (pg_stat_activity: no foreign client backends). \
+             RiffDB phase begins next (outer harness should stop Docker PG first)."
+        );
+    }
 
-        if !args.skip_riffdb {
+    if !args.skip_riffdb {
+        eprintln!("load phase: RiffDB only (PostgreSQL phase already finished)");
+        for rep in 0..args.reps {
             let riffdbd = args
                 .riffdbd_bin
                 .clone()
@@ -997,6 +1018,42 @@ fn run_load(args: Args) -> Result<(), String> {
         return Err(detail);
     }
     Ok(())
+}
+
+/// Server-side proof that a Postgres load point/phase is finished.
+///
+/// Joining worker threads is necessary but not sufficient: if a client is still
+/// connected or executing SQL, measurement boundaries and sequential isolation
+/// are lies. Fail closed with a `pg_stat_activity` sample.
+fn assert_postgres_load_quiesced(
+    database_url: &str,
+    clients: usize,
+    rep: usize,
+) -> Result<(), String> {
+    let mut control =
+        PostgresAppBackend::new(database_url).map_err(|error| error.to_string())?;
+    // Long tail: a single stuck multi-entity write under c=128 can take seconds;
+    // 30s is well above expected TCP close after join.
+    const QUIESCE_TIMEOUT: Duration = Duration::from_secs(30);
+    match control.wait_until_load_clients_gone(QUIESCE_TIMEOUT) {
+        Ok(()) => {
+            if clients == 0 && rep == usize::MAX {
+                eprintln!(
+                    "postgres-quiesce: phase gate ok (no foreign client backends on database)"
+                );
+            } else {
+                eprintln!(
+                    "postgres-quiesce: point ok rep={rep} clients={clients} \
+                     (no foreign client backends on database)"
+                );
+            }
+            Ok(())
+        }
+        Err(error) => Err(format!(
+            "measurement-integrity: PostgreSQL load claimed complete but server still has \
+             client activity (rep={rep} clients={clients}): {error}"
+        )),
+    }
 }
 
 fn run_concurrent_point_reads<B, Factory>(

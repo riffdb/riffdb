@@ -185,16 +185,109 @@ postgres_database_root="$database_root/postgres"
 mkdir -p "$postgres_database_root"
 
 postgres_container="riffdb-app-baseline-$$"
+postgres_label="riffdb.app-baseline.postgres=1"
 postgres_started=0
-cleanup() {
+postgres_url_from_harness=0
+
+# Kill-orphaned / prior-run containers. Name prefix covers legacy runs without labels;
+# label covers current harness. SIGKILL of the shell skips EXIT traps, so this must
+# also run at startup (and can be re-run anytime to reclaim docker-proxy CPU).
+sweep_harness_postgres_containers() {
+    command -v docker >/dev/null 2>&1 || return 0
+    local ids
+    ids="$(
+        {
+            docker ps -aq --filter "label=${postgres_label}" 2>/dev/null || true
+            docker ps -aq --filter "name=riffdb-app-baseline-" 2>/dev/null || true
+            # Older one-off smoke names used in earlier sessions.
+            docker ps -aq --filter "name=riffdb-app-baseline-smoke-" 2>/dev/null || true
+        } | awk 'NF' | sort -u
+    )"
+    if [[ -z "$ids" ]]; then
+        return 0
+    fi
+    local count
+    count="$(printf '%s\n' "$ids" | wc -l | tr -d ' ')"
+    printf 'sweeping %s leftover app-baseline Postgres container(s)\n' "$count" >&2
+    # shellcheck disable=SC2086
+    docker rm -f $ids >/dev/null 2>&1 || true
+}
+
+stop_postgres() {
     if ((postgres_started)); then
+        printf 'stopping PostgreSQL phase (docker container + docker-proxy)\n' >&2
         docker exec "$postgres_container" \
             chmod -R a+rwx /var/lib/postgresql >/dev/null 2>&1 || true
         docker rm -f "$postgres_container" >/dev/null 2>&1 || true
         rm -rf "$postgres_database_root" || true
+        postgres_started=0
+        if ((postgres_url_from_harness)); then
+            unset RIFFDB_APP_BASELINE_POSTGRES_URL || true
+            postgres_url_from_harness=0
+        fi
     fi
+    # Always sweep: covers trap after partial start, dual-phase handoff, and
+    # containers owned by killed sibling harnesses.
+    sweep_harness_postgres_containers
 }
-trap cleanup EXIT INT TERM
+
+cleanup() {
+    stop_postgres
+}
+trap cleanup EXIT INT TERM HUP
+
+# Reclaim orphans from prior kills before this run allocates another container.
+sweep_harness_postgres_containers
+
+start_postgres() {
+    if [[ -n "${RIFFDB_APP_BASELINE_POSTGRES_URL:-}" ]]; then
+        # External URL: harness does not own the process; dual-backend runs cannot
+        # fully isolate docker-proxy for that instance.
+        printf 'using external RIFFDB_APP_BASELINE_POSTGRES_URL (not stopped between phases)\n' >&2
+        return 0
+    fi
+    command -v docker >/dev/null 2>&1 || {
+        printf 'docker required when RIFFDB_APP_BASELINE_POSTGRES_URL is unset\n' >&2
+        exit 1
+    }
+    # One more sweep immediately before create — concurrent harnesses / races.
+    sweep_harness_postgres_containers
+    image='postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818'
+    docker pull "$image" >/dev/null
+    # Concurrency sweep needs 128 client sessions (+ reserved + harness).
+    # Default max_connections=100 is too low for the c=128 point.
+    pg_args=()
+    if ((load_concurrency_sweep)); then
+        pg_args+=(-c max_connections=200)
+    fi
+    mkdir -p "$postgres_database_root"
+    # Bind-mount PG data onto the same real-disk tree as RiffDB.
+    # Label enables reliable orphan sweep after SIGKILL (no EXIT trap).
+    docker run -d --rm \
+        --name "$postgres_container" \
+        --label "$postgres_label" \
+        --label "riffdb.app-baseline.role=postgres" \
+        -e POSTGRES_USER=riffdb \
+        -e POSTGRES_PASSWORD=riffdb \
+        -e POSTGRES_DB=riffdb_app_baseline \
+        --mount "type=bind,source=$postgres_database_root,target=/var/lib/postgresql" \
+        -p 127.0.0.1::5432 \
+        "$image" "${pg_args[@]}" >/dev/null
+    postgres_started=1
+    postgres_url_from_harness=1
+    for _ in $(seq 1 90); do
+        host_port="$(docker port "$postgres_container" 5432/tcp 2>/dev/null | head -n1 | awk -F: '{print $NF}')"
+        if [[ -n "$host_port" ]] && docker exec "$postgres_container" pg_isready -U riffdb -d riffdb_app_baseline >/dev/null 2>&1; then
+            # pg_isready can race the postmaster still accepting first clients.
+            sleep 1
+            export RIFFDB_APP_BASELINE_POSTGRES_URL="postgres://riffdb:riffdb@127.0.0.1:${host_port}/riffdb_app_baseline"
+            return 0
+        fi
+        sleep 0.25
+    done
+    printf 'failed to start PostgreSQL for app baseline\n' >&2
+    exit 1
+}
 
 extra_args=()
 if [[ "$mode" == full ]]; then
@@ -220,49 +313,15 @@ fi
 extra_args+=(--database-root "$database_root")
 extra_args+=(--postgres-data-host-path "$postgres_database_root")
 export RIFFDB_APP_BASELINE_POSTGRES_DATA_HOST="$postgres_database_root"
-((skip_postgres)) && extra_args+=(--skip-postgres)
-((skip_riffdb)) && extra_args+=(--skip-riffdb)
 ((assert_write_parity)) && extra_args+=(--assert-write-parity)
 ((assert_all_parity)) && extra_args+=(--assert-all-parity)
 
-if ((skip_postgres == 0)); then
-    if [[ -z "${RIFFDB_APP_BASELINE_POSTGRES_URL:-}" ]]; then
-        command -v docker >/dev/null 2>&1 || {
-            printf 'docker required when RIFFDB_APP_BASELINE_POSTGRES_URL is unset\n' >&2
-            exit 1
-        }
-        image='postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818'
-        docker pull "$image" >/dev/null
-        # Concurrency sweep needs 128 client sessions (+ reserved + harness).
-        # Default max_connections=100 is too low for the c=128 point.
-        pg_args=()
-        if ((load_concurrency_sweep)); then
-            pg_args+=(-c max_connections=200)
-        fi
-        # Bind-mount PG data onto the same real-disk tree as RiffDB.
-        docker run -d --rm --name "$postgres_container" \
-            -e POSTGRES_USER=riffdb \
-            -e POSTGRES_PASSWORD=riffdb \
-            -e POSTGRES_DB=riffdb_app_baseline \
-            --mount "type=bind,source=$postgres_database_root,target=/var/lib/postgresql" \
-            -p 127.0.0.1::5432 \
-            "$image" "${pg_args[@]}" >/dev/null
-        postgres_started=1
-        for _ in $(seq 1 90); do
-            host_port="$(docker port "$postgres_container" 5432/tcp 2>/dev/null | head -n1 | awk -F: '{print $NF}')"
-            if [[ -n "$host_port" ]] && docker exec "$postgres_container" pg_isready -U riffdb -d riffdb_app_baseline >/dev/null 2>&1; then
-                # pg_isready can race the postmaster still accepting first clients.
-                sleep 1
-                export RIFFDB_APP_BASELINE_POSTGRES_URL="postgres://riffdb:riffdb@127.0.0.1:${host_port}/riffdb_app_baseline"
-                break
-            fi
-            sleep 0.25
-        done
-        [[ -n "${RIFFDB_APP_BASELINE_POSTGRES_URL:-}" ]] || {
-            printf 'failed to start PostgreSQL for app baseline\n' >&2
-            exit 1
-        }
-    fi
+# Dual-backend load: run sequential exclusive phases so Postgres (and docker-proxy)
+# are fully stopped before RiffDB measures. Concurrent dual load competes for CPU/IO
+# and makes throughput curves non-evidentiary.
+dual_load_phases=0
+if [[ -n "$load_profile" ]] && ((skip_postgres == 0)) && ((skip_riffdb == 0)); then
+    dual_load_phases=1
 fi
 
 if ((skip_riffdb == 0)); then
@@ -283,14 +342,109 @@ if [[ ! -x "$runner" ]]; then
     }
 fi
 
-printf 'running app baseline (%s)\n' "$mode"
-cmd=("$runner" "${extra_args[@]}" --output "$report")
-if ((skip_postgres == 0)); then
-    cmd+=(--postgres-url "$RIFFDB_APP_BASELINE_POSTGRES_URL")
-fi
-if ((skip_riffdb == 0)); then
-    cmd+=(--riffdbd-bin "$RIFFDB_APP_BASELINE_RIFFDBD_BIN")
-fi
-"${cmd[@]}"
+merge_load_suite_json() {
+    local pg_json="$1" rd_json="$2" out_json="$3"
+    python3 - "$pg_json" "$rd_json" "$out_json" <<'PY'
+import json, sys
+pg_path, rd_path, out_path = sys.argv[1:4]
+pg = json.load(open(pg_path))
+rd = json.load(open(rd_path))
+pg_fail = list(pg.get("correctness", {}).get("failures") or [])
+rd_fail = list(rd.get("correctness", {}).get("failures") or [])
+pg_clean = bool(pg.get("correctness", {}).get("clean", False))
+rd_clean = bool(rd.get("correctness", {}).get("clean", False))
+notes = []
+for src in (pg, rd):
+    for note in (src.get("comparison") or {}).get("notes") or []:
+        if note not in notes:
+            notes.append(note)
+notes.append(
+    "Backend isolation: PostgreSQL phase fully stopped (container/docker-proxy torn down) before RiffDB phase."
+)
+comparison = dict(pg.get("comparison") or {})
+comparison.update(rd.get("comparison") or {})
+comparison["backend_isolation"] = "sequential_exclusive_phases"
+comparison["notes"] = notes
+# Prefer client_points from either side.
+if "client_points" not in comparison:
+    comparison["client_points"] = (pg.get("comparison") or {}).get("client_points") or (
+        rd.get("comparison") or {}
+    ).get("client_points")
+out = {
+    "schema": pg.get("schema") or rd.get("schema") or "riffdb.app-baseline-load-suite/v1",
+    "scale": pg.get("scale") or rd.get("scale"),
+    "comparison": comparison,
+    "curve": list(pg.get("curve") or []) + list(rd.get("curve") or []),
+    "backends": list(pg.get("backends") or []) + list(rd.get("backends") or []),
+    "correctness": {
+        "clean": pg_clean and rd_clean,
+        "failures": pg_fail + rd_fail,
+        "server_shutdown_error": (rd.get("correctness") or {}).get("server_shutdown_error")
+        or (pg.get("correctness") or {}).get("server_shutdown_error"),
+    },
+}
+with open(out_path, "w", encoding="utf-8") as fh:
+    json.dump(out, fh, indent=2)
+    fh.write("\n")
+PY
+}
 
-printf 'report: %s\n' "$report"
+if ((dual_load_phases)); then
+    printf 'running app baseline (%s) with sequential exclusive backend phases\n' "$mode"
+    printf 'phase 1/2: PostgreSQL only (RiffDB not started)\n'
+    start_postgres
+    pg_report="$out_dir/.phase-postgres-$$.json"
+    rd_report="$out_dir/.phase-riffdb-$$.json"
+    pg_cmd=("$runner" "${extra_args[@]}" --skip-riffdb --output "$pg_report")
+    pg_cmd+=(--postgres-url "$RIFFDB_APP_BASELINE_POSTGRES_URL")
+    "${pg_cmd[@]}"
+    # Belt-and-suspenders: even if the binary exited cleanly, refuse to tear down
+    # (or advance) while the server still shows other client backends.
+    if ((postgres_started)); then
+        remaining="$(docker exec "$postgres_container" \
+            psql -U riffdb -d riffdb_app_baseline -Atc \
+            "SELECT count(*) FROM pg_stat_activity
+             WHERE datname = current_database()
+               AND pid <> pg_backend_pid()
+               AND backend_type = 'client backend'" 2>/dev/null || echo unknown)"
+        if [[ "$remaining" != "0" ]]; then
+            printf 'measurement-integrity: refusing to stop PostgreSQL: foreign client backends=%s\n' \
+                "$remaining" >&2
+            docker exec "$postgres_container" \
+                psql -U riffdb -d riffdb_app_baseline -c \
+                "SELECT pid, state, left(query, 120) AS query
+                 FROM pg_stat_activity
+                 WHERE datname = current_database()
+                   AND pid <> pg_backend_pid()
+                   AND backend_type = 'client backend'
+                 ORDER BY pid
+                 LIMIT 20" >&2 || true
+            exit 1
+        fi
+        printf 'postgres-quiesce: harness gate ok (foreign client backends=0); stopping Docker PG\n'
+    fi
+    stop_postgres
+    printf 'phase 2/2: RiffDB only (PostgreSQL stopped; no docker-proxy contention)\n'
+    rd_cmd=("$runner" "${extra_args[@]}" --skip-postgres --output "$rd_report")
+    rd_cmd+=(--riffdbd-bin "$RIFFDB_APP_BASELINE_RIFFDBD_BIN")
+    "${rd_cmd[@]}"
+    merge_load_suite_json "$pg_report" "$rd_report" "$report"
+    rm -f "$pg_report" "$rd_report"
+    printf 'merged sequential-phase report: %s\n' "$report"
+else
+    if ((skip_postgres == 0)); then
+        start_postgres
+    fi
+    printf 'running app baseline (%s)\n' "$mode"
+    cmd=("$runner" "${extra_args[@]}" --output "$report")
+    ((skip_postgres)) && cmd+=(--skip-postgres)
+    ((skip_riffdb)) && cmd+=(--skip-riffdb)
+    if ((skip_postgres == 0)); then
+        cmd+=(--postgres-url "$RIFFDB_APP_BASELINE_POSTGRES_URL")
+    fi
+    if ((skip_riffdb == 0)); then
+        cmd+=(--riffdbd-bin "$RIFFDB_APP_BASELINE_RIFFDBD_BIN")
+    fi
+    "${cmd[@]}"
+    printf 'report: %s\n' "$report"
+fi
