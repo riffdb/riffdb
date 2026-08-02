@@ -41,6 +41,7 @@ files
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/registry_v2.proto
   riffdb/storage/v1/service_audit_request_index_v1.proto
+  riffdb/storage/v1/validated_prefix_checkpoint_v1.proto
   riffdb/v1/admin.proto
     import riffdb/v1/common.proto
     import riffdb/v1/value.proto
@@ -695,6 +696,27 @@ messages
     2 administration_sequence optional uint64
   riffdb.storage.v1.StoredStorageFormatVersionV1 fields=1
     1 storage_format_version optional uint32
+  riffdb.storage.v1.StoredValidatedPrefixCheckpointV1 fields=20
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 registry_digest optional bytes
+    4 checkpoint_commit_sequence optional uint64
+    5 audit_sequence_bound optional uint64
+    6 commits_count optional uint64
+    7 events_count optional uint64
+    8 event_routes_count optional uint64
+    9 outbox_count optional uint64
+    10 outbox_status_count optional uint64
+    11 idempotency_count optional uint64
+    12 audit_count optional uint64
+    13 audit_by_request_count optional uint64
+    14 entity_chain_fingerprint optional bytes
+    15 next_application_sequence optional uint64
+    16 application_sequence_exhausted optional bool
+    17 next_administration_sequence optional uint64
+    18 administration_sequence_exhausted optional bool
+    19 previous_checkpoint_hash optional bytes proto3-optional oneof=_previous_checkpoint_hash
+    20 checkpoint_hash optional bytes
   riffdb.storage.v1.TenantScopeV1 fields=2
     1 global optional .riffdb.storage.v1.UnitV1 oneof=scope
     2 tenant_id optional string oneof=scope

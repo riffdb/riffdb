@@ -2073,3 +2073,46 @@ pub struct StoredServiceAuditRequestIndexV1 {
     #[prost(uint64, tag = "2")]
     pub administration_sequence: u64,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredValidatedPrefixCheckpointV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub history_incarnation: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub registry_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "4")]
+    pub checkpoint_commit_sequence: u64,
+    #[prost(uint64, tag = "5")]
+    pub audit_sequence_bound: u64,
+    #[prost(uint64, tag = "6")]
+    pub commits_count: u64,
+    #[prost(uint64, tag = "7")]
+    pub events_count: u64,
+    #[prost(uint64, tag = "8")]
+    pub event_routes_count: u64,
+    #[prost(uint64, tag = "9")]
+    pub outbox_count: u64,
+    #[prost(uint64, tag = "10")]
+    pub outbox_status_count: u64,
+    #[prost(uint64, tag = "11")]
+    pub idempotency_count: u64,
+    #[prost(uint64, tag = "12")]
+    pub audit_count: u64,
+    #[prost(uint64, tag = "13")]
+    pub audit_by_request_count: u64,
+    #[prost(bytes = "vec", tag = "14")]
+    pub entity_chain_fingerprint: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "15")]
+    pub next_application_sequence: u64,
+    #[prost(bool, tag = "16")]
+    pub application_sequence_exhausted: bool,
+    #[prost(uint64, tag = "17")]
+    pub next_administration_sequence: u64,
+    #[prost(bool, tag = "18")]
+    pub administration_sequence_exhausted: bool,
+    #[prost(bytes = "vec", optional, tag = "19")]
+    pub previous_checkpoint_hash: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", tag = "20")]
+    pub checkpoint_hash: ::prost::alloc::vec::Vec<u8>,
+}

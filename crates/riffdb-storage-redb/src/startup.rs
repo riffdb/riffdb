@@ -45,15 +45,16 @@ use crate::layout::{
     CONTRACT_WRITE_RETIREMENTS, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING,
     INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE,
     META_CAPABILITY_BOOTSTRAP, META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
-    META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, OUTBOX, OUTBOX_STATUS,
-    PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE,
-    QUERY_MODULES, RETIRED_ENTITIES, SECONDARY_INDEXES, TABLE_NAMES,
+    META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY,
+    META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS, PROJECTION_APPLIED,
+    PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE, QUERY_MODULES,
+    RETIRED_ENTITIES, SECONDARY_INDEXES, TABLE_NAMES,
 };
 use crate::store::{
     PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST, PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST,
     PRE_ENTITY_REFERENCE_REGISTRY_DIGEST, PRE_EVENT_ROUTE_REGISTRY_DIGEST,
     PRE_HISTORY_INCARNATION_REGISTRY_DIGEST, PRE_INDEX_GENERATION_REGISTRY_DIGEST,
-    RedbDormantPorts, RedbStore, SharedRedb,
+    PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST, RedbDormantPorts, RedbStore, SharedRedb,
 };
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
@@ -64,6 +65,8 @@ fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST)
+        || digest
+            == riffdb_types::SchemaHash::from_bytes(PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST)
@@ -127,6 +130,11 @@ struct EntityChain {
     intact: bool,
     /// Set when an ENTITIES structural row claims this chain.
     consumed: bool,
+    /// Seeded from a verified checkpoint's at-S map and never touched by a
+    /// suffix commit: the chain carries a fingerprint-verified version but no
+    /// post-image hash, so row matching accepts version-only for it. Hash
+    /// checks resume the moment a suffix reference touches the chain.
+    seeded: bool,
 }
 
 /// Cap on reported orphan targets (hostile COMMITS must not allocate unboundedly).
@@ -189,7 +197,10 @@ pub struct RedbStructuralEvidenceSession {
     open_session_id: OpenSessionId,
     retained_metadata: RetainedMetadataV1,
     inputs: StartupValidationInputs,
+    /// Walk plan counts (full or suffix-adjusted under a verified checkpoint).
     structural_counts: [u64; STRUCTURAL_TABLE_COUNT],
+    /// Full table lens from the immutable snapshot (for below-S count verification).
+    full_structural_counts: [u64; STRUCTURAL_TABLE_COUNT],
     structural_total: u64,
     next_structural: StructuralEvidenceCursor,
     next_historical: HistoricalEvidenceCursor,
@@ -197,6 +208,10 @@ pub struct RedbStructuralEvidenceSession {
     structural_finished: bool,
     historical_finished: bool,
     authoritative_finding_seen: bool,
+    /// True once ANY structural finding of ANY scope was produced (including a
+    /// sample-window finding that dropped the fast path). Gates the checkpoint
+    /// write: a finding of any severity vetoes it (ADR-0019 A1).
+    any_finding_seen: bool,
     saw_v1_index: bool,
     /// Held for the structural evidence pass only; must not outlive the session.
     structural_read: Option<ReadTransaction>,
@@ -206,6 +221,19 @@ pub struct RedbStructuralEvidenceSession {
     /// Bounded cross-link findings for unconsumed/orphan chains (VecDeque: O(1) drain).
     pending_entity_orphan_findings: VecDeque<StructuralFinding>,
     historical_plan: Option<HistoricalEvidencePlan>,
+    /// Verified active checkpoint enabling prefix-skipping startup.
+    checkpoint: Option<crate::validated_prefix::ActiveCheckpoint>,
+    /// Rows inspected via deterministic sample windows (test observability).
+    sampled_window_rows_inspected: u64,
+    /// True when a checkpoint was verified and the fast path is active.
+    checkpoint_verified: bool,
+    /// Why a present-but-unusable checkpoint was ignored (test/operator observability).
+    checkpoint_ignored_reason: Option<crate::validated_prefix::CheckpointIgnoreReason>,
+    /// Walked suffix rows for range-skipped sequence-keyed tables.
+    walked_suffix_counts: [u64; STRUCTURAL_TABLE_COUNT],
+    /// Prefix rows classified-and-skipped during the full walks of the
+    /// non-sequence-prefixed tables (EVENT_ROUTES/IDEMPOTENCY/AUDIT_BY_REQUEST).
+    walked_prefix_counts: [u64; STRUCTURAL_TABLE_COUNT],
 }
 
 /// Cached single-pass entity history state for the ENTITIES structural phase.
@@ -530,6 +558,66 @@ impl StructuralEvidenceOpen for RedbStore {
         }
         let database_id = snapshot.retained_metadata.database_id();
         let open_session_id = allocate_open_session()?;
+        let full_structural_counts = snapshot.structural_counts;
+        let mut structural_counts = snapshot.structural_counts;
+        let mut structural_total = snapshot.structural_total;
+        // A new validation session invalidates any previous session's clean claim
+        // until this one finishes with zero findings (checkpoint write gate).
+        self.shared.set_startup_validation_clean(false);
+        let mut checkpoint = None;
+        let mut checkpoint_verified = false;
+        let mut checkpoint_ignored_reason = None;
+        let mut sampled_window_rows_inspected = 0_u64;
+        let mut sample_finding_seen = false;
+        match crate::validated_prefix::load_active_checkpoint(
+            &transaction,
+            database_id,
+            snapshot.retained_metadata.history_incarnation(),
+            &full_structural_counts,
+        ) {
+            Ok(active) => {
+                let c = active.counts;
+                structural_counts[10] = full_structural_counts[10].saturating_sub(c.commits_count);
+                structural_counts[12] = full_structural_counts[12].saturating_sub(c.events_count);
+                structural_counts[14] = full_structural_counts[14].saturating_sub(c.outbox_count);
+                structural_counts[15] =
+                    full_structural_counts[15].saturating_sub(c.outbox_status_count);
+                structural_counts[21] = full_structural_counts[21].saturating_sub(c.audit_count);
+                // Execute existing inspect functions over deterministically sampled
+                // prefix windows (ADR-0085 sample policy). Findings fail closed.
+                let (inspected, sample_finding) = run_checkpoint_sample_windows(
+                    &transaction,
+                    &active.checkpoint_hash,
+                    active.checkpoint_commit_sequence,
+                    active.audit_sequence_bound,
+                )?;
+                sampled_window_rows_inspected = inspected;
+                if sample_finding.is_some() {
+                    // Drop the fast path; the full pass re-emits the finding.
+                    // The finding still vetoes the checkpoint write below.
+                    structural_counts = full_structural_counts;
+                    structural_total = snapshot.structural_total;
+                    checkpoint = None;
+                    checkpoint_verified = false;
+                    sampled_window_rows_inspected = 0;
+                    sample_finding_seen = true;
+                } else {
+                    structural_total =
+                        structural_counts.iter().try_fold(1u64, |total, count| {
+                            total.checked_add(*count).ok_or_else(limit_exceeded)
+                        })?;
+                    checkpoint = Some(active);
+                    checkpoint_verified = true;
+                }
+            }
+            Err(reason) => {
+                // Fail-closed → full validation; count and expose the reason so
+                // lost fast paths (including migration-driven fingerprint
+                // mismatches) are visible, never silent.
+                self.shared.note_checkpoint_ignored(reason);
+                checkpoint_ignored_reason = Some(reason);
+            }
+        }
         Ok(Self::Session {
             shared: Arc::clone(&self.shared),
             lease: Some(lease),
@@ -538,21 +626,28 @@ impl StructuralEvidenceOpen for RedbStore {
             open_session_id,
             retained_metadata: snapshot.retained_metadata,
             inputs,
-            structural_counts: snapshot.structural_counts,
-            structural_total: snapshot.structural_total,
+            structural_counts,
+            full_structural_counts,
+            structural_total,
             next_structural: StructuralEvidenceCursor::start(database_id, open_session_id),
             next_historical: HistoricalEvidenceCursor::start(database_id, open_session_id),
             last_historical_key: None,
             structural_finished: false,
             historical_finished: false,
             authoritative_finding_seen: false,
+            any_finding_seen: sample_finding_seen,
             saw_v1_index: false,
-            // Hold one read transaction for the structural pass (savepoint pin).
             structural_read: Some(transaction),
             structural_cursors: None,
             entity_chains: None,
             pending_entity_orphan_findings: VecDeque::new(),
             historical_plan: None,
+            checkpoint,
+            sampled_window_rows_inspected,
+            checkpoint_verified,
+            checkpoint_ignored_reason,
+            walked_suffix_counts: [0; STRUCTURAL_TABLE_COUNT],
+            walked_prefix_counts: [0; STRUCTURAL_TABLE_COUNT],
         })
     }
 }
@@ -589,6 +684,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
             if !self.pending_entity_orphan_findings.is_empty() {
                 return Err(invariant());
             }
+            self.verify_checkpoint_prefix_counts()?;
             self.structural_finished = true;
             self.structural_cursors = None;
             self.entity_chains = None;
@@ -649,6 +745,9 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 }
                 findings.push(finding);
             }
+        }
+        if !findings.is_empty() {
+            self.any_finding_seen = true;
         }
         let page =
             StructuralEvidencePage::page(cursor, findings, next).map_err(value_error_as_storage)?;
@@ -828,6 +927,25 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 },
             ))
         } else {
+            // ADR-0019 A1 write gate: the checkpoint is written ONLY when this
+            // validation session produced ZERO findings of ANY scope. A finding
+            // of any severity (authoritative, outbox, projection, sampled)
+            // vetoes the write so the fast path can never silence it.
+            if !self.any_finding_seen {
+                self.shared.set_startup_validation_clean(true);
+                let retained = self.retained_metadata.clone();
+                if crate::validated_prefix::write_validated_prefix_checkpoint(
+                    &self.shared,
+                    &retained,
+                )
+                .is_err()
+                {
+                    // ADR-0019 A1: a failed checkpoint write after clean
+                    // validation is non-fatal — it costs only the next open's
+                    // fast path. Counted for operator visibility.
+                    self.shared.note_checkpoint_write_failure();
+                }
+            }
             drop(lease);
             Ok(StructuralOpenOutcome::Clean(
                 StructurallyOpened::from_finished_session(
@@ -921,10 +1039,243 @@ impl RedbStructuralEvidenceSession {
         {
             counts[index + 1] = table_len(transaction, definition)?;
         }
-        if counts != self.structural_counts {
+        if counts != self.full_structural_counts {
+            return Err(corrupt());
+        }
+        if self.checkpoint.is_none() && counts != self.structural_counts {
             return Err(corrupt());
         }
         Ok(())
+    }
+
+    /// Verifies ALL EIGHT recorded below-S row counts at structural ExactEnd.
+    ///
+    /// Range-skipped phases (COMMITS/EVENTS/OUTBOX/OUTBOX_STATUS/AUDIT) check
+    /// `full_len − walked_suffix == recorded_prefix`. The non-sequence-prefixed
+    /// tables (EVENT_ROUTES/IDEMPOTENCY/AUDIT_BY_REQUEST) are fully walked with
+    /// a counting skip; their classified prefix rows must equal the recorded
+    /// counts exactly. Per ADR-0019 A1, a divergence after verified bindings is
+    /// authoritative corruption: the recorded counts describe an immutable
+    /// prefix, so the open REFUSES — exactly as full validation refuses on
+    /// authoritative findings — instead of falling back.
+    fn verify_checkpoint_prefix_counts(&self) -> Result<(), StorageError> {
+        let Some(checkpoint) = self.checkpoint.as_ref() else {
+            return Ok(());
+        };
+        let c = checkpoint.counts;
+        let range_skipped = [
+            (10, c.commits_count),
+            (12, c.events_count),
+            (14, c.outbox_count),
+            (15, c.outbox_status_count),
+            (21, c.audit_count),
+        ];
+        for (phase, recorded_prefix) in range_skipped {
+            let full = self.full_structural_counts[phase];
+            let walked = self.walked_suffix_counts[phase];
+            if self.structural_counts[phase] != walked {
+                return Err(corrupt());
+            }
+            if full.saturating_sub(walked) != recorded_prefix {
+                return Err(corrupt());
+            }
+        }
+        let counted_skip_walks = [
+            (13, c.event_routes_count),
+            (8, c.idempotency_count),
+            (22, c.audit_by_request_count),
+        ];
+        for (phase, recorded_prefix) in counted_skip_walks {
+            if self.walked_prefix_counts[phase] != recorded_prefix {
+                return Err(corrupt());
+            }
+        }
+        Ok(())
+    }
+
+    /// Test/benchmark observability: whether a verified checkpoint drove this session.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checkpoint_verified(&self) -> bool {
+        self.checkpoint_verified
+    }
+
+    /// Test observability: rows actually inspected by deterministic sample windows.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn sampled_window_rows_inspected(&self) -> u64 {
+        self.sampled_window_rows_inspected
+    }
+
+    /// Test/operator observability: why a present checkpoint was ignored, if it was.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checkpoint_ignored_reason(&self) -> Option<&'static str> {
+        self.checkpoint_ignored_reason
+            .map(crate::validated_prefix::CheckpointIgnoreReason::as_str)
+    }
+
+    /// Benchmark observability: COMMITS rows actually walked after the checkpoint
+    /// bound S (0 on the full-validation path or an empty suffix).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checkpoint_suffix_commits(&self) -> u64 {
+        self.walked_suffix_counts[10]
+    }
+}
+
+/// Runs existing inspect functions over checkpoint-derived sample windows below S.
+///
+/// Sequence-keyed windows (COMMITS + EVENTS) sample `[1, S]`; the audit class
+/// samples `[1, audit_bound]` over AUDIT with the same self-hash derivation, so
+/// audit-shaped histories (S = 0, bound > 0) still get nonzero below-bound
+/// sampling. Sampled AUDIT service rows cross-check their AUDIT_BY_REQUEST peer
+/// by key inside `inspect_audit_row`. Budget: `SAMPLE_WINDOW_COUNT` windows of
+/// `SAMPLE_WINDOW_SIZE` rows per table class (≤ 1% of a 10M-row history).
+///
+/// Returns `(rows_inspected, optional_first_finding)`. Same checkpoint hash ⇒ same windows.
+fn run_checkpoint_sample_windows(
+    transaction: &ReadTransaction,
+    checkpoint_hash: &[u8; 32],
+    s: u64,
+    audit_bound: u64,
+) -> Result<(u64, Option<StructuralFinding>), StorageError> {
+    use std::ops::Bound::{Included, Unbounded};
+
+    let mut inspected = 0_u64;
+    if s > 0 {
+        let starts = crate::validated_prefix::sample_window_starts(checkpoint_hash, s);
+        for start in starts {
+            if start == 0 || start > s {
+                continue;
+            }
+            let end_seq = start
+                .saturating_add(crate::validated_prefix::SAMPLE_WINDOW_SIZE)
+                .min(s.saturating_add(1));
+            let Some(lower_seq) = CommitSequence::new(start) else {
+                continue;
+            };
+            let lower_key = keys::encode_application_sequence_key(lower_seq);
+            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+            for entry in commits
+                .range::<&[u8]>((Included(lower_key.as_slice()), Unbounded))
+                .map_err(precommit_storage_error)?
+            {
+                let (key, value) = entry.map_err(precommit_storage_error)?;
+                let Ok(seq) = keys::decode_application_sequence_key(key.value()) else {
+                    continue;
+                };
+                if seq.get() >= end_seq || seq.get() > s {
+                    break;
+                }
+                inspected = inspected.saturating_add(1);
+                let index = seq.get().saturating_sub(1);
+                if let Some(finding) =
+                    inspect_commit_row(transaction, index, key.value(), value.value())?
+                {
+                    return Ok((inspected, Some(finding)));
+                }
+            }
+            drop(commits);
+
+            let lower_event = keys::encode_event_key(riffdb_types::EventId::new(lower_seq, 0));
+            let events = transaction.open_table(EVENTS).map_err(table_error)?;
+            for entry in events
+                .range::<&[u8]>((Included(lower_event.as_slice()), Unbounded))
+                .map_err(precommit_storage_error)?
+            {
+                let (key, value) = entry.map_err(precommit_storage_error)?;
+                let Ok(id) = keys::decode_event_key(key.value()) else {
+                    continue;
+                };
+                if id.commit_sequence().get() >= end_seq || id.commit_sequence().get() > s {
+                    break;
+                }
+                inspected = inspected.saturating_add(1);
+                if let Some(finding) = inspect_event_row(transaction, key.value(), value.value())? {
+                    return Ok((inspected, Some(finding)));
+                }
+            }
+        }
+    }
+    if audit_bound > 0 {
+        let starts = crate::validated_prefix::sample_window_starts(checkpoint_hash, audit_bound);
+        for start in starts {
+            if start == 0 || start > audit_bound {
+                continue;
+            }
+            let end_seq = start
+                .saturating_add(crate::validated_prefix::SAMPLE_WINDOW_SIZE)
+                .min(audit_bound.saturating_add(1));
+            let Some(lower_seq) = riffdb_types::AdministrationSequence::new(start) else {
+                continue;
+            };
+            let lower_key = keys::encode_audit_key(lower_seq);
+            let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+            for entry in audit
+                .range::<&[u8]>((Included(lower_key.as_slice()), Unbounded))
+                .map_err(precommit_storage_error)?
+            {
+                let (key, value) = entry.map_err(precommit_storage_error)?;
+                let Ok(seq) = keys::decode_audit_key(key.value()) else {
+                    continue;
+                };
+                if seq.get() >= end_seq || seq.get() > audit_bound {
+                    break;
+                }
+                inspected = inspected.saturating_add(1);
+                let index = seq.get().saturating_sub(1);
+                if let Some(finding) =
+                    inspect_audit_row(transaction, index, key.value(), value.value())?
+                {
+                    return Ok((inspected, Some(finding)));
+                }
+            }
+        }
+    }
+    Ok((inspected, None))
+}
+
+impl RedbStructuralEvidenceSession {
+    fn open_structural_phase_range(
+        &self,
+        phase: usize,
+        table: ReadOnlyTable<&'static [u8], &'static [u8]>,
+    ) -> Result<Range<'static, &'static [u8], &'static [u8]>, StorageError> {
+        let Some(checkpoint) = self.checkpoint.as_ref() else {
+            return table.range::<&[u8]>(..).map_err(precommit_storage_error);
+        };
+        let s = checkpoint.checkpoint_commit_sequence;
+        let audit_bound = checkpoint.audit_sequence_bound;
+        match phase {
+            10 if s > 0 => {
+                let key =
+                    keys::encode_application_sequence_key(CommitSequence::new(s).expect("s > 0"));
+                table
+                    .range::<&[u8]>((Excluded(key.as_slice()), Unbounded))
+                    .map_err(precommit_storage_error)
+            }
+            12 | 14 | 15 if s > 0 => {
+                if let Some(lower) = crate::validated_prefix::first_event_key_after(s) {
+                    table
+                        .range::<&[u8]>((Included(lower.as_slice()), Unbounded))
+                        .map_err(precommit_storage_error)
+                } else {
+                    table
+                        .range::<&[u8]>((Excluded(&[0xff_u8; 12][..]), Unbounded))
+                        .map_err(precommit_storage_error)
+                }
+            }
+            21 if audit_bound > 0 => {
+                let key = keys::encode_audit_key(
+                    riffdb_types::AdministrationSequence::new(audit_bound).expect("bound > 0"),
+                );
+                table
+                    .range::<&[u8]>((Excluded(key.as_slice()), Unbounded))
+                    .map_err(precommit_storage_error)
+            }
+            _ => table.range::<&[u8]>(..).map_err(precommit_storage_error),
+        }
     }
 
     fn inspect_structural_forward(
@@ -965,13 +1316,36 @@ impl RedbStructuralEvidenceSession {
         if phase == 5 {
             return self.inspect_entity_row_with_chains(&key, &value);
         }
+        if let Some(checkpoint) = self.checkpoint.as_ref()
+            && crate::validated_prefix::skip_inspect_for_prefix_row(
+                phase,
+                &key,
+                &value,
+                checkpoint.checkpoint_commit_sequence,
+                checkpoint.audit_sequence_bound,
+            )
+        {
+            // Counting skip-walk: every classified prefix row is tallied and
+            // verified against the recorded count at ExactEnd, so a vanished
+            // below-S row in these full-walk tables still fails closed.
+            self.walked_prefix_counts[phase] = self.walked_prefix_counts[phase].saturating_add(1);
+            return Ok(None);
+        }
+        let inspect_index = match (phase, self.checkpoint.as_ref()) {
+            (10, Some(cp)) => index.saturating_add(cp.counts.commits_count),
+            (21, Some(cp)) => index.saturating_add(cp.counts.audit_count),
+            _ => index,
+        };
+        if crate::validated_prefix::is_range_skipped_phase(phase) {
+            self.walked_suffix_counts[phase] = self.walked_suffix_counts[phase].saturating_add(1);
+        }
         let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
         inspect_table_row_from_bytes(
             transaction,
             &self.inputs,
             self.database_id,
             phase,
-            index,
+            inspect_index,
             &key,
             &value,
         )
@@ -981,9 +1355,20 @@ impl RedbStructuralEvidenceSession {
         if self.entity_chains.is_some() {
             return Ok(());
         }
-        let entity_count = self.structural_counts.get(5).copied().unwrap_or(0);
+        let entity_count = self.full_structural_counts.get(5).copied().unwrap_or(0);
+        // Under a verified checkpoint the genesis COMMITS walk is replaced by
+        // seeding from the fingerprint-verified (target, version) map at S and
+        // advancing across the suffix only. The seed map is consumed exactly
+        // once; a second build attempt under a checkpoint is an invariant error.
+        let seed = match self.checkpoint.as_mut() {
+            Some(checkpoint) => Some((
+                checkpoint.checkpoint_commit_sequence,
+                checkpoint.entities_at_s.take().ok_or_else(invariant)?,
+            )),
+            None => None,
+        };
         let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
-        self.entity_chains = Some(build_entity_chains(transaction, entity_count)?);
+        self.entity_chains = Some(build_entity_chains(transaction, entity_count, seed)?);
         Ok(())
     }
 
@@ -1225,7 +1610,7 @@ impl RedbStructuralEvidenceSession {
                         .map_err(table_error)?,
                     _ => return Err(invariant()),
                 };
-                let range = table.range::<&[u8]>(..).map_err(precommit_storage_error)?;
+                let range = self.open_structural_phase_range(phase, table)?;
                 self.structural_cursors
                     .as_mut()
                     .ok_or_else(invariant)?
@@ -1437,6 +1822,12 @@ fn collect_startup_snapshot(
         structural_counts: counts,
         structural_total: total,
     })
+}
+
+pub(crate) fn read_retained_metadata_pub(
+    transaction: &ReadTransaction,
+) -> Result<RetainedMetadataV1, StorageError> {
+    read_retained_metadata(transaction)
 }
 
 fn read_retained_metadata(
@@ -1681,6 +2072,8 @@ fn inspect_meta_row(key: &str, value: &[u8], database_id: DatabaseId) -> Option<
         META_HISTORY_INCARNATION => decoded(codec::decode_history_incarnation_v1(value))
             .is_ok_and(|incarnation| incarnation >= 1),
         META_INDEX_EPOCH_ROWS_REPAIRED => value == [1u8].as_slice(),
+        // Optional checkpoint: invalid payloads must not produce structural findings.
+        META_VALIDATED_PREFIX_CHECKPOINT => true,
         _ => false,
     };
     (!valid).then(|| authoritative(StructuralFindingCode::MalformedRecord))
@@ -3642,9 +4035,22 @@ fn current_entity_covers_reference(
             && record.entity_version() >= reference.entity_version()))
 }
 
+/// Builds entity continuity chains from one forward COMMITS pass.
+///
+/// Without a seed the pass covers the complete history from genesis. With a
+/// verified-checkpoint seed `(S, entities_at_S)` the chains start from the
+/// fingerprint-verified `(target, version)` map at S — carrying no post-image
+/// hash and no pending migrations (any migration recorded at write time is
+/// already baked into the at-S versions; later migrations fail the fingerprint
+/// and fall back to full validation) — and the pass advances across the
+/// suffix `(S, head]` only.
 fn build_entity_chains(
     transaction: &ReadTransaction,
     entity_count: u64,
+    seed: Option<(
+        u64,
+        std::collections::BTreeMap<riffdb_storage_api::EntityTarget, riffdb_types::EntityVersion>,
+    )>,
 ) -> Result<EntityChainState, StorageError> {
     let migrations = load_entity_migration_evidence(transaction)?;
     let table = transaction.open_table(COMMITS).map_err(table_error)?;
@@ -3653,7 +4059,34 @@ fn build_entity_chains(
     let mut orphan_targets = Vec::new();
     let mut overflow = false;
     let entity_count_usize = usize::try_from(entity_count).unwrap_or(usize::MAX);
-    for entry in table.iter().map_err(precommit_storage_error)? {
+    let mut walk_lower_bound = None;
+    if let Some((s, entities_at_s)) = seed {
+        for (target, version) in entities_at_s {
+            chains.insert(
+                target,
+                EntityChain {
+                    version,
+                    hash: None,
+                    expected_bundle: None,
+                    migration_cursor: migrations.len(),
+                    intact: true,
+                    consumed: false,
+                    seeded: true,
+                },
+            );
+        }
+        if s > 0 {
+            let sequence = CommitSequence::new(s).ok_or_else(corrupt)?;
+            walk_lower_bound = Some(keys::encode_application_sequence_key(sequence));
+        }
+    }
+    let range = match walk_lower_bound.as_ref() {
+        Some(lower) => table
+            .range::<&[u8]>((Excluded(lower.as_slice()), Unbounded))
+            .map_err(precommit_storage_error)?,
+        None => table.range::<&[u8]>(..).map_err(precommit_storage_error)?,
+    };
+    for entry in range {
         let (physical_key, value) = entry.map_err(precommit_storage_error)?;
         let Ok(commit_sequence) = keys::decode_application_sequence_key(physical_key.value())
         else {
@@ -3684,6 +4117,7 @@ fn build_entity_chains(
                             migration_cursor: 0,
                             intact: false,
                             consumed: false,
+                            seeded: false,
                         },
                     );
                 } else {
@@ -3716,6 +4150,7 @@ fn build_entity_chains(
                 chain.version = reference.entity_version();
                 chain.hash = Some(reference.post_image_hash());
                 chain.expected_bundle = None;
+                chain.seeded = false;
             } else if chains.len() < entity_count_usize {
                 // INVARIANT: slot allocation assumes ENTITIES rows are never
                 // removed (true today). If a removal path appears, a dead
@@ -3730,6 +4165,7 @@ fn build_entity_chains(
                         migration_cursor: 0,
                         intact,
                         consumed: false,
+                        seeded: false,
                     },
                 );
             } else {
@@ -3903,7 +4339,11 @@ fn entity_row_matches_chain(
             (Some(expected), _) => riffdb_storage_api::derive_entity_record_hash_v1(current)
                 .is_ok_and(|hash| hash == expected),
             (None, Some(expected)) => current.schema_binding().bundle_hash() == expected,
-            (None, None) => false,
+            // Prefix-only target under a verified checkpoint: the seeded chain
+            // carries the fingerprint-verified version but no post-image hash
+            // (ADR-0019 A1 assigns below-S content to proof + sample). Hash
+            // checks resume for any chain a suffix reference touched.
+            (None, None) => chain.seeded,
         }
 }
 
@@ -6247,6 +6687,7 @@ contract RedbMigration version 1 {
             let chains = build_entity_chains(
                 &transaction,
                 u64::try_from(entities.len()).expect("entity count"),
+                None,
             )
             .expect("build chains");
             assert!(
@@ -6336,7 +6777,7 @@ contract RedbMigration version 1 {
         );
 
         let transaction = store.shared.database.begin_read().expect("read");
-        let chains = build_entity_chains(&transaction, 2).expect("chains");
+        let chains = build_entity_chains(&transaction, 2, None).expect("chains");
         assert!(entity_history_matches_chain(&chains.chains, &good_v2));
         assert!(!entity_history_matches_chain(&chains.chains, &bad_v3));
 
@@ -6377,7 +6818,7 @@ contract RedbMigration version 1 {
         );
 
         let transaction = store.shared.database.begin_read().expect("read");
-        let chains = build_entity_chains(&transaction, 2).expect("chains");
+        let chains = build_entity_chains(&transaction, 2, None).expect("chains");
         assert!(entity_history_matches_chain(&chains.chains, &b));
         assert!(!entity_history_matches_chain(&chains.chains, &a_tampered));
 
@@ -6432,7 +6873,7 @@ contract RedbMigration version 1 {
         write.commit().expect("commit");
 
         let transaction = store.shared.database.begin_read().expect("read");
-        let chains = build_entity_chains(&transaction, 2).expect("chains");
+        let chains = build_entity_chains(&transaction, 2, None).expect("chains");
         // First entity in the commit is marked broken by the duplicate; B intact.
         assert!(
             !entity_history_matches_chain(&chains.chains, &a),
@@ -6484,7 +6925,7 @@ contract RedbMigration version 1 {
         );
 
         let transaction = store.shared.database.begin_read().expect("read");
-        let chains = build_entity_chains(&transaction, 1).expect("chains");
+        let chains = build_entity_chains(&transaction, 1, None).expect("chains");
         assert!(entity_history_matches_chain(&chains.chains, &real));
         assert!(chains.overflow || !chains.orphan_targets.is_empty());
 
@@ -6535,7 +6976,7 @@ contract RedbMigration version 1 {
         );
 
         let transaction = store.shared.database.begin_read().expect("read");
-        let chains = build_entity_chains(&transaction, 2).expect("chains");
+        let chains = build_entity_chains(&transaction, 2, None).expect("chains");
         assert!(
             entity_history_matches_chain(&chains.chains, &e1),
             "E1 referenced must pass"
@@ -6841,6 +7282,7 @@ contract RedbMigration version 1 {
                     migration_cursor: 0,
                     intact: true,
                     consumed: false,
+                    seeded: false,
                 },
             );
             keys.push(entity_key);

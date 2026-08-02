@@ -245,6 +245,9 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
                     || name == "startup.rs"
                     || name == "fixtures.rs"
                     || name == "benchmark_support.rs"
+                    // Checkpoint write uses SharedRedb::commit_durable (same epoch
+                    // boundary as store migration helpers).
+                    || name == "validated_prefix.rs"
             })
         {
             continue;

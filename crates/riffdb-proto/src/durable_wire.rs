@@ -542,7 +542,7 @@ shape!(PROJECTION_CONTROL [
     message(7, &PROJECTION_FAILURE),
 ]);
 
-const ROOTS: [&Shape; 43] = [
+const ROOTS: [&Shape; 44] = [
     &Shape { rules: &[] },
     &Shape {
         rules: &[fixed_bytes(1, 16)],
@@ -596,6 +596,16 @@ const ROOTS: [&Shape; 43] = [
     &CONTRACT_WRITE_RETIREMENT_V1,
     &RETIRED_ENTITY_RECORD_V1,
     &CAPABILITY_RECORD_V2,
+    // StoredValidatedPrefixCheckpointV1: fixed digests/hashes plus scalar counters.
+    &Shape {
+        rules: &[
+            fixed_bytes(1, 16),
+            fixed_bytes(3, 32),
+            fixed_bytes(14, 32),
+            fixed_bytes(19, 32),
+            fixed_bytes(20, 32),
+        ],
+    },
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {
