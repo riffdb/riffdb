@@ -102,6 +102,75 @@ contract ColumnarHarness version 1 {
 }
 "#;
 
+/// Second contract fixture replicating the REAL ticketdesk board key shape,
+/// `key (organization_id: uuid, ticket_id: uuid)` (the shape of the ticketdesk
+/// contract's Ticket entity; deliberately replicated here rather than read
+/// from examples/). `Tag` adds a length-prefixed string key component for the
+/// typed OrderSpec rejection proof.
+pub(crate) const BOARD_KEY_CONTRACT: &str = r#"
+contract ColumnarBoardKey version 1 {
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field status: u64
+    field title: string<200>
+  }
+
+  entity Tag {
+    key (organization_id: uuid, label: string<32>)
+    field color: u64
+  }
+
+  event TicketCreated {
+    organization_id: uuid
+    ticket_id: uuid
+  }
+
+  aggregate Tickets {
+    root Ticket
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+
+  aggregate Tags {
+    root Tag
+    partition_by organization_id
+    conflict_key (organization_id, label)
+  }
+
+  command CreateTicket {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input ticket_id: uuid
+    input status: u64
+    input title: string<200>
+
+    idempotency_key idempotency_key
+    create Ticket(organization_id, ticket_id) as ticket
+      else AlreadyExists { ticket_id: ticket_id }
+
+    set ticket.status = status
+    set ticket.title = title
+
+    emit TicketCreated { organization_id: organization_id, ticket_id: ticket_id }
+    return Created { ticket: ticket }
+  }
+
+  command CreateTag {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input label: string<32>
+    input color: u64
+
+    idempotency_key idempotency_key
+    create Tag(organization_id, label) as tag
+      else TagExists { label: label }
+
+    set tag.color = color
+    return TagCreated { tag: tag }
+  }
+}
+"#;
+
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn temp_dir(label: &str) -> PathBuf {
@@ -161,6 +230,127 @@ pub(crate) fn register_ticket_board(bundle: &ContractBundle) -> RegisteredDefini
         bundle,
     )
     .expect("register board")
+}
+
+pub(crate) fn compile_board_key_bundle() -> ContractBundle {
+    compile_contract_source(BOARD_KEY_CONTRACT).expect("board-key contract compiles")
+}
+
+/// Board-shaped projection over the (uuid, uuid)-keyed Ticket entity.
+pub(crate) fn register_board_key_ticket_projection(
+    bundle: &ContractBundle,
+) -> RegisteredDefinition {
+    let org = field_id(bundle, "Ticket", "organization_id");
+    let status = field_id(bundle, "Ticket", "status");
+    let title = field_id(bundle, "Ticket", "title");
+    RegisteredDefinition::register(
+        ColumnarProjectionDefinition {
+            name: "board_key_tickets".into(),
+            entity_name: "Ticket".into(),
+            projected_fields: vec![status, title],
+            org_scope_field: org,
+        },
+        bundle,
+    )
+    .expect("register board-key ticket projection")
+}
+
+/// Projection over the string-key-component Tag entity (OrderSpec rejection).
+pub(crate) fn register_string_key_tag_projection(bundle: &ContractBundle) -> RegisteredDefinition {
+    let org = field_id(bundle, "Tag", "organization_id");
+    let color = field_id(bundle, "Tag", "color");
+    RegisteredDefinition::register(
+        ColumnarProjectionDefinition {
+            name: "string_key_tags".into(),
+            entity_name: "Tag".into(),
+            projected_fields: vec![color],
+            org_scope_field: org,
+        },
+        bundle,
+    )
+    .expect("register string-key tag projection")
+}
+
+/// Creates a (uuid, uuid)-keyed ticket at V1 in the history source.
+pub(crate) fn push_board_key_ticket_create(
+    source: &mut HistorySource,
+    bundle: &ContractBundle,
+    sequence: u64,
+    org: [u8; 16],
+    ticket_id: [u8; 16],
+    status: u64,
+    title: &str,
+) {
+    let ticket_type = entity_type_id(bundle, "Ticket");
+    let seq = CommitSequence::new(sequence).expect("seq");
+    let mut key = EntityKeyBuilder::new(ticket_type);
+    key.push_uuid(&org).expect("org uuid");
+    key.push_uuid(&ticket_id).expect("ticket uuid");
+    let target = EntityTarget::new(ticket_type, key.finish().expect("key")).expect("target");
+    let fields = CanonicalRecord::new(vec![
+        (
+            field_id(bundle, "Ticket", "organization_id"),
+            CanonicalValue::Uuid(org),
+        ),
+        (
+            field_id(bundle, "Ticket", "ticket_id"),
+            CanonicalValue::Uuid(ticket_id),
+        ),
+        (
+            field_id(bundle, "Ticket", "status"),
+            CanonicalValue::U64(status),
+        ),
+        (
+            field_id(bundle, "Ticket", "title"),
+            CanonicalValue::string(title.to_string()).expect("title"),
+        ),
+    ])
+    .expect("record");
+    let entity = HistorySource::make_entity(target.clone(), EntityVersion::first(), fields);
+    let reference = CommittedEntityReferenceV2::from_post_image(&entity).expect("ref");
+    source.put_entity(entity);
+    source.append_commit(
+        seq,
+        vec![reference],
+        vec![(target, riffdb_storage_api::ExpectedEntityState::Absent)],
+    );
+}
+
+/// Creates a (uuid, string)-keyed tag at V1 in the history source.
+pub(crate) fn push_tag_create(
+    source: &mut HistorySource,
+    bundle: &ContractBundle,
+    sequence: u64,
+    org: [u8; 16],
+    label: &str,
+    color: u64,
+) {
+    let tag_type = entity_type_id(bundle, "Tag");
+    let seq = CommitSequence::new(sequence).expect("seq");
+    let mut key = EntityKeyBuilder::new(tag_type);
+    key.push_uuid(&org).expect("org uuid");
+    key.push_str(label).expect("label");
+    let target = EntityTarget::new(tag_type, key.finish().expect("key")).expect("target");
+    let fields = CanonicalRecord::new(vec![
+        (
+            field_id(bundle, "Tag", "organization_id"),
+            CanonicalValue::Uuid(org),
+        ),
+        (
+            field_id(bundle, "Tag", "label"),
+            CanonicalValue::string(label.to_string()).expect("label"),
+        ),
+        (field_id(bundle, "Tag", "color"), CanonicalValue::U64(color)),
+    ])
+    .expect("record");
+    let entity = HistorySource::make_entity(target.clone(), EntityVersion::first(), fields);
+    let reference = CommittedEntityReferenceV2::from_post_image(&entity).expect("ref");
+    source.put_entity(entity);
+    source.append_commit(
+        seq,
+        vec![reference],
+        vec![(target, riffdb_storage_api::ExpectedEntityState::Absent)],
+    );
 }
 
 pub(crate) fn open_engine(definition: RegisteredDefinition, label: &str) -> ColumnarEngine {
