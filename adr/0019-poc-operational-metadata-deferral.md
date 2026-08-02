@@ -256,14 +256,33 @@ section above stands except where explicitly narrowed here.
   open and never trusting the record.
 - **What the next startup does.** Verify the checkpoint's self-hash and
   bindings; revalidate the entire suffix after S with the existing per-row
-  inspection; revalidate deterministically sampled windows below S (offsets
-  derived from the checkpoint's self-hash — this ADR still adds no entropy,
-  clock, or identifier surface); verify per-table below-S row counts against
-  the recorded counts (derived from total lengths minus walked suffix rows);
-  reconstruct the entity-chain state at S from current entities adjusted by
-  suffix references and verify its fingerprint. Non-sequence-keyed tables
-  (entities, indexes, catalog, capabilities) continue to receive their full
-  existing passes.
+  inspection; revalidate deterministically sampled windows below S across
+  BOTH the sequence-keyed and the audit-class tables (offsets derived from
+  the checkpoint's self-hash — this ADR still adds no entropy, clock, or
+  identifier surface); verify EVERY recorded per-table below-S row count
+  (counted during the walks themselves); reconstruct the entity-chain state
+  at S from current entities adjusted by suffix references and verify its
+  fingerprint — the genesis commit walk is replaced by this reconstruction.
+  Current-state tables (entities, indexes, catalog, capabilities) keep
+  their full existing passes.
+- **Honest complexity.** Sequence-keyed tables are range-skipped to the
+  suffix. Tables whose keys are not sequence-prefixed (event routes,
+  idempotency, audit-by-request) cannot be range-skipped; they receive a
+  cheap counting skip-walk (key decode and prefix counting only — no value
+  decode, no reciprocity rehydration). Checkpointed startup is therefore
+  O(entities + catalog + suffix + sample) in full-inspection work but
+  retains an O(history) skip-walk term with a small constant; the measured
+  effect, not an asymptotic claim, is the acceptance criterion.
+- **Divergence and write-failure semantics.** A checkpoint whose bindings
+  or self-hash fail is ignored (full validation runs). A below-S count
+  divergence discovered mid-walk AFTER bindings verified is authoritative
+  corruption — the recorded counts describe an immutable prefix, so
+  divergence means the history or the record was altered; open refuses,
+  exactly as full validation refuses on authoritative findings. A FAILURE
+  to write a checkpoint after clean validation is non-fatal: it costs only
+  the next open's fast path. The checkpoint is written ONLY when validation
+  completes with zero findings of ANY scope — a finding of any severity
+  vetoes the write so the fast path can never silence it.
 - **Crash meaning.** The checkpoint is written in one engine commit; a torn
   write yields the previous value by engine atomicity. A crash between
   validation and checkpoint write loses only the fast path. The record
