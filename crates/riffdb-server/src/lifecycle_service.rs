@@ -16,22 +16,23 @@ use riffdb_service::{
     DescribeEventRequest, DescribeEventResult, DescribeSymbolicContractResult,
     DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverResourcesRequest,
     DiscoverResourcesResult, DiscoveryApplication, EventServiceApplication, ExecuteCommandRequest,
-    ExecuteCommandResult, ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult,
-    ExplainCommandRequest, ExplainCommandResult, ExplainSymbolicQueryResult,
-    GetActiveContractRequest, GetActiveContractResult, GetCommitRequest, GetCommitResult,
-    GetContractVersionRequest, GetContractVersionResult, GetEntityRequest, GetEntityResult,
+    ExecuteCommandResult, ExecuteProjectedQueryRequest, ExecuteProjectedQueryResult,
+    ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult, ExplainCommandRequest,
+    ExplainCommandResult, ExplainSymbolicQueryResult, GetActiveContractRequest,
+    GetActiveContractResult, GetCommitRequest, GetCommitResult, GetContractVersionRequest,
+    GetContractVersionResult, GetEntityRequest, GetEntityResult,
     GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
     GetProjectionStatusRequest, GetProjectionStatusResult, GetQueryModuleRequest, HealthContext,
     HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest,
     ListPendingOutboxDeliveriesResult, NamedSymbolicQueryRequest, OfflineMaintenanceApplication,
-    OfflineMaintenanceStartResult, QueryApplication, QueryModuleInspection, QueryProjectionRequest,
-    QueryProjectionResult, ReplayEventsRequest, ReplayEventsResult, RequestContext,
-    ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, RestoreOfflineBackupInvocation,
-    RevokeCapabilityRequest, RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult,
-    ScanIndexRequest, ScanIndexResult, ServiceFuture, StatisticsRequest, StatisticsResult,
-    SubscribeToCommitsRequest, SubscribeToCommitsResult, SymbolicContractSelector,
-    SymbolicQueryApplication, TailEventsRequest, TailEventsResult, TraceProvenanceRequest,
-    TraceProvenanceResult, ValidateContractRequest,
+    OfflineMaintenanceStartResult, ProjectedQueryApplication, QueryApplication,
+    QueryModuleInspection, QueryProjectionRequest, QueryProjectionResult, ReplayEventsRequest,
+    ReplayEventsResult, RequestContext, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
+    RestoreOfflineBackupInvocation, RevokeCapabilityRequest, RevokeCapabilityResult,
+    ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult, ServiceFuture,
+    StatisticsRequest, StatisticsResult, SubscribeToCommitsRequest, SubscribeToCommitsResult,
+    SymbolicContractSelector, SymbolicQueryApplication, TailEventsRequest, TailEventsResult,
+    TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
 };
 use riffdb_types::ServiceOperationV1;
 
@@ -388,6 +389,15 @@ delegate_operation! {
             context: RequestContext,
             request: NamedSymbolicQueryRequest
         ) -> ExecuteSymbolicQueryResult => ExecuteQuery;
+    }
+}
+
+delegate_operation! {
+    ProjectedQueryApplication {
+        execute_projected_query(
+            context: RequestContext,
+            request: ExecuteProjectedQueryRequest
+        ) -> ExecuteProjectedQueryResult => ExecuteProjectedQuery;
     }
 }
 

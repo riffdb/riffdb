@@ -821,6 +821,15 @@ impl SymbolicQueryApplication for ProjectionService {
     }
 }
 
+impl riffdb_service::ProjectedQueryApplication for ProjectionService {
+    denied_operation!(
+        execute_projected_query,
+        RequestContext,
+        riffdb_service::ExecuteProjectedQueryRequest,
+        riffdb_service::ExecuteProjectedQueryResult
+    );
+}
+
 #[derive(Clone)]
 struct AcceptingAuthenticator {
     principal: AuthenticatedPrincipal,

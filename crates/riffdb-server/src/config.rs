@@ -37,6 +37,7 @@ const AUDIENCE_ENVIRONMENT: &str = "RIFFDB_AUDIENCE";
 const MCP_LISTEN_ENVIRONMENT: &str = "RIFFDB_MCP_LISTEN";
 const MCP_ORIGINS_ENVIRONMENT: &str = "RIFFDB_MCP_ORIGINS";
 const BACKUP_ROOT_ENVIRONMENT: &str = "RIFFDB_BACKUP_ROOT";
+const PROJECTIONS_ROOT_ENVIRONMENT: &str = "RIFFDB_PROJECTIONS_ROOT";
 const CAPABILITY_KEYS_ENVIRONMENT: &str = "RIFFDB_CAPABILITY_KEYS";
 const IDEMPOTENCY_KEYS_ENVIRONMENT: &str = "RIFFDB_IDEMPOTENCY_KEYS";
 const REDB_COMMIT_PROFILE_ENVIRONMENT: &str = "RIFFDB_REDB_COMMIT_PROFILE";
@@ -64,6 +65,36 @@ pub(crate) struct DatabaseConfig {
     database_path: PathBuf,
     environment: Environment,
     backup_root: PathBuf,
+    projections_root: PathBuf,
+    /// Configured columnar projection definitions (field names unresolved until startup).
+    projections: Vec<ConfiguredProjection>,
+}
+
+/// One configured columnar projection before contract-bundle resolution.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ConfiguredProjection {
+    name: String,
+    entity: String,
+    projected_fields: Vec<String>,
+    org_scope_field: String,
+}
+
+impl ConfiguredProjection {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(crate) fn entity(&self) -> &str {
+        &self.entity
+    }
+
+    pub(crate) fn projected_fields(&self) -> &[String] {
+        &self.projected_fields
+    }
+
+    pub(crate) fn org_scope_field(&self) -> &str {
+        &self.org_scope_field
+    }
 }
 
 impl DatabaseConfig {
@@ -82,6 +113,14 @@ impl DatabaseConfig {
     pub(crate) fn backup_root(&self) -> &Path {
         &self.backup_root
     }
+
+    pub(crate) fn projections_root(&self) -> &Path {
+        &self.projections_root
+    }
+
+    pub(crate) fn projections(&self) -> &[ConfiguredProjection] {
+        &self.projections
+    }
 }
 
 impl fmt::Debug for DatabaseConfig {
@@ -92,6 +131,8 @@ impl fmt::Debug for DatabaseConfig {
             .field("database_path", &"[CONFIGURED]")
             .field("environment", &self.environment)
             .field("backup_root", &"[CONFIGURED]")
+            .field("projections_root", &"[CONFIGURED]")
+            .field("projections", &self.projections.len())
             .finish()
     }
 }
@@ -137,6 +178,7 @@ impl ServerConfig {
             server,
             maintenance,
             databases: named_databases,
+            projections: top_level_projections,
         } = document;
         let server = server.unwrap_or_default();
         let maintenance = maintenance.unwrap_or_default();
@@ -144,15 +186,20 @@ impl ServerConfig {
         let database_environment = environment.value(DATABASE_ENVIRONMENT);
         let configured_environment_environment = environment.value(ENVIRONMENT_ENVIRONMENT);
         let backup_root_environment = environment.value(BACKUP_ROOT_ENVIRONMENT);
+        let projections_root_environment = environment.value(PROJECTIONS_ROOT_ENVIRONMENT);
         let uses_legacy_database_configuration = arguments.database.is_some()
             || arguments.environment.is_some()
             || arguments.backup_root.is_some()
+            || arguments.projections_root.is_some()
             || database_environment.is_some()
             || configured_environment_environment.is_some()
             || backup_root_environment.is_some()
+            || projections_root_environment.is_some()
             || server.database.is_some()
             || server.environment.is_some()
-            || maintenance.backup_root.is_some();
+            || maintenance.backup_root.is_some()
+            || maintenance.projections_root.is_some()
+            || !top_level_projections.is_empty();
         if !named_databases.is_empty() && uses_legacy_database_configuration {
             return Err(ServerConfigError::MixedDatabaseConfiguration);
         }
@@ -177,6 +224,13 @@ impl ServerConfig {
                     maintenance.backup_root.map(OsString::from),
                     current_directory.join("backups").into_os_string(),
                 )?)?,
+                projections_root: bounded_absolute_directory(select_os(
+                    arguments.projections_root.as_ref(),
+                    projections_root_environment,
+                    maintenance.projections_root.map(OsString::from),
+                    current_directory.join("projections").into_os_string(),
+                )?)?,
+                projections: parse_projection_documents(top_level_projections)?,
             }]
         } else {
             parse_named_databases(named_databases)?
@@ -251,7 +305,7 @@ impl ServerConfig {
     }
 
     fn validate_disjoint_paths(&self, current_directory: &Path) -> Result<(), ServerConfigError> {
-        let mut paths = Vec::with_capacity(self.databases.len() * 2 + 2);
+        let mut paths = Vec::with_capacity(self.databases.len() * 3 + 2);
         for database in &self.databases {
             paths.push((
                 ConfiguredPathRole::Database(database.alias.clone()),
@@ -260,6 +314,10 @@ impl ServerConfig {
             paths.push((
                 ConfiguredPathRole::BackupRoot(database.alias.clone()),
                 lexical_absolute(&database.backup_root, current_directory)?,
+            ));
+            paths.push((
+                ConfiguredPathRole::ProjectionsRoot(database.alias.clone()),
+                lexical_absolute(&database.projections_root, current_directory)?,
             ));
         }
         paths.push((
@@ -319,6 +377,14 @@ impl ServerConfig {
         self.databases[0].backup_root()
     }
 
+    pub(crate) fn projections_root(&self) -> &Path {
+        self.databases[0].projections_root()
+    }
+
+    pub(crate) fn projections(&self) -> &[ConfiguredProjection] {
+        self.databases[0].projections()
+    }
+
     pub(crate) fn capability_key_path(&self) -> &Path {
         &self.capability_key_path
     }
@@ -359,6 +425,7 @@ struct ArgumentValues {
     mcp_listen: Option<OsString>,
     mcp_origins: Vec<OsString>,
     backup_root: Option<OsString>,
+    projections_root: Option<OsString>,
     capability_keys: Option<OsString>,
     idempotency_keys: Option<OsString>,
     redb_commit_profile: Option<OsString>,
@@ -379,6 +446,7 @@ impl ArgumentValues {
                 Some("--mcp-listen") => set_once(&mut values.mcp_listen, value)?,
                 Some("--mcp-origin") => values.mcp_origins.push(value),
                 Some("--backup-root") => set_once(&mut values.backup_root, value)?,
+                Some("--projections-root") => set_once(&mut values.projections_root, value)?,
                 Some("--capability-keys") => set_once(&mut values.capability_keys, value)?,
                 Some("--idempotency-keys") => set_once(&mut values.idempotency_keys, value)?,
                 Some("--redb-commit-profile") => set_once(&mut values.redb_commit_profile, value)?,
@@ -424,6 +492,9 @@ struct ConfigDocument {
     maintenance: Option<MaintenanceDocument>,
     #[serde(default)]
     databases: BTreeMap<String, DatabaseDocument>,
+    /// Top-level projection list for the legacy single-database configuration form.
+    #[serde(default)]
+    projections: Vec<ProjectionDocument>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -444,6 +515,7 @@ struct ServerDocument {
 #[serde(deny_unknown_fields)]
 struct MaintenanceDocument {
     backup_root: Option<String>,
+    projections_root: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -452,6 +524,51 @@ struct DatabaseDocument {
     path: String,
     backup_root: String,
     environment: String,
+    /// Absolute directory for columnar projection storage; defaults are not
+    /// applied for named databases (must be explicit).
+    projections_root: Option<String>,
+    #[serde(default)]
+    projections: Vec<ProjectionDocument>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectionDocument {
+    name: String,
+    entity: String,
+    projected_fields: Vec<String>,
+    org_scope_field: String,
+}
+
+fn parse_projection_documents(
+    documents: Vec<ProjectionDocument>,
+) -> Result<Vec<ConfiguredProjection>, ServerConfigError> {
+    let mut seen = BTreeMap::new();
+    let mut out = Vec::with_capacity(documents.len());
+    for document in documents {
+        if document.name.is_empty()
+            || document.name.len() > 256
+            || document.entity.is_empty()
+            || document.projected_fields.is_empty()
+            || document.org_scope_field.is_empty()
+            || document
+                .projected_fields
+                .iter()
+                .any(|field| field.is_empty() || field.len() > 256)
+        {
+            return Err(ServerConfigError::InvalidProjectionConfiguration);
+        }
+        if seen.insert(document.name.clone(), ()).is_some() {
+            return Err(ServerConfigError::InvalidProjectionConfiguration);
+        }
+        out.push(ConfiguredProjection {
+            name: document.name,
+            entity: document.entity,
+            projected_fields: document.projected_fields,
+            org_scope_field: document.org_scope_field,
+        });
+    }
+    Ok(out)
 }
 
 fn parse_named_databases(
@@ -463,12 +580,32 @@ fn parse_named_databases(
     documents
         .into_iter()
         .map(|(alias, document)| {
+            let alias = DatabaseAlias::new(alias)
+                .map_err(|_| ServerConfigError::InvalidDatabaseConfiguration)?;
+            let backup_root = bounded_absolute_directory(OsString::from(document.backup_root))?;
+            let projections_root = match document.projections_root {
+                Some(path) => bounded_absolute_directory(OsString::from(path))?,
+                None => {
+                    // Distinct absolute default so validate_disjoint_paths stays
+                    // meaningful when no projections are configured.
+                    let mut path = backup_root
+                        .parent()
+                        .ok_or(ServerConfigError::InvalidPath)?
+                        .to_path_buf();
+                    path.push(format!("{alias}-projections"));
+                    if !path.is_absolute() {
+                        return Err(ServerConfigError::InvalidPath);
+                    }
+                    path
+                }
+            };
             Ok(DatabaseConfig {
-                alias: DatabaseAlias::new(alias)
-                    .map_err(|_| ServerConfigError::InvalidDatabaseConfiguration)?,
+                alias,
                 database_path: bounded_path(OsString::from(document.path))?,
                 environment: parse_environment(OsString::from(document.environment))?,
-                backup_root: bounded_absolute_directory(OsString::from(document.backup_root))?,
+                backup_root,
+                projections_root,
+                projections: parse_projection_documents(document.projections)?,
             })
         })
         .collect()
@@ -662,6 +799,7 @@ fn parse_redb_commit_profile(value: OsString) -> Result<RedbCommitProfile, Serve
 pub(crate) enum ConfiguredPathRole {
     Database(DatabaseAlias),
     BackupRoot(DatabaseAlias),
+    ProjectionsRoot(DatabaseAlias),
     CapabilityKeys,
     IdempotencyKeys,
 }
@@ -671,6 +809,7 @@ impl fmt::Display for ConfiguredPathRole {
         match self {
             Self::Database(alias) => write!(formatter, "database path for '{alias}'"),
             Self::BackupRoot(alias) => write!(formatter, "backup_root for '{alias}'"),
+            Self::ProjectionsRoot(alias) => write!(formatter, "projections_root for '{alias}'"),
             Self::CapabilityKeys => formatter.write_str("capability key path"),
             Self::IdempotencyKeys => formatter.write_str("idempotency key path"),
         }
@@ -686,6 +825,7 @@ pub(crate) enum ServerConfigError {
     InvalidConfigDocument,
     MixedDatabaseConfiguration,
     InvalidDatabaseConfiguration,
+    InvalidProjectionConfiguration,
     InvalidPath,
     OverlappingPaths {
         left: ConfiguredPathRole,
@@ -711,6 +851,9 @@ impl fmt::Display for ServerConfigError {
                 "legacy and named database configuration cannot be combined"
             }
             Self::InvalidDatabaseConfiguration => "configured database registry is invalid",
+            Self::InvalidProjectionConfiguration => {
+                "configured columnar projection registry is invalid"
+            }
             Self::InvalidPath => "configured path is invalid",
             Self::OverlappingPaths { left, right } => {
                 return write!(
@@ -829,6 +972,11 @@ mod tests {
             config.backup_root(),
             Path::new("/tmp/riffdb-config/backups")
         );
+        assert_eq!(
+            config.projections_root(),
+            Path::new("/tmp/riffdb-config/projections")
+        );
+        assert!(config.projections().is_empty());
         assert_eq!(
             config.capability_key_path(),
             Path::new(DEFAULT_CAPABILITY_KEY_PATH)

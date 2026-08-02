@@ -17,6 +17,7 @@ riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = f
 riffdb-api-mcp = { version = "0.1.0", path = "../riffdb-api-mcp", default-features = false, features = ["streamable-http"] }
 riffdb-api-grpc = { version = "0.1.0", path = "../riffdb-api-grpc", default-features = false, features = ["server"] }
 riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
+riffdb-columnar = { version = "0.1.0", path = "../riffdb-columnar", default-features = false }
 riffdb-commit = { version = "0.1.0", path = "../riffdb-commit", default-features = false }
 riffdb-conflict = { version = "0.1.0", path = "../riffdb-conflict", default-features = false }
 riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", default-features = false }

@@ -35,10 +35,11 @@ use riffdb_policy::{
 use riffdb_projection::{ProjectionNotifier, ProjectionSchemaRegistry};
 use riffdb_service::{
     ApplicationService, AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort,
-    ContractMigrationApplication, CurrentPolicyPort, CursorMonotonicClock, CursorTokenGenerator,
-    OperationalStatusPort, ProjectionQueryPort, QueryModuleReadPort, RequestDeadlineScheduler,
-    RiffDbServiceActivator, ServiceDiagnostics, ServiceExecutors, ServiceHealthHooks,
-    ServiceIdentity, ServiceJobSpawner, ServiceProcessMetadata, ServiceProviders, ServiceTelemetry,
+    ColumnarProjectionPort, ContractMigrationApplication, CurrentPolicyPort, CursorMonotonicClock,
+    CursorTokenGenerator, OperationalStatusPort, ProjectionQueryPort, QueryModuleReadPort,
+    RequestDeadlineScheduler, RiffDbServiceActivator, ServiceDiagnostics, ServiceExecutors,
+    ServiceHealthHooks, ServiceIdentity, ServiceJobSpawner, ServiceProcessMetadata,
+    ServiceProviders, ServiceTelemetry,
 };
 use riffdb_storage_api::{
     OutboxDestinationIdV1, OutboxPageLimit, ReadableDigestKey, ReadableIdempotencyDigestInventory,
@@ -51,7 +52,13 @@ use crate::auth_adapters::{
     ServerIdempotencyDigestProvider,
 };
 use crate::clocks::ProductionWallClocks;
-use crate::config::ServerConfig;
+use crate::columnar_adapter::{
+    ColumnarRegistrationError, ColumnarRuntime, ServerColumnarProjectionPort,
+};
+use crate::columnar_worker::{
+    ColumnarWorkerShutdownError, ColumnarWorkerStartError, RunningColumnarWorker,
+};
+use crate::config::{ConfiguredProjection, ServerConfig};
 use crate::cursor::{ProductionCursorMonotonicClock, ProductionCursorTokenGenerator};
 use crate::identifiers::{ProductionIdentifierSources, ServerRequestIdSource};
 use crate::lifecycle::{LifecycleInstallError, ProductionLifecycleRoute};
@@ -166,6 +173,8 @@ pub(crate) struct ProductionGraphBuilder {
     server_generation: ProductionServerGenerationSource,
     lifecycle: Arc<ProductionLifecycleRoute>,
     maintenance: MaintenanceController,
+    projections: Vec<ConfiguredProjection>,
+    projections_root: std::path::PathBuf,
 }
 
 impl ProductionGraphBuilder {
@@ -202,6 +211,8 @@ impl ProductionGraphBuilder {
             server_generation: ProductionServerGenerationSource::new(),
             lifecycle,
             maintenance,
+            projections: config.projections().to_vec(),
+            projections_root: config.projections_root().to_path_buf(),
         }
     }
 
@@ -221,6 +232,8 @@ impl ProductionGraphBuilder {
             server_generation,
             lifecycle,
             maintenance,
+            projections,
+            projections_root,
         } = self;
 
         let server_generation = server_generation
@@ -392,6 +405,43 @@ impl ProductionGraphBuilder {
             };
         let projection_status = projection_worker.status();
 
+        let columnar_runtime = match ColumnarRuntime::open(
+            storage.clone(),
+            &projections,
+            &projections_root,
+            retained_metadata.history_incarnation(),
+        ) {
+            Ok(runtime) => runtime,
+            Err(source) => {
+                return Err(cleanup_after_columnar_registration_failure(
+                    source,
+                    projection_worker,
+                    coordinator,
+                    blocking,
+                    &notifications,
+                ));
+            }
+        };
+        let columnar_worker = match RunningColumnarWorker::start(
+            Arc::clone(&columnar_runtime),
+            Some(observability.metrics().clone()),
+        ) {
+            Ok(worker) => worker,
+            Err(source) => {
+                return Err(cleanup_after_columnar_start_failure(
+                    source,
+                    projection_worker,
+                    coordinator,
+                    blocking,
+                    &notifications,
+                ));
+            }
+        };
+        // Retain status handle so the worker readiness path stays live for ops.
+        let _columnar_status = columnar_worker.status();
+        let columnar: Arc<dyn ColumnarProjectionPort> =
+            Arc::new(ServerColumnarProjectionPort::new(columnar_runtime));
+
         let executors = ServiceExecutors::new(
             coordinator.administration_audit_executor(),
             coordinator.control_plane_executor(),
@@ -449,6 +499,7 @@ impl ProductionGraphBuilder {
         )
         .with_query_executor(Arc::new(storage))
         .with_query_modules(query_modules)
+        .with_columnar(columnar)
         .with_offline_maintenance(offline_maintenance)
         .with_contract_migration(migration);
         let identity = ServiceIdentity::new(
@@ -471,14 +522,24 @@ impl ProductionGraphBuilder {
             Some(observability.clone() as Arc<dyn ServiceTelemetry>),
         ) {
             lifecycle.stop();
-            let cleanup =
-                cleanup_unpublished_graph(projection_worker, coordinator, blocking, &notifications);
+            let cleanup = cleanup_unpublished_graph(
+                columnar_worker,
+                projection_worker,
+                coordinator,
+                blocking,
+                &notifications,
+            );
             return Err(ProductionGraphBuildError::Activation { source, cleanup });
         }
         if let Err(source) = lifecycle.install_contract_migration(migration_service) {
             lifecycle.stop();
-            let cleanup =
-                cleanup_unpublished_graph(projection_worker, coordinator, blocking, &notifications);
+            let cleanup = cleanup_unpublished_graph(
+                columnar_worker,
+                projection_worker,
+                coordinator,
+                blocking,
+                &notifications,
+            );
             return Err(ProductionGraphBuildError::Activation { source, cleanup });
         }
         let lifecycle_for_hosted: Arc<dyn riffdb_api_grpc::GrpcLifecycleRoute> = lifecycle.clone();
@@ -495,6 +556,7 @@ impl ProductionGraphBuilder {
             hosted_request_ids,
             mcp_telemetry,
             observability,
+            columnar_worker: Some(columnar_worker),
             projection_worker: Some(projection_worker),
             coordinator: Some(coordinator),
             blocking: Some(blocking),
@@ -558,6 +620,7 @@ pub(crate) struct RunningProductionGraph {
     hosted_request_ids: ServerRequestIdSource,
     mcp_telemetry: Arc<dyn McpTelemetry>,
     observability: Arc<Observability>,
+    columnar_worker: Option<RunningColumnarWorker>,
     projection_worker: Option<RunningProjectionWorker>,
     coordinator: Option<RunningCommandCoordinator>,
     blocking: Option<BlockingPortDriver>,
@@ -637,6 +700,12 @@ impl RunningProductionGraph {
         self.lifecycle.stop();
         self.spawner.wait_for_idle().await;
 
+        let columnar = self
+            .columnar_worker
+            .take()
+            .expect("a running graph retains one columnar worker")
+            .shutdown()
+            .err();
         let projection = self
             .projection_worker
             .take()
@@ -656,7 +725,13 @@ impl RunningProductionGraph {
             .expect("a running graph retains one blocking driver")
             .shutdown_and_drain()
             .err();
-        shutdown_result(projection, notification_failed, coordinator, blocking)
+        shutdown_result(
+            columnar,
+            projection,
+            notification_failed,
+            coordinator,
+            blocking,
+        )
     }
 
     /// Maintenance-only shutdown with a closed boundary between fully drained
@@ -668,6 +743,12 @@ impl RunningProductionGraph {
         self.lifecycle.stop();
         self.spawner.wait_for_idle().await;
 
+        let columnar = self
+            .columnar_worker
+            .take()
+            .expect("a running graph retains one columnar worker")
+            .shutdown()
+            .err();
         let projection = self
             .projection_worker
             .take()
@@ -690,7 +771,13 @@ impl RunningProductionGraph {
             .expect("a running graph retains one blocking driver")
             .shutdown_and_drain()
             .err();
-        shutdown_result(projection, notification_failed, coordinator, blocking)
+        shutdown_result(
+            columnar,
+            projection,
+            notification_failed,
+            coordinator,
+            blocking,
+        )
     }
 }
 
@@ -724,7 +811,7 @@ fn cleanup_after_conflict_start_failure(
     let blocking = blocking.shutdown_and_drain().err();
     ProductionGraphBuildError::ConflictManager {
         source,
-        cleanup: shutdown_result(None, notification_failed, None, blocking).err(),
+        cleanup: shutdown_result(None, None, notification_failed, None, blocking).err(),
     }
 }
 
@@ -737,7 +824,7 @@ fn cleanup_after_coordinator_start_failure(
     let blocking = blocking.shutdown_and_drain().err();
     ProductionGraphBuildError::Coordinator {
         source,
-        cleanup: shutdown_result(None, notification_failed, None, blocking).err(),
+        cleanup: shutdown_result(None, None, notification_failed, None, blocking).err(),
     }
 }
 
@@ -752,33 +839,85 @@ fn cleanup_after_projection_start_failure(
     let blocking = blocking.shutdown_and_drain().err();
     ProductionGraphBuildError::ProjectionWorker {
         source,
-        cleanup: shutdown_result(None, notification_failed, coordinator, blocking).err(),
+        cleanup: shutdown_result(None, None, notification_failed, coordinator, blocking).err(),
+    }
+}
+
+fn cleanup_after_columnar_registration_failure(
+    source: ColumnarRegistrationError,
+    projection_worker: RunningProjectionWorker,
+    coordinator: RunningCommandCoordinator,
+    blocking: BlockingPortDriver,
+    notifications: &FirstCommitNotificationHub,
+) -> ProductionGraphBuildError {
+    let projection = projection_worker.shutdown().err();
+    let notification_failed = notifications.shutdown().is_err();
+    let coordinator = coordinator.shutdown().err();
+    let blocking = blocking.shutdown_and_drain().err();
+    ProductionGraphBuildError::ColumnarRegistration {
+        source,
+        cleanup: shutdown_result(None, projection, notification_failed, coordinator, blocking)
+            .err(),
+    }
+}
+
+fn cleanup_after_columnar_start_failure(
+    source: ColumnarWorkerStartError,
+    projection_worker: RunningProjectionWorker,
+    coordinator: RunningCommandCoordinator,
+    blocking: BlockingPortDriver,
+    notifications: &FirstCommitNotificationHub,
+) -> ProductionGraphBuildError {
+    let projection = projection_worker.shutdown().err();
+    let notification_failed = notifications.shutdown().is_err();
+    let coordinator = coordinator.shutdown().err();
+    let blocking = blocking.shutdown_and_drain().err();
+    ProductionGraphBuildError::ColumnarWorker {
+        source,
+        cleanup: shutdown_result(None, projection, notification_failed, coordinator, blocking)
+            .err(),
     }
 }
 
 fn cleanup_unpublished_graph(
+    columnar_worker: RunningColumnarWorker,
     projection_worker: RunningProjectionWorker,
     coordinator: RunningCommandCoordinator,
     blocking: BlockingPortDriver,
     notifications: &FirstCommitNotificationHub,
 ) -> Option<ProductionGraphShutdownError> {
+    let columnar = columnar_worker.shutdown().err();
     let projection = projection_worker.shutdown().err();
     let notification_failed = notifications.shutdown().is_err();
     let coordinator = coordinator.shutdown().err();
     let blocking = blocking.shutdown_and_drain().err();
-    shutdown_result(projection, notification_failed, coordinator, blocking).err()
+    shutdown_result(
+        columnar,
+        projection,
+        notification_failed,
+        coordinator,
+        blocking,
+    )
+    .err()
 }
 
 fn shutdown_result(
+    columnar: Option<ColumnarWorkerShutdownError>,
     projection: Option<ProjectionWorkerShutdownError>,
     notification_failed: bool,
     coordinator: Option<CoordinatorShutdownError>,
     blocking: Option<BlockingPortDriverShutdownError>,
 ) -> Result<(), ProductionGraphShutdownError> {
-    if projection.is_none() && !notification_failed && coordinator.is_none() && blocking.is_none() {
+    if columnar.is_none()
+        && projection.is_none()
+        && !notification_failed
+        && coordinator.is_none()
+        && blocking.is_none()
+    {
         Ok(())
     } else {
         Err(ProductionGraphShutdownError {
+            columnar,
             projection,
             notification_failed,
             coordinator,
@@ -808,6 +947,14 @@ pub(crate) enum ProductionGraphBuildError {
         source: ProjectionWorkerStartError,
         cleanup: Option<ProductionGraphShutdownError>,
     },
+    ColumnarRegistration {
+        source: ColumnarRegistrationError,
+        cleanup: Option<ProductionGraphShutdownError>,
+    },
+    ColumnarWorker {
+        source: ColumnarWorkerStartError,
+        cleanup: Option<ProductionGraphShutdownError>,
+    },
     Activation {
         source: LifecycleInstallError,
         cleanup: Option<ProductionGraphShutdownError>,
@@ -826,6 +973,8 @@ impl fmt::Display for ProductionGraphBuildError {
             Self::ConflictManager { cleanup, .. }
             | Self::Coordinator { cleanup, .. }
             | Self::ProjectionWorker { cleanup, .. }
+            | Self::ColumnarRegistration { cleanup, .. }
+            | Self::ColumnarWorker { cleanup, .. }
             | Self::Activation { cleanup, .. } => cleanup.is_some(),
             Self::ServerGeneration(_)
             | Self::CurrentView
@@ -857,6 +1006,8 @@ impl Error for ProductionGraphBuildError {
             Self::ConflictManager { source, .. } => Some(source),
             Self::Coordinator { source, .. } => Some(source),
             Self::ProjectionWorker { source, .. } => Some(source),
+            Self::ColumnarRegistration { source, .. } => Some(source),
+            Self::ColumnarWorker { source, .. } => Some(source),
             Self::Activation { source, .. } => Some(source),
         }
     }
@@ -865,6 +1016,7 @@ impl Error for ProductionGraphBuildError {
 /// Aggregate evidence that every shutdown stage was attempted in order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProductionGraphShutdownError {
+    columnar: Option<ColumnarWorkerShutdownError>,
     projection: Option<ProjectionWorkerShutdownError>,
     notification_failed: bool,
     coordinator: Option<CoordinatorShutdownError>,
@@ -873,7 +1025,8 @@ pub(crate) struct ProductionGraphShutdownError {
 
 impl fmt::Display for ProductionGraphShutdownError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _failed_stages = usize::from(self.projection.is_some())
+        let _failed_stages = usize::from(self.columnar.is_some())
+            + usize::from(self.projection.is_some())
             + usize::from(self.notification_failed)
             + usize::from(self.coordinator.is_some())
             + usize::from(self.blocking.is_some());
@@ -913,6 +1066,7 @@ mod tests {
             "ShardedConflictManager::with_observer(",
             "RunningCommandCoordinator::start_with_telemetry(",
             "RunningProjectionWorker::start(",
+            "RunningColumnarWorker::start(",
             "CheckedGrpcSecurityContext::new(",
             "activator.activate(",
         ] {
@@ -967,6 +1121,9 @@ mod tests {
             .1;
         let route = body.find("self.lifecycle.stop()").expect("route close");
         let jobs = body.find("wait_for_idle().await").expect("job drain");
+        let columnar = body
+            .find("let columnar = self")
+            .expect("columnar worker drain");
         let projection = body
             .find("let projection = self")
             .expect("projection worker drain");
@@ -976,7 +1133,8 @@ mod tests {
             .expect("coordinator drain");
         let ports = body.find("let blocking = self").expect("port drain");
         assert!(route < jobs);
-        assert!(jobs < projection);
+        assert!(jobs < columnar);
+        assert!(columnar < projection);
         assert!(projection < notifications);
         assert!(notifications < coordinator);
         assert!(coordinator < ports);

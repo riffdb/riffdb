@@ -1545,6 +1545,7 @@ const fn operation_name(operation: ServiceOperationV1) -> &'static str {
         ServiceOperationV1::DescribeEvent => "describe_event",
         ServiceOperationV1::ReplayEvents => "replay_events",
         ServiceOperationV1::TailEvents => "tail_events",
+        ServiceOperationV1::ExecuteProjectedQuery => "execute_projected_query",
     }
 }
 

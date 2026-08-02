@@ -313,6 +313,7 @@ pub trait ApplicationService:
     + OfflineMaintenanceApplication
     + DiscoveryApplication
     + crate::SymbolicQueryApplication
+    + crate::ProjectedQueryApplication
 {
 }
 
@@ -326,5 +327,6 @@ impl<T> ApplicationService for T where
         + OfflineMaintenanceApplication
         + DiscoveryApplication
         + crate::SymbolicQueryApplication
+        + crate::ProjectedQueryApplication
 {
 }
