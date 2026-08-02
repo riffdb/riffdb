@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use riffdb_contract_ir::{ContractBundle, EntitySchema, ValueType, ValueTypeTag};
+use riffdb_contract_ir::{ContractBundle, ValueType, ValueTypeTag};
 use riffdb_types::{EntityTypeId, FieldId, HashDomain, hash};
 
 /// Layout version frozen into definition fingerprints and manifests.
@@ -57,6 +57,7 @@ pub struct RegisteredDefinition {
     projected_fields: Vec<FieldId>,
     projected_types: Vec<ValueType>,
     org_scope_field: FieldId,
+    org_scope_type: ValueType,
     primary_key_fields: Vec<FieldId>,
     fingerprint: DefinitionFingerprint,
 }
@@ -108,6 +109,13 @@ impl RegisteredDefinition {
                 field_id: definition.org_scope_field,
             },
         )?;
+        if org_field.value_type().tag() == ValueTypeTag::Optional {
+            // Every row must carry a definite org partition; an absent org
+            // scope would make the row unreachable from any query.
+            return Err(DefinitionError::OptionalOrgScope {
+                field_id: definition.org_scope_field,
+            });
+        }
         if !is_supported_column_type(org_field.value_type()) {
             return Err(DefinitionError::UnsupportedColumnType {
                 field_id: definition.org_scope_field,
@@ -128,6 +136,7 @@ impl RegisteredDefinition {
             projected_fields: definition.projected_fields,
             projected_types,
             org_scope_field: definition.org_scope_field,
+            org_scope_type: org_field.value_type().clone(),
             primary_key_fields: entity.primary_key_fields().to_vec(),
             fingerprint,
         })
@@ -169,6 +178,12 @@ impl RegisteredDefinition {
         self.org_scope_field
     }
 
+    /// Organization scope value type (never `Optional` — rejected at registration).
+    #[must_use]
+    pub const fn org_scope_type(&self) -> &ValueType {
+        &self.org_scope_type
+    }
+
     /// Primary key field ids on the entity.
     #[must_use]
     pub fn primary_key_fields(&self) -> &[FieldId] {
@@ -179,12 +194,6 @@ impl RegisteredDefinition {
     #[must_use]
     pub const fn fingerprint(&self) -> DefinitionFingerprint {
         self.fingerprint
-    }
-
-    /// Entity schema lookup helper for tests and callers that already hold a bundle.
-    #[must_use]
-    pub fn entity_schema<'a>(&self, bundle: &'a ContractBundle) -> Option<&'a EntitySchema> {
-        bundle.schema().entity(self.entity_type_id)
     }
 }
 
@@ -222,6 +231,11 @@ pub enum DefinitionError {
         /// Missing org field.
         field_id: FieldId,
     },
+    /// Org scope field is `Optional`; every row must carry a definite org.
+    OptionalOrgScope {
+        /// Optional org field.
+        field_id: FieldId,
+    },
 }
 
 impl fmt::Display for DefinitionError {
@@ -244,6 +258,9 @@ impl fmt::Display for DefinitionError {
             }
             Self::OrgFieldNotOnEntity { field_id } => {
                 write!(f, "org scope field {} is not on entity", field_id.get())
+            }
+            Self::OptionalOrgScope { field_id } => {
+                write!(f, "org scope field {} must not be optional", field_id.get())
             }
         }
     }
@@ -338,6 +355,7 @@ contract ColumnarDef version 1 {
     field status: u64
     field title: string<200>
     field nested: optional<list<i64,4>>
+    field alt_org: optional<uuid>
   }
 
   event TicketCreated {
@@ -470,6 +488,24 @@ contract ColumnarDef version 1 {
         )
         .expect_err("list unsupported");
         assert!(matches!(err, DefinitionError::UnsupportedColumnType { .. }));
+    }
+
+    #[test]
+    fn rejects_optional_org_scope_field() {
+        let bundle = compile_contract_source(CONTRACT).expect("compile");
+        let status = field_id(&bundle, "Ticket", "status");
+        let alt_org = field_id(&bundle, "Ticket", "alt_org");
+        let err = RegisteredDefinition::register(
+            ColumnarProjectionDefinition {
+                name: "board".into(),
+                entity_name: "Ticket".into(),
+                projected_fields: vec![status],
+                org_scope_field: alt_org,
+            },
+            &bundle,
+        )
+        .expect_err("optional org scope rejected");
+        assert!(matches!(err, DefinitionError::OptionalOrgScope { .. }));
     }
 
     #[test]

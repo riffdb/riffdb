@@ -13,7 +13,7 @@ use crate::error::ColumnarError;
 use crate::hooks::ColumnarTestController;
 use crate::outcome::{ColumnarOutcome, ProjectionBuilding, ProjectionReady};
 use crate::query::{ColumnarQueryRequest, QueryResult, execute_query};
-use crate::store::{ColumnarSnapshot, WorkingState};
+use crate::store::ColumnarSnapshot;
 
 /// Options for opening a columnar projection directory.
 #[derive(Clone, Debug)]
@@ -51,6 +51,10 @@ impl ColumnarEngine {
         match checkpoint.load_manifest()? {
             None => {
                 // Fresh directory: building until first publication after apply.
+                // Sweep stray files from a checkpoint torn before the first
+                // manifest rename (orphan segments, temp manifests) so a later
+                // checkpoint can never collide with them.
+                checkpoint.sweep_stray_files()?;
             }
             Some(manifest) => {
                 if manifest.fingerprint != definition.fingerprint() {
@@ -83,30 +87,6 @@ impl ColumnarEngine {
     #[doc(hidden)]
     pub fn install_test_controller(&mut self, controller: ColumnarTestController) {
         self.checkpoint.install_controller(controller);
-    }
-
-    /// Test-only protocol neuters for falsifiability transcripts.
-    #[doc(hidden)]
-    pub fn test_set_skip_tombstone(&mut self, enabled: bool) {
-        self.apply.test_skip_tombstone = enabled;
-    }
-
-    /// Test-only: publish snapshot mid-commit.
-    #[doc(hidden)]
-    pub fn test_set_publish_mid_commit(&mut self, enabled: bool) {
-        self.apply.test_publish_mid_commit = enabled;
-    }
-
-    /// Test-only: drop holdback (apply raced-ahead immediately).
-    #[doc(hidden)]
-    pub fn test_set_skip_holdback(&mut self, enabled: bool) {
-        self.apply.test_skip_holdback = enabled;
-    }
-
-    /// Test-only: write manifest before segment sync (overclaim).
-    #[doc(hidden)]
-    pub fn test_set_manifest_before_segment_sync(&mut self, enabled: bool) {
-        self.checkpoint.test_manifest_before_segment_sync = enabled;
     }
 
     /// Registered definition.
@@ -143,13 +123,6 @@ impl ColumnarEngine {
     #[must_use]
     pub fn deferred_set_size(&self) -> usize {
         self.apply.deferred.len()
-    }
-
-    /// Test observability: live-row counts recorded at each publication.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn test_publish_row_counts(&self) -> &[usize] {
-        &self.apply.test_publish_row_counts
     }
 
     /// Pulls and applies all commits currently available from `reader`.
@@ -216,7 +189,16 @@ impl ColumnarEngine {
     /// Checkpoints the race-free visible frontier to durable storage.
     ///
     /// Flushes delta into segment files (data fsync before manifest rename).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError::HoldbackActive`] while a supersession
+    /// holdback window is open (published behind processed or a non-empty
+    /// deferred set): flushing the working delta then would persist
+    /// applied-but-unpublished effects of a half-visible commit. Retry after
+    /// the next apply pull applies the superseding commit.
     pub fn checkpoint(&mut self) -> Result<ManifestV1, ColumnarError> {
+        self.ensure_no_holdback()?;
         let durable = self.apply.published.visible_frontier;
         // Only checkpoint at published frontier (race-free by D4).
         let manifest = self.checkpoint.checkpoint(
@@ -227,14 +209,21 @@ impl ColumnarEngine {
         // After checkpoint, published snapshot should reflect emptied delta + new segments.
         self.apply.published = Arc::new(self.apply.working.to_snapshot(durable));
         self.durable_frontier = durable;
-        self.has_published = true;
         Ok(manifest)
     }
 
     /// Compacts the working delta into segments at the frozen published frontier (D10).
     ///
     /// Result-invariant: logical query results at the frontier are unchanged.
+    /// Each org is rewritten to one segment; superseded segment files are swept
+    /// on the next open.
+    ///
+    /// # Errors
+    ///
+    /// Refuses with [`CheckpointError::HoldbackActive`] during a holdback
+    /// window, exactly like [`Self::checkpoint`].
     pub fn compact(&mut self) -> Result<(), ColumnarError> {
+        self.ensure_no_holdback()?;
         let frontier = self.apply.published.visible_frontier;
         let _ = self.checkpoint.checkpoint(
             &mut self.apply.working,
@@ -243,6 +232,22 @@ impl ColumnarEngine {
         )?;
         self.apply.published = Arc::new(self.apply.working.to_snapshot(frontier));
         self.durable_frontier = frontier;
+        Ok(())
+    }
+
+    /// Refuses durability operations while published lags processed or a
+    /// deferral is outstanding (the working delta then holds effects beyond
+    /// the published frontier — flushing would persist a half-applied commit).
+    fn ensure_no_holdback(&self) -> Result<(), ColumnarError> {
+        let published = self.apply.published.visible_frontier;
+        let processed = self.apply.working.processed;
+        if published != processed || !self.apply.deferred.is_empty() {
+            return Err(ColumnarError::Checkpoint(CheckpointError::HoldbackActive {
+                published,
+                processed,
+                deferred: self.apply.deferred.len(),
+            }));
+        }
         Ok(())
     }
 
@@ -256,11 +261,5 @@ impl ColumnarEngine {
     #[must_use]
     pub fn directory(&self) -> &std::path::Path {
         self.checkpoint.root()
-    }
-
-    /// Test helper: replace working state (not for production).
-    #[doc(hidden)]
-    pub fn test_working_mut(&mut self) -> &mut WorkingState {
-        &mut self.apply.working
     }
 }

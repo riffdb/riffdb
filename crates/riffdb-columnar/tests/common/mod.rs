@@ -30,8 +30,9 @@ use riffdb_types::{
 };
 
 use riffdb_columnar::{
-    ColumnPredicate, ColumnarEngine, ColumnarProjectionDefinition, ColumnarQueryRequest,
-    OpenOptions, QueryBudget, QueryResult, RegisteredDefinition,
+    AggregateOp, AggregateValue, ColumnPredicate, ColumnarEngine, ColumnarError,
+    ColumnarProjectionDefinition, ColumnarQueryRequest, OpenOptions, OrderSpec, QueryBudget,
+    QueryResult, RegisteredDefinition, SortDirection,
 };
 
 pub(crate) const CONTRACT: &str = r#"
@@ -222,21 +223,22 @@ pub(crate) struct EntityImage {
     pub fields: CanonicalRecord,
 }
 
-/// Independent oracle: BTreeMap of projected live rows, keyed by org then PK.
+/// One projected effect in the oracle's ordered log.
 #[derive(Clone, Debug)]
-pub(crate) struct Oracle {
-    /// org_encoded → pk → (version, cells)
-    pub rows: BTreeMap<Vec<u8>, BTreeMap<Vec<u8>, (u64, Vec<CanonicalValue>)>>,
-    pub frontier: FrontierPosition,
+pub(crate) struct OracleOp {
+    pub sequence: u64,
+    pub org: Vec<u8>,
+    pub pk: Vec<u8>,
+    pub version: u64,
+    pub cells: Vec<CanonicalValue>,
 }
 
-impl Default for Oracle {
-    fn default() -> Self {
-        Self {
-            rows: BTreeMap::new(),
-            frontier: FrontierPosition::BeforeFirst,
-        }
-    }
+/// Independent oracle: an ordered log of projected effects replayed through a
+/// plain BTreeMap at any requested frontier. Never imports production
+/// merge/supersession code.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Oracle {
+    log: Vec<OracleOp>,
 }
 
 impl Oracle {
@@ -249,38 +251,289 @@ impl Oracle {
         sequence: CommitSequence,
     ) {
         let org_key = riffdb_types::encode_canonical_value(org).expect("org encode");
-        let entry = self.rows.entry(org_key).or_default();
-        match entry.get(pk) {
-            Some((existing, _)) if *existing >= version => {}
-            _ => {
-                entry.insert(pk.to_vec(), (version, cells));
-            }
-        }
-        self.frontier = FrontierPosition::AppliedThrough(sequence);
+        self.log.push(OracleOp {
+            sequence: sequence.get(),
+            org: org_key,
+            pk: pk.to_vec(),
+            version,
+            cells,
+        });
     }
 
-    pub(crate) fn query_rows(
+    /// Replays the log through commits `<= frontier` for one org: pk → (version, cells).
+    pub(crate) fn rows_at(
         &self,
         org: &CanonicalValue,
-        status_field_idx: usize,
-        eq_status: Option<u64>,
-    ) -> Vec<Vec<CanonicalValue>> {
-        let org_key = riffdb_types::encode_canonical_value(org).expect("org encode");
-        let Some(partition) = self.rows.get(&org_key) else {
-            return Vec::new();
+        frontier: FrontierPosition,
+    ) -> BTreeMap<Vec<u8>, (u64, Vec<CanonicalValue>)> {
+        let limit = match frontier {
+            FrontierPosition::BeforeFirst => return BTreeMap::new(),
+            FrontierPosition::AppliedThrough(sequence) => sequence.get(),
         };
-        let mut out: Vec<_> = partition
-            .iter()
-            .filter(|(_, (_, cells))| match eq_status {
-                Some(want) => {
-                    matches!(cells.get(status_field_idx), Some(CanonicalValue::U64(v)) if *v == want)
+        let org_key = riffdb_types::encode_canonical_value(org).expect("org encode");
+        let mut out: BTreeMap<Vec<u8>, (u64, Vec<CanonicalValue>)> = BTreeMap::new();
+        for op in &self.log {
+            if op.sequence > limit || op.org != org_key {
+                continue;
+            }
+            match out.get(&op.pk) {
+                Some((existing, _)) if *existing >= op.version => {}
+                _ => {
+                    out.insert(op.pk.clone(), (op.version, op.cells.clone()));
                 }
-                None => true,
-            })
+            }
+        }
+        out
+    }
+}
+
+fn status_of(cells: &[CanonicalValue]) -> u64 {
+    match cells.first() {
+        Some(CanonicalValue::U64(status)) => *status,
+        other => panic!("status cell must be U64, got {other:?}"),
+    }
+}
+
+fn priority_of(cells: &[CanonicalValue]) -> i64 {
+    match cells.get(2) {
+        Some(CanonicalValue::I64(priority)) => *priority,
+        other => panic!("priority cell must be I64, got {other:?}"),
+    }
+}
+
+/// The full D8 query corpus as engine requests, in a fixed order:
+/// board, equality, range, sort+limit asc, sort+limit desc, count, sum, min,
+/// max, group-by, empty result.
+pub(crate) fn corpus_requests(
+    bundle: &ContractBundle,
+    org_v: &CanonicalValue,
+) -> Vec<ColumnarQueryRequest> {
+    let status_f = field_id(bundle, "Ticket", "status");
+    let priority_f = field_id(bundle, "Ticket", "priority");
+    let base = board_query(org_v.clone());
+    let mut requests = vec![base.clone(), eq_status_query(org_v.clone(), status_f, 1)];
+    requests.push(ColumnarQueryRequest {
+        predicates: vec![ColumnPredicate::Range {
+            field: priority_f,
+            low: Some(CanonicalValue::I64(5)),
+            high: Some(CanonicalValue::I64(25)),
+        }],
+        ..base.clone()
+    });
+    requests.push(ColumnarQueryRequest {
+        order: vec![OrderSpec {
+            field: status_f,
+            direction: SortDirection::Asc,
+        }],
+        limit: Some(3),
+        ..base.clone()
+    });
+    requests.push(ColumnarQueryRequest {
+        order: vec![OrderSpec {
+            field: status_f,
+            direction: SortDirection::Desc,
+        }],
+        limit: Some(3),
+        ..base.clone()
+    });
+    for aggregate in [
+        AggregateOp::Count,
+        AggregateOp::Sum { field: priority_f },
+        AggregateOp::Min { field: priority_f },
+        AggregateOp::Max { field: priority_f },
+    ] {
+        requests.push(ColumnarQueryRequest {
+            aggregate: Some(aggregate),
+            ..base.clone()
+        });
+    }
+    requests.push(ColumnarQueryRequest {
+        group_by: Some(riffdb_columnar::GroupBySpec {
+            keys: vec![status_f],
+            aggregates: vec![AggregateOp::Count],
+        }),
+        ..base.clone()
+    });
+    requests.push(eq_status_query(org_v.clone(), status_f, u64::MAX));
+    requests
+}
+
+/// Runs the full corpus against the engine (D10 before/after snapshots).
+pub(crate) fn corpus_results(
+    engine: &ColumnarEngine,
+    bundle: &ContractBundle,
+    org_v: &CanonicalValue,
+) -> Vec<QueryResult> {
+    corpus_requests(bundle, org_v)
+        .iter()
+        .map(|request| engine.query(request).expect("corpus query"))
+        .collect()
+}
+
+/// Asserts the full D8 corpus is equivalent between the engine at its
+/// published frontier and the oracle replayed to the SAME frontier.
+pub(crate) fn assert_corpus_equivalence(
+    engine: &ColumnarEngine,
+    oracle: &Oracle,
+    bundle: &ContractBundle,
+    orgs: &[[u8; 16]],
+    context: &str,
+) {
+    let frontier = engine.published_frontier();
+    for org in orgs {
+        let org_v = CanonicalValue::Uuid(*org);
+        let board = match engine.query(&board_query(org_v.clone())) {
+            Err(ColumnarError::InvalidState(_)) => {
+                // Nothing published yet (initial catch-up held back): the
+                // published frontier must still be BeforeFirst, at which the
+                // oracle corpus is trivially empty.
+                assert_eq!(
+                    frontier,
+                    FrontierPosition::BeforeFirst,
+                    "{context}: query refused although a snapshot was published"
+                );
+                return;
+            }
+            other => rows_of(other.unwrap_or_else(|error| panic!("{context}: board: {error}"))),
+        };
+        let expected = oracle.rows_at(&org_v, frontier);
+        let ordered: Vec<(Vec<u8>, Vec<CanonicalValue>)> = expected
+            .iter()
             .map(|(pk, (_, cells))| (pk.clone(), cells.clone()))
             .collect();
-        out.sort_by(|a, b| a.0.cmp(&b.0));
-        out.into_iter().map(|(_, cells)| cells).collect()
+
+        // 1. Whole board (pk order).
+        let expected_board: Vec<Vec<CanonicalValue>> =
+            ordered.iter().map(|(_, cells)| cells.clone()).collect();
+        assert_eq!(
+            board, expected_board,
+            "{context}: board rows diverge for org fill {:#04x}",
+            org[0]
+        );
+
+        let requests = corpus_requests(bundle, &org_v);
+
+        // 2. Equality (status == 1).
+        let eq_rows = rows_of(engine.query(&requests[1]).expect("eq"));
+        let expected_eq: Vec<Vec<CanonicalValue>> = ordered
+            .iter()
+            .filter(|(_, cells)| status_of(cells) == 1)
+            .map(|(_, cells)| cells.clone())
+            .collect();
+        assert_eq!(eq_rows, expected_eq, "{context}: equality rows diverge");
+
+        // 3. Range (priority in [5, 25)).
+        let range_rows = rows_of(engine.query(&requests[2]).expect("range"));
+        let expected_range: Vec<Vec<CanonicalValue>> = ordered
+            .iter()
+            .filter(|(_, cells)| {
+                let priority = priority_of(cells);
+                (5..25).contains(&priority)
+            })
+            .map(|(_, cells)| cells.clone())
+            .collect();
+        assert_eq!(range_rows, expected_range, "{context}: range rows diverge");
+
+        // 4./5. Sort by status asc/desc + limit 3, pk tie-break always asc.
+        let sorted_asc = rows_of(engine.query(&requests[3]).expect("sort asc"));
+        let mut expected_sorted = ordered.clone();
+        expected_sorted
+            .sort_by(|(a_pk, a), (b_pk, b)| (status_of(a), a_pk).cmp(&(status_of(b), b_pk)));
+        let expected_asc: Vec<Vec<CanonicalValue>> = expected_sorted
+            .iter()
+            .take(3)
+            .map(|(_, cells)| cells.clone())
+            .collect();
+        assert_eq!(
+            sorted_asc, expected_asc,
+            "{context}: sort+limit asc (ties on pk) diverge"
+        );
+        let sorted_desc = rows_of(engine.query(&requests[4]).expect("sort desc"));
+        let mut expected_sorted_desc = ordered.clone();
+        expected_sorted_desc.sort_by(|(a_pk, a), (b_pk, b)| {
+            (std::cmp::Reverse(status_of(a)), a_pk).cmp(&(std::cmp::Reverse(status_of(b)), b_pk))
+        });
+        let expected_desc: Vec<Vec<CanonicalValue>> = expected_sorted_desc
+            .iter()
+            .take(3)
+            .map(|(_, cells)| cells.clone())
+            .collect();
+        assert_eq!(
+            sorted_desc, expected_desc,
+            "{context}: sort+limit desc (ties on pk) diverge"
+        );
+
+        // 6.-9. Count / sum / min / max over priority.
+        let count = engine.query(&requests[5]).expect("count");
+        assert_eq!(
+            count,
+            QueryResult::Aggregate(AggregateValue::Count(ordered.len() as u64)),
+            "{context}: count diverges"
+        );
+        let sum = engine.query(&requests[6]).expect("sum");
+        let expected_sum: i128 = ordered
+            .iter()
+            .map(|(_, cells)| i128::from(priority_of(cells)))
+            .sum();
+        assert_eq!(
+            sum,
+            QueryResult::Aggregate(AggregateValue::Sum(expected_sum)),
+            "{context}: sum diverges"
+        );
+        let min = engine.query(&requests[7]).expect("min");
+        let expected_min = ordered
+            .iter()
+            .map(|(_, cells)| priority_of(cells))
+            .min()
+            .map(CanonicalValue::I64);
+        assert_eq!(
+            min,
+            QueryResult::Aggregate(AggregateValue::Scalar(expected_min)),
+            "{context}: min diverges"
+        );
+        let max = engine.query(&requests[8]).expect("max");
+        let expected_max = ordered
+            .iter()
+            .map(|(_, cells)| priority_of(cells))
+            .max()
+            .map(CanonicalValue::I64);
+        assert_eq!(
+            max,
+            QueryResult::Aggregate(AggregateValue::Scalar(expected_max)),
+            "{context}: max diverges"
+        );
+
+        // 10. Group-by status → count.
+        let groups = engine.query(&requests[9]).expect("group");
+        let engine_groups: BTreeMap<u64, u64> = match groups {
+            QueryResult::Groups { groups, .. } => groups
+                .into_iter()
+                .map(|(key_cells, aggregates)| {
+                    let status = status_of(&key_cells);
+                    let count = match aggregates.first() {
+                        Some(AggregateValue::Count(count)) => *count,
+                        other => panic!("{context}: group aggregate {other:?}"),
+                    };
+                    (status, count)
+                })
+                .collect(),
+            other => panic!("{context}: expected groups, got {other:?}"),
+        };
+        let mut expected_groups: BTreeMap<u64, u64> = BTreeMap::new();
+        for (_, cells) in &ordered {
+            *expected_groups.entry(status_of(cells)).or_default() += 1;
+        }
+        assert_eq!(
+            engine_groups, expected_groups,
+            "{context}: group-by counts diverge"
+        );
+
+        // 11. Empty result.
+        let empty = rows_of(engine.query(&requests[10]).expect("empty"));
+        assert!(
+            empty.is_empty(),
+            "{context}: impossible predicate returned rows: {empty:?}"
+        );
     }
 }
 
@@ -637,7 +890,8 @@ pub(crate) fn push_ticket_replace(
 }
 
 /// Forced supersession race: commit C references V1 while storage already has V2.
-/// Call after putting V2 entity and after committing C with V1 reference (without updating oracle for V1).
+/// The superseding commit at `seq_v2` is appended immediately, so one apply
+/// pull resolves the race.
 pub(crate) fn push_race_pair(
     source: &mut HistorySource,
     oracle: &mut Oracle,
@@ -647,19 +901,48 @@ pub(crate) fn push_race_pair(
     org: [u8; 16],
     ticket_id: u64,
 ) {
+    let race = push_open_race_v1(source, oracle, bundle, seq_v1, org, ticket_id);
+    resolve_open_race(source, oracle, race, seq_v2);
+}
+
+/// A pending forced supersession race: commit `seq_v1` referenced V1 while the
+/// live record already raced ahead to V2; the superseding commit has NOT been
+/// appended yet (it lands beyond the current scan fence).
+#[derive(Clone, Debug)]
+pub(crate) struct OpenRace {
+    pub org: [u8; 16],
+    pub ticket_id: u64,
+    pub target: EntityTarget,
+    pub entity_v2: StoredEntityRecordV1,
+}
+
+/// Begins a forced supersession race WITHOUT resolving it: live entity state is
+/// already V2 but only V1's commit is appended. The engine must defer the
+/// entity and hold back publication until [`resolve_open_race`] appends the
+/// superseding commit (possibly beyond the frozen scan fence of the current
+/// pull). The oracle records V1 as the true post-image of `seq_v1` — the
+/// engine never publishes a frontier inside the held range, so comparisons at
+/// published frontiers stay well-defined.
+pub(crate) fn push_open_race_v1(
+    source: &mut HistorySource,
+    oracle: &mut Oracle,
+    bundle: &ContractBundle,
+    seq_v1: u64,
+    org: [u8; 16],
+    ticket_id: u64,
+) -> OpenRace {
     let ticket_type = entity_type_id(bundle, "Ticket");
     let target = HistorySource::ticket_target(ticket_type, org, ticket_id);
     let v1 = EntityVersion::first();
     let v2 = EntityVersion::new(2).expect("v2");
-    let fields_v1 = ticket_fields(bundle, org, ticket_id, 1, "v1", 1);
-    let fields_v2 = ticket_fields(bundle, org, ticket_id, 2, "v2", 2);
+    let fields_v1 = ticket_fields(bundle, org, ticket_id, 1, &format!("v1-{ticket_id}"), 1);
+    let fields_v2 = ticket_fields(bundle, org, ticket_id, 2, &format!("v2-{ticket_id}"), 2);
     let entity_v1 = HistorySource::make_entity(target.clone(), v1, fields_v1);
-    let entity_v2 = HistorySource::make_entity(target.clone(), v2, fields_v2.clone());
+    let entity_v2 = HistorySource::make_entity(target.clone(), v2, fields_v2);
     let ref_v1 = CommittedEntityReferenceV2::from_post_image(&entity_v1).expect("ref v1");
-    let ref_v2 = CommittedEntityReferenceV2::from_post_image(&entity_v2).expect("ref v2");
 
-    // Storage already at V2 before either commit is applied by the projection.
-    source.put_entity(entity_v2);
+    // Storage already at V2 before V1's commit is applied by the projection.
+    source.put_entity(entity_v2.clone());
     source.append_commit(
         CommitSequence::new(seq_v1).expect("s1"),
         vec![ref_v1],
@@ -668,22 +951,81 @@ pub(crate) fn push_race_pair(
             riffdb_storage_api::ExpectedEntityState::Absent,
         )],
     );
+    oracle.apply_exact(
+        &CanonicalValue::Uuid(org),
+        target.key().as_bytes(),
+        1,
+        projected_cells(1, &format!("v1-{ticket_id}"), 1),
+        CommitSequence::new(seq_v1).expect("s1"),
+    );
+    OpenRace {
+        org,
+        ticket_id,
+        target,
+        entity_v2,
+    }
+}
+
+/// Appends the superseding V2 commit for an [`OpenRace`], letting the next
+/// apply pull resolve the deferral and jump the published frontier.
+pub(crate) fn resolve_open_race(
+    source: &mut HistorySource,
+    oracle: &mut Oracle,
+    race: OpenRace,
+    seq_v2: u64,
+) {
+    let ref_v2 = CommittedEntityReferenceV2::from_post_image(&race.entity_v2).expect("ref v2");
     source.append_commit(
         CommitSequence::new(seq_v2).expect("s2"),
         vec![ref_v2],
         vec![(
-            target.clone(),
-            riffdb_storage_api::ExpectedEntityState::Present(v1),
+            race.target.clone(),
+            riffdb_storage_api::ExpectedEntityState::Present(EntityVersion::first()),
         )],
     );
-    // Oracle only sees V2 once seq_v2 is "published" — we model final state at v2.
     oracle.apply_exact(
-        &CanonicalValue::Uuid(org),
-        target.key().as_bytes(),
+        &CanonicalValue::Uuid(race.org),
+        race.target.key().as_bytes(),
         2,
-        projected_cells(2, "v2", 2),
+        projected_cells(2, &format!("v2-{}", race.ticket_id), 2),
         CommitSequence::new(seq_v2).expect("s2"),
     );
+}
+
+/// One multi-entity commit creating several tickets (same org partition) with
+/// a single atomic all-or-none visibility boundary.
+pub(crate) fn push_multi_ticket_create(
+    source: &mut HistorySource,
+    oracle: &mut Oracle,
+    bundle: &ContractBundle,
+    sequence: u64,
+    org: [u8; 16],
+    tickets: &[(u64, u64, i64)],
+) {
+    let ticket_type = entity_type_id(bundle, "Ticket");
+    let seq = CommitSequence::new(sequence).expect("seq");
+    let mut references = Vec::with_capacity(tickets.len());
+    let mut priors = Vec::with_capacity(tickets.len());
+    for (ticket_id, status, priority) in tickets {
+        let target = HistorySource::ticket_target(ticket_type, org, *ticket_id);
+        let title = format!("m-{ticket_id}");
+        let fields = ticket_fields(bundle, org, *ticket_id, *status, &title, *priority);
+        let entity = HistorySource::make_entity(target.clone(), EntityVersion::first(), fields);
+        references.push(CommittedEntityReferenceV2::from_post_image(&entity).expect("ref"));
+        priors.push((
+            target.clone(),
+            riffdb_storage_api::ExpectedEntityState::Absent,
+        ));
+        source.put_entity(entity);
+        oracle.apply_exact(
+            &CanonicalValue::Uuid(org),
+            target.key().as_bytes(),
+            1,
+            projected_cells(*status, &title, *priority),
+            seq,
+        );
+    }
+    source.append_commit(seq, references, priors);
 }
 
 pub(crate) fn push_irrelevant_note(

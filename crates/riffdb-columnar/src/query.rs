@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
 
+use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_types::{CanonicalValue, FieldId, encode_canonical_value};
 
 use crate::definition::RegisteredDefinition;
@@ -174,6 +175,11 @@ pub enum QueryError {
     InvalidAggregate(&'static str),
     /// Org scope encoding failed.
     InvalidOrgScope,
+    /// Org scope value does not match the registered org field's type.
+    OrgScopeTypeMismatch {
+        /// Type tag the registered org scope field requires.
+        expected: ValueTypeTag,
+    },
 }
 
 impl fmt::Display for QueryError {
@@ -188,6 +194,9 @@ impl fmt::Display for QueryError {
             }
             Self::InvalidAggregate(message) => write!(f, "invalid aggregate: {message}"),
             Self::InvalidOrgScope => f.write_str("invalid org scope value"),
+            Self::OrgScopeTypeMismatch { expected } => {
+                write!(f, "org scope value type mismatch (expected {expected:?})")
+            }
         }
     }
 }
@@ -200,6 +209,13 @@ pub(crate) fn execute_query(
     snapshot: &ColumnarSnapshot,
     request: &ColumnarQueryRequest,
 ) -> Result<QueryResult, QueryError> {
+    // A wrong-typed org value can never name a real partition; fail typed
+    // instead of silently returning an empty result.
+    if !org_value_matches_type(&request.org_scope, definition.org_scope_type()) {
+        return Err(QueryError::OrgScopeTypeMismatch {
+            expected: definition.org_scope_type().tag(),
+        });
+    }
     let org = OrgKey::from_value(&request.org_scope).map_err(|_| QueryError::InvalidOrgScope)?;
     // Validate field references.
     for predicate in &request.predicates {
@@ -427,6 +443,29 @@ fn validate_aggregate_field(
         AggregateOp::Sum { field } | AggregateOp::Min { field } | AggregateOp::Max { field } => {
             field_index(definition, *field).map(|_| ())
         }
+    }
+}
+
+/// Whether a query-supplied org value conforms to the registered org type.
+fn org_value_matches_type(value: &CanonicalValue, expected: &ValueType) -> bool {
+    match expected.tag() {
+        ValueTypeTag::Bool => matches!(value, CanonicalValue::Bool(_)),
+        ValueTypeTag::I64 => matches!(value, CanonicalValue::I64(_)),
+        ValueTypeTag::U64 => matches!(value, CanonicalValue::U64(_)),
+        ValueTypeTag::Decimal => matches!(value, CanonicalValue::Decimal(_)),
+        ValueTypeTag::Money => matches!(value, CanonicalValue::Money(_)),
+        ValueTypeTag::String => matches!(value, CanonicalValue::String(_)),
+        ValueTypeTag::Bytes => matches!(value, CanonicalValue::Bytes(_)),
+        ValueTypeTag::Timestamp => matches!(value, CanonicalValue::Timestamp(_)),
+        ValueTypeTag::Date => matches!(value, CanonicalValue::Date(_)),
+        ValueTypeTag::Uuid => matches!(value, CanonicalValue::Uuid(_)),
+        ValueTypeTag::Enum => match value {
+            CanonicalValue::Enum { type_id, .. } => expected.enum_type_id() == Some(*type_id),
+            _ => false,
+        },
+        // Optional org scopes are rejected at registration; List/Record are
+        // never supported column types. Nothing conforms to them here.
+        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Record => false,
     }
 }
 

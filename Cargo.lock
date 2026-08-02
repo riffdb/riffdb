@@ -1773,10 +1773,10 @@ dependencies = [
 name = "riffdb-columnar"
 version = "0.1.0"
 dependencies = [
+ "rand 0.8.7",
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
  "riffdb-storage-api",
- "riffdb-testkit",
  "riffdb-types",
 ]
 

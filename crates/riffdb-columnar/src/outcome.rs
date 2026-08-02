@@ -92,31 +92,6 @@ pub enum ColumnarOutcome {
 }
 
 impl ColumnarOutcome {
-    /// Builds a Ready outcome.
-    #[must_use]
-    pub fn ready(
-        snapshot: Arc<ColumnarSnapshot>,
-        head: FrontierPosition,
-        result: Option<QueryResult>,
-    ) -> Self {
-        let frontier = snapshot.visible_frontier;
-        Self::Ready(ProjectionReady {
-            snapshot,
-            frontier,
-            head,
-            result,
-        })
-    }
-
-    /// Builds a Building outcome.
-    #[must_use]
-    pub const fn building(applied_through: FrontierPosition, head: FrontierPosition) -> Self {
-        Self::Building(ProjectionBuilding {
-            applied_through,
-            head,
-        })
-    }
-
     /// Builds an Invalid outcome.
     #[must_use]
     pub const fn invalid(

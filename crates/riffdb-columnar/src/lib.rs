@@ -41,6 +41,16 @@
 //! Projection state is derived and rebuildable. The commit log and entity state
 //! are authoritative (AGENTS.md boundary #8).
 //!
+//! # Deletes and tombstones
+//!
+//! Deletes do not exist today: `EntityMutation` is Create | Replace only
+//! (riffdb-storage-api), so a projected row can only ever be superseded by a
+//! newer version of the same entity. Superseded-row masking therefore rests
+//! entirely on the entity-version comparison in the merge path. When a delete
+//! mutation lands in the storage API, tombstone masking must be reintroduced
+//! here: segments are immutable, so deletes require masking rows at read/merge
+//! time (a tombstone row state layered above segments), not physical removal.
+//!
 //! # What this crate is not
 //!
 //! - No public wire/RPC surface (CP2).
@@ -75,7 +85,7 @@ pub use query::{
     QueryBudget, QueryError, QueryResult, QueryRows, SortDirection,
 };
 pub use store::{
-    ColumnarSnapshot, LiveRow, MergedRow, OrgDelta, OrgKey, PrimaryKeyBytes, RowState, SegmentId,
+    ColumnarSnapshot, LiveRow, MergedRow, OrgDelta, OrgKey, PrimaryKeyBytes, SegmentId,
 };
 
 #[doc(hidden)]
