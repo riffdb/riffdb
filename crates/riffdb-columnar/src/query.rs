@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
-use riffdb_types::{CanonicalValue, FieldId, encode_canonical_value};
+use riffdb_types::{CanonicalValue, EntityKey, FieldId, encode_canonical_value};
 
 use crate::definition::RegisteredDefinition;
 use crate::store::{ColumnarSnapshot, MergedRow, OrgKey, PrimaryKeyBytes};
@@ -61,7 +61,7 @@ pub enum SortDirection {
 /// One sort key; primary key is always the final tie-break.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrderSpec {
-    /// Projected field to sort by.
+    /// Projected field or primary-key component to sort by.
     pub field: FieldId,
     /// Direction.
     pub direction: SortDirection,
@@ -103,6 +103,8 @@ pub struct GroupBySpec {
 pub struct ColumnarQueryRequest {
     /// Exactly one organization scope value (ADR-0086 §9 / ADR-0087).
     pub org_scope: CanonicalValue,
+    /// Selected projected fields. Empty means all projected fields (CP1 compat).
+    pub select: Vec<FieldId>,
     /// Conjunctive predicates over projected columns.
     pub predicates: Vec<ColumnPredicate>,
     /// Optional sort keys (primary key tie-break always applied).
@@ -117,13 +119,52 @@ pub struct ColumnarQueryRequest {
     pub budget: QueryBudget,
 }
 
+/// One result row: selected cells plus field-id-addressable primary-key values.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueryRow {
+    /// Selected projected cells aligned with [`QueryRows::fields`].
+    pub cells: Vec<CanonicalValue>,
+    /// Primary-key component values aligned with [`QueryRows::primary_key_fields`].
+    pub primary_key: Vec<CanonicalValue>,
+}
+
+impl QueryRow {
+    /// Returns the primary-key component for `field`, when it is part of the entity key.
+    #[must_use]
+    pub fn primary_key_value<'a>(
+        &'a self,
+        fields: &[FieldId],
+        field: FieldId,
+    ) -> Option<&'a CanonicalValue> {
+        fields
+            .iter()
+            .position(|id| *id == field)
+            .map(|idx| &self.primary_key[idx])
+    }
+
+    /// Returns the selected cell for `field`, when it is part of the select list.
+    #[must_use]
+    pub fn cell_value<'a>(
+        &'a self,
+        fields: &[FieldId],
+        field: FieldId,
+    ) -> Option<&'a CanonicalValue> {
+        fields
+            .iter()
+            .position(|id| *id == field)
+            .map(|idx| &self.cells[idx])
+    }
+}
+
 /// Row-shaped query result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueryRows {
-    /// Projected field order for each row's cells.
+    /// Selected projected field order for each row's cells.
     pub fields: Vec<FieldId>,
-    /// Matching rows (cells aligned with `fields`).
-    pub rows: Vec<Vec<CanonicalValue>>,
+    /// Entity primary-key field order for each row's primary_key vector.
+    pub primary_key_fields: Vec<FieldId>,
+    /// Matching rows.
+    pub rows: Vec<QueryRow>,
 }
 
 /// Aggregate or group result cell.
@@ -156,11 +197,31 @@ pub enum QueryResult {
 /// Query execution failures.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum QueryError {
-    /// Predicate or order references a field not in the projection.
+    /// Predicate, order, select, or group references a field not addressable.
     UnknownField {
         /// Field id.
         field_id: FieldId,
     },
+    /// Select list contains a duplicate field.
+    DuplicateSelectField {
+        /// Field id.
+        field_id: FieldId,
+    },
+    /// Select references a field that is not in the projection definition.
+    UnprojectedSelectField {
+        /// Field id.
+        field_id: FieldId,
+    },
+    /// OrderSpec field is a primary-key component whose encoding does not
+    /// preserve CanonicalValue order (length-prefixed string/bytes).
+    OrderNotValueOrderPreserving {
+        /// Field id.
+        field_id: FieldId,
+        /// Rejected value type tag.
+        tag: ValueTypeTag,
+    },
+    /// Primary-key bytes could not be decoded with the registered key schema.
+    PrimaryKeyDecode,
     /// Scan budget exceeded.
     ScanBudgetExceeded {
         /// Configured max.
@@ -186,8 +247,22 @@ impl fmt::Display for QueryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownField { field_id } => {
-                write!(f, "unknown projected field {}", field_id.get())
+                write!(f, "unknown field {}", field_id.get())
             }
+            Self::DuplicateSelectField { field_id } => {
+                write!(f, "duplicate select field {}", field_id.get())
+            }
+            Self::UnprojectedSelectField { field_id } => {
+                write!(f, "select field {} is not projected", field_id.get())
+            }
+            Self::OrderNotValueOrderPreserving { field_id, tag } => {
+                write!(
+                    f,
+                    "order field {} type {tag:?} is not value-order-preserving in the entity key",
+                    field_id.get()
+                )
+            }
+            Self::PrimaryKeyDecode => f.write_str("primary key decode failed"),
             Self::ScanBudgetExceeded { max } => write!(f, "scan budget exceeded (max {max})"),
             Self::GroupCardinalityExceeded { max } => {
                 write!(f, "group cardinality exceeded (max {max})")
@@ -203,6 +278,16 @@ impl fmt::Display for QueryError {
 
 impl std::error::Error for QueryError {}
 
+/// Public snapshot-query entry: serve reads from an already-published snapshot
+/// without holding the engine apply lock (CP2b read path).
+pub fn query_snapshot(
+    definition: &RegisteredDefinition,
+    snapshot: &ColumnarSnapshot,
+    request: &ColumnarQueryRequest,
+) -> Result<QueryResult, QueryError> {
+    execute_query(definition, snapshot, request)
+}
+
 /// Executes `request` against `snapshot` under `definition`.
 pub(crate) fn execute_query(
     definition: &RegisteredDefinition,
@@ -217,17 +302,20 @@ pub(crate) fn execute_query(
         });
     }
     let org = OrgKey::from_value(&request.org_scope).map_err(|_| QueryError::InvalidOrgScope)?;
+
+    let select_fields = resolve_select(definition, &request.select)?;
+
     // Validate field references.
     for predicate in &request.predicates {
         let field = predicate_field(predicate);
-        field_index(definition, field)?;
+        projected_field_index(definition, field)?;
     }
     for order in &request.order {
-        field_index(definition, order.field)?;
+        validate_order_field(definition, order.field)?;
     }
     if let Some(group) = &request.group_by {
         for key in &group.keys {
-            field_index(definition, *key)?;
+            projected_field_index(definition, *key)?;
         }
         for agg in &group.aggregates {
             validate_aggregate_field(definition, agg)?;
@@ -239,7 +327,7 @@ pub(crate) fn execute_query(
 
     let merged = snapshot.merged_org(&org);
     let mut scanned = 0usize;
-    let mut matched: Vec<(PrimaryKeyBytes, MergedRow)> = Vec::new();
+    let mut matched: Vec<(PrimaryKeyBytes, Vec<CanonicalValue>, MergedRow)> = Vec::new();
     for (key, row) in merged {
         scanned = scanned.saturating_add(1);
         if scanned > request.budget.max_scanned_rows {
@@ -248,7 +336,8 @@ pub(crate) fn execute_query(
             });
         }
         if predicates_match(definition, &row, &request.predicates)? {
-            matched.push((key, row));
+            let pk_values = decode_primary_key(definition, &key)?;
+            matched.push((key, pk_values, row));
         }
     }
 
@@ -256,50 +345,105 @@ pub(crate) fn execute_query(
         return execute_group_by(definition, &matched, group, &request.budget);
     }
     if let Some(agg) = &request.aggregate {
-        let value = compute_aggregate(definition, matched.iter().map(|(_, row)| row), agg)?;
+        let value = compute_aggregate(definition, matched.iter().map(|(_, _, row)| row), agg)?;
         return Ok(QueryResult::Aggregate(value));
     }
 
-    // Sort with primary-key tie-break.
-    matched.sort_by(|(left_key, left_row), (right_key, right_row)| {
-        for order in &request.order {
-            let idx = field_index(definition, order.field).expect("validated");
-            let cmp = compare_values(&left_row.cells[idx], &right_row.cells[idx]);
-            let cmp = match order.direction {
-                SortDirection::Asc => cmp,
-                SortDirection::Desc => cmp.reverse(),
-            };
-            if cmp != Ordering::Equal {
-                return cmp;
+    // Sort with primary-key tie-break (PrimaryKeyBytes total order).
+    matched.sort_by(
+        |(left_key, left_pk, left_row), (right_key, right_pk, right_row)| {
+            for order in &request.order {
+                let cmp = compare_order_field(
+                    definition,
+                    order.field,
+                    left_pk,
+                    left_row,
+                    right_pk,
+                    right_row,
+                );
+                let cmp = match order.direction {
+                    SortDirection::Asc => cmp,
+                    SortDirection::Desc => cmp.reverse(),
+                };
+                if cmp != Ordering::Equal {
+                    return cmp;
+                }
             }
-        }
-        left_key.cmp(right_key)
-    });
+            left_key.cmp(right_key)
+        },
+    );
 
     if let Some(limit) = request.limit {
         matched.truncate(limit);
     }
 
+    let primary_key_fields = definition.primary_key_fields().to_vec();
+    let select_indexes: Vec<usize> = select_fields
+        .iter()
+        .map(|field| projected_field_index(definition, *field).expect("validated"))
+        .collect();
+
     Ok(QueryResult::Rows(QueryRows {
-        fields: definition.projected_fields().to_vec(),
-        rows: matched.into_iter().map(|(_, row)| row.cells).collect(),
+        fields: select_fields,
+        primary_key_fields,
+        rows: matched
+            .into_iter()
+            .map(|(_, pk_values, row)| QueryRow {
+                cells: project_selected_cells(&row.cells, &select_indexes),
+                primary_key: pk_values,
+            })
+            .collect(),
     }))
+}
+
+/// Resolves the select list: empty means all projected fields (CP1 compat).
+fn resolve_select(
+    definition: &RegisteredDefinition,
+    select: &[FieldId],
+) -> Result<Vec<FieldId>, QueryError> {
+    if select.is_empty() {
+        return Ok(definition.projected_fields().to_vec());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for field in select {
+        if !seen.insert(*field) {
+            return Err(QueryError::DuplicateSelectField { field_id: *field });
+        }
+        if projected_field_index(definition, *field).is_err() {
+            return Err(QueryError::UnprojectedSelectField { field_id: *field });
+        }
+    }
+    Ok(select.to_vec())
+}
+
+/// Narrows full projected cells to the select indexes.
+///
+/// Extracted so falsifiability can neuter select-narrowing in one place.
+#[inline]
+pub(crate) fn project_selected_cells(
+    full_cells: &[CanonicalValue],
+    select_indexes: &[usize],
+) -> Vec<CanonicalValue> {
+    select_indexes
+        .iter()
+        .map(|idx| full_cells[*idx].clone())
+        .collect()
 }
 
 fn execute_group_by(
     definition: &RegisteredDefinition,
-    matched: &[(PrimaryKeyBytes, MergedRow)],
+    matched: &[(PrimaryKeyBytes, Vec<CanonicalValue>, MergedRow)],
     group: &GroupBySpec,
     budget: &QueryBudget,
 ) -> Result<QueryResult, QueryError> {
     let key_indexes: Vec<usize> = group
         .keys
         .iter()
-        .map(|field| field_index(definition, *field))
+        .map(|field| projected_field_index(definition, *field))
         .collect::<Result<_, _>>()?;
 
     let mut groups: BTreeMap<Vec<u8>, (Vec<CanonicalValue>, Vec<MergedRow>)> = BTreeMap::new();
-    for (_, row) in matched {
+    for (_, _, row) in matched {
         let key_cells: Vec<CanonicalValue> = key_indexes
             .iter()
             .map(|idx| row.cells[*idx].clone())
@@ -344,7 +488,7 @@ where
             Ok(AggregateValue::Count(count))
         }
         AggregateOp::Sum { field } => {
-            let idx = field_index(definition, *field)?;
+            let idx = projected_field_index(definition, *field)?;
             let mut sum: i128 = 0;
             for row in rows {
                 sum = sum
@@ -354,7 +498,7 @@ where
             Ok(AggregateValue::Sum(sum))
         }
         AggregateOp::Min { field } => {
-            let idx = field_index(definition, *field)?;
+            let idx = projected_field_index(definition, *field)?;
             let mut min: Option<CanonicalValue> = None;
             for row in rows {
                 let value = &row.cells[idx];
@@ -372,7 +516,7 @@ where
             Ok(AggregateValue::Scalar(min))
         }
         AggregateOp::Max { field } => {
-            let idx = field_index(definition, *field)?;
+            let idx = projected_field_index(definition, *field)?;
             let mut max: Option<CanonicalValue> = None;
             for row in rows {
                 let value = &row.cells[idx];
@@ -399,7 +543,7 @@ fn predicates_match(
 ) -> Result<bool, QueryError> {
     for predicate in predicates {
         let field = predicate_field(predicate);
-        let idx = field_index(definition, field)?;
+        let idx = projected_field_index(definition, field)?;
         let cell = &row.cells[idx];
         let ok = match predicate {
             ColumnPredicate::Eq { value, .. } => cell == value,
@@ -426,12 +570,106 @@ fn predicate_field(predicate: &ColumnPredicate) -> FieldId {
     }
 }
 
-fn field_index(definition: &RegisteredDefinition, field: FieldId) -> Result<usize, QueryError> {
+fn projected_field_index(
+    definition: &RegisteredDefinition,
+    field: FieldId,
+) -> Result<usize, QueryError> {
     definition
         .projected_fields()
         .iter()
         .position(|id| *id == field)
         .ok_or(QueryError::UnknownField { field_id: field })
+}
+
+fn primary_key_field_index(
+    definition: &RegisteredDefinition,
+    field: FieldId,
+) -> Result<usize, QueryError> {
+    definition
+        .primary_key_fields()
+        .iter()
+        .position(|id| *id == field)
+        .ok_or(QueryError::UnknownField { field_id: field })
+}
+
+/// Whether a key-component type preserves CanonicalValue order in entity-key bytes.
+///
+/// Fixed-width ordered components (ADR-0011) do: bool, u64, i64 (sign-bit flip),
+/// timestamp, date, enum (variant id BE), uuid (network-order 16 bytes).
+/// Length-prefixed string/bytes do **not**: `u32_be length || payload` sorts by
+/// length first, which disagrees with lexicographic CanonicalValue order.
+///
+/// Extracted so falsifiability can neuter the order-proof validation.
+#[inline]
+pub(crate) fn key_type_preserves_value_order(value_type: &ValueType) -> bool {
+    match value_type.tag() {
+        ValueTypeTag::Bool
+        | ValueTypeTag::U64
+        | ValueTypeTag::I64
+        | ValueTypeTag::Timestamp
+        | ValueTypeTag::Date
+        | ValueTypeTag::Enum
+        | ValueTypeTag::Uuid => true,
+        ValueTypeTag::String
+        | ValueTypeTag::Bytes
+        | ValueTypeTag::Decimal
+        | ValueTypeTag::Money
+        | ValueTypeTag::Optional
+        | ValueTypeTag::List
+        | ValueTypeTag::Record => false,
+    }
+}
+
+fn validate_order_field(
+    definition: &RegisteredDefinition,
+    field: FieldId,
+) -> Result<(), QueryError> {
+    if projected_field_index(definition, field).is_ok() {
+        return Ok(());
+    }
+    let pk_idx = primary_key_field_index(definition, field)?;
+    let value_type = &definition.primary_key_types()[pk_idx];
+    if !key_type_preserves_value_order(value_type) {
+        return Err(QueryError::OrderNotValueOrderPreserving {
+            field_id: field,
+            tag: value_type.tag(),
+        });
+    }
+    Ok(())
+}
+
+fn compare_order_field(
+    definition: &RegisteredDefinition,
+    field: FieldId,
+    left_pk: &[CanonicalValue],
+    left_row: &MergedRow,
+    right_pk: &[CanonicalValue],
+    right_row: &MergedRow,
+) -> Ordering {
+    if let Ok(idx) = projected_field_index(definition, field) {
+        return compare_values(&left_row.cells[idx], &right_row.cells[idx]);
+    }
+    let idx = primary_key_field_index(definition, field).expect("validated");
+    compare_values(&left_pk[idx], &right_pk[idx])
+}
+
+/// Decodes entity-key envelope bytes into primary-key field values.
+///
+/// Extracted so falsifiability can corrupt field order in one place.
+pub(crate) fn decode_primary_key(
+    definition: &RegisteredDefinition,
+    key: &PrimaryKeyBytes,
+) -> Result<Vec<CanonicalValue>, QueryError> {
+    let entity_key =
+        EntityKey::from_bytes(key.as_bytes().to_vec()).map_err(|_| QueryError::PrimaryKeyDecode)?;
+    let values = definition
+        .primary_key_schema()
+        .decode_entity(&entity_key)
+        .map_err(|_| QueryError::PrimaryKeyDecode)?;
+    if values.len() != definition.primary_key_fields().len() {
+        return Err(QueryError::PrimaryKeyDecode);
+    }
+    Ok(values)
 }
 
 fn validate_aggregate_field(
@@ -441,7 +679,7 @@ fn validate_aggregate_field(
     match agg {
         AggregateOp::Count => Ok(()),
         AggregateOp::Sum { field } | AggregateOp::Min { field } | AggregateOp::Max { field } => {
-            field_index(definition, *field).map(|_| ())
+            projected_field_index(definition, *field).map(|_| ())
         }
     }
 }
@@ -508,4 +746,75 @@ fn encode_group_key(cells: &[CanonicalValue]) -> Result<Vec<u8>, QueryError> {
         out.extend_from_slice(&encoded);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod order_proof_tests {
+    use super::key_type_preserves_value_order;
+    use riffdb_contract_ir::ValueType;
+    use riffdb_types::{CanonicalValue, EntityKeyBuilder, EntityTypeId};
+    use std::cmp::Ordering;
+
+    /// Proof shape for A3: for each fixed-width key component type used in
+    /// entity keys, lexicographic order of the encoded component payload equals
+    /// CanonicalValue order of the decoded values. Length-prefixed string/bytes
+    /// are excluded (and rejected at OrderSpec validation).
+    #[test]
+    fn fixed_width_key_components_preserve_value_order() {
+        assert!(key_type_preserves_value_order(&ValueType::uuid()));
+        assert!(key_type_preserves_value_order(&ValueType::u64()));
+        assert!(key_type_preserves_value_order(&ValueType::i64()));
+        assert!(key_type_preserves_value_order(&ValueType::bool()));
+        assert!(!key_type_preserves_value_order(
+            &ValueType::string(32).expect("bound")
+        ));
+        assert!(!key_type_preserves_value_order(
+            &ValueType::bytes(32).expect("bound")
+        ));
+
+        // UUID: network-order 16 bytes — byte cmp == array cmp used by
+        // CanonicalValue::Uuid equality/ordering paths.
+        let u_lo = [0x01u8; 16];
+        let u_hi = [0x02u8; 16];
+        assert_eq!(u_lo.cmp(&u_hi), Ordering::Less);
+        assert!(matches!(
+            (CanonicalValue::Uuid(u_lo), CanonicalValue::Uuid(u_hi)),
+            (CanonicalValue::Uuid(a), CanonicalValue::Uuid(b)) if a < b
+        ));
+
+        // U64: big-endian fixed width — key byte order tracks numeric order.
+        let u_values = [7u64, 9u64];
+        let mut builder_lo = EntityKeyBuilder::new(EntityTypeId::first());
+        builder_lo.push_u64(u_values[0]).expect("push");
+        let mut builder_hi = EntityKeyBuilder::new(EntityTypeId::first());
+        builder_hi.push_u64(u_values[1]).expect("push");
+        assert_eq!(
+            builder_lo.as_bytes().cmp(builder_hi.as_bytes()),
+            u_values[0].cmp(&u_values[1])
+        );
+
+        // I64: sign-bit flip preserves numeric order in key bytes.
+        let i_values = [-3i64, 1i64];
+        let mut neg = EntityKeyBuilder::new(EntityTypeId::first());
+        neg.push_i64(i_values[0]).expect("push");
+        let mut pos = EntityKeyBuilder::new(EntityTypeId::first());
+        pos.push_i64(i_values[1]).expect("push");
+        assert_eq!(
+            neg.as_bytes().cmp(pos.as_bytes()),
+            i_values[0].cmp(&i_values[1])
+        );
+
+        // String length-prefix counterexample: "b" < "aa" by length, but "aa" < "b" lex.
+        let s_left = "b";
+        let s_right = "aa";
+        let mut s_b = EntityKeyBuilder::new(EntityTypeId::first());
+        s_b.push_str(s_left).expect("push");
+        let mut s_aa = EntityKeyBuilder::new(EntityTypeId::first());
+        s_aa.push_str(s_right).expect("push");
+        assert_ne!(
+            s_b.as_bytes().cmp(s_aa.as_bytes()),
+            s_left.cmp(s_right),
+            "length-prefix key order disagrees with lexicographic string order"
+        );
+    }
 }

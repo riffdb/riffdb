@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use riffdb_contract_ir::{ContractBundle, ValueType, ValueTypeTag};
+use riffdb_contract_ir::{ContractBundle, KeySchema, ValueType, ValueTypeTag};
 use riffdb_types::{EntityTypeId, FieldId, HashDomain, hash};
 
 /// Layout version frozen into definition fingerprints and manifests.
@@ -59,6 +59,9 @@ pub struct RegisteredDefinition {
     org_scope_field: FieldId,
     org_scope_type: ValueType,
     primary_key_fields: Vec<FieldId>,
+    primary_key_types: Vec<ValueType>,
+    /// Entity primary-key codec used to decode [`crate::PrimaryKeyBytes`].
+    primary_key_schema: KeySchema,
     fingerprint: DefinitionFingerprint,
 }
 
@@ -129,6 +132,13 @@ impl RegisteredDefinition {
             definition.org_scope_field,
             org_field.value_type(),
         );
+        let primary_key_fields = entity.primary_key_fields().to_vec();
+        let primary_key_types: Vec<ValueType> = entity
+            .primary_key()
+            .components()
+            .iter()
+            .map(|component| component.value_type().clone())
+            .collect();
         Ok(Self {
             name: definition.name,
             entity_type_id: entity.id(),
@@ -137,7 +147,9 @@ impl RegisteredDefinition {
             projected_types,
             org_scope_field: definition.org_scope_field,
             org_scope_type: org_field.value_type().clone(),
-            primary_key_fields: entity.primary_key_fields().to_vec(),
+            primary_key_fields,
+            primary_key_types,
+            primary_key_schema: entity.primary_key().clone(),
             fingerprint,
         })
     }
@@ -188,6 +200,18 @@ impl RegisteredDefinition {
     #[must_use]
     pub fn primary_key_fields(&self) -> &[FieldId] {
         &self.primary_key_fields
+    }
+
+    /// Primary key component types aligned with [`Self::primary_key_fields`].
+    #[must_use]
+    pub fn primary_key_types(&self) -> &[ValueType] {
+        &self.primary_key_types
+    }
+
+    /// Entity primary-key schema used to decode map keys into field values.
+    #[must_use]
+    pub const fn primary_key_schema(&self) -> &KeySchema {
+        &self.primary_key_schema
     }
 
     /// Definition fingerprint.

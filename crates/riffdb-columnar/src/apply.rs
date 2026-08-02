@@ -86,9 +86,7 @@ impl ApplyState {
         };
         let caught_up;
         loop {
-            let page = reader
-                .scan_commits(scan)
-                .map_err(|error| ColumnarError::Storage(error.to_string()))?;
+            let page = reader.scan_commits(scan).map_err(ColumnarError::from)?;
             let inclusive_upper = page.inclusive_upper();
             if inclusive_upper < self.working.processed {
                 return Err(ColumnarError::Integrity(
@@ -175,7 +173,7 @@ impl ApplyState {
     ) -> Result<(), ColumnarError> {
         let record = reader
             .read_entity(reference.target())
-            .map_err(|error| ColumnarError::Storage(error.to_string()))?
+            .map_err(ColumnarError::from)?
             .ok_or(ColumnarError::Integrity(
                 "entity absent for commit reference",
             ))?;
