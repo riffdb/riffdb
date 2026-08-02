@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn service_operation_registry_is_exact_and_closed() {
-        let expected: Vec<u8> = (0x01..=0x1c).collect();
+        let expected: Vec<u8> = (0x01..=0x1f).collect();
         assert_eq!(
             ServiceOperationV1::ALL
                 .into_iter()
@@ -608,7 +608,7 @@ mod tests {
             );
         }
         assert_eq!(ServiceOperationV1::from_tag(0), None);
-        assert_eq!(ServiceOperationV1::from_tag(0x1d), None);
+        assert_eq!(ServiceOperationV1::from_tag(0x20), None);
         assert_eq!(ServiceOperationV1::from_tag(u8::MAX), None);
     }
 
