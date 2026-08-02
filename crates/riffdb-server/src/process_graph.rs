@@ -437,8 +437,8 @@ impl ProductionGraphBuilder {
                 ));
             }
         };
-        // Retain status handle so the worker readiness path stays live for ops.
-        let _columnar_status = columnar_worker.status();
+        // Columnar apply readiness folds into aggregate operational health.
+        let columnar_status = columnar_worker.status();
         let columnar: Arc<dyn ColumnarProjectionPort> =
             Arc::new(ServerColumnarProjectionPort::new(columnar_runtime));
 
@@ -467,6 +467,7 @@ impl ProductionGraphBuilder {
                 notifications.clone(),
                 outbox_health,
                 projection_status,
+                columnar_status,
             ));
         let health: Arc<dyn ServiceHealthHooks> = Arc::new(
             ProductionObservabilityHealthHooks::new(runtime.clone(), observability.clone()),

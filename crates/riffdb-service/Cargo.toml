@@ -48,5 +48,9 @@ path = "../../tests/service/service_end_to_end.rs"
 name = "service_audit_orchestration"
 path = "../../tests/service/service_audit_orchestration.rs"
 
+[[test]]
+name = "projected_read_acceptance"
+path = "../../tests/service/projected_read_acceptance.rs"
+
 [lints]
 workspace = true

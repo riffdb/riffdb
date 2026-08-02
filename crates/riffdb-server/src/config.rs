@@ -80,6 +80,25 @@ pub(crate) struct ConfiguredProjection {
 }
 
 impl ConfiguredProjection {
+    /// Test-only constructor bypassing document parsing (adapter unit tests).
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        name: &str,
+        entity: &str,
+        projected_fields: &[&str],
+        org_scope_field: &str,
+    ) -> Self {
+        Self {
+            name: name.to_owned(),
+            entity: entity.to_owned(),
+            projected_fields: projected_fields
+                .iter()
+                .map(|field| (*field).to_owned())
+                .collect(),
+            org_scope_field: org_scope_field.to_owned(),
+        }
+    }
+
     pub(crate) fn name(&self) -> &str {
         &self.name
     }
