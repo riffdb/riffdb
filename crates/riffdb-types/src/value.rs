@@ -165,6 +165,12 @@ impl CanonicalString {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// Consumes the wrapper and returns the owned UTF-8 string.
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
 }
 
 /// Exact bounded opaque bytes for a canonical value.
@@ -208,6 +214,12 @@ impl CanonicalBytes {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// Consumes the wrapper and returns the owned byte vector.
+    #[must_use]
+    pub fn into_vec(self) -> Vec<u8> {
+        self.0
+    }
 }
 
 /// A bounded ordered list of canonical values.
@@ -249,6 +261,12 @@ impl CanonicalList {
     /// Returns whether the list contains no values.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// Consumes the list and returns the ordered values.
+    #[must_use]
+    pub fn into_values(self) -> Vec<CanonicalValue> {
+        self.0
     }
 }
 
@@ -307,6 +325,12 @@ impl CanonicalRecord {
     /// Returns whether the record contains no fields.
     pub fn is_empty(&self) -> bool {
         self.fields.is_empty()
+    }
+
+    /// Consumes the record and returns fields in stable-ID order.
+    #[must_use]
+    pub fn into_fields(self) -> Vec<(FieldId, CanonicalValue)> {
+        self.fields
     }
 }
 

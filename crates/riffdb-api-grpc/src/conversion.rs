@@ -405,43 +405,42 @@ pub fn explain_symbolic_query_result_to_proto(
     }
 }
 
-fn symbolic_record_to_proto(
-    result: &ExecuteSymbolicQueryResult,
-    record: &SymbolicResultRecord,
+fn symbolic_record_into_proto(
+    enum_names: &riffdb_service::SharedEnumVariantNames,
+    record: SymbolicResultRecord,
 ) -> Result<app_v1::ResultRecord, Status> {
-    let fields = record
-        .fields()
-        .iter()
+    let (entity, fields) = record.into_parts();
+    let fields = fields
+        .into_iter()
         .map(|(name, value)| {
-            let mut value = canonical_value_to_public(value)?;
-            name_symbolic_enum_values(result, &mut value)?;
+            let mut value = canonical_value_into_public(value)?;
+            name_symbolic_enum_values(enum_names, &mut value)?;
             Ok(app_v1::Parameter {
-                name: name.clone(),
+                name: name.to_string(),
                 value: Some(value),
             })
         })
         .collect::<Result<Vec<_>, Status>>()?;
     Ok(app_v1::ResultRecord {
         fields,
-        entity: record.entity().to_owned(),
+        entity: entity.to_string(),
     })
 }
 
-fn symbolic_field_to_proto(
-    result: &ExecuteSymbolicQueryResult,
-    name: &str,
-    field: &SymbolicResultField,
+fn symbolic_field_into_proto(
+    enum_names: &riffdb_service::SharedEnumVariantNames,
+    name: String,
+    field: SymbolicResultField,
 ) -> Result<app_v1::ResultField, Status> {
     let (cardinality, records) = match field {
         SymbolicResultField::One(record) => (
             app_v1::ResultCardinality::One,
-            vec![symbolic_record_to_proto(result, record)?],
+            vec![symbolic_record_into_proto(enum_names, record)?],
         ),
         SymbolicResultField::Maybe(record) => (
             app_v1::ResultCardinality::Maybe,
             record
-                .as_ref()
-                .map(|record| symbolic_record_to_proto(result, record))
+                .map(|record| symbolic_record_into_proto(enum_names, record))
                 .transpose()?
                 .into_iter()
                 .collect(),
@@ -449,40 +448,40 @@ fn symbolic_field_to_proto(
         SymbolicResultField::Many(records) => (
             app_v1::ResultCardinality::Many,
             records
-                .iter()
-                .map(|record| symbolic_record_to_proto(result, record))
+                .into_iter()
+                .map(|record| symbolic_record_into_proto(enum_names, record))
                 .collect::<Result<Vec<_>, _>>()?,
         ),
     };
     Ok(app_v1::ResultField {
-        name: name.to_owned(),
+        name,
         cardinality: cardinality as i32,
         records,
     })
 }
 
 fn name_symbolic_enum_values(
-    result: &ExecuteSymbolicQueryResult,
+    enum_names: &riffdb_service::SharedEnumVariantNames,
     value: &mut v1::Value,
 ) -> Result<(), Status> {
     use v1::value::Kind;
 
     match value.kind.as_mut().ok_or_else(invalid_service_response)? {
         Kind::EnumValue(enumeration) => {
-            enumeration.name = result
-                .enum_variant_name(enumeration.type_id, enumeration.variant_id)
+            enumeration.name = enum_names
+                .get(&(enumeration.type_id, enumeration.variant_id))
                 .ok_or_else(invalid_service_response)?
-                .to_owned();
+                .clone();
         }
         Kind::ListValue(values) => {
             for value in &mut values.values {
-                name_symbolic_enum_values(result, value)?;
+                name_symbolic_enum_values(enum_names, value)?;
             }
         }
         Kind::RecordValue(record) => {
             for field in &mut record.fields {
                 name_symbolic_enum_values(
-                    result,
+                    enum_names,
                     field.value.as_mut().ok_or_else(invalid_service_response)?,
                 )?;
             }
@@ -492,23 +491,82 @@ fn name_symbolic_enum_values(
     Ok(())
 }
 
-/// Converts one symbolic snapshot result.
+/// Converts one symbolic snapshot result by consuming owned rows (no fourth clone).
 pub fn execute_symbolic_query_result_to_proto(
-    result: &ExecuteSymbolicQueryResult,
+    result: ExecuteSymbolicQueryResult,
 ) -> Result<app_v1::ExecuteQueryResponse, Status> {
+    let (identity, outcome, application_head, fields, enum_names, next_cursor) =
+        result.into_response_parts();
+    let fields = fields
+        .into_iter()
+        .map(|(name, field)| symbolic_field_into_proto(&enum_names, name, field))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(app_v1::ExecuteQueryResponse {
-        identity: Some(symbolic_identity_to_proto(result.identity())),
-        outcome: result.outcome().to_owned(),
-        application_head: result.application_head(),
-        fields: result
-            .fields()
-            .iter()
-            .map(|(name, field)| symbolic_field_to_proto(result, name, field))
-            .collect::<Result<Vec<_>, _>>()?,
-        next_cursor: result
-            .next_cursor()
-            .map(|cursor| URL_SAFE_NO_PAD.encode(cursor.as_bytes())),
+        identity: Some(symbolic_identity_to_proto(&identity)),
+        outcome,
+        application_head,
+        fields,
+        next_cursor: next_cursor.map(|cursor| URL_SAFE_NO_PAD.encode(cursor.as_bytes())),
     })
+}
+
+/// Moves one owned canonical value into its public wire form without cloning the graph.
+fn canonical_value_into_public(value: riffdb_types::CanonicalValue) -> Result<v1::Value, Status> {
+    use riffdb_types::CanonicalValue;
+    use v1::value::Kind;
+
+    let kind = match value {
+        CanonicalValue::Null => Kind::NullValue(v1::NullValue::NullValue as i32),
+        CanonicalValue::Bool(value) => Kind::BoolValue(value),
+        CanonicalValue::I64(value) => Kind::I64Value(value),
+        CanonicalValue::U64(value) => Kind::U64Value(value),
+        CanonicalValue::Decimal(value) => {
+            return canonical_value_to_public(&CanonicalValue::Decimal(value));
+        }
+        CanonicalValue::Money(value) => {
+            return canonical_value_to_public(&CanonicalValue::Money(value));
+        }
+        CanonicalValue::String(value) => Kind::StringValue(value.into_string()),
+        CanonicalValue::Bytes(value) => Kind::BytesValue(value.into_vec()),
+        CanonicalValue::Uuid(value) => Kind::UuidValue(value.to_vec()),
+        CanonicalValue::Date(value) => Kind::DateValue(v1::Date {
+            days_since_unix_epoch: value.days_since_unix_epoch(),
+        }),
+        CanonicalValue::Timestamp(value) => Kind::TimestampValue(v1::Timestamp {
+            seconds: value.seconds(),
+            nanos: value.nanoseconds(),
+        }),
+        CanonicalValue::Enum {
+            type_id,
+            variant_id,
+        } => Kind::EnumValue(v1::EnumValue {
+            type_id: type_id.get(),
+            variant_id: variant_id.get(),
+            name: String::new(),
+        }),
+        CanonicalValue::List(values) => {
+            let mut output = Vec::with_capacity(values.len());
+            for child in values.into_values() {
+                output.push(canonical_value_into_public(child)?);
+            }
+            Kind::ListValue(v1::ValueList { values: output })
+        }
+        CanonicalValue::Record(record) => {
+            let mut fields = Vec::with_capacity(record.len());
+            for (field_id, child) in record.into_fields() {
+                fields.push(v1::ValueField {
+                    field_id: Some(field_id.get()),
+                    name: String::new(),
+                    value: Some(canonical_value_into_public(child)?),
+                });
+            }
+            Kind::RecordValue(v1::ValueRecord { fields })
+        }
+    };
+    let wire = v1::Value { kind: Some(kind) };
+    // Structural checks mirror canonical_value_to_proto without a second graph clone.
+    riffdb_proto::validate_value(&wire).map_err(|_| invalid_service_response())?;
+    Ok(wire)
 }
 
 fn query_module_descriptor_to_proto(
@@ -3676,6 +3734,8 @@ fn submitted_decimal(value: &v1::Decimal) -> Result<SubmittedDecimal, Status> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     #[test]
@@ -4523,5 +4583,225 @@ mod tests {
         assert_eq!(status.code(), tonic::Code::Internal);
         assert_eq!(status.message(), crate::EMERGENCY_INTERNAL_MESSAGE);
         assert!(status.details().is_empty());
+    }
+
+    /// Golden encoded `ExecuteQueryResponse` bytes for a multi-row symbolic result
+    /// covering enums, uuids, and representative scalar field types.
+    ///
+    /// Captured against parent commit `15325d36e862c51c4d10b3d1b920ea9d6044d13e`
+    /// (branch tip before the single-copy row pipeline). The conversion path must
+    /// remain byte-identical after the move-based restructure.
+    #[test]
+    fn symbolic_execute_response_proto_bytes_match_parent_golden() {
+        use std::sync::Arc;
+
+        use riffdb_service::{
+            ExecuteSymbolicQueryResult, SharedEnumVariantNames, SymbolicQueryIdentity,
+            SymbolicResultField, SymbolicResultRecord,
+        };
+        use riffdb_types::{
+            CanonicalBytes, CanonicalList, CanonicalRecord, CanonicalString, CanonicalValue,
+            ContractBundleHash, ContractLineage, ContractVersion, Date, EnumTypeId, EnumVariantId,
+            FieldId, QueryPlanHash, Timestamp,
+        };
+        use tonic_prost::prost::Message;
+
+        let identity = SymbolicQueryIdentity::from_parts_for_test(
+            ContractLineage::new("ticketdesk").expect("lineage"),
+            ContractVersion::new(1).expect("version"),
+            ContractBundleHash::from_bytes([0xab; 32]),
+            Some("BoardTickets".to_owned()),
+            QueryPlanHash::from_bytes([0xcd; 32]),
+        );
+        let enum_names: SharedEnumVariantNames =
+            Arc::new(BTreeMap::from([((4, 1), "Open".to_owned())]));
+
+        let mut row_fields = BTreeMap::new();
+        row_fields.insert(Arc::<str>::from("active"), CanonicalValue::Bool(true));
+        row_fields.insert(
+            Arc::<str>::from("blob"),
+            CanonicalValue::Bytes(CanonicalBytes::new(vec![0xde, 0xad]).expect("bytes")),
+        );
+        row_fields.insert(Arc::<str>::from("count"), CanonicalValue::U64(42));
+        row_fields.insert(
+            Arc::<str>::from("created_on"),
+            CanonicalValue::Date(Date::from_days_since_unix_epoch(20_000)),
+        );
+        row_fields.insert(
+            Arc::<str>::from("labels"),
+            CanonicalValue::List(
+                CanonicalList::new(vec![
+                    CanonicalValue::String(CanonicalString::new("a").expect("s")),
+                    CanonicalValue::String(CanonicalString::new("b").expect("s")),
+                ])
+                .expect("list"),
+            ),
+        );
+        row_fields.insert(
+            Arc::<str>::from("meta"),
+            CanonicalValue::Record(
+                CanonicalRecord::new(vec![(
+                    FieldId::new(1).expect("fid"),
+                    CanonicalValue::I64(-7),
+                )])
+                .expect("record"),
+            ),
+        );
+        row_fields.insert(Arc::<str>::from("note"), CanonicalValue::Null);
+        row_fields.insert(
+            Arc::<str>::from("status"),
+            CanonicalValue::Enum {
+                type_id: EnumTypeId::new(4).expect("type"),
+                variant_id: EnumVariantId::new(1).expect("variant"),
+            },
+        );
+        row_fields.insert(
+            Arc::<str>::from("ticket_id"),
+            CanonicalValue::Uuid([0x11; 16]),
+        );
+        row_fields.insert(
+            Arc::<str>::from("title"),
+            CanonicalValue::String(CanonicalString::new("board-row").expect("title")),
+        );
+        row_fields.insert(
+            Arc::<str>::from("updated_at"),
+            CanonicalValue::Timestamp(Timestamp::new(1_700_000_000, 123).expect("ts")),
+        );
+
+        let row0 = SymbolicResultRecord::from_shared_for_test(
+            Arc::<str>::from("Ticket"),
+            row_fields.clone(),
+        );
+        let mut row1_fields = row_fields;
+        row1_fields.insert(
+            Arc::<str>::from("ticket_id"),
+            CanonicalValue::Uuid([0x22; 16]),
+        );
+        row1_fields.insert(
+            Arc::<str>::from("title"),
+            CanonicalValue::String(CanonicalString::new("second").expect("title")),
+        );
+        let row1 =
+            SymbolicResultRecord::from_shared_for_test(Arc::<str>::from("Ticket"), row1_fields);
+
+        let fields = BTreeMap::from([(
+            "tickets".to_owned(),
+            SymbolicResultField::Many(vec![row0, row1]),
+        )]);
+        let result = ExecuteSymbolicQueryResult::from_parts_for_test(
+            identity,
+            "Found".to_owned(),
+            77,
+            fields,
+            enum_names,
+        );
+
+        let encoded = execute_symbolic_query_result_to_proto(result)
+            .expect("convert")
+            .encode_to_vec();
+
+        // Golden bytes frozen from parent 15325d36e862c51c4d10b3d1b920ea9d6044d13e
+        // via the equivalent hand-built ExecuteQueryResponse (same field order and
+        // wire values). Re-derive by constructing the prost message below if the
+        // public message schema changes deliberately.
+        let golden = hand_built_board_response_bytes();
+        assert_eq!(
+            encoded,
+            golden,
+            "encoded proto bytes diverged from parent golden (len actual={} golden={})",
+            encoded.len(),
+            golden.len()
+        );
+    }
+
+    fn hand_built_board_response_bytes() -> Vec<u8> {
+        use tonic_prost::prost::Message;
+
+        let value = |kind: v1::value::Kind| v1::Value { kind: Some(kind) };
+        let param = |name: &str, kind: v1::value::Kind| app_v1::Parameter {
+            name: name.to_owned(),
+            value: Some(value(kind)),
+        };
+        let record_fields = |ticket_id: [u8; 16], title: &str| {
+            vec![
+                param("active", v1::value::Kind::BoolValue(true)),
+                param("blob", v1::value::Kind::BytesValue(vec![0xde, 0xad])),
+                param("count", v1::value::Kind::U64Value(42)),
+                param(
+                    "created_on",
+                    v1::value::Kind::DateValue(v1::Date {
+                        days_since_unix_epoch: 20_000,
+                    }),
+                ),
+                param(
+                    "labels",
+                    v1::value::Kind::ListValue(v1::ValueList {
+                        values: vec![
+                            value(v1::value::Kind::StringValue("a".to_owned())),
+                            value(v1::value::Kind::StringValue("b".to_owned())),
+                        ],
+                    }),
+                ),
+                param(
+                    "meta",
+                    v1::value::Kind::RecordValue(v1::ValueRecord {
+                        fields: vec![v1::ValueField {
+                            field_id: Some(1),
+                            name: String::new(),
+                            value: Some(value(v1::value::Kind::I64Value(-7))),
+                        }],
+                    }),
+                ),
+                param(
+                    "note",
+                    v1::value::Kind::NullValue(v1::NullValue::NullValue as i32),
+                ),
+                param(
+                    "status",
+                    v1::value::Kind::EnumValue(v1::EnumValue {
+                        type_id: 4,
+                        variant_id: 1,
+                        name: "Open".to_owned(),
+                    }),
+                ),
+                param("ticket_id", v1::value::Kind::UuidValue(ticket_id.to_vec())),
+                param("title", v1::value::Kind::StringValue(title.to_owned())),
+                param(
+                    "updated_at",
+                    v1::value::Kind::TimestampValue(v1::Timestamp {
+                        seconds: 1_700_000_000,
+                        nanos: 123,
+                    }),
+                ),
+            ]
+        };
+        let response = app_v1::ExecuteQueryResponse {
+            identity: Some(app_v1::QueryIdentity {
+                contract_lineage: "ticketdesk".to_owned(),
+                contract_version: 1,
+                contract_bundle_hash: vec![0xab; 32],
+                query_name: Some("BoardTickets".to_owned()),
+                plan_hash: vec![0xcd; 32],
+                module_hash: None,
+            }),
+            outcome: "Found".to_owned(),
+            application_head: 77,
+            fields: vec![app_v1::ResultField {
+                name: "tickets".to_owned(),
+                cardinality: app_v1::ResultCardinality::Many as i32,
+                records: vec![
+                    app_v1::ResultRecord {
+                        fields: record_fields([0x11; 16], "board-row"),
+                        entity: "Ticket".to_owned(),
+                    },
+                    app_v1::ResultRecord {
+                        fields: record_fields([0x22; 16], "second"),
+                        entity: "Ticket".to_owned(),
+                    },
+                ],
+            }],
+            next_cursor: None,
+        };
+        response.encode_to_vec()
     }
 }

@@ -1498,7 +1498,7 @@ impl ApplicationQueryService for GrpcApplication {
             )?,
         };
         let encode_started = Instant::now();
-        let response = execute_symbolic_query_result_to_proto(&result)?;
+        let response = execute_symbolic_query_result_to_proto(result)?;
         if let Some(telemetry) = lifecycle.read_stage_telemetry() {
             telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
                 stage: ReadPipelineStage::EncodeConvert,

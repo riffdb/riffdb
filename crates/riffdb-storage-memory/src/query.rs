@@ -1,6 +1,7 @@
 //! One-lock owned composite-query snapshots for the memory reference backend.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use riffdb_query_executor::{
     BoundPredicate, QueryBackendFault, QueryContinuation, QueryExecutionError, QueryExecutionPort,
@@ -11,7 +12,7 @@ use riffdb_query_ir::{
     AccessDirection, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryPredicateOperator,
 };
 use riffdb_storage_api::{EntityTarget, PartitionIndexTarget, StorageError, StorageErrorKind};
-use riffdb_types::{CanonicalValue, IndexEntryKey};
+use riffdb_types::{CanonicalValue, FieldId, IndexEntryKey};
 
 use crate::state::{MemoryIndexEntry, MemoryState, unique_binary_search_by};
 use crate::store::{MemoryOperationalPorts, storage_error};
@@ -106,9 +107,10 @@ impl QueryReadView for MemoryQueryView<'_> {
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         let target = EntityTarget::new(step.internal_entity_id(), key)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let plan = RowMaterializePlan::for_step(self.program, step)?;
         match unique_binary_search_by(&self.state.entities, |record| record.target().cmp(&target))?
         {
-            Ok(index) => row_from_record(self.program, step, &self.state.entities[index]).map(Some),
+            Ok(index) => plan.materialize(&self.state.entities[index]).map(Some),
             Err(_) => Ok(None),
         }
     }
@@ -267,6 +269,7 @@ impl QueryReadView for MemoryQueryView<'_> {
         let continuation = has_more
             .then(|| entries.last().map(|entry| entry.1.as_bytes().to_vec()))
             .flatten();
+        let plan = RowMaterializePlan::for_step(self.program, step)?;
         let rows = entries
             .into_iter()
             .map(|(entry, _)| {
@@ -279,7 +282,7 @@ impl QueryReadView for MemoryQueryView<'_> {
                 match unique_binary_search_by(&self.state.entities, |record| {
                     record.target().cmp(&target)
                 })? {
-                    Ok(index) => row_from_record(self.program, step, &self.state.entities[index]),
+                    Ok(index) => plan.materialize(&self.state.entities[index]),
                     Err(_) => Err(storage_error(StorageErrorKind::CorruptData)),
                 }
             })
@@ -365,31 +368,51 @@ fn index_prefixes(
     Ok(prefixes)
 }
 
-fn row_from_record(
-    program: &QueryAccessProgramV1,
-    step: &QueryAccessStep,
-    record: &riffdb_storage_api::StoredEntityRecordV1,
-) -> Result<QueryRow, StorageError> {
-    let access = program
-        .internal_entity_access(step.entity())
-        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-    let fields_by_id = record
-        .fields()
-        .fields()
-        .iter()
-        .map(|(id, value)| (*id, value))
-        .collect::<BTreeMap<_, _>>();
-    let fields = access
-        .internal_fields()
-        .map(|(name, id)| {
-            fields_by_id
-                .get(&id)
-                .map(|value| (name.to_owned(), (*value).clone()))
-                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))
+/// Per-step field-name interning for one-pass row materialization (memory parity).
+struct RowMaterializePlan {
+    entity: Arc<str>,
+    needed: Vec<(FieldId, Arc<str>)>,
+}
+
+impl RowMaterializePlan {
+    fn for_step(
+        program: &QueryAccessProgramV1,
+        step: &QueryAccessStep,
+    ) -> Result<Self, StorageError> {
+        let access = program
+            .internal_entity_access(step.entity())
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let mut needed = access
+            .internal_fields()
+            .map(|(name, id)| (id, Arc::<str>::from(name)))
+            .collect::<Vec<_>>();
+        needed.sort_by_key(|(id, _)| id.get());
+        Ok(Self {
+            entity: Arc::<str>::from(step.entity()),
+            needed,
         })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-    QueryRow::checked(step.entity().to_owned(), fields)
-        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))
+    }
+
+    fn materialize(
+        &self,
+        record: &riffdb_storage_api::StoredEntityRecordV1,
+    ) -> Result<QueryRow, StorageError> {
+        let stored = record.fields().fields();
+        let mut fields = BTreeMap::new();
+        let mut store_index = 0usize;
+        for (need_id, name) in &self.needed {
+            while store_index < stored.len() && stored[store_index].0.get() < need_id.get() {
+                store_index += 1;
+            }
+            if store_index >= stored.len() || stored[store_index].0 != *need_id {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            fields.insert(Arc::clone(name), stored[store_index].1.clone());
+            store_index += 1;
+        }
+        QueryRow::from_shared(Arc::clone(&self.entity), fields)
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))
+    }
 }
 
 #[cfg(test)]

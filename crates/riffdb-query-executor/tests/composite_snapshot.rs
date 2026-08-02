@@ -1,12 +1,14 @@
 //! Closed-program composite snapshot semantics.
 
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_compiler::compile_query;
 use riffdb_query_executor::{
     BoundPredicate, QueryContinuation, QueryExecutionError, QueryParameters, QueryReadView,
-    QueryResultValue, QueryRow, QueryScanPage, execute_in_snapshot, execute_page_in_snapshot,
+    QueryResultValue, QueryRow, QueryScanPage, disable_pipeline_clone_counting,
+    enable_pipeline_clone_counting, execute_in_snapshot, execute_page_in_snapshot,
 };
 use riffdb_query_ir::QueryAccessStep;
 use riffdb_query_ir::SymbolicCatalog;
@@ -846,5 +848,131 @@ fn scan_ceiling_breach_is_bound_exceeded_not_internal() {
     assert_eq!(
         execute_in_snapshot(&program, &parameters, &mut over),
         Err(QueryExecutionError::BoundExceeded)
+    );
+}
+
+/// Falsifiability: leaf many-query projection must not clone selected values
+/// (move path). Transcript: temporarily force `project_clone` for non-retained
+/// bindings → this guard fails → restore move path → passes.
+#[test]
+fn leaf_many_projection_does_not_clone_selected_values() {
+    enable_pipeline_clone_counting();
+
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let program =
+        compile_query(&parse_query(OPEN_TICKETS).expect("query"), &catalog).expect("program");
+    let status = catalog.enumeration("TicketStatus").expect("status enum");
+    let parameters = QueryParameters::checked(BTreeMap::from([
+        ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+        ("project_id".to_owned(), CanonicalValue::Uuid([2; 16])),
+    ]))
+    .expect("parameters");
+
+    let tickets: Vec<QueryRow> = (0u8..3)
+        .map(|n| {
+            row(
+                "Ticket",
+                [
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("project_id", CanonicalValue::Uuid([2; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([n; 16])),
+                    (
+                        "status",
+                        CanonicalValue::Enum {
+                            type_id: status.internal_id(),
+                            variant_id: status.variant("Open").expect("Open"),
+                        },
+                    ),
+                ],
+            )
+        })
+        .collect();
+    // selected fields: status, ticket_id → 2 values × 3 rows would be 6 clones
+    // under the old project path; move path must record zero pipeline clones.
+    let mut view = FakeView {
+        head: 9,
+        rows: BTreeMap::from([("tickets".to_owned(), tickets)]),
+        point_calls: 0,
+        batch_calls: 0,
+        missing_batch_target: false,
+        scan_calls: 0,
+        last_limit: None,
+        last_after: None,
+        scan_epoch: 1,
+        continue_first_scan: false,
+    };
+    let snapshot = execute_in_snapshot(&program, &parameters, &mut view).expect("execute");
+    let clones = disable_pipeline_clone_counting();
+    match snapshot.fields().get("tickets") {
+        Some(QueryResultValue::Many(rows)) => assert_eq!(rows.len(), 3),
+        other => panic!("expected 3 tickets, got {other:?}"),
+    }
+    assert!(
+        clones == 0,
+        "per-row result-path clone count must be 0 for a leaf 3-row query (observed {clones}); \
+         revert to cloning project → this fails"
+    );
+}
+
+/// Report-only micro-bench: 450-row materialize+project loop. Prints elapsed for
+/// controller comparison against the pre-change baseline; does not gate CI.
+#[test]
+fn report_only_board_scale_materialize_project_loop() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    // take 499 so the closed program admits a 450-row board page.
+    let program =
+        compile_query(&parse_query(STATIC_MAX_PAGE).expect("query"), &catalog).expect("program");
+    let parameters = QueryParameters::checked(BTreeMap::from([
+        ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+        ("project_id".to_owned(), CanonicalValue::Uuid([2; 16])),
+    ]))
+    .expect("parameters");
+    let tickets: Vec<QueryRow> = (0u16..450)
+        .map(|n| {
+            let mut id = [0u8; 16];
+            id[0] = (n >> 8) as u8;
+            id[1] = n as u8;
+            row(
+                "Ticket",
+                [
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("project_id", CanonicalValue::Uuid([2; 16])),
+                    ("ticket_id", CanonicalValue::Uuid(id)),
+                    (
+                        "status",
+                        CanonicalValue::Enum {
+                            type_id: EnumTypeId::first(),
+                            variant_id: EnumVariantId::first(),
+                        },
+                    ),
+                ],
+            )
+        })
+        .collect();
+    let mut view = FakeView {
+        head: 1,
+        rows: BTreeMap::from([("tickets".to_owned(), tickets)]),
+        point_calls: 0,
+        batch_calls: 0,
+        missing_batch_target: false,
+        scan_calls: 0,
+        last_limit: None,
+        last_after: None,
+        scan_epoch: 1,
+        continue_first_scan: false,
+    };
+    let started = Instant::now();
+    let snapshot = execute_in_snapshot(&program, &parameters, &mut view).expect("execute");
+    let elapsed = started.elapsed();
+    match snapshot.fields().get("tickets") {
+        Some(QueryResultValue::Many(rows)) => assert_eq!(rows.len(), 450),
+        other => panic!("expected 450 tickets, got {other:?}"),
+    }
+    eprintln!(
+        "row-pipeline microbench (report-only): 450-row materialize+project in {:?} ({:.1} ns/row)",
+        elapsed,
+        elapsed.as_nanos() as f64 / 450.0
     );
 }
