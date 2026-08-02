@@ -134,7 +134,9 @@ pub(crate) fn drive_contract_migration(
             Err(error)
                 if matches!(
                     error.kind(),
-                    StorageErrorKind::LimitExceeded | StorageErrorKind::SequenceExhausted
+                    StorageErrorKind::LimitExceeded
+                        | StorageErrorKind::SequenceExhausted
+                        | StorageErrorKind::HistoryPruned
                 ) =>
             {
                 return fail_closed_and_reopen(

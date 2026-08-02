@@ -644,6 +644,11 @@ fn expected_enum_values() -> BTreeSet<String> {
             "PUBLIC_ERROR_KIND_OVERLOADED",
         ),
         (
+            "riffdb.v1.PublicErrorKind",
+            12,
+            "PUBLIC_ERROR_KIND_HISTORY_PRUNED",
+        ),
+        (
             "riffdb.v1.ResourceDiscoveryKind",
             0,
             "RESOURCE_DISCOVERY_KIND_UNSPECIFIED",

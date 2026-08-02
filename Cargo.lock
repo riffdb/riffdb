@@ -1732,6 +1732,7 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-diagnostics",
  "riffdb-query-module",
+ "riffdb-storage-redb",
  "riffdb-types",
  "serde",
  "serde_json",

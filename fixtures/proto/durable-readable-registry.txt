@@ -1,5 +1,5 @@
 riffdb-durable-registry-v1
-records 45
+records 48
 riffdb.storage.v1.StoredStorageFormatVersionV1 source=metadata.proto message=StoredStorageFormatVersionV1 descriptor-bytes=1498 max-payload-bytes=8192 max-envelope-bytes=8284 schema-hash=07371c0b9eba9bfcad3118b345064b3d33a20a13641c6bde017e5c99dc6020ab
 riffdb.storage.v1.StoredDatabaseIdentityV1 source=metadata.proto message=StoredDatabaseIdentityV1 descriptor-bytes=1498 max-payload-bytes=8192 max-envelope-bytes=8280 schema-hash=de6f4f35fa52ca7664a85d9ffaa0041c506f3c5eb22632ba0ecd757dc6df1dea
 riffdb.storage.v1.StoredApplicationSequenceAllocatorV1 source=metadata.proto message=StoredApplicationSequenceAllocatorV1 descriptor-bytes=1498 max-payload-bytes=8192 max-envelope-bytes=8292 schema-hash=ff01f9e77e1d0ae47de12badcd541131a58fc6926b27543c681f0151f49aa24a
@@ -43,5 +43,8 @@ riffdb.storage.v1.StoredContractMigrationRecordV1 source=migration_v1.proto mess
 riffdb.storage.v1.StoredContractWriteRetirementV1 source=migration_v1.proto message=StoredContractWriteRetirementV1 descriptor-bytes=11338 max-payload-bytes=8192 max-envelope-bytes=8287 schema-hash=5f8f2c3c510fd24cdb91c5f51026fc5feebf2a56b76ed4b380c944d31577f317
 riffdb.storage.v1.StoredRetiredEntityRecordV1 source=migration_v1.proto message=StoredRetiredEntityRecordV1 descriptor-bytes=11338 max-payload-bytes=16777123 max-envelope-bytes=16777216 schema-hash=da35b66acd172e6a4c8d1252c37f14512b2af7a81c18658f5c4855491e4e789e
 riffdb.storage.v1.CapabilityRecordV2 source=capability_migration.proto message=CapabilityRecordV2 descriptor-bytes=6699 max-payload-bytes=2097152 max-envelope-bytes=2097236 schema-hash=a04ef1808dbea65cb09d4a081b9e4591bf4bb41a2b8a14167de2bb7a2fed72f0
-riffdb.storage.v1.StoredValidatedPrefixCheckpointV1 source=validated_prefix_checkpoint_v1.proto message=StoredValidatedPrefixCheckpointV1 descriptor-bytes=1154 max-payload-bytes=8192 max-envelope-bytes=8289 schema-hash=ed739062e9fd76fe0ab8386489e11ab7aa0f6f822f38bfadecb23e500e2b3849
+riffdb.storage.v1.StoredValidatedPrefixCheckpointV1 source=validated_prefix_checkpoint_v1.proto message=StoredValidatedPrefixCheckpointV1 descriptor-bytes=1220 max-payload-bytes=8192 max-envelope-bytes=8289 schema-hash=368a30c7ca07ba9d788718233fc97972e9288e8fac2135358e3ee2910233adf9
+riffdb.storage.v1.StoredRetentionWatermarkV1 source=retention_watermark_v1.proto message=StoredRetentionWatermarkV1 descriptor-bytes=900 max-payload-bytes=8192 max-envelope-bytes=8282 schema-hash=4f81e4a8d8621e0c24688755eb41e19fa8eee94ae464f0c083fa2053f7c926c3
+riffdb.storage.v1.StoredRetentionHoldsV1 source=retention_watermark_v1.proto message=StoredRetentionHoldsV1 descriptor-bytes=900 max-payload-bytes=8192 max-envelope-bytes=8278 schema-hash=39a5fbe35f6a51bd9abed2aa3063154dcf9f884caf482e0d9896841d415699a5
+riffdb.storage.v1.StoredHistoryTombstoneV1 source=retention_watermark_v1.proto message=StoredHistoryTombstoneV1 descriptor-bytes=900 max-payload-bytes=8192 max-envelope-bytes=8280 schema-hash=1069d14b6938a3a935cd5cc07e8bfc7564a724b7df6f86aefe8a0524fc4a7a9e
 riffdb.storage.v1.CapabilityRecordV1 source=capability.proto message=CapabilityRecordV1 descriptor-bytes=6290 max-payload-bytes=2097152 max-envelope-bytes=2097236 schema-hash=cb42c4ebbce8280123f8b34d4dcde74ca9483406847531f34d5fb3f18d40b342

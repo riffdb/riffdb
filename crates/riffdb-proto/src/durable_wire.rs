@@ -542,7 +542,7 @@ shape!(PROJECTION_CONTROL [
     message(7, &PROJECTION_FAILURE),
 ]);
 
-const ROOTS: [&Shape; 44] = [
+const ROOTS: [&Shape; 47] = [
     &Shape { rules: &[] },
     &Shape {
         rules: &[fixed_bytes(1, 16)],
@@ -605,6 +605,16 @@ const ROOTS: [&Shape; 44] = [
             fixed_bytes(19, 32),
             fixed_bytes(20, 32),
         ],
+    },
+    // StoredRetentionWatermarkV1: self-hash is fixed 32 bytes; sequences are wire-type 0.
+    &Shape {
+        rules: &[fixed_bytes(3, 32)],
+    },
+    // StoredRetentionHoldsV1: repeated holds with string fields — no fixed-length roots.
+    &Shape { rules: &[] },
+    // StoredHistoryTombstoneV1: content digest + hashes fixed 32; counts/sequences wire-type 0.
+    &Shape {
+        rules: &[fixed_bytes(7, 32), fixed_bytes(8, 32), fixed_bytes(9, 32)],
     },
 ];
 

@@ -900,7 +900,8 @@ fn map_storage_kind(kind: StorageErrorKind) -> AuthoritativeReadError {
         | StorageErrorKind::IncompatibleFormat
         | StorageErrorKind::LimitExceeded
         | StorageErrorKind::InvariantViolation
-        | StorageErrorKind::SequenceExhausted => AuthoritativeReadError::Integrity,
+        | StorageErrorKind::SequenceExhausted
+        | StorageErrorKind::HistoryPruned => AuthoritativeReadError::Integrity,
     }
 }
 

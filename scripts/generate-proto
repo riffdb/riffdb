@@ -74,6 +74,12 @@ artifacts=(
     fixtures/proto/durable-capability-v2-schema-hash.bin
     fixtures/proto/durable-validated-prefix-checkpoint-v1-record-bound.bin
     fixtures/proto/durable-validated-prefix-checkpoint-v1-schema-hash.bin
+    fixtures/proto/durable-retention-watermark-v1-record-bound.bin
+    fixtures/proto/durable-retention-watermark-v1-schema-hash.bin
+    fixtures/proto/durable-retention-holds-v1-record-bound.bin
+    fixtures/proto/durable-retention-holds-v1-schema-hash.bin
+    fixtures/proto/durable-history-tombstone-v1-record-bound.bin
+    fixtures/proto/durable-history-tombstone-v1-schema-hash.bin
     fixtures/proto/durable-event-reference-v2-record-bounds.bin
     fixtures/proto/durable-event-reference-v2-schema-hashes.bin
     fixtures/proto/durable-event-reference-v2-wire-vectors.txt

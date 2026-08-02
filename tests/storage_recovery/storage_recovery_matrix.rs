@@ -1931,6 +1931,7 @@ fn validated_prefix_checkpoint_prefix_count_mismatch_fails_closed() {
                 original.entity_chain_fingerprint(),
                 original.retained(),
                 original.previous_checkpoint_hash(),
+                0,
             )
             .expect("rehash under-reported counts");
             let encoded = encode_validated_prefix_checkpoint_v1(&doctored).expect("encode");
@@ -2129,6 +2130,7 @@ fn validated_prefix_checkpoint_entity_fingerprint_mismatch_falls_back() {
                 wrong_fp,
                 original.retained(),
                 original.previous_checkpoint_hash(),
+                0,
             )
             .expect("rehash doctored checkpoint");
             assert_ne!(
@@ -2469,6 +2471,7 @@ fn assert_underreported_count_is_detected_by_walk_end_guard(
             original.entity_chain_fingerprint(),
             original.retained(),
             original.previous_checkpoint_hash(),
+            0,
         )
         .expect("rehash doctored counts")
     });
@@ -2768,6 +2771,7 @@ fn checkpoint_wrong_database_id_falls_back_to_full_validation() {
                 original.entity_chain_fingerprint(),
                 original.retained(),
                 original.previous_checkpoint_hash(),
+                0,
             )
             .expect("rehash wrong database id")
         },
@@ -2792,6 +2796,7 @@ fn checkpoint_wrong_registry_digest_falls_back_to_full_validation() {
                 original.entity_chain_fingerprint(),
                 original.retained(),
                 original.previous_checkpoint_hash(),
+                0,
             )
             .expect("rehash wrong digest")
         },
@@ -2814,6 +2819,7 @@ fn checkpoint_sequence_beyond_head_falls_back_to_full_validation() {
                 original.entity_chain_fingerprint(),
                 original.retained(),
                 original.previous_checkpoint_hash(),
+                0,
             )
             .expect("rehash beyond-head sequence")
         },

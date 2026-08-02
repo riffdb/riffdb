@@ -28,4 +28,7 @@ message StoredValidatedPrefixCheckpointV1 {
   bool administration_sequence_exhausted = 18;
   optional bytes previous_checkpoint_hash = 19; // 32 bytes if present
   bytes checkpoint_hash = 20; // 32 bytes
+  // Retention watermark sequence bound at write time (ADR-0085 Amendment 2).
+  // A mismatch against the live watermark causes the checkpoint to be ignored.
+  uint64 retention_watermark_sequence = 21;
 }

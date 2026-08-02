@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// Bound retention watermark (ADR-0085 Amendment 2).
+// Advances only during offline retention maintenance; re-validated (never
+// advanced) at startup. Sequence 0 means no history has been pruned.
+message StoredRetentionWatermarkV1 {
+  // Highest commit sequence that has been pruned (inclusive). 0 = unpruned.
+  uint64 watermark_sequence = 1;
+  // History incarnation at the time the watermark was written.
+  uint64 history_incarnation = 2;
+  // Self-hash over the bound fields (32 bytes).
+  bytes watermark_hash = 3;
+}
+
+// Operator holds that bind the fencing minimum (ADR-0085 Amendment 2).
+// Bounded list of named holds; managed by offline maintenance verbs.
+message StoredRetentionHoldsV1 {
+  repeated RetentionHoldV1 holds = 1;
+}
+
+message RetentionHoldV1 {
+  // Operator-chosen identifier (unique within the holds list).
+  string hold_id = 1;
+  // Sequence floor this hold enforces (watermark must not exceed).
+  uint64 sequence = 2;
+  // Human-readable reason for the hold.
+  string reason = 3;
+}
+
+// Per-range history tombstone (ADR-0085 Amendment 2).
+// Hash-chained like the contract-migration journal; chain root bound to the
+// registry digest. Ranges are contiguous, non-overlapping, ascending, and
+// abut the watermark.
+message StoredHistoryTombstoneV1 {
+  // First commit sequence covered by this tombstone (inclusive).
+  uint64 first_sequence = 1;
+  // Last commit sequence covered by this tombstone (inclusive).
+  uint64 last_sequence = 2;
+  // Per-table pruned-row counts for the four v1-pruned tables.
+  uint64 commits_count = 3;
+  uint64 events_count = 4;
+  uint64 outbox_count = 5;
+  uint64 outbox_status_count = 6;
+  // Content digest over the pruned rows in this range (32 bytes).
+  bytes content_digest = 7;
+  // Previous tombstone hash, if any (32 bytes when present).
+  optional bytes previous_tombstone_hash = 8;
+  // This tombstone's chained hash (32 bytes).
+  bytes tombstone_hash = 9;
+  // History incarnation at prune time.
+  uint64 history_incarnation = 10;
+}

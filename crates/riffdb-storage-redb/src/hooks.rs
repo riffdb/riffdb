@@ -29,6 +29,12 @@ pub enum RedbTestOperation {
     Restore,
     /// Validated-prefix startup checkpoint write (ADR-0085 A1).
     ValidatedPrefixCheckpoint,
+    /// Offline retention hold add/remove (ADR-0085 A2).
+    RetentionHold,
+    /// Offline retention prune: first transaction deletes the validated-prefix checkpoint.
+    RetentionPruneCheckpointDelete,
+    /// Offline retention prune: one sub-range delete+tombstone+watermark transaction.
+    RetentionPruneSubrange,
 }
 
 /// Closed transaction boundary exposed by redaction-safe test diagnostics.

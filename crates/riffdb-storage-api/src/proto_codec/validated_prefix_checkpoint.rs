@@ -50,6 +50,7 @@ pub fn encode_validated_prefix_checkpoint_v1(
                 .previous_checkpoint_hash()
                 .map(|hash| hash.as_bytes().to_vec()),
             checkpoint_hash: value.checkpoint_hash().as_bytes().to_vec(),
+            retention_watermark_sequence: value.retention_watermark_sequence(),
         },
     )
 }
@@ -88,6 +89,7 @@ pub fn decode_validated_prefix_checkpoint_v1(
                 .map(|hash| fixed(hash).map(ValidatedPrefixCheckpointHash::from_bytes))
                 .transpose()?,
             ValidatedPrefixCheckpointHash::from_bytes(fixed(value.checkpoint_hash)?),
+            value.retention_watermark_sequence,
         )
         .map_err(DurableCodecError::from_storage_value)
     })

@@ -435,7 +435,8 @@ pub(crate) fn map_storage_error(error: StorageError) -> ProjectionEvaluationErro
         StorageErrorKind::CorruptData
         | StorageErrorKind::IncompatibleFormat
         | StorageErrorKind::InvariantViolation
-        | StorageErrorKind::SequenceExhausted => {
+        | StorageErrorKind::SequenceExhausted
+        | StorageErrorKind::HistoryPruned => {
             ProjectionEvaluationErrorKind::ProjectionStateIntegrity
         }
     })

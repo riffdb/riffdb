@@ -11,6 +11,7 @@ mod error;
 mod metadata;
 mod outbox;
 mod projection;
+mod retention;
 mod validated_prefix_checkpoint;
 
 use std::fmt;
@@ -32,6 +33,7 @@ pub use error::*;
 pub use metadata::*;
 pub use outbox::*;
 pub use projection::*;
+pub use retention::*;
 pub use validated_prefix_checkpoint::*;
 
 /// One complete canonical v1 durable envelope and its exact byte charge.

@@ -360,6 +360,7 @@ pub enum ApplicationErrorCode {
     CapabilityRevoked = 17,
     ProtocolInvalid = 18,
     HistoryIncarnationMismatch = 19,
+    HistoryPruned = 21,
     Overloaded = 20,
 }
 impl ApplicationErrorCode {
@@ -393,6 +394,7 @@ impl ApplicationErrorCode {
             Self::HistoryIncarnationMismatch => {
                 "APPLICATION_ERROR_CODE_HISTORY_INCARNATION_MISMATCH"
             }
+            Self::HistoryPruned => "APPLICATION_ERROR_CODE_HISTORY_PRUNED",
             Self::Overloaded => "APPLICATION_ERROR_CODE_OVERLOADED",
         }
     }
@@ -431,6 +433,7 @@ impl ApplicationErrorCode {
             "APPLICATION_ERROR_CODE_HISTORY_INCARNATION_MISMATCH" => {
                 Some(Self::HistoryIncarnationMismatch)
             }
+            "APPLICATION_ERROR_CODE_HISTORY_PRUNED" => Some(Self::HistoryPruned),
             "APPLICATION_ERROR_CODE_OVERLOADED" => Some(Self::Overloaded),
             _ => None,
         }
