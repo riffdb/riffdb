@@ -46,7 +46,7 @@ use riffdb_storage_api::{
     StructuralFindingCode, StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
     command_write_set_upper_bound_v1, decode_index_entry_v1, decode_index_entry_v2,
     decode_index_migration_row, derive_event_hash_v1, encode_index_entry_v1_fixture,
-    encode_index_entry_v2,
+    encode_index_entry_v2, encode_record_registry_v2,
 };
 use riffdb_storage_redb::{
     RedbCommitProfile, RedbDormantPorts, RedbOperationalPorts, RedbStartupIndexMigrationPort,
@@ -817,9 +817,15 @@ fn read_migration_control_state(path: &Path) -> MigrationControlState {
         .expect("open migration fixture metadata")
         .iter()
         .expect("iterate migration fixture metadata")
-        .map(|entry| {
+        .filter_map(|entry| {
             let (key, value) = entry.expect("read migration fixture metadata");
-            (key.value().to_owned(), value.value().to_vec())
+            let key = key.value().to_owned();
+            // Optional validated-prefix checkpoint is rewritten on every clean
+            // finish and is not a migration control marker.
+            if key == "validated_prefix_checkpoint/v1" {
+                return None;
+            }
+            Some((key, value.value().to_vec()))
         })
         .collect();
     MigrationControlState { tables, metadata }
@@ -1133,6 +1139,12 @@ fn process_recovery_child() {
         "after-index-migration-batch-commit" => {
             RedbTestController::abort_after_commit(RedbTestOperation::IndexMigrationBatch)
         }
+        "before-validated-prefix-checkpoint-commit" => {
+            RedbTestController::abort_before_commit(RedbTestOperation::ValidatedPrefixCheckpoint)
+        }
+        "after-validated-prefix-checkpoint-commit" => {
+            RedbTestController::abort_after_commit(RedbTestOperation::ValidatedPrefixCheckpoint)
+        }
         _ => panic!("unknown closed child mode"),
     };
     let store =
@@ -1156,6 +1168,11 @@ fn process_recovery_child() {
                 panic!("migration failpoint child requires one V1 index row");
             };
             let _ = drive_index_migration(port, context, &controller);
+        }
+        "before-validated-prefix-checkpoint-commit"
+        | "after-validated-prefix-checkpoint-commit" => {
+            // Seeded DB reopens and complete_startup_pass writes the checkpoint on finish.
+            let _ = complete_startup_pass(store);
         }
         _ => unreachable!("controller match rejects unknown modes"),
     }
@@ -1709,4 +1726,482 @@ fn missing_event_route_is_authoritative_startup_corruption() {
         }),
         "missing route must fail closed as authoritative cross-link corruption: {findings:?}"
     );
+}
+
+fn complete_startup_observing_checkpoint(
+    store: RedbStore,
+) -> (
+    OpenSessionId,
+    CatalogHistoryOutcome,
+    StructuralOpenOutcome<RedbDormantPorts, RedbStartupIndexMigrationPort>,
+    bool,
+    u64,
+) {
+    let digest_key = DigestKeyId::new(1).expect("digest key ID");
+    let inputs = StartupValidationInputs::new(
+        Timestamp::new(1_700_000_000, 0).expect("startup timestamp"),
+        ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+            .expect("capability digest inventory"),
+        ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+            .expect("idempotency digest inventory"),
+    );
+    let mut session = store
+        .begin_structural_evidence(inputs)
+        .expect("begin exclusive structural evidence");
+    let checkpoint_verified = session.checkpoint_verified();
+    let sampled = session.sampled_window_rows_inspected();
+    let database_id = session.database_id();
+    let open_session_id = session.open_session_id();
+    let limit = EvidencePageLimit::new(64).expect("page limit");
+
+    let mut structural_cursor = StructuralEvidenceCursor::start(database_id, open_session_id);
+    let structural_end = loop {
+        match session
+            .read_structural_evidence(structural_cursor, limit)
+            .expect("read structural evidence")
+        {
+            StructuralEvidencePage::Page { findings, next, .. } => {
+                assert!(
+                    findings.is_empty(),
+                    "a valid recovery fixture has no findings"
+                );
+                structural_cursor = next;
+            }
+            StructuralEvidencePage::ExactEnd(end) => break end,
+        }
+    };
+
+    let (catalog_outcome, historical_end) = validate_catalog_history(&mut session)
+        .expect("catalog validates the complete historical stream")
+        .into_parts();
+    let outcome = session
+        .finish(structural_end, historical_end)
+        .expect("finish structural evidence");
+    (
+        open_session_id,
+        catalog_outcome,
+        outcome,
+        checkpoint_verified,
+        sampled,
+    )
+}
+
+#[test]
+fn validated_prefix_checkpoint_roundtrip_second_open_uses_fast_path() {
+    let path = TestDatabasePath::new("validated-prefix-roundtrip");
+    let _ = prepare_committed_command_database(&path.0);
+    // Write an S=head checkpoint after the committed command (prepare's open was pre-command).
+    let _ = complete_startup_pass(RedbStore::open(&path.0).expect("seed S=head checkpoint"));
+
+    // A subsequent open must verify the checkpoint and take the fast path.
+    let (_, _, outcome, verified, sampled) =
+        complete_startup_observing_checkpoint(RedbStore::open(&path.0).expect("checkpointed open"));
+    assert!(
+        matches!(outcome, StructuralOpenOutcome::Clean(_)),
+        "checkpointed open must finish clean"
+    );
+    assert!(
+        verified,
+        "open after a clean finish must verify the written checkpoint"
+    );
+    assert!(
+        sampled > 0,
+        "verified checkpoint with S>0 must execute sampled windows (observed {sampled})"
+    );
+    drop(outcome);
+
+    // Forced full path: remove checkpoint meta, open full, rewrite, reopen.
+    {
+        let database = Database::create(&path.0).expect("open");
+        let txn = database.begin_write().expect("write");
+        {
+            let mut meta = txn.open_table(META).expect("meta");
+            let _ = meta.remove("validated_prefix_checkpoint/v1");
+        }
+        txn.commit().expect("commit");
+        drop(database);
+    }
+    let store = RedbStore::open(&path.0).expect("full open");
+    let (_, _, outcome, verified_full, _) = complete_startup_observing_checkpoint(store);
+    assert!(
+        matches!(outcome, StructuralOpenOutcome::Clean(_)),
+        "full validation open must finish clean"
+    );
+    assert!(
+        !verified_full,
+        "absent checkpoint must force full validation"
+    );
+    drop(outcome);
+    let store = RedbStore::open(&path.0).expect("rewrite open");
+    let (_, _, outcome, verified_again, _) = complete_startup_observing_checkpoint(store);
+    assert!(matches!(outcome, StructuralOpenOutcome::Clean(_)));
+    assert!(verified_again, "rewritten checkpoint must verify");
+    drop(outcome);
+}
+
+#[test]
+fn validated_prefix_checkpoint_binding_mismatch_falls_back_to_full_validation() {
+    let path = TestDatabasePath::new("validated-prefix-binding-mismatch");
+    let _ = prepare_committed_command_database(&path.0);
+    let (_, _, seed_outcome) =
+        complete_startup_pass(RedbStore::open(&path.0).expect("seed checkpoint"));
+    drop(seed_outcome);
+
+    // Corrupt the checkpoint self-hash by flipping a byte in the meta row.
+    {
+        let database = Database::create(&path.0).expect("open for doctor");
+        let txn = database.begin_write().expect("write");
+        {
+            let mut meta = txn.open_table(META).expect("meta");
+            let key = "validated_prefix_checkpoint/v1";
+            let existing = meta
+                .get(key)
+                .expect("get")
+                .expect("checkpoint present")
+                .value()
+                .to_vec();
+            let mut doctored = existing;
+            if let Some(last) = doctored.last_mut() {
+                *last ^= 0xff;
+            }
+            meta.insert(key, doctored.as_slice()).expect("insert");
+        }
+        txn.commit().expect("commit doctor");
+        drop(database);
+    }
+
+    let (_, _, outcome, verified, _) =
+        complete_startup_observing_checkpoint(RedbStore::open(&path.0).expect("reopen"));
+    assert!(
+        !verified,
+        "corrupted self-hash must ignore checkpoint (full validation)"
+    );
+    assert!(
+        matches!(outcome, StructuralOpenOutcome::Clean(_)),
+        "full validation must still open cleanly on otherwise-valid data"
+    );
+    drop(outcome);
+}
+
+#[test]
+fn validated_prefix_checkpoint_prefix_count_mismatch_fails_closed() {
+    use riffdb_storage_api::{
+        StoredValidatedPrefixCheckpointV1,
+        proto_codec::{
+            decode_validated_prefix_checkpoint_v1, encode_validated_prefix_checkpoint_v1,
+        },
+    };
+
+    let path = TestDatabasePath::new("validated-prefix-count-mismatch");
+    let _ = prepare_committed_command_database(&path.0);
+    let _ = complete_startup_pass(RedbStore::open(&path.0).expect("write checkpoint"));
+
+    // Under-report commits_count while leaving rows in place. Load-time
+    // CountImpossible does not fire (recorded ≤ full), but at ExactEnd
+    // table_len − walked_suffix ≠ recorded_prefix → fail closed.
+    {
+        let database = Database::create(&path.0).expect("open");
+        let txn = database.begin_write().expect("write");
+        {
+            let mut meta = txn.open_table(META).expect("meta");
+            let key = "validated_prefix_checkpoint/v1";
+            let existing = meta
+                .get(key)
+                .expect("get")
+                .expect("checkpoint present")
+                .value()
+                .to_vec();
+            let original = decode_validated_prefix_checkpoint_v1(&existing)
+                .expect("decode")
+                .into_parts()
+                .0;
+            assert!(
+                original.counts().commits_count >= 1,
+                "fixture must record a non-empty commits prefix"
+            );
+            let mut counts = original.counts();
+            counts.commits_count = 0;
+            let doctored = StoredValidatedPrefixCheckpointV1::new(
+                original.database_id(),
+                original.history_incarnation(),
+                original.registry_digest(),
+                original.checkpoint_commit_sequence(),
+                original.audit_sequence_bound(),
+                counts,
+                original.entity_chain_fingerprint(),
+                original.retained(),
+                original.previous_checkpoint_hash(),
+            )
+            .expect("rehash under-reported counts");
+            let encoded = encode_validated_prefix_checkpoint_v1(&doctored).expect("encode");
+            meta.insert(key, encoded.as_bytes()).expect("insert");
+        }
+        txn.commit().expect("commit doctor");
+    }
+
+    let store = RedbStore::open(&path.0).expect("open doctored DB");
+    let digest_key = DigestKeyId::new(1).expect("digest key ID");
+    let inputs = StartupValidationInputs::new(
+        Timestamp::new(1_700_000_000, 0).expect("startup timestamp"),
+        ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+            .expect("capability digest inventory"),
+        ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+            .expect("idempotency digest inventory"),
+    );
+    let mut session = store
+        .begin_structural_evidence(inputs)
+        .expect("begin accepts bindable checkpoint");
+    assert!(
+        session.checkpoint_verified(),
+        "under-reported counts still bind at load; mismatch is walk-end verified"
+    );
+    let mut cursor =
+        StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
+    let limit = EvidencePageLimit::new(64).expect("page limit");
+    let mut failed_closed = false;
+    loop {
+        match session.read_structural_evidence(cursor, limit) {
+            Ok(StructuralEvidencePage::Page { findings, next, .. }) => {
+                if !findings.is_empty() {
+                    failed_closed = true;
+                    break;
+                }
+                cursor = next;
+            }
+            Ok(StructuralEvidencePage::ExactEnd(_)) => break,
+            Err(_) => {
+                failed_closed = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        failed_closed,
+        "under-reported below-S commits_count must fail closed at walk end"
+    );
+}
+
+#[test]
+fn crash_before_validated_prefix_checkpoint_commit_leaves_no_meta() {
+    let path = TestDatabasePath::new("before-validated-prefix-checkpoint");
+    let _ = prepare_committed_command_database(&path.0);
+    // Strip any checkpoint from prior opens so the crash targets a first write.
+    {
+        let database = Database::create(&path.0).expect("open");
+        let txn = database.begin_write().expect("write");
+        {
+            let mut meta = txn.open_table(META).expect("meta");
+            let _ = meta.remove("validated_prefix_checkpoint/v1");
+        }
+        txn.commit().expect("commit");
+    }
+    run_crashing_child("before-validated-prefix-checkpoint-commit", &path.0);
+
+    // After abort-before-commit, meta must still be absent.
+    {
+        let database = Database::create(&path.0).expect("open");
+        let txn = database.begin_read().expect("read");
+        let meta = txn.open_table(META).expect("meta");
+        assert!(
+            meta.get("validated_prefix_checkpoint/v1")
+                .expect("get")
+                .is_none(),
+            "abort before checkpoint commit must leave no durable checkpoint"
+        );
+    }
+
+    // Reopen: full validation path (no verified checkpoint at begin).
+    let store = RedbStore::open(&path.0).expect("reopen after before-checkpoint crash");
+    let (_, _, outcome, verified, _) = complete_startup_observing_checkpoint(store);
+    assert!(
+        matches!(outcome, StructuralOpenOutcome::Clean(_)),
+        "recovery after pre-checkpoint crash must open clean"
+    );
+    assert!(
+        !verified,
+        "first reopen after pre-checkpoint crash must not verify a checkpoint"
+    );
+}
+
+#[test]
+fn crash_after_validated_prefix_checkpoint_commit_reopens_fast_path() {
+    let path = TestDatabasePath::new("after-validated-prefix-checkpoint");
+    let _ = prepare_committed_command_database(&path.0);
+    run_crashing_child("after-validated-prefix-checkpoint-commit", &path.0);
+
+    let store = RedbStore::open(&path.0).expect("reopen after after-checkpoint crash");
+    let (_, _, outcome, verified, _) = complete_startup_observing_checkpoint(store);
+    assert!(
+        matches!(outcome, StructuralOpenOutcome::Clean(_)),
+        "recovery after post-checkpoint crash must open clean"
+    );
+    assert!(
+        verified,
+        "checkpoint committed before crash must be verified on reopen"
+    );
+}
+
+#[test]
+fn perf_014_unclean_recovery_vs_clean_startup() {
+    // Real kill-mid-write via before-command-batch-commit, then measure reopen drain.
+    let unclean_path = TestDatabasePath::new("perf-014-unclean");
+    prepare_command_database(&unclean_path.0);
+    run_crashing_child("before-command-batch-commit", &unclean_path.0);
+
+    // Force repair callback observation on reopen of the unclean file.
+    let unclean_start = std::time::Instant::now();
+    let unclean_store = RedbStore::open(&unclean_path.0).expect("open unclean");
+    let repair_bps = riffdb_storage_redb::last_repair_progress_basis_points();
+    let _ = complete_startup_pass(unclean_store);
+    let unclean_ns = unclean_start.elapsed().as_nanos();
+
+    let clean_path = TestDatabasePath::new("perf-014-clean");
+    let _ = prepare_committed_command_database(&clean_path.0);
+    let _ = complete_startup_pass(RedbStore::open(&clean_path.0).expect("seed clean"));
+    let clean_start = std::time::Instant::now();
+    let _ = complete_startup_pass(RedbStore::open(&clean_path.0).expect("clean reopen"));
+    let clean_ns = clean_start.elapsed().as_nanos();
+
+    let ratio = if clean_ns == 0 {
+        0.0
+    } else {
+        unclean_ns as f64 / clean_ns as f64
+    };
+    println!(
+        "{{\"schema\":\"riffdb.perf-014/v1\",\"repair_progress_bps\":{repair_bps},\"unclean_ns\":{unclean_ns},\"clean_ns\":{clean_ns},\"ratio\":{ratio}}}"
+    );
+    // Honest report only — do not reintroduce PERF-014 gate unless ratio ≤3× reliably.
+    let _ = ratio;
+}
+
+#[test]
+fn validated_prefix_checkpoint_entity_fingerprint_mismatch_falls_back() {
+    use riffdb_storage_api::{
+        EntityChainFingerprint, StoredValidatedPrefixCheckpointV1,
+        proto_codec::{
+            decode_validated_prefix_checkpoint_v1, encode_validated_prefix_checkpoint_v1,
+        },
+    };
+
+    let path = TestDatabasePath::new("validated-prefix-entity-fp");
+    let _ = prepare_committed_command_database(&path.0);
+    let _ = complete_startup_pass(RedbStore::open(&path.0).expect("write checkpoint"));
+
+    // Rewrite checkpoint with a wrong entity-chain fingerprint (self-hash recomputed so
+    // the envelope is valid). Reconstruct-at-S must disagree → ignore → full validation.
+    {
+        let database = Database::create(&path.0).expect("open");
+        let txn = database.begin_write().expect("write");
+        {
+            let mut meta = txn.open_table(META).expect("meta");
+            let key = "validated_prefix_checkpoint/v1";
+            let existing = meta
+                .get(key)
+                .expect("get")
+                .expect("checkpoint present")
+                .value()
+                .to_vec();
+            let original = decode_validated_prefix_checkpoint_v1(&existing)
+                .expect("decode checkpoint")
+                .into_parts()
+                .0;
+            let wrong_fp = EntityChainFingerprint::from_bytes([0xab; 32]);
+            let doctored = StoredValidatedPrefixCheckpointV1::new(
+                original.database_id(),
+                original.history_incarnation(),
+                original.registry_digest(),
+                original.checkpoint_commit_sequence(),
+                original.audit_sequence_bound(),
+                original.counts(),
+                wrong_fp,
+                original.retained(),
+                original.previous_checkpoint_hash(),
+            )
+            .expect("rehash doctored checkpoint");
+            assert_ne!(
+                doctored.entity_chain_fingerprint(),
+                original.entity_chain_fingerprint()
+            );
+            let encoded =
+                encode_validated_prefix_checkpoint_v1(&doctored).expect("encode doctored");
+            meta.insert(key, encoded.as_bytes()).expect("insert");
+        }
+        txn.commit().expect("commit doctor");
+    }
+
+    let store = RedbStore::open(&path.0).expect("open");
+    let (_, _, outcome, verified, _) = complete_startup_observing_checkpoint(store);
+    assert!(
+        !verified,
+        "mismatched entity-chain fingerprint must ignore checkpoint (full validation)"
+    );
+    assert!(
+        matches!(outcome, StructuralOpenOutcome::Clean(_)),
+        "full validation of otherwise-valid data must open clean"
+    );
+}
+
+#[test]
+fn validated_prefix_checkpoint_incarnation_mismatch_falls_back() {
+    let path = TestDatabasePath::new("validated-prefix-incarnation");
+    let _ = prepare_committed_command_database(&path.0);
+    let _ = complete_startup_pass(RedbStore::open(&path.0).expect("write checkpoint"));
+
+    // Rewrite history_incarnation without rewriting the checkpoint binding.
+    {
+        let database = Database::create(&path.0).expect("open");
+        let txn = database.begin_write().expect("write");
+        {
+            let mut meta = txn.open_table(META).expect("meta");
+            let encoded = riffdb_storage_api::proto_codec::encode_history_incarnation_v1(2)
+                .expect("encode incarnation 2");
+            meta.insert("history_incarnation/v1", encoded.as_bytes())
+                .expect("stamp incarnation");
+        }
+        txn.commit().expect("commit");
+    }
+
+    let store = RedbStore::open(&path.0).expect("open");
+    let (_, _, outcome, verified, _) = complete_startup_observing_checkpoint(store);
+    assert!(
+        !verified,
+        "incarnation mismatch must ignore checkpoint and full-validate"
+    );
+    assert!(
+        matches!(outcome, StructuralOpenOutcome::Clean(_)),
+        "full validation on incarnation-stamped-but-otherwise-valid DB must open clean"
+    );
+}
+
+#[test]
+fn pre_validated_prefix_registry_digest_migrates_on_open() {
+    let path = TestDatabasePath::new("pre-validated-prefix-migrate");
+    let mut store = RedbStore::open(&path.0).expect("open");
+    store
+        .initialize_database(database_id())
+        .expect("initialize");
+    drop(store);
+
+    // Downgrade registry digest to PRE_VALIDATED (44-schema frozen digest).
+    const PRE: [u8; 32] = [
+        0xe1, 0x59, 0x2f, 0xba, 0x8c, 0x33, 0x8a, 0xee, 0x4e, 0xd7, 0x17, 0x8b, 0x6a, 0x09, 0xbb,
+        0xcf, 0x88, 0x26, 0x7e, 0x5c, 0xd4, 0x33, 0xfa, 0x23, 0x31, 0x19, 0x9c, 0xaa, 0x3c, 0xd2,
+        0xe8, 0xcd,
+    ];
+    {
+        let database = Database::create(&path.0).expect("open");
+        let txn = database.begin_write().expect("write");
+        {
+            let mut meta = txn.open_table(META).expect("meta");
+            let encoded = encode_record_registry_v2(riffdb_types::SchemaHash::from_bytes(PRE))
+                .expect("encode pre digest");
+            meta.insert("record_registry/v2", encoded.as_bytes())
+                .expect("insert");
+        }
+        txn.commit().expect("commit");
+    }
+
+    // Open must migrate PRE_VALIDATED → current without error.
+    let store = RedbStore::open(&path.0).expect("migrate from PRE_VALIDATED");
+    let _ = complete_startup_pass(store);
 }

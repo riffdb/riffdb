@@ -27,6 +27,8 @@ pub enum RedbTestOperation {
     ProjectionMutation,
     Backup,
     Restore,
+    /// Validated-prefix startup checkpoint write (ADR-0085 A1).
+    ValidatedPrefixCheckpoint,
 }
 
 /// Closed transaction boundary exposed by redaction-safe test diagnostics.

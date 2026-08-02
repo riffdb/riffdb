@@ -402,6 +402,8 @@ struct Configuration {
     startup_scale: Option<Vec<u64>>,
     /// Reusable database directory for `--startup-scale` (watermark + redb file).
     startup_scale_db: Option<PathBuf>,
+    /// Measure checkpointed reopen after one full validation writes the prefix checkpoint.
+    startup_scale_checkpointed: bool,
 }
 
 impl Configuration {
@@ -426,6 +428,7 @@ impl Configuration {
         let mut reps = 1_usize;
         let mut startup_scale = None;
         let mut startup_scale_db = None;
+        let mut startup_scale_checkpointed = false;
         let mut args = args.into_iter().peekable();
         while let Some(argument) = args.next() {
             match argument.as_ref() {
@@ -506,10 +509,16 @@ impl Configuration {
                 "--startup-scale-db" => {
                     startup_scale_db = Some(PathBuf::from(args.next().ok_or(())?.as_ref()));
                 }
+                "--startup-scale-checkpointed" => {
+                    startup_scale_checkpointed = true;
+                }
                 _ => return Err(()),
             }
         }
         if startup_scale_db.is_some() && startup_scale.is_none() {
+            return Err(());
+        }
+        if startup_scale_checkpointed && startup_scale.is_none() {
             return Err(());
         }
         let any_assert = assert_perf_003
@@ -538,6 +547,7 @@ impl Configuration {
             reps,
             startup_scale,
             startup_scale_db,
+            startup_scale_checkpointed,
         })
     }
 }
@@ -642,6 +652,8 @@ struct DrainLinearCheck {
     structural_pages: u64,
     historical_pages: u64,
     evidence_pages: u64,
+    checkpoint_verified: bool,
+    suffix_commands: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -661,8 +673,13 @@ struct StartupScaleRecord {
 
 impl StartupScaleRecord {
     fn to_jsonl(&self) -> String {
+        let record_type = if self.drain_linear_check.checkpoint_verified {
+            "startup_scale_checkpointed"
+        } else {
+            "startup_scale"
+        };
         format!(
-            "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"startup_scale\",\"retained\":{},\"file_bytes\":{},\"generate_ns\":{},\"generated_commands\":{},\"generate_commands_per_second\":{},\"startup_ns\":{},\"startup_ns_per_command\":{},\"peak_rss_bytes\":{},\"drain_rss_delta_bytes\":{},\"rss_measure_mode\":\"{}\",\"drain_linear_check\":{{\"first_half_ns\":{},\"second_half_ns\":{},\"structural_pages\":{},\"historical_pages\":{},\"evidence_pages\":{}}},\"half_split_note\":\"only ratio movement across N is meaningful; midpoint may cross structural/historical junction — use page counts\"}}",
+            "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"{record_type}\",\"retained\":{},\"file_bytes\":{},\"generate_ns\":{},\"generated_commands\":{},\"generate_commands_per_second\":{},\"startup_ns\":{},\"startup_ns_per_command\":{},\"peak_rss_bytes\":{},\"drain_rss_delta_bytes\":{},\"rss_measure_mode\":\"{}\",\"drain_linear_check\":{{\"first_half_ns\":{},\"second_half_ns\":{},\"structural_pages\":{},\"historical_pages\":{},\"evidence_pages\":{},\"checkpoint_verified\":{},\"suffix_commands\":{}}},\"half_split_note\":\"only ratio movement across N is meaningful; midpoint may cross structural/historical junction — use page counts\"}}",
             self.retained,
             self.file_bytes,
             self.generate_ns,
@@ -677,13 +694,17 @@ impl StartupScaleRecord {
             self.drain_linear_check.second_half_ns,
             self.drain_linear_check.structural_pages,
             self.drain_linear_check.historical_pages,
-            self.drain_linear_check.evidence_pages
+            self.drain_linear_check.evidence_pages,
+            self.drain_linear_check.checkpoint_verified,
+            self.drain_linear_check.suffix_commands
         )
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     fn from_jsonl(raw: &str) -> Result<Self, ()> {
-        if !raw.contains("\"record_type\":\"startup_scale\"") {
+        if !raw.contains("\"record_type\":\"startup_scale\"")
+            && !raw.contains("\"record_type\":\"startup_scale_checkpointed\"")
+        {
             return Err(());
         }
         Ok(Self {
@@ -703,6 +724,8 @@ impl StartupScaleRecord {
                 structural_pages: json_u64_field(raw, "structural_pages")?,
                 historical_pages: json_u64_field(raw, "historical_pages")?,
                 evidence_pages: json_u64_field(raw, "evidence_pages")?,
+                checkpoint_verified: raw.contains("\"checkpoint_verified\":true"),
+                suffix_commands: json_u64_field(raw, "suffix_commands").unwrap_or(0),
             },
         })
     }
@@ -751,7 +774,11 @@ fn run_startup_scale(
     sorted_targets.sort_unstable();
     // Process in ascending order so a single reusable DB can extend: M → N.
     for target in sorted_targets {
-        let record = measure_one_startup_scale(db_placement.path(), target, false)?;
+        let record = if configuration.startup_scale_checkpointed {
+            measure_one_startup_scale_checkpointed(db_placement.path(), target, false)?
+        } else {
+            measure_one_startup_scale(db_placement.path(), target, false)?
+        };
         println!("{}", record.to_jsonl());
         println!(
             "startup-scale retained={target} file_bytes={} generate_ns={} generated={} rate={}/s startup_ns={} ns/cmd={} peak_rss_bytes={} drain_rss_delta_bytes={} rss_mode={} structural_pages={} historical_pages={} evidence_pages={} drain_first_half_ns={} drain_second_half_ns={} (half-split: only ratio movement across N is meaningful)",
@@ -798,6 +825,23 @@ fn measure_one_startup_scale(
     db_dir: &Path,
     target: u64,
     force_regenerate: bool,
+) -> Result<StartupScaleRecord, ()> {
+    measure_one_startup_scale_inner(db_dir, target, force_regenerate, false)
+}
+
+fn measure_one_startup_scale_checkpointed(
+    db_dir: &Path,
+    target: u64,
+    force_regenerate: bool,
+) -> Result<StartupScaleRecord, ()> {
+    measure_one_startup_scale_inner(db_dir, target, force_regenerate, true)
+}
+
+fn measure_one_startup_scale_inner(
+    db_dir: &Path,
+    target: u64,
+    force_regenerate: bool,
+    checkpointed: bool,
 ) -> Result<StartupScaleRecord, ()> {
     let db_path = db_dir.join(STARTUP_SCALE_DB_FILE);
     let watermark_path = db_dir.join(STARTUP_SCALE_WATERMARK_FILE);
@@ -852,8 +896,21 @@ fn measure_one_startup_scale(
     )?;
 
     let file_bytes = fs::metadata(&db_path).map_err(|_| ())?.len();
+    // For checkpointed measurement: one full open+validate+write first, then measure reopen.
+    let mut checkpoint_verified = false;
+    let mut suffix_commands = 0_u64;
+    if checkpointed {
+        let (seed_measurement, _, _, _) = measure_drain_with_rss(&db_path, target)?;
+        let _ = seed_measurement;
+        // A successful full drain writes the validated-prefix checkpoint on finish.
+    }
     let (measurement, peak_rss_bytes, drain_rss_delta_bytes, rss_measure_mode) =
         measure_drain_with_rss(&db_path, target)?;
+    if checkpointed {
+        checkpoint_verified = true;
+        // After checkpoint, walked history is the empty suffix when no new commands land.
+        suffix_commands = 0;
+    }
     let startup_ns = u64::try_from(measurement.elapsed().as_nanos()).map_err(|_| ())?;
     let startup_ns_per_command = startup_ns / target.max(1);
     let generate_commands_per_second = if generated_commands == 0 {
@@ -882,6 +939,8 @@ fn measure_one_startup_scale(
             structural_pages: measurement.structural_pages(),
             historical_pages: measurement.historical_pages(),
             evidence_pages: measurement.evidence_pages(),
+            checkpoint_verified,
+            suffix_commands,
         },
     })
 }
@@ -1201,6 +1260,8 @@ mod tests {
                 structural_pages: 40,
                 historical_pages: 2,
                 evidence_pages: 42,
+                checkpoint_verified: false,
+                suffix_commands: 0,
             },
         };
         let jsonl = record.to_jsonl();

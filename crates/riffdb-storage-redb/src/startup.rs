@@ -45,15 +45,16 @@ use crate::layout::{
     CONTRACT_WRITE_RETIREMENTS, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING,
     INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE,
     META_CAPABILITY_BOOTSTRAP, META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
-    META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, OUTBOX, OUTBOX_STATUS,
-    PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE,
-    QUERY_MODULES, RETIRED_ENTITIES, SECONDARY_INDEXES, TABLE_NAMES,
+    META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY,
+    META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS, PROJECTION_APPLIED,
+    PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE, QUERY_MODULES,
+    RETIRED_ENTITIES, SECONDARY_INDEXES, TABLE_NAMES,
 };
 use crate::store::{
     PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST, PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST,
     PRE_ENTITY_REFERENCE_REGISTRY_DIGEST, PRE_EVENT_ROUTE_REGISTRY_DIGEST,
     PRE_HISTORY_INCARNATION_REGISTRY_DIGEST, PRE_INDEX_GENERATION_REGISTRY_DIGEST,
-    RedbDormantPorts, RedbStore, SharedRedb,
+    PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST, RedbDormantPorts, RedbStore, SharedRedb,
 };
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
@@ -64,6 +65,8 @@ fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST)
+        || digest
+            == riffdb_types::SchemaHash::from_bytes(PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST)
@@ -189,7 +192,10 @@ pub struct RedbStructuralEvidenceSession {
     open_session_id: OpenSessionId,
     retained_metadata: RetainedMetadataV1,
     inputs: StartupValidationInputs,
+    /// Walk plan counts (full or suffix-adjusted under a verified checkpoint).
     structural_counts: [u64; STRUCTURAL_TABLE_COUNT],
+    /// Full table lens from the immutable snapshot (for below-S count verification).
+    full_structural_counts: [u64; STRUCTURAL_TABLE_COUNT],
     structural_total: u64,
     next_structural: StructuralEvidenceCursor,
     next_historical: HistoricalEvidenceCursor,
@@ -206,6 +212,14 @@ pub struct RedbStructuralEvidenceSession {
     /// Bounded cross-link findings for unconsumed/orphan chains (VecDeque: O(1) drain).
     pending_entity_orphan_findings: VecDeque<StructuralFinding>,
     historical_plan: Option<HistoricalEvidencePlan>,
+    /// Verified active checkpoint enabling prefix-skipping startup.
+    checkpoint: Option<crate::validated_prefix::ActiveCheckpoint>,
+    /// Rows inspected via deterministic sample windows (test observability).
+    sampled_window_rows_inspected: u64,
+    /// True when a checkpoint was verified and the fast path is active.
+    checkpoint_verified: bool,
+    /// Walked suffix rows for sequence-keyed tables (for below-S count checks).
+    walked_suffix_counts: [u64; STRUCTURAL_TABLE_COUNT],
 }
 
 /// Cached single-pass entity history state for the ENTITIES structural phase.
@@ -530,6 +544,54 @@ impl StructuralEvidenceOpen for RedbStore {
         }
         let database_id = snapshot.retained_metadata.database_id();
         let open_session_id = allocate_open_session()?;
+        let full_structural_counts = snapshot.structural_counts;
+        let mut structural_counts = snapshot.structural_counts;
+        let mut structural_total = snapshot.structural_total;
+        let mut checkpoint = None;
+        let mut checkpoint_verified = false;
+        let mut sampled_window_rows_inspected = 0_u64;
+        match crate::validated_prefix::load_active_checkpoint(
+            &transaction,
+            database_id,
+            snapshot.retained_metadata.history_incarnation(),
+            &full_structural_counts,
+        ) {
+            Ok(active) => {
+                let c = active.counts;
+                structural_counts[10] = full_structural_counts[10].saturating_sub(c.commits_count);
+                structural_counts[12] = full_structural_counts[12].saturating_sub(c.events_count);
+                structural_counts[14] = full_structural_counts[14].saturating_sub(c.outbox_count);
+                structural_counts[15] =
+                    full_structural_counts[15].saturating_sub(c.outbox_status_count);
+                structural_counts[21] = full_structural_counts[21].saturating_sub(c.audit_count);
+                // Execute existing inspect functions over deterministically sampled
+                // prefix windows (ADR-0085 sample policy). Findings fail closed.
+                let (inspected, sample_finding) = run_checkpoint_sample_windows(
+                    &transaction,
+                    &inputs,
+                    database_id,
+                    &active.checkpoint_hash,
+                    active.checkpoint_commit_sequence,
+                )?;
+                sampled_window_rows_inspected = inspected;
+                if sample_finding.is_some() {
+                    // Drop the fast path; the full pass re-emits the finding.
+                    structural_counts = full_structural_counts;
+                    structural_total = snapshot.structural_total;
+                    checkpoint = None;
+                    checkpoint_verified = false;
+                    sampled_window_rows_inspected = 0;
+                } else {
+                    structural_total =
+                        structural_counts.iter().try_fold(1u64, |total, count| {
+                            total.checked_add(*count).ok_or_else(limit_exceeded)
+                        })?;
+                    checkpoint = Some(active);
+                    checkpoint_verified = true;
+                }
+            }
+            Err(_reason) => {}
+        }
         Ok(Self::Session {
             shared: Arc::clone(&self.shared),
             lease: Some(lease),
@@ -538,8 +600,9 @@ impl StructuralEvidenceOpen for RedbStore {
             open_session_id,
             retained_metadata: snapshot.retained_metadata,
             inputs,
-            structural_counts: snapshot.structural_counts,
-            structural_total: snapshot.structural_total,
+            structural_counts,
+            full_structural_counts,
+            structural_total,
             next_structural: StructuralEvidenceCursor::start(database_id, open_session_id),
             next_historical: HistoricalEvidenceCursor::start(database_id, open_session_id),
             last_historical_key: None,
@@ -547,12 +610,15 @@ impl StructuralEvidenceOpen for RedbStore {
             historical_finished: false,
             authoritative_finding_seen: false,
             saw_v1_index: false,
-            // Hold one read transaction for the structural pass (savepoint pin).
             structural_read: Some(transaction),
             structural_cursors: None,
             entity_chains: None,
             pending_entity_orphan_findings: VecDeque::new(),
             historical_plan: None,
+            checkpoint,
+            sampled_window_rows_inspected,
+            checkpoint_verified,
+            walked_suffix_counts: [0; STRUCTURAL_TABLE_COUNT],
         })
     }
 }
@@ -589,6 +655,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
             if !self.pending_entity_orphan_findings.is_empty() {
                 return Err(invariant());
             }
+            self.verify_checkpoint_prefix_counts()?;
             self.structural_finished = true;
             self.structural_cursors = None;
             self.entity_chains = None;
@@ -828,6 +895,8 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 },
             ))
         } else {
+            let retained = self.retained_metadata.clone();
+            crate::validated_prefix::write_validated_prefix_checkpoint(&self.shared, &retained)?;
             drop(lease);
             Ok(StructuralOpenOutcome::Clean(
                 StructurallyOpened::from_finished_session(
@@ -921,10 +990,183 @@ impl RedbStructuralEvidenceSession {
         {
             counts[index + 1] = table_len(transaction, definition)?;
         }
-        if counts != self.structural_counts {
+        if counts != self.full_structural_counts {
+            return Err(corrupt());
+        }
+        if self.checkpoint.is_none() && counts != self.structural_counts {
             return Err(corrupt());
         }
         Ok(())
+    }
+
+    fn verify_checkpoint_prefix_counts(&self) -> Result<(), StorageError> {
+        let Some(checkpoint) = self.checkpoint.as_ref() else {
+            return Ok(());
+        };
+        let c = checkpoint.counts;
+        let checks = [
+            (10, c.commits_count),
+            (12, c.events_count),
+            (14, c.outbox_count),
+            (15, c.outbox_status_count),
+            (21, c.audit_count),
+        ];
+        for (phase, recorded_prefix) in checks {
+            let full = self.full_structural_counts[phase];
+            let walked = self.walked_suffix_counts[phase];
+            if self.structural_counts[phase] != walked {
+                return Err(corrupt());
+            }
+            if full.saturating_sub(walked) != recorded_prefix {
+                return Err(corrupt());
+            }
+        }
+        Ok(())
+    }
+
+    /// Test/benchmark observability: whether a verified checkpoint drove this session.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checkpoint_verified(&self) -> bool {
+        self.checkpoint_verified
+    }
+
+    /// Test observability: rows actually inspected by deterministic sample windows.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn sampled_window_rows_inspected(&self) -> u64 {
+        self.sampled_window_rows_inspected
+    }
+}
+
+/// Runs existing inspect functions over checkpoint-derived sample windows below S.
+///
+/// Returns `(rows_inspected, optional_first_finding)`. Same checkpoint hash ⇒ same windows.
+fn run_checkpoint_sample_windows(
+    transaction: &ReadTransaction,
+    inputs: &StartupValidationInputs,
+    database_id: DatabaseId,
+    checkpoint_hash: &[u8; 32],
+    s: u64,
+) -> Result<(u64, Option<StructuralFinding>), StorageError> {
+    use std::ops::Bound::{Included, Unbounded};
+
+    let _ = (inputs, database_id);
+    if s == 0 {
+        return Ok((0, None));
+    }
+    let starts = crate::validated_prefix::sample_window_starts(checkpoint_hash, s);
+    let mut inspected = 0_u64;
+    for start in starts {
+        if start == 0 || start > s {
+            continue;
+        }
+        let end_seq = start
+            .saturating_add(crate::validated_prefix::SAMPLE_WINDOW_SIZE)
+            .min(s.saturating_add(1));
+        let Some(lower_seq) = CommitSequence::new(start) else {
+            continue;
+        };
+        let lower_key = keys::encode_application_sequence_key(lower_seq);
+        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+        for entry in commits
+            .range::<&[u8]>((Included(lower_key.as_slice()), Unbounded))
+            .map_err(precommit_storage_error)?
+        {
+            let (key, value) = entry.map_err(precommit_storage_error)?;
+            let Ok(seq) = keys::decode_application_sequence_key(key.value()) else {
+                continue;
+            };
+            if seq.get() >= end_seq || seq.get() > s {
+                break;
+            }
+            inspected = inspected.saturating_add(1);
+            let index = seq.get().saturating_sub(1);
+            if let Some(finding) =
+                inspect_commit_row(transaction, index, key.value(), value.value())?
+            {
+                return Ok((inspected, Some(finding)));
+            }
+        }
+        drop(commits);
+
+        let lower_event = keys::encode_event_key(riffdb_types::EventId::new(lower_seq, 0));
+        let events = transaction.open_table(EVENTS).map_err(table_error)?;
+        for entry in events
+            .range::<&[u8]>((Included(lower_event.as_slice()), Unbounded))
+            .map_err(precommit_storage_error)?
+        {
+            let (key, value) = entry.map_err(precommit_storage_error)?;
+            let Ok(id) = keys::decode_event_key(key.value()) else {
+                continue;
+            };
+            if id.commit_sequence().get() >= end_seq || id.commit_sequence().get() > s {
+                break;
+            }
+            inspected = inspected.saturating_add(1);
+            if let Some(finding) = inspect_event_row(transaction, key.value(), value.value())? {
+                return Ok((inspected, Some(finding)));
+            }
+        }
+    }
+    Ok((inspected, None))
+}
+
+impl RedbStructuralEvidenceSession {
+    #[allow(clippy::type_complexity)]
+    fn open_structural_phase_range(
+        &self,
+        phase: usize,
+        table: ReadOnlyTable<&'static [u8], &'static [u8]>,
+    ) -> Result<(Range<'static, &'static [u8], &'static [u8]>, u64), StorageError> {
+        let Some(checkpoint) = self.checkpoint.as_ref() else {
+            let range = table.range::<&[u8]>(..).map_err(precommit_storage_error)?;
+            return Ok((range, 0));
+        };
+        let s = checkpoint.checkpoint_commit_sequence;
+        let audit_bound = checkpoint.audit_sequence_bound;
+        match phase {
+            10 if s > 0 => {
+                let key =
+                    keys::encode_application_sequence_key(CommitSequence::new(s).expect("s > 0"));
+                let range = table
+                    .range::<&[u8]>((Excluded(key.as_slice()), Unbounded))
+                    .map_err(precommit_storage_error)?;
+                Ok((range, checkpoint.counts.commits_count))
+            }
+            12 | 14 | 15 if s > 0 => {
+                if let Some(lower) = crate::validated_prefix::first_event_key_after(s) {
+                    let range = table
+                        .range::<&[u8]>((Included(lower.as_slice()), Unbounded))
+                        .map_err(precommit_storage_error)?;
+                    let offset = match phase {
+                        12 => checkpoint.counts.events_count,
+                        14 => checkpoint.counts.outbox_count,
+                        15 => checkpoint.counts.outbox_status_count,
+                        _ => 0,
+                    };
+                    Ok((range, offset))
+                } else {
+                    let range = table
+                        .range::<&[u8]>((Excluded(&[0xff_u8; 12][..]), Unbounded))
+                        .map_err(precommit_storage_error)?;
+                    Ok((range, 0))
+                }
+            }
+            21 if audit_bound > 0 => {
+                let key = keys::encode_audit_key(
+                    riffdb_types::AdministrationSequence::new(audit_bound).expect("bound > 0"),
+                );
+                let range = table
+                    .range::<&[u8]>((Excluded(key.as_slice()), Unbounded))
+                    .map_err(precommit_storage_error)?;
+                Ok((range, checkpoint.counts.audit_count))
+            }
+            _ => {
+                let range = table.range::<&[u8]>(..).map_err(precommit_storage_error)?;
+                Ok((range, 0))
+            }
+        }
     }
 
     fn inspect_structural_forward(
@@ -965,13 +1207,32 @@ impl RedbStructuralEvidenceSession {
         if phase == 5 {
             return self.inspect_entity_row_with_chains(&key, &value);
         }
+        if let Some(checkpoint) = self.checkpoint.as_ref()
+            && crate::validated_prefix::skip_inspect_for_prefix_row(
+                phase,
+                &key,
+                &value,
+                checkpoint.checkpoint_commit_sequence,
+                checkpoint.audit_sequence_bound,
+            )
+        {
+            return Ok(None);
+        }
+        let inspect_index = match (phase, self.checkpoint.as_ref()) {
+            (10, Some(cp)) => index.saturating_add(cp.counts.commits_count),
+            (21, Some(cp)) => index.saturating_add(cp.counts.audit_count),
+            _ => index,
+        };
+        if crate::validated_prefix::is_range_skipped_phase(phase) {
+            self.walked_suffix_counts[phase] = self.walked_suffix_counts[phase].saturating_add(1);
+        }
         let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
         inspect_table_row_from_bytes(
             transaction,
             &self.inputs,
             self.database_id,
             phase,
-            index,
+            inspect_index,
             &key,
             &value,
         )
@@ -981,7 +1242,7 @@ impl RedbStructuralEvidenceSession {
         if self.entity_chains.is_some() {
             return Ok(());
         }
-        let entity_count = self.structural_counts.get(5).copied().unwrap_or(0);
+        let entity_count = self.full_structural_counts.get(5).copied().unwrap_or(0);
         let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
         self.entity_chains = Some(build_entity_chains(transaction, entity_count)?);
         Ok(())
@@ -1225,7 +1486,7 @@ impl RedbStructuralEvidenceSession {
                         .map_err(table_error)?,
                     _ => return Err(invariant()),
                 };
-                let range = table.range::<&[u8]>(..).map_err(precommit_storage_error)?;
+                let (range, _prefix_count) = self.open_structural_phase_range(phase, table)?;
                 self.structural_cursors
                     .as_mut()
                     .ok_or_else(invariant)?
@@ -1437,6 +1698,12 @@ fn collect_startup_snapshot(
         structural_counts: counts,
         structural_total: total,
     })
+}
+
+pub(crate) fn read_retained_metadata_pub(
+    transaction: &ReadTransaction,
+) -> Result<RetainedMetadataV1, StorageError> {
+    read_retained_metadata(transaction)
 }
 
 fn read_retained_metadata(
@@ -1681,6 +1948,8 @@ fn inspect_meta_row(key: &str, value: &[u8], database_id: DatabaseId) -> Option<
         META_HISTORY_INCARNATION => decoded(codec::decode_history_incarnation_v1(value))
             .is_ok_and(|incarnation| incarnation >= 1),
         META_INDEX_EPOCH_ROWS_REPAIRED => value == [1u8].as_slice(),
+        // Optional checkpoint: invalid payloads must not produce structural findings.
+        META_VALIDATED_PREFIX_CHECKPOINT => true,
         _ => false,
     };
     (!valid).then(|| authoritative(StructuralFindingCode::MalformedRecord))
