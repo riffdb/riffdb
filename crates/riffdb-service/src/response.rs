@@ -20,8 +20,8 @@ use crate::{
     DiscoverCommandToolsResult, DiscoverCommandToolsResultRef, DiscoverResourcesResult,
     DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryCatalogStateRef, DurableEventView,
     EntityView, EventDescriptor, EventFieldDescriptor, EventPage, ExecuteCommandResult,
-    ExecuteSymbolicQueryResult, ExplainCommandResult, ExplainSymbolicQueryResult,
-    GeneratedSchemaIdentity, GetActiveContractResult, GetCommitResult,
+    ExecuteProjectedQueryResult, ExecuteSymbolicQueryResult, ExplainCommandResult,
+    ExplainSymbolicQueryResult, GeneratedSchemaIdentity, GetActiveContractResult, GetCommitResult,
     GetContractMigrationOperationResult, GetContractVersionResult, GetEntityResult,
     GetOfflineMaintenanceOperationResult, GetProjectionStatusResult, HealthReport, HealthResult,
     IndexRowView, IndexScanFence, JournaledCommandResult, ListPendingOutboxDeliveriesResult,
@@ -347,6 +347,77 @@ impl ServiceResponseCharge for ExecuteSymbolicQueryResult {
         }
         if self.next_cursor().is_some() {
             charge.bytes(crate::CURSOR_TOKEN_BYTES)?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for ExecuteProjectedQueryResult {}
+
+impl ServiceResponseCharge for ExecuteProjectedQueryResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(1)?;
+        match self {
+            Self::Ready {
+                fields,
+                field_ids: _,
+                primary_key_fields,
+                rows,
+                result,
+                frontier,
+                head,
+                commit_token,
+            } => {
+                charge.fields(fields.len().saturating_add(primary_key_fields.len()))?;
+                charge.bytes(frontier.as_bytes().len())?;
+                charge.bytes(head.as_bytes().len())?;
+                if let Some(token) = commit_token {
+                    charge.bytes(token.as_bytes().len())?;
+                }
+                for row in rows {
+                    for cell in &row.cells {
+                        charge.nested(cell)?;
+                    }
+                    for key in &row.primary_key {
+                        charge.nested(key)?;
+                    }
+                }
+                if result.is_some() {
+                    // Aggregate/group results are bounded by the query budget; charge a fixed reserve.
+                    charge.fields(4)?;
+                    charge.bytes(256)?;
+                }
+            }
+            Self::Lagging {
+                required,
+                current,
+                head,
+                ..
+            } => {
+                charge.fields(5)?;
+                charge.bytes(required.as_bytes().len())?;
+                charge.bytes(current.as_bytes().len())?;
+                charge.bytes(head.as_bytes().len())?;
+            }
+            Self::Building {
+                applied_through,
+                head,
+            } => {
+                charge.fields(2)?;
+                charge.bytes(applied_through.as_bytes().len())?;
+                charge.bytes(head.as_bytes().len())?;
+            }
+            Self::Rebuilding { .. } => charge.fields(3)?,
+            Self::Degraded {
+                current_frontier, ..
+            } => {
+                charge.fields(2)?;
+                charge.bytes(current_frontier.as_bytes().len())?;
+            }
+            Self::Invalid { .. } => charge.fields(2)?,
         }
         Ok(charge.finish())
     }

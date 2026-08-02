@@ -689,6 +689,9 @@ enum OperationKind {
     ExecuteAdHocQuery {
         target: ApplicationQueryTarget,
     },
+    ExecuteProjectedQuery {
+        target: ApplicationQueryTarget,
+    },
     ExplainNamedQuery {
         lineage: ContractLineage,
         module_hash: QueryModuleHash,
@@ -1033,6 +1036,17 @@ impl OperationRequest {
         Self(OperationKind::ExecuteAdHocQuery { target })
     }
 
+    /// Constructs one projected columnar query-execution request.
+    ///
+    /// Target synthesis reuses the application-query access requirement shape
+    /// (entity, non-key fields, partition, row limit, cost with access_steps==1).
+    /// Permission checks reuse the ad-hoc query kind so projected reads remain
+    /// principal-scoped without a separate capability permission registry entry.
+    #[must_use]
+    pub const fn execute_projected_query(target: ApplicationQueryTarget) -> Self {
+        Self(OperationKind::ExecuteProjectedQuery { target })
+    }
+
     /// Constructs one exact named-query explanation request.
     #[must_use]
     pub const fn explain_named_query(
@@ -1153,6 +1167,9 @@ impl OperationRequest {
             OperationKind::ExecuteAdHocQuery { .. } | OperationKind::ExecuteNamedQuery { .. } => {
                 ServiceOperationV1::ExecuteQuery
             }
+            OperationKind::ExecuteProjectedQuery { .. } => {
+                ServiceOperationV1::ExecuteProjectedQuery
+            }
             OperationKind::DeployQueryModule { .. } => ServiceOperationV1::DeployQueryModule,
             OperationKind::DescribeEvent { .. } => ServiceOperationV1::DescribeEvent,
             OperationKind::ReplayEvents { .. } => ServiceOperationV1::ReplayEvents,
@@ -1209,7 +1226,8 @@ impl OperationRequest {
             OperationKind::ExplainAdHocQuery => {
                 PermissionRequirement::Kind(Kind::ExplainAdHocQuery)
             }
-            OperationKind::ExecuteAdHocQuery { .. } => {
+            OperationKind::ExecuteAdHocQuery { .. }
+            | OperationKind::ExecuteProjectedQuery { .. } => {
                 PermissionRequirement::Kind(Kind::ExecuteAdHocQuery)
             }
             OperationKind::ExplainNamedQuery {
@@ -1327,7 +1345,8 @@ impl OperationRequest {
                 Some(&GLOBAL_ONLY_OPERATION_SCOPE)
             }
             OperationKind::ExecuteAdHocQuery { target }
-            | OperationKind::ExecuteNamedQuery { target, .. } => Some(&target.scope.tenant_scope),
+            | OperationKind::ExecuteNamedQuery { target, .. }
+            | OperationKind::ExecuteProjectedQuery { target } => Some(&target.scope.tenant_scope),
             _ => None,
         }
     }
@@ -1354,7 +1373,8 @@ impl OperationRequest {
                 PartitionRequirement::Exact(&scope.partition)
             }
             OperationKind::ExecuteAdHocQuery { target }
-            | OperationKind::ExecuteNamedQuery { target, .. } => {
+            | OperationKind::ExecuteNamedQuery { target, .. }
+            | OperationKind::ExecuteProjectedQuery { target } => {
                 PartitionRequirement::Exact(&target.scope.partition)
             }
             OperationKind::ScanIndex { .. } | OperationKind::QueryProjection { .. } => {
@@ -1438,7 +1458,8 @@ impl OperationRequest {
             | OperationKind::ScanIndex { .. }
             | OperationKind::QueryProjection { .. }
             | OperationKind::ExecuteAdHocQuery { .. }
-            | OperationKind::ExecuteNamedQuery { .. } => {
+            | OperationKind::ExecuteNamedQuery { .. }
+            | OperationKind::ExecuteProjectedQuery { .. } => {
                 OutputClassification::PolicyFilteredApplicationData
             }
             OperationKind::DeployContract { .. }
@@ -1497,7 +1518,8 @@ impl OperationRequest {
     pub(crate) const fn application_query_target(&self) -> Option<&ApplicationQueryTarget> {
         match &self.0 {
             OperationKind::ExecuteAdHocQuery { target }
-            | OperationKind::ExecuteNamedQuery { target, .. } => Some(target),
+            | OperationKind::ExecuteNamedQuery { target, .. }
+            | OperationKind::ExecuteProjectedQuery { target } => Some(target),
             _ => None,
         }
     }
@@ -1859,6 +1881,7 @@ mod tests {
             OperationRequest::check_ad_hoc_query(),
             OperationRequest::explain_ad_hoc_query(),
             OperationRequest::execute_ad_hoc_query(application_query_target()),
+            OperationRequest::execute_projected_query(application_query_target()),
             OperationRequest::explain_named_query(
                 lineage.clone(),
                 query_module_hash(),
@@ -1889,7 +1912,7 @@ mod tests {
     #[test]
     fn request_inventory_covers_every_shared_operation() {
         let requests = requests();
-        assert_eq!(requests.len(), 32);
+        assert_eq!(requests.len(), 33);
         // WP-408 needs the durable audit tag; WP-409 owns its public policy request.
         let policy_operations = ServiceOperationV1::ALL
             .into_iter()

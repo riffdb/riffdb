@@ -868,6 +868,15 @@ mod tests {
         );
     }
 
+    impl riffdb_service::ProjectedQueryApplication for ClosedApplicationService {
+        denied_operation!(
+            execute_projected_query,
+            RequestContext,
+            riffdb_service::ExecuteProjectedQueryRequest,
+            riffdb_service::ExecuteProjectedQueryResult
+        );
+    }
+
     impl CommitApplication for ClosedApplicationService {
         denied_operation!(
             get_commit,

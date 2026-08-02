@@ -187,11 +187,11 @@ impl SymbolicContractSelector {
         }
     }
 
-    fn selection(&self) -> &ContractSelection {
+    pub(crate) fn selection(&self) -> &ContractSelection {
         &self.selection
     }
 
-    fn matches(&self, bundle: &riffdb_catalog::ValidatedContractBundle) -> bool {
+    pub(crate) fn matches(&self, bundle: &riffdb_catalog::ValidatedContractBundle) -> bool {
         self.expected_hash
             .is_none_or(|expected| expected == bundle.bundle_hash())
     }

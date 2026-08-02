@@ -34,6 +34,7 @@ enum ApplicationOperation {
   APPLICATION_OPERATION_GET_QUERY_MODULE = 6;
   APPLICATION_OPERATION_EXECUTE_COMMAND = 7;
   APPLICATION_OPERATION_BATCH_COMMAND = 8;
+  APPLICATION_OPERATION_EXECUTE_PROJECTED_QUERY = 9;
 }
 
 enum ApplicationErrorCode {
@@ -282,6 +283,145 @@ message GetQueryModuleResponse {
   repeated NamedQuerySource queries = 2;
 }
 
+// --- Projected columnar query surface (ADR-0086 §2/§3/§7) ---
+
+// Opaque freshness policy. Tokens/frontiers are opaque bytes, never bare u64.
+message FreshnessPolicyProto {
+  oneof policy {
+    FreshnessCausal causal = 1;
+    FreshnessBounded bounded = 2;
+    FreshnessAvailable available = 3;
+  }
+}
+
+message FreshnessCausal {
+  // Opaque CommitToken bytes (riffdb-types::freshness).
+  bytes commit_token = 1;
+  uint64 max_wait_nanos = 2;
+}
+
+message FreshnessBounded {
+  uint64 max_lag_sequences = 1;
+}
+
+message FreshnessAvailable {}
+
+message ProjectedPredicate {
+  string field = 1;
+  oneof kind {
+    riffdb.v1.Value eq = 2;
+    ProjectedRange range = 3;
+  }
+}
+
+message ProjectedRange {
+  optional riffdb.v1.Value lower = 1;
+  optional riffdb.v1.Value upper = 2;
+  bool lower_inclusive = 3;
+  bool upper_inclusive = 4;
+}
+
+message ProjectedOrder {
+  string field = 1;
+  bool descending = 2;
+}
+
+message ProjectedAggregate {
+  string field = 1;
+  ProjectedAggregateOp op = 2;
+}
+
+enum ProjectedAggregateOp {
+  PROJECTED_AGGREGATE_OP_UNSPECIFIED = 0;
+  PROJECTED_AGGREGATE_OP_COUNT = 1;
+  PROJECTED_AGGREGATE_OP_SUM = 2;
+  PROJECTED_AGGREGATE_OP_MIN = 3;
+  PROJECTED_AGGREGATE_OP_MAX = 4;
+}
+
+message ProjectedQueryBody {
+  repeated string select = 1;
+  riffdb.v1.Value org_scope = 2;
+  repeated ProjectedPredicate predicates = 3;
+  repeated ProjectedOrder order = 4;
+  optional uint32 limit = 5;
+  repeated string group_by = 6;
+  optional ProjectedAggregate aggregate = 7;
+}
+
+message ExecuteProjectedQueryRequest {
+  optional ContractSelector contract = 1;
+  string projection_name = 2;
+  ProjectedQueryBody request = 3;
+  FreshnessPolicyProto freshness = 4;
+  bytes request_id = 100;
+}
+
+message ProjectedQueryReady {
+  repeated string fields = 1;
+  repeated ResultRecord rows = 2;
+  // Opaque ProjectionFrontier bytes.
+  bytes frontier = 3;
+  // Opaque ProjectionFrontier bytes for application head.
+  bytes head = 4;
+  // Opaque CommitToken for the served frontier (causal chaining).
+  bytes commit_token = 5;
+}
+
+message ProjectedQueryLagging {
+  bytes required = 1;
+  bytes current = 2;
+  bytes head = 3;
+  optional uint64 lag_sequences = 4;
+  optional uint64 retry_after_nanos = 5;
+}
+
+message ProjectedQueryBuilding {
+  bytes applied_through = 1;
+  bytes head = 2;
+}
+
+enum ProjectedRebuildingReason {
+  PROJECTED_REBUILDING_REASON_UNSPECIFIED = 0;
+  PROJECTED_REBUILDING_REASON_REPLAY_BUDGET_EXCEEDED = 1;
+  PROJECTED_REBUILDING_REASON_EXPLICIT_REBUILD = 2;
+  PROJECTED_REBUILDING_REASON_STATE_INTEGRITY_FAILURE = 3;
+}
+
+message ProjectedQueryRebuilding {
+  ProjectedRebuildingReason reason = 1;
+  uint64 progress_applied = 2;
+  uint64 progress_total = 3;
+}
+
+enum ProjectedDegradedReason {
+  PROJECTED_DEGRADED_REASON_UNSPECIFIED = 0;
+  PROJECTED_DEGRADED_REASON_APPLY_LAG_SLO = 1;
+  PROJECTED_DEGRADED_REASON_MAINTENANCE_BACKLOG = 2;
+  PROJECTED_DEGRADED_REASON_PARTIAL_INVENTORY = 3;
+}
+
+message ProjectedQueryDegraded {
+  ProjectedDegradedReason reason = 1;
+  bytes current = 2;
+}
+
+message ProjectedQueryInvalid {
+  bytes expected_fingerprint = 1;
+  bytes found_fingerprint = 2;
+}
+
+message ExecuteProjectedQueryResponse {
+  oneof outcome {
+    ProjectedQueryReady ready = 1;
+    ProjectedQueryLagging lagging = 2;
+    ProjectedQueryBuilding building = 3;
+    ProjectedQueryRebuilding rebuilding = 4;
+    ProjectedQueryDegraded degraded = 5;
+    ProjectedQueryInvalid invalid = 6;
+  }
+}
+
 service ApplicationQueryService {
   rpc DescribeContract(DescribeContractRequest) returns (DescribeContractResponse);
   rpc CheckQuery(CheckQueryRequest) returns (CheckQueryResponse);
@@ -289,4 +429,5 @@ service ApplicationQueryService {
   rpc ExecuteQuery(ExecuteQueryRequest) returns (ExecuteQueryResponse);
   rpc DeployQueryModule(DeployQueryModuleRequest) returns (DeployQueryModuleResponse);
   rpc GetQueryModule(GetQueryModuleRequest) returns (GetQueryModuleResponse);
+  rpc ExecuteProjectedQuery(ExecuteProjectedQueryRequest) returns (ExecuteProjectedQueryResponse);
 }

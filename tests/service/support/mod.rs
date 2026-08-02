@@ -18,6 +18,10 @@ use riffdb_catalog::{
     ValidatedQueryModule, prepare_catalog_activation, resolve_executable_plan,
     validate_catalog_history,
 };
+use riffdb_columnar::{
+    ColumnarEngine, ColumnarOutcome, ColumnarProjectionDefinition,
+    OpenOptions as ColumnarOpenOptions, RegisteredDefinition, SortDirection,
+};
 use riffdb_commit::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
     ApplicationCommitNotificationError, ApplicationCommitNotificationSink,
@@ -69,6 +73,12 @@ use riffdb_service::{
     ServiceTelemetryEvent, SourceName, SubmittedRecord, TraceProvenanceRequest,
     ValidateContractRequest, port_completion_channel,
 };
+use riffdb_service::{
+    ColumnarLifecycle, ColumnarNotifier, ColumnarObservation, ColumnarPortError,
+    ColumnarProjectionPort, ExecuteProjectedQueryRequest, ExecuteSymbolicQueryRequest,
+    ProjectedColumnPredicate, ProjectedOrderSpec, ProjectedQueryBody, SubmittedEnum,
+    SubmittedValue, SymbolicContractSelector, SymbolicQueryParameters, SymbolicQuerySource,
+};
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, AdministrationAuditReader, AdministrationAuditScan,
     AdministrationAuditScanRequest, AuditPrincipalV1, CatalogActivationIntentV1,
@@ -79,7 +89,8 @@ use riffdb_storage_api::{
     StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
     StructuralEvidenceSession, StructuralOpenOutcome,
 };
-use riffdb_storage_redb::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
+use riffdb_storage_api::{AuthoritativeScanReader, CommitScanRequest};
+use riffdb_storage_redb::{RedbDormantPorts, RedbOperationalPorts, RedbSharedPorts, RedbStore};
 use riffdb_testkit::authorization::{
     AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
 };
@@ -88,13 +99,14 @@ use riffdb_types::{
     CanonicalRecord, CanonicalString, CanonicalValue, CapabilityGrantV1, CapabilityId,
     CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1, CommitSequence,
     ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, Decimal, DecimalSpec,
-    DigestKeyId, EntityKey, EntityKeyBuilder, EntityVersion, Environment, EventId,
-    FrontierPosition, IdempotencyKey, IncidentId, IndexEntryKey, IndexEntryKeyBuilder, IndexEpoch,
-    IndexEpochPosition, LogicalTime, MAX_STRING_BYTES, OutcomeId, PartitionKey,
-    PartitionKeyBuilder, PartitionKeyHash, PartitionScopeV1, ProjectionGeneration, ProjectionId,
-    ProjectionIdentity, ProvenanceId, RequestId, RevocationReasonCodeV1, ScopedPartitionV1,
-    ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceAuditTargetsV1, ServiceIngressKindV1,
-    ServiceOperationV1, TenantId, TenantScope, Timestamp,
+    DigestKeyId, EntityKey, EntityKeyBuilder, EntityVersion, Environment, EventId, FieldId,
+    FreshnessPolicy, FrontierPosition, IdempotencyKey, IncidentId, IndexEntryKey,
+    IndexEntryKeyBuilder, IndexEpoch, IndexEpochPosition, LogicalTime, MAX_STRING_BYTES, OutcomeId,
+    PartitionKey, PartitionKeyBuilder, PartitionKeyHash, PartitionScopeV1, ProjectionFrontier,
+    ProjectionGeneration, ProjectionId, ProjectionIdentity, ProvenanceId, RequestId,
+    RevocationReasonCodeV1, ScopedPartitionV1, ServiceAuditPhaseV1, ServiceAuditTargetV1,
+    ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1, TenantId, TenantScope,
+    Timestamp,
 };
 use tokio::sync::Notify;
 
@@ -155,6 +167,7 @@ pub(crate) struct ServiceHarness {
     pub(crate) ports: Arc<HarnessPorts>,
     pub(crate) telemetry: Arc<HarnessTelemetry>,
     pub(crate) health: Arc<HarnessHealth>,
+    pub(crate) columnar: Option<Arc<HarnessColumnar>>,
     deadline_scheduler: Arc<HarnessDeadlineScheduler>,
     cursor_tokens: Arc<SequentialCursorTokens>,
     pre_bootstrap: PreBootstrapHealthContextIssuer,
@@ -478,6 +491,7 @@ impl ServiceHarness {
             ports,
             telemetry,
             health,
+            columnar: None,
             deadline_scheduler,
             cursor_tokens,
             pre_bootstrap,
@@ -2601,6 +2615,7 @@ struct HarnessPortState {
     historical_bundles:
         Mutex<BTreeMap<(ContractLineage, ContractVersion), ValidatedContractBundle>>,
     executable_plan: ResolvedExecutablePlan,
+    additional_plans: Mutex<Vec<ResolvedExecutablePlan>>,
     prepare_active_mode: AtomicU8,
     prepare_active_calls: AtomicUsize,
     active_catalog_reservations: AtomicUsize,
@@ -2679,6 +2694,7 @@ impl HarnessPorts {
                 active_catalog: Mutex::new(active_catalog),
                 historical_bundles: Mutex::new(historical_bundles),
                 executable_plan,
+                additional_plans: Mutex::new(Vec::new()),
                 prepare_active_mode: AtomicU8::new(CATALOG_READY),
                 prepare_active_calls: AtomicUsize::new(0),
                 active_catalog_reservations: AtomicUsize::new(0),
@@ -2735,6 +2751,14 @@ impl HarnessPorts {
                 discovery_order,
             }),
         }
+    }
+
+    fn install_additional_plan(&self, plan: ResolvedExecutablePlan) {
+        self.shared
+            .additional_plans
+            .lock()
+            .expect("additional plans mutex")
+            .push(plan);
     }
 
     fn set_active_catalog_reservation_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
@@ -3910,20 +3934,29 @@ impl CatalogReadPort for HarnessPorts {
             .shared
             .panic_executable_plan
             .swap(false, Ordering::AcqRel);
-        let resolved = self.shared.executable_plan.clone();
-        let reference = resolved.reference();
-        let matches = request.lineage() == reference.contract_lineage()
-            && request.version() == reference.contract_version()
-            && request.bundle_hash() == reference.contract_bundle_hash()
-            && request.command_id() == reference.command_id()
-            && request.plan_hash() == reference.command_plan_hash();
+        let request_matches = |resolved: &ResolvedExecutablePlan| {
+            let reference = resolved.reference();
+            request.lineage() == reference.contract_lineage()
+                && request.version() == reference.contract_version()
+                && request.bundle_hash() == reference.contract_bundle_hash()
+                && request.command_id() == reference.command_id()
+                && request.plan_hash() == reference.command_plan_hash()
+        };
+        let mut matched = request_matches(&self.shared.executable_plan)
+            .then(|| self.shared.executable_plan.clone());
+        if matched.is_none() {
+            matched = self
+                .shared
+                .additional_plans
+                .lock()
+                .expect("additional plans mutex")
+                .iter()
+                .find(|candidate| request_matches(candidate))
+                .cloned();
+        }
         Box::pin(async move {
             assert!(!panic, "injected executable-plan resolution panic");
-            if matches {
-                Ok(resolved)
-            } else {
-                Err(CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))
-            }
+            matched.ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))
         })
     }
 
@@ -4567,4 +4600,795 @@ fn uuid_bytes(seed: u8) -> [u8; 16] {
     bytes[6] = 0x70 | (seed & 0x0f);
     bytes[8] = 0x80 | (seed & 0x3f);
     bytes
+}
+
+// ---------------------------------------------------------------------------
+// CP2b board acceptance harness: real ticketdesk-shaped contract, real
+// coordinator/storage, real columnar apply, real policy. No mocks on the
+// write path, the apply path, the symbolic read path, or revocation.
+// ---------------------------------------------------------------------------
+
+/// Ticketdesk board shape replicated for the service acceptance spine
+/// (`examples/` is out of tree for tests; the CP2a precedent replicated the
+/// same key shape as `BOARD_KEY_CONTRACT`). `Ticket` keeps the REAL board key
+/// `(organization_id: uuid, ticket_id: uuid)`, the real board fields, the
+/// real `TicketStatus` enum, and the real `by_project_status` index the
+/// compiled board_page queries plan against. `Note` is the interleaved
+/// irrelevant entity.
+const TICKETDESK_BOARD_SOURCE: &str = r#"
+contract TicketDeskBoard version 1 {
+  enum TicketStatus { Open, InProgress, Closed }
+
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field project_id: uuid
+    field reporter_id: uuid
+    field assignee_id: uuid
+    field status: TicketStatus
+    field title: string<128>
+    index by_project_status (organization_id, project_id, status, ticket_id)
+  }
+
+  entity Note {
+    key (organization_id: uuid, note_id: uuid)
+    field body: string<128>
+  }
+
+  aggregate Tickets {
+    root Ticket
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+
+  aggregate Notes {
+    root Note
+    partition_by organization_id
+    conflict_key (organization_id, note_id)
+  }
+
+  command CreateTicket {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input ticket_id: uuid
+    input project_id: uuid
+    input reporter_id: uuid
+    input assignee_id: uuid
+    input status: TicketStatus
+    input title: string<128>
+    idempotency_key idempotency_key
+    create Ticket(organization_id, ticket_id) as ticket
+      else TicketExists { ticket_id: ticket_id }
+    set ticket.project_id = project_id
+    set ticket.reporter_id = reporter_id
+    set ticket.assignee_id = assignee_id
+    set ticket.status = status
+    set ticket.title = title
+    return Created { ticket: ticket }
+  }
+
+  command CreateNote {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input note_id: uuid
+    input body: string<128>
+    idempotency_key idempotency_key
+    create Note(organization_id, note_id) as note
+      else NoteExists { note_id: note_id }
+    set note.body = body
+    return NoteCreated { note: note }
+  }
+}
+"#;
+
+/// The compiled-path query: the exact `board_page_50.riffq` shape over the
+/// replicated contract (parameters typed against `Ticket` because the trimmed
+/// fixture has no separate `Organization`/`Project` entities).
+const BOARD_PAGE_QUERY: &str = r#"
+query BoardPage(
+    $organization_id: Ticket.organization_id,
+    $project_id: Ticket.project_id,
+    $status: TicketStatus,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == $status
+        order by ticket_id asc
+        take 50
+
+    return Found {
+        tickets: tickets {
+            ticket_id
+            project_id
+            title
+            status
+            reporter_id
+            assignee_id
+        }
+    }
+
+    outcomes Found
+}
+"#;
+
+pub(crate) const BOARD_PROJECTION_NAME: &str = "board";
+pub(crate) const BOARD_HISTORY_INCARNATION: u64 = 1;
+/// Board select order used by the projected path (ticket_id arrives via PK).
+pub(crate) const BOARD_SELECT: [&str; 5] = [
+    "project_id",
+    "title",
+    "status",
+    "reporter_id",
+    "assignee_id",
+];
+
+/// Resolves one field id on a board-contract entity by source name.
+pub(crate) fn board_field_id(bundle: &ContractBundle, entity: &str, field: &str) -> FieldId {
+    let entity = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|candidate| candidate.name() == entity)
+        .expect("board entity");
+    entity
+        .record()
+        .fields()
+        .iter()
+        .find(|candidate| candidate.name() == field)
+        .map(riffdb_contract_ir::FieldSchema::id)
+        .expect("board field")
+}
+
+/// Canonical `TicketStatus` enum value for one variant source name.
+pub(crate) fn ticket_status_value(bundle: &ContractBundle, variant: &str) -> CanonicalValue {
+    let ticket_status = bundle
+        .schema()
+        .enums()
+        .iter()
+        .find(|candidate| candidate.name() == "TicketStatus")
+        .expect("TicketStatus enum");
+    let variant = ticket_status
+        .variants()
+        .iter()
+        .find(|candidate| candidate.name() == variant)
+        .expect("TicketStatus variant");
+    CanonicalValue::Enum {
+        type_id: ticket_status.id(),
+        variant_id: variant.id(),
+    }
+}
+
+fn board_ticket_input(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    organization_id: [u8; 16],
+) -> CanonicalRecord {
+    input_record(
+        plan.input().record(),
+        [
+            (
+                "idempotency_key",
+                CanonicalValue::string(COMMAND_CALLER_KEY).expect("bounded idempotency key"),
+            ),
+            ("organization_id", CanonicalValue::Uuid(organization_id)),
+            ("ticket_id", CanonicalValue::Uuid(uuid_bytes(0x9c))),
+            ("project_id", CanonicalValue::Uuid(uuid_bytes(0x51))),
+            ("reporter_id", CanonicalValue::Uuid(uuid_bytes(0x52))),
+            ("assignee_id", CanonicalValue::Uuid(uuid_bytes(0x53))),
+            ("status", ticket_status_value(bundle, "Open")),
+            (
+                "title",
+                CanonicalValue::string("seed").expect("bounded title"),
+            ),
+        ],
+    )
+}
+
+fn board_projection_directory() -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "riffdb-service-board-{}-{}",
+        std::process::id(),
+        NEXT_PATH.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).expect("create board projection directory");
+    path
+}
+
+impl AuditDatabase {
+    /// Board-contract twin of [`AuditDatabase::create`]; also resolves the
+    /// `CreateNote` plan so irrelevant-entity commands run through the same
+    /// real coordinator.
+    fn create_board() -> (Self, ResolvedExecutablePlan) {
+        let path = next_database_path();
+        let mut store = RedbStore::open(&path).expect("create board harness database");
+        assert_eq!(
+            store
+                .initialize_database(database_id())
+                .expect("initialize board harness database"),
+            DatabaseInitializationResult::Installed(database_id())
+        );
+        let source = TICKETDESK_BOARD_SOURCE.to_owned();
+        let checked_bundle = ValidatedContractBundle::from_compiler_bundle(
+            compile_contract_source(&source).expect("compile board contract"),
+        )
+        .expect("validate board contract");
+        let mut ports = open_operational(store);
+        let stored_bundle = checked_bundle.to_stored().expect("encode board bundle");
+        let activation = ports
+            .activate_catalog(&CatalogActivationIntentV1::new(
+                None,
+                stored_bundle.clone(),
+                request_id(0x67),
+                catalog_principal(),
+                timestamp(BASE_SECONDS + 1),
+                None,
+            ))
+            .expect("activate board catalog");
+        assert!(matches!(
+            activation,
+            CatalogActivationResult::Activated { active, .. }
+                if active == ActiveCatalogPointerV1::from_bundle(&stored_bundle)
+        ));
+        let active_catalog = ActiveCatalogSnapshot::read(&ports)
+            .expect("read active board catalog")
+            .expect("board catalog is active");
+        let resolve = |name: &str, ports: &RedbOperationalPorts| {
+            let command = active_catalog
+                .bundle()
+                .bundle()
+                .commands()
+                .iter()
+                .find(|plan| plan.name() == name)
+                .unwrap_or_else(|| panic!("{name} command"));
+            let reference = ExecutablePlanRef::new(
+                checked_bundle.lineage().clone(),
+                checked_bundle.contract_version(),
+                checked_bundle.bundle_hash(),
+                command.command_id(),
+                command.plan_hash(),
+            );
+            resolve_executable_plan(ports, &reference)
+                .unwrap_or_else(|_| panic!("resolve {name} plan"))
+        };
+        let executable_plan = resolve("CreateTicket", &ports);
+        let note_plan = resolve("CreateNote", &ports);
+        let command = active_catalog
+            .bundle()
+            .bundle()
+            .commands()
+            .iter()
+            .find(|plan| plan.name() == "CreateTicket")
+            .expect("CreateTicket command");
+        let bundle = active_catalog.bundle().bundle();
+        let command_input = board_ticket_input(bundle, command, ORGANIZATION_ID);
+        let partition = derive_input_command_facts(command, command_input.clone())
+            .expect("derive board partition")
+            .partition_key()
+            .clone();
+        let alternate_partition = derive_input_command_facts(
+            command,
+            board_ticket_input(bundle, command, ALTERNATE_ORGANIZATION_ID),
+        )
+        .expect("derive alternate board partition")
+        .partition_key()
+        .clone();
+        drop(ports);
+        (
+            Self {
+                path,
+                source,
+                active_catalog,
+                executable_plan,
+                command_input,
+                partition,
+                alternate_partition,
+            },
+            note_plan,
+        )
+    }
+}
+
+/// Real columnar runtime for the board harness: one real [`ColumnarEngine`]
+/// applying from the SAME live redb database the coordinator commits to, a
+/// real [`ColumnarNotifier`], and a dedicated apply thread mirroring the
+/// server worker pass (apply, publish, notify-on-publication).
+pub(crate) struct HarnessColumnar {
+    engine: Arc<Mutex<ColumnarEngine>>,
+    definition: RegisteredDefinition,
+    notifier: ColumnarNotifier,
+    names: Vec<String>,
+    shared: RedbSharedPorts,
+    directory: PathBuf,
+    apply_enabled: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    last_apply_error: Arc<Mutex<Option<String>>>,
+}
+
+impl HarnessColumnar {
+    fn start(bundle: &ContractBundle, shared: RedbSharedPorts) -> Arc<Self> {
+        let ticket = |field: &str| board_field_id(bundle, "Ticket", field);
+        let definition = RegisteredDefinition::register(
+            ColumnarProjectionDefinition {
+                name: BOARD_PROJECTION_NAME.into(),
+                entity_name: "Ticket".into(),
+                projected_fields: vec![
+                    ticket("project_id"),
+                    ticket("reporter_id"),
+                    ticket("assignee_id"),
+                    ticket("status"),
+                    ticket("title"),
+                ],
+                org_scope_field: ticket("organization_id"),
+            },
+            bundle,
+        )
+        .expect("register board projection");
+        let directory = board_projection_directory();
+        let engine = ColumnarEngine::open(
+            definition.clone(),
+            ColumnarOpenOptions::new(directory.clone())
+                .with_history_incarnation(BOARD_HISTORY_INCARNATION),
+        )
+        .expect("open board columnar engine");
+        let engine = Arc::new(Mutex::new(engine));
+        let notifier = ColumnarNotifier::from_names([BOARD_PROJECTION_NAME.to_owned()]);
+        let apply_enabled = Arc::new(AtomicBool::new(true));
+        let stop = Arc::new(AtomicBool::new(false));
+        let last_apply_error = Arc::new(Mutex::new(None));
+        let worker = {
+            let engine = Arc::clone(&engine);
+            let shared = shared.clone();
+            let notifier = notifier.clone();
+            let apply_enabled = Arc::clone(&apply_enabled);
+            let stop = Arc::clone(&stop);
+            let last_apply_error = Arc::clone(&last_apply_error);
+            std::thread::Builder::new()
+                .name("service-harness-columnar".to_owned())
+                .spawn(move || {
+                    while !stop.load(Ordering::Acquire) {
+                        if apply_enabled.load(Ordering::Acquire) {
+                            let published_changed = {
+                                let mut engine = engine.lock().expect("board engine mutex");
+                                let before = engine.published_frontier_position();
+                                if let Err(error) = engine.apply_available(&shared) {
+                                    *last_apply_error.lock().expect("apply error mutex") =
+                                        Some(format!("{error:?}"));
+                                }
+                                engine.published_frontier_position() != before
+                            };
+                            // Engine lock released before notifying waiters.
+                            if published_changed {
+                                let _ = notifier.notify(BOARD_PROJECTION_NAME);
+                            }
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                })
+                .expect("spawn board columnar worker")
+        };
+        Arc::new(Self {
+            engine,
+            definition,
+            notifier,
+            names: vec![BOARD_PROJECTION_NAME.to_owned()],
+            shared,
+            directory,
+            apply_enabled,
+            stop,
+            worker: Mutex::new(Some(worker)),
+            last_apply_error,
+        })
+    }
+
+    fn read_head(&self) -> Result<FrontierPosition, ColumnarPortError> {
+        let limit = StorageScanLimit::new(1).ok_or(ColumnarPortError::Integrity)?;
+        let page =
+            AuthoritativeScanReader::scan_commits(&self.shared, CommitScanRequest::initial(limit))
+                .map_err(|_| ColumnarPortError::Unavailable)?;
+        Ok(page.inclusive_upper())
+    }
+
+    /// Pauses/resumes the real apply thread (freshness matrix control).
+    pub(crate) fn set_apply_enabled(&self, enabled: bool) {
+        self.apply_enabled.store(enabled, Ordering::Release);
+    }
+
+    /// Current published frontier position of the board engine.
+    pub(crate) fn published_position(&self) -> FrontierPosition {
+        self.engine
+            .lock()
+            .expect("board engine mutex")
+            .published_frontier_position()
+    }
+
+    /// Current application head position read from live storage.
+    pub(crate) fn head_position(&self) -> FrontierPosition {
+        self.read_head().expect("read board application head")
+    }
+
+    /// Panics if the real apply thread has recorded a failure.
+    pub(crate) fn assert_no_apply_error(&self) {
+        let error = self.last_apply_error.lock().expect("apply error mutex");
+        assert!(error.is_none(), "board apply failed: {error:?}");
+    }
+
+    /// Blocks until the published frontier covers `sequence` or panics after
+    /// `timeout` (real apply must catch up on its own).
+    pub(crate) fn wait_until_applied(&self, sequence: CommitSequence, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        loop {
+            self.assert_no_apply_error();
+            if self.published_position() >= FrontierPosition::AppliedThrough(sequence) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "board apply did not reach the requested sequence within {timeout:?}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+impl Drop for HarnessColumnar {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.lock().expect("board worker mutex").take() {
+            let _ = worker.join();
+        }
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
+impl ColumnarProjectionPort for HarnessColumnar {
+    fn observe(&self, projection_name: &str) -> Result<ColumnarObservation, ColumnarPortError> {
+        if projection_name != BOARD_PROJECTION_NAME {
+            return Err(ColumnarPortError::Integrity);
+        }
+        // Head from storage without holding the engine lock (adapter shape).
+        let head_position = self.read_head()?;
+        let head = ProjectionFrontier::new(BOARD_HISTORY_INCARNATION, head_position);
+        let observation = {
+            let engine = self
+                .engine
+                .lock()
+                .map_err(|_| ColumnarPortError::Unavailable)?;
+            let definition = engine.definition().clone();
+            let snapshot = engine.published_snapshot();
+            let published_frontier = engine.published_frontier();
+            let outcome = engine.outcome(head_position);
+            let (has_published, lifecycle) = map_columnar_outcome(&outcome);
+            ColumnarObservation::new(
+                definition,
+                snapshot,
+                published_frontier,
+                head,
+                has_published,
+                lifecycle,
+            )
+        };
+        // Engine lock dropped before return; callers query the Arc snapshot.
+        Ok(observation)
+    }
+
+    fn definition(&self, projection_name: &str) -> Option<RegisteredDefinition> {
+        (projection_name == BOARD_PROJECTION_NAME).then(|| self.definition.clone())
+    }
+
+    fn notifier(&self) -> &ColumnarNotifier {
+        &self.notifier
+    }
+
+    fn known_names(&self) -> &[String] {
+        &self.names
+    }
+}
+
+fn map_columnar_outcome(outcome: &ColumnarOutcome) -> (bool, Option<ColumnarLifecycle>) {
+    match outcome {
+        ColumnarOutcome::Building(_) => (false, Some(ColumnarLifecycle::Building)),
+        ColumnarOutcome::Ready(_) | ColumnarOutcome::Lagging(_) => {
+            (true, Some(ColumnarLifecycle::Ready))
+        }
+        ColumnarOutcome::Invalid(invalid) => (
+            false,
+            Some(ColumnarLifecycle::Invalid {
+                expected_fingerprint: invalid.expected_fingerprint,
+                found_fingerprint: invalid.found_fingerprint,
+            }),
+        ),
+        ColumnarOutcome::Rebuilding(rebuilding) => (
+            true,
+            Some(ColumnarLifecycle::Rebuilding {
+                reason: rebuilding.reason,
+                progress_applied: rebuilding.progress_applied,
+                progress_total: rebuilding.progress_total,
+            }),
+        ),
+        ColumnarOutcome::Degraded(degraded) => (
+            true,
+            Some(ColumnarLifecycle::Degraded {
+                reason: degraded.reason,
+            }),
+        ),
+    }
+}
+
+impl ServiceHarness {
+    /// Board acceptance harness: real coordinator + real redb storage + real
+    /// symbolic executor over that storage + real columnar apply + real policy.
+    pub(crate) fn columnar_board() -> Self {
+        let (database, note_plan) = AuditDatabase::create_board();
+        let command_reference = database.executable_plan.reference();
+        let capability_order = Arc::new(Mutex::new(Vec::new()));
+        let discovery_order = Arc::new(Mutex::new(Vec::new()));
+        let policy = Arc::new(HarnessPolicy::new(
+            false,
+            command_reference,
+            ProjectionId::new(1).expect("nonzero synthetic projection id"),
+            PartitionScopeV1::All,
+            true,
+            database.active_catalog.bundle().bundle(),
+            database.alternate_partition.clone(),
+            true,
+            Arc::clone(&capability_order),
+            Arc::clone(&discovery_order),
+            Vec::new(),
+        ));
+        let ports = Arc::new(HarnessPorts::new(
+            ReadCommitMode::ImmediateNotFound,
+            database.active_catalog.clone(),
+            database.executable_plan.clone(),
+            capability_order,
+            discovery_order,
+        ));
+        ports.install_additional_plan(note_plan);
+        let operational = database.open();
+        // Live pure-read handle over the SAME activated database instance the
+        // coordinator mutates: symbolic reads and columnar apply share it.
+        let shared = operational.shared_ports();
+        let coordinator = start_coordinator_with_capacity(operational, 8);
+        let inspector = coordinator.command_idempotency_inspector(Arc::new(FixedDigestProvider));
+        let executors = ServiceExecutors::new(
+            coordinator.administration_audit_executor(),
+            coordinator.control_plane_executor(),
+            coordinator.command_executor(),
+            inspector,
+        );
+        let telemetry = Arc::new(HarnessTelemetry::default());
+        let health = Arc::new(HarnessHealth::default());
+        let deadline_scheduler = Arc::new(HarnessDeadlineScheduler::default());
+        let cursor_tokens = Arc::new(SequentialCursorTokens::default());
+        let columnar =
+            HarnessColumnar::start(database.active_catalog.bundle().bundle(), shared.clone());
+        let providers = ServiceProviders::new(
+            Arc::clone(&ports) as Arc<dyn CatalogReadPort>,
+            Arc::clone(&policy) as Arc<dyn riffdb_service::CurrentPolicyPort>,
+            Arc::clone(&ports) as Arc<dyn AuthoritativeReadPort>,
+            Arc::clone(&ports) as Arc<dyn ProjectionQueryPort>,
+            Some(Arc::clone(&ports) as Arc<dyn OutboxStatusPort>),
+            Arc::clone(&ports) as Arc<dyn OperationalStatusPort>,
+            Arc::clone(&ports) as Arc<dyn CapabilityTokenIssuer>,
+            Arc::new(HarnessIncidentIds::new(false)),
+            Arc::new(HarnessDiagnostics),
+            Arc::clone(&telemetry) as Arc<dyn ServiceTelemetry>,
+            Arc::clone(&health) as Arc<dyn ServiceHealthHooks>,
+            Arc::new(TokioSpawner),
+            Arc::clone(&deadline_scheduler) as Arc<dyn RequestDeadlineScheduler>,
+            Arc::clone(&cursor_tokens) as Arc<dyn CursorTokenGenerator>,
+            Arc::new(FixedCursorClock),
+        )
+        .with_query_executor(Arc::new(shared) as Arc<dyn riffdb_query_executor::QueryExecutionPort>)
+        .with_columnar(Arc::clone(&columnar) as Arc<dyn ColumnarProjectionPort>);
+        let identity = ServiceIdentity::new(
+            database_id(),
+            environment(),
+            AgentSessionAdmissionPolicy::Discard,
+            BOARD_HISTORY_INCARNATION,
+        );
+        let process = ServiceProcessMetadata::new(
+            timestamp(BASE_SECONDS),
+            BuildInfo::new(
+                "0.1.0-test",
+                "service-harness",
+                "rustc-1.97.0",
+                Vec::new(),
+                1,
+                1,
+                "2025-03-26",
+            )
+            .expect("bounded build metadata"),
+        );
+        let (service, pre_bootstrap) =
+            RiffDbService::compose(identity, process, executors, providers);
+        Self {
+            service,
+            policy,
+            ports,
+            telemetry,
+            health,
+            columnar: Some(columnar),
+            deadline_scheduler,
+            cursor_tokens,
+            pre_bootstrap,
+            coordinator: Some(coordinator),
+            database,
+        }
+    }
+
+    /// Real columnar runtime attached by [`ServiceHarness::columnar_board`].
+    pub(crate) fn board_columnar(&self) -> &Arc<HarnessColumnar> {
+        self.columnar
+            .as_ref()
+            .expect("harness was composed with columnar_board")
+    }
+
+    /// Active board contract bundle.
+    pub(crate) fn board_bundle(&self) -> &ContractBundle {
+        self.database.active_catalog.bundle().bundle()
+    }
+
+    /// Canonical `TicketStatus` value by variant name.
+    pub(crate) fn board_status(&self, variant: &str) -> CanonicalValue {
+        ticket_status_value(self.board_bundle(), variant)
+    }
+
+    /// One real CreateTicket command request.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn create_ticket_request(
+        &self,
+        caller_key: &str,
+        organization_id: [u8; 16],
+        ticket_id: [u8; 16],
+        project_id: [u8; 16],
+        reporter_id: [u8; 16],
+        assignee_id: [u8; 16],
+        status: &str,
+        title: &str,
+    ) -> ExecuteCommandRequest {
+        let bundle = self.board_bundle();
+        let plan = bundle
+            .commands()
+            .iter()
+            .find(|plan| plan.name() == "CreateTicket")
+            .expect("CreateTicket plan");
+        let input = input_record(
+            plan.input().record(),
+            [
+                (
+                    "idempotency_key",
+                    CanonicalValue::string(caller_key).expect("bounded idempotency key"),
+                ),
+                ("organization_id", CanonicalValue::Uuid(organization_id)),
+                ("ticket_id", CanonicalValue::Uuid(ticket_id)),
+                ("project_id", CanonicalValue::Uuid(project_id)),
+                ("reporter_id", CanonicalValue::Uuid(reporter_id)),
+                ("assignee_id", CanonicalValue::Uuid(assignee_id)),
+                ("status", ticket_status_value(bundle, status)),
+                (
+                    "title",
+                    CanonicalValue::string(title).expect("bounded title"),
+                ),
+            ],
+        );
+        ExecuteCommandRequest::new(
+            SourceName::new("CreateTicket").expect("checked command name"),
+            Some(self.database.executable_plan.reference().contract_version()),
+            SubmittedRecord::try_from(input).expect("bounded ticket input"),
+        )
+        .expect("bounded ticket request")
+    }
+
+    /// One real CreateNote command request (irrelevant interleaved entity).
+    pub(crate) fn create_note_request(
+        &self,
+        caller_key: &str,
+        organization_id: [u8; 16],
+        note_id: [u8; 16],
+        body: &str,
+    ) -> ExecuteCommandRequest {
+        let bundle = self.board_bundle();
+        let plan = bundle
+            .commands()
+            .iter()
+            .find(|plan| plan.name() == "CreateNote")
+            .expect("CreateNote plan");
+        let input = input_record(
+            plan.input().record(),
+            [
+                (
+                    "idempotency_key",
+                    CanonicalValue::string(caller_key).expect("bounded idempotency key"),
+                ),
+                ("organization_id", CanonicalValue::Uuid(organization_id)),
+                ("note_id", CanonicalValue::Uuid(note_id)),
+                ("body", CanonicalValue::string(body).expect("bounded body")),
+            ],
+        );
+        ExecuteCommandRequest::new(
+            SourceName::new("CreateNote").expect("checked command name"),
+            Some(self.database.executable_plan.reference().contract_version()),
+            SubmittedRecord::try_from(input).expect("bounded note input"),
+        )
+        .expect("bounded note request")
+    }
+
+    /// The compiled-path request: the exact board_page shape as an ad-hoc
+    /// symbolic query executed by the REAL query executor over live storage.
+    pub(crate) fn board_symbolic_request(
+        &self,
+        organization_id: [u8; 16],
+        project_id: [u8; 16],
+        status: &str,
+    ) -> ExecuteSymbolicQueryRequest {
+        let mut values = BTreeMap::new();
+        values.insert(
+            "organization_id".to_owned(),
+            SubmittedValue::Uuid(organization_id),
+        );
+        values.insert("project_id".to_owned(), SubmittedValue::Uuid(project_id));
+        values.insert(
+            "status".to_owned(),
+            SubmittedValue::Enum(SubmittedEnum::name_only(
+                SourceName::new(status).expect("status variant name"),
+            )),
+        );
+        ExecuteSymbolicQueryRequest::new(
+            SymbolicContractSelector::active(),
+            SymbolicQuerySource::new(BOARD_PAGE_QUERY.to_owned())
+                .expect("bounded board query source"),
+            SymbolicQueryParameters::new(values).expect("board parameters"),
+        )
+    }
+
+    /// The projected-path request equivalent to [`Self::board_symbolic_request`]:
+    /// select the board fields (ticket_id via PK return), eq predicates on
+    /// project_id + status, order ticket_id asc, limit 50.
+    pub(crate) fn board_projected_request(
+        &self,
+        organization_id: [u8; 16],
+        project_id: [u8; 16],
+        status: &str,
+        freshness: FreshnessPolicy,
+    ) -> ExecuteProjectedQueryRequest {
+        let body = ProjectedQueryBody::new(CanonicalValue::Uuid(organization_id))
+            .with_select(BOARD_SELECT.iter().map(|name| (*name).to_owned()).collect())
+            .with_predicates(vec![
+                ProjectedColumnPredicate::Eq {
+                    field: "project_id".to_owned(),
+                    value: CanonicalValue::Uuid(project_id),
+                },
+                ProjectedColumnPredicate::Eq {
+                    field: "status".to_owned(),
+                    value: self.board_status(status),
+                },
+            ])
+            .with_order(vec![ProjectedOrderSpec {
+                field: "ticket_id".to_owned(),
+                direction: SortDirection::Asc,
+            }])
+            .with_limit(Some(50));
+        ExecuteProjectedQueryRequest::new(
+            SymbolicContractSelector::active(),
+            BOARD_PROJECTION_NAME,
+            body,
+            freshness,
+        )
+    }
+}
+
+/// [`run_async`] with a wider worker pool for tests that park one real
+/// blocking columnar wait while commands and apply progress elsewhere.
+pub(crate) fn run_async_threads(
+    worker_threads: usize,
+    output: impl Future<Output = ()> + Send + 'static,
+) {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .enable_time()
+        .build()
+        .expect("build service test runtime")
+        .block_on(output);
 }

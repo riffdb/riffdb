@@ -138,6 +138,19 @@ messages
     3 span optional .riffdb.app.v1.SourceSpan
     4 symbols repeated string
     5 suggestion optional string proto3-optional oneof=_suggestion
+  riffdb.app.v1.ExecuteProjectedQueryRequest fields=5
+    1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
+    2 projection_name optional string
+    3 request optional .riffdb.app.v1.ProjectedQueryBody
+    4 freshness optional .riffdb.app.v1.FreshnessPolicyProto
+    100 request_id optional bytes
+  riffdb.app.v1.ExecuteProjectedQueryResponse fields=6
+    1 ready optional .riffdb.app.v1.ProjectedQueryReady oneof=outcome
+    2 lagging optional .riffdb.app.v1.ProjectedQueryLagging oneof=outcome
+    3 building optional .riffdb.app.v1.ProjectedQueryBuilding oneof=outcome
+    4 rebuilding optional .riffdb.app.v1.ProjectedQueryRebuilding oneof=outcome
+    5 degraded optional .riffdb.app.v1.ProjectedQueryDegraded oneof=outcome
+    6 invalid optional .riffdb.app.v1.ProjectedQueryInvalid oneof=outcome
   riffdb.app.v1.ExecuteQueryRequest fields=8
     1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
     2 source optional string oneof=query
@@ -164,6 +177,16 @@ messages
     2 schema optional .riffdb.app.v1.QuerySchema proto3-optional oneof=_schema
     3 plan_lines repeated string
     4 diagnostics repeated .riffdb.app.v1.Diagnostic
+  riffdb.app.v1.FreshnessAvailable fields=0
+  riffdb.app.v1.FreshnessBounded fields=1
+    1 max_lag_sequences optional uint64
+  riffdb.app.v1.FreshnessCausal fields=2
+    1 commit_token optional bytes
+    2 max_wait_nanos optional uint64
+  riffdb.app.v1.FreshnessPolicyProto fields=3
+    1 causal optional .riffdb.app.v1.FreshnessCausal oneof=policy
+    2 bounded optional .riffdb.app.v1.FreshnessBounded oneof=policy
+    3 available optional .riffdb.app.v1.FreshnessAvailable oneof=policy
   riffdb.app.v1.GetQueryModuleRequest fields=3
     1 contract optional .riffdb.app.v1.ContractSelector
     2 module_hash optional bytes proto3-optional oneof=_module_hash
@@ -177,6 +200,54 @@ messages
   riffdb.app.v1.Parameter fields=2
     1 name optional string
     2 value optional .riffdb.v1.Value
+  riffdb.app.v1.ProjectedAggregate fields=2
+    1 field optional string
+    2 op optional .riffdb.app.v1.ProjectedAggregateOp
+  riffdb.app.v1.ProjectedOrder fields=2
+    1 field optional string
+    2 descending optional bool
+  riffdb.app.v1.ProjectedPredicate fields=3
+    1 field optional string
+    2 eq optional .riffdb.v1.Value oneof=kind
+    3 range optional .riffdb.app.v1.ProjectedRange oneof=kind
+  riffdb.app.v1.ProjectedQueryBody fields=7
+    1 select repeated string
+    2 org_scope optional .riffdb.v1.Value
+    3 predicates repeated .riffdb.app.v1.ProjectedPredicate
+    4 order repeated .riffdb.app.v1.ProjectedOrder
+    5 limit optional uint32 proto3-optional oneof=_limit
+    6 group_by repeated string
+    7 aggregate optional .riffdb.app.v1.ProjectedAggregate proto3-optional oneof=_aggregate
+  riffdb.app.v1.ProjectedQueryBuilding fields=2
+    1 applied_through optional bytes
+    2 head optional bytes
+  riffdb.app.v1.ProjectedQueryDegraded fields=2
+    1 reason optional .riffdb.app.v1.ProjectedDegradedReason
+    2 current optional bytes
+  riffdb.app.v1.ProjectedQueryInvalid fields=2
+    1 expected_fingerprint optional bytes
+    2 found_fingerprint optional bytes
+  riffdb.app.v1.ProjectedQueryLagging fields=5
+    1 required optional bytes
+    2 current optional bytes
+    3 head optional bytes
+    4 lag_sequences optional uint64 proto3-optional oneof=_lag_sequences
+    5 retry_after_nanos optional uint64 proto3-optional oneof=_retry_after_nanos
+  riffdb.app.v1.ProjectedQueryReady fields=5
+    1 fields repeated string
+    2 rows repeated .riffdb.app.v1.ResultRecord
+    3 frontier optional bytes
+    4 head optional bytes
+    5 commit_token optional bytes
+  riffdb.app.v1.ProjectedQueryRebuilding fields=3
+    1 reason optional .riffdb.app.v1.ProjectedRebuildingReason
+    2 progress_applied optional uint64
+    3 progress_total optional uint64
+  riffdb.app.v1.ProjectedRange fields=4
+    1 lower optional .riffdb.v1.Value proto3-optional oneof=_lower
+    2 upper optional .riffdb.v1.Value proto3-optional oneof=_upper
+    3 lower_inclusive optional bool
+    4 upper_inclusive optional bool
   riffdb.app.v1.QueryIdentity fields=6
     1 contract_lineage optional string
     2 contract_version optional uint64
@@ -1686,7 +1757,7 @@ enums
     8 APPLICATION_FIX_CODE_RETRY_LATER
     9 APPLICATION_FIX_CODE_RESOLVE_WITH_SAME_IDEMPOTENCY_KEY
     10 APPLICATION_FIX_CODE_CONTACT_OPERATOR_WITH_INCIDENT
-  riffdb.app.v1.ApplicationOperation values=9
+  riffdb.app.v1.ApplicationOperation values=10
     0 APPLICATION_OPERATION_UNSPECIFIED
     1 APPLICATION_OPERATION_DESCRIBE_CONTRACT
     2 APPLICATION_OPERATION_CHECK_QUERY
@@ -1696,6 +1767,7 @@ enums
     6 APPLICATION_OPERATION_GET_QUERY_MODULE
     7 APPLICATION_OPERATION_EXECUTE_COMMAND
     8 APPLICATION_OPERATION_BATCH_COMMAND
+    9 APPLICATION_OPERATION_EXECUTE_PROJECTED_QUERY
   riffdb.app.v1.ApplicationRecoveryAction values=8
     0 APPLICATION_RECOVERY_ACTION_UNSPECIFIED
     1 APPLICATION_RECOVERY_ACTION_CORRECT_REQUEST
@@ -1705,6 +1777,22 @@ enums
     5 APPLICATION_RECOVERY_ACTION_REFRESH_CONTRACT
     6 APPLICATION_RECOVERY_ACTION_CONTACT_OPERATOR
     7 APPLICATION_RECOVERY_ACTION_NONE
+  riffdb.app.v1.ProjectedAggregateOp values=5
+    0 PROJECTED_AGGREGATE_OP_UNSPECIFIED
+    1 PROJECTED_AGGREGATE_OP_COUNT
+    2 PROJECTED_AGGREGATE_OP_SUM
+    3 PROJECTED_AGGREGATE_OP_MIN
+    4 PROJECTED_AGGREGATE_OP_MAX
+  riffdb.app.v1.ProjectedDegradedReason values=4
+    0 PROJECTED_DEGRADED_REASON_UNSPECIFIED
+    1 PROJECTED_DEGRADED_REASON_APPLY_LAG_SLO
+    2 PROJECTED_DEGRADED_REASON_MAINTENANCE_BACKLOG
+    3 PROJECTED_DEGRADED_REASON_PARTIAL_INVENTORY
+  riffdb.app.v1.ProjectedRebuildingReason values=4
+    0 PROJECTED_REBUILDING_REASON_UNSPECIFIED
+    1 PROJECTED_REBUILDING_REASON_REPLAY_BUDGET_EXCEEDED
+    2 PROJECTED_REBUILDING_REASON_EXPLICIT_REBUILD
+    3 PROJECTED_REBUILDING_REASON_STATE_INTEGRITY_FAILURE
   riffdb.app.v1.QueryModuleDeploymentOutcome values=6
     0 QUERY_MODULE_DEPLOYMENT_OUTCOME_UNSPECIFIED
     1 QUERY_MODULE_DEPLOYMENT_OUTCOME_ACTIVATED
@@ -2123,6 +2211,7 @@ services
     ExecuteQuery .riffdb.app.v1.ExecuteQueryRequest -> .riffdb.app.v1.ExecuteQueryResponse (unary)
     DeployQueryModule .riffdb.app.v1.DeployQueryModuleRequest -> .riffdb.app.v1.DeployQueryModuleResponse (unary)
     GetQueryModule .riffdb.app.v1.GetQueryModuleRequest -> .riffdb.app.v1.GetQueryModuleResponse (unary)
+    ExecuteProjectedQuery .riffdb.app.v1.ExecuteProjectedQueryRequest -> .riffdb.app.v1.ExecuteProjectedQueryResponse (unary)
   riffdb.v1.AdminService
     Health .riffdb.v1.HealthRequest -> .riffdb.v1.HealthResponse (unary)
     Stats .riffdb.v1.StatsRequest -> .riffdb.v1.StatsResponse (unary)

@@ -55,6 +55,9 @@ use crate::generated::query_service_server::{QueryService, QueryServiceServer};
 use crate::generated_app::application_query_service_server::{
     ApplicationQueryService, ApplicationQueryServiceServer,
 };
+use crate::projected_query_conversion::{
+    execute_projected_query_request_from_proto, execute_projected_query_result_to_proto,
+};
 
 const GRPC_TIMEOUT_METADATA_KEY: &str = "grpc-timeout";
 
@@ -1569,6 +1572,39 @@ impl ApplicationQueryService for GrpcApplication {
         Ok(Response::new(get_query_module_result_to_proto(
             result.as_ref(),
         )))
+    }
+
+    async fn execute_projected_query(
+        &self,
+        request: Request<app_v1::ExecuteProjectedQueryRequest>,
+    ) -> Result<Response<app_v1::ExecuteProjectedQueryResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let boundary = ApplicationErrorContextBuilder::without_trace(
+            ApplicationOperation::ExecuteProjectedQuery,
+        );
+        let original = message.clone();
+        let (request_id, request) = execute_projected_query_request_from_proto(message)
+            .map_err(|status| status_from_application_boundary(status, &boundary))?;
+        let application = application_context(
+            ApplicationOperation::ExecuteProjectedQuery,
+            request_id,
+            original.contract.as_ref(),
+            Some(original.projection_name.as_str()),
+        );
+        let (service, context, _cancellation) = self
+            .normal_invocation(
+                ServiceOperationV1::ExecuteProjectedQuery,
+                &metadata,
+                request_id,
+            )
+            .map_err(|status| status_from_application_boundary(status, &application))?;
+        let result = map_application_service(
+            service.execute_projected_query(context, request).await,
+            &application,
+        )?;
+        let response = execute_projected_query_result_to_proto(result)
+            .map_err(|status| status_from_application_boundary(status, &application))?;
+        Ok(Response::new(response))
     }
 }
 
