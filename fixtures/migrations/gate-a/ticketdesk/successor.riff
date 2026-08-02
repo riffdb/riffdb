@@ -1,0 +1,55 @@
+contract TicketDeskGateA version 2 {
+  entity Organization {
+    key (organization_id: uuid)
+    field name: string<64>
+  }
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field title: string<64>
+    field amount: i64
+    field priority: i64
+    index by_priority (organization_id, priority, ticket_id)
+    unique ticket_title (organization_id, title)
+    reference organization (organization_id) -> Organization(organization_id)
+    invariant nonnegative_amount: amount >= 0
+  }
+  entity Policy {
+    key (organization_id: uuid)
+    field floor: i64
+    invariant nonnegative_floor: floor >= 0
+  }
+  event TicketCreated { organization_id: uuid amount: i64 }
+  aggregate Organizations { root Organization partition_by organization_id conflict_key (organization_id) }
+  aggregate Tickets { root Ticket partition_by organization_id conflict_key (organization_id, ticket_id) }
+  aggregate Policies { root Policy partition_by organization_id conflict_key (organization_id) }
+  command CreateOrganization {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input name: string<64>
+    idempotency_key idempotency_key
+    create Organization(organization_id) as organization else OrganizationExists {}
+    set organization.name = name
+    return Created { organization_id: organization_id }
+  }
+  command CreateTicket {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input ticket_id: uuid
+    input title: string<64>
+    input amount: i64
+    idempotency_key idempotency_key
+    read Organization(organization_id) as organization else OrganizationMissing {}
+    create Ticket(organization_id, ticket_id) as ticket else TicketExists {}
+    set ticket.title = title
+    set ticket.amount = amount
+    set ticket.priority = amount + 1
+    emit TicketCreated { organization_id: organization_id, amount: amount }
+    return Created { ticket_id: ticket_id }
+  }
+  projection TicketTotals {
+    source event TicketCreated
+    key (organization_id)
+    measure total = sum(amount)
+    frontier transactionally_ordered
+  }
+}

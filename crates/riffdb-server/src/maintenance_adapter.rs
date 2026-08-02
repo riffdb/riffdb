@@ -31,14 +31,14 @@ use riffdb_service::{
     RestoreRetryOfflineMaintenanceCoordinatorPort, RestoreRetryOfflineMaintenancePermit,
 };
 use riffdb_storage_api::{
-    AuditPrincipalV1, ContractMigrationAdmissionV1, ContractMigrationArtifactsV1,
-    ContractMigrationOperationKindV1, ContractMigrationReceiptFailureV1,
-    ContractMigrationReceiptPhaseV1, ContractMigrationReceiptTransitionV1,
-    ContractMigrationReceiptV1, OfflineMaintenanceAdmissionV1,
-    OfflineMaintenanceReceiptCreateResultV1, OfflineMaintenanceReceiptFailureV1,
-    OfflineMaintenanceReceiptPersistencePort, OfflineMaintenanceReceiptPhaseV1,
-    OfflineMaintenanceReceiptTransitionV1, OfflineMaintenanceReceiptV1, StorageError,
-    StorageErrorKind,
+    AuditPrincipalV1, CatalogRepository, ContractMigrationAdmissionV1,
+    ContractMigrationArtifactsV1, ContractMigrationOperationKindV1,
+    ContractMigrationReceiptFailureV1, ContractMigrationReceiptPhaseV1,
+    ContractMigrationReceiptTransitionV1, ContractMigrationReceiptV1,
+    OfflineMaintenanceAdmissionV1, OfflineMaintenanceReceiptCreateResultV1,
+    OfflineMaintenanceReceiptFailureV1, OfflineMaintenanceReceiptPersistencePort,
+    OfflineMaintenanceReceiptPhaseV1, OfflineMaintenanceReceiptTransitionV1,
+    OfflineMaintenanceReceiptV1, StorageError, StorageErrorKind,
 };
 use riffdb_storage_redb::RedbMaintenanceStorage;
 use riffdb_types::{
@@ -317,13 +317,11 @@ impl MaintenanceController {
         &self,
         driver: &BlockingPortDriver,
         storage: SharedRedbOperationalPorts,
-        active_lineage: Vec<ValidatedContractBundle>,
     ) -> Arc<dyn ContractMigrationCoordinatorPort> {
         Arc::new(ServerContractMigrationCoordinator::new(
             self.clone(),
             driver,
             storage,
-            active_lineage,
         ))
     }
 
@@ -527,12 +525,11 @@ impl ServerContractMigrationCoordinator {
         controller: MaintenanceController,
         driver: &BlockingPortDriver,
         storage: SharedRedbOperationalPorts,
-        active_lineage: Vec<ValidatedContractBundle>,
     ) -> Self {
         let lineage_controller = controller.clone();
         let observation_controller = controller.clone();
         let start = driver.executor(move |request| {
-            admit_contract_migration_start(&controller, &storage, &active_lineage, request)
+            admit_contract_migration_start(&controller, &storage, request)
         });
         let lineage = driver.executor(move |operation_id| {
             resolve_contract_migration_lineage(&lineage_controller, operation_id)
@@ -593,7 +590,6 @@ impl fmt::Debug for ServerContractMigrationCoordinator {
 fn admit_contract_migration_start(
     controller: &MaintenanceController,
     storage: &SharedRedbOperationalPorts,
-    active_lineage: &[ValidatedContractBundle],
     start: AuthorizedContractMigrationStart,
 ) -> Result<ContractMigrationStartResult, ContractMigrationStartPortError> {
     let (kind, request_id, ingress, operation_id, input_hash, artifacts, authorization) =
@@ -660,9 +656,9 @@ fn admit_contract_migration_start(
             existing,
         );
     }
-    let active_hash = active_lineage
-        .last()
-        .map(ValidatedContractBundle::bundle_hash)
+    let active_hash = CatalogRepository::read_active_catalog(storage)
+        .map_err(|_| ContractMigrationStartPortError::Unavailable)?
+        .map(|active| active.bundle_hash())
         .ok_or(ContractMigrationStartPortError::Integrity)?;
     let operation_artifacts = RedbMaintenanceStorage::contract_migration_operation_artifacts(
         artifacts.candidate_bundle(),
@@ -741,7 +737,7 @@ fn admit_contract_migration_start(
 
     match kind {
         ContractMigrationOperationKind::Check => {
-            run_contract_migration_check(&maintenance, storage, active_lineage, artifacts, receipt)
+            run_contract_migration_check(&maintenance, storage, artifacts, receipt)
         }
         ContractMigrationOperationKind::Apply => {
             if controller.lifecycle.begin_migration(operation_id).is_err() {
@@ -826,7 +822,6 @@ fn resolve_already_applied_contract_migration(
 fn run_contract_migration_check(
     maintenance: &RedbMaintenanceStorage,
     storage: &SharedRedbOperationalPorts,
-    active_lineage: &[ValidatedContractBundle],
     artifacts: riffdb_service::ContractMigrationArtifacts,
     receipt: ContractMigrationReceiptV1,
 ) -> Result<ContractMigrationStartResult, ContractMigrationStartPortError> {
@@ -842,19 +837,14 @@ fn run_contract_migration_check(
             MigrationBundleV1::decode(artifacts.migration_bundle())
                 .ok()
                 .and_then(|migration| {
-                    ValidatedMigrationPlan::from_lineage_artifacts(
-                        active_lineage.to_vec(),
-                        candidate,
-                        migration,
+                    ValidatedMigrationPlan::from_current_catalog_artifacts(
+                        storage, candidate, migration,
                     )
                     .ok()
                 })
         });
     let terminal = if let Some(plan) = plan {
-        let active = active_lineage
-            .last()
-            .map(ValidatedContractBundle::bundle_hash)
-            .ok_or(ContractMigrationStartPortError::Integrity)?;
+        let active = plan.parent_bundle_hash();
         let preflight = storage
             .migration_preflight(active)
             .map_err(|_| ContractMigrationStartPortError::Unavailable)?;

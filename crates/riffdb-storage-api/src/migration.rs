@@ -332,6 +332,15 @@ impl MigrationRowMutation {
             .as_ref()
             .map_or(Ok(0), StoredEntityRecordV1::semantic_bytes)
             .map_err(|_| MigrationStageError::LimitExceeded)?;
+        let retained_predecessor_bytes = self
+            .post_image
+            .as_ref()
+            .map_or(Ok(0), |_| self.expected.source().semantic_bytes())
+            .map_err(|_| MigrationStageError::LimitExceeded)?;
+        let entity_bytes = entity_bytes
+            .checked_add(retained_predecessor_bytes)
+            .filter(|bytes| *bytes <= MAX_MIGRATION_BATCH_WRITE_BYTES)
+            .ok_or(MigrationStageError::LimitExceeded)?;
         self.rebuilt_indexes
             .iter()
             .try_fold(entity_bytes, |total, entry| {

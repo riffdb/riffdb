@@ -163,7 +163,7 @@ impl MemoryMigrationStage {
         self.state.retired_predecessor_writes
     }
 
-    /// Borrows the retained-data archive. Gate A never places rows here.
+    /// Borrows exact predecessor images displaced by migration transforms.
     #[must_use]
     pub fn retained_archive(&self) -> &[StoredEntityRecordV1] {
         &self.state.retained_archive
@@ -311,6 +311,9 @@ impl MigrationStagePort for MemoryMigrationStage {
             .map_or(1, |journal| journal.batch_count().saturating_add(1));
         for (position, mutation) in positions.into_iter().zip(batch.mutations()) {
             if let Some(post_image) = mutation.post_image() {
+                self.state
+                    .retained_archive
+                    .push(self.state.entities[position].clone());
                 self.state.entities[position] = post_image.clone();
             }
             for entry in mutation.rebuilt_indexes() {
@@ -320,6 +323,9 @@ impl MigrationStagePort for MemoryMigrationStage {
         self.state
             .indexes
             .sort_unstable_by(|left, right| left.key().cmp(right.key()));
+        self.state
+            .retained_archive
+            .sort_unstable_by(|left, right| left.target().cmp(right.target()));
         self.state.journal = Some(MigrationJournalState::new(
             batch.migration(),
             batch.checked_through().clone(),

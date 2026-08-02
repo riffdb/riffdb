@@ -1,0 +1,5 @@
+migration TicketDeskGateA from 1 to 2 {
+  transform Ticket {
+    set priority = old.amount + 1
+  }
+}
