@@ -16,9 +16,20 @@ use riffdb_types::{CommandId, ContractBundleHash, ContractLineage, ContractVersi
 use crate::lineage::LineageMaterializationProof;
 use crate::{CatalogError, CatalogErrorKind};
 
+/// Shared enum display-name table for one published contract schema.
+///
+/// Built once when the validated bundle is decoded and shared for the lifetime
+/// of that catalog publication (bounded by the catalog's existing caches).
+pub type ContractEnumVariantNames = Arc<BTreeMap<(u32, u32), String>>;
+
+struct ValidatedContractBundleInner {
+    bundle: ContractBundle,
+    enum_variant_names: ContractEnumVariantNames,
+}
+
 /// A canonical bundle that has passed catalog-owned activation revalidation.
 #[derive(Clone)]
-pub struct ValidatedContractBundle(Arc<ContractBundle>);
+pub struct ValidatedContractBundle(Arc<ValidatedContractBundleInner>);
 
 impl ValidatedContractBundle {
     /// Re-decodes a checked compiler result at the catalog trust boundary.
@@ -32,7 +43,11 @@ impl ValidatedContractBundle {
             ContractBundle::decode(bytes).map_err(|error| CatalogError::from_ir(&error))?;
         validate_supported_versions(&bundle)?;
         validate_command_registry(&bundle)?;
-        Ok(Self(Arc::new(bundle)))
+        let enum_variant_names = Arc::new(build_enum_variant_names(&bundle));
+        Ok(Self(Arc::new(ValidatedContractBundleInner {
+            bundle,
+            enum_variant_names,
+        })))
     }
 
     /// Validates storage's opaque identity against decoded canonical content.
@@ -50,25 +65,31 @@ impl ValidatedContractBundle {
     /// Borrows the complete checked immutable IR bundle.
     #[must_use]
     pub fn bundle(&self) -> &ContractBundle {
-        &self.0
+        &self.0.bundle
     }
 
     /// Exact contract lineage.
     #[must_use]
     pub fn lineage(&self) -> &ContractLineage {
-        self.0.lineage()
+        self.0.bundle.lineage()
     }
 
     /// Application contract version.
     #[must_use]
     pub fn contract_version(&self) -> ContractVersion {
-        self.0.contract_version()
+        self.0.bundle.contract_version()
     }
 
     /// Hash of the canonical immutable bytes.
     #[must_use]
     pub fn bundle_hash(&self) -> ContractBundleHash {
-        self.0.bundle_hash()
+        self.0.bundle.bundle_hash()
+    }
+
+    /// Shared enum display names for this publication (pointer-stable while held).
+    #[must_use]
+    pub fn enum_variant_names(&self) -> &ContractEnumVariantNames {
+        &self.0.enum_variant_names
     }
 
     /// Constructs the IR-opaque storage representation without operational metadata.
@@ -77,7 +98,7 @@ impl ValidatedContractBundle {
             self.lineage().clone(),
             self.contract_version(),
             self.bundle_hash(),
-            self.0.canonical_bytes().to_vec(),
+            self.0.bundle.canonical_bytes().to_vec(),
         )
         .map_err(|_| CatalogError::new(CatalogErrorKind::InvalidBundle))
     }
@@ -104,6 +125,7 @@ impl ValidatedContractBundle {
         }
         let plan = self
             .0
+            .bundle
             .command(reference.command_id())
             .filter(|plan| plan.plan_hash() == reference.command_plan_hash())
             .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
@@ -115,6 +137,22 @@ impl ValidatedContractBundle {
             executing_ordinal,
         })
     }
+}
+
+fn build_enum_variant_names(bundle: &ContractBundle) -> BTreeMap<(u32, u32), String> {
+    bundle
+        .schema()
+        .enums()
+        .iter()
+        .flat_map(|enumeration| {
+            enumeration.variants().iter().map(move |variant| {
+                (
+                    (enumeration.id().get(), variant.id().get()),
+                    variant.name().to_owned(),
+                )
+            })
+        })
+        .collect()
 }
 
 impl fmt::Debug for ValidatedContractBundle {
