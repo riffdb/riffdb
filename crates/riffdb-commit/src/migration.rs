@@ -212,6 +212,10 @@ impl MigrationCoordinator {
                 let mut write_bytes = 0_usize;
                 let mut last_checked = None;
                 for row in page.rows() {
+                    if plan.is_candidate_bound(row) {
+                        last_checked = Some(row.target().clone());
+                        continue;
+                    }
                     let prepared = plan.prepare_row(row.clone())?;
                     let mutation = prepare_mutation(row, &prepared)?;
                     let mutation_bytes = mutation
@@ -414,11 +418,19 @@ fn validate_cross_row_facts<S: MigrationStagePort>(
     stage: &S,
     prepared: &PreparedMigrationRow,
 ) -> Result<(), MigrationFinding> {
-    for relationship in prepared.relationships() {
-        if !stage
-            .migration_target_exists(relationship.target())
+    if prepared.is_rekeyed() {
+        if stage
+            .migration_target_exists(prepared.effective_target())
             .map_err(MigrationFinding::from_stage_error)?
         {
+            return Err(MigrationFinding::rekey_target_occupied(
+                prepared.effective_target().entity_type_id(),
+            ));
+        }
+        validate_target_claim(plan, stage, prepared)?;
+    }
+    for relationship in prepared.relationships() {
+        if !effective_target_exists(plan, stage, relationship.target())? {
             return Err(MigrationFinding::from_stage_error(
                 MigrationStageError::RelationshipMissing(relationship.source().entity_type_id()),
             ));
@@ -428,6 +440,62 @@ fn validate_cross_row_facts<S: MigrationStagePort>(
         validate_unique_fact(plan, stage, unique)?;
     }
     Ok(())
+}
+
+fn validate_target_claim<S: MigrationStagePort>(
+    plan: &ValidatedMigrationPlan,
+    stage: &S,
+    expected: &PreparedMigrationRow,
+) -> Result<(), MigrationFinding> {
+    let mut cursor = MigrationScanCursor::start();
+    loop {
+        let page = stage
+            .scan_migration_rows(&cursor)
+            .map_err(MigrationFinding::from_stage_error)?;
+        validate_page_progress(&cursor, &page)?;
+        for row in page.rows() {
+            if row.target() == expected.source().target() {
+                continue;
+            }
+            let candidate = plan.prepare_row(row.clone())?;
+            if !candidate.is_retired()
+                && candidate.effective_target() == expected.effective_target()
+            {
+                return Err(MigrationFinding::target_collision(
+                    expected.effective_target().entity_type_id(),
+                ));
+            }
+        }
+        let Some(next) = page.next() else {
+            break;
+        };
+        cursor = next.clone();
+    }
+    Ok(())
+}
+
+fn effective_target_exists<S: MigrationStagePort>(
+    plan: &ValidatedMigrationPlan,
+    stage: &S,
+    expected: &riffdb_storage_api::EntityTarget,
+) -> Result<bool, MigrationFinding> {
+    let mut cursor = MigrationScanCursor::start();
+    loop {
+        let page = stage
+            .scan_migration_rows(&cursor)
+            .map_err(MigrationFinding::from_stage_error)?;
+        validate_page_progress(&cursor, &page)?;
+        for row in page.rows() {
+            let candidate = plan.prepare_row(row.clone())?;
+            if !candidate.is_retired() && candidate.effective_target() == expected {
+                return Ok(true);
+            }
+        }
+        let Some(next) = page.next() else {
+            return Ok(false);
+        };
+        cursor = next.clone();
+    }
 }
 
 fn validate_single_row_write(

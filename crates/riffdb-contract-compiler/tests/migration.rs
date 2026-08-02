@@ -131,6 +131,142 @@ migration Evolution from 1 to 2 {
 }
 
 #[test]
+fn gate_c_rekey_requires_exact_key_and_locality_proofs() {
+    let parent = compile_contract_source(GENESIS).expect("parent");
+    let successor = r#"
+contract Evolution version 2 {
+  entity Row {
+    key (scope: string<32>, id: uuid)
+    field value: i64
+  }
+  aggregate Rows { root Row partition_by scope conflict_key (scope, id) }
+}
+"#;
+    let candidate = compile_contract_successor(successor, &parent).expect("candidate");
+    let migration = r#"
+migration Evolution from 1 to 2 {
+  transform Row {
+    set scope = "default"
+    rekey ("default", old.id)
+  }
+  acknowledge repartition Rows
+  acknowledge conflict Rows
+}
+"#;
+    let bundle = compile_migration_source(migration, &parent, &candidate).expect("Gate C");
+    assert!(bundle.steps().iter().any(|step| matches!(
+        step.kind(),
+        MigrationStepKindV1::RekeyEntity { components, .. } if components.len() == 2
+    )));
+    assert!(bundle.steps().iter().any(|step| matches!(
+        step.kind(),
+        MigrationStepKindV1::AcknowledgeRepartition { .. }
+    )));
+    assert!(
+        bundle
+            .steps()
+            .iter()
+            .any(|step| matches!(step.kind(), MigrationStepKindV1::AcknowledgeConflict { .. }))
+    );
+
+    let missing_acknowledgement = migration.replace("  acknowledge conflict Rows\n", "");
+    assert!(has_code(
+        &compile_migration_source(&missing_acknowledgement, &parent, &candidate).unwrap_err(),
+        CompilerDiagnosticCode::MissingMigrationProof
+    ));
+}
+
+#[test]
+fn gate_c_rejects_an_unrelated_existing_command_plan_change() {
+    let parent_source = r#"
+contract CoupledPlans version 1 {
+  entity Rekeyed { key (id: uuid) }
+  entity Unchanged { key (id: uuid) field value: i64 }
+  aggregate RekeyedRows { root Rekeyed partition_by id conflict_key (id) }
+  aggregate UnchangedRows { root Unchanged partition_by id conflict_key (id) }
+  command ChangeUnchanged {
+    input idempotency_key: string<128>
+    input id: uuid
+    idempotency_key idempotency_key
+    mutate Unchanged(id) as row else Missing { id: id }
+    set row.value = 1
+    return Changed { row: row }
+  }
+}
+"#;
+    let candidate_source = parent_source
+        .replace("version 1", "version 2")
+        .replacen("key (id: uuid) }", "key (scope: string<16>, id: uuid) }", 1)
+        .replacen(
+            "partition_by id conflict_key (id) }",
+            "partition_by scope conflict_key (scope, id) }",
+            1,
+        )
+        .replace("set row.value = 1", "set row.value = 2");
+    let parent = compile_contract_source(parent_source).expect("parent");
+    let candidate =
+        compile_contract_successor(&candidate_source, &parent).expect("candidate successor");
+    let migration = r#"
+migration CoupledPlans from 1 to 2 {
+  transform Rekeyed {
+    set scope = "default"
+    rekey ("default", old.id)
+  }
+  acknowledge repartition RekeyedRows
+  acknowledge conflict RekeyedRows
+}
+"#;
+
+    assert_eq!(
+        first_code(&compile_migration_source(migration, &parent, &candidate).unwrap_err()),
+        CompilerDiagnosticCode::UnsupportedMigrationStep
+    );
+}
+
+#[test]
+fn gate_c_accepts_a_command_plan_coupled_to_the_rekeyed_entity() {
+    let parent_source = r#"
+contract CoupledCommand version 1 {
+  entity Row { key (id: uuid) field scope: string<16> field value: i64 }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  command Change {
+    input idempotency_key: string<128>
+    input id: uuid
+    input scope: string<16>
+    idempotency_key idempotency_key
+    mutate Row(id) as row else Missing { id: id }
+    set row.value = 1
+    return Changed { row: row }
+  }
+}
+"#;
+    let candidate_source = parent_source
+        .replace("version 1", "version 2")
+        .replace(
+            "key (id: uuid) field scope: string<16>",
+            "key (scope: string<16>, id: uuid)",
+        )
+        .replace(
+            "partition_by id conflict_key (id)",
+            "partition_by scope conflict_key (scope, id)",
+        )
+        .replace("mutate Row(id)", "mutate Row(scope, id)");
+    let parent = compile_contract_source(parent_source).expect("parent");
+    let candidate =
+        compile_contract_successor(&candidate_source, &parent).expect("candidate successor");
+    let migration = r#"
+migration CoupledCommand from 1 to 2 {
+  transform Row { rekey (old.scope, old.id) }
+  acknowledge repartition Rows
+  acknowledge conflict Rows
+}
+"#;
+
+    compile_migration_source(migration, &parent, &candidate)
+        .expect("the successor command is coupled to the exact Gate C change");
+}
+
+#[test]
 fn older_supported_parent_targets_the_one_canonical_successor_bundle() {
     let v1 = compile_contract_source(GENESIS).expect("v1");
     let v2_source = GENESIS.replace("version 1", "version 2");

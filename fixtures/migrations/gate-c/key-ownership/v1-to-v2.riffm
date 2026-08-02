@@ -1,0 +1,14 @@
+migration KeyOwnershipRows from 1 to 2 {
+  transform Organization {
+    set region = "global"
+    rekey (old.tenant_id, "global", old.organization_id)
+  }
+  transform Ticket {
+    set organization_region = "global"
+    rekey (old.tenant_id, "global", old.ticket_id)
+  }
+  acknowledge repartition Organizations
+  acknowledge conflict Organizations
+  acknowledge repartition Tickets
+  acknowledge conflict Tickets
+}

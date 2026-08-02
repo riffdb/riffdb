@@ -1,0 +1,16 @@
+contract KeyOwnershipRows version 1 {
+  entity Organization {
+    key (tenant_id: uuid, organization_id: uuid)
+    field name: string<64>
+    index by_name (tenant_id, name, organization_id)
+    unique organization_name (tenant_id, name)
+  }
+  entity Ticket {
+    key (tenant_id: uuid, ticket_id: uuid)
+    field organization_id: uuid
+    field title: string<64>
+    reference organization (tenant_id, organization_id) -> Organization(tenant_id, organization_id)
+  }
+  aggregate Organizations { root Organization partition_by tenant_id conflict_key (tenant_id, organization_id) }
+  aggregate Tickets { root Ticket partition_by tenant_id conflict_key (tenant_id, ticket_id) }
+}

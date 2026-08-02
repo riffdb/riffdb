@@ -5,20 +5,21 @@ existing authoritative rows or derived state to be checked or transformed.
 The latter is `RequiresMigration`: the candidate is valid, but deployment does
 not activate it without an exact migration artifact for the active parent.
 
-The current implementation compiles and locks Gate A additive and Gate B
-structural migration artifacts, checks and applies them through the public
+The current implementation compiles and locks Gate A additive, Gate B
+structural, and Gate C key/ownership migration artifacts, checks and applies them through the public
 administration service, and drives
 the internal redb execution and startup-recovery path: complete
 preflight, an immutable automatic backup, bounded staged transforms, projection
 rebuild, complete validation, atomic publication, and automatic
 post-publication rollback. `riffdb migration plan` remains a local read-only
-inspection. The retained TicketDesk Gate-A and StructuralRows Gate-B fixtures
-freeze the additive and structural artifact boundaries.
+inspection. The retained TicketDesk Gate-A, StructuralRows Gate-B, and
+KeyOwnershipRows Gate-C fixtures freeze the additive, structural, and
+key/ownership artifact boundaries.
 
 ## Semantic execution boundary
 
 The catalog rechecks the exact parent, candidate, migration hash, direct
-compatibility, and complete Gate-A proof before producing a validated plan.
+compatibility, and complete gate-specific proof before producing a validated plan.
 Migration expressions run as pure row-local evaluations. Apply repeats the
 whole read-only preflight before it constructs any mutation.
 
@@ -266,9 +267,39 @@ migration Surface from 4 to 5 {
 }
 ```
 
-Primary-key replacement, rekeying, repartitioning, aggregate-membership
-changes, relationship-target changes, and conflict-domain changes belong to
-Gate C and still fail closed.
+Gate C supports primary-key replacement, rekeying, repartitioning,
+aggregate-membership changes, relationship-target changes, and conflict-domain
+changes. A rekey supplies every successor primary-key component as a row-local
+expression over the complete predecessor row:
+
+```riffm
+migration Accounts from 2 to 3 {
+  transform Account {
+    set region = "global"
+    rekey (old.tenant_id, "global", old.account_id)
+  }
+  acknowledge repartition Accounts
+  acknowledge conflict Accounts
+}
+```
+
+The compiler derives all affected authoritative indexes, relationships,
+uniqueness checks, aggregate ownership, partition materialization, and conflict
+meaning from the exact parent and successor. An acknowledgement authorizes only
+the corresponding compiler-derived aggregate change; it cannot supply a key or
+override the candidate schema.
+
+Preflight evaluates every row before backup, proves complete successor-target
+uniqueness, resolves relationships against the complete candidate target set,
+and validates successor unique prefixes. A target already occupied in the
+predecessor keyspace fails closed, even when another row would later vacate it.
+Consequently Gate C does not support key swaps or predecessor-occupied rekey
+chains; those require a future two-phase key namespace rather than inferred
+ordering. Each admitted move archives the exact old target and row, advances the
+entity version once, removes every old index suffix, and installs the successor
+row and complete index set in the same journaled stage transaction. The private
+stage remains invisible until final validation and cutover retire predecessor
+writes.
 
 ## Lock and inspect
 

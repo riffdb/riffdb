@@ -286,6 +286,7 @@ impl MigrationStagePort for MemoryMigrationStage {
         }
 
         let mut targets = BTreeSet::new();
+        let mut successor_targets = BTreeSet::new();
         let mut index_keys = BTreeSet::new();
         for mutation in batch.mutations() {
             if !targets.insert(mutation.expected().source().target().clone()) {
@@ -297,13 +298,20 @@ impl MigrationStagePort for MemoryMigrationStage {
             if !mutation.expected().matches(&self.state.entities[position]) {
                 return Err(MigrationStageError::RowChanged);
             }
+            if let Some(post_image) = mutation.post_image()
+                && (!successor_targets.insert(post_image.target().clone())
+                    || post_image.target() != mutation.expected().source().target()
+                        && self.row_position(post_image.target()).is_ok())
+            {
+                return Err(MigrationStageError::Integrity);
+            }
+            let source_key = mutation.expected().source().target().key().as_bytes();
             for entry in mutation.rebuilt_indexes() {
                 if !index_keys.insert(entry.key().clone())
-                    || self
-                        .state
-                        .indexes
-                        .iter()
-                        .any(|current| current.key() == entry.key())
+                    || self.state.indexes.iter().any(|current| {
+                        current.key() == entry.key()
+                            && !current.key().as_bytes().ends_with(source_key)
+                    })
                 {
                     return Err(MigrationStageError::Integrity);
                 }
@@ -326,12 +334,7 @@ impl MigrationStagePort for MemoryMigrationStage {
             let position = self
                 .row_position(mutation.expected().source().target())
                 .map_err(|_| MigrationStageError::RowChanged)?;
-            if let Some(post_image) = mutation.post_image() {
-                self.state
-                    .retained_archive
-                    .push(self.state.entities[position].clone());
-                self.state.entities[position] = post_image.clone();
-            } else if mutation.retires_source() {
+            if mutation.post_image().is_some() || mutation.retires_source() {
                 self.state
                     .retained_archive
                     .push(self.state.entities[position].clone());
@@ -344,6 +347,13 @@ impl MigrationStagePort for MemoryMigrationStage {
                 self.state
                     .indexes
                     .retain(|entry| !entry.key().as_bytes().ends_with(&entity_key));
+                if let Some(post_image) = mutation.post_image() {
+                    let position = self
+                        .row_position(post_image.target())
+                        .err()
+                        .ok_or(MigrationStageError::Integrity)?;
+                    self.state.entities.insert(position, post_image.clone());
+                }
             }
             for entry in mutation.rebuilt_indexes() {
                 self.state.indexes.push(entry.clone());

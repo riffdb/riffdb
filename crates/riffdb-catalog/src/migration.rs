@@ -5,9 +5,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use riffdb_contract_ir::{
-    CompatibilityClass, CompatibilityCode, ContractCandidateV1, EntitySchema, LineageEntryState,
-    MigrationBundleV1, MigrationConversionV1, MigrationExpressionV1, MigrationStepKindV1,
-    StableIdNamespace, StableIdNamespaceTag, StableIdentity, ValueType, compare_successor,
+    CompatibilityClass, CompatibilityCode, CompatibilityEntry, ContractCandidateV1, EntitySchema,
+    LineageEntryState, MigrationBundleV1, MigrationConversionV1, MigrationExpressionV1,
+    MigrationStepKindV1, StableIdNamespace, StableIdNamespaceTag, StableIdentity, ValueType,
+    compare_successor,
 };
 use riffdb_invariant::{
     EvaluationError, ExpressionValueSource, evaluate_expression, evaluate_predicate,
@@ -17,7 +18,7 @@ use riffdb_storage_api::{
     MigrationStageError, MigrationStagePort, StoredEntityRecordV1, StoredIndexEntryV2,
 };
 use riffdb_types::{
-    CanonicalList, CanonicalRecord, CanonicalValue, ContractBundleHash,
+    AggregateTypeId, CanonicalList, CanonicalRecord, CanonicalValue, ContractBundleHash,
     ContractMigrationValidationDigest, EntityTypeId, EnumTypeId, EnumVariantId, FieldId, IndexId,
     MigrationBundleHash, hash_contract_migration_validation,
 };
@@ -54,6 +55,10 @@ pub mod migration_finding_code {
     pub const INTEGRITY: &str = "RDB-M111";
     /// An unresolved predecessor admission would be stranded by cutover.
     pub const PENDING_ADMISSION: &str = "RDB-M112";
+    /// Two predecessor rows claim the same complete successor entity target.
+    pub const TARGET_COLLISION: &str = "RDB-M113";
+    /// A rekey target is occupied in the predecessor keyspace.
+    pub const REKEY_TARGET_OCCUPIED: &str = "RDB-M114";
 }
 
 /// One bounded, value-free semantic migration finding.
@@ -140,6 +145,18 @@ impl MigrationFinding {
                 Self::new(migration_finding_code::PENDING_ADMISSION)
             }
         }
+    }
+
+    /// Reports a complete successor-target collision without exposing key bytes.
+    #[must_use]
+    pub const fn target_collision(entity: EntityTypeId) -> Self {
+        Self::new(migration_finding_code::TARGET_COLLISION).entity(entity)
+    }
+
+    /// Reports a rekey claim against an occupied predecessor target.
+    #[must_use]
+    pub const fn rekey_target_occupied(entity: EntityTypeId) -> Self {
+        Self::new(migration_finding_code::REKEY_TARGET_OCCUPIED).entity(entity)
     }
 }
 
@@ -295,6 +312,20 @@ impl PreparedMigrationRow {
     pub const fn is_retired(&self) -> bool {
         self.retired
     }
+
+    /// Complete entity target after applying the row-local Gate C plan.
+    #[must_use]
+    pub fn effective_target(&self) -> &EntityTarget {
+        self.post_image
+            .as_ref()
+            .map_or(self.source.target(), StoredEntityRecordV1::target)
+    }
+
+    /// Whether this row changes its authoritative entity target.
+    #[must_use]
+    pub fn is_rekeyed(&self) -> bool {
+        self.effective_target() != self.source.target()
+    }
 }
 
 #[derive(Clone)]
@@ -319,6 +350,7 @@ pub struct ValidatedMigrationPlan {
     set_fields: BTreeMap<EntityTypeId, Vec<(FieldId, MigrationExpressionV1)>>,
     replacements: BTreeMap<EntityTypeId, Vec<FieldReplacement>>,
     requirements: BTreeMap<EntityTypeId, Vec<MigrationExpressionV1>>,
+    rekeys: BTreeMap<EntityTypeId, Vec<MigrationExpressionV1>>,
     enum_maps: BTreeMap<EnumTypeId, BTreeMap<EnumVariantId, EnumVariantId>>,
     retired_entities: BTreeSet<EntityTypeId>,
     rebuilt_indexes: BTreeMap<EntityTypeId, Vec<IndexId>>,
@@ -326,6 +358,7 @@ pub struct ValidatedMigrationPlan {
     added_relationships: BTreeSet<(EntityTypeId, String)>,
     added_unique: BTreeSet<(EntityTypeId, IndexId)>,
     rebuilt_projections: BTreeSet<riffdb_types::ProjectionId>,
+    rebound_entities: BTreeSet<EntityTypeId>,
 }
 
 impl ValidatedMigrationPlan {
@@ -405,9 +438,9 @@ impl ValidatedMigrationPlan {
         .and_then(|candidate| compare_successor(parent.bundle(), candidate))
         .map_err(|_| MigrationFinding::new(migration_finding_code::ARTIFACT_MISMATCH))?;
         if direct.entries().is_empty()
+            || !supported_gate_c_schema_diff(parent.bundle(), candidate.bundle())
             || direct.entries().iter().any(|entry| {
-                entry.class() == CompatibilityClass::Incompatible
-                    && entry.code() != CompatibilityCode::RemovedIdentity
+                !migration_compatible_finding(entry, parent.bundle(), candidate.bundle())
             })
         {
             return Err(MigrationFinding::new(
@@ -420,6 +453,7 @@ impl ValidatedMigrationPlan {
         let mut set_fields = BTreeMap::<EntityTypeId, Vec<(FieldId, MigrationExpressionV1)>>::new();
         let mut replacements = BTreeMap::<EntityTypeId, Vec<FieldReplacement>>::new();
         let mut requirements = BTreeMap::<EntityTypeId, Vec<MigrationExpressionV1>>::new();
+        let mut rekeys = BTreeMap::<EntityTypeId, Vec<MigrationExpressionV1>>::new();
         let mut enum_maps = BTreeMap::<EnumTypeId, BTreeMap<EnumVariantId, EnumVariantId>>::new();
         let mut retired_entities = BTreeSet::new();
         let mut covered_removed = BTreeSet::new();
@@ -429,6 +463,9 @@ impl ValidatedMigrationPlan {
         let mut added_relationships = BTreeSet::new();
         let mut added_unique = BTreeSet::new();
         let mut rebuilt_projections = BTreeSet::new();
+        let mut acknowledged_repartitions = BTreeSet::new();
+        let mut acknowledged_aggregates = BTreeSet::new();
+        let mut acknowledged_conflicts = BTreeSet::new();
         for step in migration.steps() {
             let key = match step.kind() {
                 MigrationStepKindV1::RenameIdentity {
@@ -575,6 +612,35 @@ impl ValidatedMigrationPlan {
                     expected.insert(key.clone());
                     key
                 }
+                MigrationStepKindV1::RekeyEntity { entity, components } => {
+                    let candidate_entity = candidate
+                        .bundle()
+                        .schema()
+                        .entity(*entity)
+                        .ok_or_else(artifact_mismatch)?;
+                    let parent_entity = parent
+                        .bundle()
+                        .schema()
+                        .entity(*entity)
+                        .ok_or_else(artifact_mismatch)?;
+                    if parent_entity.primary_key_fields() == candidate_entity.primary_key_fields()
+                        && parent_entity.primary_key() == candidate_entity.primary_key()
+                        || components.len() != candidate_entity.primary_key().components().len()
+                        || components
+                            .iter()
+                            .zip(candidate_entity.primary_key().components())
+                            .any(|(expression, component)| {
+                                expression
+                                    .arena()
+                                    .get(expression.result())
+                                    .is_none_or(|node| node.result_type() != component.value_type())
+                            })
+                    {
+                        return Err(artifact_mismatch());
+                    }
+                    rekeys.insert(*entity, components.clone());
+                    GateAStepKey::Rekey(*entity)
+                }
                 MigrationStepKindV1::RebuildIndex { entity, index } => {
                     rebuilt_indexes.entry(*entity).or_default().push(*index);
                     GateAStepKey::RebuildIndex(*entity, *index)
@@ -616,6 +682,18 @@ impl ValidatedMigrationPlan {
                     rebuilt_projections.insert(*projection);
                     GateAStepKey::Projection(*projection)
                 }
+                MigrationStepKindV1::AcknowledgeRepartition { aggregate } => {
+                    acknowledged_repartitions.insert(*aggregate);
+                    GateAStepKey::Repartition(*aggregate)
+                }
+                MigrationStepKindV1::AcknowledgeAggregate { aggregate } => {
+                    acknowledged_aggregates.insert(*aggregate);
+                    GateAStepKey::Aggregate(*aggregate)
+                }
+                MigrationStepKindV1::AcknowledgeConflict { aggregate } => {
+                    acknowledged_conflicts.insert(*aggregate);
+                    GateAStepKey::Conflict(*aggregate)
+                }
                 _ => {
                     return Err(MigrationFinding::new(
                         migration_finding_code::UNSUPPORTED_STEP,
@@ -643,6 +721,35 @@ impl ValidatedMigrationPlan {
         for indexes in rebuilt_indexes.values_mut() {
             indexes.sort_unstable();
         }
+        let mut rebound_entities: BTreeSet<EntityTypeId> = candidate
+            .bundle()
+            .schema()
+            .aggregates()
+            .iter()
+            .filter(|aggregate| {
+                acknowledged_repartitions.contains(&aggregate.id())
+                    || acknowledged_aggregates.contains(&aggregate.id())
+                    || acknowledged_conflicts.contains(&aggregate.id())
+            })
+            .flat_map(|aggregate| {
+                std::iter::once(aggregate.root()).chain(aggregate.children().iter().copied())
+            })
+            .chain(rekeys.keys().copied())
+            .collect();
+        for entity in candidate.bundle().schema().entities() {
+            let Some(parent_entity) = parent.bundle().schema().entity(entity.id()) else {
+                continue;
+            };
+            if entity.indexes().iter().any(|index| {
+                parent_entity
+                    .indexes()
+                    .iter()
+                    .find(|old| old.id() == index.id())
+                    .is_some_and(|old| old != index)
+            }) {
+                rebound_entities.insert(entity.id());
+            }
+        }
         Ok(Self {
             parent,
             parent_lineage,
@@ -652,6 +759,7 @@ impl ValidatedMigrationPlan {
             set_fields,
             replacements,
             requirements,
+            rekeys,
             enum_maps,
             retired_entities,
             rebuilt_indexes,
@@ -659,6 +767,7 @@ impl ValidatedMigrationPlan {
             added_relationships,
             added_unique,
             rebuilt_projections,
+            rebound_entities,
         })
     }
 
@@ -702,6 +811,15 @@ impl ValidatedMigrationPlan {
     #[must_use]
     pub fn rebuilt_projections(&self) -> &BTreeSet<riffdb_types::ProjectionId> {
         &self.rebuilt_projections
+    }
+
+    /// Whether a staged row is already the exact successor-bound post-image.
+    #[must_use]
+    pub fn is_candidate_bound(&self, row: &StoredEntityRecordV1) -> bool {
+        row.schema_binding().lineage() == self.candidate.lineage()
+            && row.schema_binding().contract_version() == self.candidate.contract_version()
+            && row.schema_binding().bundle_hash() == self.candidate.bundle_hash()
+            && row.written_by_contract() == self.candidate.contract_version()
     }
 
     pub(crate) fn candidate_lineage_proof(
@@ -823,7 +941,7 @@ impl ValidatedMigrationPlan {
                 MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity_id)
             })?
         } else {
-            parent_fields
+            parent_fields.clone()
         };
         validate_candidate_record(
             self.candidate.bundle().schema(),
@@ -832,6 +950,57 @@ impl ValidatedMigrationPlan {
         )?;
         validate_added_invariants(self, candidate_entity, &effective)?;
 
+        let target = if let Some(components) = self.rekeys.get(&entity_id) {
+            let values = SchemaRowValues {
+                row: &parent_fields,
+            };
+            let components = components
+                .iter()
+                .map(|expression| {
+                    evaluate_expression(expression.arena(), expression.result(), &values).map_err(
+                        |error| {
+                            expression_finding(
+                                error,
+                                entity_id,
+                                candidate_entity.primary_key_fields()[0],
+                            )
+                        },
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let key = candidate_entity
+                .primary_key()
+                .encode_entity(&components)
+                .map_err(|_| {
+                    MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity_id)
+                })?;
+            EntityTarget::new(entity_id, key).map_err(|_| {
+                MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity_id)
+            })?
+        } else {
+            row.target().clone()
+        };
+        let record_key_values = candidate_entity
+            .primary_key_fields()
+            .iter()
+            .map(|field| {
+                field_value(&effective, *field).cloned().ok_or_else(|| {
+                    MigrationFinding::new(migration_finding_code::INVALID_ROW)
+                        .entity(entity_id)
+                        .with_field(*field)
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if !matches!(
+            candidate_entity.primary_key().encode_entity(&record_key_values),
+            Ok(key) if key == *target.key()
+        ) {
+            return Err(
+                MigrationFinding::new(migration_finding_code::INVALID_ROW).entity(entity_id)
+            );
+        }
+        changed |= target != *row.target() || self.rebound_entities.contains(&entity_id);
+
         let post_image = if changed {
             let version = row.entity_version().checked_next().ok_or_else(|| {
                 MigrationFinding::new(migration_finding_code::ENTITY_VERSION_EXHAUSTED)
@@ -839,7 +1008,7 @@ impl ValidatedMigrationPlan {
             })?;
             Some(
                 StoredEntityRecordV1::new(
-                    row.target().clone(),
+                    target.clone(),
                     version,
                     self.candidate.contract_version(),
                     DurableKeySchemaBindingV1::new(
@@ -857,9 +1026,16 @@ impl ValidatedMigrationPlan {
             None
         };
         let partition = derive_partition(self, entity_id, &effective)?;
-        let rebuilt_indexes = derive_indexes(self, candidate_entity, &row, &effective, &partition)?;
-        let relationships = derive_relationships(self, entity_id, &row, &effective)?;
-        let unique_keys = derive_unique(self, candidate_entity, &row, &effective)?;
+        let rebuilt_indexes = derive_indexes(
+            self,
+            candidate_entity,
+            &target,
+            &effective,
+            &partition,
+            changed,
+        )?;
+        let relationships = derive_relationships(self, entity_id, &target, &effective)?;
+        let unique_keys = derive_unique(self, candidate_entity, row.target(), &effective)?;
         Ok(PreparedMigrationRow {
             source: row,
             post_image,
@@ -977,8 +1153,8 @@ impl ValidatedMigrationPlan {
             })?;
         validate_record(self.candidate.bundle().schema(), entity, row)?;
         validate_all_invariants(entity, row.fields())?;
-        let relationships = derive_relationships(self, entity_id, row, row.fields())?;
-        let unique_keys = derive_unique(self, entity, row, row.fields())?;
+        let relationships = derive_relationships(self, entity_id, row.target(), row.fields())?;
+        let unique_keys = derive_unique(self, entity, row.target(), row.fields())?;
         Ok(PreparedMigrationRow {
             source: row.clone(),
             post_image: None,
@@ -1265,12 +1441,189 @@ enum GateAStepKey {
     Replace(EntityTypeId, FieldId, FieldId),
     Require(EntityTypeId, u32),
     EnumMap(EnumTypeId),
+    Rekey(EntityTypeId),
     RebuildIndex(EntityTypeId, IndexId),
     Relationship(EntityTypeId, String),
     Unique(EntityTypeId, IndexId),
     EntityInvariant(EntityTypeId, riffdb_types::InvariantId),
     AggregateInvariant(riffdb_types::AggregateTypeId, riffdb_types::InvariantId),
     Projection(riffdb_types::ProjectionId),
+    Repartition(AggregateTypeId),
+    Aggregate(AggregateTypeId),
+    Conflict(AggregateTypeId),
+}
+
+fn migration_compatible_finding(
+    entry: &CompatibilityEntry,
+    parent: &riffdb_contract_ir::ContractBundle,
+    candidate: &riffdb_contract_ir::ContractBundle,
+) -> bool {
+    entry.class() != CompatibilityClass::Incompatible
+        || matches!(
+            entry.code(),
+            CompatibilityCode::RemovedIdentity
+                | CompatibilityCode::KeyLayoutChange
+                | CompatibilityCode::PartitionConflictChange
+                | CompatibilityCode::InvariantChange
+        )
+        || (entry.code() == CompatibilityCode::ExistingPlanChange
+            && migration_coupled_command(entry.affected_path(), parent, candidate))
+}
+
+fn migration_coupled_command(
+    affected_path: &str,
+    parent: &riffdb_contract_ir::ContractBundle,
+    candidate: &riffdb_contract_ir::ContractBundle,
+) -> bool {
+    let Some(command) = candidate
+        .commands()
+        .iter()
+        .find(|command| affected_path == format!("command:{}", command.command_id().get()))
+    else {
+        return false;
+    };
+    let Some(old_command) = parent.command(command.command_id()) else {
+        return false;
+    };
+    if old_command.locality().aggregate_id() != command.locality().aggregate_id() {
+        return true;
+    }
+    let aggregate_id = command.locality().aggregate_id();
+    if parent.schema().aggregate(aggregate_id) != candidate.schema().aggregate(aggregate_id) {
+        return true;
+    }
+    old_command
+        .bindings()
+        .iter()
+        .chain(command.bindings())
+        .any(|binding| migration_changes_entity_semantics(parent, candidate, binding.entity_type()))
+}
+
+fn migration_changes_entity_semantics(
+    parent: &riffdb_contract_ir::ContractBundle,
+    candidate: &riffdb_contract_ir::ContractBundle,
+    entity: EntityTypeId,
+) -> bool {
+    let Some(old) = parent.schema().entity(entity) else {
+        return false;
+    };
+    let Some(next) = candidate.schema().entity(entity) else {
+        return true;
+    };
+    if old.primary_key_fields() != next.primary_key_fields()
+        || old.primary_key() != next.primary_key()
+        || parent
+            .schema()
+            .aggregate_for_entity(entity)
+            .map(|value| value.id())
+            != candidate
+                .schema()
+                .aggregate_for_entity(entity)
+                .map(|value| value.id())
+    {
+        return true;
+    }
+    let relationship_changed = parent
+        .schema()
+        .relationships()
+        .iter()
+        .filter(|value| value.source_entity() == entity || value.target_entity() == entity)
+        .any(|old| {
+            candidate.schema().relationships().iter().all(|next| {
+                next.source_entity() != old.source_entity()
+                    || next.name() != old.name()
+                    || next != old
+            })
+        })
+        || candidate
+            .schema()
+            .relationships()
+            .iter()
+            .filter(|value| value.source_entity() == entity || value.target_entity() == entity)
+            .any(|next| {
+                parent.schema().relationships().iter().all(|old| {
+                    old.source_entity() != next.source_entity()
+                        || old.name() != next.name()
+                        || old != next
+                })
+            });
+    let unique_changed = parent
+        .schema()
+        .unique_keys()
+        .iter()
+        .filter(|value| value.source_entity() == entity)
+        .any(|old| {
+            candidate.schema().unique_keys().iter().all(|next| {
+                next.source_entity() != old.source_entity()
+                    || next.name() != old.name()
+                    || next != old
+            })
+        })
+        || candidate
+            .schema()
+            .unique_keys()
+            .iter()
+            .filter(|value| value.source_entity() == entity)
+            .any(|next| {
+                parent.schema().unique_keys().iter().all(|old| {
+                    old.source_entity() != next.source_entity()
+                        || old.name() != next.name()
+                        || old != next
+                })
+            });
+    relationship_changed || unique_changed
+}
+
+fn supported_gate_c_schema_diff(
+    parent: &riffdb_contract_ir::ContractBundle,
+    candidate: &riffdb_contract_ir::ContractBundle,
+) -> bool {
+    for old in parent.schema().entities() {
+        let Some(next) = candidate.schema().entity(old.id()) else {
+            continue;
+        };
+        if old.invariants().iter().any(|invariant| {
+            next.invariants()
+                .iter()
+                .find(|candidate| candidate.id() == invariant.id())
+                != Some(invariant)
+        }) || old.indexes().iter().any(|index| {
+            next.indexes()
+                .iter()
+                .all(|candidate| candidate.id() != index.id())
+        }) {
+            return false;
+        }
+    }
+    for old in parent.schema().aggregates() {
+        let Some(next) = candidate.schema().aggregate(old.id()) else {
+            if candidate.schema().entity(old.root()).is_some() {
+                return false;
+            }
+            continue;
+        };
+        if old.invariants().iter().any(|invariant| {
+            next.invariants()
+                .iter()
+                .find(|candidate| candidate.id() == invariant.id())
+                != Some(invariant)
+        }) {
+            return false;
+        }
+    }
+    let relationship_retired = parent.schema().relationships().iter().any(|old| {
+        candidate.schema().entity(old.source_entity()).is_some()
+            && candidate.schema().relationships().iter().all(|next| {
+                next.source_entity() != old.source_entity() || next.name() != old.name()
+            })
+    });
+    let unique_retired = parent.schema().unique_keys().iter().any(|old| {
+        candidate.schema().entity(old.source_entity()).is_some()
+            && candidate.schema().unique_keys().iter().all(|next| {
+                next.source_entity() != old.source_entity() || next.name() != old.name()
+            })
+    });
+    !relationship_retired && !unique_retired
 }
 
 fn artifact_mismatch() -> MigrationFinding {
@@ -1534,17 +1887,57 @@ fn expected_gate_a_steps(
     candidate: &ValidatedContractBundle,
 ) -> Result<BTreeSet<GateAStepKey>, MigrationFinding> {
     let mut expected = BTreeSet::new();
+    let rekeyed = candidate
+        .bundle()
+        .schema()
+        .entities()
+        .iter()
+        .filter_map(|entity| {
+            let old = parent.bundle().schema().entity(entity.id())?;
+            (old.primary_key_fields() != entity.primary_key_fields()
+                || old.primary_key() != entity.primary_key())
+            .then_some(entity.id())
+        })
+        .collect::<BTreeSet<_>>();
+    let mut reindexed = rekeyed.clone();
+    for aggregate in candidate.bundle().schema().aggregates() {
+        let Some(old) = parent.bundle().schema().aggregate(aggregate.id()) else {
+            continue;
+        };
+        if old.root() != aggregate.root() || old.children() != aggregate.children() {
+            expected.insert(GateAStepKey::Aggregate(aggregate.id()));
+            reindexed.extend(
+                std::iter::once(aggregate.root()).chain(aggregate.children().iter().copied()),
+            );
+        }
+        if old.keys() != aggregate.keys() {
+            expected.insert(GateAStepKey::Repartition(aggregate.id()));
+            expected.insert(GateAStepKey::Conflict(aggregate.id()));
+            reindexed.extend(
+                std::iter::once(aggregate.root()).chain(aggregate.children().iter().copied()),
+            );
+        }
+    }
     for entity in candidate.bundle().schema().entities() {
         let Some(old) = parent.bundle().schema().entity(entity.id()) else {
             continue;
         };
+        if rekeyed.contains(&entity.id()) {
+            expected.insert(GateAStepKey::Rekey(entity.id()));
+        }
         for field in entity.record().fields() {
             if old.record().field(field.id()).is_none() && !field.value_type().is_optional() {
                 expected.insert(GateAStepKey::SetField(entity.id(), field.id()));
             }
         }
         for index in entity.indexes() {
-            if old.indexes().iter().all(|old| old.id() != index.id()) {
+            if reindexed.contains(&entity.id())
+                || old
+                    .indexes()
+                    .iter()
+                    .find(|old| old.id() == index.id())
+                    .is_none_or(|old| old != index)
+            {
                 expected.insert(GateAStepKey::RebuildIndex(entity.id(), index.id()));
             }
         }
@@ -1558,16 +1951,29 @@ fn expected_gate_a_steps(
             }
         }
     }
+    let old_relationships = parent
+        .bundle()
+        .schema()
+        .relationships()
+        .iter()
+        .map(|relationship| {
+            (
+                (relationship.source_entity(), relationship.name()),
+                relationship,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     for relationship in candidate.bundle().schema().relationships() {
         if parent
             .bundle()
             .schema()
             .entity(relationship.source_entity())
             .is_some()
-            && parent.bundle().schema().relationships().iter().all(|old| {
-                old.source_entity() != relationship.source_entity()
-                    || old.name() != relationship.name()
-            })
+            && (rekeyed.contains(&relationship.source_entity())
+                || rekeyed.contains(&relationship.target_entity())
+                || old_relationships
+                    .get(&(relationship.source_entity(), relationship.name()))
+                    .is_none_or(|old| *old != relationship))
         {
             expected.insert(GateAStepKey::Relationship(
                 relationship.source_entity(),
@@ -1575,15 +1981,23 @@ fn expected_gate_a_steps(
             ));
         }
     }
+    let old_unique = parent
+        .bundle()
+        .schema()
+        .unique_keys()
+        .iter()
+        .map(|unique| ((unique.source_entity(), unique.name()), unique))
+        .collect::<BTreeMap<_, _>>();
     for unique in candidate.bundle().schema().unique_keys() {
         if parent
             .bundle()
             .schema()
             .entity(unique.source_entity())
             .is_some()
-            && parent.bundle().schema().unique_keys().iter().all(|old| {
-                old.source_entity() != unique.source_entity() || old.name() != unique.name()
-            })
+            && (rekeyed.contains(&unique.source_entity())
+                || old_unique
+                    .get(&(unique.source_entity(), unique.name()))
+                    .is_none_or(|old| *old != unique))
         {
             expected.insert(GateAStepKey::Unique(
                 unique.source_entity(),
@@ -1751,30 +2165,26 @@ fn derive_partition(
 fn derive_indexes(
     plan: &ValidatedMigrationPlan,
     entity: &EntitySchema,
-    source: &StoredEntityRecordV1,
+    target: &EntityTarget,
     record: &CanonicalRecord,
     partition: &riffdb_types::PartitionKey,
+    rebuild_all: bool,
 ) -> Result<Vec<StoredIndexEntryV2>, MigrationFinding> {
-    let Some(required) = plan.rebuilt_indexes.get(&entity.id()) else {
+    let required = plan.rebuilt_indexes.get(&entity.id());
+    if !rebuild_all && required.is_none() {
         return Ok(Vec::new());
-    };
+    }
     let binding = DurableKeySchemaBindingV1::new(
         plan.candidate.lineage().clone(),
         plan.candidate.contract_version(),
         plan.candidate.bundle_hash(),
     );
-    required
+    entity
+        .indexes()
         .iter()
-        .map(|index_id| {
-            let index = entity
-                .indexes()
-                .iter()
-                .find(|index| index.id() == *index_id)
-                .ok_or_else(|| {
-                    MigrationFinding::new(migration_finding_code::INDEX_INVALID)
-                        .entity(entity.id())
-                        .with_index(*index_id)
-                })?;
+        .filter(|index| rebuild_all || required.is_some_and(|ids| ids.contains(&index.id())))
+        .map(|index| {
+            let index_id = index.id();
             let values = index
                 .fields()
                 .iter()
@@ -1783,17 +2193,17 @@ fn derive_indexes(
                         MigrationFinding::new(migration_finding_code::INDEX_INVALID)
                             .entity(entity.id())
                             .with_field(*field)
-                            .with_index(*index_id)
+                            .with_index(index_id)
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let key = index
                 .key_schema()
-                .encode_index(&values, source.target().key().clone())
+                .encode_index(&values, target.key().clone())
                 .map_err(|_| {
                     MigrationFinding::new(migration_finding_code::INDEX_INVALID)
                         .entity(entity.id())
-                        .with_index(*index_id)
+                        .with_index(index_id)
                 })?;
             StoredIndexEntryV2::new(
                 key,
@@ -1804,7 +2214,7 @@ fn derive_indexes(
             .map_err(|_| {
                 MigrationFinding::new(migration_finding_code::INDEX_INVALID)
                     .entity(entity.id())
-                    .with_index(*index_id)
+                    .with_index(index_id)
             })
         })
         .collect()
@@ -1813,7 +2223,7 @@ fn derive_indexes(
 fn derive_relationships(
     plan: &ValidatedMigrationPlan,
     entity: EntityTypeId,
-    source: &StoredEntityRecordV1,
+    source: &EntityTarget,
     record: &CanonicalRecord,
 ) -> Result<Vec<MigrationRelationshipFact>, MigrationFinding> {
     plan.candidate
@@ -1856,7 +2266,7 @@ fn derive_relationships(
             })?;
             Ok(MigrationRelationshipFact {
                 name: relationship.name().to_owned(),
-                source: source.target().clone(),
+                source: source.clone(),
                 target,
             })
         })
@@ -1866,7 +2276,7 @@ fn derive_relationships(
 fn derive_unique(
     plan: &ValidatedMigrationPlan,
     entity: &EntitySchema,
-    source: &StoredEntityRecordV1,
+    source: &EntityTarget,
     record: &CanonicalRecord,
 ) -> Result<Vec<MigrationUniqueFact>, MigrationFinding> {
     plan.candidate
@@ -1909,7 +2319,7 @@ fn derive_unique(
                 entity_type: entity.id(),
                 index: index.id(),
                 prefix: prefix.as_bytes().to_vec(),
-                source: source.target().clone(),
+                source: source.clone(),
             })
         })
         .collect()

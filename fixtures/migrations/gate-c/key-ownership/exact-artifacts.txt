@@ -1,0 +1,8 @@
+schema=riffdb.gate-c-exact-artifacts/v1
+lineage=KeyOwnershipRows
+parent_version=1
+parent_bundle_hash=c0dc1f2483724d6f5b2c9d3ef9e52091410c98354dc4a65a8968a9b04fb9e4e9
+successor_version=2
+successor_bundle_hash=144a13d008de86fcb587230a92acdccfd6b35ecd6dd67be6d209e175252bf97c
+migration_bundle_hash=6c40c758a3471ebe223fa68aa2aa7a104dbd39863b9dea94129b11b15d9593d7
+step_count=12

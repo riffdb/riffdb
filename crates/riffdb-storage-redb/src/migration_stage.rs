@@ -487,6 +487,18 @@ impl MigrationStagePort for RedbContractMigrationStage {
             let predecessor_envelope = current.value().to_vec();
             drop(current);
             if mutation.post_image().is_some() || mutation.retires_source() {
+                if let Some(post_image) = mutation.post_image()
+                    && post_image.target() != mutation.expected().source().target()
+                {
+                    let target_key = encode_entity_key(post_image.target().key());
+                    if entities
+                        .get(target_key)
+                        .map_err(|_| MigrationStageError::Integrity)?
+                        .is_some()
+                    {
+                        return Err(MigrationStageError::Integrity);
+                    }
+                }
                 let retained_record = StoredRetiredEntityRecordV1::new(
                     self.context.operation_id,
                     batch.migration(),
@@ -511,28 +523,32 @@ impl MigrationStagePort for RedbContractMigrationStage {
                 {
                     return Err(MigrationStageError::Integrity);
                 }
-                if let Some(post_image) = mutation.post_image() {
-                    let encoded = encode_entity_record_v1(post_image).map_err(stage_error)?;
-                    entities
-                        .insert(key, encoded.as_bytes())
-                        .map_err(|_| MigrationStageError::Integrity)?;
-                } else {
-                    entities
-                        .remove(key)
-                        .map_err(|_| MigrationStageError::Integrity)?
-                        .ok_or(MigrationStageError::RowChanged)?;
-                    let entity_key = mutation.expected().source().target().key().as_bytes();
-                    let mut obsolete = Vec::new();
-                    for entry in indexes.iter().map_err(|_| MigrationStageError::Integrity)? {
-                        let (index_key, _) = entry.map_err(|_| MigrationStageError::Integrity)?;
-                        if index_key.value().ends_with(entity_key) {
-                            obsolete.push(index_key.value().to_vec());
-                        }
+                entities
+                    .remove(key)
+                    .map_err(|_| MigrationStageError::Integrity)?
+                    .ok_or(MigrationStageError::RowChanged)?;
+                let entity_key = mutation.expected().source().target().key().as_bytes();
+                let mut obsolete = Vec::new();
+                for entry in indexes.iter().map_err(|_| MigrationStageError::Integrity)? {
+                    let (index_key, _) = entry.map_err(|_| MigrationStageError::Integrity)?;
+                    if index_key.value().ends_with(entity_key) {
+                        obsolete.push(index_key.value().to_vec());
                     }
-                    for index_key in obsolete {
-                        indexes
-                            .remove(index_key.as_slice())
-                            .map_err(|_| MigrationStageError::Integrity)?;
+                }
+                for index_key in obsolete {
+                    indexes
+                        .remove(index_key.as_slice())
+                        .map_err(|_| MigrationStageError::Integrity)?;
+                }
+                if let Some(post_image) = mutation.post_image() {
+                    let target_key = encode_entity_key(post_image.target().key());
+                    let encoded = encode_entity_record_v1(post_image).map_err(stage_error)?;
+                    if entities
+                        .insert(target_key, encoded.as_bytes())
+                        .map_err(|_| MigrationStageError::Integrity)?
+                        .is_some()
+                    {
+                        return Err(MigrationStageError::Integrity);
                     }
                 }
             }
