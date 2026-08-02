@@ -1108,7 +1108,9 @@ fn validate_batch_progress(
 fn stage_error(error: StorageError) -> MigrationStageError {
     match error.kind() {
         StorageErrorKind::LimitExceeded => MigrationStageError::LimitExceeded,
-        StorageErrorKind::SequenceExhausted => MigrationStageError::SequenceExhausted,
+        StorageErrorKind::SequenceExhausted | StorageErrorKind::HistoryPruned => {
+            MigrationStageError::SequenceExhausted
+        }
         _ => MigrationStageError::Integrity,
     }
 }

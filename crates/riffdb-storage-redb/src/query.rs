@@ -151,7 +151,8 @@ const fn storage_query_fault(error: &StorageError) -> QueryBackendFault {
         StorageErrorKind::CorruptData
         | StorageErrorKind::IncompatibleFormat
         | StorageErrorKind::InvariantViolation
-        | StorageErrorKind::SequenceExhausted => QueryBackendFault::Integrity,
+        | StorageErrorKind::SequenceExhausted
+        | StorageErrorKind::HistoryPruned => QueryBackendFault::Integrity,
     }
 }
 

@@ -2251,6 +2251,9 @@ fn map_authoritative_error(
         AuthoritativeReadError::Unavailable => PublicError::storage_unavailable().into(),
         AuthoritativeReadError::Cancelled => ServiceFailure::Cancelled,
         AuthoritativeReadError::DeadlineExceeded => ServiceFailure::DeadlineExceeded,
+        // Retired history is a correct-request client outcome (RDB-HISTORY-0102),
+        // never a lower-integrity failure.
+        AuthoritativeReadError::HistoryPruned => PublicError::history_pruned().into(),
         AuthoritativeReadError::Integrity | AuthoritativeReadError::InvalidContinuation => {
             service.internal_failure(operation, InternalDefect::LowerIntegrity)
         }

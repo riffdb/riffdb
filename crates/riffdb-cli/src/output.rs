@@ -63,6 +63,12 @@ pub(crate) enum CommandIdentity {
     BackupCreate,
     BackupRestore,
     BackupOperation,
+    RetentionStatus,
+    RetentionHoldAdd,
+    RetentionHoldRemove,
+    RetentionProjectionDetach,
+    RetentionProjectionReattach,
+    RetentionPrune,
     DemoBudget,
 }
 
@@ -107,6 +113,12 @@ impl CommandIdentity {
             Self::BackupCreate => "backup.create",
             Self::BackupRestore => "backup.restore",
             Self::BackupOperation => "backup.operation",
+            Self::RetentionStatus => "retention.status",
+            Self::RetentionHoldAdd => "retention.hold.add",
+            Self::RetentionHoldRemove => "retention.hold.remove",
+            Self::RetentionProjectionDetach => "retention.projection_detach",
+            Self::RetentionProjectionReattach => "retention.projection_reattach",
+            Self::RetentionPrune => "retention.prune",
             Self::DemoBudget => "demo.budget",
         }
     }

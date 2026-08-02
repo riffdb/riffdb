@@ -104,7 +104,8 @@ pub const fn application_grpc_code(code: ApplicationErrorCode) -> Code {
         | ApplicationErrorCode::QueryUnavailable
         | ApplicationErrorCode::ModuleUnavailable
         | ApplicationErrorCode::CommandExecutionFailed
-        | ApplicationErrorCode::HistoryIncarnationMismatch => Code::FailedPrecondition,
+        | ApplicationErrorCode::HistoryIncarnationMismatch
+        | ApplicationErrorCode::HistoryPruned => Code::FailedPrecondition,
         ApplicationErrorCode::ResponseTooLarge | ApplicationErrorCode::Overloaded => {
             Code::ResourceExhausted
         }
@@ -256,6 +257,7 @@ mod tests {
             PublicErrorKind::InternalDefect,
             PublicErrorKind::CommandExecutionFailed,
             PublicErrorKind::HistoryIncarnationMismatch,
+            PublicErrorKind::HistoryPruned,
             PublicErrorKind::Overloaded,
         ];
         for kind in kinds {
@@ -286,6 +288,7 @@ mod tests {
                 PublicErrorKind::HistoryIncarnationMismatch => {
                     PublicError::history_incarnation_mismatch()
                 }
+                PublicErrorKind::HistoryPruned => PublicError::history_pruned(),
                 PublicErrorKind::Overloaded => PublicError::overloaded(),
             };
             assert_eq!(error.kind(), kind);

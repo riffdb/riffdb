@@ -36,8 +36,8 @@ use crate::batch::{
 use crate::cli::{
     ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli, CommandCommand,
     CommitCommand, ContractCommand, ContractSelectionArgs, DemoCommand, EntityCommand,
-    EventCommand, MigrationCommand, OutputMode, ProjectionCommand, QueryCommand, RevocationReason,
-    RoleActorKind, RoleCommand, ServerCommand, TopLevel,
+    EventCommand, MigrationCommand, OutputMode, ProjectionCommand, QueryCommand, RetentionCommand,
+    RetentionHoldCommand, RevocationReason, RoleActorKind, RoleCommand, ServerCommand, TopLevel,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -635,6 +635,7 @@ async fn dispatch(
         }
         TopLevel::Server { command } => server_command(command, config, environment).await,
         TopLevel::Backup { command } => backup_command(command, config, environment).await,
+        TopLevel::Retention { command } => retention_command(command),
         TopLevel::Demo { command } => demo_command(command, config, environment),
     }
 }
@@ -5324,8 +5325,290 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Backup {
             command: BackupCommand::Operation { .. },
         } => CommandIdentity::BackupOperation,
+        TopLevel::Retention {
+            command: RetentionCommand::Status { .. },
+        } => CommandIdentity::RetentionStatus,
+        TopLevel::Retention {
+            command:
+                RetentionCommand::Hold {
+                    command: RetentionHoldCommand::Add { .. },
+                },
+        } => CommandIdentity::RetentionHoldAdd,
+        TopLevel::Retention {
+            command:
+                RetentionCommand::Hold {
+                    command: RetentionHoldCommand::Remove { .. },
+                },
+        } => CommandIdentity::RetentionHoldRemove,
+        TopLevel::Retention {
+            command: RetentionCommand::ProjectionDetach { .. },
+        } => CommandIdentity::RetentionProjectionDetach,
+        TopLevel::Retention {
+            command: RetentionCommand::ProjectionReattach { .. },
+        } => CommandIdentity::RetentionProjectionReattach,
+        TopLevel::Retention {
+            command: RetentionCommand::Prune { .. },
+        } => CommandIdentity::RetentionPrune,
         TopLevel::Demo { .. } => CommandIdentity::DemoBudget,
     }
+}
+
+fn retention_command(command: RetentionCommand) -> Terminal {
+    match command {
+        RetentionCommand::Status { database_path } => {
+            let identity = CommandIdentity::RetentionStatus;
+            if validate_path(&database_path).is_err() {
+                return local_error(identity, "path_invalid", "an input path is invalid");
+            }
+            match riffdb_storage_redb::RedbOfflineRetention::bind(std::path::Path::new(
+                &database_path,
+            ))
+            .status()
+            {
+                Ok(status) => {
+                    let result = RetentionStatusView {
+                        watermark_sequence: status.watermark_sequence.to_string(),
+                        history_incarnation: status.history_incarnation.to_string(),
+                        max_permissible_watermark: status
+                            .max_permissible_watermark
+                            .map(|v| v.to_string()),
+                        fence_binding: format!("{:?}", status.fence_binding),
+                        hold_count: status.holds.holds().len().to_string(),
+                        tombstone_count: status.tombstone_count.to_string(),
+                    };
+                    success(identity, "ok", &result)
+                }
+                Err(_) => local_error(
+                    identity,
+                    "retention_status_failed",
+                    "offline retention status failed",
+                ),
+            }
+        }
+        RetentionCommand::Hold {
+            command:
+                RetentionHoldCommand::Add {
+                    database_path,
+                    hold_id,
+                    sequence,
+                    reason,
+                },
+        } => {
+            let identity = CommandIdentity::RetentionHoldAdd;
+            if validate_path(&database_path).is_err() {
+                return local_error(identity, "path_invalid", "an input path is invalid");
+            }
+            let Ok(sequence) = sequence.parse::<u64>() else {
+                return local_error(identity, "input_invalid", "sequence must be an integer");
+            };
+            match riffdb_storage_redb::RedbOfflineRetention::bind(std::path::Path::new(
+                &database_path,
+            ))
+            .add_hold(hold_id, sequence, reason)
+            {
+                Ok(()) => success(identity, "ok", &RetentionOkView { ok: true }),
+                Err(_) => local_error(
+                    identity,
+                    "retention_hold_add_failed",
+                    "offline retention hold add failed",
+                ),
+            }
+        }
+        RetentionCommand::Hold {
+            command:
+                RetentionHoldCommand::Remove {
+                    database_path,
+                    hold_id,
+                },
+        } => {
+            let identity = CommandIdentity::RetentionHoldRemove;
+            if validate_path(&database_path).is_err() {
+                return local_error(identity, "path_invalid", "an input path is invalid");
+            }
+            match riffdb_storage_redb::RedbOfflineRetention::bind(std::path::Path::new(
+                &database_path,
+            ))
+            .remove_hold(&hold_id)
+            {
+                Ok(()) => success(identity, "ok", &RetentionOkView { ok: true }),
+                Err(_) => local_error(
+                    identity,
+                    "retention_hold_remove_failed",
+                    "offline retention hold remove failed",
+                ),
+            }
+        }
+        RetentionCommand::ProjectionDetach {
+            database_path,
+            projection_id,
+            reason,
+        } => retention_projection_administration(
+            CommandIdentity::RetentionProjectionDetach,
+            &database_path,
+            &projection_id,
+            &reason,
+            ProjectionAdministrationVerb::Detach,
+        ),
+        RetentionCommand::ProjectionReattach {
+            database_path,
+            projection_id,
+            reason,
+        } => retention_projection_administration(
+            CommandIdentity::RetentionProjectionReattach,
+            &database_path,
+            &projection_id,
+            &reason,
+            ProjectionAdministrationVerb::Reattach,
+        ),
+        RetentionCommand::Prune {
+            database_path,
+            target_sequence,
+        } => {
+            let identity = CommandIdentity::RetentionPrune;
+            if validate_path(&database_path).is_err() {
+                return local_error(identity, "path_invalid", "an input path is invalid");
+            }
+            let Ok(target) = target_sequence.parse::<u64>() else {
+                return local_error(
+                    identity,
+                    "input_invalid",
+                    "target_sequence must be an integer",
+                );
+            };
+            let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(
+                std::path::Path::new(&database_path),
+            );
+            match maintenance.prune_to(target) {
+                Ok(status) => {
+                    let result = RetentionStatusView {
+                        watermark_sequence: status.watermark_sequence.to_string(),
+                        history_incarnation: status.history_incarnation.to_string(),
+                        max_permissible_watermark: status
+                            .max_permissible_watermark
+                            .map(|v| v.to_string()),
+                        fence_binding: format!("{:?}", status.fence_binding),
+                        hold_count: status.holds.holds().len().to_string(),
+                        tombstone_count: status.tombstone_count.to_string(),
+                    };
+                    success(identity, "ok", &result)
+                }
+                // Operator diagnosability: a refusal names which fencing
+                // input binds the maximum when the breakdown is readable.
+                Err(_) => match maintenance.status() {
+                    Ok(status) => {
+                        let refusal = RetentionPruneRefusalView {
+                            requested_target: target.to_string(),
+                            max_permissible_watermark: status
+                                .max_permissible_watermark
+                                .map(|v| v.to_string()),
+                            fence_binding: format!("{:?}", status.fence_binding),
+                            watermark_sequence: status.watermark_sequence.to_string(),
+                        };
+                        crate::output::local_error_with(
+                            identity,
+                            &refusal,
+                            "retention_prune_refused",
+                            "offline retention prune refused by fencing",
+                            2,
+                        )
+                    }
+                    Err(_) => local_error(
+                        identity,
+                        "retention_prune_failed",
+                        "offline retention prune failed",
+                    ),
+                },
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ProjectionAdministrationVerb {
+    Detach,
+    Reattach,
+}
+
+fn retention_projection_administration(
+    identity: CommandIdentity,
+    database_path: &std::ffi::OsStr,
+    projection_id: &str,
+    reason: &str,
+    verb: ProjectionAdministrationVerb,
+) -> Terminal {
+    if validate_path(database_path).is_err() {
+        return local_error(identity, "path_invalid", "an input path is invalid");
+    }
+    let Some(projection_id) = projection_id
+        .parse::<u32>()
+        .ok()
+        .and_then(riffdb_types::ProjectionId::new)
+    else {
+        return local_error(
+            identity,
+            "input_invalid",
+            "projection_id must be a nonzero integer",
+        );
+    };
+    let Some(timestamp) = wall_clock_timestamp() else {
+        return local_error(identity, "clock_invalid", "system clock is unreadable");
+    };
+    let maintenance =
+        riffdb_storage_redb::RedbOfflineRetention::bind(std::path::Path::new(database_path));
+    let outcome = match verb {
+        ProjectionAdministrationVerb::Detach => {
+            maintenance.detach_projection(projection_id, reason, timestamp)
+        }
+        ProjectionAdministrationVerb::Reattach => {
+            maintenance.reattach_projection(projection_id, reason, timestamp)
+        }
+    };
+    match (outcome, verb) {
+        (Ok(()), _) => success(identity, "ok", &RetentionOkView { ok: true }),
+        (Err(_), ProjectionAdministrationVerb::Detach) => local_error(
+            identity,
+            "retention_projection_detach_failed",
+            "offline retention projection detach failed",
+        ),
+        (Err(_), ProjectionAdministrationVerb::Reattach) => local_error(
+            identity,
+            "retention_projection_reattach_failed",
+            "offline retention projection reattach failed",
+        ),
+    }
+}
+
+/// Operator wall-clock timestamp for audited offline administration actions
+/// (the storage layer holds no clock; the CLI supplies it).
+fn wall_clock_timestamp() -> Option<riffdb_types::Timestamp> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    let seconds = i64::try_from(now.as_secs()).ok()?;
+    riffdb_types::Timestamp::new(seconds, now.subsec_nanos()).ok()
+}
+
+#[derive(Serialize)]
+struct RetentionStatusView {
+    watermark_sequence: String,
+    history_incarnation: String,
+    max_permissible_watermark: Option<String>,
+    fence_binding: String,
+    hold_count: String,
+    tombstone_count: String,
+}
+
+#[derive(Serialize)]
+struct RetentionOkView {
+    ok: bool,
+}
+
+#[derive(Serialize)]
+struct RetentionPruneRefusalView {
+    requested_target: String,
+    max_permissible_watermark: Option<String>,
+    fence_binding: String,
+    watermark_sequence: String,
 }
 
 #[cfg(test)]

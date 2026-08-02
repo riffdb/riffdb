@@ -33,6 +33,7 @@ use crate::keys::{decode_application_sequence_key, decode_contract_bundle_key};
 use crate::layout::{
     CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS, CONTRACT_BUNDLES, EVENTS, META,
     META_APPLICATION_SEQUENCE, META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
+    META_RETENTION_WATERMARK,
 };
 
 pub(crate) const MANIFEST_FILE_NAME: &str = "manifest.riffdb";
@@ -99,8 +100,195 @@ pub fn stamp_history_incarnation(
         let encoded = codec::encode_history_incarnation_v1(incarnation)?;
         meta.insert(META_HISTORY_INCARNATION, encoded.as_bytes())
             .map_err(precommit_storage_error)?;
+        // Re-bind a present retention watermark to the new incarnation in the
+        // same transaction so startup does not see a stale binding. The
+        // recorded chain-root registry digest is carried forward verbatim:
+        // rooting happened once, at prune time (ADR-0085 A2).
+        let rebind = match meta
+            .get(META_RETENTION_WATERMARK)
+            .map_err(precommit_storage_error)?
+        {
+            None => None,
+            Some(encoded) => {
+                let existing =
+                    riffdb_storage_api::proto_codec::decode_retention_watermark_v1(encoded.value())
+                        .map_err(crate::error::codec_error)?
+                        .into_parts()
+                        .0;
+                if existing.history_incarnation() == incarnation {
+                    None
+                } else {
+                    Some((
+                        existing.watermark_sequence(),
+                        existing.chain_root_registry_digest(),
+                    ))
+                }
+            }
+        };
+        if let Some((sequence, chain_root)) = rebind {
+            let watermark = riffdb_storage_api::StoredRetentionWatermarkV1::new(
+                sequence,
+                incarnation,
+                chain_root,
+            )
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            let stamped =
+                riffdb_storage_api::proto_codec::encode_retention_watermark_v1(&watermark)
+                    .map_err(crate::error::codec_error)?;
+            meta.insert(META_RETENTION_WATERMARK, stamped.as_bytes())
+                .map_err(precommit_storage_error)?;
+        }
     }
     transaction.commit().map_err(commit_error)?;
+    Ok(())
+}
+
+/// Idempotently stamps `retention_watermark/v1` on a closed database file.
+///
+/// Offline-only path used after restore. Writes only when the stored value
+/// differs. Sequence `0` writes an explicit zero watermark bound to the live
+/// history incarnation.
+///
+/// A nonzero stamp requires an existing watermark row: its recorded
+/// chain-root registry digest (the digest current when the tombstone chain
+/// was rooted) is carried forward verbatim. A nonzero stamp with no existing
+/// row would have to fabricate that binding, so it refuses as corrupt — the
+/// database bytes and the manifest disagree about pruned history.
+pub(crate) fn stamp_retention_watermark(
+    path: impl AsRef<Path>,
+    watermark_sequence: u64,
+) -> Result<(), StorageError> {
+    let database = Database::open(path.as_ref()).map_err(database_error)?;
+    let mut transaction = database.begin_write().map_err(transaction_error)?;
+    transaction.set_two_phase_commit(true);
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let (incarnation, current) = {
+        let meta = transaction.open_table(META).map_err(table_error)?;
+        let incarnation = match meta
+            .get(META_HISTORY_INCARNATION)
+            .map_err(precommit_storage_error)?
+        {
+            None => HISTORY_INCARNATION_INITIAL,
+            Some(encoded) => {
+                let value = *codec::decode_history_incarnation_v1(encoded.value())?.value();
+                if value < HISTORY_INCARNATION_INITIAL {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                value
+            }
+        };
+        let current = match meta
+            .get(META_RETENTION_WATERMARK)
+            .map_err(precommit_storage_error)?
+        {
+            None => None,
+            Some(encoded) => {
+                let item =
+                    riffdb_storage_api::proto_codec::decode_retention_watermark_v1(encoded.value())
+                        .map_err(crate::error::codec_error)?;
+                Some(item.into_parts().0)
+            }
+        };
+        (incarnation, current)
+    };
+    if current.as_ref().map(|w| w.watermark_sequence()) == Some(watermark_sequence) {
+        return transaction.abort().map_err(precommit_storage_error);
+    }
+    let chain_root = if watermark_sequence == 0 {
+        None
+    } else {
+        match current
+            .as_ref()
+            .and_then(|w| w.chain_root_registry_digest())
+        {
+            Some(digest) => Some(digest),
+            // Nonzero target with no recorded rooting digest: refuse rather
+            // than fabricate a chain-root binding (fail toward retention).
+            None => return Err(storage_error(StorageErrorKind::CorruptData)),
+        }
+    };
+    let watermark = riffdb_storage_api::StoredRetentionWatermarkV1::new(
+        watermark_sequence,
+        incarnation,
+        chain_root,
+    )
+    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    {
+        let mut meta = transaction.open_table(META).map_err(table_error)?;
+        let encoded = riffdb_storage_api::proto_codec::encode_retention_watermark_v1(&watermark)
+            .map_err(crate::error::codec_error)?;
+        meta.insert(META_RETENTION_WATERMARK, encoded.as_bytes())
+            .map_err(precommit_storage_error)?;
+    }
+    transaction.commit().map_err(commit_error)?;
+    Ok(())
+}
+
+/// After restore: stamp watermark from the manifest when history was pruned,
+/// then re-derive a fail-safe ceiling against restored fencing inputs.
+///
+/// Unpruned (`Some(0)` or absent) leaves the meta key absent so a subsequent
+/// history-incarnation bump (restore publication) cannot leave a stale
+/// watermark incarnation binding. Pruned watermarks (`> 0`) are stamped and
+/// re-bound to the live incarnation.
+///
+/// Never advances the watermark past the fencing minimum. May lower the stored
+/// watermark when fencing requires it **and** no tombstone chain claims a higher
+/// pruned end (otherwise the pruned truth is retained so `HistoryPruned` stays
+/// correct).
+pub(crate) fn apply_restored_retention_watermark(
+    path: impl AsRef<Path>,
+    manifest_watermark: Option<u64>,
+) -> Result<(), StorageError> {
+    let path = path.as_ref();
+    let Some(manifest_watermark) = manifest_watermark else {
+        // Pre-RT-B backup: leave absent key (treat as 0).
+        return Ok(());
+    };
+    if manifest_watermark == 0 {
+        // Explicit unpruned: do not invent a zero-watermark meta row. A later
+        // history-incarnation stamp on restore would otherwise desync the binding.
+        return Ok(());
+    }
+    stamp_retention_watermark(path, manifest_watermark)?;
+
+    let database = Database::open(path).map_err(database_error)?;
+    let transaction = database.begin_read().map_err(transaction_error)?;
+    let current = crate::retention::load_watermark(&transaction)?
+        .map(|w| w.watermark_sequence())
+        .unwrap_or(0);
+    let holds = crate::retention::load_holds(&transaction)?;
+    let fencing = crate::retention::collect_fencing_inputs(&transaction, &holds)?;
+    let (max_perm, _) = riffdb_storage_api::compute_max_permissible_watermark(&fencing);
+    let tombstone_end = {
+        let table = transaction
+            .open_table(crate::layout::HISTORY_TOMBSTONES)
+            .map_err(table_error)?;
+        match table.last().map_err(precommit_storage_error)? {
+            None => 0,
+            Some((_, value)) => {
+                let item =
+                    riffdb_storage_api::proto_codec::decode_history_tombstone_v1(value.value())
+                        .map_err(crate::error::codec_error)?;
+                item.into_parts().0.last_sequence()
+            }
+        }
+    };
+    drop(transaction);
+    drop(database);
+
+    // Fail-safe: never store a watermark above the fencing min when one exists,
+    // but never lower below the tombstone chain end (pruned history truth).
+    let mut target = current;
+    if let Some(max_perm) = max_perm {
+        target = target.min(max_perm);
+    }
+    target = target.max(tombstone_end);
+    if target != current {
+        stamp_retention_watermark(path, target)?;
+    }
     Ok(())
 }
 
@@ -183,6 +371,8 @@ struct DatabaseFacts {
     active_catalog: Option<ActiveCatalogPointerV1>,
     last_commit_sequence: Option<CommitSequence>,
     history_incarnation: Option<u64>,
+    /// Explicit post-RT-B watermark (`Some(0)` when unpruned / key absent).
+    retention_watermark_sequence: Option<u64>,
 }
 
 impl DatabaseFacts {
@@ -199,6 +389,9 @@ impl DatabaseFacts {
             self.active_catalog,
             self.last_commit_sequence,
             self.history_incarnation,
+            // Prefer explicit Some(0) when the live DB has no key so new backups
+            // always carry the post-RT-B watermark presence tag.
+            Some(self.retention_watermark_sequence.unwrap_or(0)),
             vec![BackupArtifactChecksumV1::new(NonZeroU32::MIN, checksum)],
             build,
         )
@@ -289,6 +482,12 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
         if let Some(controller) = &self.test_controller {
             controller.after_commit(RedbTestOperation::Restore)?;
         }
+        // Stamp/re-derive the retention watermark from the manifest so restore
+        // of pre-stamp artifacts and fencing drift stay fail-safe (ADR-0085 A2).
+        apply_restored_retention_watermark(
+            &target_artifact,
+            manifest.retention_watermark_sequence(),
+        )?;
         Ok(OfflineRestoreResultV1::Restored {
             manifest: Box::new(manifest),
         })
@@ -323,6 +522,11 @@ fn open_database_with_facts(path: &Path) -> Result<(Database, DatabaseFacts), St
         Some(encoded) => Some(*codec::decode_history_incarnation_v1(encoded.value())?.value()),
     };
     drop(meta);
+    // Watermark: 0 when absent (pre-RT-B / unpruned). Exposed as Some for new
+    // backup manifests; allocator fencing uses the effective sequence.
+    let retention_watermark_sequence =
+        crate::retention::load_watermark(&transaction)?.map(|w| w.watermark_sequence());
+    let effective_watermark = retention_watermark_sequence.unwrap_or(0);
 
     let bundle_table = transaction
         .open_table(CONTRACT_BUNDLES)
@@ -369,8 +573,21 @@ fn open_database_with_facts(path: &Path) -> Result<(Database, DatabaseFacts), St
     let events = transaction.open_table(EVENTS).map_err(table_error)?;
     let last_commit_sequence = match commits.last().map_err(precommit_storage_error)? {
         None => {
+            // Empty commits table: either never-written, or fully pruned.
+            // Accept an advanced allocator only when the watermark covers the
+            // pruned prefix exactly (allocator Next(n) ⇔ watermark == n-1;
+            // Exhausted ⇔ watermark == u64::MAX).
             if allocator != ApplicationSequenceAllocator::initial() {
-                return Err(corrupt());
+                let covered = match allocator {
+                    ApplicationSequenceAllocator::Next(next) => {
+                        let expected_watermark = next.get().saturating_sub(1);
+                        effective_watermark == expected_watermark && effective_watermark > 0
+                    }
+                    ApplicationSequenceAllocator::Exhausted => effective_watermark == u64::MAX,
+                };
+                if !covered {
+                    return Err(corrupt());
+                }
             }
             None
         }
@@ -380,6 +597,11 @@ fn open_database_with_facts(path: &Path) -> Result<(Database, DatabaseFacts), St
                 .into_parts()
                 .0;
             if commit.commit_sequence() != sequence {
+                return Err(corrupt());
+            }
+            // Retained last commit must sit strictly above the pruned prefix
+            // when any history was pruned (watermark covers [1, watermark]).
+            if effective_watermark > 0 && sequence.get() <= effective_watermark {
                 return Err(corrupt());
             }
             let expected_allocator = sequence.checked_next().map_or(
@@ -404,6 +626,7 @@ fn open_database_with_facts(path: &Path) -> Result<(Database, DatabaseFacts), St
             active_catalog,
             last_commit_sequence,
             history_incarnation,
+            retention_watermark_sequence,
         },
     ))
 }
@@ -465,13 +688,17 @@ pub(crate) fn validate_database_semantics(
 }
 
 impl DatabaseFacts {
-    /// Exact non-history semantic match plus the fence-compatible history rule.
+    /// Exact non-history semantic match plus fence-compatible history/watermark rules.
     ///
     /// When both the manifest and artifact carry a history incarnation, the
     /// manifest value must be ≤ the artifact value (startup may only advance it
     /// via accepted migrations). A pre-fence manifest without the field remains
     /// acceptable. A manifest that claims an incarnation the artifact lacks is
     /// corrupt.
+    ///
+    /// Watermark: effective sequences (absent → 0) must match. A post-RT-B
+    /// restore may re-derive a lower watermark under fencing; the artifact may
+    /// therefore be ≤ the manifest claim, never greater without an equal stamp.
     fn semantically_match_manifest(
         &self,
         manifest: &OfflineBackupManifestV1,
@@ -494,11 +721,15 @@ impl DatabaseFacts {
         }
         match (manifest.history_incarnation(), self.history_incarnation) {
             (Some(from_manifest), Some(from_artifact)) if from_manifest > from_artifact => {
-                Ok(false)
+                return Ok(false);
             }
-            (Some(_), None) => Ok(false),
-            _ => Ok(true),
+            (Some(_), None) => return Ok(false),
+            _ => {}
         }
+        let artifact_watermark = self.retention_watermark_sequence.unwrap_or(0);
+        let manifest_watermark = manifest.effective_retention_watermark_sequence();
+        // Artifact may be lower after fail-safe re-derive; never higher.
+        Ok(artifact_watermark <= manifest_watermark)
     }
 }
 
@@ -516,21 +747,42 @@ fn manifest_checksum(
     Ok(checksum.checksum().clone())
 }
 
-fn encode_manifest(manifest: &OfflineBackupManifestV1) -> Result<Vec<u8>, StorageError> {
-    encode_manifest_with_history_field(manifest, true)
+#[derive(Clone, Copy)]
+enum ManifestWireEra {
+    /// History + retention watermark presence tags (newest).
+    PostRetention,
+    /// History presence tag only (post ADR-0072, pre ADR-0085 A2).
+    PreRetention,
+    /// Neither field (pre ADR-0072).
+    PreFence,
 }
 
-/// Pre-fence encoding omits the history-incarnation presence tag entirely.
-fn encode_manifest_pre_fence(manifest: &OfflineBackupManifestV1) -> Result<Vec<u8>, StorageError> {
-    if manifest.history_incarnation().is_some() {
+fn encode_manifest(manifest: &OfflineBackupManifestV1) -> Result<Vec<u8>, StorageError> {
+    encode_manifest_for_era(manifest, ManifestWireEra::PostRetention)
+}
+
+/// History-only encoding (post-fence / pre-RT-B).
+fn encode_manifest_pre_retention(
+    manifest: &OfflineBackupManifestV1,
+) -> Result<Vec<u8>, StorageError> {
+    if manifest.retention_watermark_sequence().is_some() {
         return Err(corrupt());
     }
-    encode_manifest_with_history_field(manifest, false)
+    encode_manifest_for_era(manifest, ManifestWireEra::PreRetention)
 }
 
-fn encode_manifest_with_history_field(
+/// Pre-fence encoding omits history and watermark presence tags entirely.
+fn encode_manifest_pre_fence(manifest: &OfflineBackupManifestV1) -> Result<Vec<u8>, StorageError> {
+    if manifest.history_incarnation().is_some() || manifest.retention_watermark_sequence().is_some()
+    {
+        return Err(corrupt());
+    }
+    encode_manifest_for_era(manifest, ManifestWireEra::PreFence)
+}
+
+fn encode_manifest_for_era(
     manifest: &OfflineBackupManifestV1,
-    include_history_field: bool,
+    era: ManifestWireEra,
 ) -> Result<Vec<u8>, StorageError> {
     if manifest.manifest_version() != BackupManifestVersion::V1
         || manifest.snapshot_kind() != BackupSnapshotKindV1::StorageEngineData
@@ -578,12 +830,24 @@ fn encode_manifest_with_history_field(
             output.u64(sequence.get())?;
         }
     }
-    if include_history_field {
-        match manifest.history_incarnation() {
+    match era {
+        ManifestWireEra::PostRetention | ManifestWireEra::PreRetention => {
+            match manifest.history_incarnation() {
+                None => output.u8(0)?,
+                Some(incarnation) => {
+                    output.u8(1)?;
+                    output.u64(incarnation)?;
+                }
+            }
+        }
+        ManifestWireEra::PreFence => {}
+    }
+    if matches!(era, ManifestWireEra::PostRetention) {
+        match manifest.retention_watermark_sequence() {
             None => output.u8(0)?,
-            Some(incarnation) => {
+            Some(sequence) => {
                 output.u8(1)?;
-                output.u64(incarnation)?;
+                output.u64(sequence)?;
             }
         }
     }
@@ -605,16 +869,20 @@ fn decode_manifest(encoded: &[u8]) -> Result<OfflineBackupManifestV1, StorageErr
     if encoded.len() > MANIFEST_MAX_BYTES {
         return Err(limit_exceeded());
     }
-    // Prefer post-fence (presence-tagged history field). Fall back to pre-fence
-    // bytes that omit the field entirely (accept-and-stamp at restore). On any
-    // post-fence parse/canonicalization mismatch, try the pre-fence parser
-    // rather than fail closed — pre-fence bytes can partially parse as post-fence.
-    if let Ok(manifest) = decode_manifest_body(encoded, true)
+    // Triple-path: newest (history+watermark) → history-only → pre-fence.
+    // Prefer round-trip equality so older eras that partially parse as newer
+    // fall through to the correct decoder.
+    if let Ok(manifest) = decode_manifest_body(encoded, ManifestWireEra::PostRetention)
         && encode_manifest(&manifest)? == encoded
     {
         return Ok(manifest);
     }
-    let manifest = decode_manifest_body(encoded, false)?;
+    if let Ok(manifest) = decode_manifest_body(encoded, ManifestWireEra::PreRetention)
+        && encode_manifest_pre_retention(&manifest)? == encoded
+    {
+        return Ok(manifest);
+    }
+    let manifest = decode_manifest_body(encoded, ManifestWireEra::PreFence)?;
     if encode_manifest_pre_fence(&manifest)? != encoded {
         return Err(corrupt());
     }
@@ -623,7 +891,7 @@ fn decode_manifest(encoded: &[u8]) -> Result<OfflineBackupManifestV1, StorageErr
 
 fn decode_manifest_body(
     encoded: &[u8],
-    include_history_field: bool,
+    era: ManifestWireEra,
 ) -> Result<OfflineBackupManifestV1, StorageError> {
     let mut input = ManifestDecoder::new(encoded);
     if input.bytes(MANIFEST_MAGIC.len())? != MANIFEST_MAGIC {
@@ -668,8 +936,8 @@ fn decode_manifest_body(
         1 => Some(CommitSequence::new(input.u64()?).ok_or_else(corrupt)?),
         _ => return Err(corrupt()),
     };
-    let history_incarnation = if include_history_field {
-        match input.u8()? {
+    let history_incarnation = match era {
+        ManifestWireEra::PostRetention | ManifestWireEra::PreRetention => match input.u8()? {
             0 => None,
             1 => {
                 let incarnation = input.u64()?;
@@ -679,9 +947,16 @@ fn decode_manifest_body(
                 Some(incarnation)
             }
             _ => return Err(corrupt()),
-        }
-    } else {
-        None
+        },
+        ManifestWireEra::PreFence => None,
+    };
+    let retention_watermark_sequence = match era {
+        ManifestWireEra::PostRetention => match input.u8()? {
+            0 => None,
+            1 => Some(input.u64()?),
+            _ => return Err(corrupt()),
+        },
+        ManifestWireEra::PreRetention | ManifestWireEra::PreFence => None,
     };
 
     if input.u32()? != 1 {
@@ -716,8 +991,9 @@ fn decode_manifest_body(
         enabled_features,
     )
     .map_err(value_error)?;
-    if include_history_field {
-        OfflineBackupManifestV1::new(
+    let checksums = vec![BackupArtifactChecksumV1::new(ordinal, checksum)];
+    match era {
+        ManifestWireEra::PostRetention => OfflineBackupManifestV1::new(
             storage_format_version,
             database_id,
             BackupSnapshotKindV1::StorageEngineData,
@@ -725,22 +1001,34 @@ fn decode_manifest_body(
             active_catalog,
             last_commit_sequence,
             history_incarnation,
-            vec![BackupArtifactChecksumV1::new(ordinal, checksum)],
+            retention_watermark_sequence,
+            checksums,
             build,
         )
-        .map_err(value_error)
-    } else {
-        OfflineBackupManifestV1::new_pre_fence(
+        .map_err(value_error),
+        ManifestWireEra::PreRetention => OfflineBackupManifestV1::new_pre_retention(
             storage_format_version,
             database_id,
             BackupSnapshotKindV1::StorageEngineData,
             catalog_bundles,
             active_catalog,
             last_commit_sequence,
-            vec![BackupArtifactChecksumV1::new(ordinal, checksum)],
+            history_incarnation,
+            checksums,
             build,
         )
-        .map_err(value_error)
+        .map_err(value_error),
+        ManifestWireEra::PreFence => OfflineBackupManifestV1::new_pre_fence(
+            storage_format_version,
+            database_id,
+            BackupSnapshotKindV1::StorageEngineData,
+            catalog_bundles,
+            active_catalog,
+            last_commit_sequence,
+            checksums,
+            build,
+        )
+        .map_err(value_error),
     }
 }
 
@@ -1487,6 +1775,7 @@ mod tests {
             active_catalog: None,
             last_commit_sequence: None,
             history_incarnation: Some(1),
+            retention_watermark_sequence: None,
         }
         .into_manifest(checksum, build_metadata())
         .expect("manifest");
@@ -1496,13 +1785,14 @@ mod tests {
             manifest
         );
         let golden_digest: [u8; SHA256_BYTES] = Sha256::digest(&encoded).into();
-        // Encoding grows by the presence-tagged history_incarnation field; digest is
-        // recomputed whenever the durable layout of this fixture changes intentionally.
+        // Encoding includes presence-tagged history + retention watermark fields;
+        // recompute whenever the durable layout of this fixture changes intentionally.
+        // Printed on failure so the new golden can be pasted deliberately.
         assert_eq!(
             golden_digest,
             [
-                98, 103, 172, 112, 38, 182, 112, 170, 150, 145, 173, 122, 22, 2, 234, 237, 12, 227,
-                218, 76, 37, 220, 133, 3, 47, 44, 214, 244, 252, 204, 145, 19,
+                18, 11, 58, 227, 42, 195, 101, 222, 240, 162, 254, 83, 202, 105, 64, 139, 72, 29,
+                26, 43, 124, 27, 87, 57, 5, 168, 198, 17, 233, 47, 197, 99,
             ],
             "manifest v1 encoding is a durable compatibility boundary"
         );
@@ -1527,9 +1817,8 @@ mod tests {
     }
 
     #[test]
-    fn semantic_bytes_tri_state_matches_real_encoder_lengths() {
-        // W5: pre-fence absent / post-fence None / post-fence Some must charge
-        // the same deltas the real encoder emits.
+    fn semantic_bytes_wire_eras_match_real_encoder_lengths() {
+        // pre-fence / pre-retention / post-retention (None watermark) / post-retention Some
         let checksum = BackupIntegrityChecksumV1::new(vec![0x5a; SHA256_BYTES]).expect("checksum");
         let build = build_metadata();
         let pre = OfflineBackupManifestV1::new_pre_fence(
@@ -1546,22 +1835,7 @@ mod tests {
             build.clone(),
         )
         .expect("pre-fence");
-        let post_none = OfflineBackupManifestV1::new(
-            StorageFormatVersion::V1,
-            database_id(),
-            BackupSnapshotKindV1::StorageEngineData,
-            Vec::new(),
-            None,
-            None,
-            None,
-            vec![BackupArtifactChecksumV1::new(
-                NonZeroU32::MIN,
-                checksum.clone(),
-            )],
-            build.clone(),
-        )
-        .expect("post-fence None");
-        let post_some = OfflineBackupManifestV1::new(
+        let history_only = OfflineBackupManifestV1::new_pre_retention(
             StorageFormatVersion::V1,
             database_id(),
             BackupSnapshotKindV1::StorageEngineData,
@@ -1569,76 +1843,117 @@ mod tests {
             None,
             None,
             Some(1),
+            vec![BackupArtifactChecksumV1::new(
+                NonZeroU32::MIN,
+                checksum.clone(),
+            )],
+            build.clone(),
+        )
+        .expect("pre-retention");
+        let post_wm_none = OfflineBackupManifestV1::new(
+            StorageFormatVersion::V1,
+            database_id(),
+            BackupSnapshotKindV1::StorageEngineData,
+            Vec::new(),
+            None,
+            None,
+            Some(1),
+            None,
+            vec![BackupArtifactChecksumV1::new(
+                NonZeroU32::MIN,
+                checksum.clone(),
+            )],
+            build.clone(),
+        )
+        .expect("post-retention wm None");
+        let post_wm_some = OfflineBackupManifestV1::new(
+            StorageFormatVersion::V1,
+            database_id(),
+            BackupSnapshotKindV1::StorageEngineData,
+            Vec::new(),
+            None,
+            None,
+            Some(1),
+            Some(0),
             vec![BackupArtifactChecksumV1::new(NonZeroU32::MIN, checksum)],
             build,
         )
-        .expect("post-fence Some");
+        .expect("post-retention wm Some(0)");
 
         assert!(!pre.history_wire_tagged());
-        assert!(post_none.history_wire_tagged());
-        assert!(post_some.history_wire_tagged());
-        assert_eq!(pre.history_incarnation(), None);
-        assert_eq!(post_none.history_incarnation(), None);
-        assert_eq!(post_some.history_incarnation(), Some(1));
+        assert!(!pre.retention_watermark_wire_tagged());
+        assert!(history_only.history_wire_tagged());
+        assert!(!history_only.retention_watermark_wire_tagged());
+        assert!(post_wm_none.retention_watermark_wire_tagged());
+        assert!(post_wm_some.retention_watermark_wire_tagged());
 
         let encoded_pre = encode_manifest_pre_fence(&pre).expect("encode pre");
-        let encoded_none = encode_manifest(&post_none).expect("encode none");
-        let encoded_some = encode_manifest(&post_some).expect("encode some");
+        let encoded_history =
+            encode_manifest_pre_retention(&history_only).expect("encode history-only");
+        let encoded_wm_none = encode_manifest(&post_wm_none).expect("encode wm none");
+        let encoded_wm_some = encode_manifest(&post_wm_some).expect("encode wm some");
 
-        // Presence-tag only: post-fence None is one byte longer than pre-fence.
-        assert_eq!(encoded_none.len() - encoded_pre.len(), 1);
+        // History presence(1)+u64(8) over pre-fence.
+        assert_eq!(encoded_history.len() - encoded_pre.len(), 9);
+        // Watermark presence only (None).
+        assert_eq!(encoded_wm_none.len() - encoded_history.len(), 1);
+        // Watermark Some adds 8 over presence-0.
+        assert_eq!(encoded_wm_some.len() - encoded_wm_none.len(), 8);
         assert_eq!(
-            post_none.semantic_bytes() - pre.semantic_bytes(),
-            encoded_none.len() - encoded_pre.len(),
-            "pre-fence absent vs post-fence None semantic delta must match encoder"
-        );
-        // Some adds presence(1) + u64(8) over None's presence(0).
-        assert_eq!(encoded_some.len() - encoded_none.len(), 8);
-        assert_eq!(
-            post_some.semantic_bytes() - post_none.semantic_bytes(),
-            encoded_some.len() - encoded_none.len(),
-            "post-fence None vs Some semantic delta must match encoder"
+            history_only.semantic_bytes() - pre.semantic_bytes(),
+            encoded_history.len() - encoded_pre.len()
         );
         assert_eq!(
-            post_some.semantic_bytes() - pre.semantic_bytes(),
-            encoded_some.len() - encoded_pre.len(),
-            "pre-fence vs post-fence Some semantic delta must match encoder"
+            post_wm_none.semantic_bytes() - history_only.semantic_bytes(),
+            encoded_wm_none.len() - encoded_history.len()
+        );
+        assert_eq!(
+            post_wm_some.semantic_bytes() - post_wm_none.semantic_bytes(),
+            encoded_wm_some.len() - encoded_wm_none.len()
         );
     }
 
     #[test]
     fn pre_fence_manifest_and_stamp_round_trip() {
         let checksum = BackupIntegrityChecksumV1::new(vec![0x5a; SHA256_BYTES]).expect("checksum");
-        let pre_fence = DatabaseFacts {
-            storage_format_version: StorageFormatVersion::V1,
-            database_id: database_id(),
-            catalog_bundles: Vec::new(),
-            active_catalog: None,
-            last_commit_sequence: None,
-            history_incarnation: None,
-        }
-        .into_manifest(checksum.clone(), build_metadata())
+        // Pre-fence constructor omits both wire tags.
+        let pre_fence = OfflineBackupManifestV1::new_pre_fence(
+            StorageFormatVersion::V1,
+            database_id(),
+            BackupSnapshotKindV1::StorageEngineData,
+            Vec::new(),
+            None,
+            None,
+            vec![BackupArtifactChecksumV1::new(
+                NonZeroU32::MIN,
+                checksum.clone(),
+            )],
+            build_metadata(),
+        )
         .expect("pre-fence manifest");
         let encoded = encode_manifest_pre_fence(&pre_fence).expect("encode pre-fence");
-        let decoded = decode_manifest(&encoded).expect("decode pre-fence via dual-path");
+        let decoded = decode_manifest(&encoded).expect("decode pre-fence via triple-path");
         assert_eq!(decoded.history_incarnation(), None);
+        assert_eq!(decoded.retention_watermark_sequence(), None);
         assert_eq!(decoded.database_id(), pre_fence.database_id());
 
-        // Post-fence encode with presence tag also round-trips.
-        let with_field = DatabaseFacts {
+        // Newest encode with explicit watermark also round-trips.
+        let with_fields = DatabaseFacts {
             storage_format_version: StorageFormatVersion::V1,
             database_id: database_id(),
             catalog_bundles: Vec::new(),
             active_catalog: None,
             last_commit_sequence: None,
             history_incarnation: Some(1),
+            retention_watermark_sequence: None,
         }
         .into_manifest(checksum, build_metadata())
-        .expect("post-fence manifest");
-        let post = encode_manifest(&with_field).expect("encode post-fence");
+        .expect("post-retention manifest");
+        assert_eq!(with_fields.retention_watermark_sequence(), Some(0));
+        let post = encode_manifest(&with_fields).expect("encode post-retention");
         assert_eq!(
-            decode_manifest(&post).expect("decode post-fence"),
-            with_field
+            decode_manifest(&post).expect("decode post-retention"),
+            with_fields
         );
     }
 

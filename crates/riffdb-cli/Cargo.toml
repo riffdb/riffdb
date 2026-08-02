@@ -19,6 +19,7 @@ riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compi
 riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", default-features = false }
 riffdb-diagnostics = { version = "0.1.0", path = "../riffdb-diagnostics", default-features = false }
 riffdb-query-module = { version = "0.1.0", path = "../riffdb-query-module", default-features = false }
+riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }

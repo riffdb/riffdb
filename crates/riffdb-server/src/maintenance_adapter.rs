@@ -1626,7 +1626,8 @@ fn map_start_read_error(
         | StorageErrorKind::IncompatibleFormat
         | StorageErrorKind::LimitExceeded
         | StorageErrorKind::InvariantViolation
-        | StorageErrorKind::SequenceExhausted => {
+        | StorageErrorKind::SequenceExhausted
+        | StorageErrorKind::HistoryPruned => {
             controller.lifecycle.fail_closed(operation_id);
             OfflineMaintenanceStartPortError::Integrity
         }
@@ -1648,7 +1649,8 @@ fn map_receipt_create_error(
         | StorageErrorKind::IncompatibleFormat
         | StorageErrorKind::LimitExceeded
         | StorageErrorKind::InvariantViolation
-        | StorageErrorKind::SequenceExhausted => {
+        | StorageErrorKind::SequenceExhausted
+        | StorageErrorKind::HistoryPruned => {
             controller.lifecycle.fail_closed(operation_id);
             OfflineMaintenanceStartPortError::Integrity
         }
@@ -1668,7 +1670,8 @@ fn map_observation_error(
         | StorageErrorKind::IncompatibleFormat
         | StorageErrorKind::LimitExceeded
         | StorageErrorKind::InvariantViolation
-        | StorageErrorKind::SequenceExhausted => {
+        | StorageErrorKind::SequenceExhausted
+        | StorageErrorKind::HistoryPruned => {
             controller.lifecycle.fail_closed(operation_id);
             OfflineMaintenanceObservationPortError::Integrity
         }

@@ -22,6 +22,8 @@ pub enum StorageErrorKind {
     InvariantViolation,
     /// A sequence or epoch cannot advance without wrapping.
     SequenceExhausted,
+    /// Requested history was retired by retention and is no longer retained.
+    HistoryPruned,
 }
 
 impl StorageErrorKind {
@@ -36,6 +38,7 @@ impl StorageErrorKind {
             Self::LimitExceeded => "storage semantic limit exceeded",
             Self::InvariantViolation => "storage invariant violated",
             Self::SequenceExhausted => "storage sequence is exhausted",
+            Self::HistoryPruned => "requested history has been pruned",
         }
     }
 }
