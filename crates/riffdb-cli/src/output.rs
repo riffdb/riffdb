@@ -64,6 +64,7 @@ pub(crate) enum CommandIdentity {
     RetentionHoldAdd,
     RetentionHoldRemove,
     RetentionProjectionDetach,
+    RetentionProjectionReattach,
     RetentionPrune,
     DemoBudget,
 }
@@ -110,6 +111,7 @@ impl CommandIdentity {
             Self::RetentionHoldAdd => "retention.hold.add",
             Self::RetentionHoldRemove => "retention.hold.remove",
             Self::RetentionProjectionDetach => "retention.projection_detach",
+            Self::RetentionProjectionReattach => "retention.projection_reattach",
             Self::RetentionPrune => "retention.prune",
             Self::DemoBudget => "demo.budget",
         }

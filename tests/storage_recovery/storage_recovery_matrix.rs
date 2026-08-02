@@ -78,6 +78,7 @@ contract StorageRecovery version 1 {
   }
 
   event RowCreated {
+    partition_by (id)
     id: u64
     value: u64
   }
@@ -318,10 +319,14 @@ fn record(value: u64) -> CanonicalRecord {
     .expect("canonical record")
 }
 
-fn target_and_index() -> (EntityTarget, IndexEntryKey, IndexRangeTarget) {
+/// Ordinal-parameterized fixture target: ordinal 1 is the original fixture
+/// shape (entity/partition value 7); later ordinals commit disjoint rows.
+fn target_and_index_at(ordinal: u64) -> (EntityTarget, IndexEntryKey, IndexRangeTarget) {
     let entity_type_id = EntityTypeId::new(1).expect("entity type ID");
     let mut entity_key = EntityKeyBuilder::new(entity_type_id);
-    entity_key.push_u64(7).expect("entity key component");
+    entity_key
+        .push_u64(6 + ordinal)
+        .expect("entity key component");
     let entity_key = entity_key.finish().expect("entity key");
     let target = EntityTarget::new(entity_type_id, entity_key.clone()).expect("entity target");
 
@@ -332,15 +337,24 @@ fn target_and_index() -> (EntityTarget, IndexEntryKey, IndexRangeTarget) {
     let mut prefix = riffdb_storage_api::IndexRangePrefixBuilder::new(index_id);
     prefix.push_u64(10).expect("range component");
     let mut partition = PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("aggregate"));
-    partition.push_u64(7).expect("partition component");
+    partition
+        .push_u64(6 + ordinal)
+        .expect("partition component");
     let range = IndexRangeTarget::new(partition.finish().expect("partition key"), prefix.finish());
     (target, index_key, range)
 }
 
 fn command_fixture() -> CommandFixture {
+    command_fixture_at(1)
+}
+
+/// Ordinal-parameterized committed command: ordinal 1 reproduces the original
+/// fixture exactly; ordinal N commits sequence N over a disjoint entity.
+fn command_fixture_at(ordinal: u64) -> CommandFixture {
     let plan = plan();
-    let sequence = CommitSequence::first();
-    let (target, index_key, range) = target_and_index();
+    let sequence = CommitSequence::new(ordinal).expect("fixture ordinal");
+    let ordinal_u8 = u8::try_from(ordinal).expect("small fixture ordinal");
+    let (target, index_key, range) = target_and_index_at(ordinal);
     let tenant_scope = TenantScope::Tenant(TenantId::new("tenant-a").expect("tenant"));
     let principal = ActorId::new("principal-a").expect("principal");
     let actor = riffdb_types::AdmittedActorContext::new(
@@ -356,14 +370,20 @@ fn command_fixture() -> CommandFixture {
         principal,
         plan.contract_lineage().clone(),
         plan.command_id(),
-        IdempotencyKeyDigest::from_hmac_bytes(DigestKeyId::new(1).expect("digest key"), [0x41; 32]),
+        IdempotencyKeyDigest::from_hmac_bytes(
+            DigestKeyId::new(1).expect("digest key"),
+            [0x40 + ordinal_u8; 32],
+        ),
     );
-    let request_id = RequestId::from_bytes(uuid_bytes(0x31)).expect("request ID");
-    let provenance_id = ProvenanceId::from_bytes(uuid_bytes(0x51)).expect("provenance ID");
+    let request_id = RequestId::from_bytes(uuid_bytes(0x30 + ordinal_u8)).expect("request ID");
+    let provenance_id =
+        ProvenanceId::from_bytes(uuid_bytes(0x50 + ordinal_u8)).expect("provenance ID");
     let logical_time =
         LogicalTime::new(Timestamp::new(1_700_000_001, 0).expect("logical timestamp"));
     let mut partition = PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("aggregate"));
-    partition.push_u64(7).expect("partition component");
+    partition
+        .push_u64(6 + ordinal)
+        .expect("partition component");
     let partition = partition.finish().expect("partition key");
     let pending = StoredPendingAdmissionV1::new(
         identity.clone(),
@@ -632,7 +652,10 @@ fn commit_command_fixture(ports: &RedbOperationalPorts, fixture: &CommandFixture
         panic!("small recovery fixture must reserve");
     };
     let candidate = candidate.assign_sequence().expect("assign sequence");
-    assert_eq!(candidate.assignment().assigned(), CommitSequence::first());
+    assert_eq!(
+        candidate.assignment().assigned(),
+        fixture.records.commit().commit_sequence()
+    );
     candidate
         .stage(fixture.records.clone())
         .expect("stage complete command graph")
@@ -716,6 +739,19 @@ fn prepare_committed_command_database(path: &Path) -> (CommandFixture, StoredInd
     let index_entry = committed_index_entry(&fixture);
     drop(ports);
     (fixture, index_entry)
+}
+
+/// Two real committed commands (sequences 1 and 2, disjoint entities) — the
+/// populated-history shape every retention prune test exercises.
+fn prepare_two_command_database(path: &Path) -> (CommandFixture, CommandFixture) {
+    prepare_command_database(path);
+    let first = command_fixture_at(1);
+    let second = command_fixture_at(2);
+    let ports = open_operational(RedbStore::open(path).expect("reopen command fixture database"));
+    commit_command_fixture(&ports, &first);
+    commit_command_fixture(&ports, &second);
+    drop(ports);
+    (first, second)
 }
 
 fn migration_index_entry(entity_value: u64, partition_value: u64) -> StoredIndexEntryV2 {
@@ -2889,4 +2925,934 @@ fn audit_shaped_history_gets_nonzero_below_bound_sampling() {
         sampled > 2,
         "audit-class rows must be sampled below the bound (observed {sampled})"
     );
+}
+
+// ===================================================================
+// RT-B retention acceptance spine (ADR-0085 Amendment 2): offline prune
+// over REAL committed history. Grown from the independent review's
+// runtime probes; every test asserts the spec-mandated behavior.
+// ===================================================================
+
+/// Marks the outbox intent at `(sequence, 0)` delivered, raw. The canonical
+/// initial state (absent status row) is UNDELIVERED and fences prune.
+fn retention_deliver_outbox_status_raw(path: &Path, sequence: u64) {
+    let database = Database::open(path).expect("open raw for delivered status");
+    let write = database.begin_write().expect("write");
+    {
+        let mut statuses = write
+            .open_table(TableDefinition::<&[u8], &[u8]>::new("outbox_status"))
+            .expect("outbox_status");
+        let event_id = EventId::new(
+            CommitSequence::new(sequence).expect("delivered sequence"),
+            0,
+        );
+        let status = riffdb_storage_api::StoredOutboxStatusV1::delivered(
+            event_id,
+            std::num::NonZeroU32::MIN,
+            riffdb_storage_api::OutboxDestinationIdV1::new("dest-1").expect("dest"),
+            Timestamp::new(1_700_000_005, 0).expect("delivered at"),
+        );
+        let encoded = riffdb_storage_api::proto_codec::encode_outbox_status_v1(&status)
+            .expect("encode delivered status");
+        statuses
+            .insert(retention_event_key(sequence).as_slice(), encoded.as_bytes())
+            .expect("insert delivered status");
+    }
+    write.commit().expect("commit delivered status");
+}
+
+const fn retention_event_key(sequence: u64) -> [u8; 12] {
+    let mut key = [0u8; 12];
+    let bytes = sequence.to_be_bytes();
+    let mut i = 0;
+    while i < 8 {
+        key[i] = bytes[i];
+        i += 1;
+    }
+    key
+}
+
+fn retention_raw_row_present(path: &Path, table_name: &str, key: &[u8]) -> bool {
+    let database = Database::open(path).expect("open raw");
+    let read = database.begin_read().expect("read");
+    let table = read
+        .open_table(TableDefinition::<&[u8], &[u8]>::new(table_name))
+        .expect("table");
+    table.get(key).expect("get").is_some()
+}
+
+fn retention_meta_present(path: &Path, key: &str) -> bool {
+    let database = Database::open(path).expect("open raw");
+    let read = database.begin_read().expect("read");
+    let table = read.open_table(META).expect("meta");
+    table.get(key).expect("get").is_some()
+}
+
+fn retention_tombstones(path: &Path) -> Vec<riffdb_storage_api::StoredHistoryTombstoneV1> {
+    let database = Database::open(path).expect("open raw");
+    let read = database.begin_read().expect("read");
+    let table = read
+        .open_table(TableDefinition::<&[u8], &[u8]>::new("history_tombstones"))
+        .expect("tombstones");
+    table
+        .iter()
+        .expect("iter")
+        .map(|entry| {
+            let (_, value) = entry.expect("entry");
+            riffdb_storage_api::proto_codec::decode_history_tombstone_v1(value.value())
+                .expect("decode tombstone")
+                .into_parts()
+                .0
+        })
+        .collect()
+}
+
+fn retention_delete_raw_row(path: &Path, table_name: &str, key: &[u8]) {
+    let database = Database::open(path).expect("open raw");
+    let write = database.begin_write().expect("write");
+    {
+        let mut table = write
+            .open_table(TableDefinition::<&[u8], &[u8]>::new(table_name))
+            .expect("table");
+        assert!(
+            table.remove(key).expect("remove").is_some(),
+            "doctored row must exist before deletion"
+        );
+    }
+    write.commit().expect("commit doctored deletion");
+}
+
+#[test]
+fn retention_prune_refuses_below_undelivered_outbox_intent() {
+    // Commit 1 leaves outbox intent (1,0) in the canonical absent-status
+    // (undelivered) initial state; the undelivered low-water mark fences the
+    // watermark at 0. Prune REFUSES and deletes nothing.
+    let path = TestDatabasePath::new("retention-undelivered-fence");
+    let _ = prepare_committed_command_database(&path.0);
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+    maintenance.add_hold("cap", 5, "test cap").expect("hold");
+    let outcome = maintenance.prune_to(1);
+    assert!(
+        outcome.is_err(),
+        "prune below an undelivered outbox intent must refuse: {outcome:?}"
+    );
+    let status = maintenance.status().expect("status after refusal");
+    assert_eq!(status.watermark_sequence, 0);
+    assert_eq!(status.tombstone_count, 0);
+    assert!(retention_raw_row_present(
+        &path.0,
+        "commits",
+        &1u64.to_be_bytes()
+    ));
+    assert!(retention_raw_row_present(
+        &path.0,
+        "events",
+        &retention_event_key(1)
+    ));
+}
+
+#[test]
+fn retention_prune_populated_roundtrip_reopens_clean_and_types_pruned_reads() {
+    // The mandated populated-history roundtrip: prune → every pruned row gone,
+    // tombstone counts exact → reopen validates CLEAN → fresh checkpoint
+    // written → reads above the watermark unchanged → reads below typed
+    // HistoryPruned (RDB-HISTORY-0102).
+    let path = TestDatabasePath::new("retention-populated-roundtrip");
+    let (_, second) = prepare_two_command_database(&path.0);
+    retention_deliver_outbox_status_raw(&path.0, 1);
+    retention_deliver_outbox_status_raw(&path.0, 2);
+
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+    maintenance.add_hold("cap", 5, "test cap").expect("hold");
+    let status = maintenance.prune_to(1).expect("prune populated range");
+    assert_eq!(status.watermark_sequence, 1);
+    assert_eq!(status.tombstone_count, 1);
+
+    for table in ["commits", "events", "outbox", "outbox_status"] {
+        let key: &[u8] = if table == "commits" {
+            &1u64.to_be_bytes()
+        } else {
+            &retention_event_key(1)
+        };
+        assert!(
+            !retention_raw_row_present(&path.0, table, key),
+            "{table} row for sequence 1 must be deleted by the prune"
+        );
+        let retained_key: &[u8] = if table == "commits" {
+            &2u64.to_be_bytes()
+        } else {
+            &retention_event_key(2)
+        };
+        assert!(
+            retention_raw_row_present(&path.0, table, retained_key),
+            "{table} row for sequence 2 must be retained"
+        );
+    }
+    let tombstones = retention_tombstones(&path.0);
+    assert_eq!(tombstones.len(), 1);
+    assert_eq!(
+        (
+            tombstones[0].first_sequence(),
+            tombstones[0].last_sequence(),
+            tombstones[0].commits_count(),
+            tombstones[0].events_count(),
+            tombstones[0].outbox_count(),
+            tombstones[0].outbox_status_count(),
+        ),
+        (1, 1, 1, 1, 1, 1),
+        "tombstone must record every pruned row"
+    );
+
+    // Reopen: the tombstone-tolerant walk must be CLEAN on a pruned database.
+    let findings = collect_structural_findings(RedbStore::open(&path.0).expect("reopen pruned"));
+    assert!(
+        findings.is_empty(),
+        "pruned reopen must validate clean: {findings:?}"
+    );
+
+    // A clean full pass writes a FRESH checkpoint bound to the new watermark.
+    complete_startup_pass(RedbStore::open(&path.0).expect("checkpoint pass"));
+    assert!(
+        retention_meta_present(&path.0, "validated_prefix_checkpoint/v1"),
+        "clean pruned validation must write a fresh checkpoint"
+    );
+
+    // Reads above the watermark are unchanged; reads below are typed pruned.
+    let ports = open_operational(RedbStore::open(&path.0).expect("operational reopen"));
+    let retained = ports
+        .read_commit(second.records.commit().commit_sequence())
+        .expect("read retained commit")
+        .expect("retained commit body");
+    assert_eq!(retained.commit_sequence().get(), 2);
+    let retained_event = ports
+        .read_durable_event(EventId::new(CommitSequence::new(2).expect("sequence"), 0))
+        .expect("read retained event")
+        .expect("retained event body");
+    assert_eq!(retained_event.event_id().commit_sequence().get(), 2);
+    let commit_err = ports
+        .read_commit(CommitSequence::first())
+        .expect_err("below-watermark commit read must be typed pruned");
+    assert_eq!(
+        commit_err.kind(),
+        riffdb_storage_api::StorageErrorKind::HistoryPruned
+    );
+    let event_err = ports
+        .read_durable_event(EventId::new(CommitSequence::first(), 0))
+        .expect_err("below-watermark event read must be typed pruned");
+    assert_eq!(
+        event_err.kind(),
+        riffdb_storage_api::StorageErrorKind::HistoryPruned
+    );
+}
+
+#[test]
+fn retention_prune_cannot_pass_durable_history_end() {
+    // One committed command (durable head 1): the application-head fencing
+    // input refuses any watermark past the end of durable history, even under
+    // a permissive operator hold.
+    let path = TestDatabasePath::new("retention-head-fence");
+    let _ = prepare_committed_command_database(&path.0);
+    retention_deliver_outbox_status_raw(&path.0, 1);
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+    maintenance.add_hold("cap", 100, "test cap").expect("hold");
+    let outcome = maintenance.prune_to(50);
+    assert!(
+        outcome.is_err(),
+        "watermark must not pass the durable history end: {outcome:?}"
+    );
+    let status = maintenance.status().expect("status after refusal");
+    assert_eq!(status.watermark_sequence, 0);
+    assert_eq!(
+        status.max_permissible_watermark,
+        Some(1),
+        "durable application head must bind the fencing maximum"
+    );
+    assert_eq!(
+        status.fence_binding,
+        riffdb_storage_api::RetentionFenceBinding::DurableApplicationHead
+    );
+}
+
+#[test]
+fn retention_prune_refuses_on_empty_history() {
+    // Nothing ever committed: the durable head is 0 and pruning anything is
+    // impossible by construction, even under an operator hold.
+    let path = TestDatabasePath::new("retention-empty-history");
+    prepare_command_database(&path.0);
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+    maintenance.add_hold("cap", 5, "test cap").expect("hold");
+    let outcome = maintenance.prune_to(1);
+    assert!(
+        outcome.is_err(),
+        "prune over empty history must refuse: {outcome:?}"
+    );
+}
+
+#[test]
+fn retention_prune_deletes_live_checkpoint_first() {
+    let path = TestDatabasePath::new("retention-checkpoint-delete");
+    prepare_checkpointed_command_database(&path.0);
+    assert!(
+        retention_meta_present(&path.0, "validated_prefix_checkpoint/v1"),
+        "fixture must start with a live checkpoint"
+    );
+    retention_deliver_outbox_status_raw(&path.0, 1);
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+    maintenance.add_hold("cap", 5, "test cap").expect("hold");
+    let _ = maintenance
+        .prune_to(1)
+        .expect("prune checkpointed database");
+    assert!(
+        !retention_meta_present(&path.0, "validated_prefix_checkpoint/v1"),
+        "prune must delete the validated-prefix checkpoint in its first transaction"
+    );
+}
+
+#[test]
+fn retention_stale_checkpoint_bound_to_wrong_watermark_is_ignored() {
+    // A checkpoint written BEFORE the prune (watermark binding 0) restored
+    // after the prune must be IGNORED via WatermarkMismatch and fall back to
+    // full validation. The checkpoint is engineered so every other ignore
+    // condition passes: removing the watermark ignore-arm would let it verify.
+    let path = TestDatabasePath::new("retention-stale-checkpoint");
+    prepare_checkpointed_command_database(&path.0);
+    // Capture the S=1 checkpoint (bound to watermark 0, counts within the
+    // post-prune totals).
+    let stale = {
+        let database = Database::open(&path.0).expect("open raw");
+        let read = database.begin_read().expect("read");
+        let meta = read.open_table(META).expect("meta");
+        meta.get("validated_prefix_checkpoint/v1")
+            .expect("get")
+            .expect("live checkpoint")
+            .value()
+            .to_vec()
+    };
+    // Commit sequence 2 so the retained head stays above the pruned prefix.
+    let second = command_fixture_at(2);
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen for second commit"));
+    commit_command_fixture(&ports, &second);
+    drop(ports);
+    retention_deliver_outbox_status_raw(&path.0, 1);
+    retention_deliver_outbox_status_raw(&path.0, 2);
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+    maintenance.add_hold("cap", 5, "test cap").expect("hold");
+    let _ = maintenance.prune_to(1).expect("prune");
+    assert!(!retention_meta_present(
+        &path.0,
+        "validated_prefix_checkpoint/v1"
+    ));
+    {
+        let database = Database::open(&path.0).expect("open raw");
+        let write = database.begin_write().expect("write");
+        {
+            let mut meta = write.open_table(META).expect("meta");
+            meta.insert("validated_prefix_checkpoint/v1", stale.as_slice())
+                .expect("restore stale checkpoint");
+        }
+        write.commit().expect("commit stale checkpoint");
+    }
+
+    let digest_key = DigestKeyId::new(1).expect("digest key ID");
+    let inputs = StartupValidationInputs::new(
+        Timestamp::new(1_700_000_000, 0).expect("startup timestamp"),
+        ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+            .expect("capability digest inventory"),
+        ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+            .expect("idempotency digest inventory"),
+    );
+    let session = RedbStore::open(&path.0)
+        .expect("open with stale checkpoint")
+        .begin_structural_evidence(inputs)
+        .expect("stale checkpoint must not block the open");
+    assert!(
+        !session.checkpoint_verified(),
+        "a checkpoint bound to the wrong watermark must never verify"
+    );
+    assert_eq!(
+        session.checkpoint_ignored_reason(),
+        Some("watermark_mismatch"),
+        "the stale checkpoint must be ignored by the watermark binding"
+    );
+    drop(session);
+    let findings =
+        collect_structural_findings(RedbStore::open(&path.0).expect("full validation reopen"));
+    assert!(
+        findings.is_empty(),
+        "full validation after ignoring the stale checkpoint must be clean: {findings:?}"
+    );
+}
+
+#[test]
+fn retention_absence_above_watermark_remains_corruption() {
+    // Deliverable: absence NOT covered by the verified tombstone chain is the
+    // same corruption it is today. Doctor away rows ABOVE the watermark; the
+    // walk must refuse or produce authoritative findings.
+    for (label, table, key) in [
+        ("event", "events", retention_event_key(2).to_vec()),
+        ("commit", "commits", 2u64.to_be_bytes().to_vec()),
+    ] {
+        let path = TestDatabasePath::new("retention-doctored-above");
+        let _ = prepare_two_command_database(&path.0);
+        retention_deliver_outbox_status_raw(&path.0, 1);
+        retention_deliver_outbox_status_raw(&path.0, 2);
+        let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+        maintenance.add_hold("cap", 5, "test cap").expect("hold");
+        let _ = maintenance.prune_to(1).expect("prune");
+        retention_delete_raw_row(&path.0, table, &key);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            collect_structural_findings(RedbStore::open(&path.0).expect("reopen doctored database"))
+        }));
+        match outcome {
+            Ok(findings) => assert!(
+                !findings.is_empty(),
+                "doctored {label} above the watermark must stay corruption"
+            ),
+            Err(_) => {
+                // A refused walk (structural error) is an equally valid
+                // fail-closed outcome for uncovered absence.
+            }
+        }
+    }
+}
+
+#[test]
+fn retention_multi_prune_resumes_tombstone_chain() {
+    // The chain-resume path: a second prune (and a crash between sub-range
+    // transactions) continues the tombstone chain — contiguous, hash-linked,
+    // abutting the advanced watermark — and the pruned database still
+    // validates clean.
+    let path = TestDatabasePath::new("retention-chain-resume");
+    let _ = prepare_two_command_database(&path.0);
+    retention_deliver_outbox_status_raw(&path.0, 1);
+    retention_deliver_outbox_status_raw(&path.0, 2);
+
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+    maintenance.add_hold("cap", 5, "test cap").expect("hold");
+    let status = maintenance.prune_to(1).expect("first prune");
+    assert_eq!(status.watermark_sequence, 1);
+
+    // Crash before the resumed sub-range commits: state stays valid at
+    // watermark 1 and the database reopens.
+    let controller = RedbTestController::return_before_commit(
+        riffdb_storage_redb::RedbTestOperation::RetentionPruneSubrange,
+    );
+    let crashed =
+        riffdb_storage_redb::RedbOfflineRetention::bind_with_test_controller(&path.0, controller);
+    let err = crashed
+        .prune_to(2)
+        .expect_err("failpoint before resume commit");
+    assert_eq!(
+        err.kind(),
+        riffdb_storage_api::StorageErrorKind::Unavailable
+    );
+    drop(crashed);
+    let status = maintenance.status().expect("status after aborted resume");
+    assert_eq!(status.watermark_sequence, 1);
+    assert_eq!(status.tombstone_count, 1);
+    drop(RedbStore::open(&path.0).expect("reopen after aborted resume"));
+
+    // Re-run: the chain RESUMES with a second tombstone linked to the first.
+    let status = maintenance.prune_to(2).expect("resumed prune");
+    assert_eq!(status.watermark_sequence, 2);
+    assert_eq!(status.tombstone_count, 2);
+    let tombstones = retention_tombstones(&path.0);
+    assert_eq!(tombstones.len(), 2);
+    assert_eq!(
+        (
+            tombstones[0].first_sequence(),
+            tombstones[0].last_sequence()
+        ),
+        (1, 1)
+    );
+    assert_eq!(
+        (
+            tombstones[1].first_sequence(),
+            tombstones[1].last_sequence()
+        ),
+        (2, 2)
+    );
+    assert_eq!(
+        tombstones[1].previous_tombstone_hash(),
+        Some(tombstones[0].tombstone_hash()),
+        "the resumed tombstone must hash-link to its predecessor"
+    );
+    let findings =
+        collect_structural_findings(RedbStore::open(&path.0).expect("reopen fully pruned"));
+    assert!(
+        findings.is_empty(),
+        "fully pruned reopen must validate clean: {findings:?}"
+    );
+}
+
+#[test]
+fn retention_prune_refuses_when_commit_rows_missing_in_range() {
+    // Pre-delete verification: a commit row already missing inside the
+    // requested range is pre-existing corruption. Prune must REFUSE rather
+    // than launder the absence into "verified pruned".
+    let path = TestDatabasePath::new("retention-predelete-verification");
+    let _ = prepare_committed_command_database(&path.0);
+    retention_deliver_outbox_status_raw(&path.0, 1);
+    retention_delete_raw_row(&path.0, "commits", &1u64.to_be_bytes());
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+    maintenance.add_hold("cap", 5, "test cap").expect("hold");
+    let err = maintenance
+        .prune_to(1)
+        .expect_err("prune over a missing commit row must refuse");
+    assert_eq!(
+        err.kind(),
+        riffdb_storage_api::StorageErrorKind::CorruptData
+    );
+    assert!(
+        retention_raw_row_present(&path.0, "events", &retention_event_key(1)),
+        "a refused prune must not delete sibling rows"
+    );
+    assert!(retention_tombstones(&path.0).is_empty());
+}
+
+#[test]
+fn retention_semantic_chain_forgery_refuses_startup() {
+    // A canonically re-encoded tombstone with a VALID self-hash but forged
+    // semantics must refuse startup validation:
+    // (a) forged per-table counts (count arithmetic),
+    // (b) forged range end (abutment at the watermark).
+    for (label, forge_last, forge_counts) in [("counts", 1u64, 7u64), ("gap", 1u64, 1u64)] {
+        let path = TestDatabasePath::new("retention-chain-forgery");
+        let _ = prepare_two_command_database(&path.0);
+        retention_deliver_outbox_status_raw(&path.0, 1);
+        retention_deliver_outbox_status_raw(&path.0, 2);
+        let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+        maintenance.add_hold("cap", 5, "test cap").expect("hold");
+        let target = if label == "gap" { 2 } else { 1 };
+        let _ = maintenance.prune_to(target).expect("prune");
+        {
+            let database = Database::open(&path.0).expect("open raw");
+            let write = database.begin_write().expect("write");
+            {
+                let mut table = write
+                    .open_table(TableDefinition::<&[u8], &[u8]>::new("history_tombstones"))
+                    .expect("tombstones");
+                let (key_bytes, original) = {
+                    let (key, value) = table
+                        .iter()
+                        .expect("iter")
+                        .next()
+                        .expect("row")
+                        .expect("entry");
+                    (key.value().to_vec(), value.value().to_vec())
+                };
+                let original =
+                    riffdb_storage_api::proto_codec::decode_history_tombstone_v1(&original)
+                        .expect("decode original")
+                        .into_parts()
+                        .0;
+                let forged = riffdb_storage_api::StoredHistoryTombstoneV1::new(
+                    original.first_sequence(),
+                    forge_last,
+                    forge_counts,
+                    forge_counts,
+                    forge_counts,
+                    forge_counts,
+                    original.content_digest(),
+                    original.previous_tombstone_hash(),
+                    original.history_incarnation(),
+                )
+                .expect("forge canonically valid tombstone");
+                let encoded = riffdb_storage_api::proto_codec::encode_history_tombstone_v1(&forged)
+                    .expect("encode forged tombstone");
+                if label == "gap" {
+                    // Drop any later tombstones so the forged [1,1] leaves a
+                    // real gap below watermark 2.
+                    let keys: Vec<Vec<u8>> = table
+                        .iter()
+                        .expect("iter")
+                        .map(|entry| entry.expect("entry").0.value().to_vec())
+                        .collect();
+                    for key in keys {
+                        let _ = table.remove(key.as_slice()).expect("remove");
+                    }
+                }
+                table
+                    .insert(key_bytes.as_slice(), encoded.as_bytes())
+                    .expect("rewrite forged tombstone");
+            }
+            write.commit().expect("commit forgery");
+        }
+        let digest_key = DigestKeyId::new(1).expect("digest key ID");
+        let inputs = StartupValidationInputs::new(
+            Timestamp::new(1_700_000_000, 0).expect("startup timestamp"),
+            ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+                .expect("capability digest inventory"),
+            ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+                .expect("idempotency digest inventory"),
+        );
+        let outcome = RedbStore::open(&path.0)
+            .expect("plain open (canonical bytes)")
+            .begin_structural_evidence(inputs);
+        assert!(
+            outcome.is_err(),
+            "semantic chain forgery ({label}) must refuse startup validation"
+        );
+    }
+}
+
+#[test]
+fn retention_projection_frontier_fences_prune() {
+    // A live projection whose durable frontier is BeforeFirst fences the
+    // watermark at 0; detaching it (audited) releases the fence.
+    use riffdb_types::{ContractLineage, ProjectionFrontierKey, ProjectionId, ProjectionPlanHash};
+
+    let path = TestDatabasePath::new("retention-projection-fence");
+    let _ = prepare_committed_command_database(&path.0);
+    retention_deliver_outbox_status_raw(&path.0, 1);
+    let identity = riffdb_types::ProjectionIdentity::new(
+        ContractLineage::new("retention-fence").expect("lineage"),
+        ProjectionId::new(9).expect("projection id"),
+        ProjectionPlanHash::from_bytes([0x33; 32]),
+    );
+    let control = riffdb_storage_api::StoredProjectionControlV1::new(
+        identity.clone(),
+        riffdb_types::ProjectionGeneration::first(),
+        Some(riffdb_storage_api::ProjectionGenerationPosition::new(
+            riffdb_types::ProjectionGeneration::first(),
+            riffdb_types::FrontierPosition::BeforeFirst,
+        )),
+        None,
+        Some(riffdb_storage_api::PublishedApplyModeV1::Enabled),
+        riffdb_storage_api::ProjectionLifecycleV1::Ready,
+        None,
+    )
+    .expect("projection control");
+    {
+        let database = Database::open(&path.0).expect("open raw");
+        let write = database.begin_write().expect("write");
+        {
+            let mut controls = write
+                .open_table(TableDefinition::<&[u8], &[u8]>::new("projection_frontier"))
+                .expect("projection_frontier");
+            let key = ProjectionFrontierKey::new(identity.clone());
+            let encoded = riffdb_storage_api::proto_codec::encode_projection_control_v1(&control)
+                .expect("encode control");
+            controls
+                .insert(key.as_bytes(), encoded.as_bytes())
+                .expect("insert control");
+        }
+        write.commit().expect("commit control");
+    }
+
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+    maintenance.add_hold("cap", 5, "test cap").expect("hold");
+    let err = maintenance
+        .prune_to(1)
+        .expect_err("projection frontier at BeforeFirst must fence the prune");
+    assert_eq!(
+        err.kind(),
+        riffdb_storage_api::StorageErrorKind::InvariantViolation
+    );
+    let status = maintenance.status().expect("status");
+    assert_eq!(status.max_permissible_watermark, Some(0));
+    assert_eq!(
+        status.fence_binding,
+        riffdb_storage_api::RetentionFenceBinding::ProjectionDurableFrontier
+    );
+
+    // Audited detach releases the projection from the fencing minimum.
+    maintenance
+        .detach_projection(
+            ProjectionId::new(9).expect("projection id"),
+            "replay budget accepted",
+            Timestamp::new(1_700_000_009, 0).expect("timestamp"),
+        )
+        .expect("detach projection");
+    let status = maintenance.prune_to(1).expect("prune after detach");
+    assert_eq!(status.watermark_sequence, 1);
+}
+
+#[test]
+fn retention_pruned_route_resolution_yields_typed_pruned_via_event_replay() {
+    // Real-path RDB-HISTORY-0102: routes are retained under prune, and a
+    // route resolving below the watermark surfaces the typed pruned outcome
+    // through the catalog event-replay join — never an integrity error.
+    use riffdb_catalog::ActiveCatalogSnapshot;
+
+    let path = TestDatabasePath::new("retention-replay-pruned");
+    let _ = prepare_two_command_database(&path.0);
+    retention_deliver_outbox_status_raw(&path.0, 1);
+    retention_deliver_outbox_status_raw(&path.0, 2);
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+    maintenance.add_hold("cap", 5, "test cap").expect("hold");
+    let _ = maintenance.prune_to(1).expect("prune");
+    let route_key = {
+        let mut key = [0u8; 44];
+        key[..32].copy_from_slice(
+            hash_partition_key(command_fixture_at(1).pending.partition_key().as_bytes()).as_bytes(),
+        );
+        key[32..].copy_from_slice(&retention_event_key(1));
+        key
+    };
+    assert!(
+        retention_raw_row_present(&path.0, "event_routes", &route_key),
+        "event routes must be RETAINED under prune"
+    );
+
+    let ports = open_operational(RedbStore::open(&path.0).expect("operational reopen"));
+    let active = ActiveCatalogSnapshot::read(&ports)
+        .expect("catalog read")
+        .expect("active catalog");
+    let replay = active
+        .resolve_event_replay(
+            "RowCreated",
+            [("id", CanonicalValue::U64(7))],
+            ["id", "value"],
+        )
+        .expect("resolve event replay");
+    let error = replay
+        .replay_page(
+            &ports,
+            riffdb_catalog::EventReplayPosition::Initial { after: None },
+            riffdb_storage_api::EventRoutePageLimit::new(
+                std::num::NonZeroU16::new(4).expect("nonzero"),
+            )
+            .expect("limit"),
+            1,
+        )
+        .expect_err("a route below the watermark must surface typed pruned");
+    assert_eq!(
+        error.kind(),
+        riffdb_catalog::EventReplayErrorKind::Storage(
+            riffdb_storage_api::StorageErrorKind::HistoryPruned
+        ),
+        "pruned replay must be the typed outcome, never integrity"
+    );
+}
+
+#[test]
+fn retention_operator_hold_fences_prune() {
+    let path = TestDatabasePath::new("retention-hold-fence");
+    let _ = prepare_two_command_database(&path.0);
+    retention_deliver_outbox_status_raw(&path.0, 1);
+    retention_deliver_outbox_status_raw(&path.0, 2);
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+    maintenance
+        .add_hold("legal-hold", 1, "litigation")
+        .expect("hold");
+    let err = maintenance
+        .prune_to(2)
+        .expect_err("prune past the operator hold must refuse");
+    assert_eq!(
+        err.kind(),
+        riffdb_storage_api::StorageErrorKind::InvariantViolation
+    );
+    let status = maintenance.status().expect("status");
+    assert_eq!(status.max_permissible_watermark, Some(1));
+    assert_eq!(
+        status.fence_binding,
+        riffdb_storage_api::RetentionFenceBinding::OperatorHold
+    );
+    let status = maintenance.prune_to(1).expect("prune at the hold fence");
+    assert_eq!(status.watermark_sequence, 1);
+}
+
+#[test]
+fn retention_staged_migration_frontier_fences_prune() {
+    // An open staged contract migration's frozen application frontier fences
+    // the watermark: history at or below the frozen frontier must survive
+    // until the stage resolves.
+    use riffdb_storage_api::{
+        ContractMigrationArtifactsV1, ContractMigrationJournalStepV1, MigrationScanCursor,
+        StoredContractMigrationJournalV1,
+    };
+    use riffdb_types::{
+        ContractBundleHash, ContractMigrationInputHash, ContractMigrationOperationId,
+        MigrationBundleHash,
+    };
+
+    let path = TestDatabasePath::new("retention-staged-fence");
+    let _ = prepare_two_command_database(&path.0);
+    retention_deliver_outbox_status_raw(&path.0, 1);
+    retention_deliver_outbox_status_raw(&path.0, 2);
+    let operation_id =
+        ContractMigrationOperationId::from_unix_milliseconds_and_random(2, [0x22; 10])
+            .expect("operation id");
+    let journal = StoredContractMigrationJournalV1::new(
+        database_id(),
+        operation_id,
+        ContractMigrationInputHash::from_bytes([0x55; 32]),
+        ContractMigrationArtifactsV1::new(
+            ContractBundleHash::from_bytes([0x66; 32]),
+            ContractBundleHash::from_bytes([0x77; 32]),
+            MigrationBundleHash::from_bytes([0x88; 32]),
+        ),
+        ContractMigrationJournalStepV1::Transforming,
+        MigrationScanCursor::start(),
+        0,
+        0,
+        1,
+        Some(CommitSequence::first()),
+        Vec::new(),
+        None,
+    )
+    .expect("staged journal with frozen frontier");
+    {
+        let database = Database::open(&path.0).expect("open raw");
+        let write = database.begin_write().expect("write");
+        {
+            let mut table = write
+                .open_table(TableDefinition::<&[u8], &[u8]>::new(
+                    "contract_migration_journal",
+                ))
+                .expect("journal table");
+            let encoded =
+                riffdb_storage_api::proto_codec::encode_contract_migration_journal_v1(&journal)
+                    .expect("encode journal");
+            table
+                .insert(operation_id.into_bytes().as_slice(), encoded.as_bytes())
+                .expect("insert journal");
+        }
+        write.commit().expect("commit journal");
+    }
+
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+    maintenance.add_hold("cap", 5, "test cap").expect("hold");
+    let err = maintenance
+        .prune_to(2)
+        .expect_err("prune past the frozen application frontier must refuse");
+    assert_eq!(
+        err.kind(),
+        riffdb_storage_api::StorageErrorKind::InvariantViolation
+    );
+    let status = maintenance.status().expect("status");
+    assert_eq!(status.max_permissible_watermark, Some(1));
+    assert_eq!(
+        status.fence_binding,
+        riffdb_storage_api::RetentionFenceBinding::StagedMigrationFrozenFrontier
+    );
+}
+
+#[test]
+fn retention_after_commit_uncertainty_leaves_durable_subrange() {
+    // CommitStatusUnknown AFTER the sub-range transaction committed: the
+    // sub-range is durable {deleted rows, tombstone, watermark} and the
+    // database reopens valid.
+    let path = TestDatabasePath::new("retention-after-commit");
+    let _ = prepare_committed_command_database(&path.0);
+    retention_deliver_outbox_status_raw(&path.0, 1);
+    let controller = RedbTestController::return_unknown_after_commit(
+        riffdb_storage_redb::RedbTestOperation::RetentionPruneSubrange,
+    );
+    let maintenance =
+        riffdb_storage_redb::RedbOfflineRetention::bind_with_test_controller(&path.0, controller);
+    maintenance.add_hold("cap", 5, "test cap").expect("hold");
+    let err = maintenance.prune_to(1).expect_err("failpoint after commit");
+    assert_eq!(
+        err.kind(),
+        riffdb_storage_api::StorageErrorKind::CommitStatusUnknown
+    );
+    drop(maintenance);
+    let status = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0)
+        .status()
+        .expect("status after uncertainty");
+    assert_eq!(status.watermark_sequence, 1);
+    assert_eq!(status.tombstone_count, 1);
+    let findings =
+        collect_structural_findings(RedbStore::open(&path.0).expect("reopen after uncertainty"));
+    assert!(findings.is_empty(), "durable sub-range must validate clean");
+}
+
+#[test]
+fn retention_tombstone_byte_corruption_refuses_open() {
+    // A byte-flipped tombstone row fails canonical decode at plain open.
+    let path = TestDatabasePath::new("retention-tombstone-byteflip");
+    let _ = prepare_committed_command_database(&path.0);
+    retention_deliver_outbox_status_raw(&path.0, 1);
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+    maintenance.add_hold("cap", 5, "test cap").expect("hold");
+    let _ = maintenance.prune_to(1).expect("prune");
+    {
+        let database = Database::open(&path.0).expect("open raw");
+        let write = database.begin_write().expect("write");
+        {
+            let mut table = write
+                .open_table(TableDefinition::<&[u8], &[u8]>::new("history_tombstones"))
+                .expect("tombstones");
+            let (key_bytes, mut bytes) = {
+                let (key, value) = table
+                    .iter()
+                    .expect("iter")
+                    .next()
+                    .expect("row")
+                    .expect("entry");
+                (key.value().to_vec(), value.value().to_vec())
+            };
+            let last = bytes.len() - 1;
+            bytes[last] ^= 0xff;
+            table
+                .insert(key_bytes.as_slice(), bytes.as_slice())
+                .expect("rewrite");
+        }
+        write.commit().expect("commit corruption");
+    }
+    let err = RedbStore::open(&path.0).expect_err("byte-corrupt tombstone must refuse open");
+    assert_eq!(
+        err.kind(),
+        riffdb_storage_api::StorageErrorKind::CorruptData
+    );
+}
+
+#[test]
+fn retention_backup_of_pruned_database_restores_and_validates() {
+    use riffdb_storage_api::{
+        BackupBuildMetadataV1, OfflineBackupPersistencePort, OfflineRestoreOverwritePolicyV1,
+        OfflineRestorePersistencePort, OfflineRestoreResultV1,
+    };
+
+    let path = TestDatabasePath::new("retention-backup-pruned");
+    let _ = prepare_two_command_database(&path.0);
+    retention_deliver_outbox_status_raw(&path.0, 1);
+    retention_deliver_outbox_status_raw(&path.0, 2);
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+    maintenance.add_hold("cap", 5, "test cap").expect("hold");
+    let status = maintenance.prune_to(1).expect("prune");
+    assert_eq!(status.watermark_sequence, 1);
+
+    let root = std::env::temp_dir().join(format!(
+        "riffdb-retention-backup-{}-{}",
+        std::process::id(),
+        NEXT_PATH.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("backup root");
+    let backup_dir = root.join("backup");
+    let build = BackupBuildMetadataV1::new(
+        "0.1.0",
+        "0123456789abcdef",
+        "rustc-1.97.0",
+        1,
+        vec!["retention".to_owned()],
+    )
+    .expect("build metadata");
+    let mut backup = riffdb_storage_redb::RedbOfflineBackup::bind(&path.0, &backup_dir);
+    let manifest = backup.create_offline_backup(&build).expect("backup");
+    assert_eq!(manifest.retention_watermark_sequence(), Some(1));
+
+    let restore_dir = root.join("restored");
+    std::fs::create_dir_all(&restore_dir).expect("restore dir");
+    let mut restore = riffdb_storage_redb::RedbOfflineRestore::bind(&backup_dir, &restore_dir);
+    let result = restore
+        .restore_offline_backup(OfflineRestoreOverwritePolicyV1::RefuseNonEmpty)
+        .expect("restore");
+    assert!(matches!(result, OfflineRestoreResultV1::Restored { .. }));
+
+    let restored = restore_dir.join("database.redb");
+    let findings = collect_structural_findings(RedbStore::open(&restored).expect("open restored"));
+    assert!(
+        findings.is_empty(),
+        "restored pruned database must validate clean: {findings:?}"
+    );
+    let restored_status = riffdb_storage_redb::RedbOfflineRetention::bind(&restored)
+        .status()
+        .expect("restored status");
+    assert_eq!(restored_status.watermark_sequence, 1);
+    assert_eq!(restored_status.tombstone_count, 1);
+    let _ = std::fs::remove_dir_all(&root);
 }

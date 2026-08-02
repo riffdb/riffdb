@@ -226,7 +226,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
             ("riffdb/storage/v1/registry_v2.proto".to_owned(), vec![]),
             (
                 "riffdb/storage/v1/retention_watermark_v1.proto".to_owned(),
-                vec![],
+                vec!["riffdb/storage/v1/common.proto"],
             ),
             (
                 "riffdb/storage/v1/service_audit_request_index_v1.proto".to_owned(),
@@ -251,8 +251,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        102,
-        "101 semantic messages plus the unchanged StoredEnvelope"
+        103,
+        "102 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -260,7 +260,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.enum_type.len())
             .sum::<usize>(),
-        13
+        15
     );
     assert!(
         descriptors
@@ -281,9 +281,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 42);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 48);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 42);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 43);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 49);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 43);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -323,6 +323,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredRetentionWatermarkV1".to_owned());
     readable_names.push("riffdb.storage.v1.StoredRetentionHoldsV1".to_owned());
     readable_names.push("riffdb.storage.v1.StoredHistoryTombstoneV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredRetentionAdministrationV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     let mut writable_names = legacy_names.clone();
     writable_names[8] = format!("riffdb.storage.v1.{}", INDEX_V2_RECORD.0);
@@ -346,6 +347,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredRetentionWatermarkV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredRetentionHoldsV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredHistoryTombstoneV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredRetentionAdministrationV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredRecordRegistryV2".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
@@ -466,8 +468,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 48);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 42);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 49);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 43);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -617,6 +619,7 @@ fn semantic_optional_wire_presence_is_exact() {
         "StoredHistoryTombstoneV1.previous_tombstone_hash",
         "StoredProjectionControlV1.published_apply_mode",
         "StoredQueryModuleAdministrationV1.approval_id",
+        "StoredRetentionWatermarkV1.chain_root_registry_digest",
         "StoredValidatedPrefixCheckpointV1.previous_checkpoint_hash",
     ]
     .into_iter()
@@ -762,6 +765,8 @@ fn closed_oneof_and_enum_registries_are_exact() {
             ("ProjectionFailureCodeV1", "PROJECTION_FAILURE_CODE_UNSPECIFIED=0,PROJECTION_FAILURE_CODE_ARITHMETIC_OVERFLOW=1,PROJECTION_FAILURE_CODE_MALFORMED_DURABLE_EVENT=2,PROJECTION_FAILURE_CODE_MISSING_COMMIT=3,PROJECTION_FAILURE_CODE_PLAN_OR_SCHEMA_UNAVAILABLE=4,PROJECTION_FAILURE_CODE_PROJECTION_STATE_INTEGRITY=5,PROJECTION_FAILURE_CODE_HARD_LIMIT_EXCEEDED=6"),
             ("ProjectionLifecycleV1", "PROJECTION_LIFECYCLE_UNSPECIFIED=0,PROJECTION_LIFECYCLE_BUILDING=1,PROJECTION_LIFECYCLE_CATCHING_UP=2,PROJECTION_LIFECYCLE_READY=3,PROJECTION_LIFECYCLE_DEGRADED=4,PROJECTION_LIFECYCLE_REBUILDING=5,PROJECTION_LIFECYCLE_INVALID=6"),
             ("PublishedApplyModeV1", "PUBLISHED_APPLY_MODE_UNSPECIFIED=0,PUBLISHED_APPLY_MODE_ENABLED=1,PUBLISHED_APPLY_MODE_SUSPENDED=2"),
+            ("RetentionAdministrationActionV1", "RETENTION_ADMINISTRATION_ACTION_V1_UNSPECIFIED=0,RETENTION_ADMINISTRATION_ACTION_V1_PROJECTION_DETACH=1,RETENTION_ADMINISTRATION_ACTION_V1_PROJECTION_REATTACH=2"),
+            ("RetentionHoldKindV1", "RETENTION_HOLD_KIND_V1_UNSPECIFIED=0,RETENTION_HOLD_KIND_V1_OPERATOR=1,RETENTION_HOLD_KIND_V1_PROJECTION_DETACH=2"),
             ("RevocationReasonCodeV1", "REVOCATION_REASON_CODE_UNSPECIFIED=0,REVOCATION_REASON_CODE_REQUESTED=1,REVOCATION_REASON_CODE_REPLACED=2,REVOCATION_REASON_CODE_SUSPECTED_COMPROMISE=3,REVOCATION_REASON_CODE_POLICY_CHANGE=4"),
             ("ServiceAuditPhaseV1", "SERVICE_AUDIT_PHASE_UNSPECIFIED=0,SERVICE_AUDIT_PHASE_STARTED=1,SERVICE_AUDIT_PHASE_SUCCEEDED=2,SERVICE_AUDIT_PHASE_DENIED=3,SERVICE_AUDIT_PHASE_CANCELLED=4,SERVICE_AUDIT_PHASE_FAILED=5,SERVICE_AUDIT_PHASE_OUTCOME_UNCERTAIN=6"),
             ("ServiceIngressKindV1", "SERVICE_INGRESS_KIND_UNSPECIFIED=0,SERVICE_INGRESS_KIND_GRPC=1,SERVICE_INGRESS_KIND_MCP_HTTP=2,SERVICE_INGRESS_KIND_IN_PROCESS_TEST_COMPARISON=3"),

@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 48;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 49;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 42;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 43;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -138,6 +138,14 @@ const HISTORY_TOMBSTONE_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!
 const HISTORY_TOMBSTONE_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-history-tombstone-v1-record-bound.bin"
+));
+const RETENTION_ADMINISTRATION_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-retention-administration-v1-schema-hash.bin"
+));
+const RETENTION_ADMINISTRATION_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-retention-administration-v1-record-bound.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
@@ -654,6 +662,26 @@ const HISTORY_TOMBSTONE_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::
 )
 .with_compact_identity(41, 1);
 
+const RETENTION_ADMINISTRATION_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredRetentionAdministrationV1",
+    SchemaHash::from_bytes(*RETENTION_ADMINISTRATION_V1_SCHEMA_HASH_BYTES),
+    u32::from_be_bytes([
+        RETENTION_ADMINISTRATION_V1_RECORD_BOUND_BYTES[0],
+        RETENTION_ADMINISTRATION_V1_RECORD_BOUND_BYTES[1],
+        RETENTION_ADMINISTRATION_V1_RECORD_BOUND_BYTES[2],
+        RETENTION_ADMINISTRATION_V1_RECORD_BOUND_BYTES[3],
+    ]) as usize,
+    u32::from_be_bytes([
+        RETENTION_ADMINISTRATION_V1_RECORD_BOUND_BYTES[4],
+        RETENTION_ADMINISTRATION_V1_RECORD_BOUND_BYTES[5],
+        RETENTION_ADMINISTRATION_V1_RECORD_BOUND_BYTES[6],
+        RETENTION_ADMINISTRATION_V1_RECORD_BOUND_BYTES[7],
+    ]) as usize,
+    preflight_payload::<47>,
+    validate_payload::<47, v1::StoredRetentionAdministrationV1>,
+)
+.with_compact_identity(42, 1);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -790,6 +818,10 @@ readable_message!(
     v1::StoredHistoryTombstoneV1,
     HISTORY_TOMBSTONE_V1_RECORD_SCHEMA
 );
+readable_message!(
+    v1::StoredRetentionAdministrationV1,
+    RETENTION_ADMINISTRATION_V1_RECORD_SCHEMA
+);
 
 writable_message!(v1::StoredStorageFormatVersionV1);
 writable_message!(v1::StoredDatabaseIdentityV1);
@@ -833,6 +865,7 @@ writable_message!(v1::StoredValidatedPrefixCheckpointV1);
 writable_message!(v1::StoredRetentionWatermarkV1);
 writable_message!(v1::StoredRetentionHoldsV1);
 writable_message!(v1::StoredHistoryTombstoneV1);
+writable_message!(v1::StoredRetentionAdministrationV1);
 
 /// Encodes one sealed generated message after the same allocation-free shape preflight.
 pub fn encode_current_message<M: WritableRecordMessage>(
@@ -900,6 +933,7 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     RETENTION_WATERMARK_V1_RECORD_SCHEMA,
     RETENTION_HOLDS_V1_RECORD_SCHEMA,
     HISTORY_TOMBSTONE_V1_RECORD_SCHEMA,
+    RETENTION_ADMINISTRATION_V1_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
 ];
 
@@ -946,6 +980,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     RETENTION_WATERMARK_V1_RECORD_SCHEMA,
     RETENTION_HOLDS_V1_RECORD_SCHEMA,
     HISTORY_TOMBSTONE_V1_RECORD_SCHEMA,
+    RETENTION_ADMINISTRATION_V1_RECORD_SCHEMA,
     REGISTRY_V2_RECORD_SCHEMA,
 ];
 

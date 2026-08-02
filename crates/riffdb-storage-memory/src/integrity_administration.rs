@@ -116,6 +116,9 @@ pub(crate) fn inspect_administration_graph(
             inspect_capability_administration(state, record)
         }
         StoredAdministrationAuditRecordV1::Service(record) => inspect_service_record(state, record),
+        // Retention administration records (projection detach/reattach) have
+        // no cross-linked peer row; the semantic decode is the check.
+        StoredAdministrationAuditRecordV1::Retention(_) => None,
     }
 }
 
@@ -590,7 +593,8 @@ fn service_link_is_valid(state: &MemoryState, record: &StoredServiceAuditRecordV
                 }
                 StoredAdministrationAuditRecordV1::Catalog(_)
                 | StoredAdministrationAuditRecordV1::QueryModule(_)
-                | StoredAdministrationAuditRecordV1::Service(_) => true,
+                | StoredAdministrationAuditRecordV1::Service(_)
+                | StoredAdministrationAuditRecordV1::Retention(_) => true,
             };
             operation_kind_matches
                 && target_matches

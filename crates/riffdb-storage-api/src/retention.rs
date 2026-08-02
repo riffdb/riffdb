@@ -1,6 +1,6 @@
 //! Retention watermark, operator holds, and history tombstones (ADR-0085 Amendment 2).
 
-use riffdb_types::{HashDomain, SchemaHash, hash};
+use riffdb_types::{AdministrationSequence, HashDomain, ProjectionId, SchemaHash, Timestamp, hash};
 
 use crate::StorageValueError;
 
@@ -74,30 +74,41 @@ impl HistoryTombstoneContentDigest {
 /// Bound retention watermark (ADR-0085 Amendment 2).
 ///
 /// Sequence 0 means no history has been pruned. Advances only during offline
-/// prune; re-validated (never advanced) at startup.
+/// prune; re-validated (never advanced) at startup. When any history has been
+/// pruned the record durably binds the registry digest CURRENT AT CHAIN
+/// ROOTING; tombstone-chain verification uses that recorded value, never the
+/// process's current digest, so registry migrations cannot invalidate an
+/// existing chain.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoredRetentionWatermarkV1 {
     watermark_sequence: u64,
     history_incarnation: u64,
     watermark_hash: RetentionWatermarkHash,
+    chain_root_registry_digest: Option<SchemaHash>,
 }
 
 impl StoredRetentionWatermarkV1 {
     /// Constructs a watermark and computes its self-hash.
+    ///
+    /// `chain_root_registry_digest` must be present exactly when
+    /// `watermark_sequence > 0` (a tombstone chain exists and is rooted).
     pub fn new(
         watermark_sequence: u64,
         history_incarnation: u64,
+        chain_root_registry_digest: Option<SchemaHash>,
     ) -> Result<Self, StorageValueError> {
         let mut value = Self {
             watermark_sequence,
             history_incarnation,
             watermark_hash: RetentionWatermarkHash::from_bytes([0; 32]),
+            chain_root_registry_digest,
         };
         value.watermark_hash = value.computed_hash()?;
         Self::from_stored_parts(
             value.watermark_sequence,
             value.history_incarnation,
             value.watermark_hash,
+            value.chain_root_registry_digest,
         )
     }
 
@@ -106,14 +117,19 @@ impl StoredRetentionWatermarkV1 {
         watermark_sequence: u64,
         history_incarnation: u64,
         watermark_hash: RetentionWatermarkHash,
+        chain_root_registry_digest: Option<SchemaHash>,
     ) -> Result<Self, StorageValueError> {
         if history_incarnation < crate::HISTORY_INCARNATION_INITIAL {
+            return Err(StorageValueError::InvalidShape);
+        }
+        if (watermark_sequence > 0) != chain_root_registry_digest.is_some() {
             return Err(StorageValueError::InvalidShape);
         }
         let value = Self {
             watermark_sequence,
             history_incarnation,
             watermark_hash,
+            chain_root_registry_digest,
         };
         if value.computed_hash()? != watermark_hash {
             return Err(StorageValueError::IdentityMismatch);
@@ -139,6 +155,13 @@ impl StoredRetentionWatermarkV1 {
         self.watermark_hash
     }
 
+    /// Registry digest recorded when the tombstone chain was rooted, present
+    /// exactly when any history has been pruned.
+    #[must_use]
+    pub const fn chain_root_registry_digest(&self) -> Option<SchemaHash> {
+        self.chain_root_registry_digest
+    }
+
     /// Recomputes the domain-separated self-hash.
     pub fn computed_hash(&self) -> Result<RetentionWatermarkHash, StorageValueError> {
         let mut bytes = Vec::new();
@@ -146,25 +169,67 @@ impl StoredRetentionWatermarkV1 {
         bytes.extend_from_slice(&1_u32.to_be_bytes());
         bytes.extend_from_slice(&self.watermark_sequence.to_be_bytes());
         bytes.extend_from_slice(&self.history_incarnation.to_be_bytes());
+        match self.chain_root_registry_digest {
+            None => bytes.push(0),
+            Some(digest) => {
+                bytes.push(1);
+                bytes.extend_from_slice(digest.as_bytes());
+            }
+        }
         let digest = hash(HashDomain::Schema, &bytes);
         Ok(RetentionWatermarkHash::from_bytes(*digest.as_bytes()))
     }
 }
 
-/// One named operator retention hold.
+/// Typed kind of one retention hold row (never inferred from hold_id shape).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetentionHoldKind {
+    /// Operator sequence floor: binds the fencing minimum.
+    Operator,
+    /// Projection detached from the fencing minimum. The hold_id is the
+    /// decimal projection ID; the sequence carries no meaning and is 0.
+    /// Removed only by the audited projection-reattach administration action.
+    ProjectionDetach,
+}
+
+/// One named retention hold row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetentionHoldV1 {
     hold_id: String,
     sequence: u64,
     reason: String,
+    kind: RetentionHoldKind,
 }
 
 impl RetentionHoldV1 {
-    /// Constructs a hold with validated bounds.
+    /// Constructs an operator hold with validated bounds.
     pub fn new(
         hold_id: impl Into<String>,
         sequence: u64,
         reason: impl Into<String>,
+    ) -> Result<Self, StorageValueError> {
+        Self::from_stored_parts(hold_id, sequence, reason, RetentionHoldKind::Operator)
+    }
+
+    /// Constructs a projection-detach hold for one projection identity.
+    pub fn new_projection_detach(
+        projection_id: ProjectionId,
+        reason: impl Into<String>,
+    ) -> Result<Self, StorageValueError> {
+        Self::from_stored_parts(
+            projection_id.get().to_string(),
+            0,
+            reason,
+            RetentionHoldKind::ProjectionDetach,
+        )
+    }
+
+    /// Reconstructs a semantically checked stored hold.
+    pub fn from_stored_parts(
+        hold_id: impl Into<String>,
+        sequence: u64,
+        reason: impl Into<String>,
+        kind: RetentionHoldKind,
     ) -> Result<Self, StorageValueError> {
         let hold_id = hold_id.into();
         let reason = reason.into();
@@ -177,20 +242,34 @@ impl RetentionHoldV1 {
         {
             return Err(StorageValueError::InvalidShape);
         }
+        if kind == RetentionHoldKind::ProjectionDetach {
+            // Canonical detach identity: the exact decimal of a nonzero
+            // projection ID, and no fencing sequence.
+            let parsed = hold_id
+                .parse::<u32>()
+                .ok()
+                .and_then(ProjectionId::new)
+                .is_some_and(|id| id.get().to_string() == hold_id);
+            if !parsed || sequence != 0 {
+                return Err(StorageValueError::InvalidShape);
+            }
+        }
         Ok(Self {
             hold_id,
             sequence,
             reason,
+            kind,
         })
     }
 
-    /// Operator-chosen identifier (unique within the holds list).
+    /// Hold identifier (unique within the holds list across kinds).
     #[must_use]
     pub fn hold_id(&self) -> &str {
         &self.hold_id
     }
 
     /// Sequence floor this hold enforces (watermark must not exceed).
+    /// Always 0 for projection-detach holds, which never join the minimum.
     #[must_use]
     pub const fn sequence(&self) -> u64 {
         self.sequence
@@ -200,6 +279,12 @@ impl RetentionHoldV1 {
     #[must_use]
     pub fn reason(&self) -> &str {
         &self.reason
+    }
+
+    /// Typed kind of this hold row.
+    #[must_use]
+    pub const fn kind(&self) -> RetentionHoldKind {
+        self.kind
     }
 }
 
@@ -237,10 +322,90 @@ impl StoredRetentionHoldsV1 {
         &self.holds
     }
 
-    /// Minimum sequence across holds, if any hold is present.
+    /// Minimum sequence across OPERATOR holds, if any is present.
+    /// Projection-detach holds never join the fencing minimum.
     #[must_use]
     pub fn min_hold_sequence(&self) -> Option<u64> {
-        self.holds.iter().map(RetentionHoldV1::sequence).min()
+        self.holds
+            .iter()
+            .filter(|hold| hold.kind() == RetentionHoldKind::Operator)
+            .map(RetentionHoldV1::sequence)
+            .min()
+    }
+}
+
+/// Audited offline retention administration action (ADR-0085 Amendment 2):
+/// one record in the shared administration audit sequence space for every
+/// projection detach/reattach performed by the offline maintenance verbs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredRetentionAdministrationV1 {
+    administration_sequence: AdministrationSequence,
+    action: RetentionAdministrationAction,
+    projection_id: ProjectionId,
+    reason: String,
+    timestamp: Timestamp,
+}
+
+/// Which retention administration action a record describes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetentionAdministrationAction {
+    /// A projection was detached from the retention fencing minimum.
+    ProjectionDetach,
+    /// A previously detached projection was reattached to the minimum.
+    ProjectionReattach,
+}
+
+impl StoredRetentionAdministrationV1 {
+    /// Constructs a bounded retention administration record.
+    pub fn new(
+        administration_sequence: AdministrationSequence,
+        action: RetentionAdministrationAction,
+        projection_id: ProjectionId,
+        reason: impl Into<String>,
+        timestamp: Timestamp,
+    ) -> Result<Self, StorageValueError> {
+        let reason = reason.into();
+        if reason.len() > MAX_RETENTION_HOLD_REASON_BYTES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        Ok(Self {
+            administration_sequence,
+            action,
+            projection_id,
+            reason,
+            timestamp,
+        })
+    }
+
+    /// Shared nonzero administration ordering sequence.
+    #[must_use]
+    pub const fn administration_sequence(&self) -> AdministrationSequence {
+        self.administration_sequence
+    }
+
+    /// Which action this record describes.
+    #[must_use]
+    pub const fn action(&self) -> RetentionAdministrationAction {
+        self.action
+    }
+
+    /// Stable nonzero projection identity the action targeted.
+    #[must_use]
+    pub const fn projection_id(&self) -> ProjectionId {
+        self.projection_id
+    }
+
+    /// Operator-supplied reason.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    /// Operator-supplied wall-clock timestamp (the offline storage layer
+    /// holds no clock; the maintenance verb provides it).
+    #[must_use]
+    pub const fn timestamp(&self) -> Timestamp {
+        self.timestamp
     }
 }
 
@@ -437,6 +602,9 @@ pub fn history_tombstone_chain_root(registry_digest: SchemaHash) -> HistoryTombs
 /// Which fencing input produced the binding minimum (for diagnostics / tests).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RetentionFenceBinding {
+    /// Durable application head (last committed sequence): the watermark can
+    /// never pass the end of durable history.
+    DurableApplicationHead,
     /// Projection durable frontier (non-detached).
     ProjectionDurableFrontier,
     /// Operator hold sequence.
@@ -455,6 +623,12 @@ pub enum RetentionFenceBinding {
 /// the call site; this pure function only considers successfully decoded values.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetentionFencingInputs {
+    /// Durable application head: the last committed application sequence
+    /// (0 when nothing has ever committed). The watermark must stay at or
+    /// below this bound — sequences committed later must never be born below
+    /// the watermark. Collectors always supply it; `None` only exists so the
+    /// pure function can be property-tested input-by-input.
+    pub durable_application_head: Option<u64>,
     /// Minimum durable frontier across non-detached projections, when any exist.
     pub min_projection_durable_frontier: Option<u64>,
     /// Minimum operator hold sequence, when any holds exist.
@@ -499,6 +673,12 @@ pub fn compute_max_permissible_watermark(
     consider(
         &mut min_value,
         &mut binding,
+        inputs.durable_application_head,
+        RetentionFenceBinding::DurableApplicationHead,
+    );
+    consider(
+        &mut min_value,
+        &mut binding,
         inputs.min_projection_durable_frontier,
         RetentionFenceBinding::ProjectionDurableFrontier,
     );
@@ -530,9 +710,56 @@ mod tests {
 
     #[test]
     fn watermark_self_hash_roundtrip() {
-        let wm = StoredRetentionWatermarkV1::new(10, 1).expect("construct");
+        let wm = StoredRetentionWatermarkV1::new(10, 1, Some(SchemaHash::from_bytes([7; 32])))
+            .expect("construct");
         assert_eq!(wm.watermark_sequence(), 10);
         assert_eq!(wm.computed_hash().expect("hash"), wm.watermark_hash());
+    }
+
+    #[test]
+    fn watermark_chain_root_presence_matches_sequence() {
+        // Pruned watermark without a recorded rooting digest is malformed.
+        assert!(StoredRetentionWatermarkV1::new(10, 1, None).is_err());
+        // Unpruned watermark must not carry a rooting digest.
+        assert!(
+            StoredRetentionWatermarkV1::new(0, 1, Some(SchemaHash::from_bytes([7; 32]))).is_err()
+        );
+        assert!(StoredRetentionWatermarkV1::new(0, 1, None).is_ok());
+    }
+
+    #[test]
+    fn watermark_hash_binds_chain_root_digest() {
+        let a = StoredRetentionWatermarkV1::new(10, 1, Some(SchemaHash::from_bytes([7; 32])))
+            .expect("a");
+        let b = StoredRetentionWatermarkV1::new(10, 1, Some(SchemaHash::from_bytes([8; 32])))
+            .expect("b");
+        assert_ne!(a.watermark_hash(), b.watermark_hash());
+    }
+
+    #[test]
+    fn detach_holds_require_canonical_projection_identity() {
+        let id = ProjectionId::new(7).expect("projection id");
+        let detach = RetentionHoldV1::new_projection_detach(id, "reason").expect("detach");
+        assert_eq!(detach.kind(), RetentionHoldKind::ProjectionDetach);
+        assert_eq!(detach.hold_id(), "7");
+        assert_eq!(detach.sequence(), 0);
+        // Non-decimal, zero, non-canonical, or sequenced detach rows refuse.
+        assert!(
+            RetentionHoldV1::from_stored_parts("x", 0, "r", RetentionHoldKind::ProjectionDetach)
+                .is_err()
+        );
+        assert!(
+            RetentionHoldV1::from_stored_parts("0", 0, "r", RetentionHoldKind::ProjectionDetach)
+                .is_err()
+        );
+        assert!(
+            RetentionHoldV1::from_stored_parts("07", 0, "r", RetentionHoldKind::ProjectionDetach)
+                .is_err()
+        );
+        assert!(
+            RetentionHoldV1::from_stored_parts("7", 3, "r", RetentionHoldKind::ProjectionDetach)
+                .is_err()
+        );
     }
 
     #[test]
@@ -544,43 +771,53 @@ mod tests {
         assert_eq!(holds.min_hold_sequence(), Some(3));
     }
 
-    #[test]
-    fn fencing_each_input_binds_alone() {
-        let only_proj = RetentionFencingInputs {
-            min_projection_durable_frontier: Some(10),
+    const fn no_inputs() -> RetentionFencingInputs {
+        RetentionFencingInputs {
+            durable_application_head: None,
+            min_projection_durable_frontier: None,
             min_operator_hold_sequence: None,
             undelivered_outbox_low_water: None,
             staged_migration_frozen_frontier: None,
+        }
+    }
+
+    #[test]
+    fn fencing_each_input_binds_alone() {
+        let only_head = RetentionFencingInputs {
+            durable_application_head: Some(3),
+            ..no_inputs()
+        };
+        let (v, b) = compute_max_permissible_watermark(&only_head);
+        assert_eq!(v, Some(3));
+        assert_eq!(b, RetentionFenceBinding::DurableApplicationHead);
+
+        let only_proj = RetentionFencingInputs {
+            min_projection_durable_frontier: Some(10),
+            ..no_inputs()
         };
         let (v, b) = compute_max_permissible_watermark(&only_proj);
         assert_eq!(v, Some(10));
         assert_eq!(b, RetentionFenceBinding::ProjectionDurableFrontier);
 
         let only_hold = RetentionFencingInputs {
-            min_projection_durable_frontier: None,
             min_operator_hold_sequence: Some(7),
-            undelivered_outbox_low_water: None,
-            staged_migration_frozen_frontier: None,
+            ..no_inputs()
         };
         let (v, b) = compute_max_permissible_watermark(&only_hold);
         assert_eq!(v, Some(7));
         assert_eq!(b, RetentionFenceBinding::OperatorHold);
 
         let only_outbox = RetentionFencingInputs {
-            min_projection_durable_frontier: None,
-            min_operator_hold_sequence: None,
             undelivered_outbox_low_water: Some(4),
-            staged_migration_frozen_frontier: None,
+            ..no_inputs()
         };
         let (v, b) = compute_max_permissible_watermark(&only_outbox);
         assert_eq!(v, Some(4));
         assert_eq!(b, RetentionFenceBinding::UndeliveredOutboxLowWater);
 
         let only_mig = RetentionFencingInputs {
-            min_projection_durable_frontier: None,
-            min_operator_hold_sequence: None,
-            undelivered_outbox_low_water: None,
             staged_migration_frozen_frontier: Some(9),
+            ..no_inputs()
         };
         let (v, b) = compute_max_permissible_watermark(&only_mig);
         assert_eq!(v, Some(9));
@@ -590,6 +827,7 @@ mod tests {
     #[test]
     fn fencing_min_across_inputs() {
         let inputs = RetentionFencingInputs {
+            durable_application_head: Some(80),
             min_projection_durable_frontier: Some(100),
             min_operator_hold_sequence: Some(50),
             undelivered_outbox_low_water: Some(75),
@@ -598,6 +836,20 @@ mod tests {
         let (v, b) = compute_max_permissible_watermark(&inputs);
         assert_eq!(v, Some(50));
         assert_eq!(b, RetentionFenceBinding::OperatorHold);
+    }
+
+    #[test]
+    fn fencing_head_binds_below_every_other_input() {
+        let inputs = RetentionFencingInputs {
+            durable_application_head: Some(1),
+            min_projection_durable_frontier: Some(100),
+            min_operator_hold_sequence: Some(100),
+            undelivered_outbox_low_water: Some(100),
+            staged_migration_frozen_frontier: Some(100),
+        };
+        let (v, b) = compute_max_permissible_watermark(&inputs);
+        assert_eq!(v, Some(1));
+        assert_eq!(b, RetentionFenceBinding::DurableApplicationHead);
     }
 
     #[test]

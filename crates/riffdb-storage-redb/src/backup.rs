@@ -101,8 +101,10 @@ pub fn stamp_history_incarnation(
         meta.insert(META_HISTORY_INCARNATION, encoded.as_bytes())
             .map_err(precommit_storage_error)?;
         // Re-bind a present retention watermark to the new incarnation in the
-        // same transaction so startup does not see a stale binding.
-        let watermark_sequence = match meta
+        // same transaction so startup does not see a stale binding. The
+        // recorded chain-root registry digest is carried forward verbatim:
+        // rooting happened once, at prune time (ADR-0085 A2).
+        let rebind = match meta
             .get(META_RETENTION_WATERMARK)
             .map_err(precommit_storage_error)?
         {
@@ -116,14 +118,20 @@ pub fn stamp_history_incarnation(
                 if existing.history_incarnation() == incarnation {
                     None
                 } else {
-                    Some(existing.watermark_sequence())
+                    Some((
+                        existing.watermark_sequence(),
+                        existing.chain_root_registry_digest(),
+                    ))
                 }
             }
         };
-        if let Some(sequence) = watermark_sequence {
-            let watermark =
-                riffdb_storage_api::StoredRetentionWatermarkV1::new(sequence, incarnation)
-                    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let Some((sequence, chain_root)) = rebind {
+            let watermark = riffdb_storage_api::StoredRetentionWatermarkV1::new(
+                sequence,
+                incarnation,
+                chain_root,
+            )
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
             let stamped =
                 riffdb_storage_api::proto_codec::encode_retention_watermark_v1(&watermark)
                     .map_err(crate::error::codec_error)?;
@@ -135,26 +143,18 @@ pub fn stamp_history_incarnation(
     Ok(())
 }
 
-/// Reads the durable retention watermark sequence from a closed database file.
-///
-/// Returns `None` when the meta key is absent (pre-RT-B or unpruned without an
-/// explicit zero stamp). Opens read-only so inspection never triggers recovery
-/// writes.
-pub fn read_retention_watermark_sequence(
-    path: impl AsRef<Path>,
-) -> Result<Option<u64>, StorageError> {
-    let database = redb::ReadOnlyDatabase::open(path.as_ref()).map_err(database_error)?;
-    let transaction = database.begin_read().map_err(transaction_error)?;
-    Ok(crate::retention::load_watermark(&transaction)?
-        .map(|watermark| watermark.watermark_sequence()))
-}
-
 /// Idempotently stamps `retention_watermark/v1` on a closed database file.
 ///
 /// Offline-only path used after restore. Writes only when the stored value
 /// differs. Sequence `0` writes an explicit zero watermark bound to the live
 /// history incarnation.
-pub fn stamp_retention_watermark(
+///
+/// A nonzero stamp requires an existing watermark row: its recorded
+/// chain-root registry digest (the digest current when the tombstone chain
+/// was rooted) is carried forward verbatim. A nonzero stamp with no existing
+/// row would have to fabricate that binding, so it refuses as corrupt — the
+/// database bytes and the manifest disagree about pruned history.
+pub(crate) fn stamp_retention_watermark(
     path: impl AsRef<Path>,
     watermark_sequence: u64,
 ) -> Result<(), StorageError> {
@@ -188,17 +188,33 @@ pub fn stamp_retention_watermark(
                 let item =
                     riffdb_storage_api::proto_codec::decode_retention_watermark_v1(encoded.value())
                         .map_err(crate::error::codec_error)?;
-                Some(item.into_parts().0.watermark_sequence())
+                Some(item.into_parts().0)
             }
         };
         (incarnation, current)
     };
-    if current == Some(watermark_sequence) {
+    if current.as_ref().map(|w| w.watermark_sequence()) == Some(watermark_sequence) {
         return transaction.abort().map_err(precommit_storage_error);
     }
-    let watermark =
-        riffdb_storage_api::StoredRetentionWatermarkV1::new(watermark_sequence, incarnation)
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let chain_root = if watermark_sequence == 0 {
+        None
+    } else {
+        match current
+            .as_ref()
+            .and_then(|w| w.chain_root_registry_digest())
+        {
+            Some(digest) => Some(digest),
+            // Nonzero target with no recorded rooting digest: refuse rather
+            // than fabricate a chain-root binding (fail toward retention).
+            None => return Err(storage_error(StorageErrorKind::CorruptData)),
+        }
+    };
+    let watermark = riffdb_storage_api::StoredRetentionWatermarkV1::new(
+        watermark_sequence,
+        incarnation,
+        chain_root,
+    )
+    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
     {
         let mut meta = transaction.open_table(META).map_err(table_error)?;
         let encoded = riffdb_storage_api::proto_codec::encode_retention_watermark_v1(&watermark)
@@ -222,7 +238,7 @@ pub fn stamp_retention_watermark(
 /// watermark when fencing requires it **and** no tombstone chain claims a higher
 /// pruned end (otherwise the pruned truth is retained so `HistoryPruned` stays
 /// correct).
-pub fn apply_restored_retention_watermark(
+pub(crate) fn apply_restored_retention_watermark(
     path: impl AsRef<Path>,
     manifest_watermark: Option<u64>,
 ) -> Result<(), StorageError> {
@@ -273,60 +289,6 @@ pub fn apply_restored_retention_watermark(
     if target != current {
         stamp_retention_watermark(path, target)?;
     }
-    Ok(())
-}
-
-/// Re-binds an existing retention watermark to the live history incarnation.
-///
-/// Called after restore publication stamps a new history incarnation so the
-/// watermark's incarnation field stays consistent with retained metadata.
-pub fn rebind_retention_watermark_incarnation(
-    path: impl AsRef<Path>,
-    history_incarnation: u64,
-) -> Result<(), StorageError> {
-    if history_incarnation < HISTORY_INCARNATION_INITIAL {
-        return Err(storage_error(StorageErrorKind::InvariantViolation));
-    }
-    let database = Database::open(path.as_ref()).map_err(database_error)?;
-    let mut transaction = database.begin_write().map_err(transaction_error)?;
-    transaction.set_two_phase_commit(true);
-    transaction
-        .set_durability(Durability::Immediate)
-        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-    let current = {
-        let meta = transaction.open_table(META).map_err(table_error)?;
-        match meta
-            .get(META_RETENTION_WATERMARK)
-            .map_err(precommit_storage_error)?
-        {
-            None => None,
-            Some(encoded) => {
-                let item =
-                    riffdb_storage_api::proto_codec::decode_retention_watermark_v1(encoded.value())
-                        .map_err(crate::error::codec_error)?;
-                Some(item.into_parts().0)
-            }
-        }
-    };
-    let Some(existing) = current else {
-        return transaction.abort().map_err(precommit_storage_error);
-    };
-    if existing.history_incarnation() == history_incarnation {
-        return transaction.abort().map_err(precommit_storage_error);
-    }
-    let watermark = riffdb_storage_api::StoredRetentionWatermarkV1::new(
-        existing.watermark_sequence(),
-        history_incarnation,
-    )
-    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-    {
-        let mut meta = transaction.open_table(META).map_err(table_error)?;
-        let encoded = riffdb_storage_api::proto_codec::encode_retention_watermark_v1(&watermark)
-            .map_err(crate::error::codec_error)?;
-        meta.insert(META_RETENTION_WATERMARK, encoded.as_bytes())
-            .map_err(precommit_storage_error)?;
-    }
-    transaction.commit().map_err(commit_error)?;
     Ok(())
 }
 
