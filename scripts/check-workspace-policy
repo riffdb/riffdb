@@ -13,6 +13,7 @@ EXPECTED_PACKAGES = %w[
   riffdb-auth
   riffdb-bench-root
   riffdb-catalog
+  riffdb-columnar
   riffdb-cli
   riffdb-client-python-native
   riffdb-client-rust
