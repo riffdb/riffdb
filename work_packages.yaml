@@ -6849,3 +6849,27 @@ work_packages:
     symbolic generated surfaces, revocation leaks no retained data, and a fresh agent completes the feature without
     internal source or kernel access.
   human_review_triggers: *id001
+- id: WP-430
+  name: Columnar projection engine core
+  depends_on: []
+  objective: Deliver the ADR-0086 columnar projection engine as a pure library with definition
+    validation, supersession-safe apply, durable checkpoint recovery, bounded query execution,
+    and crash-injection equivalence coverage without public API surface.
+  requirements: []
+  required_adrs: [ADR-0086, ADR-0087]
+  allowed_paths: [Cargo.toml, Cargo.lock, work_packages.yaml, scripts/check-workspace-policy,
+    crates/riffdb-columnar/**]
+  deliverables:
+  - riffdb-columnar crate with definition registration, fingerprint, and typed rejection classes
+  - Delta plus immutable segment store, D4 apply protocol with deferred supersession holdback
+  - Checkpoint manifest with checksums, torn-write recovery, and replay idempotence
+  - Org-scoped query executor with budgets, aggregates, and typed lifecycle outcomes
+  - Independent oracle equivalence, compaction invariance, and four-boundary crash matrix
+  acceptance_commands:
+  - cargo test -p riffdb-columnar --all-features
+  - cargo fmt --all -- --check
+  - cargo clippy -p riffdb-columnar --all-targets --all-features -- -D warnings
+  - ./scripts/check-workspace-policy
+  exit_gate: Columnar engine results match an independent oracle at every published frontier and
+    after recovery; crash injection never overclaims a durable frontier; org scope is airtight.
+  human_review_triggers: *id001
