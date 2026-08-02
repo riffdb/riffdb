@@ -1,6 +1,6 @@
 # ADR-0091: Native Vector Search as a Projection
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-02
 - **Decision owners:** RiffDB maintainers
 - **Related:** ADR-0086 (projection plane, freshness, frontiers, authorization),
@@ -45,7 +45,22 @@ the vector (calling the configured model endpoint); the result is written
 back as an authoritative system command carrying the model version. The
 vector projection then consumes the embedding like any other field.
 
+The declared vector field also carries an **exposure bound**: the set of
+source fields whose content may be sent to the model endpoint is exactly the
+declared source-field list, checked at deploy time against field
+classifications — a model endpoint is an egress surface and is governed like
+one (the projection-envelope principle of ADR-0086 §5 applied to outbound
+data). Embedding freshness is a typed, budgeted state: each vector field
+declares a staleness SLO (like ADR-0086 §6 lag profiles); entities whose
+source fields outrun their embeddings are countable and queryable, and a
+breached budget changes health — never a silent search-quality degradation.
+
 Consequences of this shape, all deliberate:
+- Embeddings add real weight to authoritative state and therefore to
+  backups (order of kilobytes per row at common dimensions). This is the
+  accepted price of rebuildability; deployments that cannot pay it should
+  not declare vector fields on high-cardinality entities, and a quantized
+  authoritative representation is a future amendment, not an assumption.
 - Apply-time external calls are PROHIBITED — projection apply stays
   deterministic and fast, and apply lag can never be held hostage by a model
   endpoint.
@@ -119,4 +134,5 @@ ADR-0086 hold unchanged; replay budget detaches a stuck index.
 
 ## Acceptance
 
-Pending maintainer decision.
+Accepted by the maintainer on 2026-08-02, with the exposure-bound,
+staleness-SLO, and backup-weight clauses folded in at acceptance.
