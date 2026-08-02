@@ -166,9 +166,7 @@ pub(crate) fn register_ticket_board(bundle: &ContractBundle) -> RegisteredDefini
 pub(crate) fn open_engine(definition: RegisteredDefinition, label: &str) -> ColumnarEngine {
     ColumnarEngine::open(
         definition,
-        OpenOptions {
-            directory: temp_dir(label),
-        },
+        OpenOptions::new(temp_dir(label)).with_history_incarnation(1),
     )
     .expect("open engine")
 }
@@ -379,7 +377,7 @@ pub(crate) fn assert_corpus_equivalence(
     orgs: &[[u8; 16]],
     context: &str,
 ) {
-    let frontier = engine.published_frontier();
+    let frontier = engine.published_frontier_position();
     for org in orgs {
         let org_v = CanonicalValue::Uuid(*org);
         let board = match engine.query(&board_query(org_v.clone())) {
@@ -778,6 +776,8 @@ pub(crate) fn projected_cells(status: u64, title: &str, priority: i64) -> Vec<Ca
 pub(crate) fn board_query(org: CanonicalValue) -> ColumnarQueryRequest {
     ColumnarQueryRequest {
         org_scope: org,
+        // Empty select = all projected fields (CP1 compatibility).
+        select: Vec::new(),
         predicates: Vec::new(),
         order: Vec::new(),
         limit: None,
@@ -794,6 +794,7 @@ pub(crate) fn eq_status_query(
 ) -> ColumnarQueryRequest {
     ColumnarQueryRequest {
         org_scope: org,
+        select: Vec::new(),
         predicates: vec![ColumnPredicate::Eq {
             field: status_field,
             value: CanonicalValue::U64(status),
@@ -808,7 +809,7 @@ pub(crate) fn eq_status_query(
 
 pub(crate) fn rows_of(result: QueryResult) -> Vec<Vec<CanonicalValue>> {
     match result {
-        QueryResult::Rows(rows) => rows.rows,
+        QueryResult::Rows(rows) => rows.rows.into_iter().map(|row| row.cells).collect(),
         other => panic!("expected rows, got {other:?}"),
     }
 }
