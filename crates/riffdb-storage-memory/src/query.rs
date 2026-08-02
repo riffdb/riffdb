@@ -1,9 +1,9 @@
 //! One-lock owned composite-query snapshots for the memory reference backend.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-#[cfg(test)]
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use riffdb_query_executor::{
     BoundPredicate, QueryBackendFault, QueryContinuation, QueryExecutionError, QueryExecutionPort,
@@ -437,11 +437,13 @@ impl RowMaterializePlan {
 }
 
 #[cfg(test)]
-static MATERIALIZE_PLAN_BUILDS: AtomicU64 = AtomicU64::new(0);
+thread_local! {
+    static MATERIALIZE_PLAN_BUILDS: Cell<u64> = const { Cell::new(0) };
+}
 
 #[cfg(test)]
 fn note_materialize_plan_build() {
-    MATERIALIZE_PLAN_BUILDS.fetch_add(1, Ordering::Relaxed);
+    MATERIALIZE_PLAN_BUILDS.set(MATERIALIZE_PLAN_BUILDS.get() + 1);
 }
 
 #[cfg(not(test))]
@@ -449,12 +451,12 @@ const fn note_materialize_plan_build() {}
 
 #[cfg(test)]
 fn reset_materialize_plan_builds() {
-    MATERIALIZE_PLAN_BUILDS.store(0, Ordering::Relaxed);
+    MATERIALIZE_PLAN_BUILDS.set(0);
 }
 
 #[cfg(test)]
 fn materialize_plan_builds() -> u64 {
-    MATERIALIZE_PLAN_BUILDS.load(Ordering::Relaxed)
+    MATERIALIZE_PLAN_BUILDS.get()
 }
 
 #[cfg(test)]
