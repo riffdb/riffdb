@@ -1,6 +1,6 @@
 # ADR-0092: Native Full-Text Search as a Projection
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-02
 - **Decision owners:** RiffDB maintainers
 - **Related:** ADR-0086 (projection plane), ADR-0087 (ad-hoc grammar
@@ -49,9 +49,21 @@ where applicable) in the projection definition. Analyzer output feeds the
 durable index, so an analyzer change is a declared migration that rebuilds
 the projection with typed `Rebuilding` progress — never an in-place
 reinterpretation. v1 ships an opinionated small analyzer set (simple,
-language-default stemming, exact/keyword); custom analyzers are deferred.
+language-default stemming, exact/keyword); custom analyzers are deferred — with a named trigger: the deferral is
+revisited when a deployment's declared locale set exceeds what the shipped
+analyzers serve, not on speculation.
 
-### 4. Grammar
+### 4. Scoring is specified deterministic
+
+Relevance scores are computed in fixed-point integer arithmetic (a
+documented scale constant of the engine), never platform floats — RiffDB's
+canonical values contain no floats and its acceptance contract demands
+rank-exactness, so the scoring function's every term (term frequency
+saturation, document-frequency weighting, length normalization) is defined
+over integers with documented rounding. Rank ties break by primary key
+ascending, matching the engine's sort tie-break everywhere else.
+
+### 5. Grammar
 
 New predicates entering the 0087 surface by this amendment: `match(field,
 $query)`, `phrase(field, $query)`, and `prefix(field, $term)`, plus ordering
@@ -84,4 +96,5 @@ progress; all ADR-0086 frontier/crash invariants hold unchanged.
 
 ## Acceptance
 
-Pending maintainer decision.
+Accepted by the maintainer on 2026-08-02, with the deterministic-scoring
+specification and the analyzer-deferral trigger folded in at acceptance.
