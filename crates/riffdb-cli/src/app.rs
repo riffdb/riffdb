@@ -36,8 +36,8 @@ use crate::batch::{
 use crate::cli::{
     ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli, CommandCommand,
     CommitCommand, ContractCommand, ContractSelectionArgs, DemoCommand, EntityCommand,
-    MigrationCommand, OutputMode, ProjectionCommand, QueryCommand, RevocationReason, RoleActorKind,
-    RoleCommand, ServerCommand, TopLevel,
+    EventCommand, MigrationCommand, OutputMode, ProjectionCommand, QueryCommand, RevocationReason,
+    RoleActorKind, RoleCommand, ServerCommand, TopLevel,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -624,6 +624,7 @@ async fn dispatch(
         TopLevel::Command { command } => command_command(command, config, environment, stdin).await,
         TopLevel::Entity { command } => entity_command(command, config, environment).await,
         TopLevel::Commit { command } => commit_command(command, config, environment).await,
+        TopLevel::Event { command } => event_command(command, config, environment).await,
         TopLevel::Projection { command } => {
             projection_command(command, config, environment, stdin).await
         }
@@ -2952,6 +2953,252 @@ async fn commit_command(
     }
 }
 
+async fn event_command(
+    command: EventCommand,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+) -> Terminal {
+    let identity = match command {
+        EventCommand::Describe { .. } => CommandIdentity::EventDescribe,
+        EventCommand::Replay { .. } => CommandIdentity::EventReplay,
+        EventCommand::Tail { .. } => CommandIdentity::EventTail,
+    };
+    let metadata = match required_metadata(identity, config, environment) {
+        Ok(metadata) => metadata,
+        Err(terminal) => return terminal,
+    };
+    let mut client = match connect(config).await {
+        Ok(client) => client,
+        Err(error) => return client_error(identity, &error),
+    };
+    let request_id = match request_id() {
+        Ok(request_id) => request_id,
+        Err(error) => return client_error(identity, &error),
+    };
+    match command {
+        EventCommand::Describe { event } => match client
+            .describe_event(
+                v1::DescribeEventRequest {
+                    request_id,
+                    event_name: event,
+                },
+                &metadata,
+            )
+            .await
+        {
+            Ok(response) => render_event_description(&response),
+            Err(error) => client_error(identity, &error),
+        },
+        EventCommand::Replay {
+            event,
+            partition,
+            fields,
+            after,
+            limit,
+            cursor,
+            observed_history_incarnation,
+        } => {
+            let selection = match event_selection(event, partition, fields) {
+                Ok(selection) => selection,
+                Err(()) => return invalid_input(identity),
+            };
+            let after_event_id = match after.map(|value| parse_event_id(&value)).transpose() {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            let page = match event_page_request(limit, cursor) {
+                Ok(page) => page,
+                Err(()) => return invalid_input(identity),
+            };
+            let observed_history_incarnation = match observed_history_incarnation
+                .map(|value| parse_nonzero_u64(&value))
+                .transpose()
+            {
+                Ok(value) => value.unwrap_or(0),
+                Err(()) => return invalid_input(identity),
+            };
+            match client
+                .replay_events(
+                    v1::ReplayEventsRequest {
+                        request_id,
+                        selection: Some(selection),
+                        after_event_id,
+                        page: Some(page),
+                        observed_history_incarnation,
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => {
+                    render_event_page(CommandIdentity::EventReplay, response.page.as_ref(), false)
+                }
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        EventCommand::Tail {
+            event,
+            partition,
+            fields,
+            after,
+            limit,
+            wait_nanos,
+            observed_history_incarnation,
+        } => {
+            let selection = match event_selection(event, partition, fields) {
+                Ok(selection) => selection,
+                Err(()) => return invalid_input(identity),
+            };
+            let after_event_id = match after.map(|value| parse_event_id(&value)).transpose() {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            let page = match event_page_request(limit, None) {
+                Ok(page) => page,
+                Err(()) => return invalid_input(identity),
+            };
+            let maximum_wait_nanos = match parse_nonzero_u64(&wait_nanos) {
+                Ok(value) if value <= 30_000_000_000 => value,
+                _ => return invalid_input(identity),
+            };
+            let observed_history_incarnation = match observed_history_incarnation
+                .map(|value| parse_nonzero_u64(&value))
+                .transpose()
+            {
+                Ok(value) => value.unwrap_or(0),
+                Err(()) => return invalid_input(identity),
+            };
+            match client
+                .tail_events(
+                    v1::TailEventsRequest {
+                        request_id,
+                        selection: Some(selection),
+                        after_event_id,
+                        page: Some(page),
+                        maximum_wait_nanos,
+                        observed_history_incarnation,
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => render_event_page(
+                    CommandIdentity::EventTail,
+                    response.page.as_ref(),
+                    response.wait_timed_out,
+                ),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+    }
+}
+
+fn event_selection(
+    event_name: String,
+    partition: Vec<String>,
+    selected_fields: Vec<String>,
+) -> Result<v1::EventSelection, ()> {
+    let partition = partition
+        .into_iter()
+        .map(|component| {
+            let (name, value) = component.split_once('=').ok_or(())?;
+            let value: InputValue = serde_json::from_str(value).map_err(|_| ())?;
+            Ok(v1::EventPartitionComponent {
+                name: name.to_owned(),
+                value: Some(value.into_proto().map_err(|_| ())?),
+            })
+        })
+        .collect::<Result<Vec<_>, ()>>()?;
+    Ok(v1::EventSelection {
+        event_name,
+        partition,
+        selected_fields,
+    })
+}
+
+fn parse_event_id(value: &str) -> Result<v1::EventId, ()> {
+    let (commit, ordinal) = value.split_once(':').ok_or(())?;
+    Ok(v1::EventId {
+        commit_sequence: parse_nonzero_u64(commit)?,
+        event_ordinal: ordinal.parse().map_err(|_| ())?,
+    })
+}
+
+fn event_page_request(
+    limit: Option<String>,
+    cursor: Option<String>,
+) -> Result<v1::PageRequest, ()> {
+    let limit = limit
+        .map(|value| value.parse::<u32>().map_err(|_| ()))
+        .transpose()?;
+    if limit.is_some_and(|value| value == 0 || value > 500) {
+        return Err(());
+    }
+    let cursor = cursor
+        .map(|value| STANDARD.decode(value).map_err(|_| ()))
+        .transpose()?;
+    Ok(v1::PageRequest {
+        limit: Some(limit.unwrap_or(DEFAULT_PAGE_LIMIT)),
+        cursor,
+    })
+}
+
+fn render_event_description(response: &v1::DescribeEventResponse) -> Terminal {
+    let result = match response.result.as_ref() {
+        Some(v1::describe_event_response::Result::NotFound(_)) => {
+            serde_json::json!({"found": false})
+        }
+        Some(v1::describe_event_response::Result::Found(value)) => serde_json::json!({
+            "found": true,
+            "contract_lineage": value.contract_lineage,
+            "contract_version": value.contract_version.to_string(),
+            "contract_bundle_hash": hex(&value.contract_bundle_hash),
+            "event_name": value.event_name,
+            "application_streamable": value.application_streamable,
+            "partition_fields": value.partition_fields.iter().map(|field| serde_json::json!({"name": field.name, "type": field.value_type})).collect::<Vec<_>>(),
+            "payload_fields": value.payload_fields.iter().map(|field| serde_json::json!({"name": field.name, "type": field.value_type})).collect::<Vec<_>>(),
+        }),
+        None => {
+            return local_error(
+                CommandIdentity::EventDescribe,
+                "invalid_response",
+                "event response is incomplete",
+            );
+        }
+    };
+    success(CommandIdentity::EventDescribe, "described", &result)
+}
+
+fn render_event_page(
+    identity: CommandIdentity,
+    page: Option<&v1::EventPage>,
+    wait_timed_out: bool,
+) -> Terminal {
+    let Some(page) = page else {
+        return local_error(identity, "invalid_response", "event page is incomplete");
+    };
+    let items = page.items.iter().map(|event| serde_json::json!({
+        "event_id": event.event_id.as_ref().map(|id| format!("{}:{}", id.commit_sequence, id.event_ordinal)),
+        "event_name": event.event_name,
+        "writer_contract_version": event.writer_contract_version.to_string(),
+        "command_name": event.command_name,
+        "request_id": format_uuid(&event.request_id),
+        "root_request_id": format_uuid(&event.root_request_id),
+        "occurred_at": event.occurred_at.as_ref().map(|time| serde_json::json!({"seconds": time.seconds.to_string(), "nanos": time.nanos})),
+        "actor_kind": event.actor_kind,
+        "provenance_uri": event.provenance_uri,
+        "fields": event.fields.iter().map(|field| serde_json::json!({"name": field.name, "value": field.value.as_ref().and_then(|value| serde_json::to_value(crate::value::OutputValue(value)).ok())})).collect::<Vec<_>>(),
+    })).collect::<Vec<_>>();
+    let result = serde_json::json!({
+        "items": items,
+        "next_cursor": (!page.next_cursor.is_empty()).then(|| STANDARD.encode(&page.next_cursor)),
+        "observed_upper": page.observed_upper.as_ref().map(|id| format!("{}:{}", id.commit_sequence, id.event_ordinal)),
+        "history_incarnation": page.history_incarnation.to_string(),
+        "wait_timed_out": wait_timed_out,
+    });
+    success(identity, "read", &result)
+}
+
 async fn bind_compiled_role(
     binding: PreparedRoleBinding,
     identity: CommandIdentity,
@@ -5012,6 +5259,15 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         } => CommandIdentity::CommandOutcome,
         TopLevel::Entity { .. } => CommandIdentity::EntityGet,
         TopLevel::Commit { .. } => CommandIdentity::CommitShow,
+        TopLevel::Event {
+            command: EventCommand::Describe { .. },
+        } => CommandIdentity::EventDescribe,
+        TopLevel::Event {
+            command: EventCommand::Replay { .. },
+        } => CommandIdentity::EventReplay,
+        TopLevel::Event {
+            command: EventCommand::Tail { .. },
+        } => CommandIdentity::EventTail,
         TopLevel::Projection { .. } => CommandIdentity::ProjectionQuery,
         TopLevel::Query {
             command: QueryCommand::Describe { .. },

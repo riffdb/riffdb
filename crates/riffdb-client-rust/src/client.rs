@@ -7,7 +7,7 @@ use std::time::Duration;
 use riffdb_api_grpc::generated::{
     admin_service_client::AdminServiceClient, command_service_client::CommandServiceClient,
     commit_service_client::CommitServiceClient, contract_service_client::ContractServiceClient,
-    query_service_client::QueryServiceClient,
+    event_service_client::EventServiceClient, query_service_client::QueryServiceClient,
 };
 use riffdb_api_grpc::generated_app::application_query_service_client::ApplicationQueryServiceClient;
 use riffdb_proto::{
@@ -180,6 +180,7 @@ pub struct RiffDbClient {
     command: CommandServiceClient<Channel>,
     query: QueryServiceClient<Channel>,
     commit: CommitServiceClient<Channel>,
+    event: EventServiceClient<Channel>,
     admin: AdminServiceClient<Channel>,
     application_query: ApplicationQueryServiceClient<Channel>,
     /// Optional client-remembered history incarnation for commit read surfaces.
@@ -208,6 +209,7 @@ impl RiffDbClient {
             command: CommandServiceClient::new(channel.clone()),
             query: QueryServiceClient::new(channel.clone()),
             commit: CommitServiceClient::new(channel.clone()),
+            event: EventServiceClient::new(channel.clone()),
             admin: AdminServiceClient::new(channel.clone()),
             application_query: ApplicationQueryServiceClient::new(channel),
             observed_history_incarnation: None,
@@ -465,6 +467,27 @@ impl RiffDbClient {
         v1::TraceProvenanceRequest,
         v1::TraceProvenanceResponse,
         validate_trace_provenance_exchange
+    );
+    unary!(
+        describe_event,
+        event,
+        describe_event,
+        v1::DescribeEventRequest,
+        v1::DescribeEventResponse
+    );
+    unary!(
+        replay_events,
+        event,
+        replay_events,
+        v1::ReplayEventsRequest,
+        v1::ReplayEventsResponse
+    );
+    unary!(
+        tail_events,
+        event,
+        tail_events,
+        v1::TailEventsRequest,
+        v1::TailEventsResponse
     );
     unary!(health, admin, health, v1::HealthRequest, v1::HealthResponse);
     unary!(stats, admin, stats, v1::StatsRequest, v1::StatsResponse);

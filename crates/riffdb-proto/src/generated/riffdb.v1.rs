@@ -3179,6 +3179,155 @@ impl ExecutionFailureCode {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EventFieldDescriptor {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub value_type: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EventDescriptor {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub contract_version: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub contract_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "4")]
+    pub event_name: ::prost::alloc::string::String,
+    #[prost(bool, tag = "5")]
+    pub application_streamable: bool,
+    #[prost(message, repeated, tag = "6")]
+    pub partition_fields: ::prost::alloc::vec::Vec<EventFieldDescriptor>,
+    #[prost(message, repeated, tag = "7")]
+    pub payload_fields: ::prost::alloc::vec::Vec<EventFieldDescriptor>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DescribeEventRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "2")]
+    pub event_name: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DescribeEventResponse {
+    #[prost(oneof = "describe_event_response::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<describe_event_response::Result>,
+}
+/// Nested message and enum types in `DescribeEventResponse`.
+pub mod describe_event_response {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        NotFound(super::Unit),
+        #[prost(message, tag = "2")]
+        Found(super::EventDescriptor),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EventPartitionComponent {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub value: ::core::option::Option<Value>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EventSelection {
+    #[prost(string, tag = "1")]
+    pub event_name: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "2")]
+    pub partition: ::prost::alloc::vec::Vec<EventPartitionComponent>,
+    #[prost(string, repeated, tag = "3")]
+    pub selected_fields: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SymbolicEventField {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub value: ::core::option::Option<Value>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SymbolicEvent {
+    #[prost(message, optional, tag = "1")]
+    pub event_id: ::core::option::Option<EventId>,
+    #[prost(string, tag = "2")]
+    pub event_name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "3")]
+    pub writer_contract_version: u64,
+    #[prost(bytes = "vec", tag = "4")]
+    pub writer_plan_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "5")]
+    pub command_name: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "6")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub root_request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "8")]
+    pub causing_event_id: ::core::option::Option<EventId>,
+    #[prost(message, optional, tag = "9")]
+    pub occurred_at: ::core::option::Option<Timestamp>,
+    #[prost(enumeration = "ActorKind", tag = "10")]
+    pub actor_kind: i32,
+    #[prost(string, tag = "11")]
+    pub provenance_uri: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "12")]
+    pub history_incarnation: u64,
+    #[prost(message, repeated, tag = "13")]
+    pub fields: ::prost::alloc::vec::Vec<SymbolicEventField>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EventPage {
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<SymbolicEvent>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub next_cursor: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub observed_upper: ::core::option::Option<EventId>,
+    #[prost(uint64, tag = "4")]
+    pub history_incarnation: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ReplayEventsRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub selection: ::core::option::Option<EventSelection>,
+    #[prost(message, optional, tag = "3")]
+    pub after_event_id: ::core::option::Option<EventId>,
+    #[prost(message, optional, tag = "4")]
+    pub page: ::core::option::Option<PageRequest>,
+    #[prost(uint64, tag = "5")]
+    pub observed_history_incarnation: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ReplayEventsResponse {
+    #[prost(message, optional, tag = "1")]
+    pub page: ::core::option::Option<EventPage>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TailEventsRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub selection: ::core::option::Option<EventSelection>,
+    #[prost(message, optional, tag = "3")]
+    pub after_event_id: ::core::option::Option<EventId>,
+    #[prost(message, optional, tag = "4")]
+    pub page: ::core::option::Option<PageRequest>,
+    #[prost(uint64, tag = "5")]
+    pub maximum_wait_nanos: u64,
+    #[prost(uint64, tag = "6")]
+    pub observed_history_incarnation: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TailEventsResponse {
+    #[prost(message, optional, tag = "1")]
+    pub page: ::core::option::Option<EventPage>,
+    #[prost(bool, tag = "2")]
+    pub wait_timed_out: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProjectionIdentity {
     #[prost(string, tag = "1")]
     pub contract_lineage: ::prost::alloc::string::String,

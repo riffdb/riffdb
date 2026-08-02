@@ -20,6 +20,7 @@ Commands:
   command
   entity
   commit
+  event        Describes and reads partitioned domain events
   projection
   query
   role         Checks, describes, binds, or revokes an exact symbolic application role
@@ -219,6 +220,28 @@ Usage: riffdb commit [OPTIONS] <COMMAND>
 
 Commands:
   show
+
+Options:
+      --config <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+### `riffdb event`
+
+```text
+Describes and reads partitioned domain events
+
+Usage: riffdb event [OPTIONS] <COMMAND>
+
+Commands:
+  describe  Describes one event in the active contract
+  replay    Replays one exact event partition
+  tail      Waits for events after one exact partition position
 
 Options:
       --config <PATH>
@@ -784,6 +807,78 @@ Options:
 
   -h, --help
           Print help
+```
+
+#### `riffdb event describe`
+
+```text
+Describes one event in the active contract
+
+Usage: riffdb event describe [OPTIONS] <EVENT>
+
+Arguments:
+  <EVENT>
+
+Options:
+      --config <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb event replay`
+
+```text
+Replays one exact event partition
+
+Usage: riffdb event replay [OPTIONS] <EVENT>
+
+Arguments:
+  <EVENT>
+
+Options:
+      --config <PATH>
+      --partition <FIELD=JSON_VALUE>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --field <FIELD>
+      --after <COMMIT:ORDINAL>
+      --database <DATABASE>
+      --limit <ROWS>
+      --output <human|json>                         [possible values: human, json]
+      --cursor <BASE64_CURSOR>
+      --max-attempts <1..10>
+      --credential-file <PATH>
+      --observed-history-incarnation <INCARNATION>
+  -h, --help                                        Print help
+```
+
+#### `riffdb event tail`
+
+```text
+Waits for events after one exact partition position
+
+Usage: riffdb event tail [OPTIONS] <EVENT>
+
+Arguments:
+  <EVENT>
+
+Options:
+      --config <PATH>
+      --partition <FIELD=JSON_VALUE>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --field <FIELD>
+      --after <COMMIT:ORDINAL>
+      --database <DATABASE>
+      --limit <ROWS>
+      --output <human|json>                         [possible values: human, json]
+      --max-attempts <1..10>
+      --wait-nanos <NANOSECONDS>                    [default: 30000000000]
+      --credential-file <PATH>
+      --observed-history-incarnation <INCARNATION>
+  -h, --help                                        Print help
 ```
 
 #### `riffdb projection query`

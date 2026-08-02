@@ -3236,6 +3236,7 @@ impl HostedGrpc {
             .add_service(application.query_server())
             .add_service(application.application_query_server())
             .add_service(application.commit_server())
+            .add_service(application.event_server())
             .add_service(application.admin_server());
         let task = tokio::spawn(router.serve_with_incoming_shutdown(incoming, async move {
             let _ = stopped.await;

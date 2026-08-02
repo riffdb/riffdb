@@ -428,6 +428,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "CommandService",
             "CommitService",
             "ContractService",
+            "EventService",
             "QueryService",
         ])
     );
@@ -437,7 +438,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .iter()
             .map(|file| file.service.len())
             .sum::<usize>(),
-        6
+        7
     );
     let mut methods = Vec::new();
     for file in &descriptors.file {
@@ -455,7 +456,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 35);
+    assert_eq!(methods.len(), 38);
     let descriptor_order = descriptors
         .file
         .iter()
@@ -517,6 +518,10 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         ]
     );
     assert_eq!(
+        descriptor_order["EventService"],
+        vec!["DescribeEvent", "ReplayEvents", "TailEvents"]
+    );
+    assert_eq!(
         descriptor_order["AdminService"],
         vec![
             "Health",
@@ -543,6 +548,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "CommandService",
             "CommitService",
             "ContractService",
+            "EventService",
             "QueryService",
         ])
     );
@@ -614,6 +620,19 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         "GetContractMigrationOperationResponse",
         "ValidateContractRequest",
         "ValidateContractResponse",
+        "EventFieldDescriptor",
+        "EventDescriptor",
+        "DescribeEventRequest",
+        "DescribeEventResponse",
+        "EventPartitionComponent",
+        "EventSelection",
+        "SymbolicEventField",
+        "SymbolicEvent",
+        "EventPage",
+        "ReplayEventsRequest",
+        "ReplayEventsResponse",
+        "TailEventsRequest",
+        "TailEventsResponse",
     ];
     assert!(
         completed
@@ -625,7 +644,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        174
+        187
     );
     assert_eq!(
         messages

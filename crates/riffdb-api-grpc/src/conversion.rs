@@ -7,7 +7,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use riffdb_auth::AuthenticationContext;
-use riffdb_proto::{app::v1 as app_v1, canonical_value_to_proto, v1};
+use riffdb_proto::{app::v1 as app_v1, canonical_value_from_proto, canonical_value_to_proto, v1};
 use riffdb_service::{
     ApplyContractMigrationRequest, BootstrapCapabilityRequest, BootstrapCapabilityResult,
     CapabilityIdentityView, CapabilityTransitionView, CheckContractMigrationRequest,
@@ -20,20 +20,20 @@ use riffdb_service::{
     ContractMigrationStartDisposition, ContractMigrationStartResult, ContractSelection,
     ContractSource, ContractValidationResult, CreateCapabilityResult, CreateOfflineBackupRequest,
     CursorToken, DeclaredOutcomeView, DeployContractRequest, DeployContractResult,
-    DeployQueryModuleRequest, DeployQueryModuleResult, DescribeSymbolicContractResult,
-    DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverCommandToolsResultRef,
-    DiscoverResourcesRequest, DiscoverResourcesResult, DiscoverResourcesResultRef,
-    DiscoveryCatalogFence, DiscoveryCatalogStateRef, DiscoveryRepresentation,
-    ExecuteCommandRequest, ExecuteCommandResult, ExecuteSymbolicQueryRequest,
-    ExecuteSymbolicQueryResult, ExplainCommandRequest, ExplainCommandResult,
-    ExplainSymbolicQueryResult, FieldSelection, FixedToolKind, GeneratedSchemaIdentity,
-    GetActiveContractRequest, GetActiveContractResult, GetCommitRequest, GetCommitResult,
-    GetContractMigrationOperationRequest, GetContractMigrationOperationResult,
-    GetContractVersionRequest, GetContractVersionResult, GetEntityRequest, GetEntityResult,
-    GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
-    GetProjectionStatusRequest, GetProjectionStatusResult, GetQueryModuleRequest,
-    HealthComponentKind, HealthComponentStatus, HealthRequest, HealthResult, HealthStatus,
-    JournaledCommandResult, JournaledCompletion, ListPendingOutboxDeliveriesRequest,
+    DeployQueryModuleRequest, DeployQueryModuleResult, DescribeEventRequest, DescribeEventResult,
+    DescribeSymbolicContractResult, DiscoverCommandToolsRequest, DiscoverCommandToolsResult,
+    DiscoverCommandToolsResultRef, DiscoverResourcesRequest, DiscoverResourcesResult,
+    DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryCatalogStateRef,
+    DiscoveryRepresentation, EventPartitionComponent, EventSelection, ExecuteCommandRequest,
+    ExecuteCommandResult, ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult,
+    ExplainCommandRequest, ExplainCommandResult, ExplainSymbolicQueryResult, FieldSelection,
+    FixedToolKind, GeneratedSchemaIdentity, GetActiveContractRequest, GetActiveContractResult,
+    GetCommitRequest, GetCommitResult, GetContractMigrationOperationRequest,
+    GetContractMigrationOperationResult, GetContractVersionRequest, GetContractVersionResult,
+    GetEntityRequest, GetEntityResult, GetOfflineMaintenanceOperationRequest,
+    GetOfflineMaintenanceOperationResult, GetProjectionStatusRequest, GetProjectionStatusResult,
+    GetQueryModuleRequest, HealthComponentKind, HealthComponentStatus, HealthRequest, HealthResult,
+    HealthStatus, JournaledCommandResult, JournaledCompletion, ListPendingOutboxDeliveriesRequest,
     ListPendingOutboxDeliveriesResult, NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact,
     NamedSymbolicQueryRequest, NormalCreateCapabilityRequest, NormalCreateCapabilityResult,
     OfflineMaintenanceObservationFailure, OfflineMaintenanceObservationPhase,
@@ -43,15 +43,16 @@ use riffdb_service::{
     OutcomeResourceLocator, PageLimit, PageRequest, PreBootstrapLifecycle, ProjectionFailureCode,
     ProjectionLifecycle, ProjectionUnavailableReason, ProvenanceSelection, PublishedApplyMode,
     QueryModuleActiveExpectation, QueryModuleDeploymentDisposition, QueryModuleInspection,
-    QueryProjectionRequest, QueryProjectionResult, ResolveCommandOutcomeRequest,
-    ResolveCommandOutcomeResult, ResourceDescriptor, ResourceDescriptorRef, ResourceDiscoveryKind,
-    RestoreOfflineBackupRequest, RevokeCapabilityRequest, RevokeCapabilityResult,
-    ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult,
-    SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue, SourceName, StatisticsRequest,
-    StatisticsResult, SubmittedDecimal, SubmittedEnum, SubmittedField, SubmittedFieldIdentity,
-    SubmittedMoney, SubmittedRecord, SubmittedValue, SubscribeToCommitsRequest,
-    SymbolicContractSelector, SymbolicDiagnostic, SymbolicQueryIdentity, SymbolicQueryParameters,
-    SymbolicQuerySchema, SymbolicQuerySource, SymbolicResultField, SymbolicResultRecord,
+    QueryProjectionRequest, QueryProjectionResult, ReplayEventsRequest, ReplayEventsResult,
+    ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, ResourceDescriptor,
+    ResourceDescriptorRef, ResourceDiscoveryKind, RestoreOfflineBackupRequest,
+    RevokeCapabilityRequest, RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult,
+    ScanIndexRequest, ScanIndexResult, SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue,
+    SourceName, StatisticsRequest, StatisticsResult, SubmittedDecimal, SubmittedEnum,
+    SubmittedField, SubmittedFieldIdentity, SubmittedMoney, SubmittedRecord, SubmittedValue,
+    SubscribeToCommitsRequest, SymbolicContractSelector, SymbolicDiagnostic, SymbolicEvent,
+    SymbolicQueryIdentity, SymbolicQueryParameters, SymbolicQuerySchema, SymbolicQuerySource,
+    SymbolicResultField, SymbolicResultRecord, TailEventsRequest, TailEventsResult,
     TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
 };
 use riffdb_types::{
@@ -1142,6 +1143,77 @@ pub fn scan_commits_request_from_proto(
     ))
 }
 
+/// Converts one exact event catalog request.
+pub fn describe_event_request_from_proto(
+    request: v1::DescribeEventRequest,
+) -> Result<(RequestId, DescribeEventRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let request = DescribeEventRequest::new(request.event_name).map_err(|_| invalid_request())?;
+    Ok((request_id, request))
+}
+
+fn event_id_from_proto(value: v1::EventId) -> Result<riffdb_types::EventId, Status> {
+    let sequence = CommitSequence::new(value.commit_sequence).ok_or_else(invalid_request)?;
+    Ok(riffdb_types::EventId::new(sequence, value.event_ordinal))
+}
+
+fn event_selection_from_proto(value: v1::EventSelection) -> Result<EventSelection, Status> {
+    let partition = value
+        .partition
+        .into_iter()
+        .map(|component| {
+            EventPartitionComponent::new(
+                component.name,
+                canonical_value_from_proto(component.value.ok_or_else(invalid_request)?)
+                    .map_err(|_| invalid_request())?,
+            )
+            .map_err(|_| invalid_request())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    EventSelection::new(value.event_name, partition, value.selected_fields)
+        .map_err(|_| invalid_request())
+}
+
+/// Converts one exact partition replay request.
+pub fn replay_events_request_from_proto(
+    request: v1::ReplayEventsRequest,
+) -> Result<(RequestId, ReplayEventsRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let selection = event_selection_from_proto(request.selection.ok_or_else(invalid_request)?)?;
+    let after = request
+        .after_event_id
+        .map(event_id_from_proto)
+        .transpose()?;
+    let page = page_request_from_proto(request.page.ok_or_else(invalid_request)?)?;
+    let observed =
+        (request.observed_history_incarnation != 0).then_some(request.observed_history_incarnation);
+    let request = ReplayEventsRequest::new(selection, after, page)
+        .map_err(|_| invalid_request())?
+        .with_observed_history_incarnation(observed);
+    Ok((request_id, request))
+}
+
+/// Converts one bounded unary event-tail request.
+pub fn tail_events_request_from_proto(
+    request: v1::TailEventsRequest,
+) -> Result<(RequestId, TailEventsRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let selection = event_selection_from_proto(request.selection.ok_or_else(invalid_request)?)?;
+    let after = request
+        .after_event_id
+        .map(event_id_from_proto)
+        .transpose()?;
+    let page = page_request_from_proto(request.page.ok_or_else(invalid_request)?)?;
+    let observed =
+        (request.observed_history_incarnation != 0).then_some(request.observed_history_incarnation);
+    let replay = ReplayEventsRequest::new(selection, after, page)
+        .map_err(|_| invalid_request())?
+        .with_observed_history_incarnation(observed);
+    let request = TailEventsRequest::new(replay, Duration::from_nanos(request.maximum_wait_nanos))
+        .map_err(|_| invalid_request())?;
+    Ok((request_id, request))
+}
+
 /// Converts one bounded commit-subscription establishment request.
 pub fn subscribe_commits_request_from_proto(
     request: v1::SubscribeCommitsRequest,
@@ -1214,6 +1286,117 @@ pub fn scan_commits_result_to_proto(
             observed_fence: Some(frontier_to_proto(page.observed_fence().position())),
             history_incarnation,
         }),
+    })
+}
+
+/// Converts one active symbolic event descriptor.
+pub fn describe_event_result_to_proto(result: &DescribeEventResult) -> v1::DescribeEventResponse {
+    let result = match result {
+        DescribeEventResult::NotFound => v1::describe_event_response::Result::NotFound(v1::Unit {}),
+        DescribeEventResult::Found(descriptor) => {
+            let convert_field =
+                |field: &riffdb_service::EventFieldDescriptor| v1::EventFieldDescriptor {
+                    name: field.name().to_owned(),
+                    value_type: field.value_type().to_owned(),
+                };
+            v1::describe_event_response::Result::Found(v1::EventDescriptor {
+                contract_lineage: descriptor.lineage().as_str().to_owned(),
+                contract_version: descriptor.version().get(),
+                contract_bundle_hash: descriptor.bundle_hash().as_bytes().to_vec(),
+                event_name: descriptor.event_name().to_owned(),
+                application_streamable: descriptor.application_streamable(),
+                partition_fields: descriptor
+                    .partition_fields()
+                    .iter()
+                    .map(convert_field)
+                    .collect(),
+                payload_fields: descriptor
+                    .payload_fields()
+                    .iter()
+                    .map(convert_field)
+                    .collect(),
+            })
+        }
+    };
+    v1::DescribeEventResponse {
+        result: Some(result),
+    }
+}
+
+fn event_id_to_proto(value: riffdb_types::EventId) -> v1::EventId {
+    v1::EventId {
+        commit_sequence: value.commit_sequence().get(),
+        event_ordinal: value.event_ordinal(),
+    }
+}
+
+fn symbolic_event_to_proto(value: &SymbolicEvent) -> Result<v1::SymbolicEvent, Status> {
+    let actor_kind = match value.actor_kind() {
+        ActorKind::Human => v1::ActorKind::Human,
+        ActorKind::Agent => v1::ActorKind::Agent,
+        ActorKind::Service => v1::ActorKind::Service,
+    };
+    let occurred_at = value.occurred_at();
+    Ok(v1::SymbolicEvent {
+        event_id: Some(event_id_to_proto(value.event_id())),
+        event_name: value.event_name().to_owned(),
+        writer_contract_version: value.writer_contract_version().get(),
+        writer_plan_hash: value.writer_plan_hash().as_bytes().to_vec(),
+        command_name: value.command_name().to_owned(),
+        request_id: value.request_id().as_bytes().to_vec(),
+        root_request_id: value.root_request_id().as_bytes().to_vec(),
+        causing_event_id: value.causing_event_id().map(event_id_to_proto),
+        occurred_at: Some(v1::Timestamp {
+            seconds: occurred_at.seconds(),
+            nanos: occurred_at.nanoseconds(),
+        }),
+        actor_kind: actor_kind as i32,
+        provenance_uri: format!("riffdb://provenance/{}", value.provenance_id()),
+        history_incarnation: value.history_incarnation(),
+        fields: value
+            .fields()
+            .iter()
+            .map(|field| {
+                Ok(v1::SymbolicEventField {
+                    name: field.name().to_owned(),
+                    value: Some(canonical_value_to_public(field.value())?),
+                })
+            })
+            .collect::<Result<Vec<_>, Status>>()?,
+    })
+}
+
+fn event_page_to_proto(page: &riffdb_service::EventPage) -> Result<v1::EventPage, Status> {
+    Ok(v1::EventPage {
+        items: page
+            .items()
+            .iter()
+            .map(symbolic_event_to_proto)
+            .collect::<Result<Vec<_>, _>>()?,
+        next_cursor: page
+            .next_cursor()
+            .map_or_else(Vec::new, |cursor| cursor.as_bytes().to_vec()),
+        observed_upper: page.observed_upper().map(event_id_to_proto),
+        history_incarnation: page.history_incarnation(),
+    })
+}
+
+/// Converts one replay page.
+pub fn replay_events_result_to_proto(
+    result: &ReplayEventsResult,
+) -> Result<v1::ReplayEventsResponse, Status> {
+    Ok(v1::ReplayEventsResponse {
+        page: Some(event_page_to_proto(result.page())?),
+    })
+}
+
+/// Converts one bounded tail result.
+pub fn tail_events_result_to_proto(
+    result: &TailEventsResult,
+) -> Result<v1::TailEventsResponse, Status> {
+    Ok(v1::TailEventsResponse {
+        page: Some(event_page_to_proto(result.page())?),
+        wait_timed_out: result.wait_timed_out(),
     })
 }
 

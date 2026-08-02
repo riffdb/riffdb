@@ -30,11 +30,11 @@ use riffdb_types::{
 use crate::{
     ApplyContractMigrationRequest, AuthoritativeCommitPage, AuthoritativeCommitScanRequest,
     AuthoritativeCommitSnapshot, AuthoritativeCommitSubscriptionRequest,
-    AuthoritativeEntityRequest, AuthoritativeEntitySnapshot, AuthoritativeIndexPage,
-    AuthoritativeIndexRequest, AuthoritativeOutcomeRequest, AuthoritativeOutcomeSnapshot,
-    AuthoritativeProvenanceSnapshot, CapabilityRevokeTargetSnapshot, CheckContractMigrationRequest,
-    ContractMigrationOperationObservation, ContractMigrationStartResult,
-    CreateOfflineBackupRequest, GetContractMigrationOperationRequest,
+    AuthoritativeEntityRequest, AuthoritativeEntitySnapshot, AuthoritativeEventReplayRequest,
+    AuthoritativeIndexPage, AuthoritativeIndexRequest, AuthoritativeOutcomeRequest,
+    AuthoritativeOutcomeSnapshot, AuthoritativeProvenanceSnapshot, CapabilityRevokeTargetSnapshot,
+    CheckContractMigrationRequest, ContractMigrationOperationObservation,
+    ContractMigrationStartResult, CreateOfflineBackupRequest, GetContractMigrationOperationRequest,
     GetOfflineMaintenanceOperationRequest, OfflineMaintenanceOperationObservation,
     OfflineMaintenanceStartResult, OperationalHealthSnapshot, OperationalStatisticsSnapshot,
     OutboxStatusRequest, OutboxStatusSnapshot, ProjectionPortRequest, ProjectionPortResult,
@@ -534,6 +534,22 @@ pub trait CommitNotificationSource: Send {
 
 /// Authoritative entity, outcome, commit, provenance, and capability observations.
 pub trait AuthoritativeReadPort: Send + Sync {
+    /// Reserves capacity for one catalog-resolved partition-local event page.
+    fn reserve_replay_events<'a>(
+        &'a self,
+        _control: &'a RequestControl,
+    ) -> PortFuture<
+        'a,
+        BoxPortCapacityPermit<
+            AuthoritativeEventReplayRequest,
+            riffdb_catalog::SymbolicEventReplayPage,
+            AuthoritativeReadError,
+        >,
+        PortAdmissionError,
+    > {
+        Box::pin(async { Err(PortAdmissionError::Stopped) })
+    }
+
     /// Reserves capacity for one exact authoritative entity observation.
     fn reserve_read_entity<'a>(
         &'a self,

@@ -87,6 +87,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/v1/contract.proto",
     "riffdb/v1/discovery.proto",
     "riffdb/v1/error.proto",
+    "riffdb/v1/event.proto",
     "riffdb/v1/projection.proto",
     "riffdb/v1/query.proto",
     "riffdb/v1/services.proto",
@@ -378,6 +379,9 @@ const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("CommitService", "ScanCommits", false),
     ("CommitService", "SubscribeCommits", true),
     ("CommitService", "TraceProvenance", false),
+    ("EventService", "DescribeEvent", false),
+    ("EventService", "ReplayEvents", false),
+    ("EventService", "TailEvents", false),
     ("ContractService", "DeployContract", false),
     ("ContractService", "DiscoverCommandTools", false),
     ("ContractService", "DiscoverResources", false),
@@ -1573,7 +1577,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
         .sum::<usize>();
     if actual_services != expected_services || service_count != expected_services.len() {
         return Err(io::Error::other(
-            "service descriptors differ from the accepted five-service baseline",
+            "service descriptors differ from the accepted seven-service baseline",
         )
         .into());
     }
@@ -1631,7 +1635,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
 
     if actual != expected {
         return Err(io::Error::other(format!(
-            "service inventory differs from the accepted six-service, thirty-five-RPC baseline: expected {expected:?}, found {actual:?}"
+            "service inventory differs from the accepted seven-service, thirty-eight-RPC baseline: expected {expected:?}, found {actual:?}"
         ))
         .into());
     }

@@ -8,6 +8,7 @@
 - **Related work packages:** `WP-414` through `WP-421`
 - **Amends:** ADR-0013, ADR-0017, ADR-0049, ADR-0055, ADR-0056, ADR-0057,
   ADR-0063, ADR-0064, ADR-0072, and ADR-0075
+- **WP-415 public-inspection clarification accepted:** 2026-08-02
 
 ## Context
 
@@ -190,6 +191,27 @@ exact consumer identity. Neither cursor nor ack token is authority by itself.
 Payloads and context are forbidden from telemetry. Wakeups are payload-free.
 Direct browser access to riffdbd is not added; generated application server code
 holds the capability and exposes an application-authenticated SSE relay.
+
+### WP-415 public inspection boundary
+
+The maintainer accepted this exact clarification on 2026-08-02. WP-415 exposes
+one additive public `EventService` with bounded `DescribeEvent`, `ReplayEvents`,
+and `TailEvents` operations through the API-neutral service, gRPC, Rust client,
+and CLI. These operations expose only the ADR-0080 safe symbolic envelope and
+opaque cursors; they do not expose raw commits, event payloads, partition keys,
+stable numeric schema IDs, or storage identities.
+
+WP-415 inspection is an operator surface. `DescribeEvent` requires the existing
+`ReadContract` authority. `ReplayEvents` and `TailEvents` require the existing
+`ReadCommit` authority because their caller selects a historical position.
+They receive distinct additive service-operation and audit tags, and may not be
+implemented by invoking or relabeling the existing contract or commit RPCs.
+
+This clarification adds no capability permission or durable capability format.
+WP-416 remains the sole owner of least-authority application roles bound to
+named streams and reactive module identity. An application must not receive
+`ReadCommit` merely to consume a named stream. WP-419 remains the owner of MCP
+event tools and payload-free notification presentation.
 
 ## Rejected alternatives
 

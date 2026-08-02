@@ -6,21 +6,22 @@ use std::pin::Pin;
 use crate::{
     ApplyContractMigrationRequest, CheckContractMigrationRequest, ContractMigrationStartResult,
     ContractValidationResult, CreateCapabilityInvocation, CreateCapabilityResult,
-    CreateOfflineBackupRequest, DeployContractRequest, DeployContractResult,
-    DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverResourcesRequest,
-    DiscoverResourcesResult, ExecuteCommandRequest, ExecuteCommandResult, ExplainCommandRequest,
-    ExplainCommandResult, GetActiveContractRequest, GetActiveContractResult, GetCommitRequest,
-    GetCommitResult, GetContractMigrationOperationRequest, GetContractMigrationOperationResult,
-    GetContractVersionRequest, GetContractVersionResult, GetEntityRequest, GetEntityResult,
-    GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
-    GetProjectionStatusRequest, GetProjectionStatusResult, HealthContext, HealthRequest,
-    HealthResult, ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
-    OfflineMaintenanceStartResult, QueryProjectionRequest, QueryProjectionResult,
-    RecoveryRestoreOfflineBackupInvocation, RequestContext, ResolveCommandOutcomeRequest,
-    ResolveCommandOutcomeResult, RestoreOfflineBackupInvocation, RevokeCapabilityRequest,
-    RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest,
-    ScanIndexResult, ServiceResult, StatisticsRequest, StatisticsResult, SubscribeToCommitsRequest,
-    SubscribeToCommitsResult, TraceProvenanceRequest, TraceProvenanceResult,
+    CreateOfflineBackupRequest, DeployContractRequest, DeployContractResult, DescribeEventRequest,
+    DescribeEventResult, DiscoverCommandToolsRequest, DiscoverCommandToolsResult,
+    DiscoverResourcesRequest, DiscoverResourcesResult, ExecuteCommandRequest, ExecuteCommandResult,
+    ExplainCommandRequest, ExplainCommandResult, GetActiveContractRequest, GetActiveContractResult,
+    GetCommitRequest, GetCommitResult, GetContractMigrationOperationRequest,
+    GetContractMigrationOperationResult, GetContractVersionRequest, GetContractVersionResult,
+    GetEntityRequest, GetEntityResult, GetOfflineMaintenanceOperationRequest,
+    GetOfflineMaintenanceOperationResult, GetProjectionStatusRequest, GetProjectionStatusResult,
+    HealthContext, HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest,
+    ListPendingOutboxDeliveriesResult, OfflineMaintenanceStartResult, QueryProjectionRequest,
+    QueryProjectionResult, RecoveryRestoreOfflineBackupInvocation, ReplayEventsRequest,
+    ReplayEventsResult, RequestContext, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
+    RestoreOfflineBackupInvocation, RevokeCapabilityRequest, RevokeCapabilityResult,
+    ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult, ServiceResult,
+    StatisticsRequest, StatisticsResult, SubscribeToCommitsRequest, SubscribeToCommitsResult,
+    TailEventsRequest, TailEventsResult, TraceProvenanceRequest, TraceProvenanceResult,
     ValidateContractRequest,
 };
 
@@ -142,6 +143,30 @@ pub trait CommitApplication: Send + Sync {
         context: RequestContext,
         request: TraceProvenanceRequest,
     ) -> ServiceFuture<'_, TraceProvenanceResult>;
+}
+
+/// Symbolic event catalog, replay, and bounded tail reads.
+pub trait EventServiceApplication: Send + Sync {
+    /// Describes one event in the active checked catalog.
+    fn describe_event(
+        &self,
+        context: RequestContext,
+        request: DescribeEventRequest,
+    ) -> ServiceFuture<'_, DescribeEventResult>;
+
+    /// Replays one exact partition through an opaque continuation.
+    fn replay_events(
+        &self,
+        context: RequestContext,
+        request: ReplayEventsRequest,
+    ) -> ServiceFuture<'_, ReplayEventsResult>;
+
+    /// Performs one bounded unary tail observation.
+    fn tail_events(
+        &self,
+        context: RequestContext,
+        request: TailEventsRequest,
+    ) -> ServiceFuture<'_, TailEventsResult>;
 }
 
 /// Health, statistics, capabilities, and outbox administration.
@@ -283,6 +308,7 @@ pub trait ApplicationService:
     + CommandApplication
     + QueryApplication
     + CommitApplication
+    + EventServiceApplication
     + AdministrationApplication
     + OfflineMaintenanceApplication
     + DiscoveryApplication
@@ -295,6 +321,7 @@ impl<T> ApplicationService for T where
         + CommandApplication
         + QueryApplication
         + CommitApplication
+        + EventServiceApplication
         + AdministrationApplication
         + OfflineMaintenanceApplication
         + DiscoveryApplication

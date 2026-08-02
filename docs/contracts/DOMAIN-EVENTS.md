@@ -67,3 +67,51 @@ conflict keys, unselected payload, credentials, or process-local trace data.
 Replay order is increasing `EventId` within exactly one logical partition. This
 does not promise global order, time-based retention, raw CDC, exactly-once
 delivery, or event-sourced reconstruction.
+
+## Inspecting events
+
+WP-415 provides an operator-oriented event catalog over the shared application
+service. `event describe` requires `ReadContract`; `event replay` and `event
+tail` require `ReadCommit`. These permissions are intentionally broader than
+the least-authority named-stream permissions generated for applications in the
+next phase.
+
+Describe the active declaration before constructing a replay request:
+
+```bash
+riffdb --database ticketdesk event describe TicketCreated
+```
+
+Replay requires every ordered partition component and at least one explicitly
+selected payload field. CLI partition values use the same tagged canonical JSON
+shape as other kernel commands:
+
+```bash
+riffdb --database ticketdesk event replay TicketCreated \
+  --partition 'organization_id={"type":"uuid","value":"018f6f50-6f31-7d62-9a7e-4f8b913d2f11"}' \
+  --field ticket_id \
+  --field created_at \
+  --limit 50
+```
+
+`next_cursor` is opaque, process-local, principal-bound, and valid for five
+minutes. It may be present on an empty page because the route scan advanced
+past other event types in the same partition. Resume such a page with
+`--cursor`; do not infer completion from an empty `items` array alone.
+
+Tail performs a race-free catch-up before waiting for a commit wakeup and then
+replays authoritative routes again. It waits for at most 30 seconds and reports
+`wait_timed_out: true` only when that interval expires without a selected event:
+
+```bash
+riffdb --database ticketdesk event tail TicketCreated \
+  --partition 'organization_id={"type":"uuid","value":"018f6f50-6f31-7d62-9a7e-4f8b913d2f11"}' \
+  --field ticket_id \
+  --after 41:0 \
+  --wait-nanos 30000000000
+```
+
+Both replay and tail return the current `history_incarnation`. Supplying it on
+a later call detects restore and fails closed instead of interpreting a stale
+position against replacement history. A tail request does not accept a replay
+cursor; use the last returned event ID as its next `--after` position.

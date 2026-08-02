@@ -26,6 +26,7 @@ pub(crate) enum InputValue {
         #[serde(deserialize_with = "deserialize_base64")]
         coefficient_twos_complement: Vec<u8>,
         scale: u32,
+        precision: Option<u32>,
     },
     Money {
         currency: String,
@@ -70,6 +71,7 @@ pub(crate) struct InputDecimal {
     #[serde(deserialize_with = "deserialize_base64")]
     coefficient_twos_complement: Vec<u8>,
     scale: u32,
+    precision: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -113,17 +115,18 @@ impl InputValue {
             Self::Decimal {
                 coefficient_twos_complement,
                 scale,
+                precision,
             } => v1::value::Kind::DecimalValue(v1::Decimal {
                 coefficient_twos_complement,
                 scale,
-                precision: None,
+                precision,
             }),
             Self::Money { currency, amount } => v1::value::Kind::MoneyValue(v1::Money {
                 currency,
                 amount: Some(v1::Decimal {
                     coefficient_twos_complement: amount.coefficient_twos_complement,
                     scale: amount.scale,
-                    precision: None,
+                    precision: amount.precision,
                 }),
             }),
             Self::String { value } => v1::value::Kind::StringValue(value),

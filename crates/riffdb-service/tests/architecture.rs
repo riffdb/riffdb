@@ -4,8 +4,8 @@
 
 use riffdb_service::{
     AdministrationApplication, CommandApplication, CommitApplication, ContractApplication,
-    CreateCapabilityInvocation, DiscoveryApplication, OfflineMaintenanceApplication,
-    QueryApplication, RecoveryOfflineMaintenanceApplication,
+    CreateCapabilityInvocation, DiscoveryApplication, EventServiceApplication,
+    OfflineMaintenanceApplication, QueryApplication, RecoveryOfflineMaintenanceApplication,
     RestoreRetryOfflineMaintenanceApplication,
 };
 
@@ -14,6 +14,7 @@ const ADMINISTRATION_SOURCE: &str = include_str!("../src/administration_operatio
 const COMMIT_SOURCE: &str = include_str!("../src/commit_operations.rs");
 const CONTEXT_SOURCE: &str = include_str!("../src/context.rs");
 const DTO_SOURCE: &str = include_str!("../src/dto.rs");
+const EVENT_SOURCE: &str = include_str!("../src/event_operations.rs");
 const MAINTENANCE_SOURCE: &str = include_str!("../src/maintenance_operations.rs");
 const ORCHESTRATION_SOURCE: &str = include_str!("../src/orchestration.rs");
 const PORTS_SOURCE: &str = include_str!("../src/ports.rs");
@@ -22,11 +23,16 @@ const SERVICE_SOURCE: &str = include_str!("../src/service.rs");
 const SYMBOLIC_QUERY_SOURCE: &str = include_str!("../src/symbolic_query.rs");
 const TRAITS_SOURCE: &str = include_str!("../src/application.rs");
 
-fn assert_object_safe(
+fn assert_data_path_object_safe(
     _contract: &dyn ContractApplication,
     _command: &dyn CommandApplication,
     _query: &dyn QueryApplication,
     _commit: &dyn CommitApplication,
+    _event: &dyn EventServiceApplication,
+) {
+}
+
+fn assert_control_path_object_safe(
     _administration: &dyn AdministrationApplication,
     _maintenance: &dyn OfflineMaintenanceApplication,
     _discovery: &dyn DiscoveryApplication,
@@ -45,8 +51,9 @@ fn exhaust_create_invocation(invocation: CreateCapabilityInvocation) {
 }
 
 #[test]
-fn seven_service_traits_are_object_safe_and_create_mode_is_closed() {
-    let _ = assert_object_safe;
+fn eight_service_traits_are_object_safe_and_create_mode_is_closed() {
+    let _ = assert_data_path_object_safe;
+    let _ = assert_control_path_object_safe;
     let _ = assert_recovery_object_safe;
     let _ = assert_restore_retry_object_safe;
     let _ = exhaust_create_invocation;
@@ -273,7 +280,7 @@ fn index_scan_keeps_durable_types_out_and_performs_one_lower_scan() {
 }
 
 #[test]
-fn operation_specific_traits_expose_the_closed_twenty_five_method_inventory() {
+fn operation_specific_traits_expose_the_closed_method_inventory() {
     let methods = [
         "fn validate_contract(",
         "fn explain_command(",
@@ -290,6 +297,9 @@ fn operation_specific_traits_expose_the_closed_twenty_five_method_inventory() {
         "fn scan_commits(",
         "fn subscribe_to_commits(",
         "fn trace_provenance(",
+        "fn describe_event(",
+        "fn replay_events(",
+        "fn tail_events(",
         "fn health(",
         "fn statistics(",
         "fn create_capability(",
@@ -317,6 +327,30 @@ fn operation_specific_traits_expose_the_closed_twenty_five_method_inventory() {
     assert!(!TRAITS_SOURCE.contains("fn execute("));
     assert!(!TRAITS_SOURCE.contains("fn generic_read("));
     assert!(!TRAITS_SOURCE.contains("fn generic_mutation("));
+}
+
+#[test]
+fn event_tail_registers_its_wakeup_source_before_authoritative_catch_up() {
+    let operation = EVENT_SOURCE
+        .split_once("async fn execute_event_read(")
+        .expect("event read orchestration exists")
+        .1
+        .split_once("async fn establish_tail_source(")
+        .expect("event read orchestration has a closed source boundary")
+        .0;
+    let subscribe = operation
+        .find("establish_tail_source(")
+        .expect("tail establishes a bounded commit notification source");
+    let replay = operation
+        .find("read_event_page(")
+        .expect("tail performs authoritative route catch-up");
+    assert!(
+        subscribe < replay,
+        "subscription must close the catch-up race"
+    );
+    assert!(operation.contains("EventReplayPosition::Continue(continuation)"));
+    assert!(operation.contains("EventReplayPosition::Initial {"));
+    assert!(operation.contains("after: observed_upper"));
 }
 
 #[test]

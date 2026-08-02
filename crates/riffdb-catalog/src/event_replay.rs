@@ -214,6 +214,15 @@ impl SymbolicEventReplayPage {
     pub const fn inclusive_upper(&self) -> EventRouteUpperFenceV1 {
         self.inclusive_upper
     }
+
+    /// Returns the captured route frontier without exposing storage cursor types.
+    #[must_use]
+    pub const fn observed_upper(&self) -> Option<EventId> {
+        match self.inclusive_upper {
+            EventRouteUpperFenceV1::BeforeFirst => None,
+            EventRouteUpperFenceV1::Inclusive(event_id) => Some(event_id),
+        }
+    }
 }
 
 /// Safe symbolic application envelope joined from event and enclosing commit.

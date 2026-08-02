@@ -16,11 +16,12 @@ use crate::{
     CompactResourceDescriptor, CompactResourceDescriptorRef, ContractDescriptor,
     ContractMigrationOperationObservation, ContractMigrationStartResult, ContractValidationResult,
     CreateCapabilityResult, CursorToken, DeclaredOutcomeView, DeployContractResult,
-    DeployQueryModuleResult, DescribeSymbolicContractResult, DiscoverCommandToolsResult,
-    DiscoverCommandToolsResultRef, DiscoverResourcesResult, DiscoverResourcesResultRef,
-    DiscoveryCatalogFence, DiscoveryCatalogStateRef, DurableEventView, EntityView,
-    ExecuteCommandResult, ExecuteSymbolicQueryResult, ExplainCommandResult,
-    ExplainSymbolicQueryResult, GeneratedSchemaIdentity, GetActiveContractResult, GetCommitResult,
+    DeployQueryModuleResult, DescribeEventResult, DescribeSymbolicContractResult,
+    DiscoverCommandToolsResult, DiscoverCommandToolsResultRef, DiscoverResourcesResult,
+    DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryCatalogStateRef, DurableEventView,
+    EntityView, EventDescriptor, EventFieldDescriptor, EventPage, ExecuteCommandResult,
+    ExecuteSymbolicQueryResult, ExplainCommandResult, ExplainSymbolicQueryResult,
+    GeneratedSchemaIdentity, GetActiveContractResult, GetCommitResult,
     GetContractMigrationOperationResult, GetContractVersionResult, GetEntityResult,
     GetOfflineMaintenanceOperationResult, GetProjectionStatusResult, HealthReport, HealthResult,
     IndexRowView, IndexScanFence, JournaledCommandResult, ListPendingOutboxDeliveriesResult,
@@ -29,11 +30,12 @@ use crate::{
     OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
     OutboxDeliverySummary, Page, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
     ProvenanceClaimsView, ProvenanceView, QueryModuleInspection, QueryProjectionResult,
-    ReadOnlyCommandResult, ResolveCommandOutcomeResult, ResourceDescriptor, ResourceDescriptorRef,
-    RevokeCapabilityResult, ScanCommitsResult, ScanIndexResult, SchemaBoundOutcomeRecord,
-    SchemaBoundOutcomeValue, ServiceFailure, StatisticsResult, SubscribeToCommitsResult,
-    SymbolicDiagnostic, SymbolicQueryIdentity, SymbolicQuerySchema, SymbolicResultField,
-    SymbolicResultRecord, TraceProvenanceResult,
+    ReadOnlyCommandResult, ReplayEventsResult, ResolveCommandOutcomeResult, ResourceDescriptor,
+    ResourceDescriptorRef, RevokeCapabilityResult, ScanCommitsResult, ScanIndexResult,
+    SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue, ServiceFailure, StatisticsResult,
+    SubscribeToCommitsResult, SymbolicDiagnostic, SymbolicEvent, SymbolicEventField,
+    SymbolicQueryIdentity, SymbolicQuerySchema, SymbolicResultField, SymbolicResultRecord,
+    TailEventsResult, TraceProvenanceResult,
 };
 
 /// Exact POC ceiling for one API-neutral unary result or visible stream item.
@@ -1056,6 +1058,113 @@ impl ServiceResponseCharge for CommitView {
         charge.repeated(snapshot.events())?;
         charge_declared_outcome(&mut charge, snapshot.outcome())?;
         charge.bytes(56)?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for EventFieldDescriptor {}
+impl ServiceResponseCharge for EventFieldDescriptor {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.bytes(self.name().len())?;
+        charge.bytes(self.value_type().len())?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for EventDescriptor {}
+impl ServiceResponseCharge for EventDescriptor {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge_lineage(&mut charge, self.lineage())?;
+        charge.bytes(32)?;
+        charge.bytes(self.event_name().len())?;
+        charge.fields(2)?;
+        charge.repeated(self.partition_fields())?;
+        charge.repeated(self.payload_fields())?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for DescribeEventResult {}
+impl ServiceResponseCharge for DescribeEventResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        if let Self::Found(descriptor) = self {
+            charge.nested(descriptor)?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for SymbolicEventField {}
+impl ServiceResponseCharge for SymbolicEventField {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.bytes(self.name().len())?;
+        charge.nested(self.value())?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for SymbolicEvent {}
+impl ServiceResponseCharge for SymbolicEvent {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(12)?;
+        charge.bytes(16)?;
+        charge.bytes(self.event_name().len())?;
+        charge.bytes(32)?;
+        charge.bytes(self.command_name().len())?;
+        charge.bytes(16 * 3)?;
+        charge.bytes(56)?;
+        charge.repeated(self.fields())?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for EventPage {}
+impl ServiceResponseCharge for EventPage {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.repeated(self.items())?;
+        if self.next_cursor().is_some() {
+            charge.bytes(crate::CURSOR_TOKEN_BYTES)?;
+        }
+        charge.fields(3)?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for ReplayEventsResult {}
+impl ServiceResponseCharge for ReplayEventsResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        self.page().service_response_charge_v1()
+    }
+}
+
+impl sealed::Sealed for TailEventsResult {}
+impl ServiceResponseCharge for TailEventsResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.nested(self.page())?;
+        charge.fields(1)?;
         Ok(charge.finish())
     }
 }
