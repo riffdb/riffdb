@@ -1,8 +1,8 @@
 //! Symbolic RiffQL application operations over the shared service boundary.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::num::NonZeroU16;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 use std::time::Instant;
 
 use riffdb_catalog::{
@@ -263,6 +263,7 @@ impl SymbolicQueryIdentity {
     }
 
     /// Test-only identity for golden conversion fixtures.
+    #[cfg(feature = "test-fixtures")]
     #[doc(hidden)]
     pub fn from_parts_for_test(
         lineage: ContractLineage,
@@ -897,6 +898,7 @@ impl SymbolicResultRecord {
     }
 
     /// Test-only constructor for golden conversion fixtures.
+    #[cfg(feature = "test-fixtures")]
     #[doc(hidden)]
     pub fn from_shared_for_test(
         entity: Arc<str>,
@@ -908,12 +910,6 @@ impl SymbolicResultRecord {
     /// Contract entity name.
     #[must_use]
     pub fn entity(&self) -> &str {
-        &self.entity
-    }
-
-    /// Shared entity name handle.
-    #[must_use]
-    pub fn entity_arc(&self) -> &Arc<str> {
         &self.entity
     }
 
@@ -942,7 +938,10 @@ pub enum SymbolicResultField {
 }
 
 /// Shared enum display-name table for one published contract schema.
-pub type SharedEnumVariantNames = Arc<BTreeMap<(u32, u32), String>>;
+///
+/// Alias of the catalog publication table so response assembly and transport
+/// share one Arc allocation for the lifetime of the validated bundle.
+pub type SharedEnumVariantNames = riffdb_catalog::ContractEnumVariantNames;
 
 /// Complete one-snapshot execution result.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1067,6 +1066,7 @@ impl ExecuteSymbolicQueryResult {
     }
 
     /// Test-only constructor for golden conversion fixtures and enum-map sharing tests.
+    #[cfg(feature = "test-fixtures")]
     #[doc(hidden)]
     pub fn from_parts_for_test(
         identity: SymbolicQueryIdentity,
@@ -1093,52 +1093,11 @@ impl ExecuteSymbolicQueryResult {
             .map(String::as_str)
     }
 
-    /// Shared enum display-name table (pointer-stable for one publication).
-    #[must_use]
-    pub fn enum_variant_names(&self) -> &SharedEnumVariantNames {
-        &self.enum_variant_names
-    }
-
     /// Opaque continuation token, when this page is not final.
     #[must_use]
     pub const fn next_cursor(&self) -> Option<CursorToken> {
         self.next_cursor
     }
-}
-
-/// Builds (or reuses) the process-shared enum name table for one published bundle.
-///
-/// Tables are keyed by bundle hash so two responses from the same catalog
-/// publication share one `Arc` allocation (pointer equality).
-pub(crate) fn shared_enum_variant_names(
-    bundle: &riffdb_contract_ir::ContractBundle,
-) -> SharedEnumVariantNames {
-    static CACHE: OnceLock<Mutex<HashMap<[u8; 32], SharedEnumVariantNames>>> = OnceLock::new();
-    let key = *bundle.bundle_hash().as_bytes();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = cache
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(existing) = guard.get(&key) {
-        return Arc::clone(existing);
-    }
-    let map = Arc::new(
-        bundle
-            .schema()
-            .enums()
-            .iter()
-            .flat_map(|enumeration| {
-                enumeration.variants().iter().map(move |variant| {
-                    (
-                        (enumeration.id().get(), variant.id().get()),
-                        variant.name().to_owned(),
-                    )
-                })
-            })
-            .collect::<BTreeMap<_, _>>(),
-    );
-    guard.insert(key, Arc::clone(&map));
-    map
 }
 
 /// Symbolic RiffQL application surface.
@@ -1990,9 +1949,11 @@ async fn execute_compiled_query(
             elapsed: authorize_post_started.elapsed(),
         });
     let response_build_started = Instant::now();
-    let enum_variant_names = shared_enum_variant_names(bundle.bundle());
-    let mut result =
-        ExecuteSymbolicQueryResult::from_snapshot(&program, snapshot, enum_variant_names);
+    let mut result = ExecuteSymbolicQueryResult::from_snapshot(
+        &program,
+        snapshot,
+        Arc::clone(bundle.enum_variant_names()),
+    );
     if let Some(module_hash) = module_hash {
         result.identity = SymbolicQueryIdentity::from_named(&program, module_hash);
     }
@@ -2682,16 +2643,27 @@ contract EnumShare version 1 {
   }
 }
 "#;
-        let bundle = riffdb_contract_compiler::compile_contract_source(source).expect("contract");
-        let first = shared_enum_variant_names(&bundle);
-        let second = shared_enum_variant_names(&bundle);
+        let compiled = riffdb_contract_compiler::compile_contract_source(source).expect("contract");
+        let first = riffdb_catalog::ValidatedContractBundle::from_compiler_bundle(compiled.clone())
+            .expect("validated");
+        // Same publication bytes re-decoded produce distinct Arc shells, but
+        // cloning one validated bundle shares the table pointer.
+        let second = first.clone();
         assert!(
-            Arc::ptr_eq(&first, &second),
-            "two responses from the same module/publication must share one enum-name Arc"
+            Arc::ptr_eq(first.enum_variant_names(), second.enum_variant_names()),
+            "clones of one validated publication must share one enum-name Arc"
         );
-        assert!(first.contains_key(&(
-            bundle.schema().enums()[0].id().get(),
-            bundle.schema().enums()[0].variants()[0].id().get()
+        // Re-decode of the same bytes is a separate publication object; tables
+        // are equal by content, bounded by the catalog publication lifetime.
+        let redecoded = riffdb_catalog::ValidatedContractBundle::from_compiler_bundle(compiled)
+            .expect("revalidated");
+        assert_eq!(
+            first.enum_variant_names().as_ref(),
+            redecoded.enum_variant_names().as_ref()
+        );
+        assert!(first.enum_variant_names().contains_key(&(
+            first.bundle().schema().enums()[0].id().get(),
+            first.bundle().schema().enums()[0].variants()[0].id().get()
         )));
     }
 }

@@ -2,6 +2,7 @@
 
 //! Closed-program execution over one engine-owned authoritative read view.
 
+#[cfg(test)]
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -113,12 +114,6 @@ impl QueryRow {
         &self.entity
     }
 
-    /// Shared entity name handle.
-    #[must_use]
-    pub fn entity_arc(&self) -> &Arc<str> {
-        &self.entity
-    }
-
     /// Resolves one exact field.
     #[must_use]
     pub fn field(&self, name: &str) -> Option<&CanonicalValue> {
@@ -130,12 +125,6 @@ impl QueryRow {
         self.fields
             .iter()
             .map(|(name, value)| (name.as_ref(), value))
-    }
-
-    /// Shared field map (names are interned handles).
-    #[must_use]
-    pub const fn field_map(&self) -> &BTreeMap<Arc<str>, CanonicalValue> {
-        &self.fields
     }
 
     /// Consumes the row into entity name and fields.
@@ -178,14 +167,15 @@ impl QueryRow {
     }
 }
 
-// Thread-local clone probe for the result-row pipeline after storage
-// materialization. Thread-local (not process-global) so parallel test threads
-// cannot race — the redb table-open lesson applied to a multi-threaded suite.
+// Test-only clone probe (same gating lesson as redb table-open counters).
+// Thread-local so parallel unit-test threads cannot race.
+#[cfg(test)]
 thread_local! {
     static PIPELINE_CLONE_COUNTING: Cell<bool> = const { Cell::new(false) };
     static PIPELINE_VALUE_CLONES: Cell<u64> = const { Cell::new(0) };
 }
 
+#[cfg(test)]
 fn note_pipeline_value_clone() {
     PIPELINE_CLONE_COUNTING.with(|enabled| {
         if enabled.get() {
@@ -194,14 +184,17 @@ fn note_pipeline_value_clone() {
     });
 }
 
-/// Enables clone counting on the current thread after reset.
-pub fn enable_pipeline_clone_counting() {
+#[cfg(not(test))]
+const fn note_pipeline_value_clone() {}
+
+#[cfg(test)]
+fn enable_pipeline_clone_counting() {
     PIPELINE_VALUE_CLONES.with(|count| count.set(0));
     PIPELINE_CLONE_COUNTING.with(|enabled| enabled.set(true));
 }
 
-/// Disables counting on the current thread and returns the observed total.
-pub fn disable_pipeline_clone_counting() -> u64 {
+#[cfg(test)]
+fn disable_pipeline_clone_counting() -> u64 {
     PIPELINE_CLONE_COUNTING.with(|enabled| enabled.set(false));
     PIPELINE_VALUE_CLONES.with(|count| count.replace(0))
 }
@@ -215,6 +208,24 @@ pub struct BoundPredicate {
 }
 
 impl BoundPredicate {
+    /// Constructs one resolved predicate.
+    ///
+    /// Production code builds predicates through binding; this constructor
+    /// exists for cross-crate tests only.
+    #[cfg(feature = "test-fixtures")]
+    #[must_use]
+    pub fn new(
+        field: impl Into<String>,
+        operator: QueryPredicateOperator,
+        value: CanonicalValue,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            operator,
+            value,
+        }
+    }
+
     /// Target field.
     #[must_use]
     pub fn field(&self) -> &str {
@@ -985,12 +996,20 @@ fn bind_predicates(
                         }
                     })?
                 }
-                QueryPredicateValue::BindingField { binding, field } => bindings
-                    .get(binding)
-                    .and_then(|rows| rows.first())
-                    .and_then(|row| row.field(field))
-                    .cloned()
-                    .unwrap_or(CanonicalValue::Null),
+                QueryPredicateValue::BindingField { binding, field } => {
+                    // Compiler invariant: every binding read is in dependencies()
+                    // and was retained by a prior step.
+                    debug_assert!(
+                        bindings.contains_key(binding),
+                        "binding {binding:?} is read but missing from retained bindings"
+                    );
+                    bindings
+                        .get(binding)
+                        .and_then(|rows| rows.first())
+                        .and_then(|row| row.field(field))
+                        .cloned()
+                        .unwrap_or(CanonicalValue::Null)
+                }
                 QueryPredicateValue::BindingFieldSet { .. } => {
                     return Err(QueryExecutionError::InvalidProgram);
                 }
@@ -1088,15 +1107,21 @@ fn bind_dependent_point_batch(
                                 }
                             })?,
                         ),
-                        QueryPredicateValue::BindingField { binding, field } => (
-                            predicate.operator(),
-                            bindings
-                                .get(binding)
-                                .and_then(|rows| rows.first())
-                                .and_then(|row| row.field(field))
-                                .cloned()
-                                .unwrap_or(CanonicalValue::Null),
-                        ),
+                        QueryPredicateValue::BindingField { binding, field } => {
+                            debug_assert!(
+                                bindings.contains_key(binding),
+                                "binding {binding:?} is read but missing from retained bindings"
+                            );
+                            (
+                                predicate.operator(),
+                                bindings
+                                    .get(binding)
+                                    .and_then(|rows| rows.first())
+                                    .and_then(|row| row.field(field))
+                                    .cloned()
+                                    .unwrap_or(CanonicalValue::Null),
+                            )
+                        }
                         QueryPredicateValue::BindingFieldSet { binding, field }
                             if binding == source_binding && field == source_field =>
                         {
@@ -1231,3 +1256,144 @@ fn scalar_order(left: &CanonicalValue, right: &CanonicalValue) -> Option<Orderin
 
 #[allow(dead_code)]
 fn _bounded_set_guard(_: BTreeSet<String>) {}
+
+#[cfg(test)]
+mod pipeline_clone_tests {
+    use super::*;
+    use riffdb_contract_compiler::compile_contract_source;
+    use riffdb_query_compiler::compile_query;
+    use riffdb_query_ir::{QueryAccessStep, SymbolicCatalog};
+    use riffdb_riffql_syntax::parse_query;
+
+    const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
+    const OPEN_TICKETS: &str = r#"
+query OpenTickets(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == TicketStatus.Open
+        order by ticket_id asc
+        take 5
+    return Found { tickets: tickets { ticket_id status } }
+    outcomes Found
+}
+"#;
+
+    struct FakeView {
+        rows: BTreeMap<String, Vec<QueryRow>>,
+    }
+
+    impl QueryReadView for FakeView {
+        type Error = ();
+
+        fn fault(&self, _error: &Self::Error) -> QueryBackendFault {
+            QueryBackendFault::Unavailable
+        }
+
+        fn application_head(&self) -> u64 {
+            1
+        }
+
+        fn point(
+            &mut self,
+            step: &QueryAccessStep,
+            _predicates: &[BoundPredicate],
+        ) -> Result<Option<QueryRow>, Self::Error> {
+            Ok(self
+                .rows
+                .get(step.binding())
+                .and_then(|rows| rows.first())
+                .cloned())
+        }
+
+        fn dependent_point_batch(
+            &mut self,
+            step: &QueryAccessStep,
+            predicates: &[Vec<BoundPredicate>],
+        ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
+            Ok(self
+                .rows
+                .get(step.binding())
+                .into_iter()
+                .flatten()
+                .cloned()
+                .map(Some)
+                .take(predicates.len())
+                .collect())
+        }
+
+        fn scan(
+            &mut self,
+            step: &QueryAccessStep,
+            _predicates: &[BoundPredicate],
+            _limit: u64,
+            _after: Option<&[u8]>,
+        ) -> Result<QueryScanPage, Self::Error> {
+            let rows = self.rows.get(step.binding()).cloned().unwrap_or_default();
+            Ok(QueryScanPage::exact_end(rows, 1))
+        }
+    }
+
+    fn row(entity: &str, fields: &[(&str, CanonicalValue)]) -> QueryRow {
+        QueryRow::checked(
+            entity.to_owned(),
+            fields
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), value.clone()))
+                .collect(),
+        )
+        .expect("row")
+    }
+
+    /// Falsifiability: leaf many-query projection must not clone selected values.
+    /// Transcript: force project_clone → observed 6 → restore move path → 0.
+    #[test]
+    fn leaf_many_projection_does_not_clone_selected_values() {
+        enable_pipeline_clone_counting();
+        let bundle = compile_contract_source(CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let program =
+            compile_query(&parse_query(OPEN_TICKETS).expect("query"), &catalog).expect("program");
+        let status = catalog.enumeration("TicketStatus").expect("status");
+        let parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            ("project_id".to_owned(), CanonicalValue::Uuid([2; 16])),
+        ]))
+        .expect("parameters");
+        let tickets: Vec<QueryRow> = (0u8..3)
+            .map(|n| {
+                row(
+                    "Ticket",
+                    &[
+                        ("organization_id", CanonicalValue::Uuid([1; 16])),
+                        ("project_id", CanonicalValue::Uuid([2; 16])),
+                        ("ticket_id", CanonicalValue::Uuid([n; 16])),
+                        (
+                            "status",
+                            CanonicalValue::Enum {
+                                type_id: status.internal_id(),
+                                variant_id: status.variant("Open").expect("Open"),
+                            },
+                        ),
+                    ],
+                )
+            })
+            .collect();
+        let mut view = FakeView {
+            rows: BTreeMap::from([("tickets".to_owned(), tickets)]),
+        };
+        let snapshot = execute_in_snapshot(&program, &parameters, &mut view).expect("execute");
+        let clones = disable_pipeline_clone_counting();
+        match snapshot.fields().get("tickets") {
+            Some(QueryResultValue::Many(rows)) => assert_eq!(rows.len(), 3),
+            other => panic!("expected 3 tickets, got {other:?}"),
+        }
+        assert_eq!(
+            clones, 0,
+            "per-row result-path clone count must be 0 for a leaf 3-row query (observed {clones})"
+        );
+    }
+}

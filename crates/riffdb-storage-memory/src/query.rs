@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use riffdb_query_executor::{
     BoundPredicate, QueryBackendFault, QueryContinuation, QueryExecutionError, QueryExecutionPort,
@@ -84,35 +86,8 @@ impl QueryReadView for MemoryQueryView<'_> {
         step: &QueryAccessStep,
         predicates: &[BoundPredicate],
     ) -> Result<Option<QueryRow>, Self::Error> {
-        let key_fields = match step.access() {
-            QueryAccessKind::Point { key_fields }
-            | QueryAccessKind::DependentPointBatch { key_fields, .. } => key_fields,
-            QueryAccessKind::Index { .. } => {
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
-        };
-        let values = key_fields
-            .iter()
-            .map(|field| exact_value(predicates, field))
-            .collect::<Result<Vec<_>, _>>()?;
-        if values
-            .iter()
-            .any(|value| matches!(value, CanonicalValue::Null))
-        {
-            return Ok(None);
-        }
-        let key = step
-            .internal_entity_key_schema()
-            .encode_entity(&values)
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let target = EntityTarget::new(step.internal_entity_id(), key)
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         let plan = RowMaterializePlan::for_step(self.program, step)?;
-        match unique_binary_search_by(&self.state.entities, |record| record.target().cmp(&target))?
-        {
-            Ok(index) => plan.materialize(&self.state.entities[index]).map(Some),
-            Err(_) => Ok(None),
-        }
+        self.point_with_plan(step, predicates, &plan)
     }
 
     fn dependent_point_batch(
@@ -123,9 +98,11 @@ impl QueryReadView for MemoryQueryView<'_> {
         if !matches!(step.access(), QueryAccessKind::DependentPointBatch { .. }) {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        // One plan for the whole batch (not per predicate/row).
+        let plan = RowMaterializePlan::for_step(self.program, step)?;
         predicates
             .iter()
-            .map(|predicates| self.point(step, predicates))
+            .map(|predicates| self.point_with_plan(step, predicates, &plan))
             .collect()
     }
 
@@ -297,6 +274,44 @@ impl QueryReadView for MemoryQueryView<'_> {
     }
 }
 
+impl MemoryQueryView<'_> {
+    fn point_with_plan(
+        &self,
+        step: &QueryAccessStep,
+        predicates: &[BoundPredicate],
+        plan: &RowMaterializePlan,
+    ) -> Result<Option<QueryRow>, StorageError> {
+        let key_fields = match step.access() {
+            QueryAccessKind::Point { key_fields }
+            | QueryAccessKind::DependentPointBatch { key_fields, .. } => key_fields,
+            QueryAccessKind::Index { .. } => {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+        };
+        let values = key_fields
+            .iter()
+            .map(|field| exact_value(predicates, field))
+            .collect::<Result<Vec<_>, _>>()?;
+        if values
+            .iter()
+            .any(|value| matches!(value, CanonicalValue::Null))
+        {
+            return Ok(None);
+        }
+        let key = step
+            .internal_entity_key_schema()
+            .encode_entity(&values)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let target = EntityTarget::new(step.internal_entity_id(), key)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        match unique_binary_search_by(&self.state.entities, |record| record.target().cmp(&target))?
+        {
+            Ok(index) => plan.materialize(&self.state.entities[index]).map(Some),
+            Err(_) => Ok(None),
+        }
+    }
+}
+
 fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     let mut upper = prefix.to_vec();
     let position = upper.iter().rposition(|byte| *byte != u8::MAX)?;
@@ -369,6 +384,9 @@ fn index_prefixes(
 }
 
 /// Per-step field-name interning for one-pass row materialization (memory parity).
+///
+/// Callers build this once per access step (scan loop, single point, or whole
+/// dependent-point batch) and share it across every row of that step.
 struct RowMaterializePlan {
     entity: Arc<str>,
     needed: Vec<(FieldId, Arc<str>)>,
@@ -379,6 +397,7 @@ impl RowMaterializePlan {
         program: &QueryAccessProgramV1,
         step: &QueryAccessStep,
     ) -> Result<Self, StorageError> {
+        note_materialize_plan_build();
         let access = program
             .internal_entity_access(step.entity())
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
@@ -400,6 +419,8 @@ impl RowMaterializePlan {
         let stored = record.fields().fields();
         let mut fields = BTreeMap::new();
         let mut store_index = 0usize;
+        // Merge requires needed FieldIds unique (name uniqueness is plan-checked;
+        // duplicate FieldIds would yield CorruptData rather than last-wins map).
         for (need_id, name) in &self.needed {
             while store_index < stored.len() && stored[store_index].0.get() < need_id.get() {
                 store_index += 1;
@@ -413,6 +434,27 @@ impl RowMaterializePlan {
         QueryRow::from_shared(Arc::clone(&self.entity), fields)
             .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))
     }
+}
+
+#[cfg(test)]
+static MATERIALIZE_PLAN_BUILDS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+fn note_materialize_plan_build() {
+    MATERIALIZE_PLAN_BUILDS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+const fn note_materialize_plan_build() {}
+
+#[cfg(test)]
+fn reset_materialize_plan_builds() {
+    MATERIALIZE_PLAN_BUILDS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn materialize_plan_builds() -> u64 {
+    MATERIALIZE_PLAN_BUILDS.load(Ordering::Relaxed)
 }
 
 #[cfg(test)]
@@ -800,6 +842,65 @@ query list_members_exact(
         assert!(
             snapshot.continuation().is_none() && snapshot.continuation_binding().is_none(),
             "exact-end page must not mint a continuation"
+        );
+    }
+
+    /// F5: dependent_point_batch builds the materialize plan once for the batch.
+    /// Transcript: re-inline plan inside point() → builds == predicate count → hoist → 1.
+    #[test]
+    fn dependent_point_batch_builds_one_materialize_plan() {
+        use riffdb_query_executor::BoundPredicate;
+        use riffdb_query_ir::{QueryAccessKind, QueryPredicateOperator};
+
+        let bundle = compile_contract_source(CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let program = compile_query(
+            &parse_query(include_str!(
+                "../../../queries/ticketdesk/ticket_page.riffq"
+            ))
+            .expect("parse"),
+            &catalog,
+        )
+        .expect("program");
+        let step = program
+            .steps()
+            .iter()
+            .find(|step| matches!(step.access(), QueryAccessKind::DependentPointBatch { .. }))
+            .expect("labels dependent batch step");
+        let QueryAccessKind::DependentPointBatch { key_fields, .. } = step.access() else {
+            unreachable!();
+        };
+        let null_preds: Vec<BoundPredicate> = key_fields
+            .iter()
+            .map(|field| {
+                BoundPredicate::new(
+                    field.clone(),
+                    QueryPredicateOperator::Equal,
+                    CanonicalValue::Null,
+                )
+            })
+            .collect();
+        let batch = vec![null_preds.clone(), null_preds.clone(), null_preds];
+        let state = MemoryState::default();
+        let parameters = QueryParameters::checked(BTreeMap::from([(
+            "organization_id".to_owned(),
+            CanonicalValue::Uuid([1; 16]),
+        )]))
+        .expect("parameters");
+        let mut view = MemoryQueryView {
+            state: &state,
+            program: &program,
+            parameters: &parameters,
+        };
+        reset_materialize_plan_builds();
+        let rows = view
+            .dependent_point_batch(step, &batch)
+            .expect("batch executes");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            materialize_plan_builds(),
+            1,
+            "dependent batch must intern field names once, not per predicate"
         );
     }
 }
