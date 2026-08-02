@@ -119,3 +119,67 @@ maintainer; nothing in the checkpoint package forecloses any retention
 choice.
 
 Status: Accepted by the maintainer on 2026-08-02.
+
+## Amendment 2 — retention definitions (Proposed 2026-08-02)
+
+Scoping approved by the maintainer 2026-08-02: hard-fence-only watermark
+with a manual detach verb (the ADR-0086 §8 automated replay budget follows
+once the projection plane carries production projections); v1 prunes event
+payload rows and commit-record body rows only; watermark advancement only at
+deliberate maintenance points, never in the hot write path.
+
+- **Watermark.** One meta key, `retention_watermark/v1`, holding a
+  registry-governed record binding the watermark sequence, the history
+  incarnation, and a self-hash. It advances only (a) during the offline
+  retention maintenance operation and (b) is re-validated (never advanced)
+  at startup. It MUST NOT exceed the minimum of: every projection control's
+  durable frontier (detached projections excluded), every operator hold,
+  the undelivered-outbox low-water mark, and any staged migration's frozen
+  frontier. Restore re-derives it fail-safe (minimum of the restored state's
+  fencing inputs).
+- **Operator holds.** One meta key, `retention_holds/v1`: a bounded list of
+  named holds (identifier, sequence, reason), managed by maintenance verbs.
+  The manual projection-detach verb removes a projection from the fencing
+  minimum explicitly and is recorded as an audited administration action.
+- **Tombstones.** One new table, `history_tombstones`: per-range records
+  {first sequence, last sequence, per-table pruned-row counts, content
+  digest over the pruned rows, previous-tombstone hash, incarnation},
+  hash-chained like the contract-migration journal with the chain root bound
+  to the registry digest. Ranges are contiguous, non-overlapping, ascending,
+  and abut the watermark.
+- **What prunes in v1.** COMMITS bodies, EVENTS payloads, and OUTBOX /
+  OUTBOX_STATUS rows (all sequence-keyed) below the watermark. Retained:
+  event ROUTES (a route resolving below the watermark yields the typed
+  pruned outcome — history that existed and was retired, never "not found"),
+  provenance (identifier-keyed; its pruning needs an additive index —
+  deferred), idempotency terminal records (the retry contract outlives
+  event retention), and all audit history.
+- **Prune execution.** An offline maintenance operation under exclusive
+  access, processing bounded sub-ranges; each sub-range commits atomically
+  {delete rows, append tombstone, advance watermark}; a crash between
+  sub-ranges leaves a valid state. The operation deletes any
+  validated-prefix checkpoint in its first transaction — a checkpoint's
+  recorded prefix counts describe rows the prune removes, so the next
+  startup performs full validation of the retained history (with tombstone
+  verification) and writes a fresh checkpoint. Checkpoints additionally
+  bind the watermark value; a mismatch is one more ignore-and-fall-back
+  condition.
+- **Startup validation with tombstones.** Below-watermark ranges are
+  validated by tombstone-chain verification (chain hashes, contiguity,
+  abutment, counts) instead of row-by-row content; every reciprocity check
+  and the row-ordinal identity treat below-watermark absence covered by a
+  verified tombstone as valid, and absence NOT covered by one as the same
+  corruption it is today. ADR-0019's guarantee holds in the amended form:
+  everything is validated directly, by checkpoint proof, or by tombstone
+  proof — and every proof is verified, never trusted.
+- **Public surface.** A typed pruned outcome (`RDB-HISTORY-0102`,
+  `history_pruned`) distinguishes retired history from never-existed on
+  every historical read path (commit reads, event replay, provenance
+  traces), following the `history_incarnation_mismatch` precedent across
+  the error, presentation, client, and metrics surfaces.
+- **Backup.** The offline backup manifest gains the watermark; the
+  backup-facts allocator check accepts a pruned prefix exactly when the
+  manifest watermark covers it; restore stamps the watermark and re-derives
+  fencing before any subsequent prune.
+
+Status: Proposed. Acceptance is the maintainer's.
