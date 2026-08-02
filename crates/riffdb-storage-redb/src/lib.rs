@@ -27,6 +27,7 @@ mod shared_ports;
 mod startup;
 mod store;
 mod transient;
+mod validated_prefix;
 
 pub use backup::{
     RedbOfflineBackup, RedbOfflineRestore, read_history_incarnation, stamp_history_incarnation,

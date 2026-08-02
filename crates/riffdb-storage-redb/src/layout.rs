@@ -117,8 +117,10 @@ pub(crate) const META_HISTORY_INCARNATION: &str = "history_incarnation/v1";
 /// on open. Written after a successful `migrate_partition_index_generations`
 /// while the digest is current so reopen can skip the full secondary-index scan.
 pub(crate) const META_INDEX_EPOCH_ROWS_REPAIRED: &str = "index_epoch_rows_repaired/v1";
+/// Optional proof-carrying validated-prefix startup checkpoint (ADR-0085 A1).
+pub(crate) const META_VALIDATED_PREFIX_CHECKPOINT: &str = "validated_prefix_checkpoint/v1";
 
-pub(crate) const META_KEYS: [&str; 8] = [
+pub(crate) const META_KEYS: [&str; 9] = [
     META_FORMAT_VERSION,
     META_DATABASE_ID,
     META_APPLICATION_SEQUENCE,
@@ -127,6 +129,7 @@ pub(crate) const META_KEYS: [&str; 8] = [
     META_RECORD_REGISTRY,
     META_HISTORY_INCARNATION,
     META_INDEX_EPOCH_ROWS_REPAIRED,
+    META_VALIDATED_PREFIX_CHECKPOINT,
 ];
 
 #[allow(dead_code, reason = "WP-070 catalog ports consume this frozen key")]
@@ -224,9 +227,10 @@ mod tests {
                 "record_registry/v2",
                 "history_incarnation/v1",
                 "index_epoch_rows_repaired/v1",
+                "validated_prefix_checkpoint/v1",
             ]
         );
-        assert_eq!(META_KEYS.len(), 8);
+        assert_eq!(META_KEYS.len(), 9);
         assert_eq!(
             META_KEYS.into_iter().collect::<BTreeSet<_>>().len(),
             META_KEYS.len()
