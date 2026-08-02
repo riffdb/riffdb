@@ -395,6 +395,7 @@ Each compatibility entry encodes its exact eight-byte ASCII code through normal 
 | `RDB-K033` | `0x04` | added uniqueness rule over existing state |
 | `RDB-K034` | `0x04` | added invariant over existing state |
 | `RDB-K035` | `0x04` | added projection requiring historical backfill |
+| `RDB-K036` | `0x04` | semantic rename retaining stable ID |
 | `RDB-K100` | `0x03` | removed identity |
 | `RDB-K101` | `0x03` | tombstone resurrection |
 | `RDB-K102` | `0x03` | stable ID reuse |
@@ -452,8 +453,9 @@ Fields below are listed in exact byte order. A collection field includes its cou
 
 | # | Field | Encoding |
 |---:|---|---|
-| 1 | `version` | u32 = 1 |
+| 1 | `version` | u32 = 1 or 2 |
 | 2 | `allocations` | u32 count + LineageAllocation[] |
+| 3 | `aliases` | ledger v2 only: u32 count + LineageAlias[] |
 
 ### LineageAllocation
 
@@ -474,6 +476,16 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 3 | `identity_owner_ids` | u8 count + u32[] |
 | 4 | `name` | string |
 | 5 | `state` | Lineage entry state tag |
+
+### LineageAlias
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `namespace_tag` | Stable ID namespace tag |
+| 2 | `identity_owner_kind` | contextual owner tag |
+| 3 | `identity_owner_ids` | u8 count + u32[] |
+| 4 | `name` | string |
+| 5 | `id` | u32 existing allocation ID |
 
 ### StructuralSchema
 

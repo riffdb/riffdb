@@ -93,6 +93,8 @@ pub enum CompatibilityCode {
     AddedInvariant,
     /// Added projection requiring historical backfill.
     ProjectionBackfill,
+    /// Migration-proven semantic rename retaining the stable ID.
+    RenamedIdentity,
     /// Removed stable identity.
     RemovedIdentity,
     /// Attempted tombstone resurrection.
@@ -122,7 +124,7 @@ pub enum CompatibilityCode {
 }
 
 impl CompatibilityCode {
-    pub(crate) const ALL: [Self; 30] = [
+    pub(crate) const ALL: [Self; 31] = [
         Self::NoSemanticChange,
         Self::AddedCommand,
         Self::AddedEvent,
@@ -140,6 +142,7 @@ impl CompatibilityCode {
         Self::AddedUniqueConstraint,
         Self::AddedInvariant,
         Self::ProjectionBackfill,
+        Self::RenamedIdentity,
         Self::RemovedIdentity,
         Self::TombstoneResurrection,
         Self::IdReuse,
@@ -702,10 +705,10 @@ fn compare_schema(
             (Some(old), Some(next)) => old == next,
             (Some(_), None) => false,
         };
-        if old.name() != event.name()
-            || !partition_compatible
-            || !only_optional_additions(old.payload(), event.payload())
-        {
+        if old.name() != event.name() {
+            add(findings, CompatibilityCode::RenamedIdentity, path.clone());
+        }
+        if !partition_compatible || !only_optional_additions(old.payload(), event.payload()) {
             add(findings, CompatibilityCode::EventChange, path);
         } else if old.payload() != event.payload() {
             compatible.optional_events.insert(event.id());
@@ -718,7 +721,7 @@ fn compare_schema(
             continue;
         };
         if old.name() != enumeration.name() {
-            add(findings, CompatibilityCode::IdReuse, path.clone());
+            add(findings, CompatibilityCode::RenamedIdentity, path.clone());
         }
         let old_variants = old
             .variants()
@@ -729,8 +732,8 @@ fn compare_schema(
             let variant_path = format!("{path}/variant:{}", variant.id().get());
             match old_variants.get(&variant.id()) {
                 None => add(findings, CompatibilityCode::AddedEnumVariant, variant_path),
-                Some(old) if *old != variant => {
-                    add(findings, CompatibilityCode::IdReuse, variant_path);
+                Some(old) if old.name() != variant.name() => {
+                    add(findings, CompatibilityCode::RenamedIdentity, variant_path);
                 }
                 Some(_) => {}
             }
@@ -903,7 +906,7 @@ fn compare_optional_record_additions(
                 let code = if old.value_type() != field.value_type() {
                     CompatibilityCode::TypeChange
                 } else {
-                    CompatibilityCode::IdReuse
+                    CompatibilityCode::RenamedIdentity
                 };
                 add(findings, code, path);
             }
@@ -927,7 +930,7 @@ fn only_optional_additions(parent: &RecordSchema, next: &RecordSchema) -> bool {
             .fields()
             .iter()
             .all(|field| match old_fields.get(&field.id()) {
-                Some(old) => *old == field,
+                Some(old) => old.value_type() == field.value_type(),
                 None => field.value_type().is_optional(),
             })
 }
@@ -1008,7 +1011,7 @@ fn compare_outcomes(
             findings,
         );
         if old.name() != outcome.name() {
-            add(findings, CompatibilityCode::IdReuse, path.clone());
+            add(findings, CompatibilityCode::RenamedIdentity, path.clone());
         }
         if old.payload() != outcome.payload()
             && !only_optional_additions(old.payload(), outcome.payload())
@@ -1729,16 +1732,20 @@ fn compare_identities(
             );
             match entry.state() {
                 LineageEntryState::Active => {
+                    let slot_identity =
+                        desired_by_slot.get(&(allocation.namespace().clone(), entry.id()));
                     match desired_by_identity.get(entry.identity()) {
+                        None if slot_identity.is_some() => {
+                            add(findings, CompatibilityCode::RenamedIdentity, path.clone());
+                        }
                         None => add(findings, CompatibilityCode::RemovedIdentity, path.clone()),
                         Some(id) if *id != entry.id() => {
                             add(findings, CompatibilityCode::IdReuse, path.clone());
                         }
                         Some(_) => {}
                     }
-                    if desired_by_slot
-                        .get(&(allocation.namespace().clone(), entry.id()))
-                        .is_some_and(|identity| *identity != entry.identity())
+                    if slot_identity.is_some_and(|identity| *identity != entry.identity())
+                        && desired_by_identity.contains_key(entry.identity())
                     {
                         add(findings, CompatibilityCode::IdReuse, path);
                     }

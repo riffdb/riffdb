@@ -6538,7 +6538,7 @@ work_packages:
     replacement projections without stable-ID reuse or historical reinterpretation.
   requirements: [MIG-001, MIG-002, MIG-003, MIG-004, MIG-005, MIG-009, MIG-011, MIG-013, MIG-014, MIG-015,
     MIG-018, MIG-019, MIG-020]
-  required_adrs: [ADR-0013, ADR-0066, ADR-0076, ADR-0077, ADR-0078]
+  required_adrs: [ADR-0013, ADR-0066, ADR-0076, ADR-0077, ADR-0078, ADR-0090]
   allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
     crates/riffdb-contract-compiler/**, crates/riffdb-catalog/**, crates/riffdb-invariant/**,
     crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,

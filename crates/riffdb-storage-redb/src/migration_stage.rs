@@ -430,6 +430,32 @@ impl MigrationStagePort for RedbContractMigrationStage {
         self.context.backup_manifest.included_application_frontier()
     }
 
+    fn retained_migration_entity_count(
+        &self,
+        migration: MigrationBundleHash,
+        entity_types: &[riffdb_types::EntityTypeId],
+    ) -> Result<u64, MigrationStageError> {
+        let transaction = self.ports.begin_read().map_err(stage_error)?;
+        let table = transaction
+            .open_table(RETIRED_ENTITIES)
+            .map_err(|_| MigrationStageError::Integrity)?;
+        let mut count = 0_u64;
+        for entry in table.iter().map_err(|_| MigrationStageError::Integrity)? {
+            let (_, value) = entry.map_err(|_| MigrationStageError::Integrity)?;
+            let record =
+                riffdb_storage_api::proto_codec::decode_retired_entity_record_v1(value.value())
+                    .map_err(|_| MigrationStageError::Integrity)?;
+            if record.value().migration() == migration
+                && entity_types.contains(&record.value().original_target().entity_type_id())
+            {
+                count = count
+                    .checked_add(1)
+                    .ok_or(MigrationStageError::LimitExceeded)?;
+            }
+        }
+        Ok(count)
+    }
+
     fn apply_migration_batch(&mut self, batch: MigrationBatch) -> Result<(), MigrationStageError> {
         if batch.migration() != self.context.artifacts.migration() {
             return Err(MigrationStageError::Integrity);
@@ -460,7 +486,7 @@ impl MigrationStagePort for RedbContractMigrationStage {
             }
             let predecessor_envelope = current.value().to_vec();
             drop(current);
-            if let Some(post_image) = mutation.post_image() {
+            if mutation.post_image().is_some() || mutation.retires_source() {
                 let retained_record = StoredRetiredEntityRecordV1::new(
                     self.context.operation_id,
                     batch.migration(),
@@ -485,10 +511,30 @@ impl MigrationStagePort for RedbContractMigrationStage {
                 {
                     return Err(MigrationStageError::Integrity);
                 }
-                let encoded = encode_entity_record_v1(post_image).map_err(stage_error)?;
-                entities
-                    .insert(key, encoded.as_bytes())
-                    .map_err(|_| MigrationStageError::Integrity)?;
+                if let Some(post_image) = mutation.post_image() {
+                    let encoded = encode_entity_record_v1(post_image).map_err(stage_error)?;
+                    entities
+                        .insert(key, encoded.as_bytes())
+                        .map_err(|_| MigrationStageError::Integrity)?;
+                } else {
+                    entities
+                        .remove(key)
+                        .map_err(|_| MigrationStageError::Integrity)?
+                        .ok_or(MigrationStageError::RowChanged)?;
+                    let entity_key = mutation.expected().source().target().key().as_bytes();
+                    let mut obsolete = Vec::new();
+                    for entry in indexes.iter().map_err(|_| MigrationStageError::Integrity)? {
+                        let (index_key, _) = entry.map_err(|_| MigrationStageError::Integrity)?;
+                        if index_key.value().ends_with(entity_key) {
+                            obsolete.push(index_key.value().to_vec());
+                        }
+                    }
+                    for index_key in obsolete {
+                        indexes
+                            .remove(index_key.as_slice())
+                            .map_err(|_| MigrationStageError::Integrity)?;
+                    }
+                }
             }
             for index in mutation.rebuilt_indexes() {
                 let encoded = encode_index_entry_v2(index).map_err(stage_error)?;

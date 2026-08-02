@@ -261,6 +261,21 @@ impl MigrationStagePort for MemoryMigrationStage {
         Ok(self.state.journal.clone())
     }
 
+    fn retained_migration_entity_count(
+        &self,
+        _migration: riffdb_types::MigrationBundleHash,
+        entity_types: &[riffdb_types::EntityTypeId],
+    ) -> Result<u64, MigrationStageError> {
+        u64::try_from(
+            self.state
+                .retained_archive
+                .iter()
+                .filter(|row| entity_types.contains(&row.target().entity_type_id()))
+                .count(),
+        )
+        .map_err(|_| MigrationStageError::LimitExceeded)
+    }
+
     fn apply_migration_batch(&mut self, batch: MigrationBatch) -> Result<(), MigrationStageError> {
         if self.state.retired_predecessor_writes
             || self.state.journal.as_ref().is_some_and(|journal| {
@@ -270,7 +285,6 @@ impl MigrationStagePort for MemoryMigrationStage {
             return Err(MigrationStageError::Integrity);
         }
 
-        let mut positions = Vec::with_capacity(batch.mutations().len());
         let mut targets = BTreeSet::new();
         let mut index_keys = BTreeSet::new();
         for mutation in batch.mutations() {
@@ -294,7 +308,6 @@ impl MigrationStagePort for MemoryMigrationStage {
                     return Err(MigrationStageError::Integrity);
                 }
             }
-            positions.push(position);
         }
         if self.state.journal.as_ref().is_some_and(|journal| {
             batch.checked_rows() < journal.checked_rows()
@@ -309,12 +322,28 @@ impl MigrationStagePort for MemoryMigrationStage {
             .journal
             .as_ref()
             .map_or(1, |journal| journal.batch_count().saturating_add(1));
-        for (position, mutation) in positions.into_iter().zip(batch.mutations()) {
+        for mutation in batch.mutations() {
+            let position = self
+                .row_position(mutation.expected().source().target())
+                .map_err(|_| MigrationStageError::RowChanged)?;
             if let Some(post_image) = mutation.post_image() {
                 self.state
                     .retained_archive
                     .push(self.state.entities[position].clone());
                 self.state.entities[position] = post_image.clone();
+            } else if mutation.retires_source() {
+                self.state
+                    .retained_archive
+                    .push(self.state.entities[position].clone());
+                let entity_key = self.state.entities[position]
+                    .target()
+                    .key()
+                    .as_bytes()
+                    .to_vec();
+                self.state.entities.remove(position);
+                self.state
+                    .indexes
+                    .retain(|entry| !entry.key().as_bytes().ends_with(&entity_key));
             }
             for entry in mutation.rebuilt_indexes() {
                 self.state.indexes.push(entry.clone());

@@ -53,6 +53,8 @@ const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
 const EVENT_PARTITION_SCHEMA_EXTENSION: u64 = 0xffff_fffc_ffff_ffff;
 /// Immutable stable-ID lineage-ledger format version.
 pub const LINEAGE_LEDGER_VERSION_V1: u32 = 1;
+/// Stable-ID lineage-ledger format with permanent rename aliases.
+pub const LINEAGE_LEDGER_VERSION_V2: u32 = 2;
 /// Maximum canonical bundle bytes below the durable envelope limit.
 pub const MAX_BUNDLE_BYTES: usize = 15 * 1024 * 1024;
 /// Maximum stable lineage ledger entries including tombstones.
@@ -314,6 +316,39 @@ pub struct StableIdentity {
     name: String,
 }
 
+/// One compiler-sealed semantic rename within an exact allocation namespace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StableIdentityRename {
+    from: StableIdentity,
+    to: StableIdentity,
+}
+
+impl StableIdentityRename {
+    /// Creates a non-reflexive rename that cannot move an identity between namespaces.
+    pub fn new(from: StableIdentity, to: StableIdentity) -> Result<Self, IrValidationError> {
+        if from == to
+            || from.namespace.allocation_namespace() != to.namespace.allocation_namespace()
+        {
+            return Err(IrValidationError::InvalidLineageLedger {
+                reason: "stable identity rename changes allocation namespace",
+            });
+        }
+        Ok(Self { from, to })
+    }
+
+    /// Predecessor identity key.
+    #[must_use]
+    pub const fn from(&self) -> &StableIdentity {
+        &self.from
+    }
+
+    /// Successor identity key.
+    #[must_use]
+    pub const fn to(&self) -> &StableIdentity {
+        &self.to
+    }
+}
+
 impl StableIdentity {
     /// Creates one exact source identity path.
     pub fn new(
@@ -385,6 +420,27 @@ pub struct LineageAllocation {
     entries: Vec<LineageEntry>,
 }
 
+/// One permanent historical name bound to its original numeric stable ID.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LineageAlias {
+    identity: StableIdentity,
+    id: u32,
+}
+
+impl LineageAlias {
+    /// Historical semantic identity key.
+    #[must_use]
+    pub const fn identity(&self) -> &StableIdentity {
+        &self.identity
+    }
+
+    /// Original numeric stable ID.
+    #[must_use]
+    pub const fn id(&self) -> u32 {
+        self.id
+    }
+}
+
 impl LineageAllocation {
     /// Exact allocation namespace.
     #[must_use]
@@ -408,13 +464,14 @@ impl LineageAllocation {
 pub struct LineageLedgerV1 {
     version: u32,
     allocations: Vec<LineageAllocation>,
+    aliases: Vec<LineageAlias>,
 }
 
 impl LineageLedgerV1 {
     /// Allocates a genesis ledger deterministically from canonical identities.
     pub fn genesis(identities: Vec<StableIdentity>) -> Result<Self, IrValidationError> {
         let required = inferred_allocation_namespaces(&identities)?;
-        Self::from_parent(None, identities, required)
+        Self::from_parent(None, identities, required, Vec::new())
     }
 
     /// Allocates genesis while retaining explicitly required empty scoped states.
@@ -422,7 +479,7 @@ impl LineageLedgerV1 {
         identities: Vec<StableIdentity>,
         required: Vec<StableIdAllocationNamespace>,
     ) -> Result<Self, IrValidationError> {
-        Self::from_parent(None, identities, required)
+        Self::from_parent(None, identities, required, Vec::new())
     }
 
     /// Allocates a successor, preserving surviving IDs and permanent tombstones.
@@ -431,7 +488,7 @@ impl LineageLedgerV1 {
         identities: Vec<StableIdentity>,
     ) -> Result<Self, IrValidationError> {
         let required = inferred_allocation_namespaces(&identities)?;
-        Self::from_parent(Some(parent), identities, required)
+        Self::from_parent(Some(parent), identities, required, Vec::new())
     }
 
     /// Allocates a successor while retaining explicitly required empty states.
@@ -440,13 +497,34 @@ impl LineageLedgerV1 {
         identities: Vec<StableIdentity>,
         required: Vec<StableIdAllocationNamespace>,
     ) -> Result<Self, IrValidationError> {
-        Self::from_parent(Some(parent), identities, required)
+        Self::from_parent(Some(parent), identities, required, Vec::new())
+    }
+
+    /// Allocates a successor while applying exact compiler-sealed semantic renames.
+    pub fn successor_with_renames(
+        parent: &Self,
+        identities: Vec<StableIdentity>,
+        renames: Vec<StableIdentityRename>,
+    ) -> Result<Self, IrValidationError> {
+        let required = inferred_allocation_namespaces(&identities)?;
+        Self::from_parent(Some(parent), identities, required, renames)
+    }
+
+    /// Allocates a complete successor and applies exact semantic renames.
+    pub fn successor_complete_with_renames(
+        parent: &Self,
+        identities: Vec<StableIdentity>,
+        required: Vec<StableIdAllocationNamespace>,
+        renames: Vec<StableIdentityRename>,
+    ) -> Result<Self, IrValidationError> {
+        Self::from_parent(Some(parent), identities, required, renames)
     }
 
     fn from_parent(
         parent: Option<&Self>,
         identities: Vec<StableIdentity>,
         required: Vec<StableIdAllocationNamespace>,
+        renames: Vec<StableIdentityRename>,
     ) -> Result<Self, IrValidationError> {
         checked_len(
             "stable identities",
@@ -465,6 +543,16 @@ impl LineageLedgerV1 {
                 MAX_LINEAGE_ALLOCATION_STATES,
             )?;
         }
+        if parent.is_none() && !renames.is_empty() {
+            return Err(IrValidationError::InvalidLineageLedger {
+                reason: "genesis ledger cannot contain rename aliases",
+            });
+        }
+        checked_len(
+            "stable identity renames",
+            renames.len(),
+            MAX_LINEAGE_LEDGER_ENTRIES,
+        )?;
         let mut desired: BTreeMap<StableIdAllocationNamespace, BTreeMap<Vec<u8>, StableIdentity>> =
             BTreeMap::new();
         for identity in identities {
@@ -480,6 +568,39 @@ impl LineageLedgerV1 {
                     reason: "duplicate stable identity",
                 });
             }
+        }
+        let mut aliases = parent.map_or_else(Vec::new, |ledger| ledger.aliases.clone());
+        let historical = aliases
+            .iter()
+            .map(|alias| alias.identity.clone())
+            .collect::<BTreeSet<_>>();
+        if desired
+            .values()
+            .flat_map(BTreeMap::values)
+            .any(|identity| historical.contains(identity))
+        {
+            return Err(IrValidationError::InvalidLineageLedger {
+                reason: "renamed stable identity cannot be reintroduced",
+            });
+        }
+        let mut renames_by_allocation =
+            BTreeMap::<StableIdAllocationNamespace, Vec<StableIdentityRename>>::new();
+        let mut rename_sources = BTreeSet::new();
+        let mut rename_targets = BTreeSet::new();
+        for rename in renames {
+            if !rename_sources.insert(rename.from.clone())
+                || !rename_targets.insert(rename.to.clone())
+                || historical.contains(&rename.from)
+                || historical.contains(&rename.to)
+            {
+                return Err(IrValidationError::InvalidLineageLedger {
+                    reason: "stable identity rename is duplicate or collides with history",
+                });
+            }
+            renames_by_allocation
+                .entry(rename.from.namespace.allocation_namespace())
+                .or_default()
+                .push(rename);
         }
         let mut namespaces = required.into_iter().collect::<BTreeSet<_>>();
         namespaces.extend(required_global_allocation_namespaces()?);
@@ -514,6 +635,31 @@ impl LineageLedgerV1 {
                 .flat_map(|allocation| allocation.entries.iter())
                 .map(|entry| (entry.identity.clone(), entry.clone()))
                 .collect::<BTreeMap<_, _>>();
+            for rename in renames_by_allocation.remove(&namespace).unwrap_or_default() {
+                if !wanted.values().any(|identity| identity == &rename.to)
+                    || by_name.contains_key(&rename.to)
+                {
+                    return Err(IrValidationError::InvalidLineageLedger {
+                        reason: "stable identity rename target is absent or already allocated",
+                    });
+                }
+                let Some(mut entry) = by_name.remove(&rename.from) else {
+                    return Err(IrValidationError::InvalidLineageLedger {
+                        reason: "stable identity rename source is absent",
+                    });
+                };
+                if entry.state != LineageEntryState::Active {
+                    return Err(IrValidationError::InvalidLineageLedger {
+                        reason: "stable identity rename source is not active",
+                    });
+                }
+                aliases.push(LineageAlias {
+                    identity: rename.from,
+                    id: entry.id,
+                });
+                entry.identity = rename.to.clone();
+                by_name.insert(rename.to, entry);
+            }
             for identity in wanted.values() {
                 if by_name
                     .get(identity)
@@ -577,9 +723,31 @@ impl LineageLedgerV1 {
             });
         }
         checked_len("lineage ledger entries", total, MAX_LINEAGE_LEDGER_ENTRIES)?;
+        if !renames_by_allocation.is_empty() {
+            return Err(IrValidationError::InvalidLineageLedger {
+                reason: "stable identity rename uses an unknown allocation namespace",
+            });
+        }
+        aliases.sort_unstable_by(|left, right| left.identity.cmp(&right.identity));
+        if aliases
+            .windows(2)
+            .any(|pair| pair[0].identity >= pair[1].identity)
+        {
+            return Err(IrValidationError::InvalidLineageLedger {
+                reason: "lineage aliases are duplicate or unordered",
+            });
+        }
+        checked_len("lineage aliases", aliases.len(), MAX_LINEAGE_LEDGER_ENTRIES)?;
         Ok(Self {
-            version: LINEAGE_LEDGER_VERSION_V1,
+            version: if parent.is_some_and(|ledger| ledger.version == LINEAGE_LEDGER_VERSION_V2)
+                || !aliases.is_empty()
+            {
+                LINEAGE_LEDGER_VERSION_V2
+            } else {
+                LINEAGE_LEDGER_VERSION_V1
+            },
             allocations,
+            aliases,
         })
     }
 
@@ -592,6 +760,11 @@ impl LineageLedgerV1 {
     #[must_use]
     pub fn allocations(&self) -> &[LineageAllocation] {
         &self.allocations
+    }
+    /// Permanent historical rename aliases in canonical identity order.
+    #[must_use]
+    pub fn aliases(&self) -> &[LineageAlias] {
+        &self.aliases
     }
     /// Finds the assigned active ID for a compiler identity.
     #[must_use]
@@ -997,7 +1170,10 @@ fn validate_ledger(
     commands: &[CommandPlan],
     projections: &[ProjectionPlan],
 ) -> Result<(), IrValidationError> {
-    if ledger.version != LINEAGE_LEDGER_VERSION_V1
+    if !matches!(
+        ledger.version,
+        LINEAGE_LEDGER_VERSION_V1 | LINEAGE_LEDGER_VERSION_V2
+    ) || ledger.version == LINEAGE_LEDGER_VERSION_V1 && !ledger.aliases.is_empty()
         || ledger
             .allocations
             .windows(2)
@@ -1206,6 +1382,42 @@ fn validate_ledger(
         {
             return Err(IrValidationError::InvalidLineageLedger {
                 reason: "ledger allocation history is noncontiguous or mis-scoped",
+            });
+        }
+    }
+    if ledger
+        .aliases
+        .windows(2)
+        .any(|pair| pair[0].identity >= pair[1].identity)
+    {
+        return Err(IrValidationError::InvalidLineageLedger {
+            reason: "lineage aliases are duplicate or unordered",
+        });
+    }
+    for alias in &ledger.aliases {
+        if !identities.insert(alias.identity.clone()) {
+            return Err(IrValidationError::InvalidLineageLedger {
+                reason: "lineage alias collides with an allocated identity",
+            });
+        }
+        let namespace = alias.identity.namespace.allocation_namespace();
+        let Some(allocation) = ledger
+            .allocations
+            .iter()
+            .find(|allocation| allocation.namespace == namespace)
+        else {
+            return Err(IrValidationError::InvalidLineageLedger {
+                reason: "lineage alias allocation namespace is absent",
+            });
+        };
+        let Some(entry) = allocation.entries.iter().find(|entry| entry.id == alias.id) else {
+            return Err(IrValidationError::InvalidLineageLedger {
+                reason: "lineage alias target is absent",
+            });
+        };
+        if entry.identity == alias.identity {
+            return Err(IrValidationError::InvalidLineageLedger {
+                reason: "lineage alias duplicates its current identity",
             });
         }
     }
@@ -1831,6 +2043,19 @@ fn encode_ledger(writer: &mut Writer, ledger: &LineageLedgerV1) -> Result<(), Ir
             }
             writer.string(&entry.identity.name)?;
             writer.u8(entry.state as u8)?;
+        }
+    }
+    if ledger.version == LINEAGE_LEDGER_VERSION_V2 {
+        writer.u32(ledger.aliases.len() as u32)?;
+        for alias in &ledger.aliases {
+            writer.u8(alias.identity.namespace.tag as u8)?;
+            writer.u8(alias.identity.namespace.owner_kind)?;
+            writer.u8(alias.identity.namespace.owner_ids.len() as u8)?;
+            for id in &alias.identity.namespace.owner_ids {
+                writer.u32(*id)?;
+            }
+            writer.string(&alias.identity.name)?;
+            writer.u32(alias.id)?;
         }
     }
     Ok(())
@@ -2703,7 +2928,16 @@ fn decode_lineage_entry_state(tag: u8) -> Result<LineageEntryState, IrValidation
 }
 
 fn decode_ledger(reader: &mut Reader<'_>) -> Result<LineageLedgerV1, IrValidationError> {
-    require_version(reader.u32()?, LINEAGE_LEDGER_VERSION_V1, "lineage ledger")?;
+    let version = reader.u32()?;
+    if !matches!(
+        version,
+        LINEAGE_LEDGER_VERSION_V1 | LINEAGE_LEDGER_VERSION_V2
+    ) {
+        return Err(IrValidationError::UnsupportedVersion {
+            kind: "lineage ledger",
+            value: version,
+        });
+    }
     let count = decode_len_with_minimum(
         reader,
         "lineage allocations",
@@ -2806,9 +3040,35 @@ fn decode_ledger(reader: &mut Reader<'_>) -> Result<LineageLedgerV1, IrValidatio
             kind: "lineage allocation states",
         });
     }
+    let aliases = if version == LINEAGE_LEDGER_VERSION_V2 {
+        let count =
+            decode_len_with_minimum(reader, "lineage aliases", MAX_LINEAGE_LEDGER_ENTRIES, 13)?;
+        let mut aliases = Vec::with_capacity(count);
+        for _ in 0..count {
+            let tag = decode_namespace_tag(reader.u8()?)?;
+            let owner_kind = reader.u8()?;
+            let owner_count = reader.u8()? as usize;
+            ensure_fixed_width_items(reader, owner_count, 4, "lineage alias owner path")?;
+            let mut owner_ids = Vec::with_capacity(owner_count);
+            for _ in 0..owner_count {
+                owner_ids.push(reader.u32()?);
+            }
+            aliases.push(LineageAlias {
+                identity: StableIdentity::new(
+                    StableIdNamespace::new(tag, owner_kind, owner_ids)?,
+                    reader.string(256)?,
+                )?,
+                id: reader.u32()?,
+            });
+        }
+        aliases
+    } else {
+        Vec::new()
+    };
     Ok(LineageLedgerV1 {
-        version: LINEAGE_LEDGER_VERSION_V1,
+        version,
         allocations,
+        aliases,
     })
 }
 

@@ -1,0 +1,9 @@
+schema=riffdb.gate-b-exact-artifacts/v1
+lineage=StructuralRows
+parent_version=1
+parent_bundle_hash=2c94c1628b04dfa2ba7d361b2661cc4536e80b91bc3977d4b2daba2e6f8d4fba
+successor_version=2
+successor_bundle_hash=c9fb753df9075e0ddc7754dd44a3cf4da4fecf7af710e79d82e6c77c70a57424
+migration_bundle_hash=832fa2d1f8d9cb9fdb686ba918c76b674ec766496e79c300d2630af6fca9bb55
+lineage_ledger_version=2
+lineage_alias_count=1

@@ -1,0 +1,11 @@
+migration StructuralRows from 1 to 2 {
+  rename entity Row to Record
+  transform Row {
+    require old.value >= 0
+    replace value with amount using checked_i64_to_u64
+  }
+  map enum WorkflowStatus {
+    Open -> Open
+    Closed -> Archived
+  }
+}

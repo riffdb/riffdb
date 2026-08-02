@@ -1,0 +1,12 @@
+kind=semantic
+count=2
+diagnostic.0.code=RDB-C028
+diagnostic.0.message=a required migration proof is missing
+diagnostic.0.primary=0..217
+diagnostic.0.related=none
+diagnostic.0.help=add the source clause required by the reported compatibility change
+diagnostic.1.code=RDB-C028
+diagnostic.1.message=a required migration proof is missing
+diagnostic.1.primary=175..215
+diagnostic.1.related=none
+diagnostic.1.help=add the source clause required by the reported compatibility change

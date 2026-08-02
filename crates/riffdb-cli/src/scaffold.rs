@@ -771,7 +771,65 @@ fn compile_symbolic_application_mode(
                 riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
             ));
         }
-        contract
+        if source.migrations().is_empty() {
+            contract
+        } else {
+            let parent_ref = contract.parent().ok_or_else(|| {
+                lock_diagnostic(
+                    Path::new(DEFAULT_LOCK_PATH),
+                    riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+                )
+            })?;
+            let mut matching_parent = None;
+            for declared in source.migrations() {
+                let parent_bytes = read_workspace_file(
+                    root,
+                    declared.parent_bundle(),
+                    riffdb_contract_ir::MAX_BUNDLE_BYTES,
+                )?;
+                let parent = ContractBundle::decode(&parent_bytes).map_err(|_| {
+                    lock_diagnostic(
+                        Path::new(declared.parent_bundle()),
+                        riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+                    )
+                })?;
+                if parent.contract_version() == parent_ref.contract_version()
+                    && parent.bundle_hash() == parent_ref.bundle_hash()
+                {
+                    matching_parent = Some(declared);
+                    break;
+                }
+            }
+            let declared = matching_parent.ok_or_else(|| {
+                lock_diagnostic(
+                    Path::new(DEFAULT_LOCK_PATH),
+                    riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+                )
+            })?;
+            let parent_bytes = read_workspace_file(
+                root,
+                declared.parent_bundle(),
+                riffdb_contract_ir::MAX_BUNDLE_BYTES,
+            )?;
+            let parent = ContractBundle::decode(&parent_bytes).map_err(|_| {
+                lock_diagnostic(
+                    Path::new(declared.parent_bundle()),
+                    riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+                )
+            })?;
+            let migration_source = read_workspace_text(
+                root,
+                declared.source(),
+                riffdb_contract_ir::MAX_MIGRATION_SOURCE_BYTES_V1,
+            )?;
+            let (candidate, _) = riffdb_contract_compiler::compile_contract_migration_successor(
+                &contract_source,
+                &migration_source,
+                &parent,
+            )
+            .map_err(|error| contract_diagnostic(declared.source(), &error))?;
+            candidate
+        }
     } else {
         compile_contract_source(&contract_source)
             .map_err(|error| contract_diagnostic(source.contract().source(), &error))?
@@ -2626,14 +2684,22 @@ mod tests {
         create_application("safe-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
         let source_path = base.join("riffdb.application.json");
         let contract_path = base.join("riffdb/contract.riff");
-        let genesis_source = fs::read_to_string(&contract_path).expect("genesis source");
+        let genesis_source = fs::read_to_string(&contract_path)
+            .expect("genesis source")
+            .replacen(
+                "contract SafeApp version 1 {",
+                "contract SafeApp version 1 {\n  enum FixtureStatus { Open }",
+                1,
+            );
+        fs::write(&contract_path, &genesis_source).expect("enum-bearing genesis source");
         let genesis = compile_contract_source(&genesis_source).expect("genesis bundle");
 
         fs::create_dir_all(base.join("retained")).expect("retained artifacts");
         fs::write(base.join("retained/v1.bundle"), genesis.canonical_bytes())
             .expect("retained parent bundle");
         fs::create_dir_all(base.join("riffdb/migrations")).expect("migration sources");
-        let migration_source = "migration SafeApp from 1 to 2 {}\n";
+        let migration_source =
+            "migration SafeApp from 1 to 2 { rename enum FixtureStatus to CurrentStatus }\n";
         fs::write(
             base.join("riffdb/migrations/v1-to-v2.riffm"),
             migration_source,
@@ -2642,13 +2708,17 @@ mod tests {
 
         let successor_source = genesis_source
             .replacen("version 1", "version 2", 1)
+            .replace("enum FixtureStatus", "enum CurrentStatus")
             .replace(
                 "field created_at: timestamp",
                 "field created_at: timestamp\n    index by_title (title, item_id)",
             );
-        let successor =
-            riffdb_contract_compiler::compile_contract_successor(&successor_source, &genesis)
-                .expect("index successor");
+        let (successor, _) = riffdb_contract_compiler::compile_contract_migration_successor(
+            &successor_source,
+            migration_source,
+            &genesis,
+        )
+        .expect("rename and index successor");
         fs::write(&contract_path, successor_source).expect("successor source");
 
         let mut source: serde_json::Value =
@@ -2688,11 +2758,12 @@ mod tests {
         assert_eq!(plan["schema"], "riffdb.migration-plan/v1");
         assert_eq!(plan["candidate_version"], 2);
         assert_eq!(plan["supported_parents"][0]["parent_version"], 1);
-        assert_eq!(plan["supported_parents"][0]["step_count"], 1);
-        assert_eq!(
-            plan["supported_parents"][0]["step_categories"][0],
-            "rebuild_index"
-        );
+        assert_eq!(plan["supported_parents"][0]["step_count"], 2);
+        let categories = plan["supported_parents"][0]["step_categories"]
+            .as_array()
+            .expect("step categories");
+        assert!(categories.contains(&json!("rename_identity")));
+        assert!(categories.contains(&json!("rebuild_index")));
 
         fs::write(
             base.join("riffdb/migrations/v1-to-v2.riffm"),

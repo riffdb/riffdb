@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use riffdb_contract_compiler::{
     CompilationError, CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics,
-    compile_contract_source, compile_contract_successor, compile_migration_source,
-    validate_contract_source,
+    compile_contract_migration_successor, compile_contract_source, compile_contract_successor,
+    compile_migration_source, validate_contract_source,
 };
 use riffdb_contract_ir::{
     BinaryOperator, BindingMode, CapabilityRequirement, CommandExplain, CompatibilityClass,
@@ -333,6 +333,111 @@ fn generate_migration_fixtures(output_root: &std::path::Path) -> Result<(), Box<
         render_compatibility(&candidate)?,
     )?;
     generate_gate_a_application_fixture(&root)?;
+    generate_gate_b_application_fixture(&root)?;
+    Ok(())
+}
+
+fn generate_gate_b_application_fixture(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
+    const PARENT: &str = r#"contract StructuralRows version 1 {
+  enum WorkflowStatus { Open, Closed }
+  entity Row {
+    key (id: uuid)
+    field value: i64
+    field status: WorkflowStatus
+  }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+}
+"#;
+    const CANDIDATE: &str = r#"contract StructuralRows version 2 {
+  enum WorkflowStatus { Open, Archived }
+  entity Record {
+    key (id: uuid)
+    field amount: u64
+    field status: WorkflowStatus
+  }
+  aggregate Rows { root Record partition_by id conflict_key (id) }
+}
+"#;
+    const MIGRATION: &str = r#"migration StructuralRows from 1 to 2 {
+  rename entity Row to Record
+  transform Row {
+    require old.value >= 0
+    replace value with amount using checked_i64_to_u64
+  }
+  map enum WorkflowStatus {
+    Open -> Open
+    Closed -> Archived
+  }
+}
+"#;
+    const INCOMPLETE_ENUM_MAP: &str = r#"migration StructuralRows from 1 to 2 {
+  rename entity Row to Record
+  transform Row {
+    require old.value >= 0
+    replace value with amount using checked_i64_to_u64
+  }
+  map enum WorkflowStatus { Open -> Open }
+}
+"#;
+
+    let parent = compile_contract_source(PARENT)?;
+    let (candidate, migration) =
+        compile_contract_migration_successor(CANDIDATE, MIGRATION, &parent)?;
+    let fixture = root.join("gate-b/structural-rows");
+    fs::create_dir_all(&fixture)?;
+    fs::write(fixture.join("parent.riff"), PARENT)?;
+    fs::write(fixture.join("successor.riff"), CANDIDATE)?;
+    fs::write(fixture.join("v1-to-v2.riffm"), MIGRATION)?;
+    fs::write(
+        fixture.join("parent.contract.bundle"),
+        parent.canonical_bytes(),
+    )?;
+    fs::write(
+        fixture.join("successor.contract.bundle"),
+        candidate.canonical_bytes(),
+    )?;
+    fs::write(
+        fixture.join("v1-to-v2.migration.bundle"),
+        migration.canonical_bytes(),
+    )?;
+    fs::write(
+        fixture.join("exact-artifacts.txt"),
+        format!(
+            concat!(
+                "schema=riffdb.gate-b-exact-artifacts/v1\n",
+                "lineage={}\n",
+                "parent_version={}\n",
+                "parent_bundle_hash={}\n",
+                "successor_version={}\n",
+                "successor_bundle_hash={}\n",
+                "migration_bundle_hash={}\n",
+                "lineage_ledger_version={}\n",
+                "lineage_alias_count={}\n"
+            ),
+            migration.lineage().as_str(),
+            migration.parent_version().get(),
+            hex(migration.parent_bundle_hash().as_bytes()),
+            migration.candidate_version().get(),
+            hex(migration.candidate_bundle_hash().as_bytes()),
+            hex(migration.bundle_hash().as_bytes()),
+            candidate.ledger().version(),
+            candidate.ledger().aliases().len(),
+        ),
+    )?;
+
+    let invalid_root = root.join("source/invalid");
+    fs::write(
+        invalid_root.join("incomplete-enum-map.riffm"),
+        INCOMPLETE_ENUM_MAP,
+    )?;
+    let invalid = compile_contract_migration_successor(CANDIDATE, INCOMPLETE_ENUM_MAP, &parent)
+        .expect_err("incomplete enum map must fail");
+    let mut invalid_snapshot = String::new();
+    render_compilation_error(&mut invalid_snapshot, &invalid)?;
+    fs::write(
+        invalid_root.join("incomplete-enum-map.diagnostic.txt"),
+        invalid_snapshot,
+    )?;
     Ok(())
 }
 

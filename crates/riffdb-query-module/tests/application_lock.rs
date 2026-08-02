@@ -346,6 +346,8 @@ fn v4_lock_pins_and_round_trips_one_canonical_successor_with_exact_parent_entrie
         Vec::new(),
         MigrationStepKindV1::RetireIdentity {
             namespace: StableIdNamespaceTag::Entity,
+            owner_kind: 0,
+            owner_ids: Vec::new(),
             stable_id: 1,
         },
     )

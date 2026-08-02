@@ -123,7 +123,7 @@ impl MigrationCoordinator {
             for row in page.rows() {
                 let prepared = plan.prepare_row(row.clone())?;
                 checked_rows = checked_add(checked_rows, 1)?;
-                if prepared.post_image().is_some() {
+                if prepared.post_image().is_some() || prepared.is_retired() {
                     changed_rows = checked_add(changed_rows, 1)?;
                 }
                 validate_single_row_write(row, &prepared)?;
@@ -238,7 +238,7 @@ impl MigrationCoordinator {
                         write_bytes = 0;
                     }
                     checked_rows = checked_add(checked_rows, 1)?;
-                    if prepared.post_image().is_some() {
+                    if prepared.post_image().is_some() || prepared.is_retired() {
                         changed_rows = checked_add(changed_rows, 1)?;
                     }
                     if let Some(mutation) = mutation {
@@ -446,6 +446,11 @@ fn prepare_mutation(
     row: &riffdb_storage_api::StoredEntityRecordV1,
     prepared: &PreparedMigrationRow,
 ) -> Result<Option<MigrationRowMutation>, MigrationFinding> {
+    if prepared.is_retired() {
+        return Ok(Some(MigrationRowMutation::retire(
+            MigrationRowEvidence::from_source(row.clone()),
+        )));
+    }
     let post_image = prepared.post_image().cloned();
     if post_image.is_none() && prepared.rebuilt_indexes().is_empty() {
         return Ok(None);

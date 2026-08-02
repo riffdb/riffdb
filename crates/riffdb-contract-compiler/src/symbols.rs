@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use riffdb_contract_ir::{
     LineageEntryState, LineageLedgerV1, StableIdAllocationNamespace, StableIdNamespace,
-    StableIdNamespaceTag, StableIdentity,
+    StableIdNamespaceTag, StableIdentity, StableIdentityRename,
 };
 use riffdb_contract_syntax::ast::{
     AggregateItem, CommandDeclaration, Declaration, EntityItem, ObjectLiteral,
@@ -37,13 +37,14 @@ pub(crate) struct GenesisSymbols {
     pub(crate) indexes: BTreeMap<(EntityTypeId, String), IndexId>,
     pub(crate) entity_invariants: BTreeMap<(EntityTypeId, String), InvariantId>,
     pub(crate) aggregate_invariants: BTreeMap<(AggregateTypeId, String), InvariantId>,
+    pub(crate) renames: Vec<StableIdentityRename>,
 }
 
 /// Validates source namespaces and allocates all genesis stable IDs deterministically.
 pub(crate) fn allocate_genesis_symbols(
     document: &ContractDocument,
 ) -> Result<GenesisSymbols, CompilerDiagnostics> {
-    allocate_symbols(document, None)
+    allocate_symbols(document, None, Vec::new())
 }
 
 /// Allocates stable IDs from an exact predecessor ledger.
@@ -51,12 +52,22 @@ pub(crate) fn allocate_successor_symbols(
     document: &ContractDocument,
     parent: &LineageLedgerV1,
 ) -> Result<GenesisSymbols, CompilerDiagnostics> {
-    allocate_symbols(document, Some(parent))
+    allocate_symbols(document, Some(parent), Vec::new())
+}
+
+/// Allocates successor IDs after binding exact migration rename proofs.
+pub(crate) fn allocate_successor_symbols_with_renames(
+    document: &ContractDocument,
+    parent: &LineageLedgerV1,
+    renames: Vec<StableIdentityRename>,
+) -> Result<GenesisSymbols, CompilerDiagnostics> {
+    allocate_symbols(document, Some(parent), renames)
 }
 
 fn allocate_symbols(
     document: &ContractDocument,
     parent: Option<&LineageLedgerV1>,
+    renames: Vec<StableIdentityRename>,
 ) -> Result<GenesisSymbols, CompilerDiagnostics> {
     let contract = &document.contract.value;
     let contract_version = match contract
@@ -107,7 +118,7 @@ fn allocate_symbols(
         }
     }
 
-    let allocator = StableIdAllocator::new(parent);
+    let allocator = StableIdAllocator::new(parent, &renames);
     let entities = allocator.allocate_global::<EntityTypeId>(
         StableIdNamespaceTag::Entity,
         &entity_names.names,
@@ -402,6 +413,7 @@ fn allocate_symbols(
         indexes,
         entity_invariants,
         aggregate_invariants,
+        renames,
     })
 }
 
@@ -628,11 +640,12 @@ impl_allocatable_id!(
 
 struct StableIdAllocator<'a> {
     parent: Option<&'a LineageLedgerV1>,
+    renames: &'a [StableIdentityRename],
 }
 
 impl<'a> StableIdAllocator<'a> {
-    const fn new(parent: Option<&'a LineageLedgerV1>) -> Self {
-        Self { parent }
+    const fn new(parent: Option<&'a LineageLedgerV1>, renames: &'a [StableIdentityRename]) -> Self {
+        Self { parent, renames }
     }
 
     fn allocate_global<I: AllocatableId>(
@@ -701,6 +714,30 @@ impl<'a> StableIdAllocator<'a> {
                     continue;
                 }
             };
+            if let Some(rename) = self.renames.iter().find(|rename| rename.to() == &identity) {
+                match parent_allocation.and_then(|parent| {
+                    parent.entries().iter().find(|entry| {
+                        entry.identity() == rename.from()
+                            && entry.state() == LineageEntryState::Active
+                    })
+                }) {
+                    Some(entry) => {
+                        if let Some(id) = I::from_nonzero(entry.id()) {
+                            resolved.insert(key, id);
+                        } else {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::StableIdAllocation,
+                                span,
+                            ));
+                        }
+                    }
+                    None => diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::StableIdAllocation,
+                        span,
+                    )),
+                }
+                continue;
+            }
             match parent_allocation.and_then(|parent| {
                 parent
                     .entries()

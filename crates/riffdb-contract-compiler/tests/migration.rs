@@ -1,8 +1,8 @@
 //! Exact-parent migration compiler contract tests.
 
 use riffdb_contract_compiler::{
-    CompilationError, CompilerDiagnosticCode, compile_contract_source, compile_contract_successor,
-    compile_migration_source,
+    CompilationError, CompilerDiagnosticCode, compile_contract_migration_successor,
+    compile_contract_source, compile_contract_successor, compile_migration_source,
 };
 use riffdb_contract_ir::{CompatibilityClass, MigrationBundleV1, MigrationStepKindV1};
 
@@ -126,7 +126,7 @@ migration Evolution from 1 to 2 {
 "#;
     assert!(has_code(
         &compile_migration_source(rename, &parent, &candidate).unwrap_err(),
-        CompilerDiagnosticCode::UnsupportedMigrationStep
+        CompilerDiagnosticCode::MissingMigrationProof
     ));
 }
 
@@ -155,6 +155,49 @@ migration Evolution from 2 to 3 {
 }
 
 #[test]
+fn migration_aware_successor_preserves_renamed_field_id_and_emits_alias() {
+    let parent = compile_contract_source(GENESIS).expect("parent");
+    let successor = GENESIS
+        .replace("version 1", "version 2")
+        .replace("field value: i64", "field amount: i64");
+    let source = r#"
+migration Evolution from 1 to 2 {
+  rename field Row.value to amount
+}
+"#;
+    let (candidate, migration) =
+        compile_contract_migration_successor(&successor, source, &parent).expect("rename");
+    let old = parent.schema().entities()[0].record().fields()[1].id();
+    let renamed = candidate.schema().entities()[0].record().fields()[1].id();
+
+    assert_eq!(old, renamed);
+    assert_eq!(candidate.ledger().version(), 2);
+    assert_eq!(candidate.ledger().aliases().len(), 1);
+    assert_eq!(
+        candidate.compatibility().overall(),
+        CompatibilityClass::RequiresMigration
+    );
+    assert!(
+        candidate
+            .compatibility()
+            .entries()
+            .iter()
+            .any(|entry| entry.code().as_str() == "RDB-K036")
+    );
+    assert!(matches!(
+        migration.steps()[0].kind(),
+        MigrationStepKindV1::RenameIdentity { stable_id, new_name, .. }
+            if *stable_id == old.get() && new_name == "amount"
+    ));
+    assert_eq!(
+        riffdb_contract_ir::ContractBundle::decode(candidate.canonical_bytes())
+            .expect("bundle round trip")
+            .canonical_bytes(),
+        candidate.canonical_bytes()
+    );
+}
+
+#[test]
 fn added_index_requires_a_proof_and_derives_an_index_rebuild_step() {
     let parent = compile_contract_source(GENESIS).expect("parent");
     let candidate_source = GENESIS.replace("version 1", "version 2").replace(
@@ -175,4 +218,196 @@ fn added_index_requires_a_proof_and_derives_an_index_rebuild_step() {
         bundle.steps()[0].kind(),
         MigrationStepKindV1::RebuildIndex { .. }
     ));
+}
+
+#[test]
+fn replacement_retirement_and_exhaustive_enum_map_compile() {
+    let parent = compile_contract_source(GENESIS).expect("parent");
+    let replacement_source = GENESIS
+        .replace("version 1", "version 2")
+        .replace("field value: i64", "field amount: u64");
+    let replacement =
+        compile_contract_successor(&replacement_source, &parent).expect("replacement successor");
+    let replacement_migration = r#"
+migration Evolution from 1 to 2 {
+  transform Row {
+    replace value with amount using checked_i64_to_u64
+  }
+}
+"#;
+    let replacement = compile_migration_source(replacement_migration, &parent, &replacement)
+        .expect("checked replacement");
+    assert!(matches!(
+        replacement.steps()[0].kind(),
+        MigrationStepKindV1::ReplaceField { .. }
+    ));
+
+    let retired_source = "contract Evolution version 2 {}";
+    let retired =
+        compile_contract_successor(retired_source, &parent).expect("retirement successor");
+    let retirement = compile_migration_source(
+        "migration Evolution from 1 to 2 { retire entity Row }",
+        &parent,
+        &retired,
+    )
+    .expect("logical retirement");
+    assert!(matches!(
+        retirement.steps()[0].kind(),
+        MigrationStepKindV1::RetireIdentity { .. }
+    ));
+
+    let enum_parent_source = r#"
+contract EnumEvolution version 1 {
+  enum WorkflowStatus { Open, Closed }
+  entity Row {
+    key (id: uuid)
+    field status: WorkflowStatus
+  }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+}
+"#;
+    let enum_successor_source = enum_parent_source
+        .replace("version 1", "version 2")
+        .replace("Open, Closed", "Open, Archived");
+    let enum_parent = compile_contract_source(enum_parent_source).expect("enum parent");
+    let enum_successor =
+        compile_contract_successor(&enum_successor_source, &enum_parent).expect("enum successor");
+    let enum_migration = r#"
+migration EnumEvolution from 1 to 2 {
+  map enum WorkflowStatus {
+    Open -> Open
+    Closed -> Archived
+  }
+}
+"#;
+    let mapped = compile_migration_source(enum_migration, &enum_parent, &enum_successor)
+        .expect("exhaustive map");
+    assert!(matches!(
+        mapped.steps()[0].kind(),
+        MigrationStepKindV1::MapEnum { mappings, .. } if mappings.len() == 2
+    ));
+
+    let incomplete = r#"
+migration EnumEvolution from 1 to 2 {
+  map enum WorkflowStatus { Open -> Open }
+}
+"#;
+    assert_eq!(
+        first_code(
+            &compile_migration_source(incomplete, &enum_parent, &enum_successor).unwrap_err()
+        ),
+        CompilerDiagnosticCode::MissingMigrationProof
+    );
+}
+
+#[test]
+fn scoped_field_renames_with_equal_numeric_ids_remain_distinct() {
+    let parent_source = r#"
+contract ScopedRenames version 1 {
+  entity Left { key (id: uuid) field value: i64 }
+  entity Right { key (id: uuid) field value: i64 }
+  aggregate Lefts { root Left partition_by id conflict_key (id) }
+  aggregate Rights { root Right partition_by id conflict_key (id) }
+}
+"#;
+    let successor_source = parent_source
+        .replace("version 1", "version 2")
+        .replace("field value: i64", "field amount: i64");
+    let migration_source = r#"
+migration ScopedRenames from 1 to 2 {
+  rename field Left.value to amount
+  rename field Right.value to amount
+}
+"#;
+    let parent = compile_contract_source(parent_source).expect("parent");
+    let (candidate, migration) =
+        compile_contract_migration_successor(&successor_source, migration_source, &parent)
+            .expect("scoped renames");
+    let renames = migration
+        .steps()
+        .iter()
+        .filter_map(|step| match step.kind() {
+            MigrationStepKindV1::RenameIdentity {
+                owner_ids,
+                stable_id,
+                ..
+            } => Some((owner_ids.clone(), *stable_id)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(renames.len(), 2);
+    assert_ne!(renames[0].0, renames[1].0);
+    assert_eq!(renames[0].1, renames[1].1);
+    assert_eq!(candidate.ledger().aliases().len(), 2);
+    assert_eq!(
+        MigrationBundleV1::decode(migration.canonical_bytes()).expect("scoped round trip"),
+        migration
+    );
+}
+
+#[test]
+fn logical_retirement_closes_owned_identities_and_rebuilds_replacement_projection() {
+    let parent_source = r#"
+contract RetiredSurface version 1 {
+  entity Row { key (id: uuid) }
+  event Audit { id: uuid }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  command Observe {
+    input id: uuid
+    read Row(id) as row else Missing {}
+    return Found {}
+  }
+  projection OldAudit {
+    source event Audit
+    key (id)
+    measure seen = count()
+    frontier transactionally_ordered
+  }
+}
+"#;
+    let successor_source = r#"
+contract RetiredSurface version 2 {
+  entity Row { key (id: uuid) }
+  event Audit { id: uuid }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  projection CurrentAudit {
+    source event Audit
+    key (id)
+    measure seen = count()
+    frontier transactionally_ordered
+  }
+}
+"#;
+    let parent = compile_contract_source(parent_source).expect("parent");
+    let candidate =
+        compile_contract_successor(successor_source, &parent).expect("retired successor");
+    let migration = compile_migration_source(
+        r#"
+migration RetiredSurface from 1 to 2 {
+  retire command Observe
+  retire projection OldAudit
+}
+"#,
+        &parent,
+        &candidate,
+    )
+    .expect("logical retirement and replacement projection");
+
+    assert!(migration.steps().iter().any(|step| matches!(
+        step.kind(),
+        MigrationStepKindV1::RetireIdentity { namespace, .. }
+            if *namespace == riffdb_contract_ir::StableIdNamespaceTag::Command
+    )));
+    assert!(migration.steps().iter().any(|step| matches!(
+        step.kind(),
+        MigrationStepKindV1::RetireIdentity { namespace, .. }
+            if *namespace == riffdb_contract_ir::StableIdNamespaceTag::Projection
+    )));
+    assert!(
+        migration
+            .steps()
+            .iter()
+            .any(|step| matches!(step.kind(), MigrationStepKindV1::RebuildProjection { .. }))
+    );
 }
