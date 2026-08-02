@@ -365,38 +365,6 @@ impl fmt::Debug for ColumnarWaitRegistration {
     }
 }
 
-/// One published observation paired with a pre-read waiter registration.
-///
-/// Register-before-read plus epoch comparison prevents a transition between
-/// those steps from becoming a lost wakeup.
-pub struct RegisteredColumnarObservation<T> {
-    observation: T,
-    registration: ColumnarWaitRegistration,
-}
-
-impl<T> RegisteredColumnarObservation<T> {
-    /// Creates an observation from one pre-read registration.
-    #[must_use]
-    pub const fn new(observation: T, registration: ColumnarWaitRegistration) -> Self {
-        Self {
-            observation,
-            registration,
-        }
-    }
-
-    /// Borrows the published observation.
-    #[must_use]
-    pub const fn observation(&self) -> &T {
-        &self.observation
-    }
-
-    /// Splits the published observation from its still-active registration.
-    #[must_use]
-    pub fn into_parts(self) -> (T, ColumnarWaitRegistration) {
-        (self.observation, self.registration)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
