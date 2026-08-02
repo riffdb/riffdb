@@ -209,6 +209,10 @@ pub struct BoundPredicate {
 
 impl BoundPredicate {
     /// Constructs one resolved predicate.
+    ///
+    /// Production code builds predicates through binding; this constructor
+    /// exists for cross-crate tests only.
+    #[cfg(feature = "test-fixtures")]
     #[must_use]
     pub fn new(
         field: impl Into<String>,
