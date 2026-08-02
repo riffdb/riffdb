@@ -224,7 +224,7 @@ WP-130 must complete the composed readiness path without adding a durable ready,
 clean-shutdown, or last-integrity marker. WP-185 must extend that path rather
 than introducing a P2-only prerequisite for the runnable P1 server.
 
-## Amendment 1 — validated-prefix checkpoint (Proposed 2026-08-02)
+## Amendment 1 — validated-prefix checkpoint (Accepted 2026-08-02)
 
 ADR-0085 accepted a proof-carrying validated-prefix checkpoint in principle.
 Per this record's own rule (a deferred item joins the durable format only
@@ -310,4 +310,4 @@ section above stands except where explicitly narrowed here.
   neutered-verification falsifiability transcript (checkpoint accepted
   despite binding mismatch must fail a named test) is part of acceptance.
 
-Status: Proposed. Acceptance is the maintainer's.
+Status: Accepted by the maintainer on 2026-08-02.
