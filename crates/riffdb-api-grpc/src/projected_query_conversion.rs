@@ -6,10 +6,9 @@ use std::time::Duration;
 
 use riffdb_proto::{app::v1 as app_v1, canonical_value_from_proto, canonical_value_to_proto};
 use riffdb_service::{
-    ExecuteProjectedQueryRequest, ExecuteProjectedQueryResult, ProjectedAggregateOp,
-    ProjectedColumnPredicate, ProjectedDegradedReason, ProjectedGroupBySpec, ProjectedOrderSpec,
-    ProjectedQueryBody, ProjectedRebuildingReason, ProjectedSortDirection,
-    SymbolicContractSelector,
+    ExecuteProjectedQueryRequest, ExecuteProjectedQueryResult, ProjectedColumnPredicate,
+    ProjectedDegradedReason, ProjectedOrderSpec, ProjectedQueryBody, ProjectedRebuildingReason,
+    ProjectedSortDirection, SymbolicContractSelector,
 };
 use riffdb_types::{CanonicalValue, CommitToken, FreshnessPolicy, ProjectionFrontier, RequestId};
 use tonic::Status;
@@ -180,20 +179,12 @@ fn projected_query_body_from_proto(
     if let Some(limit) = body.limit {
         domain = domain.with_limit(Some(limit as usize));
     }
-    if !body.group_by.is_empty() {
-        // Aggregate required when group_by is set: proto carries a single optional aggregate.
-        let aggregate = body
-            .aggregate
-            .as_ref()
-            .map(projected_aggregate_from_proto)
-            .transpose()?
-            .ok_or_else(invalid_request)?;
-        domain = domain.with_group_by(Some(ProjectedGroupBySpec {
-            keys: body.group_by,
-            aggregates: vec![aggregate],
-        }));
-    } else if let Some(aggregate) = body.aggregate {
-        domain = domain.with_aggregate(Some(projected_aggregate_from_proto(&aggregate)?));
+    // Aggregate and group_by results have no response carriage yet: the Ready
+    // arm carries rows only, so accepting these shapes would execute them and
+    // silently drop the output. Reject typed until carriage lands; the
+    // engine-level surface remains available in-process.
+    if !body.group_by.is_empty() || body.aggregate.is_some() {
+        return Err(invalid_request());
     }
     Ok(domain)
 }
@@ -238,39 +229,6 @@ fn projected_predicate_from_proto(
             })
         }
         None => Err(invalid_request()),
-    }
-}
-
-fn projected_aggregate_from_proto(
-    aggregate: &app_v1::ProjectedAggregate,
-) -> Result<ProjectedAggregateOp, Status> {
-    match app_v1::ProjectedAggregateOp::try_from(aggregate.op) {
-        Ok(app_v1::ProjectedAggregateOp::Count) => Ok(ProjectedAggregateOp::Count),
-        Ok(app_v1::ProjectedAggregateOp::Sum) => {
-            if aggregate.field.is_empty() {
-                return Err(invalid_request());
-            }
-            Ok(ProjectedAggregateOp::Sum {
-                field: aggregate.field.clone(),
-            })
-        }
-        Ok(app_v1::ProjectedAggregateOp::Min) => {
-            if aggregate.field.is_empty() {
-                return Err(invalid_request());
-            }
-            Ok(ProjectedAggregateOp::Min {
-                field: aggregate.field.clone(),
-            })
-        }
-        Ok(app_v1::ProjectedAggregateOp::Max) => {
-            if aggregate.field.is_empty() {
-                return Err(invalid_request());
-            }
-            Ok(ProjectedAggregateOp::Max {
-                field: aggregate.field.clone(),
-            })
-        }
-        Ok(app_v1::ProjectedAggregateOp::Unspecified) | Err(_) => Err(invalid_request()),
     }
 }
 
@@ -338,3 +296,40 @@ fn internal_defect() -> Status {
 const _: fn(&CanonicalValue) = |_| {};
 const _: fn(&ProjectionFrontier) = |_| {};
 const _: fn(&SymbolicContractSelector) = |_| {};
+
+#[cfg(test)]
+mod aggregate_carriage_tests {
+    use super::*;
+
+    fn minimal_body() -> app_v1::ProjectedQueryBody {
+        app_v1::ProjectedQueryBody {
+            select: Vec::new(),
+            org_scope: Some(riffdb_proto::v1::Value {
+                kind: Some(riffdb_proto::v1::value::Kind::U64Value(7)),
+            }),
+            predicates: Vec::new(),
+            order: Vec::new(),
+            limit: Some(10),
+            group_by: Vec::new(),
+            aggregate: None,
+        }
+    }
+
+    /// Aggregate and group_by have no response carriage yet; accepting them
+    /// would execute the query and silently drop the output on the wire.
+    #[test]
+    fn aggregate_and_group_by_bodies_are_rejected_typed_until_carriage_exists() {
+        let mut with_aggregate = minimal_body();
+        with_aggregate.aggregate = Some(app_v1::ProjectedAggregate {
+            op: app_v1::ProjectedAggregateOp::Count as i32,
+            field: String::new(),
+        });
+        assert!(projected_query_body_from_proto(with_aggregate).is_err());
+
+        let mut with_group_by = minimal_body();
+        with_group_by.group_by = vec!["status".to_owned()];
+        assert!(projected_query_body_from_proto(with_group_by).is_err());
+
+        assert!(projected_query_body_from_proto(minimal_body()).is_ok());
+    }
+}

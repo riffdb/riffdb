@@ -659,6 +659,12 @@ async fn serve_bounded(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// CAPACITY NOTE: the causal wait parks on a synchronous condvar
+/// (`wait_controlled`) from within an async context, holding one runtime
+/// worker thread for up to `max_wait`. Waits are deadline-bounded and
+/// registrations are capped (`MAX_COLUMNAR_WAITERS`), so this is safe but
+/// not free: sustained high-fanout causal reads should move this wait onto
+/// a dedicated blocking pool or an async notifier before production load.
 async fn serve_causal(
     service: &RiffDbServiceInner,
     context: &RequestContext,
