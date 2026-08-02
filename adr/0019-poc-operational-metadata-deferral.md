@@ -271,8 +271,11 @@ section above stands except where explicitly narrowed here.
   cheap counting skip-walk (key decode and prefix counting only — no value
   decode, no reciprocity rehydration). Checkpointed startup is therefore
   O(entities + catalog + suffix + sample) in full-inspection work but
-  retains an O(history) skip-walk term with a small constant; the measured
-  effect, not an asymptotic claim, is the acceptance criterion.
+  retains an O(history) skip-walk term with a small constant, and
+  provenance rows (one per commit, identifier-keyed, not range-skippable)
+  retain full below-S inspection pending their own counted-skip treatment;
+  the measured effect, not an asymptotic claim, is the acceptance
+  criterion.
 - **Divergence and write-failure semantics.** A checkpoint whose bindings
   or self-hash fail is ignored (full validation runs). A below-S count
   divergence discovered mid-walk AFTER bindings verified is authoritative
