@@ -1,0 +1,59 @@
+{
+  "schema": "riffdb.migration-evolution-comparison/v1",
+  "work_package": "WP-413",
+  "requirements": [
+    "MIG-001",
+    "MIG-002",
+    "MIG-003",
+    "MIG-005",
+    "MIG-007",
+    "MIG-008",
+    "MIG-009",
+    "MIG-010",
+    "MIG-013",
+    "MIG-016",
+    "MIG-018",
+    "MIG-019",
+    "MIG-020"
+  ],
+  "revision": "bf8298a516db2bf98277aedb6a7eebbff6dc9e15",
+  "environment": {
+    "os": "Linux 7.0.12-gentoo-r1-x86_64 x86_64 GNU/Linux",
+    "tmp_root_policy": "caller TMPDIR or HOME/tmp"
+  },
+  "bounds": {
+    "requested_postgres_rows": 1000,
+    "maximum_rows": 10000
+  },
+  "riffdb": {
+    "surface": "public gRPC through riffdbd",
+    "complete_acceptance_elapsed_ns": 12966998162,
+    "gate_a": {
+      "rows": 70,
+      "check_rows_per_second": 172,
+      "apply_rows_per_second": 10,
+      "downtime_ms": 6641,
+      "peak_disk_bytes": 2230984
+    },
+    "assertions": [
+      "exact direct-parent Gate A/B/C artifacts",
+      "populated selected database migrated",
+      "sibling database remained available",
+      "same-operation retry recovered",
+      "invalid predecessor failed closed",
+      "immutable backup retained"
+    ]
+  },
+  "postgres": {
+    "available": true,
+    "server_version": "18.3 (Debian 18.3-1.pgdg12+1)",
+    "successor_elapsed_ns": 55286078,
+    "invalid_required_column_rejected": true,
+    "surface": "operator-authored SQL DDL and DML"
+  },
+  "comparison": {
+    "benchmark_eligible": false,
+    "reason": "different operational contracts; PostgreSQL negative controls are correctness evidence only",
+    "claim": "both workflows can evolve the example; only the RiffDB workflow is constrained by the accepted migration artifact, authorization, preflight, staging, and recovery protocol"
+  }
+}

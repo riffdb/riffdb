@@ -46,6 +46,43 @@ for catalog in "${mcp_tool_catalogs[@]}"; do
     fi
 done
 
+migration_report=release/evidence/wp413-migration-evolution-v1.json
+migration_review=release/evidence/wp413-p7-review-v1.json
+migration_report_hash="$(sha256sum "$migration_report" | awk '{print $1}')"
+jq -e '
+    .schema == "riffdb.migration-evolution-comparison/v1"
+    and .work_package == "WP-413"
+    and (.revision | test("^[0-9a-f]{40}$"))
+    and .bounds.maximum_rows == 10000
+    and .riffdb.surface == "public gRPC through riffdbd"
+    and .riffdb.gate_a.rows == 70
+    and .postgres.available == true
+    and .postgres.invalid_required_column_rejected == true
+    and .comparison.benchmark_eligible == false
+' "$migration_report" >/dev/null
+jq -e --arg report_hash "$migration_report_hash" '
+    .schema == "riffdb.p7-migration-review/v1"
+    and .work_package == "WP-413"
+    and .gate == "P7"
+    and .status == "passed"
+    and (.acceptance_revision | test("^[0-9a-f]{40}$"))
+    and .measurement.path == "release/evidence/wp413-migration-evolution-v1.json"
+    and .measurement.sha256 == $report_hash
+    and .measurement.postgres_control_executed == true
+    and .measurement.benchmark_eligible == false
+    and (.requirements | length) == 20
+    and ([.requirements[]] == [
+      "MIG-001", "MIG-002", "MIG-003", "MIG-004", "MIG-005",
+      "MIG-006", "MIG-007", "MIG-008", "MIG-009", "MIG-010",
+      "MIG-011", "MIG-012", "MIG-013", "MIG-014", "MIG-015",
+      "MIG-016", "MIG-017", "MIG-018", "MIG-019", "MIG-020"
+    ])
+    and (.acceptance_commands | length) == 11
+    and all(.acceptance_commands[]; .status == "passed")
+    and (.final_evidence | length) == 7
+    and (.known_limits | length) == 5
+' "$migration_review" >/dev/null
+
 if rg -l -F 'riffdb\\.cmd\\.' \
     crates/riffdb-service/schema \
     crates/riffdb-api-mcp/schema \

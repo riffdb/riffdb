@@ -1,0 +1,104 @@
+{
+  "schema": "riffdb.p7-migration-review/v1",
+  "work_package": "WP-413",
+  "gate": "P7",
+  "status": "passed",
+  "reviewed_on": "2026-08-02",
+  "acceptance_revision": "c2889e15cf3d41404dd2c629a34ca227ece875f6",
+  "measurement": {
+    "path": "release/evidence/wp413-migration-evolution-v1.json",
+    "sha256": "d061cc14c7696bd96e8eb08e2829f82a30ba317d571daf5fd169c5f309a7cdd3",
+    "revision": "bf8298a516db2bf98277aedb6a7eebbff6dc9e15",
+    "postgres_control_executed": true,
+    "benchmark_eligible": false
+  },
+  "requirements": [
+    "MIG-001",
+    "MIG-002",
+    "MIG-003",
+    "MIG-004",
+    "MIG-005",
+    "MIG-006",
+    "MIG-007",
+    "MIG-008",
+    "MIG-009",
+    "MIG-010",
+    "MIG-011",
+    "MIG-012",
+    "MIG-013",
+    "MIG-014",
+    "MIG-015",
+    "MIG-016",
+    "MIG-017",
+    "MIG-018",
+    "MIG-019",
+    "MIG-020"
+  ],
+  "acceptance_commands": [
+    {
+      "command": "cargo test --workspace --all-features",
+      "status": "passed"
+    },
+    {
+      "command": "cargo test -p riffdb-server --test contract_migration_recovery -- --ignored",
+      "status": "passed"
+    },
+    {
+      "command": "cargo test -p riffdb-testkit --test contract_migration_acceptance --all-features",
+      "status": "passed"
+    },
+    {
+      "command": "./scripts/release-source-bootstrap-smoke",
+      "status": "passed"
+    },
+    {
+      "command": "./scripts/handbook check",
+      "status": "passed"
+    },
+    {
+      "command": "./scripts/check-application-bindings",
+      "status": "passed"
+    },
+    {
+      "command": "./scripts/check-generated",
+      "status": "passed"
+    },
+    {
+      "command": "./scripts/check-requirement-coverage",
+      "status": "passed"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "status": "passed"
+    },
+    {
+      "command": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+      "status": "passed"
+    },
+    {
+      "command": "cargo deny check",
+      "status": "passed"
+    }
+  ],
+  "installed_scope": {
+    "user": "live disposable source install, bootstrap, restart, and two-database verification",
+    "system": "staged package layout, unit syntax, hardening, ownership, and supervised-process verification",
+    "host_manager_limit": "real /etc, /usr, sysusers, tmpfiles, and system-manager activation require disposable-host operator acceptance"
+  },
+  "final_evidence": [
+    "exact Gate A, B, and C direct-parent artifact matrix",
+    "Application Source V1 through V3 and Lock V1 through V4 compatibility",
+    "populated public migration, exact retry, sibling isolation, and retained backup",
+    "pre-publication recovery and post-publication automatic rollback",
+    "dedicated migration authorization with negative MCP and application-driver inventory",
+    "EA and TicketDesk dogfood plus bounded PostgreSQL correctness control",
+    "reproducible handbook, CLI, protocol, and generated application references"
+  ],
+  "known_limits": [
+    "offline single-database migration only",
+    "one process-wide migration operation",
+    "no inferred chaining, online dual write, cross-row split or merge, physical purge, or cross-database migration",
+    "Gate C rejects key swaps and predecessor-occupied rekey chains",
+    "comparison timing is revision-specific and not a cross-engine performance claim"
+  ]
+}
