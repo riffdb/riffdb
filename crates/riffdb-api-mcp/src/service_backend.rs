@@ -3181,7 +3181,7 @@ fn named_query_record(
     let fields = record
         .fields()
         .iter()
-        .map(|(name, value)| Ok((name.clone(), named_query_value(result, value)?)))
+        .map(|(name, value)| Ok((name.as_ref().to_owned(), named_query_value(result, value)?)))
         .collect::<Result<serde_json::Map<_, _>, McpBackendError>>()?;
     Ok(serde_json::Value::Object(fields))
 }

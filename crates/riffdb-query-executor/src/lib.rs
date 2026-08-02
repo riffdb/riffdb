@@ -2,15 +2,19 @@
 
 //! Closed-program execution over one engine-owned authoritative read view.
 
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use riffdb_query_ir::{
     QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicateOperator,
     QueryPredicateValue, QueryRowLimit,
 };
 use riffdb_riffql_syntax::Cardinality;
-use riffdb_types::{CanonicalValue, QueryCostVectorV1, encode_canonical_value};
+use riffdb_types::{
+    CanonicalValue, QueryCostVectorV1, canonical_value_encoded_len, encode_canonical_value,
+};
 
 /// Maximum checked submitted parameters.
 pub const MAX_QUERY_PARAMETERS: usize = 1_024;
@@ -52,25 +56,51 @@ impl QueryParameters {
 }
 
 /// One owned, name-addressed authoritative entity row.
+///
+/// Field **names** and the entity name are shared `Arc<str>` handles (per-query
+/// constants). Field **values** are owned exactly once at materialization and
+/// then moved through projection, service assembly, and transport conversion.
 #[derive(Clone, Eq, PartialEq)]
 pub struct QueryRow {
-    entity: String,
-    fields: BTreeMap<String, CanonicalValue>,
+    entity: Arc<str>,
+    fields: BTreeMap<Arc<str>, CanonicalValue>,
 }
 
 impl std::fmt::Debug for QueryRow {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("QueryRow")
-            .field("entity", &self.entity)
-            .field("field_names", &self.fields.keys().collect::<Vec<_>>())
+            .field("entity", &self.entity.as_ref())
+            .field(
+                "field_names",
+                &self
+                    .fields
+                    .keys()
+                    .map(|name| name.as_ref())
+                    .collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
 
 impl QueryRow {
     /// Constructs one bounded row with unique field names.
+    ///
+    /// Accepts owned strings for harness and adapter convenience; hot paths
+    /// should prefer [`Self::from_shared`] with interned `Arc<str>` names.
     pub fn checked(entity: String, fields: BTreeMap<String, CanonicalValue>) -> Option<Self> {
+        let fields = fields
+            .into_iter()
+            .map(|(name, value)| (Arc::<str>::from(name), value))
+            .collect::<BTreeMap<_, _>>();
+        Self::from_shared(Arc::<str>::from(entity), fields)
+    }
+
+    /// Constructs one bounded row from already-shared name handles.
+    pub fn from_shared(
+        entity: Arc<str>,
+        fields: BTreeMap<Arc<str>, CanonicalValue>,
+    ) -> Option<Self> {
         (!entity.is_empty()
             && fields.len() <= MAX_QUERY_ROW_FIELDS
             && fields.keys().all(|name| !name.is_empty()))
@@ -80,6 +110,12 @@ impl QueryRow {
     /// Contract entity name.
     #[must_use]
     pub fn entity(&self) -> &str {
+        &self.entity
+    }
+
+    /// Shared entity name handle.
+    #[must_use]
+    pub fn entity_arc(&self) -> &Arc<str> {
         &self.entity
     }
 
@@ -93,24 +129,81 @@ impl QueryRow {
     pub fn fields(&self) -> impl ExactSizeIterator<Item = (&str, &CanonicalValue)> {
         self.fields
             .iter()
-            .map(|(name, value)| (name.as_str(), value))
+            .map(|(name, value)| (name.as_ref(), value))
     }
 
-    fn project(&self, selected: &[String]) -> Result<Self, QueryExecutionError> {
-        let fields = selected
-            .iter()
-            .map(|name| {
-                self.field(name)
-                    .cloned()
-                    .map(|value| (name.clone(), value))
-                    .ok_or_else(|| QueryExecutionError::MissingField {
-                        entity: self.entity.clone(),
-                        field: name.clone(),
-                    })
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
-        Self::checked(self.entity.clone(), fields).ok_or(QueryExecutionError::BoundExceeded)
+    /// Shared field map (names are interned handles).
+    #[must_use]
+    pub const fn field_map(&self) -> &BTreeMap<Arc<str>, CanonicalValue> {
+        &self.fields
     }
+
+    /// Consumes the row into entity name and fields.
+    #[must_use]
+    pub fn into_parts(self) -> (Arc<str>, BTreeMap<Arc<str>, CanonicalValue>) {
+        (self.entity, self.fields)
+    }
+
+    /// Moves selected fields into a projected row (no value clones).
+    fn into_project(mut self, selected: &[Arc<str>]) -> Result<Self, QueryExecutionError> {
+        let mut fields = BTreeMap::new();
+        for name in selected {
+            let value = self.fields.remove(name.as_ref()).ok_or_else(|| {
+                QueryExecutionError::MissingField {
+                    entity: self.entity.to_string(),
+                    field: name.to_string(),
+                }
+            })?;
+            fields.insert(Arc::clone(name), value);
+        }
+        Self::from_shared(self.entity, fields).ok_or(QueryExecutionError::BoundExceeded)
+    }
+
+    /// Clones selected fields into a projected row (used only when the full row
+    /// must also be retained for a later dependent step).
+    fn project_clone(&self, selected: &[Arc<str>]) -> Result<Self, QueryExecutionError> {
+        let mut fields = BTreeMap::new();
+        for name in selected {
+            let value =
+                self.field(name.as_ref())
+                    .ok_or_else(|| QueryExecutionError::MissingField {
+                        entity: self.entity.to_string(),
+                        field: name.to_string(),
+                    })?;
+            note_pipeline_value_clone();
+            fields.insert(Arc::clone(name), value.clone());
+        }
+        Self::from_shared(Arc::clone(&self.entity), fields)
+            .ok_or(QueryExecutionError::BoundExceeded)
+    }
+}
+
+// Thread-local clone probe for the result-row pipeline after storage
+// materialization. Thread-local (not process-global) so parallel test threads
+// cannot race — the redb table-open lesson applied to a multi-threaded suite.
+thread_local! {
+    static PIPELINE_CLONE_COUNTING: Cell<bool> = const { Cell::new(false) };
+    static PIPELINE_VALUE_CLONES: Cell<u64> = const { Cell::new(0) };
+}
+
+fn note_pipeline_value_clone() {
+    PIPELINE_CLONE_COUNTING.with(|enabled| {
+        if enabled.get() {
+            PIPELINE_VALUE_CLONES.with(|count| count.set(count.get().saturating_add(1)));
+        }
+    });
+}
+
+/// Enables clone counting on the current thread after reset.
+pub fn enable_pipeline_clone_counting() {
+    PIPELINE_VALUE_CLONES.with(|count| count.set(0));
+    PIPELINE_CLONE_COUNTING.with(|enabled| enabled.set(true));
+}
+
+/// Disables counting on the current thread and returns the observed total.
+pub fn disable_pipeline_clone_counting() -> u64 {
+    PIPELINE_CLONE_COUNTING.with(|enabled| enabled.set(false));
+    PIPELINE_VALUE_CLONES.with(|count| count.replace(0))
 }
 
 /// One resolved predicate passed to the closed engine view.
@@ -456,6 +549,12 @@ impl QueryOwnedSnapshot {
     pub fn continuation_binding(&self) -> Option<&str> {
         self.continuation_binding.as_deref()
     }
+
+    /// Consumes the snapshot into its name-addressed result fields.
+    #[must_use]
+    pub fn into_fields(self) -> BTreeMap<String, QueryResultValue> {
+        self.fields
+    }
 }
 
 /// Closed, safe executor failure classification.
@@ -535,20 +634,27 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
     let mut index_epochs = BTreeMap::new();
     let mut continuation_binding = None;
     let mut continuation = None;
+    // Hoist once: outcome name is a program constant, not per-step work.
     let default_outcome = program
         .surface()
         .schemas()
         .results()
         .first()
-        .map(|branch| branch.name().to_owned())
-        .unwrap_or_else(|| "Result".to_owned());
+        .map(|branch| branch.name())
+        .unwrap_or("Result");
 
-    for step in program.steps() {
+    for (step_index, step) in program.steps().iter().enumerate() {
         fuel.step()?;
         let limit = resolve_row_limit(step, parameters)?;
         let after = prior
             .filter(|cursor| cursor.binding == step.binding())
             .map(|cursor| cursor.lower.as_slice());
+        // Shared selected field names for this step (per-query constants).
+        let selected_names: Vec<Arc<str>> = step
+            .selected_fields()
+            .iter()
+            .map(|name| Arc::<str>::from(name.as_str()))
+            .collect();
         let (mut rows, scalar_predicates) = match step.access() {
             riffdb_query_ir::QueryAccessKind::Point { .. } => {
                 let predicates = bind_predicates(step, parameters, &bindings)?;
@@ -638,7 +744,12 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
                 }
                 fuel.scans(page.scanned_rows)?;
                 fuel.points(page.point_reads)?;
-                index_epochs.insert(format!("{}.{}", step.entity(), index), page.epoch);
+                // Borrow entity/index names into one key; avoid format! per scan step.
+                let mut epoch_key = String::with_capacity(step.entity().len() + 1 + index.len());
+                epoch_key.push_str(step.entity());
+                epoch_key.push('.');
+                epoch_key.push_str(index);
+                index_epochs.insert(epoch_key, page.epoch);
                 if page.continuation.is_some() {
                     if continuation.is_some() {
                         return Err(QueryExecutionError::InvalidProgram);
@@ -683,10 +794,21 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
                 },
             );
         }
-        let projected = rows
-            .iter()
-            .map(|row| row.project(step.selected_fields()))
-            .collect::<Result<Vec<_>, _>>()?;
+        let retain_for_dependents = binding_referenced_later(program, step_index, step.binding());
+        let projected = if retain_for_dependents {
+            // Later steps still need the full intermediate rows; clone only the
+            // selected result projection (not the dual path when unused).
+            rows.iter()
+                .map(|row| row.project_clone(&selected_names))
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            // Move selected values into the result path; drop intermediate fields.
+            let mut projected = Vec::with_capacity(rows.len());
+            for row in std::mem::take(&mut rows) {
+                projected.push(row.into_project(&selected_names)?);
+            }
+            projected
+        };
         let projected_count = u64::try_from(projected.len())
             .ok()
             .and_then(|rows| rows.checked_mul(step.selected_fields().len() as u64))
@@ -696,19 +818,28 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
         let value = match step.cardinality() {
             Cardinality::One => QueryResultValue::One(
                 projected
-                    .first()
-                    .cloned()
+                    .into_iter()
+                    .next()
                     .ok_or(QueryExecutionError::InvalidProgram)?,
             ),
-            Cardinality::Maybe => QueryResultValue::Maybe(projected.first().cloned()),
+            Cardinality::Maybe => QueryResultValue::Maybe(projected.into_iter().next()),
             Cardinality::Many => QueryResultValue::Many(projected),
         };
-        for name in step.result_names() {
-            if result_fields.insert(name.clone(), value.clone()).is_some() {
+        // result_names is almost always one entry; move into the last slot.
+        let mut result_names = step.result_names().iter();
+        if let Some(first) = result_names.next() {
+            for name in result_names {
+                if result_fields.insert(name.clone(), value.clone()).is_some() {
+                    return Err(QueryExecutionError::InvalidProgram);
+                }
+            }
+            if result_fields.insert(first.clone(), value).is_some() {
                 return Err(QueryExecutionError::InvalidProgram);
             }
         }
-        bindings.insert(step.binding().to_owned(), rows);
+        if retain_for_dependents {
+            bindings.insert(step.binding().to_owned(), rows);
+        }
     }
 
     if let Some(prior) = prior {
@@ -729,12 +860,36 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
         QueryOwnedSnapshot {
             application_head: view.application_head(),
             index_epochs,
-            outcome: default_outcome,
+            outcome: default_outcome.to_owned(),
             fields: result_fields,
             continuation_binding,
             continuation,
         },
     )
+}
+
+fn binding_referenced_later(
+    program: &QueryAccessProgramV1,
+    step_index: usize,
+    binding: &str,
+) -> bool {
+    program.steps().iter().skip(step_index + 1).any(|later| {
+        later.dependencies().iter().any(|name| name == binding)
+            || later
+                .predicates()
+                .iter()
+                .any(|predicate| match predicate.value() {
+                    QueryPredicateValue::BindingField {
+                        binding: source, ..
+                    }
+                    | QueryPredicateValue::BindingFieldSet {
+                        binding: source, ..
+                    } => source == binding,
+                    QueryPredicateValue::Parameter(_)
+                    | QueryPredicateValue::Literal(_)
+                    | QueryPredicateValue::EnumVariant { .. } => false,
+                })
+    })
 }
 
 fn finish_snapshot(
@@ -766,11 +921,11 @@ fn encoded_snapshot_bytes(snapshot: &QueryOwnedSnapshot) -> Result<u64, QueryExe
                 .and_then(|value| value.checked_add(64))
                 .ok_or(QueryExecutionError::BoundExceeded)?;
             for (field, value) in &row.fields {
-                let encoded = encode_canonical_value(value)
+                let encoded_len = canonical_value_encoded_len(value)
                     .map_err(|_| QueryExecutionError::InvalidProgram)?;
                 bytes = bytes
                     .checked_add(field.len() as u64)
-                    .and_then(|value| value.checked_add(encoded.len() as u64))
+                    .and_then(|value| value.checked_add(encoded_len as u64))
                     .and_then(|value| value.checked_add(160))
                     .ok_or(QueryExecutionError::BoundExceeded)?;
             }
@@ -1017,7 +1172,7 @@ fn predicates_match(
         let actual =
             row.field(&predicate.field)
                 .ok_or_else(|| QueryExecutionError::MissingField {
-                    entity: row.entity.clone(),
+                    entity: row.entity.to_string(),
                     field: predicate.field.clone(),
                 })?;
         let matches = match predicate.operator {

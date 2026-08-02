@@ -1,8 +1,8 @@
 //! Symbolic RiffQL application operations over the shared service boundary.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroU16;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use riffdb_catalog::{
@@ -258,6 +258,25 @@ impl SymbolicQueryIdentity {
             bundle_hash: program.contract().bundle_hash(),
             name: program.name().map(str::to_owned),
             plan_hash: program.identity().hash(),
+            module_hash: None,
+        }
+    }
+
+    /// Test-only identity for golden conversion fixtures.
+    #[doc(hidden)]
+    pub fn from_parts_for_test(
+        lineage: ContractLineage,
+        version: ContractVersion,
+        bundle_hash: ContractBundleHash,
+        name: Option<String>,
+        plan_hash: QueryPlanHash,
+    ) -> Self {
+        Self {
+            lineage,
+            version,
+            bundle_hash,
+            name,
+            plan_hash,
             module_hash: None,
         }
     }
@@ -862,21 +881,28 @@ impl ExecuteSymbolicQueryRequest {
 }
 
 /// One name-addressed result record.
+///
+/// Entity and field **names** are shared `Arc<str>` handles from the query plan;
+/// field **values** are moved from the executor snapshot (no third clone).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SymbolicResultRecord {
-    entity: String,
-    fields: BTreeMap<String, CanonicalValue>,
+    entity: Arc<str>,
+    fields: BTreeMap<Arc<str>, CanonicalValue>,
 }
 
 impl SymbolicResultRecord {
-    fn from_row(row: &QueryRow) -> Self {
-        Self {
-            entity: row.entity().to_owned(),
-            fields: row
-                .fields()
-                .map(|(name, value)| (name.to_owned(), value.clone()))
-                .collect(),
-        }
+    fn from_row(row: QueryRow) -> Self {
+        let (entity, fields) = row.into_parts();
+        Self { entity, fields }
+    }
+
+    /// Test-only constructor for golden conversion fixtures.
+    #[doc(hidden)]
+    pub fn from_shared_for_test(
+        entity: Arc<str>,
+        fields: BTreeMap<Arc<str>, CanonicalValue>,
+    ) -> Self {
+        Self { entity, fields }
     }
 
     /// Contract entity name.
@@ -885,10 +911,22 @@ impl SymbolicResultRecord {
         &self.entity
     }
 
-    /// Fields in canonical name order.
+    /// Shared entity name handle.
     #[must_use]
-    pub const fn fields(&self) -> &BTreeMap<String, CanonicalValue> {
+    pub fn entity_arc(&self) -> &Arc<str> {
+        &self.entity
+    }
+
+    /// Fields in canonical name order (shared name handles).
+    #[must_use]
+    pub const fn fields(&self) -> &BTreeMap<Arc<str>, CanonicalValue> {
         &self.fields
+    }
+
+    /// Consumes the record into owned name handles and values.
+    #[must_use]
+    pub fn into_parts(self) -> (Arc<str>, BTreeMap<Arc<str>, CanonicalValue>) {
+        (self.entity, self.fields)
     }
 }
 
@@ -903,6 +941,9 @@ pub enum SymbolicResultField {
     Many(Vec<SymbolicResultRecord>),
 }
 
+/// Shared enum display-name table for one published contract schema.
+pub type SharedEnumVariantNames = Arc<BTreeMap<(u32, u32), String>>;
+
 /// Complete one-snapshot execution result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecuteSymbolicQueryResult {
@@ -910,7 +951,7 @@ pub struct ExecuteSymbolicQueryResult {
     outcome: String,
     application_head: u64,
     fields: BTreeMap<String, SymbolicResultField>,
-    enum_variant_names: BTreeMap<(u32, u32), String>,
+    enum_variant_names: SharedEnumVariantNames,
     next_cursor: Option<CursorToken>,
 }
 
@@ -937,52 +978,44 @@ impl ExecuteSymbolicQueryResult {
             outcome: "Ok".to_owned(),
             application_head: 0,
             fields: BTreeMap::new(),
-            enum_variant_names: BTreeMap::new(),
+            enum_variant_names: Arc::new(BTreeMap::new()),
             next_cursor: None,
         }
     }
 
     fn from_snapshot(
         program: &QueryAccessProgramV1,
-        snapshot: &QueryOwnedSnapshot,
-        bundle: &riffdb_contract_ir::ContractBundle,
+        snapshot: QueryOwnedSnapshot,
+        enum_variant_names: SharedEnumVariantNames,
     ) -> Self {
+        let application_head = snapshot.application_head();
+        let outcome = snapshot.outcome().to_owned();
         let fields = snapshot
-            .fields()
-            .iter()
+            .into_fields()
+            .into_iter()
             .map(|(name, value)| {
                 let value = match value {
                     QueryResultValue::One(row) => {
                         SymbolicResultField::One(SymbolicResultRecord::from_row(row))
                     }
                     QueryResultValue::Maybe(row) => {
-                        SymbolicResultField::Maybe(row.as_ref().map(SymbolicResultRecord::from_row))
+                        SymbolicResultField::Maybe(row.map(SymbolicResultRecord::from_row))
                     }
                     QueryResultValue::Many(rows) => SymbolicResultField::Many(
-                        rows.iter().map(SymbolicResultRecord::from_row).collect(),
+                        rows.into_iter()
+                            .map(SymbolicResultRecord::from_row)
+                            .collect(),
                     ),
                 };
-                (name.clone(), value)
+                (name, value)
             })
             .collect();
         Self {
             identity: SymbolicQueryIdentity::from_program(program),
-            outcome: snapshot.outcome().to_owned(),
-            application_head: snapshot.application_head(),
+            outcome,
+            application_head,
             fields,
-            enum_variant_names: bundle
-                .schema()
-                .enums()
-                .iter()
-                .flat_map(|enumeration| {
-                    enumeration.variants().iter().map(move |variant| {
-                        (
-                            (enumeration.id().get(), variant.id().get()),
-                            variant.name().to_owned(),
-                        )
-                    })
-                })
-                .collect(),
+            enum_variant_names,
             next_cursor: None,
         }
     }
@@ -1011,6 +1044,47 @@ impl ExecuteSymbolicQueryResult {
         &self.fields
     }
 
+    /// Consumes the result into identity metadata and owned fields for transport.
+    #[must_use]
+    pub fn into_response_parts(
+        self,
+    ) -> (
+        SymbolicQueryIdentity,
+        String,
+        u64,
+        BTreeMap<String, SymbolicResultField>,
+        SharedEnumVariantNames,
+        Option<CursorToken>,
+    ) {
+        (
+            self.identity,
+            self.outcome,
+            self.application_head,
+            self.fields,
+            self.enum_variant_names,
+            self.next_cursor,
+        )
+    }
+
+    /// Test-only constructor for golden conversion fixtures and enum-map sharing tests.
+    #[doc(hidden)]
+    pub fn from_parts_for_test(
+        identity: SymbolicQueryIdentity,
+        outcome: String,
+        application_head: u64,
+        fields: BTreeMap<String, SymbolicResultField>,
+        enum_variant_names: SharedEnumVariantNames,
+    ) -> Self {
+        Self {
+            identity,
+            outcome,
+            application_head,
+            fields,
+            enum_variant_names,
+            next_cursor: None,
+        }
+    }
+
     /// Resolves a canonical enum identity to its contract source name.
     #[must_use]
     pub fn enum_variant_name(&self, type_id: u32, variant_id: u32) -> Option<&str> {
@@ -1019,11 +1093,52 @@ impl ExecuteSymbolicQueryResult {
             .map(String::as_str)
     }
 
+    /// Shared enum display-name table (pointer-stable for one publication).
+    #[must_use]
+    pub fn enum_variant_names(&self) -> &SharedEnumVariantNames {
+        &self.enum_variant_names
+    }
+
     /// Opaque continuation token, when this page is not final.
     #[must_use]
     pub const fn next_cursor(&self) -> Option<CursorToken> {
         self.next_cursor
     }
+}
+
+/// Builds (or reuses) the process-shared enum name table for one published bundle.
+///
+/// Tables are keyed by bundle hash so two responses from the same catalog
+/// publication share one `Arc` allocation (pointer equality).
+pub(crate) fn shared_enum_variant_names(
+    bundle: &riffdb_contract_ir::ContractBundle,
+) -> SharedEnumVariantNames {
+    static CACHE: OnceLock<Mutex<HashMap<[u8; 32], SharedEnumVariantNames>>> = OnceLock::new();
+    let key = *bundle.bundle_hash().as_bytes();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(existing) = guard.get(&key) {
+        return Arc::clone(existing);
+    }
+    let map = Arc::new(
+        bundle
+            .schema()
+            .enums()
+            .iter()
+            .flat_map(|enumeration| {
+                enumeration.variants().iter().map(move |variant| {
+                    (
+                        (enumeration.id().get(), variant.id().get()),
+                        variant.name().to_owned(),
+                    )
+                })
+            })
+            .collect::<BTreeMap<_, _>>(),
+    );
+    guard.insert(key, Arc::clone(&map));
+    map
 }
 
 /// Symbolic RiffQL application surface.
@@ -1875,8 +1990,9 @@ async fn execute_compiled_query(
             elapsed: authorize_post_started.elapsed(),
         });
     let response_build_started = Instant::now();
+    let enum_variant_names = shared_enum_variant_names(bundle.bundle());
     let mut result =
-        ExecuteSymbolicQueryResult::from_snapshot(&program, &snapshot, bundle.bundle());
+        ExecuteSymbolicQueryResult::from_snapshot(&program, snapshot, enum_variant_names);
     if let Some(module_hash) = module_hash {
         result.identity = SymbolicQueryIdentity::from_named(&program, module_hash);
     }
@@ -2535,5 +2651,47 @@ contract EventCatalog version 1 {
         );
         assert!(!rendered.contains("field_id"));
         assert!(!rendered.contains("event_type_id"));
+    }
+}
+
+#[cfg(test)]
+mod enum_map_sharing_tests {
+    use super::*;
+
+    #[test]
+    fn enum_variant_names_are_shared_by_bundle_publication() {
+        let source = r#"
+contract EnumShare version 1 {
+  enum Status { Open, Closed }
+  entity Item {
+    key (id: uuid)
+    field status: Status
+  }
+  aggregate Items {
+    root Item
+    partition_by id
+    conflict_key (id)
+  }
+  command Seed {
+    input idempotency_key: string<128>
+    input id: uuid
+    idempotency_key idempotency_key
+    create Item(id) as item else Exists { id: id }
+    set item.status = Status.Open
+    return Created { item: item }
+  }
+}
+"#;
+        let bundle = riffdb_contract_compiler::compile_contract_source(source).expect("contract");
+        let first = shared_enum_variant_names(&bundle);
+        let second = shared_enum_variant_names(&bundle);
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "two responses from the same module/publication must share one enum-name Arc"
+        );
+        assert!(first.contains_key(&(
+            bundle.schema().enums()[0].id().get(),
+            bundle.schema().enums()[0].variants()[0].id().get()
+        )));
     }
 }

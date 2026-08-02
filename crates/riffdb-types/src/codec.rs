@@ -36,6 +36,17 @@ pub fn encode_canonical_value(value: &CanonicalValue) -> Result<Vec<u8>, Canonic
     Ok(encoder.output)
 }
 
+/// Exact encoded byte length of one value under canonical value encoding v1.
+///
+/// Matches [`encode_canonical_value`] without allocating the document. Rejects
+/// the same bound, nesting, and structural faults so callers can treat length
+/// and encode as interchangeable for fuel and charge accounting.
+pub fn canonical_value_encoded_len(value: &CanonicalValue) -> Result<usize, CanonicalCodecError> {
+    let mut counter = LengthCounter::default();
+    counter.encode_value(value, 0)?;
+    Ok(counter.len)
+}
+
 /// Encodes one borrowed record as a complete canonical `Value::Record` document.
 ///
 /// This produces exactly the same v1 bytes as [`encode_canonical_value`] without
@@ -68,6 +79,11 @@ pub fn decode_canonical_value(input: &[u8]) -> Result<CanonicalValue, CanonicalC
 #[derive(Default)]
 struct Encoder {
     output: Vec<u8>,
+}
+
+#[derive(Default)]
+struct LengthCounter {
+    len: usize,
 }
 
 impl Encoder {
@@ -237,6 +253,134 @@ impl Encoder {
             });
         }
         self.output.extend_from_slice(bytes);
+        Ok(())
+    }
+}
+
+impl LengthCounter {
+    fn validate_depth(depth: usize) -> Result<(), CanonicalCodecError> {
+        Encoder::validate_depth(depth)
+    }
+
+    fn encode_value(
+        &mut self,
+        value: &CanonicalValue,
+        depth: usize,
+    ) -> Result<(), CanonicalCodecError> {
+        Self::validate_depth(depth)?;
+        self.add(1)?; // version
+        match value {
+            CanonicalValue::Null => self.add(1),
+            CanonicalValue::Bool(_) => self.add(2),
+            CanonicalValue::I64(_) => self.add(1 + 8),
+            CanonicalValue::U64(_) => self.add(1 + 8),
+            CanonicalValue::Decimal(value) => {
+                self.add(1)?;
+                self.encode_decimal(value)
+            }
+            CanonicalValue::Money(value) => {
+                self.add(1 + 3)?;
+                self.encode_decimal(&value.amount())
+            }
+            CanonicalValue::String(value) => {
+                self.add(1)?;
+                self.encode_bounded_bytes(value.as_str().as_bytes(), BoundedKind::String)
+            }
+            CanonicalValue::Bytes(value) => {
+                self.add(1)?;
+                self.encode_bounded_bytes(value.as_bytes(), BoundedKind::Bytes)
+            }
+            CanonicalValue::Timestamp(_) => self.add(1 + 8 + 4),
+            CanonicalValue::Date(_) => self.add(1 + 4),
+            CanonicalValue::Uuid(_) => self.add(1 + 16),
+            CanonicalValue::Enum { .. } => self.add(1 + 4 + 4),
+            CanonicalValue::List(values) => {
+                if values.len() > MAX_LIST_ENTRIES {
+                    return Err(CanonicalCodecError::TooManyEntries {
+                        kind: CollectionKind::List,
+                        actual: values.len(),
+                        maximum: MAX_LIST_ENTRIES,
+                    });
+                }
+                self.add(1 + 4)?;
+                for value in values.values() {
+                    self.encode_value(value, depth + 1)?;
+                }
+                Ok(())
+            }
+            CanonicalValue::Record(record) => self.encode_record_payload(record, depth),
+        }
+    }
+
+    fn encode_record_payload(
+        &mut self,
+        record: &CanonicalRecord,
+        depth: usize,
+    ) -> Result<(), CanonicalCodecError> {
+        if record.len() > MAX_RECORD_FIELDS {
+            return Err(CanonicalCodecError::TooManyEntries {
+                kind: CollectionKind::Record,
+                actual: record.len(),
+                maximum: MAX_RECORD_FIELDS,
+            });
+        }
+        self.add(1 + 4)?;
+        let mut previous = None;
+        for (field_id, value) in record.fields() {
+            if previous.is_some_and(|id| id >= field_id.get()) {
+                return Err(CanonicalCodecError::NonCanonicalRecordOrder);
+            }
+            previous = Some(field_id.get());
+            self.add(4)?;
+            self.encode_value(value, depth + 1)?;
+        }
+        Ok(())
+    }
+
+    fn encode_decimal(&mut self, value: &Decimal) -> Result<(), CanonicalCodecError> {
+        let _ = value;
+        self.add(2 + 16)
+    }
+
+    fn encode_bounded_bytes(
+        &mut self,
+        value: &[u8],
+        kind: BoundedKind,
+    ) -> Result<(), CanonicalCodecError> {
+        let maximum = match kind {
+            BoundedKind::String => MAX_STRING_BYTES,
+            BoundedKind::Bytes => MAX_BYTES_VALUE_BYTES,
+        };
+        if value.len() > maximum {
+            return Err(match kind {
+                BoundedKind::String => CanonicalCodecError::StringTooLarge {
+                    actual: value.len(),
+                    maximum,
+                },
+                BoundedKind::Bytes => CanonicalCodecError::BytesTooLarge {
+                    actual: value.len(),
+                    maximum,
+                },
+            });
+        }
+        self.add(4 + value.len())
+    }
+
+    fn add(&mut self, bytes: usize) -> Result<(), CanonicalCodecError> {
+        let new_length =
+            self.len
+                .checked_add(bytes)
+                .ok_or(CanonicalCodecError::DocumentTooLarge {
+                    actual: usize::MAX,
+                    maximum: MAX_CANONICAL_DOCUMENT_BYTES,
+                })?;
+        if new_length > MAX_CANONICAL_DOCUMENT_BYTES {
+            return Err(CanonicalCodecError::DocumentTooLarge {
+                actual: new_length,
+                maximum: MAX_CANONICAL_DOCUMENT_BYTES,
+            });
+        }
+        self.len = new_length;
         Ok(())
     }
 }
@@ -652,6 +796,67 @@ mod tests {
         ];
         for case in cases {
             assert!(decode_canonical_value(case).is_err(), "accepted {case:?}");
+        }
+    }
+
+    #[test]
+    fn encoded_len_matches_encode_across_variants_and_nesting() {
+        use crate::{
+            CurrencyCode, Date, Decimal, DecimalSpec, EnumTypeId, EnumVariantId, Money, Timestamp,
+        };
+
+        let decimal = Decimal::new(DecimalSpec::new(10, 2).expect("spec"), 1_234).expect("decimal");
+        let money = Money::new(CurrencyCode::new("USD").expect("currency"), decimal);
+        let nested_record = CanonicalRecord::new(vec![
+            (FieldId::new(1).expect("id"), CanonicalValue::U64(7)),
+            (
+                FieldId::new(3).expect("id"),
+                CanonicalValue::String(CanonicalString::new("nested").expect("string")),
+            ),
+        ])
+        .expect("record");
+        let nested_list = CanonicalList::new(vec![
+            CanonicalValue::Bool(true),
+            CanonicalValue::I64(-9),
+            CanonicalValue::Record(nested_record.clone()),
+        ])
+        .expect("list");
+        let samples = [
+            CanonicalValue::Null,
+            CanonicalValue::Bool(false),
+            CanonicalValue::Bool(true),
+            CanonicalValue::I64(i64::MIN),
+            CanonicalValue::I64(0),
+            CanonicalValue::I64(i64::MAX),
+            CanonicalValue::U64(0),
+            CanonicalValue::U64(u64::MAX),
+            CanonicalValue::Decimal(decimal),
+            CanonicalValue::Money(money),
+            CanonicalValue::String(CanonicalString::new("").expect("empty")),
+            CanonicalValue::String(CanonicalString::new("hello ✓").expect("utf8")),
+            CanonicalValue::Bytes(CanonicalBytes::new(vec![]).expect("empty bytes")),
+            CanonicalValue::Bytes(CanonicalBytes::new(vec![0, 1, 2, 255]).expect("bytes")),
+            CanonicalValue::Timestamp(Timestamp::new(1_700_000_000, 123).expect("ts")),
+            CanonicalValue::Date(Date::from_days_since_unix_epoch(20_000)),
+            CanonicalValue::Uuid([0x11; 16]),
+            CanonicalValue::Enum {
+                type_id: EnumTypeId::new(4).expect("type"),
+                variant_id: EnumVariantId::new(2).expect("variant"),
+            },
+            CanonicalValue::List(CanonicalList::new(vec![]).expect("empty list")),
+            CanonicalValue::List(nested_list),
+            CanonicalValue::Record(CanonicalRecord::new(vec![]).expect("empty record")),
+            CanonicalValue::Record(nested_record),
+        ];
+        for value in samples {
+            let encoded = encode_canonical_value(&value).expect("encode");
+            let len = canonical_value_encoded_len(&value).expect("length");
+            assert_eq!(
+                len,
+                encoded.len(),
+                "encoded_len diverged for {value:?}: len={len} encode={}",
+                encoded.len()
+            );
         }
     }
 }

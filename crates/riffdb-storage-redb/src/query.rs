@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Included};
+use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
 #[cfg(test)]
@@ -17,7 +18,7 @@ use riffdb_query_ir::{
     AccessDirection, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryPredicateOperator,
 };
 use riffdb_storage_api::{EntityTarget, PartitionIndexTarget, StorageError, StorageErrorKind};
-use riffdb_types::{CanonicalValue, IndexEntryKey};
+use riffdb_types::{CanonicalValue, FieldId, IndexEntryKey};
 
 use crate::codec::{decode_index_entry_v2, decode_index_epoch_v1};
 use crate::error::{precommit_storage_error, storage_error};
@@ -235,9 +236,10 @@ impl QueryReadView for RedbQueryView<'_> {
             .encode_entity(&values)
             .map_err(|_| invariant())?;
         let target = EntityTarget::new(step.internal_entity_id(), key).map_err(|_| invariant())?;
+        let plan = RowMaterializePlan::for_step(self.program, step)?;
         let entities = self.entities_table()?;
         read_entity_record(entities, &target)?
-            .map(|record| row_from_record(self.program, step, &record))
+            .map(|record| plan.materialize(&record))
             .transpose()
     }
 
@@ -375,6 +377,7 @@ impl QueryReadView for RedbQueryView<'_> {
         let continuation = has_more
             .then(|| entries.last().map(|entry| entry.0.as_bytes().to_vec()))
             .flatten();
+        let plan = RowMaterializePlan::for_step(self.program, step)?;
         let mut rows = Vec::with_capacity(entries.len());
         for (key, _) in entries {
             let decoded = schema.decode_index(&key).map_err(|_| corrupt())?;
@@ -384,7 +387,7 @@ impl QueryReadView for RedbQueryView<'_> {
                 let entities = self.entities_table()?;
                 read_entity_record(entities, &target)?.ok_or_else(corrupt)?
             };
-            rows.push(row_from_record(self.program, step, &record)?);
+            rows.push(plan.materialize(&record)?);
         }
         match continuation {
             Some(continuation) => {
@@ -480,31 +483,57 @@ fn index_prefixes(
     Ok(prefixes)
 }
 
-fn row_from_record(
-    program: &QueryAccessProgramV1,
-    step: &QueryAccessStep,
-    record: &riffdb_storage_api::StoredEntityRecordV1,
-) -> Result<QueryRow, StorageError> {
-    let access = program
-        .internal_entity_access(step.entity())
-        .ok_or_else(invariant)?;
-    let fields_by_id = record
-        .fields()
-        .fields()
-        .iter()
-        .map(|(id, value)| (*id, value))
-        .collect::<BTreeMap<_, _>>();
-    let fields = access
-        .internal_fields()
-        .map(|(name, id)| {
-            fields_by_id
-                .get(&id)
-                .map(|value| (name.to_owned(), (*value).clone()))
-                .ok_or_else(corrupt)
+/// Per-step field-name interning for one-pass row materialization.
+///
+/// Built once per access step and shared across every row of that step so
+/// entity/field names are not `to_owned` per row.
+struct RowMaterializePlan {
+    entity: Arc<str>,
+    /// Needed `(FieldId, name)` pairs sorted by field ID for a dual-pointer merge
+    /// against the canonically ordered stored record.
+    needed: Vec<(FieldId, Arc<str>)>,
+}
+
+impl RowMaterializePlan {
+    fn for_step(
+        program: &QueryAccessProgramV1,
+        step: &QueryAccessStep,
+    ) -> Result<Self, StorageError> {
+        let access = program
+            .internal_entity_access(step.entity())
+            .ok_or_else(invariant)?;
+        let mut needed = access
+            .internal_fields()
+            .map(|(name, id)| (id, Arc::<str>::from(name)))
+            .collect::<Vec<_>>();
+        needed.sort_by_key(|(id, _)| id.get());
+        Ok(Self {
+            entity: Arc::<str>::from(step.entity()),
+            needed,
         })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-    QueryRow::checked(step.entity().to_owned(), fields)
-        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))
+    }
+
+    fn materialize(
+        &self,
+        record: &riffdb_storage_api::StoredEntityRecordV1,
+    ) -> Result<QueryRow, StorageError> {
+        let stored = record.fields().fields();
+        let mut fields = BTreeMap::new();
+        let mut store_index = 0usize;
+        for (need_id, name) in &self.needed {
+            while store_index < stored.len() && stored[store_index].0.get() < need_id.get() {
+                store_index += 1;
+            }
+            if store_index >= stored.len() || stored[store_index].0 != *need_id {
+                return Err(corrupt());
+            }
+            // Single ownership transfer into the row pipeline for this field value.
+            fields.insert(Arc::clone(name), stored[store_index].1.clone());
+            store_index += 1;
+        }
+        QueryRow::from_shared(Arc::clone(&self.entity), fields)
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))
+    }
 }
 
 const fn invariant() -> StorageError {
