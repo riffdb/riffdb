@@ -114,6 +114,8 @@ pub struct StoredValidatedPrefixCheckpointV1 {
     retained: ValidatedPrefixRetainedSnapshot,
     previous_checkpoint_hash: Option<ValidatedPrefixCheckpointHash>,
     checkpoint_hash: ValidatedPrefixCheckpointHash,
+    /// Retention watermark sequence bound at write time (ADR-0085 Amendment 2).
+    retention_watermark_sequence: u64,
 }
 
 impl StoredValidatedPrefixCheckpointV1 {
@@ -129,6 +131,7 @@ impl StoredValidatedPrefixCheckpointV1 {
         entity_chain_fingerprint: EntityChainFingerprint,
         retained: ValidatedPrefixRetainedSnapshot,
         previous_checkpoint_hash: Option<ValidatedPrefixCheckpointHash>,
+        retention_watermark_sequence: u64,
     ) -> Result<Self, StorageValueError> {
         let mut value = Self {
             database_id,
@@ -141,6 +144,7 @@ impl StoredValidatedPrefixCheckpointV1 {
             retained,
             previous_checkpoint_hash,
             checkpoint_hash: ValidatedPrefixCheckpointHash::from_bytes([0; 32]),
+            retention_watermark_sequence,
         };
         value.checkpoint_hash = value.computed_hash()?;
         Self::from_stored_parts(
@@ -154,6 +158,7 @@ impl StoredValidatedPrefixCheckpointV1 {
             value.retained,
             value.previous_checkpoint_hash,
             value.checkpoint_hash,
+            value.retention_watermark_sequence,
         )
     }
 
@@ -170,6 +175,7 @@ impl StoredValidatedPrefixCheckpointV1 {
         retained: ValidatedPrefixRetainedSnapshot,
         previous_checkpoint_hash: Option<ValidatedPrefixCheckpointHash>,
         checkpoint_hash: ValidatedPrefixCheckpointHash,
+        retention_watermark_sequence: u64,
     ) -> Result<Self, StorageValueError> {
         if history_incarnation == 0 {
             return Err(StorageValueError::InvalidShape);
@@ -199,6 +205,7 @@ impl StoredValidatedPrefixCheckpointV1 {
             retained,
             previous_checkpoint_hash,
             checkpoint_hash,
+            retention_watermark_sequence,
         };
         if value.computed_hash()? != checkpoint_hash {
             return Err(StorageValueError::IdentityMismatch);
@@ -266,6 +273,12 @@ impl StoredValidatedPrefixCheckpointV1 {
         self.checkpoint_hash
     }
 
+    /// Returns the retention watermark sequence bound at write time.
+    #[must_use]
+    pub const fn retention_watermark_sequence(&self) -> u64 {
+        self.retention_watermark_sequence
+    }
+
     /// Recomputes the domain-separated self-hash over all fields except `checkpoint_hash`.
     pub fn computed_hash(&self) -> Result<ValidatedPrefixCheckpointHash, StorageValueError> {
         let mut bytes = Vec::new();
@@ -296,6 +309,7 @@ impl StoredValidatedPrefixCheckpointV1 {
                 bytes.extend_from_slice(hash.as_bytes());
             }
         }
+        bytes.extend_from_slice(&self.retention_watermark_sequence.to_be_bytes());
         let digest = hash(HashDomain::Schema, &bytes);
         Ok(ValidatedPrefixCheckpointHash::from_bytes(
             *digest.as_bytes(),
@@ -352,6 +366,7 @@ mod tests {
             EntityChainFingerprint::from_bytes([0xab; 32]),
             sample_retained(),
             None,
+            0,
         )
         .expect("construct");
         assert_eq!(
@@ -369,6 +384,7 @@ mod tests {
             sample_retained(),
             None,
             checkpoint.checkpoint_hash(),
+            0,
         )
         .expect("verified");
         assert_eq!(again, checkpoint);
@@ -386,6 +402,7 @@ mod tests {
                 sample_retained(),
                 None,
                 ValidatedPrefixCheckpointHash::from_bytes(bad),
+                0,
             )
             .is_err()
         );

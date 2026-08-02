@@ -3002,6 +3002,7 @@ pub enum PublicErrorKind {
     InternalDefect = 8,
     CommandExecutionFailed = 9,
     HistoryIncarnationMismatch = 10,
+    HistoryPruned = 12,
     Overloaded = 11,
 }
 impl PublicErrorKind {
@@ -3026,6 +3027,7 @@ impl PublicErrorKind {
             Self::HistoryIncarnationMismatch => {
                 "PUBLIC_ERROR_KIND_HISTORY_INCARNATION_MISMATCH"
             }
+            Self::HistoryPruned => "PUBLIC_ERROR_KIND_HISTORY_PRUNED",
             Self::Overloaded => "PUBLIC_ERROR_KIND_OVERLOADED",
         }
     }
@@ -3049,6 +3051,7 @@ impl PublicErrorKind {
             "PUBLIC_ERROR_KIND_HISTORY_INCARNATION_MISMATCH" => {
                 Some(Self::HistoryIncarnationMismatch)
             }
+            "PUBLIC_ERROR_KIND_HISTORY_PRUNED" => Some(Self::HistoryPruned),
             "PUBLIC_ERROR_KIND_OVERLOADED" => Some(Self::Overloaded),
             _ => None,
         }

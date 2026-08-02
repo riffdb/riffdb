@@ -258,6 +258,7 @@ const fn proto_code(value: DomainCode) -> app_v1::ApplicationErrorCode {
         DomainCode::HistoryIncarnationMismatch => {
             app_v1::ApplicationErrorCode::HistoryIncarnationMismatch
         }
+        DomainCode::HistoryPruned => app_v1::ApplicationErrorCode::HistoryPruned,
         DomainCode::Overloaded => app_v1::ApplicationErrorCode::Overloaded,
     }
 }
@@ -284,6 +285,7 @@ fn domain_code(value: i32) -> Result<DomainCode, ApplicationErrorWireError> {
         Ok(Wire::CapabilityRevoked) => Ok(DomainCode::CapabilityRevoked),
         Ok(Wire::ProtocolInvalid) => Ok(DomainCode::ProtocolInvalid),
         Ok(Wire::HistoryIncarnationMismatch) => Ok(DomainCode::HistoryIncarnationMismatch),
+        Ok(Wire::HistoryPruned) => Ok(DomainCode::HistoryPruned),
         Ok(Wire::Overloaded) => Ok(DomainCode::Overloaded),
         Ok(Wire::Unspecified) | Err(_) => Err(ApplicationErrorWireError::UnknownCode),
     }

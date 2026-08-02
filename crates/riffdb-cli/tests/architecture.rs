@@ -7,7 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-const DIRECT_DEPENDENCIES: [&str; 15] = [
+const DIRECT_DEPENDENCIES: [&str; 16] = [
     "base64",
     "clap",
     "riffdb-auth",
@@ -16,6 +16,8 @@ const DIRECT_DEPENDENCIES: [&str; 15] = [
     "riffdb-contract-ir",
     "riffdb-diagnostics",
     "riffdb-query-module",
+    // Offline exclusive retention verbs (ADR-0085 A2) bind a closed database file.
+    "riffdb-storage-redb",
     "riffdb-types",
     "serde",
     "serde_json",
@@ -33,6 +35,7 @@ const EXACT_DEPENDENCY_ROWS: &str = concat!(
     "riffdb-contract-ir = { version = \"0.1.0\", path = \"../riffdb-contract-ir\", default-features = false }\n",
     "riffdb-diagnostics = { version = \"0.1.0\", path = \"../riffdb-diagnostics\", default-features = false }\n",
     "riffdb-query-module = { version = \"0.1.0\", path = \"../riffdb-query-module\", default-features = false }\n",
+    "riffdb-storage-redb = { version = \"0.1.0\", path = \"../riffdb-storage-redb\", default-features = false }\n",
     "riffdb-types = { version = \"0.1.0\", path = \"../riffdb-types\", default-features = false }\n",
     "serde = { version = \"=1.0.229\", default-features = false, features = [\"derive\", \"std\"] }\n",
     "serde_json = { version = \"=1.0.150\", default-features = false, features = [\"std\"] }\n",
@@ -88,9 +91,11 @@ fn source_has_no_internal_database_or_unchecked_transport_path() {
         "riffdb_runtime",
         "riffdb_server",
         "riffdb_service",
-        "riffdb_storage",
+        // Offline retention may import `riffdb_storage_redb` only; other storage
+        // crates remain forbidden. Match full crate roots, not the shared prefix.
+        "riffdb_storage_api",
+        "riffdb_storage_memory",
         "tonic::",
-        "redb",
         "load_capability_token_file",
     ] {
         assert!(
@@ -98,6 +103,16 @@ fn source_has_no_internal_database_or_unchecked_transport_path() {
             "forbidden source edge: {forbidden}"
         );
     }
+    // Direct redb engine access remains forbidden; offline retention goes through
+    // the exclusive adapter only (`riffdb_storage_redb` is an allowed exception).
+    assert!(
+        !source.contains("use redb") && !source.contains("redb::Database"),
+        "forbidden direct redb engine edge"
+    );
+    assert!(
+        source.contains("riffdb_storage_redb::RedbOfflineRetention"),
+        "offline retention must use RedbOfflineRetention"
+    );
     assert!(source.contains("RiffDbClient"));
     assert!(source.contains("execute_with_retry"));
     assert!(source.contains("create_bootstrap_capability_with_retry"));

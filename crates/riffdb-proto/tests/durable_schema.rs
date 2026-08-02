@@ -225,6 +225,10 @@ fn storage_source_import_and_type_inventory_is_exact() {
             ),
             ("riffdb/storage/v1/registry_v2.proto".to_owned(), vec![]),
             (
+                "riffdb/storage/v1/retention_watermark_v1.proto".to_owned(),
+                vec![],
+            ),
+            (
                 "riffdb/storage/v1/service_audit_request_index_v1.proto".to_owned(),
                 vec![],
             ),
@@ -247,8 +251,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        98,
-        "97 semantic messages plus the unchanged StoredEnvelope"
+        102,
+        "101 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -277,9 +281,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 39);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 45);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 39);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 42);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 48);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 42);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -316,6 +320,9 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredRetiredEntityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV2".to_owned());
     readable_names.push("riffdb.storage.v1.StoredValidatedPrefixCheckpointV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredRetentionWatermarkV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredRetentionHoldsV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredHistoryTombstoneV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     let mut writable_names = legacy_names.clone();
     writable_names[8] = format!("riffdb.storage.v1.{}", INDEX_V2_RECORD.0);
@@ -336,6 +343,9 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredRetiredEntityRecordV1".to_owned());
     writable_names.push("riffdb.storage.v1.CapabilityRecordV2".to_owned());
     writable_names.push("riffdb.storage.v1.StoredValidatedPrefixCheckpointV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredRetentionWatermarkV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredRetentionHoldsV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredHistoryTombstoneV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredRecordRegistryV2".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
@@ -456,8 +466,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 45);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 39);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 48);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 42);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -604,6 +614,7 @@ fn semantic_optional_wire_presence_is_exact() {
         "StoredContractMigrationRecordV1.approval_id",
         "StoredContractMigrationRecordV1.predecessor_application_frontier",
         "StoredContractMigrationRecordV1.successor_application_frontier",
+        "StoredHistoryTombstoneV1.previous_tombstone_hash",
         "StoredProjectionControlV1.published_apply_mode",
         "StoredQueryModuleAdministrationV1.approval_id",
         "StoredValidatedPrefixCheckpointV1.previous_checkpoint_hash",

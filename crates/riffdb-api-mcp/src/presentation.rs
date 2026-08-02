@@ -388,7 +388,7 @@ mod tests {
         MCP_OUTBOUND_MESSAGE_MAX_BYTES, SchemaDocument, bounded_json, fixed_tool_registry,
     };
 
-    const PUBLIC_ERROR_KINDS: [PublicErrorKind; 11] = [
+    const PUBLIC_ERROR_KINDS: [PublicErrorKind; 12] = [
         PublicErrorKind::Validation,
         PublicErrorKind::IdempotencyKeyReuse,
         PublicErrorKind::AuthorizationDenied,
@@ -399,6 +399,7 @@ mod tests {
         PublicErrorKind::InternalDefect,
         PublicErrorKind::CommandExecutionFailed,
         PublicErrorKind::HistoryIncarnationMismatch,
+        PublicErrorKind::HistoryPruned,
         PublicErrorKind::Overloaded,
     ];
 
@@ -441,7 +442,7 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
-    const PUBLIC_ERROR_TEXT_GOLDENS: [&str; 11] = [
+    const PUBLIC_ERROR_TEXT_GOLDENS: [&str; 12] = [
         "{\"class\":\"invalid_argument\",\"code\":\"validation_failed\",\"message\":\"request validation failed\",\"recovery_action\":\"correct_request\",\"validation_issues\":[{\"code\":\"type_mismatch\",\"path\":[{\"field_id\":7},{\"list_index\":3}]}]}",
         "{\"class\":\"conflict\",\"code\":\"idempotency_key_reuse\",\"message\":\"idempotency key was reused with different input\",\"recovery_action\":\"correct_request\"}",
         "{\"class\":\"permission_denied\",\"code\":\"authorization_denied\",\"message\":\"operation is not authorized\",\"recovery_action\":\"obtain_permission\"}",
@@ -452,6 +453,7 @@ mod tests {
         "{\"class\":\"internal\",\"code\":\"internal_defect\",\"incident_id\":\"42424242-4242-7242-8242-424242424242\",\"message\":\"an internal error occurred\",\"recovery_action\":\"contact_operator\"}",
         "{\"class\":\"failed_precondition\",\"code\":\"command_execution_failed\",\"execution_failure\":1,\"message\":\"command execution failed\",\"recovery_action\":\"contact_operator\"}",
         "{\"class\":\"failed_precondition\",\"code\":\"history_incarnation_mismatch\",\"message\":\"observed history predates a database restore\",\"recovery_action\":\"correct_request\"}",
+        "{\"class\":\"failed_precondition\",\"code\":\"history_pruned\",\"message\":\"requested history has been pruned\",\"recovery_action\":\"correct_request\"}",
         "{\"class\":\"unavailable\",\"code\":\"overloaded\",\"message\":\"service is over capacity\",\"recovery_action\":\"retry\"}",
     ];
 
@@ -574,6 +576,7 @@ mod tests {
             PublicErrorKind::HistoryIncarnationMismatch => {
                 PublicError::history_incarnation_mismatch()
             }
+            PublicErrorKind::HistoryPruned => PublicError::history_pruned(),
             PublicErrorKind::Overloaded => PublicError::overloaded(),
         }
     }

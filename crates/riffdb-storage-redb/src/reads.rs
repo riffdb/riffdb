@@ -143,12 +143,18 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         sequence: CommitSequence,
     ) -> Result<Option<StoredCommitRecordV1>, StorageError> {
         let transaction = self.begin_read()?;
+        let watermark = crate::retention::load_watermark(&transaction)?
+            .map(|w| w.watermark_sequence())
+            .unwrap_or(0);
         let table = transaction.open_table(COMMITS).map_err(table_error)?;
         let encoded_key = encode_application_sequence_key(sequence);
         let Some(encoded) = table
             .get(encoded_key.as_slice())
             .map_err(precommit_storage_error)?
         else {
+            if crate::retention::sequence_covered_by_watermark(sequence.get(), watermark) {
+                return Err(storage_error(StorageErrorKind::HistoryPruned));
+            }
             return Ok(None);
         };
         let record = decode_commit_in_snapshot(&transaction, encoded.value())?
@@ -185,12 +191,21 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         event_id: EventId,
     ) -> Result<Option<StoredDurableEventV1>, StorageError> {
         let transaction = self.begin_read()?;
+        let watermark = crate::retention::load_watermark(&transaction)?
+            .map(|w| w.watermark_sequence())
+            .unwrap_or(0);
         let table = transaction.open_table(EVENTS).map_err(table_error)?;
         let encoded_key = encode_event_key(event_id);
         let Some(encoded) = table
             .get(encoded_key.as_slice())
             .map_err(precommit_storage_error)?
         else {
+            if crate::retention::sequence_covered_by_watermark(
+                event_id.commit_sequence().get(),
+                watermark,
+            ) {
+                return Err(storage_error(StorageErrorKind::HistoryPruned));
+            }
             return Ok(None);
         };
         let event = decode_durable_event_v1(encoded.value())?.into_parts().0;

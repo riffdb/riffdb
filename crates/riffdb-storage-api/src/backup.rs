@@ -950,6 +950,16 @@ pub struct OfflineBackupManifestV1 {
     /// presence byte `0`, `Some` is presence `1` + u64. Pre-fence dual-path
     /// reconstructs omit the field entirely (`false`).
     history_wire_tagged: bool,
+    /// Inclusive retention watermark sequence on post-RT-B backups.
+    ///
+    /// `None` means a pre-RT-B backup (treat as 0 for fencing). `Some(0)` is an
+    /// explicit unpruned post-RT-B backup; `Some(n)` is pruned through `n`.
+    retention_watermark_sequence: Option<u64>,
+    /// Whether the wire form includes the retention-watermark presence tag.
+    ///
+    /// Newest encodings always include the tag (`true`). Pre-RT-B dual-path
+    /// reconstructs (history-only or pre-fence) omit the field (`false`).
+    retention_watermark_wire_tagged: bool,
     checksums: Vec<BackupArtifactChecksumV1>,
     build: BackupBuildMetadataV1,
     semantic_bytes: usize,
@@ -966,6 +976,7 @@ impl OfflineBackupManifestV1 {
         active_catalog: Option<ActiveCatalogPointerV1>,
         last_commit_sequence: Option<CommitSequence>,
         history_incarnation: Option<u64>,
+        retention_watermark_sequence: Option<u64>,
         mut checksums: Vec<BackupArtifactChecksumV1>,
         build: BackupBuildMetadataV1,
     ) -> Result<Self, StorageValueError> {
@@ -1006,14 +1017,17 @@ impl OfflineBackupManifestV1 {
             return Err(StorageValueError::Duplicate);
         }
 
-        // `new` always builds the post-fence wire form (presence-tagged field).
+        // `new` always builds the newest wire form (history + watermark tags).
         let history_wire_tagged = true;
+        let retention_watermark_wire_tagged = true;
         let semantic_bytes = backup_manifest_semantic_bytes(
             &catalog_bundles,
             active_catalog.as_ref(),
             last_commit_sequence,
             history_incarnation,
             history_wire_tagged,
+            retention_watermark_sequence,
+            retention_watermark_wire_tagged,
             &checksums,
             &build,
         )?;
@@ -1028,16 +1042,18 @@ impl OfflineBackupManifestV1 {
             last_commit_sequence,
             history_incarnation,
             history_wire_tagged,
+            retention_watermark_sequence,
+            retention_watermark_wire_tagged,
             checksums,
             build,
             semantic_bytes,
         })
     }
 
-    /// Reconstructs a pre-fence manifest whose wire form omits the history field.
+    /// Reconstructs a pre-fence manifest whose wire form omits history and watermark.
     ///
-    /// Used only by dual-path decode of historical backup bytes. History must be
-    /// absent; size accounting matches field omission (zero bytes).
+    /// Used only by triple-path decode of historical backup bytes. Both fields
+    /// must be absent; size accounting matches field omission (zero bytes).
     #[allow(clippy::too_many_arguments)]
     pub fn new_pre_fence(
         storage_format_version: StorageFormatVersion,
@@ -1057,14 +1073,61 @@ impl OfflineBackupManifestV1 {
             active_catalog,
             last_commit_sequence,
             None,
+            None,
             checksums,
             build,
         )?;
         candidate.history_wire_tagged = false;
+        candidate.retention_watermark_wire_tagged = false;
         candidate.semantic_bytes = backup_manifest_semantic_bytes(
             &candidate.catalog_bundles,
             candidate.active_catalog.as_ref(),
             candidate.last_commit_sequence,
+            None,
+            false,
+            None,
+            false,
+            &candidate.checksums,
+            &candidate.build,
+        )?;
+        Ok(candidate)
+    }
+
+    /// Reconstructs a post-fence / pre-RT-B manifest (history tagged, watermark omitted).
+    ///
+    /// Used only by triple-path decode of historical backup bytes produced after
+    /// ADR-0072 but before ADR-0085 Amendment 2.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_pre_retention(
+        storage_format_version: StorageFormatVersion,
+        database_id: DatabaseId,
+        snapshot_kind: BackupSnapshotKindV1,
+        catalog_bundles: Vec<BackupCatalogBundleV1>,
+        active_catalog: Option<ActiveCatalogPointerV1>,
+        last_commit_sequence: Option<CommitSequence>,
+        history_incarnation: Option<u64>,
+        checksums: Vec<BackupArtifactChecksumV1>,
+        build: BackupBuildMetadataV1,
+    ) -> Result<Self, StorageValueError> {
+        let mut candidate = Self::new(
+            storage_format_version,
+            database_id,
+            snapshot_kind,
+            catalog_bundles,
+            active_catalog,
+            last_commit_sequence,
+            history_incarnation,
+            None,
+            checksums,
+            build,
+        )?;
+        candidate.retention_watermark_wire_tagged = false;
+        candidate.semantic_bytes = backup_manifest_semantic_bytes(
+            &candidate.catalog_bundles,
+            candidate.active_catalog.as_ref(),
+            candidate.last_commit_sequence,
+            candidate.history_incarnation,
+            candidate.history_wire_tagged,
             None,
             false,
             &candidate.checksums,
@@ -1077,6 +1140,12 @@ impl OfflineBackupManifestV1 {
     #[must_use]
     pub const fn history_wire_tagged(&self) -> bool {
         self.history_wire_tagged
+    }
+
+    /// Returns whether the durable wire form includes the retention-watermark tag.
+    #[must_use]
+    pub const fn retention_watermark_wire_tagged(&self) -> bool {
+        self.retention_watermark_wire_tagged
     }
 
     /// Returns the semantic backup-manifest version.
@@ -1125,6 +1194,24 @@ impl OfflineBackupManifestV1 {
     #[must_use]
     pub const fn history_incarnation(&self) -> Option<u64> {
         self.history_incarnation
+    }
+
+    /// Returns the backup retention watermark when the artifact carries one.
+    ///
+    /// Absent means a pre-RT-B backup and must be treated as sequence 0 for
+    /// fencing. Explicit `Some(0)` is an unpruned post-RT-B backup.
+    #[must_use]
+    pub const fn retention_watermark_sequence(&self) -> Option<u64> {
+        self.retention_watermark_sequence
+    }
+
+    /// Effective watermark for fencing (absent pre-RT-B field → 0).
+    #[must_use]
+    pub const fn effective_retention_watermark_sequence(&self) -> u64 {
+        match self.retention_watermark_sequence {
+            Some(sequence) => sequence,
+            None => 0,
+        }
     }
 
     /// Returns checksums in canonical artifact-name order.
@@ -1360,12 +1447,15 @@ fn checked_feature(value: &str) -> Result<(), StorageValueError> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn backup_manifest_semantic_bytes(
     catalog_bundles: &[BackupCatalogBundleV1],
     active_catalog: Option<&ActiveCatalogPointerV1>,
     last_commit_sequence: Option<CommitSequence>,
     history_incarnation: Option<u64>,
     history_wire_tagged: bool,
+    retention_watermark_sequence: Option<u64>,
+    retention_watermark_wire_tagged: bool,
     checksums: &[BackupArtifactChecksumV1],
     build: &BackupBuildMetadataV1,
 ) -> Result<usize, StorageValueError> {
@@ -1410,12 +1500,18 @@ fn backup_manifest_semantic_bytes(
         bundles,
         active,
         1 + last_commit_sequence.map_or(0, |_| 8),
-        // Match actual encoding for all three wire cases:
-        // - pre-fence omitted field → 0
-        // - post-fence tagged None (presence 0) → 1
-        // - post-fence tagged Some → 1 + 8
+        // History wire cases:
+        // - omitted → 0
+        // - tagged None (presence 0) → 1
+        // - tagged Some → 1 + 8
         if history_wire_tagged {
             1 + history_incarnation.map_or(0, |_| 8)
+        } else {
+            0
+        },
+        // Retention watermark wire cases (same presence pattern; 0 is valid Some).
+        if retention_watermark_wire_tagged {
+            1 + retention_watermark_sequence.map_or(0, |_| 8)
         } else {
             0
         },
@@ -1535,6 +1631,7 @@ mod tests {
                 None,
                 Some(CommitSequence::first()),
                 Some(1),
+                Some(0),
                 vec![checksum],
                 build,
             ),

@@ -48,8 +48,9 @@ use crate::layout::{
     AUDIT, AUDIT_BY_REQUEST, BYTE_TABLES, COMMITS, EVENT_ROUTES, EVENTS, INDEX_EPOCHS, META,
     META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
     META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
-    META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY,
-    META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, SECONDARY_INDEXES, TABLE_NAMES, create_all_tables,
+    META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, META_RETENTION_HOLDS,
+    META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, SECONDARY_INDEXES,
+    TABLE_NAMES, create_all_tables,
 };
 use crate::transient::{TransientIndexDelta, TransientIndexState, TransientIndexes};
 
@@ -72,7 +73,7 @@ pub(crate) struct SharedRedb {
     checkpoint_write_failures: AtomicU64,
     /// Per-reason counts of ignored validated-prefix checkpoints
     /// (index = `CheckpointIgnoreReason::index`).
-    checkpoint_ignored: [AtomicU64; 9],
+    checkpoint_ignored: [AtomicU64; 10],
 }
 
 /// Closed redb durability profiles for authoritative application writes.
@@ -166,7 +167,7 @@ impl SharedRedb {
         let _ = self.checkpoint_ignored[reason.index()].fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn checkpoint_ignore_counts(&self) -> [(&'static str, u64); 9] {
+    pub(crate) fn checkpoint_ignore_counts(&self) -> [(&'static str, u64); 10] {
         crate::validated_prefix::CheckpointIgnoreReason::ALL.map(|reason| {
             (
                 reason.as_str(),
@@ -245,6 +246,7 @@ enum RegistryMigration {
     EntityReference,
     ContractMigration,
     ValidatedPrefixCheckpoint,
+    RetentionWatermark,
 }
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
@@ -288,6 +290,12 @@ pub(crate) const PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST: [u8; 32] = [
 pub(crate) const PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST: [u8; 32] = [
     0xe1, 0x59, 0x2f, 0xba, 0x8c, 0x33, 0x8a, 0xee, 0x4e, 0xd7, 0x17, 0x8b, 0x6a, 0x09, 0xbb, 0xcf,
     0x88, 0x26, 0x7e, 0x5c, 0xd4, 0x33, 0xfa, 0x23, 0x31, 0x19, 0x9c, 0xaa, 0x3c, 0xd2, 0xe8, 0xcd,
+];
+/// Registry digest of the 45-schema registry immediately before retention watermark
+/// records and the checkpoint watermark binding (frozen PRE for RT-B).
+pub(crate) const PRE_RETENTION_WATERMARK_REGISTRY_DIGEST: [u8; 32] = [
+    0x99, 0x13, 0x0d, 0x68, 0x02, 0x71, 0x1b, 0x38, 0xe8, 0xda, 0x85, 0xc2, 0x04, 0x39, 0x60, 0xf3,
+    0x62, 0x04, 0x7f, 0x41, 0xc2, 0xd8, 0x0a, 0x4d, 0x88, 0xff, 0xf8, 0x2c, 0x9c, 0xfc, 0x46, 0x69,
 ];
 
 /// Last observed redb repair progress in basis points (0..=10_000), for recovery telemetry.
@@ -378,7 +386,7 @@ impl RedbStore {
                 transient_indexes: Mutex::new(TransientIndexState::Dormant),
                 startup_validation_clean: AtomicBool::new(false),
                 checkpoint_write_failures: AtomicU64::new(0),
-                checkpoint_ignored: [(); 9].map(|()| AtomicU64::new(0)),
+                checkpoint_ignored: [(); 10].map(|()| AtomicU64::new(0)),
             }),
         };
         store.ensure_current_storage_format()?;
@@ -451,6 +459,10 @@ impl RedbStore {
                     == &SchemaHash::from_bytes(PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST)
                 {
                     RegistryMigration::ValidatedPrefixCheckpoint
+                } else if observed.value()
+                    == &SchemaHash::from_bytes(PRE_RETENTION_WATERMARK_REGISTRY_DIGEST)
+                {
+                    RegistryMigration::RetentionWatermark
                 } else {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
@@ -568,10 +580,30 @@ impl RedbStore {
                 | RegistryMigration::ContractMigration
                 | RegistryMigration::ValidatedPrefixCheckpoint
         ) {
-            // No table install: the checkpoint is a meta-row only. Publish digest.
+            // No table install: the checkpoint is a meta-row only. Publish to the
+            // pre-retention digest (not current); retention installs next.
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_RETENTION_WATERMARK_REGISTRY_DIGEST),
+            )?;
+        }
+        if matches!(
+            registry_migration,
+            RegistryMigration::EventReferencesThenGenerations
+                | RegistryMigration::Generations
+                | RegistryMigration::HistoryIncarnation
+                | RegistryMigration::AuditRequestIndex
+                | RegistryMigration::EventRoute
+                | RegistryMigration::EntityReference
+                | RegistryMigration::ContractMigration
+                | RegistryMigration::ValidatedPrefixCheckpoint
+                | RegistryMigration::RetentionWatermark
+        ) {
+            install_history_tombstones_table(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_RETENTION_WATERMARK_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -686,6 +718,12 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_RETENTION_WATERMARK_REGISTRY_DIGEST),
+            )?;
+            install_history_tombstones_table(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_RETENTION_WATERMARK_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -797,6 +835,12 @@ impl RedbStore {
         publish_record_registry(
             &self.shared,
             SchemaHash::from_bytes(PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST),
+            SchemaHash::from_bytes(PRE_RETENTION_WATERMARK_REGISTRY_DIGEST),
+        )?;
+        install_history_tombstones_table(&self.shared)?;
+        publish_record_registry(
+            &self.shared,
+            SchemaHash::from_bytes(PRE_RETENTION_WATERMARK_REGISTRY_DIGEST),
             current,
         )
     }
@@ -840,7 +884,7 @@ impl RedbStore {
     /// Per-reason counts of ignored validated-prefix checkpoints on this handle.
     #[doc(hidden)]
     #[must_use]
-    pub fn checkpoint_ignore_counts(&self) -> [(&'static str, u64); 9] {
+    pub fn checkpoint_ignore_counts(&self) -> [(&'static str, u64); 10] {
         self.shared.checkpoint_ignore_counts()
     }
 
@@ -1645,6 +1689,16 @@ fn install_contract_migration_tables(shared: &SharedRedb) -> Result<(), StorageE
     shared.commit_durable(transaction)
 }
 
+/// Ensures `history_tombstones` exists (and any other current tables). Idempotent.
+fn install_history_tombstones_table(shared: &SharedRedb) -> Result<(), StorageError> {
+    let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    create_all_tables(&transaction).map_err(table_error)?;
+    shared.commit_durable(transaction)
+}
+
 fn migrate_string_table(
     shared: &SharedRedb,
     definition: TableDefinition<&str, &[u8]>,
@@ -1680,9 +1734,12 @@ fn migrate_string_table(
                     last = Some(key);
                     continue;
                 }
-                // Optional validated-prefix checkpoint: invalid payloads must never
-                // block open (startup ignores them and runs full validation).
-                if key == META_VALIDATED_PREFIX_CHECKPOINT {
+                // Optional meta rows: invalid payloads must never block open
+                // (startup ignores them / re-validates and falls back safely).
+                if key == META_VALIDATED_PREFIX_CHECKPOINT
+                    || key == META_RETENTION_WATERMARK
+                    || key == META_RETENTION_HOLDS
+                {
                     if let Ok(compact) = transcode_durable_record_to_v2(original) {
                         if require_compact && compact.as_bytes() != original {
                             return Err(storage_error(StorageErrorKind::IncompatibleFormat));
@@ -1889,7 +1946,7 @@ impl RedbOperationalPorts {
     /// Per-reason counts of ignored validated-prefix checkpoints on this database.
     #[doc(hidden)]
     #[must_use]
-    pub fn checkpoint_ignore_counts(&self) -> [(&'static str, u64); 9] {
+    pub fn checkpoint_ignore_counts(&self) -> [(&'static str, u64); 10] {
         self.shared.checkpoint_ignore_counts()
     }
 
@@ -2282,10 +2339,16 @@ fn classify_table_names(
     if tables == expected {
         return Ok(LayoutState::Initialized);
     }
+    // Pre-retention layout: missing history_tombstones is migration-eligible.
+    let mut pre_retention = expected.clone();
+    pre_retention.remove("history_tombstones");
+    if tables == pre_retention {
+        return Ok(LayoutState::Initialized);
+    }
     // Pre-audit-request-index layout: exactly the 21-table predecessor is
     // migration-eligible and treated as initialized for open/identity probe.
     // ensure_current_storage_format creates audit_by_request before any write path.
-    let mut pre_event_route = expected.clone();
+    let mut pre_event_route = pre_retention;
     pre_event_route.remove("event_routes");
     if tables == pre_event_route {
         return Ok(LayoutState::Initialized);
@@ -2422,6 +2485,14 @@ where
                 let _ = riffdb_storage_api::proto_codec::decode_validated_prefix_checkpoint_v1(
                     value.value(),
                 );
+            }
+            META_RETENTION_WATERMARK => {
+                // Optional; invalid payloads re-validated fail-closed at startup.
+                let _ =
+                    riffdb_storage_api::proto_codec::decode_retention_watermark_v1(value.value());
+            }
+            META_RETENTION_HOLDS => {
+                let _ = riffdb_storage_api::proto_codec::decode_retention_holds_v1(value.value());
             }
             _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
         }

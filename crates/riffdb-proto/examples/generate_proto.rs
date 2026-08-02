@@ -57,6 +57,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/registry_v2.proto",
     "riffdb/storage/v1/service_audit_request_index_v1.proto",
     "riffdb/storage/v1/validated_prefix_checkpoint_v1.proto",
+    "riffdb/storage/v1/retention_watermark_v1.proto",
 ];
 const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/app/v1/application.proto",
@@ -80,6 +81,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/registry_v2.proto",
     "riffdb/storage/v1/service_audit_request_index_v1.proto",
     "riffdb/storage/v1/validated_prefix_checkpoint_v1.proto",
+    "riffdb/storage/v1/retention_watermark_v1.proto",
     "riffdb/v1/admin.proto",
     "riffdb/v1/command.proto",
     "riffdb/v1/commit.proto",
@@ -331,6 +333,21 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
     durable(
         "validated_prefix_checkpoint_v1.proto",
         "StoredValidatedPrefixCheckpointV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "retention_watermark_v1.proto",
+        "StoredRetentionWatermarkV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "retention_watermark_v1.proto",
+        "StoredRetentionHoldsV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "retention_watermark_v1.proto",
+        "StoredHistoryTombstoneV1",
         PayloadBound::Tiny,
     ),
 ];
@@ -664,6 +681,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| {
             io::Error::other("durable validated-prefix-checkpoint registry is incomplete")
         })?;
+    let retention_watermark_record = durable_registry
+        .get(current_v1_record_count + 15)
+        .ok_or_else(|| io::Error::other("durable retention-watermark registry is incomplete"))?;
+    let retention_holds_record = durable_registry
+        .get(current_v1_record_count + 16)
+        .ok_or_else(|| io::Error::other("durable retention-holds registry is incomplete"))?;
+    let history_tombstone_record = durable_registry
+        .get(current_v1_record_count + 17)
+        .ok_or_else(|| io::Error::other("durable history-tombstone registry is incomplete"))?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -798,6 +824,36 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/durable-validated-prefix-checkpoint-v1-record-bound.bin",
         &durable_record_bounds(std::slice::from_ref(validated_prefix_checkpoint_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-retention-watermark-v1-schema-hash.bin",
+        &retention_watermark_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-retention-watermark-v1-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(retention_watermark_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-retention-holds-v1-schema-hash.bin",
+        &retention_holds_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-retention-holds-v1-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(retention_holds_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-history-tombstone-v1-schema-hash.bin",
+        &history_tombstone_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-history-tombstone-v1-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(history_tombstone_record)),
     )?;
     write_artifact(
         &output_root,
@@ -1066,9 +1122,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 44 {
+    if DURABLE_RECORDS.len() != 47 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 44 records").into(),
+            io::Error::other("readable durable registry must contain exactly 47 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1078,7 +1134,7 @@ fn build_durable_registry(
             .any(|file| file.package() != "riffdb.storage.v1")
     {
         return Err(io::Error::other(
-            "storage descriptor must contain exactly the twenty riffdb.storage.v1 sources",
+            "storage descriptor must contain exactly the twenty-one riffdb.storage.v1 sources",
         )
         .into());
     }
@@ -1092,9 +1148,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 98 || enum_count != 13 {
+    if message_count != 102 || enum_count != 13 {
         return Err(io::Error::other(format!(
-            "storage schema must contain 97 semantic messages plus StoredEnvelope and 13 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain 101 semantic messages plus StoredEnvelope and 13 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1305,6 +1361,15 @@ fn durable_writable_registry_fixture(
         records.get(current_v1_record_count + 14).ok_or_else(|| {
             io::Error::other("durable registry is missing StoredValidatedPrefixCheckpointV1")
         })?;
+    let retention_watermark = records.get(current_v1_record_count + 15).ok_or_else(|| {
+        io::Error::other("durable registry is missing StoredRetentionWatermarkV1")
+    })?;
+    let retention_holds = records
+        .get(current_v1_record_count + 16)
+        .ok_or_else(|| io::Error::other("durable registry is missing StoredRetentionHoldsV1"))?;
+    let history_tombstone = records
+        .get(current_v1_record_count + 17)
+        .ok_or_else(|| io::Error::other("durable registry is missing StoredHistoryTombstoneV1"))?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -1321,10 +1386,13 @@ fn durable_writable_registry_fixture(
         .chain(migration_v1.iter())
         .chain(std::iter::once(capability_v2))
         .chain(std::iter::once(validated_prefix_checkpoint))
+        .chain(std::iter::once(retention_watermark))
+        .chain(std::iter::once(retention_holds))
+        .chain(std::iter::once(history_tombstone))
         .chain(std::iter::once(registry_v2));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 10);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 13);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

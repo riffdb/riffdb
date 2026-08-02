@@ -1506,6 +1506,7 @@ const fn service_terminal_label(terminal: ServiceTerminalClass) -> MetricLabel {
             ServiceTerminalClass::ResponseTooLarge => "response_too_large",
             ServiceTerminalClass::EmergencyInternal => "emergency_internal",
             ServiceTerminalClass::HistoryIncarnationMismatch => "history_incarnation_mismatch",
+            ServiceTerminalClass::HistoryPruned => "history_pruned",
             ServiceTerminalClass::Overloaded => "overloaded",
         },
     }

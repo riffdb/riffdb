@@ -1397,13 +1397,15 @@ pub enum ServiceTerminalClass {
     EmergencyInternal,
     /// Observed history predates a database restore.
     HistoryIncarnationMismatch,
+    /// Requested history was retired by retention prune.
+    HistoryPruned,
     /// Admission rejected the request because the service is over capacity.
     Overloaded,
 }
 
 impl ServiceTerminalClass {
     /// Every terminal class in stable metric order.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Succeeded,
         Self::Validation,
         Self::IdempotencyMismatch,
@@ -1419,6 +1421,7 @@ impl ServiceTerminalClass {
         Self::ResponseTooLarge,
         Self::EmergencyInternal,
         Self::HistoryIncarnationMismatch,
+        Self::HistoryPruned,
         Self::Overloaded,
     ];
 }
