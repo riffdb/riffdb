@@ -75,17 +75,19 @@ pub use definition::{
     RegisteredDefinition,
 };
 pub use engine::{ColumnarEngine, OpenOptions};
-pub use error::ColumnarError;
+pub use error::{ColumnarError, StorageFailure};
 pub use outcome::{
-    ColumnarOutcome, ProjectionBuilding, ProjectionDegraded, ProjectionInvalid, ProjectionLagging,
-    ProjectionReady, ProjectionRebuilding, frontier_lag_sequences, lagging_for,
+    ColumnarOutcome, DegradedReason, ProjectionBuilding, ProjectionDegraded, ProjectionInvalid,
+    ProjectionLagging, ProjectionReady, ProjectionRebuilding, RebuildingReason,
+    frontier_lag_sequences, lagging_for,
 };
 pub use query::{
     AggregateOp, AggregateValue, ColumnPredicate, ColumnarQueryRequest, GroupBySpec, OrderSpec,
-    QueryBudget, QueryError, QueryResult, QueryRows, SortDirection,
+    QueryBudget, QueryError, QueryResult, QueryRow, QueryRows, SortDirection, query_snapshot,
 };
 pub use store::{
     ColumnarSnapshot, LiveRow, MergedRow, OrgDelta, OrgKey, PrimaryKeyBytes, SegmentId,
+    encode_org_scope_key,
 };
 
 #[doc(hidden)]

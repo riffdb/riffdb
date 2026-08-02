@@ -10,22 +10,49 @@ use riffdb_types::{
 use crate::error::ColumnarError;
 
 /// Opaque org-partition key: canonical encoding of the org scope value.
+///
+/// Encoding is exactly [`encode_canonical_value`] of the org scope
+/// [`CanonicalValue`]. CP2b's org/partition equivalence test must round-trip
+/// both this encoding and the aggregate partition key codec over every
+/// supported org type — a mismatch is a cross-tenant authorization bypass.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct OrgKey(pub(crate) Vec<u8>);
 
 impl OrgKey {
-    /// Builds an org key from a scope value.
+    /// Builds an org key from a scope value (public CP2b equivalence hook).
+    ///
+    /// Equivalent to encoding the value with the ADR-0011 canonical value
+    /// codec and wrapping the bytes. See crate-level note on partition
+    /// equivalence.
     pub fn from_value(value: &CanonicalValue) -> Result<Self, ColumnarError> {
         let bytes = encode_canonical_value(value)
             .map_err(|_| ColumnarError::Projection("org scope value failed canonical encoding"))?;
         Ok(Self(bytes))
     }
 
-    /// Borrows the encoded bytes.
+    /// Reconstructs an org key from already-encoded canonical bytes.
+    ///
+    /// Does not re-validate the payload shape; intended solely for CP2b's
+    /// cross-crate partition-encoding equivalence proof, which must compare
+    /// byte-for-byte against partition codecs. Hidden from the documented API
+    /// so [`OrgKey::from_value`] stays the only advertised constructor.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_encoded_bytes(bytes: impl Into<Vec<u8>>) -> Self {
+        Self(bytes.into())
+    }
+
+    /// Borrows the encoded bytes (canonical org-scope encoding).
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
+}
+
+/// Encodes an organization scope value into the partition key used by the
+/// columnar engine. Public hook for CP2b's org/partition equivalence proof.
+pub fn encode_org_scope_key(value: &CanonicalValue) -> Result<OrgKey, ColumnarError> {
+    OrgKey::from_value(value)
 }
 
 /// Primary key bytes (entity key envelope bytes).

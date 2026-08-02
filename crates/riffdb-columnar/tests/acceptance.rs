@@ -339,6 +339,7 @@ fn acceptance_org_scope_airtight() {
     let count_a = engine
         .query(&ColumnarQueryRequest {
             org_scope: CanonicalValue::Uuid(org_a),
+            select: Vec::new(),
             predicates: Vec::new(),
             order: Vec::new(),
             limit: None,
@@ -391,6 +392,7 @@ fn acceptance_query_range_sort_limit_aggregates_group_by_budgets() {
         engine
             .query(&ColumnarQueryRequest {
                 org_scope: CanonicalValue::Uuid(org),
+                select: Vec::new(),
                 predicates: vec![ColumnPredicate::Range {
                     field: priority,
                     low: Some(CanonicalValue::I64(15)),
@@ -416,6 +418,7 @@ fn acceptance_query_range_sort_limit_aggregates_group_by_budgets() {
         engine
             .query(&ColumnarQueryRequest {
                 org_scope: CanonicalValue::Uuid(org),
+                select: Vec::new(),
                 predicates: vec![ColumnPredicate::Eq {
                     field: status,
                     value: CanonicalValue::U64(1),
@@ -443,6 +446,7 @@ fn acceptance_query_range_sort_limit_aggregates_group_by_budgets() {
         engine
             .query(&ColumnarQueryRequest {
                 org_scope: CanonicalValue::Uuid(org),
+                select: Vec::new(),
                 predicates: vec![ColumnPredicate::Eq {
                     field: status,
                     value: CanonicalValue::U64(1),
@@ -474,6 +478,7 @@ fn acceptance_query_range_sort_limit_aggregates_group_by_budgets() {
         let result = engine
             .query(&ColumnarQueryRequest {
                 org_scope: CanonicalValue::Uuid(org),
+                select: Vec::new(),
                 predicates: Vec::new(),
                 order: Vec::new(),
                 limit: None,
@@ -489,6 +494,7 @@ fn acceptance_query_range_sort_limit_aggregates_group_by_budgets() {
     let groups = engine
         .query(&ColumnarQueryRequest {
             org_scope: CanonicalValue::Uuid(org),
+            select: Vec::new(),
             predicates: Vec::new(),
             order: Vec::new(),
             limit: None,
@@ -509,6 +515,7 @@ fn acceptance_query_range_sort_limit_aggregates_group_by_budgets() {
     let err = engine
         .query(&ColumnarQueryRequest {
             org_scope: CanonicalValue::Uuid(org),
+            select: Vec::new(),
             predicates: Vec::new(),
             order: Vec::new(),
             limit: None,
@@ -529,6 +536,7 @@ fn acceptance_query_range_sort_limit_aggregates_group_by_budgets() {
     let err = engine
         .query(&ColumnarQueryRequest {
             org_scope: CanonicalValue::Uuid(org),
+            select: Vec::new(),
             predicates: Vec::new(),
             order: Vec::new(),
             limit: None,
@@ -592,13 +600,8 @@ fn acceptance_checkpoint_recover_and_replay() {
     let bundle = compile_bundle();
     let definition = register_ticket_board(&bundle);
     let dir = temp_dir("ckpt");
-    let mut engine = ColumnarEngine::open(
-        definition.clone(),
-        OpenOptions {
-            directory: dir.clone(),
-        },
-    )
-    .expect("open");
+    let mut engine =
+        ColumnarEngine::open(definition.clone(), OpenOptions::new(dir.clone())).expect("open");
     let mut source = HistorySource::default();
     let mut oracle = Oracle::default();
     let org = uuid(0x90);
@@ -611,10 +614,9 @@ fn acceptance_checkpoint_recover_and_replay() {
     );
 
     // Reopen: durable frontier restored; further apply is idempotent.
-    let mut engine2 =
-        ColumnarEngine::open(definition, OpenOptions { directory: dir }).expect("reopen");
+    let mut engine2 = ColumnarEngine::open(definition, OpenOptions::new(dir)).expect("reopen");
     assert_eq!(
-        engine2.durable_frontier(),
+        engine2.durable_frontier().position(),
         FrontierPosition::AppliedThrough(CommitSequence::new(1).expect("1"))
     );
     // Durable frontier must not overclaim: data for seq 1 must already be queryable
@@ -644,13 +646,7 @@ fn acceptance_fingerprint_mismatch_invalid() {
     let bundle = compile_bundle();
     let definition = register_ticket_board(&bundle);
     let dir = temp_dir("fp");
-    let mut engine = ColumnarEngine::open(
-        definition,
-        OpenOptions {
-            directory: dir.clone(),
-        },
-    )
-    .expect("open");
+    let mut engine = ColumnarEngine::open(definition, OpenOptions::new(dir.clone())).expect("open");
     let mut source = HistorySource::default();
     let mut oracle = Oracle::default();
     push_ticket_create(
@@ -680,7 +676,7 @@ fn acceptance_fingerprint_mismatch_invalid() {
         &bundle,
     )
     .expect("register");
-    let err = ColumnarEngine::open(other, OpenOptions { directory: dir })
+    let err = ColumnarEngine::open(other, OpenOptions::new(dir))
         .map(|_| ())
         .expect_err("mismatch");
     assert!(matches!(
@@ -697,16 +693,17 @@ fn acceptance_lifecycle_outcomes_shapes() {
     let required = CommitSequence::new(5).expect("5");
     let current = FrontierPosition::AppliedThrough(CommitSequence::new(2).expect("2"));
     let head = FrontierPosition::AppliedThrough(CommitSequence::new(9).expect("9"));
-    match lagging_for(required, current, head) {
+    match lagging_for(1, required, current, head) {
         ColumnarOutcome::Lagging(lag) => {
             assert_eq!(lag.lag_sequences, Some(7));
+            assert_eq!(lag.current.history_incarnation(), 1);
             assert_eq!(frontier_lag_sequences(current, head), Some(7));
         }
         _ => panic!("lagging"),
     }
     assert!(matches!(
         ColumnarOutcome::Rebuilding(ProjectionRebuilding {
-            reason: "budget",
+            reason: riffdb_columnar::RebuildingReason::ReplayBudgetExceeded,
             progress_applied: 1,
             progress_total: 2,
         }),
@@ -714,8 +711,11 @@ fn acceptance_lifecycle_outcomes_shapes() {
     ));
     assert!(matches!(
         ColumnarOutcome::Degraded(ProjectionDegraded {
-            reason: "slo",
-            current_frontier: FrontierPosition::BeforeFirst,
+            reason: riffdb_columnar::DegradedReason::ApplyLagSlo,
+            current_frontier: riffdb_types::ProjectionFrontier::new(
+                1,
+                FrontierPosition::BeforeFirst
+            ),
         }),
         ColumnarOutcome::Degraded(_)
     ));
@@ -738,13 +738,8 @@ fn run_randomized_history(seed: u64) {
     let bundle = compile_bundle();
     let definition = register_ticket_board(&bundle);
     let dir = temp_dir(&format!("rand-{seed}"));
-    let mut engine = ColumnarEngine::open(
-        definition.clone(),
-        OpenOptions {
-            directory: dir.clone(),
-        },
-    )
-    .unwrap_or_else(|error| panic!("seed {seed}: open: {error}"));
+    let mut engine = ColumnarEngine::open(definition.clone(), OpenOptions::new(dir.clone()))
+        .unwrap_or_else(|error| panic!("seed {seed}: open: {error}"));
     let mut source = HistorySource::default();
     let mut oracle = Oracle::default();
     let orgs = [uuid(0xa0), uuid(0xa1)];
@@ -884,13 +879,9 @@ fn run_randomized_history(seed: u64) {
         if rng.gen_range(0u32..8) == 0 {
             match engine.checkpoint() {
                 Ok(_) => {
-                    engine = ColumnarEngine::open(
-                        definition.clone(),
-                        OpenOptions {
-                            directory: dir.clone(),
-                        },
-                    )
-                    .unwrap_or_else(|error| panic!("{context}: reopen: {error}"));
+                    engine =
+                        ColumnarEngine::open(definition.clone(), OpenOptions::new(dir.clone()))
+                            .unwrap_or_else(|error| panic!("{context}: reopen: {error}"));
                     assert_corpus_equivalence(
                         &engine,
                         &oracle,
@@ -950,7 +941,7 @@ fn run_randomized_history(seed: u64) {
     engine
         .checkpoint()
         .unwrap_or_else(|error| panic!("seed {seed}: final checkpoint: {error}"));
-    let mut engine2 = ColumnarEngine::open(definition, OpenOptions { directory: dir })
+    let mut engine2 = ColumnarEngine::open(definition, OpenOptions::new(dir))
         .unwrap_or_else(|error| panic!("seed {seed}: final reopen: {error}"));
     assert_corpus_equivalence(
         &engine2,
@@ -1036,7 +1027,10 @@ fn falsify_drop_holdback_rule() {
         vec![(target, riffdb_storage_api::ExpectedEntityState::Absent)],
     );
     engine.apply_available(&source).expect("apply");
-    assert_eq!(engine.published_frontier(), FrontierPosition::BeforeFirst);
+    assert_eq!(
+        engine.published_frontier().position(),
+        FrontierPosition::BeforeFirst
+    );
     assert_eq!(engine.deferred_set_size(), 1);
 }
 
@@ -1114,14 +1108,9 @@ fn crash_child_process_matrix() {
         // Parent reopens and asserts no overclaim + recoverability. The reopen
         // itself must sweep any torn-checkpoint leftovers (orphan segments,
         // temp manifests).
-        let mut engine = ColumnarEngine::open(
-            definition.clone(),
-            OpenOptions {
-                directory: dir.clone(),
-            },
-        )
-        .expect("reopen after crash");
-        let durable = engine.durable_frontier();
+        let mut engine = ColumnarEngine::open(definition.clone(), OpenOptions::new(dir.clone()))
+            .expect("reopen after crash");
+        let durable = engine.durable_frontier().position();
 
         // The same history + oracle the child applied before it died.
         let org = uuid(0xc1);
@@ -1176,7 +1165,7 @@ fn crash_child_process_matrix() {
         // Replay from history must reach head without error.
         engine.apply_available(&source).expect("replay after crash");
         assert_eq!(
-            engine.processed_frontier(),
+            engine.processed_frontier().position(),
             FrontierPosition::AppliedThrough(CommitSequence::new(1).expect("1"))
         );
         // Post-recovery FULL-CORPUS equivalence at the published frontier (D9).
@@ -1199,9 +1188,12 @@ fn crash_child_process_matrix() {
             "{name}: post-recovery checkpoint frontier"
         );
         // And the new checkpoint must itself be recoverable.
-        let recovered = ColumnarEngine::open(definition.clone(), OpenOptions { directory: dir })
+        let recovered = ColumnarEngine::open(definition.clone(), OpenOptions::new(dir))
             .expect("reopen after post-recovery checkpoint");
-        assert_eq!(recovered.durable_frontier(), manifest.durable_frontier);
+        assert_eq!(
+            recovered.durable_frontier().position(),
+            manifest.durable_frontier
+        );
         assert_corpus_equivalence(
             &recovered,
             &oracle,
@@ -1224,13 +1216,7 @@ fn run_crash_child() {
     };
     let bundle = compile_bundle();
     let definition = register_ticket_board(&bundle);
-    let mut engine = ColumnarEngine::open(
-        definition,
-        OpenOptions {
-            directory: path.into(),
-        },
-    )
-    .expect("child open");
+    let mut engine = ColumnarEngine::open(definition, OpenOptions::new(path)).expect("child open");
     let mut source = HistorySource::default();
     let mut oracle = Oracle::default();
     push_ticket_create(
@@ -1261,8 +1247,7 @@ fn build_holdback_state(
     org: [u8; 16],
 ) -> (ColumnarEngine, HistorySource, Oracle) {
     let definition = register_ticket_board(bundle);
-    let mut engine =
-        ColumnarEngine::open(definition, OpenOptions { directory: dir }).expect("open");
+    let mut engine = ColumnarEngine::open(definition, OpenOptions::new(dir)).expect("open");
     let mut source = HistorySource::default();
     let mut oracle = Oracle::default();
     let ticket_type = entity_type_id(bundle, "Ticket");
@@ -1397,7 +1382,10 @@ fn checkpoint_refuses_during_holdback_then_recovers_complete_commit() {
     assert_holdback_refusal(error, "checkpoint");
     assert_no_durable_files(&dir, "checkpoint refusal");
     // The published snapshot must be untouched by the refusal.
-    assert_eq!(engine.published_frontier(), FrontierPosition::BeforeFirst);
+    assert_eq!(
+        engine.published_frontier().position(),
+        FrontierPosition::BeforeFirst
+    );
 
     // (ii) The next pull applies the superseding commit; checkpoint succeeds.
     let progress = engine.apply_available(&source).expect("resolve");
@@ -1415,8 +1403,7 @@ fn checkpoint_refuses_during_holdback_then_recovers_complete_commit() {
     // Reopen: the recovered state carries the COMPLETE commit 1 (both
     // entities), never the half-applied form.
     let definition = register_ticket_board(&bundle);
-    let mut reopened =
-        ColumnarEngine::open(definition, OpenOptions { directory: dir }).expect("reopen");
+    let mut reopened = ColumnarEngine::open(definition, OpenOptions::new(dir)).expect("reopen");
     let rows = rows_of(
         reopened
             .query(&board_query(CanonicalValue::Uuid(org)))
@@ -1455,7 +1442,10 @@ fn compact_refuses_during_holdback_then_succeeds() {
     let error = engine.compact().expect_err("must refuse during holdback");
     assert_holdback_refusal(error, "compact");
     assert_no_durable_files(&dir, "compact refusal");
-    assert_eq!(engine.published_frontier(), FrontierPosition::BeforeFirst);
+    assert_eq!(
+        engine.published_frontier().position(),
+        FrontierPosition::BeforeFirst
+    );
 
     // After the race resolves, compact succeeds and stays result-invariant.
     engine.apply_available(&source).expect("resolve");
@@ -1525,13 +1515,8 @@ fn checkpoint_bounds_segment_growth_and_sweeps_superseded_files() {
     let bundle = compile_bundle();
     let definition = register_ticket_board(&bundle);
     let dir = temp_dir("growth");
-    let mut engine = ColumnarEngine::open(
-        definition.clone(),
-        OpenOptions {
-            directory: dir.clone(),
-        },
-    )
-    .expect("open");
+    let mut engine =
+        ColumnarEngine::open(definition.clone(), OpenOptions::new(dir.clone())).expect("open");
     let mut source = HistorySource::default();
     let mut oracle = Oracle::default();
     let org_a = uuid(0xd3);
@@ -1605,13 +1590,7 @@ fn checkpoint_bounds_segment_growth_and_sweeps_superseded_files() {
     );
 
     // ...but the next open sweeps it, leaving exactly the referenced files.
-    let reopened = ColumnarEngine::open(
-        definition,
-        OpenOptions {
-            directory: dir.clone(),
-        },
-    )
-    .expect("reopen");
+    let reopened = ColumnarEngine::open(definition, OpenOptions::new(dir.clone())).expect("reopen");
     let files_after_open = on_disk(&dir);
     let referenced: std::collections::BTreeSet<String> = second
         .segments
