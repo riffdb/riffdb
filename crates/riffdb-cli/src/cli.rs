@@ -111,6 +111,11 @@ pub(crate) enum TopLevel {
         #[command(subcommand)]
         command: BackupCommand,
     },
+    /// Offline exclusive retention maintenance on a closed database file.
+    Retention {
+        #[command(subcommand)]
+        command: RetentionCommand,
+    },
     Demo {
         #[command(subcommand)]
         command: DemoCommand,
@@ -640,6 +645,65 @@ pub(crate) enum BackupCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub(crate) enum RetentionCommand {
+    /// Prints the retention watermark and fencing breakdown for a closed database.
+    Status {
+        #[arg(long, value_name = "PATH")]
+        database_path: OsString,
+    },
+    /// Operator hold management (add / remove).
+    Hold {
+        #[command(subcommand)]
+        command: RetentionHoldCommand,
+    },
+    /// Detaches a projection identity from the fencing minimum (audited).
+    ProjectionDetach {
+        #[arg(long, value_name = "PATH")]
+        database_path: OsString,
+        #[arg(long, value_name = "ID")]
+        projection_id: String,
+        #[arg(long, value_name = "TEXT")]
+        reason: String,
+    },
+    /// Reattaches a previously detached projection to the minimum (audited).
+    ProjectionReattach {
+        #[arg(long, value_name = "PATH")]
+        database_path: OsString,
+        #[arg(long, value_name = "ID")]
+        projection_id: String,
+        #[arg(long, value_name = "TEXT")]
+        reason: String,
+    },
+    /// Offline prune of commits/events/outbox through a target inclusive sequence.
+    Prune {
+        #[arg(long, value_name = "PATH")]
+        database_path: OsString,
+        #[arg(long, value_name = "N")]
+        target_sequence: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum RetentionHoldCommand {
+    Add {
+        #[arg(long, value_name = "PATH")]
+        database_path: OsString,
+        #[arg(long, value_name = "ID")]
+        hold_id: String,
+        #[arg(long, value_name = "N")]
+        sequence: String,
+        #[arg(long, value_name = "TEXT")]
+        reason: String,
+    },
+    Remove {
+        #[arg(long, value_name = "PATH")]
+        database_path: OsString,
+        #[arg(long, value_name = "ID")]
+        hold_id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub(crate) enum DemoCommand {
     Budget {
         #[arg(long, value_name = "PATH")]
@@ -709,6 +773,103 @@ mod tests {
                     case: BudgetCase::SameKeyReplay,
                     ..
                 }
+            }
+        ));
+    }
+
+    #[test]
+    fn retention_offline_verbs_parse() {
+        let status = Cli::try_parse_from([
+            "riffdb",
+            "retention",
+            "status",
+            "--database-path",
+            "/tmp/db.redb",
+        ])
+        .expect("status");
+        assert!(matches!(
+            status.command,
+            TopLevel::Retention {
+                command: RetentionCommand::Status { .. }
+            }
+        ));
+
+        let hold = Cli::try_parse_from([
+            "riffdb",
+            "retention",
+            "hold",
+            "add",
+            "--database-path",
+            "/tmp/db.redb",
+            "--hold-id",
+            "cap",
+            "--sequence",
+            "10",
+            "--reason",
+            "test",
+        ])
+        .expect("hold add");
+        assert!(matches!(
+            hold.command,
+            TopLevel::Retention {
+                command: RetentionCommand::Hold {
+                    command: RetentionHoldCommand::Add { .. }
+                }
+            }
+        ));
+
+        let prune = Cli::try_parse_from([
+            "riffdb",
+            "retention",
+            "prune",
+            "--database-path",
+            "/tmp/db.redb",
+            "--target-sequence",
+            "5",
+        ])
+        .expect("prune");
+        assert!(matches!(
+            prune.command,
+            TopLevel::Retention {
+                command: RetentionCommand::Prune { .. }
+            }
+        ));
+
+        let detach = Cli::try_parse_from([
+            "riffdb",
+            "retention",
+            "projection-detach",
+            "--database-path",
+            "/tmp/db.redb",
+            "--projection-id",
+            "7",
+            "--reason",
+            "replay budget hold",
+        ])
+        .expect("detach");
+        assert!(matches!(
+            detach.command,
+            TopLevel::Retention {
+                command: RetentionCommand::ProjectionDetach { .. }
+            }
+        ));
+
+        let reattach = Cli::try_parse_from([
+            "riffdb",
+            "retention",
+            "projection-reattach",
+            "--database-path",
+            "/tmp/db.redb",
+            "--projection-id",
+            "7",
+            "--reason",
+            "budget restored",
+        ])
+        .expect("reattach");
+        assert!(matches!(
+            reattach.command,
+            TopLevel::Retention {
+                command: RetentionCommand::ProjectionReattach { .. }
             }
         ));
     }

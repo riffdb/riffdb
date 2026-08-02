@@ -23,6 +23,7 @@ mod maintenance;
 mod migration_stage;
 mod query;
 mod reads;
+mod retention;
 mod shared_ports;
 mod startup;
 mod store;
@@ -58,6 +59,7 @@ pub use migration_stage::{
     RedbContractMigrationContext, RedbContractMigrationImmutableWitness,
     RedbContractMigrationPreflight, RedbContractMigrationStage, RedbMigrationProjectionPorts,
 };
+pub use retention::{RedbOfflineRetention, RetentionStatusV1};
 pub use shared_ports::RedbSharedPorts;
 pub use startup::{
     RedbCompletionAuthority, RedbHistoricalEvidenceEnd, RedbStartupIndexMigrationPort,

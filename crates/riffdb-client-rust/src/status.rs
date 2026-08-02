@@ -303,7 +303,8 @@ const fn code_for_application(code: ApplicationErrorCode) -> Code {
         | ApplicationErrorCode::QueryUnavailable
         | ApplicationErrorCode::ModuleUnavailable
         | ApplicationErrorCode::CommandExecutionFailed
-        | ApplicationErrorCode::HistoryIncarnationMismatch => Code::FailedPrecondition,
+        | ApplicationErrorCode::HistoryIncarnationMismatch
+        | ApplicationErrorCode::HistoryPruned => Code::FailedPrecondition,
         ApplicationErrorCode::ResponseTooLarge | ApplicationErrorCode::Overloaded => {
             Code::ResourceExhausted
         }
@@ -627,6 +628,10 @@ mod tests {
         assert!(!is_retryable(&mismatch));
         assert!(!carries_uncertainty(&mismatch));
 
+        let pruned = ClientError::Public(PublicError::history_pruned());
+        assert!(!is_retryable(&pruned));
+        assert!(!carries_uncertainty(&pruned));
+
         let overloaded_app = ClientError::Application(Box::new(ApplicationError::new(
             ApplicationErrorCode::Overloaded,
             riffdb_errors::ApplicationOperation::ExecuteQuery,
@@ -644,6 +649,15 @@ mod tests {
         )));
         assert!(!is_retryable(&mismatch_app));
         assert!(!carries_uncertainty(&mismatch_app));
+
+        let pruned_app = ClientError::Application(Box::new(ApplicationError::new(
+            ApplicationErrorCode::HistoryPruned,
+            riffdb_errors::ApplicationOperation::ExecuteQuery,
+            riffdb_errors::ApplicationErrorContext::empty(),
+            None,
+        )));
+        assert!(!is_retryable(&pruned_app));
+        assert!(!carries_uncertainty(&pruned_app));
     }
 
     #[test]
@@ -675,6 +689,18 @@ mod tests {
             checked,
             ClientError::Public(ref error)
                 if error.kind() == PublicErrorKind::HistoryIncarnationMismatch
+        ));
+
+        let pruned_details =
+            contextless_error_bytes(12, "history_pruned", "requested history has been pruned", 1);
+        let checked = checked_status(Status::with_details(
+            Code::FailedPrecondition,
+            "requested history has been pruned",
+            pruned_details.into(),
+        ));
+        assert!(matches!(
+            checked,
+            ClientError::Public(ref error) if error.kind() == PublicErrorKind::HistoryPruned
         ));
     }
 

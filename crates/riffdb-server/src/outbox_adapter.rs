@@ -199,7 +199,8 @@ fn map_source_error(error: OutboxStatusSourceError) -> OutboxStatusPortError {
             | StorageErrorKind::IncompatibleFormat
             | StorageErrorKind::LimitExceeded
             | StorageErrorKind::InvariantViolation
-            | StorageErrorKind::SequenceExhausted => OutboxStatusPortError::Integrity,
+            | StorageErrorKind::SequenceExhausted
+            | StorageErrorKind::HistoryPruned => OutboxStatusPortError::Integrity,
         },
     }
 }

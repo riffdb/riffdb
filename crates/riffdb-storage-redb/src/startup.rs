@@ -42,23 +42,24 @@ use crate::keys;
 use crate::layout::{
     AUDIT, AUDIT_BY_REQUEST, CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY,
     COMMITS, CONTRACT_BUNDLES, CONTRACT_MIGRATION_JOURNAL, CONTRACT_MIGRATIONS,
-    CONTRACT_WRITE_RETIREMENTS, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING,
-    INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE,
-    META_CAPABILITY_BOOTSTRAP, META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
-    META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY,
-    META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS, PROJECTION_APPLIED,
-    PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE, QUERY_MODULES,
-    RETIRED_ENTITIES, SECONDARY_INDEXES, TABLE_NAMES,
+    CONTRACT_WRITE_RETIREMENTS, ENTITIES, EVENT_ROUTES, EVENTS, HISTORY_TOMBSTONES, IDEMPOTENCY,
+    IDEMPOTENCY_PENDING, INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE,
+    META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP, META_DATABASE_ID, META_FORMAT_VERSION,
+    META_HISTORY_INCARNATION, META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY,
+    META_RETENTION_HOLDS, META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX,
+    OUTBOX_STATUS, PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE,
+    QUERY_MODULE_ACTIVE, QUERY_MODULES, RETIRED_ENTITIES, SECONDARY_INDEXES, TABLE_NAMES,
 };
 use crate::store::{
     PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST, PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST,
     PRE_ENTITY_REFERENCE_REGISTRY_DIGEST, PRE_EVENT_ROUTE_REGISTRY_DIGEST,
     PRE_HISTORY_INCARNATION_REGISTRY_DIGEST, PRE_INDEX_GENERATION_REGISTRY_DIGEST,
-    PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST, RedbDormantPorts, RedbStore, SharedRedb,
+    PRE_RETENTION_WATERMARK_REGISTRY_DIGEST, PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST,
+    RedbDormantPorts, RedbStore, SharedRedb,
 };
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
-const STRUCTURAL_TABLE_COUNT: usize = 27;
+const STRUCTURAL_TABLE_COUNT: usize = 28;
 
 fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
     digest == riffdb_storage_api::proto_codec::current_record_registry_digest()
@@ -67,6 +68,7 @@ fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST)
         || digest
             == riffdb_types::SchemaHash::from_bytes(PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST)
+        || digest == riffdb_types::SchemaHash::from_bytes(PRE_RETENTION_WATERMARK_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST)
@@ -247,6 +249,11 @@ struct EntityChainState {
     /// [`RedbStructuralEvidenceSession::queue_entity_orphan_findings`].
     overflow: bool,
     orphans_queued: bool,
+    /// Verified retention watermark at chain build (0 = unpruned). Below this
+    /// floor, commit bodies are tombstone-covered absence: chains may START at
+    /// any version, and an ENTITIES row untouched by any retained commit
+    /// validates by fingerprint-of-current shape, not by replay (ADR-0085 A2).
+    pruned_floor: u64,
 }
 
 /// Bounded permanent evidence for one successful catalog migration.
@@ -561,6 +568,39 @@ impl StructuralEvidenceOpen for RedbStore {
         let full_structural_counts = snapshot.structural_counts;
         let mut structural_counts = snapshot.structural_counts;
         let mut structural_total = snapshot.structural_total;
+        // Re-validate retention watermark bindings (never advance). Verify the
+        // tombstone chain covers [1, watermark] when pruned history exists —
+        // against the rooting registry digest RECORDED in the watermark
+        // record, never the process's current digest (ADR-0085 A2), so a
+        // registry migration cannot invalidate an existing chain.
+        {
+            let watermark = crate::retention::load_watermark(&transaction)?;
+            if let Some(wm) = watermark.as_ref() {
+                if wm.history_incarnation() != snapshot.retained_metadata.history_incarnation() {
+                    return Err(corrupt());
+                }
+                let recomputed = wm
+                    .computed_hash()
+                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+                if recomputed != wm.watermark_hash() {
+                    return Err(corrupt());
+                }
+                // The watermark must never pass the durable application head:
+                // sequences committed later must not be born below it.
+                let head = crate::retention::durable_application_head(&transaction)?;
+                if wm.watermark_sequence() > head {
+                    return Err(corrupt());
+                }
+                crate::retention::verify_tombstone_chain(
+                    &transaction,
+                    wm.watermark_sequence(),
+                    wm.chain_root_registry_digest(),
+                )?;
+            } else {
+                // Absent watermark means sequence 0; any tombstones are corrupt.
+                crate::retention::verify_tombstone_chain(&transaction, 0, None)?;
+            }
+        }
         // A new validation session invalidates any previous session's clean claim
         // until this one finishes with zero findings (checkpoint write gate).
         self.shared.set_startup_validation_clean(false);
@@ -1006,7 +1046,10 @@ impl RedbStructuralEvidenceSession {
         let mut counts = [0u64; STRUCTURAL_TABLE_COUNT];
         counts[0] = meta.len().map_err(precommit_storage_error)?;
         drop(meta);
-        for (index, definition) in [
+        // Length-annotated so a table added to STRUCTURAL_TABLE_COUNT without a
+        // row here is a compile error, not a silent zero (RT-A/RT-B lesson).
+        let definitions: [TableDefinition<'static, &'static [u8], &'static [u8]>;
+            STRUCTURAL_TABLE_COUNT - 1] = [
             CONTRACT_BUNDLES,
             CATALOG_ACTIVE,
             QUERY_MODULES,
@@ -1033,10 +1076,9 @@ impl RedbStructuralEvidenceSession {
             CONTRACT_MIGRATIONS,
             CONTRACT_WRITE_RETIREMENTS,
             RETIRED_ENTITIES,
-        ]
-        .into_iter()
-        .enumerate()
-        {
+            HISTORY_TOMBSTONES,
+        ];
+        for (index, definition) in definitions.into_iter().enumerate() {
             counts[index + 1] = table_len(transaction, definition)?;
         }
         if counts != self.full_structural_counts {
@@ -1468,7 +1510,12 @@ impl RedbStructuralEvidenceSession {
                     }
                     entity_row_matches_chain(chain, &record)
                 }
-                None => false,
+                // No retained commit references this target. Under a pruned
+                // floor its whole history is tombstone-covered: the row
+                // validates by fingerprint-of-current shape (decode + binding
+                // cross-links above), not by replay (ADR-0085 A2). Unpruned,
+                // an unreferenced ENTITIES row remains corruption.
+                None => state.pruned_floor > 0,
             }
         };
         self.maybe_queue_orphans_after_entity_row();
@@ -1608,6 +1655,9 @@ impl RedbStructuralEvidenceSession {
                     26 => transaction
                         .open_table(RETIRED_ENTITIES)
                         .map_err(table_error)?,
+                    27 => transaction
+                        .open_table(HISTORY_TOMBSTONES)
+                        .map_err(table_error)?,
                     _ => return Err(invariant()),
                 };
                 let range = self.open_structural_phase_range(phase, table)?;
@@ -1687,8 +1737,23 @@ fn inspect_table_row_from_bytes(
         24 => inspect_contract_migration_record_row(key, value),
         25 => inspect_contract_write_retirement_row(key, value),
         26 => inspect_retired_entity_row(transaction, key, value),
+        27 => inspect_history_tombstone_row(key, value),
         _ => Err(invariant()),
     }
+}
+
+fn inspect_history_tombstone_row(
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let first = keys::decode_application_sequence_key(key).map_err(|_| corrupt())?;
+    let decoded = riffdb_storage_api::proto_codec::decode_history_tombstone_v1(value)
+        .map_err(crate::error::codec_error)?;
+    let tombstone = decoded.value();
+    if tombstone.first_sequence() != first.get() {
+        return Err(corrupt());
+    }
+    Ok(None)
 }
 
 fn inspect_contract_migration_journal_row(
@@ -1813,6 +1878,7 @@ fn collect_startup_snapshot(
         table_len(transaction, CONTRACT_MIGRATIONS)?,
         table_len(transaction, CONTRACT_WRITE_RETIREMENTS)?,
         table_len(transaction, RETIRED_ENTITIES)?,
+        table_len(transaction, HISTORY_TOMBSTONES)?,
     ];
     let total = counts.iter().try_fold(1u64, |total, count| {
         total.checked_add(*count).ok_or_else(limit_exceeded)
@@ -2074,6 +2140,9 @@ fn inspect_meta_row(key: &str, value: &[u8], database_id: DatabaseId) -> Option<
         META_INDEX_EPOCH_ROWS_REPAIRED => value == [1u8].as_slice(),
         // Optional checkpoint: invalid payloads must not produce structural findings.
         META_VALIDATED_PREFIX_CHECKPOINT => true,
+        // Optional retention meta: full verify happens in the retention module.
+        META_RETENTION_WATERMARK => true,
+        META_RETENTION_HOLDS => true,
         _ => false,
     };
     (!valid).then(|| authoritative(StructuralFindingCode::MalformedRecord))
@@ -2319,9 +2388,14 @@ fn inspect_commit_row(
         Ok(value) => value,
         Err(code) => return Ok(Some(authoritative(code))),
     };
-    if index.checked_add(1).and_then(CommitSequence::new) != Some(sequence)
-        || record.commit_sequence() != sequence
-    {
+    // After offline prune, retained commits start at watermark+1. The table
+    // ordinal `index` is relative to the retained prefix, not absolute history.
+    let watermark = retention_watermark_sequence(transaction)?;
+    let expected = watermark
+        .checked_add(index)
+        .and_then(|base| base.checked_add(1))
+        .and_then(CommitSequence::new);
+    if expected != Some(sequence) || record.commit_sequence() != sequence {
         return Ok(Some(authoritative(
             StructuralFindingCode::SequenceDiscontinuity,
         )));
@@ -2396,6 +2470,17 @@ fn inspect_event_route_row(
         Ok(value) => value,
         Err(code) => return Ok(Some(authoritative(code))),
     };
+    // Routes are retained under prune; event/commit bodies below the watermark
+    // are intentionally absent and covered by the verified tombstone chain.
+    let watermark = retention_watermark_sequence(transaction)?;
+    if crate::retention::sequence_covered_by_watermark(id.commit_sequence().get(), watermark) {
+        if route.event_id() != id {
+            return Ok(Some(authoritative(
+                StructuralFindingCode::CrossLinkMismatch,
+            )));
+        }
+        return Ok(None);
+    }
     let Some(event) = get_event(transaction, id)? else {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
     };
@@ -2790,6 +2875,10 @@ fn inspect_audit_row(
                 None
             }
         }
+        // Retention administration records (projection detach/reattach) have
+        // no cross-linked peer row: the hold list is a live snapshot, not a
+        // per-record reciprocal, so the codec's semantic decode is the check.
+        riffdb_storage_api::StoredAdministrationAuditRecordV1::Retention(_) => None,
     };
     Ok(finding)
 }
@@ -3864,6 +3953,13 @@ fn missing_projection_source_finding(
     if commit_exists(transaction, sequence)? {
         return Ok(None);
     }
+    // Below-watermark absence is covered by the verified tombstone chain
+    // (ADR-0085 A2); projection source commits in the pruned prefix are not
+    // corruption.
+    let watermark = retention_watermark_sequence(transaction)?;
+    if crate::retention::sequence_covered_by_watermark(sequence.get(), watermark) {
+        return Ok(None);
+    }
     let meta = transaction.open_table(META).map_err(table_error)?;
     let allocator = match meta_decode(
         &meta,
@@ -3882,6 +3978,13 @@ fn missing_projection_source_finding(
     } else {
         derived_projection(StructuralFindingCode::ProjectionStateMismatch)
     }))
+}
+
+/// Live retention watermark sequence (0 when the meta key is absent).
+fn retention_watermark_sequence(transaction: &ReadTransaction) -> Result<u64, StorageError> {
+    Ok(crate::retention::load_watermark(transaction)?
+        .map(|w| w.watermark_sequence())
+        .unwrap_or(0))
 }
 
 fn get_commit(
@@ -3976,6 +4079,21 @@ fn outcome_graph_is_reciprocal(
     outcome: &riffdb_storage_api::StoredOutcomeV1,
 ) -> Result<bool, StorageError> {
     let Some(commit) = get_commit(transaction, outcome.commit_sequence())? else {
+        // Idempotency terminal records are retained across prune; the commit
+        // body below the watermark is tombstone-covered absence (ADR-0085
+        // A2). The retained provenance record must still reciprocate.
+        let watermark = retention_watermark_sequence(transaction)?;
+        if crate::retention::sequence_covered_by_watermark(
+            outcome.commit_sequence().get(),
+            watermark,
+        ) {
+            return Ok(
+                get_provenance(transaction, outcome.provenance_id())?.is_some_and(|provenance| {
+                    provenance.commit_sequence() == outcome.commit_sequence()
+                        && provenance.identity() == outcome.identity()
+                }),
+            );
+        }
         return Ok(false);
     };
     let Some(provenance) = get_provenance(transaction, outcome.provenance_id())? else {
@@ -4053,6 +4171,9 @@ fn build_entity_chains(
     )>,
 ) -> Result<EntityChainState, StorageError> {
     let migrations = load_entity_migration_evidence(transaction)?;
+    // Chains build from the RETAINED commit range only: below-watermark commit
+    // bodies are tombstone-covered (verified before this walk began).
+    let pruned_floor = retention_watermark_sequence(transaction)?;
     let table = transaction.open_table(COMMITS).map_err(table_error)?;
     let mut chains: std::collections::BTreeMap<riffdb_storage_api::EntityTarget, EntityChain> =
         std::collections::BTreeMap::new();
@@ -4155,7 +4276,10 @@ fn build_entity_chains(
                 // INVARIANT: slot allocation assumes ENTITIES rows are never
                 // removed (true today). If a removal path appears, a dead
                 // target can steal a live entity's slot → false MissingCrossLink.
-                let intact = reference.entity_version() == riffdb_types::EntityVersion::first();
+                // Under a pruned floor a chain may START at any version: its
+                // earlier versions lived in tombstone-covered commits.
+                let intact = pruned_floor > 0
+                    || reference.entity_version() == riffdb_types::EntityVersion::first();
                 chains.insert(
                     target_key,
                     EntityChain {
@@ -4180,6 +4304,7 @@ fn build_entity_chains(
         orphan_targets,
         overflow,
         orphans_queued: false,
+        pruned_floor,
     })
 }
 
@@ -4363,6 +4488,16 @@ fn provenance_graph_is_reciprocal(
     provenance: &riffdb_storage_api::StoredProvenanceRecordV1,
 ) -> Result<bool, StorageError> {
     let Some(commit) = get_commit(transaction, provenance.commit_sequence())? else {
+        // Provenance is retained across prune; commit bodies below the watermark
+        // are intentionally absent (tombstone-covered). Terminal outcome remains.
+        let watermark = retention_watermark_sequence(transaction)?;
+        if crate::retention::sequence_covered_by_watermark(
+            provenance.commit_sequence().get(),
+            watermark,
+        ) {
+            return Ok(get_terminal(transaction, provenance.identity())?
+                .is_some_and(|record| matches!(record, IdempotencyRecordV1::StoredOutcome(_))));
+        }
         return Ok(false);
     };
     let Some(IdempotencyRecordV1::StoredOutcome(outcome)) =
@@ -4942,18 +5077,34 @@ fn service_link_is_valid(
         riffdb_types::ServiceAuditLinkV1::Command {
             commit_sequence,
             provenance_id,
-        } => Ok(
-            record.phase() == riffdb_types::ServiceAuditPhaseV1::Succeeded
-                && matches!(
+        } => {
+            if record.phase() != riffdb_types::ServiceAuditPhaseV1::Succeeded
+                || !matches!(
                     record.operation(),
                     riffdb_types::ServiceOperationV1::ExecuteCommand
                         | riffdb_types::ServiceOperationV1::ResolveCommandOutcome
                 )
-                && get_commit(transaction, commit_sequence)?
-                    .is_some_and(|commit| commit.provenance_id() == provenance_id)
+            {
+                return Ok(false);
+            }
+            let commit_side = match get_commit(transaction, commit_sequence)? {
+                Some(commit) => commit.provenance_id() == provenance_id,
+                None => {
+                    // Audit history is retained across prune; the linked commit
+                    // body below the watermark is tombstone-covered absence
+                    // (ADR-0085 A2). The retained provenance record still
+                    // carries the binding and must reciprocate below.
+                    let watermark = retention_watermark_sequence(transaction)?;
+                    crate::retention::sequence_covered_by_watermark(
+                        commit_sequence.get(),
+                        watermark,
+                    )
+                }
+            };
+            Ok(commit_side
                 && get_provenance(transaction, provenance_id)?
-                    .is_some_and(|provenance| provenance.commit_sequence() == commit_sequence),
-        ),
+                    .is_some_and(|provenance| provenance.commit_sequence() == commit_sequence))
+        }
         riffdb_types::ServiceAuditLinkV1::ControlPlane {
             administration_sequence,
         } => {
@@ -5067,7 +5218,24 @@ fn application_allocator_matches(
     let table = transaction.open_table(COMMITS).map_err(table_error)?;
     let events = transaction.open_table(EVENTS).map_err(table_error)?;
     let expected = match table.last().map_err(precommit_storage_error)? {
-        None => ApplicationSequenceAllocator::initial(),
+        None => {
+            // Empty commits table: never-written, or fully pruned. Accept an
+            // advanced allocator exactly when the verified watermark covers
+            // the whole pruned prefix (allocator Next(n) ⇔ watermark == n-1;
+            // Exhausted ⇔ watermark == u64::MAX) — same rule as the backup
+            // facts check (ADR-0085 A2).
+            if allocator != ApplicationSequenceAllocator::initial() {
+                let watermark = retention_watermark_sequence(transaction)?;
+                let covered = match allocator {
+                    ApplicationSequenceAllocator::Next(next) => {
+                        watermark > 0 && watermark == next.get().saturating_sub(1)
+                    }
+                    ApplicationSequenceAllocator::Exhausted => watermark == u64::MAX,
+                };
+                return Ok(covered);
+            }
+            ApplicationSequenceAllocator::initial()
+        }
         Some((key, value)) => {
             let Ok(sequence) = keys::decode_application_sequence_key(key.value()) else {
                 return Ok(false);

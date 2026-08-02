@@ -1388,9 +1388,9 @@ fn artifact_storage_failure(error: &StorageError) -> OfflineMaintenanceReceiptFa
         StorageErrorKind::CommitStatusUnknown => {
             OfflineMaintenanceReceiptFailureV1::StorageUnavailable
         }
-        StorageErrorKind::InvariantViolation | StorageErrorKind::SequenceExhausted => {
-            OfflineMaintenanceReceiptFailureV1::InternalFailure
-        }
+        StorageErrorKind::InvariantViolation
+        | StorageErrorKind::SequenceExhausted
+        | StorageErrorKind::HistoryPruned => OfflineMaintenanceReceiptFailureV1::InternalFailure,
     }
 }
 

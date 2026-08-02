@@ -242,6 +242,7 @@ enum-value riffdb.v1.OutboxDeliveryState 3 OUTBOX_DELIVERY_STATE_DELIVERING
 enum-value riffdb.v1.OutboxDeliveryState 4 OUTBOX_DELIVERY_STATE_DEAD_LETTER
 enum-value riffdb.v1.PublicErrorKind 10 PUBLIC_ERROR_KIND_HISTORY_INCARNATION_MISMATCH
 enum-value riffdb.v1.PublicErrorKind 11 PUBLIC_ERROR_KIND_OVERLOADED
+enum-value riffdb.v1.PublicErrorKind 12 PUBLIC_ERROR_KIND_HISTORY_PRUNED
 enum-value riffdb.v1.ResourceDiscoveryKind 0 RESOURCE_DISCOVERY_KIND_UNSPECIFIED
 enum-value riffdb.v1.ResourceDiscoveryKind 1 RESOURCE_DISCOVERY_KIND_ALL
 enum-value riffdb.v1.ResourceDiscoveryKind 2 RESOURCE_DISCOVERY_KIND_CONCRETE

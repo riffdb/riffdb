@@ -374,7 +374,8 @@ where
                     StorageErrorKind::Unavailable
                     | StorageErrorKind::CommitStatusUnknown
                     | StorageErrorKind::LimitExceeded
-                    | StorageErrorKind::SequenceExhausted => {
+                    | StorageErrorKind::SequenceExhausted
+                    | StorageErrorKind::HistoryPruned => {
                         AuthenticationDefect::RepositoryUnavailable
                     }
                 };

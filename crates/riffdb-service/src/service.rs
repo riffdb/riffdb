@@ -582,6 +582,7 @@ const fn service_terminal_class<T>(result: &ServiceResult<T>) -> crate::ServiceT
             PublicErrorKind::HistoryIncarnationMismatch => {
                 crate::ServiceTerminalClass::HistoryIncarnationMismatch
             }
+            PublicErrorKind::HistoryPruned => crate::ServiceTerminalClass::HistoryPruned,
             PublicErrorKind::Overloaded => crate::ServiceTerminalClass::Overloaded,
         },
         Err(ServiceFailure::Cancelled) => crate::ServiceTerminalClass::Cancelled,

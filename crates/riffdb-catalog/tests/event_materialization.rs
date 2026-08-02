@@ -429,3 +429,106 @@ fn replay_requires_the_enclosing_commit_before_any_event_escapes() {
         EventReplayErrorKind::Integrity
     );
 }
+
+struct HistoryPrunedEventReader {
+    event: StoredDurableEventV1,
+}
+
+impl AuthoritativePointReader for HistoryPrunedEventReader {
+    fn read_entity(
+        &self,
+        _target: &EntityTarget,
+    ) -> Result<Option<StoredEntityRecordV1>, StorageError> {
+        Ok(None)
+    }
+
+    fn read_stored_outcome(
+        &self,
+        _identity: &IdempotencyIdentity,
+    ) -> Result<Option<StoredOutcomeV1>, StorageError> {
+        Ok(None)
+    }
+
+    fn read_commit(
+        &self,
+        _sequence: CommitSequence,
+    ) -> Result<Option<StoredCommitRecordV1>, StorageError> {
+        Err(StorageError::new(
+            riffdb_storage_api::StorageErrorKind::HistoryPruned,
+            None,
+        ))
+    }
+
+    fn read_provenance(
+        &self,
+        _provenance_id: ProvenanceId,
+    ) -> Result<Option<StoredProvenanceRecordV1>, StorageError> {
+        Ok(None)
+    }
+
+    fn read_durable_event(
+        &self,
+        _event_id: EventId,
+    ) -> Result<Option<StoredDurableEventV1>, StorageError> {
+        Err(StorageError::new(
+            riffdb_storage_api::StorageErrorKind::HistoryPruned,
+            None,
+        ))
+    }
+}
+
+impl PartitionEventRouteReader for HistoryPrunedEventReader {
+    fn scan_partition_event_routes(
+        &self,
+        request: EventRouteScanRequestV1,
+    ) -> Result<EventRouteScanV1, StorageError> {
+        let route = StoredEventRouteV1::new(
+            self.event.event_id(),
+            self.event.event_type_id(),
+            self.event.event_hash(),
+        );
+        Ok(EventRouteScanV1::exact_end(
+            request,
+            EventRouteUpperFenceV1::Inclusive(self.event.event_id()),
+            vec![EncodedPageItem::new(
+                route,
+                EncodedContentCharge::new(64).expect("bounded route charge"),
+            )],
+        )
+        .expect("canonical one-route page"))
+    }
+}
+
+#[test]
+fn history_pruned_storage_error_is_not_remapped_to_integrity() {
+    // Storage(HistoryPruned) must surface as Storage, never Integrity.
+    // Neutering this: remapping HistoryPruned → Integrity in event_replay would fail.
+    let (bundles, repository) = compile_chain();
+    let active = ActiveCatalogSnapshot::read(&repository)
+        .expect("catalog read")
+        .expect("active catalog");
+    let replay = active
+        .resolve_event_replay(
+            "Changed",
+            [("id", CanonicalValue::Uuid([0x77; 16]))],
+            ["id"],
+        )
+        .expect("resolved replay");
+    let event = event(&bundles[0], vec![("id", CanonicalValue::Uuid([0x77; 16]))]);
+    let reader = HistoryPrunedEventReader { event };
+    let limit =
+        EventRoutePageLimit::new(NonZeroU16::new(1).expect("nonzero")).expect("bounded limit");
+
+    assert_eq!(
+        replay
+            .replay_page(
+                &reader,
+                riffdb_catalog::EventReplayPosition::Initial { after: None },
+                limit,
+                1,
+            )
+            .expect_err("pruned history must not escape as integrity")
+            .kind(),
+        EventReplayErrorKind::Storage(riffdb_storage_api::StorageErrorKind::HistoryPruned)
+    );
+}

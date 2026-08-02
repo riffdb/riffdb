@@ -1968,7 +1968,8 @@ fn scan_service_audits(
             StoredAdministrationAuditRecordV1::Service(service) => Some(service),
             StoredAdministrationAuditRecordV1::Catalog(_)
             | StoredAdministrationAuditRecordV1::Capability(_)
-            | StoredAdministrationAuditRecordV1::QueryModule(_) => None,
+            | StoredAdministrationAuditRecordV1::QueryModule(_)
+            | StoredAdministrationAuditRecordV1::Retention(_) => None,
         })
         .collect()
 }

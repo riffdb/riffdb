@@ -52,11 +52,12 @@ pub(crate) enum CheckpointIgnoreReason {
     SequenceBeyondHead,
     CountImpossible,
     EntityChainMismatch,
+    WatermarkMismatch,
 }
 
 impl CheckpointIgnoreReason {
     /// Every reason, in counter-index order (see [`Self::index`]).
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::Absent,
         Self::DecodeFailed,
         Self::SelfHashMismatch,
@@ -66,6 +67,7 @@ impl CheckpointIgnoreReason {
         Self::SequenceBeyondHead,
         Self::CountImpossible,
         Self::EntityChainMismatch,
+        Self::WatermarkMismatch,
     ];
 
     /// Stable counter index for per-store ignore-reason counting.
@@ -81,6 +83,7 @@ impl CheckpointIgnoreReason {
             Self::SequenceBeyondHead => 6,
             Self::CountImpossible => 7,
             Self::EntityChainMismatch => 8,
+            Self::WatermarkMismatch => 9,
         }
     }
 
@@ -96,6 +99,7 @@ impl CheckpointIgnoreReason {
             Self::SequenceBeyondHead => "sequence_beyond_head",
             Self::CountImpossible => "count_impossible",
             Self::EntityChainMismatch => "entity_chain_mismatch",
+            Self::WatermarkMismatch => "watermark_mismatch",
         }
     }
 }
@@ -156,6 +160,8 @@ fn build_checkpoint_from_snapshot(
 
     let previous = load_previous_hash(transaction)?;
 
+    let retention_watermark_sequence = load_retention_watermark_sequence(transaction)?;
+
     StoredValidatedPrefixCheckpointV1::new(
         database_id,
         history_incarnation,
@@ -166,8 +172,16 @@ fn build_checkpoint_from_snapshot(
         entity_chain_fingerprint,
         retained_snap,
         previous,
+        retention_watermark_sequence,
     )
     .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
+}
+
+/// Reads the live retention watermark sequence (0 when the meta key is absent).
+fn load_retention_watermark_sequence(transaction: &ReadTransaction) -> Result<u64, StorageError> {
+    Ok(crate::retention::load_watermark(transaction)?
+        .map(|w| w.watermark_sequence())
+        .unwrap_or(0))
 }
 
 fn retained_snapshot(
@@ -222,7 +236,7 @@ pub(crate) fn load_active_checkpoint(
     transaction: &ReadTransaction,
     database_id: DatabaseId,
     history_incarnation: u64,
-    full_counts: &[u64; 27],
+    full_counts: &[u64; 28],
 ) -> Result<ActiveCheckpoint, CheckpointIgnoreReason> {
     let meta = transaction
         .open_table(META)
@@ -252,6 +266,11 @@ pub(crate) fn load_active_checkpoint(
     }
     if checkpoint.registry_digest() != current_record_registry_digest() {
         return Err(CheckpointIgnoreReason::RegistryDigestMismatch);
+    }
+    let live_watermark = load_retention_watermark_sequence(transaction)
+        .map_err(|_| CheckpointIgnoreReason::DecodeFailed)?;
+    if checkpoint.retention_watermark_sequence() != live_watermark {
+        return Err(CheckpointIgnoreReason::WatermarkMismatch);
     }
     let head = last_commit_sequence(transaction)
         .map_err(|_| CheckpointIgnoreReason::DecodeFailed)?

@@ -1674,6 +1674,9 @@ fn authoritative_failure(
         AuthoritativeReadError::Unavailable => PublicError::storage_unavailable().into(),
         AuthoritativeReadError::Cancelled => ServiceFailure::Cancelled,
         AuthoritativeReadError::DeadlineExceeded => ServiceFailure::DeadlineExceeded,
+        // Retired history is a correct-request client outcome (RDB-HISTORY-0102),
+        // never a lower-integrity failure.
+        AuthoritativeReadError::HistoryPruned => PublicError::history_pruned().into(),
         AuthoritativeReadError::Integrity | AuthoritativeReadError::InvalidContinuation => {
             lower_integrity_failure(service, operation)
         }

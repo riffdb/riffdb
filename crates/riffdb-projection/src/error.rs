@@ -83,7 +83,8 @@ impl From<StorageError> for ProjectionCoreError {
             StorageErrorKind::CorruptData
             | StorageErrorKind::IncompatibleFormat
             | StorageErrorKind::InvariantViolation
-            | StorageErrorKind::SequenceExhausted => ProjectionCoreErrorKind::Integrity,
+            | StorageErrorKind::SequenceExhausted
+            | StorageErrorKind::HistoryPruned => ProjectionCoreErrorKind::Integrity,
         };
         Self::new(kind)
     }

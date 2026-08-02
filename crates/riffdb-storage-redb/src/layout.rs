@@ -45,8 +45,10 @@ pub(crate) const CONTRACT_WRITE_RETIREMENTS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("contract_write_retirements");
 pub(crate) const RETIRED_ENTITIES: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("retired_entities");
+pub(crate) const HISTORY_TOMBSTONES: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("history_tombstones");
 
-pub(crate) const TABLE_NAMES: [&str; 27] = [
+pub(crate) const TABLE_NAMES: [&str; 28] = [
     "meta",
     "contract_bundles",
     "catalog_active",
@@ -74,9 +76,10 @@ pub(crate) const TABLE_NAMES: [&str; 27] = [
     "contract_migrations",
     "contract_write_retirements",
     "retired_entities",
+    "history_tombstones",
 ];
 
-pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 26] = [
+pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 27] = [
     CONTRACT_BUNDLES,
     CATALOG_ACTIVE,
     QUERY_MODULES,
@@ -103,6 +106,7 @@ pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 26] = [
     CONTRACT_MIGRATIONS,
     CONTRACT_WRITE_RETIREMENTS,
     RETIRED_ENTITIES,
+    HISTORY_TOMBSTONES,
 ];
 
 pub(crate) const META_FORMAT_VERSION: &str = "format_version";
@@ -119,8 +123,12 @@ pub(crate) const META_HISTORY_INCARNATION: &str = "history_incarnation/v1";
 pub(crate) const META_INDEX_EPOCH_ROWS_REPAIRED: &str = "index_epoch_rows_repaired/v1";
 /// Optional proof-carrying validated-prefix startup checkpoint (ADR-0085 A1).
 pub(crate) const META_VALIDATED_PREFIX_CHECKPOINT: &str = "validated_prefix_checkpoint/v1";
+/// Bound retention watermark (ADR-0085 Amendment 2). Optional; absent means sequence 0.
+pub(crate) const META_RETENTION_WATERMARK: &str = "retention_watermark/v1";
+/// Operator retention holds (ADR-0085 Amendment 2). Optional; absent means empty holds.
+pub(crate) const META_RETENTION_HOLDS: &str = "retention_holds/v1";
 
-pub(crate) const META_KEYS: [&str; 9] = [
+pub(crate) const META_KEYS: [&str; 11] = [
     META_FORMAT_VERSION,
     META_DATABASE_ID,
     META_APPLICATION_SEQUENCE,
@@ -130,6 +138,8 @@ pub(crate) const META_KEYS: [&str; 9] = [
     META_HISTORY_INCARNATION,
     META_INDEX_EPOCH_ROWS_REPAIRED,
     META_VALIDATED_PREFIX_CHECKPOINT,
+    META_RETENTION_WATERMARK,
+    META_RETENTION_HOLDS,
 ];
 
 #[allow(dead_code, reason = "WP-070 catalog ports consume this frozen key")]
@@ -163,6 +173,7 @@ pub(crate) fn create_all_tables(tx: &WriteTransaction) -> Result<(), TableError>
     drop(tx.open_table(CONTRACT_MIGRATIONS)?);
     drop(tx.open_table(CONTRACT_WRITE_RETIREMENTS)?);
     drop(tx.open_table(RETIRED_ENTITIES)?);
+    drop(tx.open_table(HISTORY_TOMBSTONES)?);
     Ok(())
 }
 
@@ -204,10 +215,11 @@ mod tests {
             CONTRACT_MIGRATIONS.name(),
             CONTRACT_WRITE_RETIREMENTS.name(),
             RETIRED_ENTITIES.name(),
+            HISTORY_TOMBSTONES.name(),
         ];
 
         assert_eq!(definition_names, TABLE_NAMES);
-        assert_eq!(TABLE_NAMES.len(), 27);
+        assert_eq!(TABLE_NAMES.len(), 28);
         assert_eq!(
             TABLE_NAMES.into_iter().collect::<BTreeSet<_>>().len(),
             TABLE_NAMES.len()
@@ -228,9 +240,11 @@ mod tests {
                 "history_incarnation/v1",
                 "index_epoch_rows_repaired/v1",
                 "validated_prefix_checkpoint/v1",
+                "retention_watermark/v1",
+                "retention_holds/v1",
             ]
         );
-        assert_eq!(META_KEYS.len(), 9);
+        assert_eq!(META_KEYS.len(), 11);
         assert_eq!(
             META_KEYS.into_iter().collect::<BTreeSet<_>>().len(),
             META_KEYS.len()

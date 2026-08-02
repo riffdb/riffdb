@@ -1494,7 +1494,8 @@ fn classify_write_error(
         | StorageErrorKind::IncompatibleFormat
         | StorageErrorKind::LimitExceeded
         | StorageErrorKind::InvariantViolation
-        | StorageErrorKind::SequenceExhausted => {
+        | StorageErrorKind::SequenceExhausted
+        | StorageErrorKind::HistoryPruned => {
             lifecycle.stop();
             ControlPlaneExecutionError {
                 kind: ControlPlaneExecutionErrorKind::InternalDefect,
