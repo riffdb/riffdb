@@ -90,7 +90,7 @@ Accepted by the maintainer on 2026-08-01.
 Unresolved implementation detail (watermark advance cadence, sample policy,
 tombstone schema) proceeds to package briefs after acceptance.
 
-## Amendment 1 — checkpoint definitions and package split (Proposed 2026-08-02)
+## Amendment 1 — checkpoint definitions and package split (Accepted 2026-08-02)
 
 The checkpoint mechanism's durable key, encoding, bindings, crash meaning,
 write points, and sample policy are defined by ADR-0019 Amendment 1, which
@@ -118,4 +118,4 @@ follows in its own package once its open decisions are put to the
 maintainer; nothing in the checkpoint package forecloses any retention
 choice.
 
-Status: Proposed. Acceptance is the maintainer's.
+Status: Accepted by the maintainer on 2026-08-02.
