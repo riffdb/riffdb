@@ -1,0 +1,5 @@
+migration EaMigrationDogfood from 1 to 2 {
+  transform AttentionItem {
+    set source_channel = "legacy"
+  }
+}

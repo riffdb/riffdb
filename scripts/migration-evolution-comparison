@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+usage() {
+    printf '%s\n' \
+        'usage: scripts/migration-evolution-comparison [--postgres-url URL] [--rows 1..10000] --output PATH' >&2
+}
+
+fail() {
+    printf 'migration evolution comparison failed: %s\n' "$1" >&2
+    exit 1
+}
+
+postgres_url=
+rows=1000
+output=
+while (($#)); do
+    case "$1" in
+        --postgres-url)
+            [[ $# -ge 2 && -z "$postgres_url" ]] || { usage; exit 2; }
+            postgres_url="$2"
+            shift 2
+            ;;
+        --rows)
+            [[ $# -ge 2 ]] || { usage; exit 2; }
+            rows="$2"
+            shift 2
+            ;;
+        --output)
+            [[ $# -ge 2 && -z "$output" ]] || { usage; exit 2; }
+            output="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage
+            exit 2
+            ;;
+    esac
+done
+
+[[ "$rows" =~ ^[0-9]+$ ]] || fail 'rows must be an integer'
+(( rows >= 1 && rows <= 10000 )) || fail 'rows must be between 1 and 10000'
+[[ -n "$output" && "$output" == /* ]] || fail 'output must be an absolute path'
+
+for tool in cargo date git jq mkdir mktemp sed stat uname; do
+    command -v "$tool" >/dev/null 2>&1 || fail "required tool is missing: $tool"
+done
+if [[ -n "$postgres_url" ]]; then
+    command -v psql >/dev/null 2>&1 || fail 'psql is required for the PostgreSQL control'
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+tmp_root="${TMPDIR:-${HOME:?HOME must be set}/tmp}"
+mkdir -p "$tmp_root"
+chmod 0700 "$tmp_root"
+work_root="$(mktemp -d "$tmp_root/riffdb-migration-evolution.XXXXXX")"
+schema="riffdb_wp413_${$}"
+cleanup() {
+    if [[ -n "$postgres_url" ]]; then
+        psql "$postgres_url" -X -v ON_ERROR_STOP=1 \
+            -c "DROP SCHEMA IF EXISTS $schema CASCADE" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$work_root"
+}
+trap cleanup EXIT INT TERM
+
+start_ns="$(date +%s%N)"
+TMPDIR="$tmp_root" cargo test -p riffdb-testkit --test contract_migration_acceptance \
+    --all-features >"$work_root/acceptance.out" 2>&1
+TMPDIR="$tmp_root" cargo test -p riffdb-testkit --test contract_migration_gate_a \
+    --all-features >"$work_root/gate-a.out" 2>&1
+riffdb_elapsed_ns=$(( $(date +%s%N) - start_ns ))
+gate_line="$(sed -n 's/^contract_migration_gate_a: passed /&/p' "$work_root/gate-a.out")"
+[[ -n "$gate_line" ]] || {
+    cat "$work_root/gate-a.out" >&2
+    fail 'Gate-A runner did not publish its bounded report'
+}
+
+gate_rows="$(sed -n 's/.* rows=\([0-9][0-9]*\).*/\1/p' <<<"$gate_line")"
+check_rows_per_second="$(sed -n 's/.* check_rows_per_second=\([0-9][0-9]*\).*/\1/p' <<<"$gate_line")"
+apply_rows_per_second="$(sed -n 's/.* apply_rows_per_second=\([0-9][0-9]*\).*/\1/p' <<<"$gate_line")"
+downtime_ms="$(sed -n 's/.* downtime_ms=\([0-9][0-9]*\).*/\1/p' <<<"$gate_line")"
+peak_disk_bytes="$(sed -n 's/.* peak_disk_bytes=\([0-9][0-9]*\).*/\1/p' <<<"$gate_line")"
+for value in "$gate_rows" "$check_rows_per_second" "$apply_rows_per_second" "$downtime_ms" "$peak_disk_bytes"; do
+    [[ "$value" =~ ^[0-9]+$ ]] || fail 'Gate-A report is malformed'
+done
+
+postgres_available=false
+postgres_elapsed_ns=null
+postgres_invalid_control=false
+postgres_version=null
+if [[ -n "$postgres_url" ]]; then
+    postgres_available=true
+    postgres_version="$(psql "$postgres_url" -X -Atqc 'SHOW server_version')"
+    psql "$postgres_url" -X -v ON_ERROR_STOP=1 -c "CREATE SCHEMA $schema" >/dev/null
+    export PGOPTIONS="-c search_path=$schema"
+    psql "$postgres_url" -X -v ON_ERROR_STOP=1 \
+        -f examples/migration-evolution/postgresql/001-parent.sql >/dev/null
+    psql "$postgres_url" -X -v ON_ERROR_STOP=1 -v rows="$rows" <<'SQL' >/dev/null
+INSERT INTO attention_item (workspace_id, attention_id, origin, external_id)
+SELECT
+    '00000000-0000-7000-8000-000000000001'::uuid,
+    (substr(md5(g::text), 1, 8) || '-' || substr(md5(g::text), 9, 4) || '-7' ||
+     substr(md5(g::text), 14, 3) || '-8' || substr(md5(g::text), 18, 3) || '-' ||
+     substr(md5(g::text), 21, 12))::uuid,
+    'attention_other'::attention_origin,
+    'external:' || g::text
+FROM generate_series(1, :rows) AS g;
+SQL
+    postgres_start_ns="$(date +%s%N)"
+    psql "$postgres_url" -X -v ON_ERROR_STOP=1 \
+        -f examples/migration-evolution/postgresql/002-successor.sql >/dev/null
+    postgres_elapsed_ns=$(( $(date +%s%N) - postgres_start_ns ))
+    migrated_rows="$(psql "$postgres_url" -X -Atqc \
+        "SELECT count(*) FROM attention_item WHERE source_channel = 'legacy'")"
+    [[ "$migrated_rows" == "$rows" ]] || fail 'PostgreSQL control did not migrate every row'
+    if psql "$postgres_url" -X -v ON_ERROR_STOP=1 \
+        -f examples/migration-evolution/postgresql/003-invalid-successor.sql \
+        >"$work_root/postgres-invalid.out" 2>&1
+    then
+        fail 'PostgreSQL invalid-successor control unexpectedly succeeded'
+    fi
+    postgres_invalid_control=true
+    unset PGOPTIONS
+fi
+
+mkdir -p "$(dirname "$output")"
+jq -n \
+    --arg revision "$(git rev-parse HEAD)" \
+    --arg os "$(uname -srmo)" \
+    --argjson requested_rows "$rows" \
+    --argjson riffdb_elapsed_ns "$riffdb_elapsed_ns" \
+    --argjson gate_rows "$gate_rows" \
+    --argjson check_rows_per_second "$check_rows_per_second" \
+    --argjson apply_rows_per_second "$apply_rows_per_second" \
+    --argjson downtime_ms "$downtime_ms" \
+    --argjson peak_disk_bytes "$peak_disk_bytes" \
+    --argjson postgres_available "$postgres_available" \
+    --argjson postgres_elapsed_ns "$postgres_elapsed_ns" \
+    --argjson postgres_invalid_control "$postgres_invalid_control" \
+    --arg postgres_version "$postgres_version" \
+    '{
+      schema: "riffdb.migration-evolution-comparison/v1",
+      work_package: "WP-413",
+      requirements: ["MIG-001", "MIG-002", "MIG-003", "MIG-005", "MIG-007", "MIG-008", "MIG-009", "MIG-010", "MIG-013", "MIG-016", "MIG-018", "MIG-019", "MIG-020"],
+      revision: $revision,
+      environment: {os: $os, tmp_root_policy: "caller TMPDIR or HOME/tmp"},
+      bounds: {requested_postgres_rows: $requested_rows, maximum_rows: 10000},
+      riffdb: {
+        surface: "public gRPC through riffdbd",
+        complete_acceptance_elapsed_ns: $riffdb_elapsed_ns,
+        gate_a: {
+          rows: $gate_rows,
+          check_rows_per_second: $check_rows_per_second,
+          apply_rows_per_second: $apply_rows_per_second,
+          downtime_ms: $downtime_ms,
+          peak_disk_bytes: $peak_disk_bytes
+        },
+        assertions: [
+          "exact direct-parent Gate A/B/C artifacts",
+          "populated selected database migrated",
+          "sibling database remained available",
+          "same-operation retry recovered",
+          "invalid predecessor failed closed",
+          "immutable backup retained"
+        ]
+      },
+      postgres: {
+        available: $postgres_available,
+        server_version: (if $postgres_available then $postgres_version else null end),
+        successor_elapsed_ns: $postgres_elapsed_ns,
+        invalid_required_column_rejected: $postgres_invalid_control,
+        surface: "operator-authored SQL DDL and DML"
+      },
+      comparison: {
+        benchmark_eligible: false,
+        reason: "different operational contracts; PostgreSQL negative controls are correctness evidence only",
+        claim: "both workflows can evolve the example; only the RiffDB workflow is constrained by the accepted migration artifact, authorization, preflight, staging, and recovery protocol"
+      }
+    }' >"$work_root/report.json"
+
+chmod 0644 "$work_root/report.json"
+mv "$work_root/report.json" "$output"
+printf 'Migration evolution report: %s\n' "$output"

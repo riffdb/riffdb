@@ -58,6 +58,7 @@
 - [Configuration](configuration.md)
 - [Multiple Databases](operations/MULTIPLE-DATABASES.md)
 - [Backup and Restore](backup-restore.md)
+- [Contract Migration Acceptance](operations/CONTRACT-MIGRATION-ACCEPTANCE.md)
 - [Upgrade, Reset, and Removal](upgrade-removal.md)
 - [Troubleshooting](operations/TROUBLESHOOTING.md)
 - [Security Posture](security.md)
@@ -72,6 +73,7 @@
 # Performance
 
 - [Benchmark Integrity](performance/benchmark-integrity.md)
+- [WP-413 Migration Evolution Evidence](performance/wp-413-migration-evolution.md)
 
 # Reference
 

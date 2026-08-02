@@ -2134,6 +2134,7 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-invariant",
  "riffdb-proto",
+ "riffdb-query-module",
  "riffdb-runtime",
  "riffdb-server",
  "riffdb-storage-api",
