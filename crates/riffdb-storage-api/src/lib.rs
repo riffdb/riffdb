@@ -30,6 +30,7 @@ pub mod schema_binding;
 pub mod sequence;
 pub mod snapshot;
 pub mod startup;
+pub mod validated_prefix_checkpoint;
 
 pub use admission::*;
 pub use audit::*;
@@ -57,3 +58,4 @@ pub use schema_binding::*;
 pub use sequence::*;
 pub use snapshot::*;
 pub use startup::*;
+pub use validated_prefix_checkpoint::*;

@@ -87,4 +87,35 @@ curve; together, startup is O(recent activity) regardless of database age.
 ## Acceptance
 
 Accepted by the maintainer on 2026-08-01.
-sample policy, tombstone schema) proceeds to package briefs after acceptance.
+Unresolved implementation detail (watermark advance cadence, sample policy,
+tombstone schema) proceeds to package briefs after acceptance.
+
+## Amendment 1 — checkpoint definitions and package split (Accepted 2026-08-02)
+
+The checkpoint mechanism's durable key, encoding, bindings, crash meaning,
+write points, and sample policy are defined by ADR-0019 Amendment 1, which
+this amendment incorporates by reference. Two narrowings against the original
+text, both fail-safe:
+
+- **Sample policy (resolving the truncated sentence above):** sampled-window
+  offsets are derived deterministically from the checkpoint's own self-hash
+  (no entropy surface, auditable, unpredictable to an author who cannot
+  already rewrite history); window count and size are fixed constants of the
+  storage crate, chosen so sampling stays under one percent of a
+  10-million-commit history.
+- **Write points:** startup-validation completion and graceful shutdown
+  only. Opportunistic runtime checkpoints are deferred until a writer-lane
+  idle-window mechanism exists; the consequence is that an unclean crash
+  revalidates the suffix since the last completed startup or graceful
+  shutdown, which still bounds PERF-014 for any process that has ever
+  completed one of the two.
+
+**Package split.** The checkpoint ships first and alone (with the real
+kill-mid-write PERF-014 evidence it bounds). Retention — watermark advance,
+tombstone record schema, reciprocity-check tolerance, backup interaction,
+provenance's non-sequence key, and the ADR-0086 §8 replay-budget scoping —
+follows in its own package once its open decisions are put to the
+maintainer; nothing in the checkpoint package forecloses any retention
+choice.
+
+Status: Accepted by the maintainer on 2026-08-02.

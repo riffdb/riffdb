@@ -529,6 +529,11 @@ pub struct CleanStartupMeasurement {
     structural_pages: u64,
     historical_pages: u64,
     evidence_pages: u64,
+    /// Observed from the session: whether a verified checkpoint drove this drain.
+    checkpoint_verified: bool,
+    /// Observed from the session: COMMITS rows actually walked after the
+    /// checkpoint bound S (0 on the full-validation path).
+    suffix_commands: u64,
 }
 
 impl CleanStartupMeasurement {
@@ -567,6 +572,45 @@ impl CleanStartupMeasurement {
     pub const fn evidence_pages(self) -> u64 {
         self.evidence_pages
     }
+
+    /// Whether the drained session verified a validated-prefix checkpoint
+    /// (session observability, never a caller-supplied flag).
+    #[must_use]
+    pub const fn checkpoint_verified(self) -> bool {
+        self.checkpoint_verified
+    }
+
+    /// COMMITS rows the session actually walked after the checkpoint bound S
+    /// (session observability; 0 on the full-validation path).
+    #[must_use]
+    pub const fn suffix_commands(self) -> u64 {
+        self.suffix_commands
+    }
+}
+
+/// Removes any stored validated-prefix checkpoint via a raw engine transaction.
+///
+/// Benchmark-only affordance so a plain `--startup-scale` baseline measures FULL
+/// validation even on a reused database whose earlier clean open wrote a
+/// checkpoint. Lives behind the `benchmark-support` feature and is called only
+/// by the benchmark harness — no production open/validation path can reach it.
+pub fn strip_validated_prefix_checkpoint(path: &Path) -> Result<(), EngineBenchmarkError> {
+    let database = Database::create(path).map_err(|_| EngineBenchmarkError::Engine)?;
+    let transaction = database
+        .begin_write()
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    {
+        let mut meta = transaction
+            .open_table(META)
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+        let _ = meta
+            .remove(crate::layout::META_VALIDATED_PREFIX_CHECKPOINT)
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+    }
+    transaction
+        .commit()
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    Ok(())
 }
 
 /// Full clean startup with combined structural+historical page half-split timings.
@@ -586,6 +630,8 @@ pub fn measure_clean_startup_linear(
         structural_pages: detail.structural_pages,
         historical_pages: detail.historical_pages,
         evidence_pages: detail.evidence_pages,
+        checkpoint_verified: detail.checkpoint_verified,
+        suffix_commands: detail.suffix_commands,
     })
 }
 
@@ -619,6 +665,8 @@ struct DrainLinearDetail {
     structural_pages: u64,
     historical_pages: u64,
     evidence_pages: u64,
+    checkpoint_verified: bool,
+    suffix_commands: u64,
 }
 
 fn drain_startup_evidence(path: &Path) -> Result<(), EngineBenchmarkError> {
@@ -650,6 +698,8 @@ fn drain_startup_evidence_linear(
     let mut session = store
         .begin_structural_evidence(inputs)
         .map_err(|_| EngineBenchmarkError::Engine)?;
+    // Session observability, never a caller-supplied flag (evidence integrity).
+    let checkpoint_verified = session.checkpoint_verified();
     let database_id = session.database_id();
     let open_session_id = session.open_session_id();
     let limit = EvidencePageLimit::new(64).ok_or(EngineBenchmarkError::Engine)?;
@@ -697,6 +747,7 @@ fn drain_startup_evidence_linear(
     };
     let evidence_pages = u64::try_from(page_ns.len()).unwrap_or(u64::MAX);
     let (first_half_ns, second_half_ns) = split_half_page_durations(&page_ns);
+    let suffix_commands = session.checkpoint_suffix_commits();
     let outcome = session
         .finish(structural_end, historical_end)
         .map_err(|_| EngineBenchmarkError::Engine)?;
@@ -717,6 +768,8 @@ fn drain_startup_evidence_linear(
         structural_pages,
         historical_pages,
         evidence_pages,
+        checkpoint_verified,
+        suffix_commands,
     })
 }
 

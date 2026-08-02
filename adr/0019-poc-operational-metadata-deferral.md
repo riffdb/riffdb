@@ -223,3 +223,91 @@ guarantee appears to require one of those deferred items.
 WP-130 must complete the composed readiness path without adding a durable ready,
 clean-shutdown, or last-integrity marker. WP-185 must extend that path rather
 than introducing a P2-only prerequisite for the runnable P1 server.
+
+## Amendment 1 — validated-prefix checkpoint (Accepted 2026-08-02)
+
+ADR-0085 accepted a proof-carrying validated-prefix checkpoint in principle.
+Per this record's own rule (a deferred item joins the durable format only
+through an ADR defining purpose, owner, source semantics, durable key and
+encoding, compatibility, crash meaning, security exposure, and tests), this
+amendment supplies those definitions. Every obligation in the Decision
+section above stands except where explicitly narrowed here.
+
+- **Purpose.** Bound startup validation cost to O(entities + catalog +
+  suffix + sample) while preserving the every-startup-validation guarantee:
+  everything is validated either directly (suffix and sampled windows) or by
+  verified proof (the checkpoint), never trusted.
+- **Owner.** The storage engine (riffdb-storage-redb); written only inside
+  the exclusive-lease session or the single-writer shutdown path.
+- **Durable key and encoding.** One new meta key,
+  `validated_prefix_checkpoint/v1`, holding a
+  `StoredValidatedPrefixCheckpointV1` storage message added to the readable
+  record registry under the established registry-digest migration chain.
+- **Binding (source semantics).** The record binds `database_id`,
+  `history_incarnation`, the record-registry digest current at write time,
+  the checkpoint commit sequence S, the audit sequence bound at S, per-table
+  row counts at S for sequence-keyed tables, the entity-chain state
+  fingerprint at S, the retained-metadata snapshot, and a self-hash chained
+  to the previous checkpoint's hash (genesis: none), modeled on the contract
+  migration journal record. Any binding mismatch at open — different
+  database, different incarnation, unknown digest, S beyond the head —
+  causes the checkpoint to be IGNORED and full validation to run.
+  Fail-closed means falling back to complete validation, never refusing to
+  open and never trusting the record.
+- **What the next startup does.** Verify the checkpoint's self-hash and
+  bindings; revalidate the entire suffix after S with the existing per-row
+  inspection; revalidate deterministically sampled windows below S across
+  BOTH the sequence-keyed and the audit-class tables (offsets derived from
+  the checkpoint's self-hash — this ADR still adds no entropy, clock, or
+  identifier surface); verify EVERY recorded per-table below-S row count
+  (counted during the walks themselves); reconstruct the entity-chain state
+  at S from current entities adjusted by suffix references and verify its
+  fingerprint — the genesis commit walk is replaced by this reconstruction.
+  Current-state tables (entities, indexes, catalog, capabilities) keep
+  their full existing passes.
+- **Honest complexity.** Sequence-keyed tables are range-skipped to the
+  suffix. Tables whose keys are not sequence-prefixed (event routes,
+  idempotency, audit-by-request) cannot be range-skipped; they receive a
+  cheap counting skip-walk (key decode and prefix counting only — no value
+  decode, no reciprocity rehydration). Checkpointed startup is therefore
+  O(entities + catalog + suffix + sample) in full-inspection work but
+  retains an O(history) skip-walk term with a small constant, and
+  provenance rows (one per commit, identifier-keyed, not range-skippable)
+  retain full below-S inspection pending their own counted-skip treatment;
+  the measured effect, not an asymptotic claim, is the acceptance
+  criterion.
+- **Divergence and write-failure semantics.** A checkpoint whose bindings
+  or self-hash fail is ignored (full validation runs). A below-S count
+  divergence discovered mid-walk AFTER bindings verified is authoritative
+  corruption — the recorded counts describe an immutable prefix, so
+  divergence means the history or the record was altered; open refuses,
+  exactly as full validation refuses on authoritative findings. A FAILURE
+  to write a checkpoint after clean validation is non-fatal: it costs only
+  the next open's fast path. The checkpoint is written ONLY when validation
+  completes with zero findings of ANY scope — a finding of any severity
+  vetoes the write so the fast path can never silence it.
+- **Crash meaning.** The checkpoint is written in one engine commit; a torn
+  write yields the previous value by engine atomicity. A crash between
+  validation and checkpoint write loses only the fast path. The record
+  never asserts a clean close and its absence is never an error.
+- **Write points.** (1) At startup, immediately after the complete
+  validation session finishes successfully — the proof restates what was
+  just validated. (2) At graceful shutdown, after the writer lane drains,
+  as the final engine commit. The prohibition on clean-shutdown markers
+  stands: this record differs from a marker precisely in that it is
+  re-verified, suffix-and-sample revalidated, and discarded on any
+  mismatch; it can shorten validation, never skip it. Opportunistic
+  runtime checkpoints (writer-lane idle windows) are deferred until an
+  idle-window mechanism exists.
+- **Security exposure.** The record contains digests, counts, and sequence
+  bounds only — no payloads, no identities beyond the database id. Forging
+  it requires write access to the database file, which already implies the
+  ability to forge history itself; verification bounds the blast radius of
+  a corrupted checkpoint to a wasted fast path.
+- **Tests.** The schema-inventory and architecture tests gain the new meta
+  key and message as sanctioned entries; crash injection covers abort
+  before and after the checkpoint commit at both write points; a
+  neutered-verification falsifiability transcript (checkpoint accepted
+  despite binding mismatch must fail a named test) is part of acceptance.
+
+Status: Accepted by the maintainer on 2026-08-02.

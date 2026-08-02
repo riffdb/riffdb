@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// Proof-carrying validated-prefix startup checkpoint (ADR-0019 Amendment 1).
+message StoredValidatedPrefixCheckpointV1 {
+  bytes database_id = 1;
+  uint64 history_incarnation = 2;
+  bytes registry_digest = 3;
+  // Highest fully-validated commit sequence S; 0 means empty application history.
+  uint64 checkpoint_commit_sequence = 4;
+  // Highest fully-validated administration sequence bound at S; 0 means none.
+  uint64 audit_sequence_bound = 5;
+  // Row counts with sequence <= S for sequence-keyed tables (canonical order).
+  uint64 commits_count = 6;
+  uint64 events_count = 7;
+  uint64 event_routes_count = 8;
+  uint64 outbox_count = 9;
+  uint64 outbox_status_count = 10;
+  uint64 idempotency_count = 11;
+  uint64 audit_count = 12;
+  uint64 audit_by_request_count = 13;
+  bytes entity_chain_fingerprint = 14; // 32 bytes
+  // Retained-metadata snapshot scalars at write time.
+  uint64 next_application_sequence = 15; // 0 if exhausted sentinel handled carefully
+  bool application_sequence_exhausted = 16;
+  uint64 next_administration_sequence = 17;
+  bool administration_sequence_exhausted = 18;
+  optional bytes previous_checkpoint_hash = 19; // 32 bytes if present
+  bytes checkpoint_hash = 20; // 32 bytes
+}

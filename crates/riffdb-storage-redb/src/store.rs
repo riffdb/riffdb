@@ -48,8 +48,8 @@ use crate::layout::{
     AUDIT, AUDIT_BY_REQUEST, BYTE_TABLES, COMMITS, EVENT_ROUTES, EVENTS, INDEX_EPOCHS, META,
     META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
     META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
-    META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, OUTBOX, SECONDARY_INDEXES,
-    TABLE_NAMES, create_all_tables,
+    META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY,
+    META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, SECONDARY_INDEXES, TABLE_NAMES, create_all_tables,
 };
 use crate::transient::{TransientIndexDelta, TransientIndexState, TransientIndexes};
 
@@ -63,6 +63,16 @@ pub(crate) struct SharedRedb {
     durable_commit_epoch: AtomicU64,
     test_controller: Option<RedbTestController>,
     transient_indexes: Mutex<TransientIndexState>,
+    /// True only after this handle's startup validation session finished with
+    /// ZERO structural findings of any scope. Gates every validated-prefix
+    /// checkpoint write (ADR-0019 A1: a finding of any severity vetoes the
+    /// write so the fast path can never silence it).
+    startup_validation_clean: AtomicBool,
+    /// Failed checkpoint writes after clean validation (non-fatal; fast path lost).
+    checkpoint_write_failures: AtomicU64,
+    /// Per-reason counts of ignored validated-prefix checkpoints
+    /// (index = `CheckpointIgnoreReason::index`).
+    checkpoint_ignored: [AtomicU64; 9],
 }
 
 /// Closed redb durability profiles for authoritative application writes.
@@ -128,6 +138,41 @@ impl SharedRedb {
 
     pub(crate) fn durable_commit_epoch(&self) -> u64 {
         self.durable_commit_epoch.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_startup_validation_clean(&self, clean: bool) {
+        self.startup_validation_clean
+            .store(clean, Ordering::Release);
+    }
+
+    pub(crate) fn startup_validation_clean(&self) -> bool {
+        self.startup_validation_clean.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn note_checkpoint_write_failure(&self) {
+        let _ = self
+            .checkpoint_write_failures
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn checkpoint_write_failures(&self) -> u64 {
+        self.checkpoint_write_failures.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn note_checkpoint_ignored(
+        &self,
+        reason: crate::validated_prefix::CheckpointIgnoreReason,
+    ) {
+        let _ = self.checkpoint_ignored[reason.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn checkpoint_ignore_counts(&self) -> [(&'static str, u64); 9] {
+        crate::validated_prefix::CheckpointIgnoreReason::ALL.map(|reason| {
+            (
+                reason.as_str(),
+                self.checkpoint_ignored[reason.index()].load(Ordering::Relaxed),
+            )
+        })
     }
 
     pub(crate) fn commit_durable(&self, transaction: WriteTransaction) -> Result<(), StorageError> {
@@ -199,6 +244,7 @@ enum RegistryMigration {
     AuditRequestIndex,
     EntityReference,
     ContractMigration,
+    ValidatedPrefixCheckpoint,
 }
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
@@ -237,6 +283,12 @@ pub(crate) const PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST: [u8; 32] = [
     0x5d, 0x79, 0x8d, 0x58, 0xec, 0x21, 0x95, 0x11, 0x3e, 0x51, 0x73, 0x88, 0x97, 0xbb, 0xc5, 0x3b,
     0x95, 0x96, 0xc4, 0xa1, 0x2c, 0x4e, 0x05, 0x4f, 0x32, 0xca, 0xa3, 0x67, 0x9e, 0x2d, 0x46, 0xe5,
 ];
+/// Registry digest of the 44-schema registry immediately before the validated-prefix
+/// checkpoint record became durable (frozen PRE for this additive schema).
+pub(crate) const PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST: [u8; 32] = [
+    0xe1, 0x59, 0x2f, 0xba, 0x8c, 0x33, 0x8a, 0xee, 0x4e, 0xd7, 0x17, 0x8b, 0x6a, 0x09, 0xbb, 0xcf,
+    0x88, 0x26, 0x7e, 0x5c, 0xd4, 0x33, 0xfa, 0x23, 0x31, 0x19, 0x9c, 0xaa, 0x3c, 0xd2, 0xe8, 0xcd,
+];
 
 /// Last observed redb repair progress in basis points (0..=10_000), for recovery telemetry.
 static LAST_REPAIR_PROGRESS_BPS: AtomicU64 = AtomicU64::new(0);
@@ -245,6 +297,20 @@ static LAST_REPAIR_PROGRESS_BPS: AtomicU64 = AtomicU64::new(0);
 #[must_use]
 pub fn last_repair_progress_basis_points() -> u64 {
     LAST_REPAIR_PROGRESS_BPS.load(Ordering::Relaxed)
+}
+
+/// Sentinel for [`reset_last_repair_progress_for_tests`]: never produced by the
+/// repair callback, so "changed from sentinel" proves the callback fired even
+/// at 0% progress.
+#[doc(hidden)]
+pub const REPAIR_PROGRESS_SENTINEL: u64 = u64::MAX;
+
+/// Resets the process-global repair observation to the sentinel so a test can
+/// assert the callback fired for ITS open (the static is process-global and
+/// otherwise indistinguishable from an earlier in-process repair).
+#[doc(hidden)]
+pub fn reset_last_repair_progress_for_tests() {
+    LAST_REPAIR_PROGRESS_BPS.store(REPAIR_PROGRESS_SENTINEL, Ordering::Relaxed);
 }
 
 impl RedbStore {
@@ -310,6 +376,9 @@ impl RedbStore {
                 durable_commit_epoch: AtomicU64::new(0),
                 test_controller,
                 transient_indexes: Mutex::new(TransientIndexState::Dormant),
+                startup_validation_clean: AtomicBool::new(false),
+                checkpoint_write_failures: AtomicU64::new(0),
+                checkpoint_ignored: [(); 9].map(|()| AtomicU64::new(0)),
             }),
         };
         store.ensure_current_storage_format()?;
@@ -378,6 +447,10 @@ impl RedbStore {
                     == &SchemaHash::from_bytes(PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST)
                 {
                     RegistryMigration::ContractMigration
+                } else if observed.value()
+                    == &SchemaHash::from_bytes(PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST)
+                {
+                    RegistryMigration::ValidatedPrefixCheckpoint
                 } else {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
@@ -481,6 +554,24 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST),
+            )?;
+        }
+        if matches!(
+            registry_migration,
+            RegistryMigration::EventReferencesThenGenerations
+                | RegistryMigration::Generations
+                | RegistryMigration::HistoryIncarnation
+                | RegistryMigration::AuditRequestIndex
+                | RegistryMigration::EventRoute
+                | RegistryMigration::EntityReference
+                | RegistryMigration::ContractMigration
+                | RegistryMigration::ValidatedPrefixCheckpoint
+        ) {
+            // No table install: the checkpoint is a meta-row only. Publish digest.
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -584,6 +675,17 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST),
+            )?;
+            install_contract_migration_tables(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST),
+            )?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -684,12 +786,62 @@ impl RedbStore {
         publish_record_registry(
             &self.shared,
             SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST),
+            SchemaHash::from_bytes(PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST),
+        )?;
+        install_contract_migration_tables(&self.shared)?;
+        publish_record_registry(
+            &self.shared,
+            SchemaHash::from_bytes(PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST),
+            SchemaHash::from_bytes(PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST),
+        )?;
+        publish_record_registry(
+            &self.shared,
+            SchemaHash::from_bytes(PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST),
             current,
         )
     }
 
     pub(crate) fn fence_writes(&self) {
         self.shared.fence_writes();
+    }
+
+    /// Writes one proof-carrying validated-prefix startup checkpoint (ADR-0085 A1).
+    ///
+    /// Requires exclusive writer access. Same body — and the SAME write gate —
+    /// as the post-validation startup write: the checkpoint is written only
+    /// when this handle's startup validation session completed with zero
+    /// structural findings of any scope. Returns `Ok(false)` (vetoed, nothing
+    /// written) otherwise, so a finding can never be silenced by a shutdown
+    /// checkpoint. Server shutdown wiring is intentionally out of scope for RT-A.
+    pub fn write_validated_prefix_checkpoint(&self) -> Result<bool, StorageError> {
+        let _lease = self.acquire_mutation_lease()?;
+        self.ensure_writable()?;
+        if !self.shared.startup_validation_clean() {
+            return Ok(false);
+        }
+        let transaction = self
+            .shared
+            .database
+            .begin_read()
+            .map_err(transaction_error)?;
+        let retained = crate::startup::read_retained_metadata_pub(&transaction)?;
+        drop(transaction);
+        crate::validated_prefix::write_validated_prefix_checkpoint(&self.shared, &retained)?;
+        Ok(true)
+    }
+
+    /// Failed checkpoint writes after clean validation (non-fatal; counted).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checkpoint_write_failures(&self) -> u64 {
+        self.shared.checkpoint_write_failures()
+    }
+
+    /// Per-reason counts of ignored validated-prefix checkpoints on this handle.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checkpoint_ignore_counts(&self) -> [(&'static str, u64); 9] {
+        self.shared.checkpoint_ignore_counts()
     }
 
     #[cfg(test)]
@@ -1528,6 +1680,20 @@ fn migrate_string_table(
                     last = Some(key);
                     continue;
                 }
+                // Optional validated-prefix checkpoint: invalid payloads must never
+                // block open (startup ignores them and runs full validation).
+                if key == META_VALIDATED_PREFIX_CHECKPOINT {
+                    if let Ok(compact) = transcode_durable_record_to_v2(original) {
+                        if require_compact && compact.as_bytes() != original {
+                            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+                        }
+                        if compact.as_bytes() != original {
+                            replacements.push((key.clone(), compact.into_bytes()));
+                        }
+                    }
+                    last = Some(key);
+                    continue;
+                }
                 let compact =
                     transcode_durable_record_to_v2(original).map_err(crate::error::codec_error)?;
                 if require_compact && compact.as_bytes() != original {
@@ -1701,6 +1867,32 @@ fn activate_operational_ports(
 }
 
 impl RedbOperationalPorts {
+    /// Writes one proof-carrying validated-prefix startup checkpoint (ADR-0085 A1).
+    ///
+    /// Gated exactly like the startup write: returns `Ok(false)` without
+    /// writing unless this database's startup validation completed with zero
+    /// structural findings of any scope.
+    pub fn write_validated_prefix_checkpoint(&self) -> Result<bool, StorageError> {
+        RedbStore {
+            shared: Arc::clone(&self.shared),
+        }
+        .write_validated_prefix_checkpoint()
+    }
+
+    /// Failed checkpoint writes after clean validation (non-fatal; counted).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checkpoint_write_failures(&self) -> u64 {
+        self.shared.checkpoint_write_failures()
+    }
+
+    /// Per-reason counts of ignored validated-prefix checkpoints on this database.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checkpoint_ignore_counts(&self) -> [(&'static str, u64); 9] {
+        self.shared.checkpoint_ignore_counts()
+    }
+
     /// Returns a cloneable pure-read handle over the same activated database.
     ///
     /// Mutation exclusion is the exclusive mutation gate, not handle uniqueness.
@@ -2222,6 +2414,14 @@ where
                 if value.value() != [1u8].as_slice() {
                     return Err(storage_error(StorageErrorKind::CorruptData));
                 }
+            }
+            META_VALIDATED_PREFIX_CHECKPOINT => {
+                // Optional proof-carrying checkpoint. Decode failures are NOT open
+                // errors: startup ignores an invalid checkpoint and runs full
+                // validation (fail-closed = full validation, never blocks open).
+                let _ = riffdb_storage_api::proto_codec::decode_validated_prefix_checkpoint_v1(
+                    value.value(),
+                );
             }
             _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
         }

@@ -150,6 +150,8 @@ fn disjoint_commands_share_two_immediate_transitions_and_keep_independent_result
         .events()
         .into_iter()
         .filter(|event| event.phase() == RedbTestPhase::BeforeEngineCommit)
+        // Startup may write a validated-prefix checkpoint on open; ignore it.
+        .filter(|event| event.operation() != RedbTestOperation::ValidatedPrefixCheckpoint)
         .map(|event| event.operation())
         .collect::<Vec<_>>();
     assert_eq!(
