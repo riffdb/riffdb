@@ -63,6 +63,16 @@ pub(crate) struct SharedRedb {
     durable_commit_epoch: AtomicU64,
     test_controller: Option<RedbTestController>,
     transient_indexes: Mutex<TransientIndexState>,
+    /// True only after this handle's startup validation session finished with
+    /// ZERO structural findings of any scope. Gates every validated-prefix
+    /// checkpoint write (ADR-0019 A1: a finding of any severity vetoes the
+    /// write so the fast path can never silence it).
+    startup_validation_clean: AtomicBool,
+    /// Failed checkpoint writes after clean validation (non-fatal; fast path lost).
+    checkpoint_write_failures: AtomicU64,
+    /// Per-reason counts of ignored validated-prefix checkpoints
+    /// (index = `CheckpointIgnoreReason::index`).
+    checkpoint_ignored: [AtomicU64; 9],
 }
 
 /// Closed redb durability profiles for authoritative application writes.
@@ -128,6 +138,41 @@ impl SharedRedb {
 
     pub(crate) fn durable_commit_epoch(&self) -> u64 {
         self.durable_commit_epoch.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_startup_validation_clean(&self, clean: bool) {
+        self.startup_validation_clean
+            .store(clean, Ordering::Release);
+    }
+
+    pub(crate) fn startup_validation_clean(&self) -> bool {
+        self.startup_validation_clean.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn note_checkpoint_write_failure(&self) {
+        let _ = self
+            .checkpoint_write_failures
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn checkpoint_write_failures(&self) -> u64 {
+        self.checkpoint_write_failures.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn note_checkpoint_ignored(
+        &self,
+        reason: crate::validated_prefix::CheckpointIgnoreReason,
+    ) {
+        let _ = self.checkpoint_ignored[reason.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn checkpoint_ignore_counts(&self) -> [(&'static str, u64); 9] {
+        crate::validated_prefix::CheckpointIgnoreReason::ALL.map(|reason| {
+            (
+                reason.as_str(),
+                self.checkpoint_ignored[reason.index()].load(Ordering::Relaxed),
+            )
+        })
     }
 
     pub(crate) fn commit_durable(&self, transaction: WriteTransaction) -> Result<(), StorageError> {
@@ -254,6 +299,20 @@ pub fn last_repair_progress_basis_points() -> u64 {
     LAST_REPAIR_PROGRESS_BPS.load(Ordering::Relaxed)
 }
 
+/// Sentinel for [`reset_last_repair_progress_for_tests`]: never produced by the
+/// repair callback, so "changed from sentinel" proves the callback fired even
+/// at 0% progress.
+#[doc(hidden)]
+pub const REPAIR_PROGRESS_SENTINEL: u64 = u64::MAX;
+
+/// Resets the process-global repair observation to the sentinel so a test can
+/// assert the callback fired for ITS open (the static is process-global and
+/// otherwise indistinguishable from an earlier in-process repair).
+#[doc(hidden)]
+pub fn reset_last_repair_progress_for_tests() {
+    LAST_REPAIR_PROGRESS_BPS.store(REPAIR_PROGRESS_SENTINEL, Ordering::Relaxed);
+}
+
 impl RedbStore {
     /// Opens an existing redb file or creates an empty redb container.
     ///
@@ -317,6 +376,9 @@ impl RedbStore {
                 durable_commit_epoch: AtomicU64::new(0),
                 test_controller,
                 transient_indexes: Mutex::new(TransientIndexState::Dormant),
+                startup_validation_clean: AtomicBool::new(false),
+                checkpoint_write_failures: AtomicU64::new(0),
+                checkpoint_ignored: [(); 9].map(|()| AtomicU64::new(0)),
             }),
         };
         store.ensure_current_storage_format()?;
@@ -745,11 +807,18 @@ impl RedbStore {
 
     /// Writes one proof-carrying validated-prefix startup checkpoint (ADR-0085 A1).
     ///
-    /// Requires exclusive writer access. Same body as the post-validation startup write.
-    /// Server shutdown wiring is intentionally out of scope for RT-A.
-    pub fn write_validated_prefix_checkpoint(&self) -> Result<(), StorageError> {
+    /// Requires exclusive writer access. Same body — and the SAME write gate —
+    /// as the post-validation startup write: the checkpoint is written only
+    /// when this handle's startup validation session completed with zero
+    /// structural findings of any scope. Returns `Ok(false)` (vetoed, nothing
+    /// written) otherwise, so a finding can never be silenced by a shutdown
+    /// checkpoint. Server shutdown wiring is intentionally out of scope for RT-A.
+    pub fn write_validated_prefix_checkpoint(&self) -> Result<bool, StorageError> {
         let _lease = self.acquire_mutation_lease()?;
         self.ensure_writable()?;
+        if !self.shared.startup_validation_clean() {
+            return Ok(false);
+        }
         let transaction = self
             .shared
             .database
@@ -757,7 +826,22 @@ impl RedbStore {
             .map_err(transaction_error)?;
         let retained = crate::startup::read_retained_metadata_pub(&transaction)?;
         drop(transaction);
-        crate::validated_prefix::write_validated_prefix_checkpoint(&self.shared, &retained)
+        crate::validated_prefix::write_validated_prefix_checkpoint(&self.shared, &retained)?;
+        Ok(true)
+    }
+
+    /// Failed checkpoint writes after clean validation (non-fatal; counted).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checkpoint_write_failures(&self) -> u64 {
+        self.shared.checkpoint_write_failures()
+    }
+
+    /// Per-reason counts of ignored validated-prefix checkpoints on this handle.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checkpoint_ignore_counts(&self) -> [(&'static str, u64); 9] {
+        self.shared.checkpoint_ignore_counts()
     }
 
     #[cfg(test)]
@@ -1784,11 +1868,29 @@ fn activate_operational_ports(
 
 impl RedbOperationalPorts {
     /// Writes one proof-carrying validated-prefix startup checkpoint (ADR-0085 A1).
-    pub fn write_validated_prefix_checkpoint(&self) -> Result<(), StorageError> {
+    ///
+    /// Gated exactly like the startup write: returns `Ok(false)` without
+    /// writing unless this database's startup validation completed with zero
+    /// structural findings of any scope.
+    pub fn write_validated_prefix_checkpoint(&self) -> Result<bool, StorageError> {
         RedbStore {
             shared: Arc::clone(&self.shared),
         }
         .write_validated_prefix_checkpoint()
+    }
+
+    /// Failed checkpoint writes after clean validation (non-fatal; counted).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checkpoint_write_failures(&self) -> u64 {
+        self.shared.checkpoint_write_failures()
+    }
+
+    /// Per-reason counts of ignored validated-prefix checkpoints on this database.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checkpoint_ignore_counts(&self) -> [(&'static str, u64); 9] {
+        self.shared.checkpoint_ignore_counts()
     }
 
     /// Returns a cloneable pure-read handle over the same activated database.

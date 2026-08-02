@@ -63,6 +63,8 @@ pub use startup::{
     RedbCompletionAuthority, RedbHistoricalEvidenceEnd, RedbStartupIndexMigrationPort,
     RedbStructuralEvidenceEnd, RedbStructuralEvidenceSession,
 };
+#[doc(hidden)]
+pub use store::{REPAIR_PROGRESS_SENTINEL, reset_last_repair_progress_for_tests};
 pub use store::{
     RedbCommitProfile, RedbDormantPorts, RedbOperationalPorts, RedbStore,
     last_repair_progress_basis_points,

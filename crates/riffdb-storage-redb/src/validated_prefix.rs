@@ -30,15 +30,13 @@ pub(crate) const SAMPLE_WINDOW_SIZE: u64 = 128;
 
 /// Active checkpoint binding used by a checkpointed structural evidence session.
 #[derive(Clone, Debug)]
-#[allow(
-    dead_code,
-    reason = "fields retained for tests and future sample-window wiring"
-)]
 pub(crate) struct ActiveCheckpoint {
     pub checkpoint_commit_sequence: u64,
     pub audit_sequence_bound: u64,
     pub counts: ValidatedPrefixSequenceCounts,
-    pub entity_chain_fingerprint: EntityChainFingerprint,
+    /// Fingerprint-verified `(target, version)` map at S; consumed once to seed
+    /// suffix entity-chain advancement (`None` after consumption).
+    pub entities_at_s: Option<std::collections::BTreeMap<EntityTarget, EntityVersion>>,
     pub checkpoint_hash: [u8; 32],
 }
 
@@ -57,11 +55,36 @@ pub(crate) enum CheckpointIgnoreReason {
 }
 
 impl CheckpointIgnoreReason {
+    /// Every reason, in counter-index order (see [`Self::index`]).
+    pub(crate) const ALL: [Self; 9] = [
+        Self::Absent,
+        Self::DecodeFailed,
+        Self::SelfHashMismatch,
+        Self::DatabaseIdMismatch,
+        Self::IncarnationMismatch,
+        Self::RegistryDigestMismatch,
+        Self::SequenceBeyondHead,
+        Self::CountImpossible,
+        Self::EntityChainMismatch,
+    ];
+
+    /// Stable counter index for per-store ignore-reason counting.
     #[must_use]
-    #[allow(
-        dead_code,
-        reason = "diagnostic surface for operators and future metrics"
-    )]
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            Self::Absent => 0,
+            Self::DecodeFailed => 1,
+            Self::SelfHashMismatch => 2,
+            Self::DatabaseIdMismatch => 3,
+            Self::IncarnationMismatch => 4,
+            Self::RegistryDigestMismatch => 5,
+            Self::SequenceBeyondHead => 6,
+            Self::CountImpossible => 7,
+            Self::EntityChainMismatch => 8,
+        }
+    }
+
+    #[must_use]
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Absent => "absent",
@@ -251,15 +274,18 @@ pub(crate) fn load_active_checkpoint(
     {
         return Err(CheckpointIgnoreReason::CountImpossible);
     }
-    // Entity-chain fingerprint must match reconstructed-at-S map from current ENTITIES
-    // adjusted by suffix. Mismatch → full validation.
-    let fingerprint = match reconstruct_entity_chain_fingerprint_at_s(
-        transaction,
-        checkpoint.checkpoint_commit_sequence(),
-    ) {
-        Ok(fp) => fp,
-        Err(_) => return Err(CheckpointIgnoreReason::EntityChainMismatch),
-    };
+    // Entity-chain fingerprint must match the reconstructed-at-S map from current
+    // ENTITIES adjusted by suffix. Mismatch → full validation. Contract-migration
+    // version jumps between write and open also land here (reconstruction cannot
+    // see migration bumps): the fallback is counted so migrated databases lose
+    // the fast path visibly, never silently.
+    let entities_at_s =
+        match reconstruct_entities_at_s(transaction, checkpoint.checkpoint_commit_sequence()) {
+            Ok(map) => map,
+            Err(_) => return Err(CheckpointIgnoreReason::EntityChainMismatch),
+        };
+    let fingerprint =
+        EntityChainFingerprint::from_sorted_pairs(entities_at_s.iter().map(|(t, v)| (t, *v)));
     if fingerprint != checkpoint.entity_chain_fingerprint() {
         return Err(CheckpointIgnoreReason::EntityChainMismatch);
     }
@@ -267,7 +293,7 @@ pub(crate) fn load_active_checkpoint(
         checkpoint_commit_sequence: checkpoint.checkpoint_commit_sequence(),
         audit_sequence_bound: checkpoint.audit_sequence_bound(),
         counts,
-        entity_chain_fingerprint: checkpoint.entity_chain_fingerprint(),
+        entities_at_s: Some(entities_at_s),
         checkpoint_hash: *checkpoint.checkpoint_hash().as_bytes(),
     })
 }
@@ -483,11 +509,13 @@ fn entity_chain_fingerprint_from_entities(
     ))
 }
 
-/// Reconstructs entity versions at S from current ENTITIES adjusted by suffix commits.
-fn reconstruct_entity_chain_fingerprint_at_s(
+/// Reconstructs the `(target, version)` map at S from current ENTITIES adjusted
+/// by suffix commits. The caller fingerprints the map and, when the fingerprint
+/// binds, seeds suffix entity-chain advancement from it.
+fn reconstruct_entities_at_s(
     transaction: &ReadTransaction,
     s: u64,
-) -> Result<EntityChainFingerprint, StorageError> {
+) -> Result<std::collections::BTreeMap<EntityTarget, EntityVersion>, StorageError> {
     use std::collections::BTreeMap;
     use std::ops::Bound::{Included, Unbounded};
 
@@ -504,9 +532,7 @@ fn reconstruct_entity_chain_fingerprint_at_s(
     let commits = transaction.open_table(COMMITS).map_err(table_error)?;
     let mut first_suffix: BTreeMap<EntityTarget, EntityVersion> = BTreeMap::new();
     if s == u64::MAX {
-        return Ok(EntityChainFingerprint::from_sorted_pairs(
-            map.iter().map(|(t, v)| (t, *v)),
-        ));
+        return Ok(map);
     }
     // Collect suffix commit payloads first to avoid heterogeneous range types.
     let mut suffix_values = Vec::new();
@@ -546,9 +572,7 @@ fn reconstruct_entity_chain_fingerprint_at_s(
             map.insert(target, at_s);
         }
     }
-    Ok(EntityChainFingerprint::from_sorted_pairs(
-        map.iter().map(|(t, v)| (t, *v)),
-    ))
+    Ok(map)
 }
 
 /// Lower-bound event key for rows with commit sequence > S.

@@ -779,6 +779,13 @@ fn run_startup_scale(
         } else {
             measure_one_startup_scale(db_placement.path(), target, false)?
         };
+        // Baseline-honesty assertion on the emitted record itself: a plain
+        // --startup-scale record claiming a verified checkpoint is fabricated.
+        assert!(
+            configuration.startup_scale_checkpointed
+                || !record.drain_linear_check.checkpoint_verified,
+            "baseline startup_scale record must not claim checkpoint_verified"
+        );
         println!("{}", record.to_jsonl());
         println!(
             "startup-scale retained={target} file_bytes={} generate_ns={} generated={} rate={}/s startup_ns={} ns/cmd={} peak_rss_bytes={} drain_rss_delta_bytes={} rss_mode={} structural_pages={} historical_pages={} evidence_pages={} drain_first_half_ns={} drain_second_half_ns={} (half-split: only ratio movement across N is meaningful)",
@@ -896,21 +903,32 @@ fn measure_one_startup_scale_inner(
     )?;
 
     let file_bytes = fs::metadata(&db_path).map_err(|_| ())?.len();
-    // For checkpointed measurement: one full open+validate+write first, then measure reopen.
-    let mut checkpoint_verified = false;
-    let mut suffix_commands = 0_u64;
     if checkpointed {
-        let (seed_measurement, _, _, _) = measure_drain_with_rss(&db_path, target)?;
-        let _ = seed_measurement;
-        // A successful full drain writes the validated-prefix checkpoint on finish.
+        // One full open+validate+write first, then measure the checkpointed reopen.
+        // A successful clean drain writes the validated-prefix checkpoint on finish.
+        let _ = measure_drain_with_rss(&db_path, target)?;
+    } else {
+        // Baseline honesty: a reused database may carry a checkpoint from an
+        // earlier run's clean finish. Strip it in a raw engine transaction (a
+        // bench-only affordance that no production path can reach) so plain
+        // `--startup-scale` always measures FULL validation.
+        riffdb_storage_redb::benchmark_support::strip_validated_prefix_checkpoint(&db_path)
+            .map_err(|_| ())?;
     }
     let (measurement, peak_rss_bytes, drain_rss_delta_bytes, rss_measure_mode) =
         measure_drain_with_rss(&db_path, target)?;
-    if checkpointed {
-        checkpoint_verified = true;
-        // After checkpoint, walked history is the empty suffix when no new commands land.
-        suffix_commands = 0;
-    }
+    // Evidence integrity: both fields derive from the SESSION's observability,
+    // never from the CLI flag.
+    let checkpoint_verified = measurement.checkpoint_verified();
+    let suffix_commands = measurement.suffix_commands();
+    assert!(
+        checkpointed || !checkpoint_verified,
+        "baseline --startup-scale must measure full validation (checkpoint_verified must be false)"
+    );
+    assert!(
+        !checkpointed || checkpoint_verified,
+        "--startup-scale-checkpointed reopen failed to verify the seeded checkpoint"
+    );
     let startup_ns = u64::try_from(measurement.elapsed().as_nanos()).map_err(|_| ())?;
     let startup_ns_per_command = startup_ns / target.max(1);
     let generate_commands_per_second = if generated_commands == 0 {
