@@ -327,6 +327,7 @@ struct LoweredPreparation {
     cancellation: CancellationToken,
     audited_lifecycle: Option<AuditedCommandLifecycle>,
     post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
+    causation: Option<riffdb_storage_api::StoredCommandCausationV1>,
 }
 
 struct AdmissionPreparationParts {
@@ -339,6 +340,7 @@ struct AdmissionPreparationParts {
     cancellation: CancellationToken,
     audited_lifecycle: Option<AuditedCommandLifecycle>,
     post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
+    causation: Option<riffdb_storage_api::StoredCommandCausationV1>,
 }
 
 /// Reduces one exact command preparation to replay, retry, or execution state.
@@ -516,6 +518,7 @@ fn prepare_command_admission_with_hash(
         cancellation,
         audited_lifecycle,
         post_evaluation_authorizer,
+        causation,
     } = preparation.into_parts();
     let parts = AdmissionPreparationParts {
         resolved_plan,
@@ -527,6 +530,7 @@ fn prepare_command_admission_with_hash(
         cancellation,
         audited_lifecycle,
         post_evaluation_authorizer,
+        causation,
     };
     let rechecked = IdempotencyRecheckExecutor::new(repository)
         .recheck(idempotency)
@@ -550,7 +554,9 @@ fn prepare_command_admission_with_hash(
                 .map(PreparedCommandAdmission::Complete)
         }
         IdempotencyRecheckResultV1::Outcome(outcome) => {
-            if outcome.partition_key() != parts.input_facts.partition_key() {
+            if outcome.partition_key() != parts.input_facts.partition_key()
+                || outcome.causation() != parts.causation
+            {
                 return Err(CommandAdmissionError::Integrity);
             }
             let audit_recheck = admission_request_from_outcome(&outcome)?;
@@ -563,7 +569,9 @@ fn prepare_command_admission_with_hash(
             )))
         }
         IdempotencyRecheckResultV1::ExecutionFailed(failure) => {
-            if failure.pending().partition_key() != parts.input_facts.partition_key() {
+            if failure.pending().partition_key() != parts.input_facts.partition_key()
+                || failure.pending().causation() != parts.causation
+            {
                 return Err(CommandAdmissionError::Integrity);
             }
             let audit_recheck = admission_request_from_pending(failure.pending().clone())?;
@@ -614,7 +622,7 @@ fn prepare_vacant(
     let identity = prepared_idempotency.current_identity().clone();
 
     let logical_time = LogicalTime::new(clock.now().map_err(CommandAdmissionError::Clock)?);
-    let pending = StoredPendingAdmissionV1::new(
+    let pending = StoredPendingAdmissionV1::new_with_causation(
         identity,
         canonical_input_hash,
         lowered.invocation_request_id,
@@ -623,6 +631,7 @@ fn prepare_vacant(
         actor,
         partition_key,
         provenance_claims,
+        lowered.causation,
     )
     .map_err(|_| CommandAdmissionError::Integrity)?;
     let context = PreEvaluationCommitContext::new(
@@ -646,7 +655,7 @@ fn prepare_vacant(
 fn admission_request_from_outcome(
     outcome: &StoredOutcomeV1,
 ) -> Result<AdmissionRequestV1, CommandAdmissionError> {
-    let pending = StoredPendingAdmissionV1::new(
+    let pending = StoredPendingAdmissionV1::new_with_causation(
         outcome.identity().clone(),
         outcome.canonical_input_hash(),
         outcome.admission_request_id(),
@@ -655,6 +664,7 @@ fn admission_request_from_outcome(
         outcome.actor().clone(),
         outcome.partition_key().clone(),
         outcome.admitted_claims().clone(),
+        outcome.causation(),
     )
     .map_err(|_| CommandAdmissionError::Integrity)?;
     let context = PreEvaluationCommitContext::new(
@@ -735,6 +745,7 @@ fn resume_pending(
     if normalized_input != parts.normalized_input
         || pending.plan() != parts.resolved_plan.reference()
         || pending.partition_key() != parts.input_facts.partition_key()
+        || pending.causation() != parts.causation
     {
         return Err(CommandAdmissionError::Integrity);
     }
@@ -774,6 +785,7 @@ fn lower_preparation(
         cancellation: parts.cancellation,
         audited_lifecycle: parts.audited_lifecycle,
         post_evaluation_authorizer: parts.post_evaluation_authorizer,
+        causation: parts.causation,
     })
 }
 
@@ -814,6 +826,7 @@ fn outcome_matches_context(
         && outcome.partition_hash() == context.partition_hash()
         && outcome.conflict_hashes() == context.conflict_hashes()
         && outcome.admitted_claims() == pending.provenance_claims()
+        && outcome.causation() == pending.causation()
 }
 
 fn lower_provenance_claims(

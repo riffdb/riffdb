@@ -31,10 +31,10 @@ code.8.message=the command binding is invalid or ambiguously owned
 code.8.help=bind an entity owned by the command's one aggregate
 code.9.id=RDB-C010
 code.9.message=a mutating command must declare one idempotency key
-code.9.help=declare a direct bounded string input as idempotency_key
+code.9.help=declare a direct UUID or bounded string input as idempotency_key
 code.10.id=RDB-C011
 code.10.message=the idempotency expression is invalid or used outside its clause
-code.10.help=use one required string<1..=128> input only in the idempotency clause
+code.10.help=use one required UUID or string<1..=128> input only in the idempotency clause
 code.11.id=RDB-C012
 code.11.message=the create binding does not definitely initialize its record
 code.11.help=assign every required non-key field exactly once before return
@@ -206,7 +206,7 @@ diagnostic.0.code=RDB-C010
 diagnostic.0.message=a mutating command must declare one idempotency key
 diagnostic.0.primary=157..163
 diagnostic.0.related=none
-diagnostic.0.help=declare a direct bounded string input as idempotency_key
+diagnostic.0.help=declare a direct UUID or bounded string input as idempotency_key
 
 [RDB-C011-invalid-idempotency]
 expected=RDB-C011
@@ -216,7 +216,7 @@ diagnostic.0.code=RDB-C011
 diagnostic.0.message=the idempotency expression is invalid or used outside its clause
 diagnostic.0.primary=365..380
 diagnostic.0.related=none
-diagnostic.0.help=use one required string<1..=128> input only in the idempotency clause
+diagnostic.0.help=use one required UUID or string<1..=128> input only in the idempotency clause
 
 [RDB-C012-invalid-creation]
 expected=RDB-C012

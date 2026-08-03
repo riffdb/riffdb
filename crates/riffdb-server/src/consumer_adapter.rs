@@ -1,18 +1,18 @@
 //! Production adapter for the service-owned durable consumer coordinator.
 
 use riffdb_service::{
-    BoxPortCapacityPermit, EventConsumerCheckpoint, EventConsumerMutationResult, EventConsumerPort,
-    EventConsumerPortError, EventConsumerPortIdentity, EventConsumerPortLease,
-    EventConsumerPortRequest, EventConsumerPortResponse, EventConsumerStatus, PortAdmissionError,
-    PortFuture, RequestControl,
+    BoxPortCapacityPermit, EventConsumerCheckpoint, EventConsumerLeaseValidation,
+    EventConsumerMutationResult, EventConsumerPort, EventConsumerPortError,
+    EventConsumerPortIdentity, EventConsumerPortLease, EventConsumerPortRequest,
+    EventConsumerPortResponse, EventConsumerStatus, PortAdmissionError, PortFuture, RequestControl,
 };
 use riffdb_storage_api::{
     ConsumerCheckpointV1, CoordinateConsumerAcknowledgementV1, CoordinateConsumerLeaseV1,
-    CoordinateConsumerNegativeAcknowledgementV1, CoordinatedConsumerStatusV1,
-    EventConsumerIdentityV1, EventConsumerTransitionResultV1, StorageErrorKind,
-    coordinate_consumer_acknowledgement, coordinate_consumer_lease,
-    coordinate_consumer_negative_acknowledgement, coordinate_consumer_retire,
-    coordinate_consumer_seek, coordinate_consumer_status,
+    CoordinateConsumerNegativeAcknowledgementV1, CoordinatedConsumerLeaseValidationV1,
+    CoordinatedConsumerStatusV1, EventConsumerIdentityV1, EventConsumerTransitionResultV1,
+    StorageErrorKind, coordinate_consumer_acknowledgement, coordinate_consumer_lease,
+    coordinate_consumer_lease_validation, coordinate_consumer_negative_acknowledgement,
+    coordinate_consumer_retire, coordinate_consumer_seek, coordinate_consumer_status,
 };
 use riffdb_types::DatabaseId;
 
@@ -75,6 +75,37 @@ fn coordinate_request(
                 .map(|status| EventConsumerPortResponse::Status(status.map(service_status)))
                 .map_err(map_storage)
         }
+        EventConsumerPortRequest::ValidateLease {
+            identity,
+            partition_hash,
+            event_id,
+            attempt,
+            token,
+            history_incarnation,
+            observed_at,
+        } => coordinate_consumer_lease_validation(
+            &storage,
+            &storage_identity(database_id, identity),
+            partition_hash,
+            event_id,
+            attempt,
+            token,
+            history_incarnation,
+            observed_at,
+        )
+        .map(|result| {
+            EventConsumerPortResponse::LeaseValidation(match result {
+                CoordinatedConsumerLeaseValidationV1::Live => EventConsumerLeaseValidation::Live,
+                CoordinatedConsumerLeaseValidationV1::NotFound => {
+                    EventConsumerLeaseValidation::NotFound
+                }
+                CoordinatedConsumerLeaseValidationV1::Stale => EventConsumerLeaseValidation::Stale,
+                CoordinatedConsumerLeaseValidationV1::Expired => {
+                    EventConsumerLeaseValidation::Expired
+                }
+            })
+        })
+        .map_err(map_storage),
         EventConsumerPortRequest::Lease {
             identity,
             partition_hash,

@@ -217,7 +217,7 @@ fn maintenance_and_migration_are_additive_and_never_an_mcp_surface() {
             .lines()
             .filter(|line| line.trim_start().starts_with("rpc "))
             .count(),
-        40
+        45
     );
     assert_eq!(services.matches("rpc ExecuteBatch(").count(), 1);
     for rpc in [

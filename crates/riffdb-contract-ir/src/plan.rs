@@ -1035,7 +1035,7 @@ impl CommandPlan {
     pub const fn success_outcome(&self) -> OutcomeId {
         self.success_outcome
     }
-    /// Direct required string idempotency input for mutations.
+    /// Direct required UUID or bounded-string idempotency input for mutations.
     #[must_use]
     pub const fn idempotency_input(&self) -> Option<FieldId> {
         self.idempotency_input
@@ -2994,13 +2994,15 @@ fn validate_idempotency(
         .ok_or(IrValidationError::InvalidReference {
             kind: "idempotency input",
         })?;
-    if field.value_type().tag() != ValueTypeTag::String
-        || field
+    let supported = match field.value_type().tag() {
+        ValueTypeTag::Uuid => true,
+        ValueTypeTag::String => field
             .value_type()
             .byte_bound()
-            .is_none_or(|bound| bound == 0 || bound > 128)
-        || field.value_type().is_optional()
-    {
+            .is_some_and(|bound| bound != 0 && bound <= 128),
+        _ => false,
+    };
+    if !supported || field.value_type().is_optional() {
         return Err(IrValidationError::TypeMismatch {
             context: "idempotency input",
         });
@@ -3558,6 +3560,12 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn minimal_mutation() -> (CommandPlan, SchemaIr) {
+        minimal_mutation_with_idempotency(crate::ValueType::string(64).expect("string"))
+    }
+
+    fn minimal_mutation_with_idempotency(
+        idempotency_type: crate::ValueType,
+    ) -> (CommandPlan, SchemaIr) {
         let entity_id = EntityTypeId::first();
         let aggregate_id = AggregateTypeId::first();
         let command_id = CommandId::first();
@@ -3628,12 +3636,8 @@ pub(crate) mod tests {
             RecordSchema::new(
                 RecordTypeRef::CommandInput(command_id),
                 vec![
-                    FieldSchema::new(
-                        idempotency_field,
-                        "request_id",
-                        crate::ValueType::string(64).expect("string"),
-                    )
-                    .expect("field"),
+                    FieldSchema::new(idempotency_field, "request_id", idempotency_type)
+                        .expect("field"),
                     FieldSchema::new(input_key_field, "root_id", crate::ValueType::u64())
                         .expect("field"),
                 ],
@@ -3725,6 +3729,20 @@ pub(crate) mod tests {
         )
         .expect("command");
         (plan, schema)
+    }
+
+    #[test]
+    fn mutation_idempotency_accepts_uuid_and_bounded_string_inputs() {
+        assert_eq!(
+            minimal_mutation_with_idempotency(crate::ValueType::uuid())
+                .0
+                .idempotency_input(),
+            Some(FieldId::first())
+        );
+        assert_eq!(
+            minimal_mutation().0.idempotency_input(),
+            Some(FieldId::first())
+        );
     }
 
     pub(crate) fn root_validation_mutation(field_dependent: bool) -> (CommandPlan, SchemaIr) {

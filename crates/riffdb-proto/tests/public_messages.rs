@@ -1562,3 +1562,33 @@ fn batch_exchange_validator_items_primary_and_legacy_fallback() {
         Err(PublicWireError::InconsistentFields)
     );
 }
+
+#[test]
+fn contextual_reaction_requires_one_exact_request_identity() {
+    let mut request = v1::ExecuteContextualReactionRequest {
+        request_id: uuid_v7(),
+        selection: Some(v1::EventConsumerSelection {
+            reactive_module_hash: vec![0x21; 32],
+            operation_name: "TriageTicket".to_owned(),
+            parameters: Vec::new(),
+            consumer_name: "triage-worker".to_owned(),
+        }),
+        causation_token: vec![0x31; 33],
+        reaction_name: "assign".to_owned(),
+        command: Some(v1::ExecuteCommandRequest {
+            request_id: uuid_v7(),
+            command_name: "AssignTicket".to_owned(),
+            expected_contract_version: Some(1),
+            input: Some(v1::Value {
+                kind: Some(v1::value::Kind::RecordValue(empty_record())),
+            }),
+        }),
+    };
+    validate_public_message(&request).expect("matching request identities");
+
+    request.command.as_mut().expect("command").request_id[15] ^= 1;
+    assert_eq!(
+        validate_public_message(&request),
+        Err(PublicWireError::InconsistentFields)
+    );
+}

@@ -4582,6 +4582,69 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
         }
         riffdb_query_executor::execute_page_in_snapshot(program, parameters, prior, &mut EmptyView)
     }
+
+    fn execute_query_group(
+        &self,
+        requests: &[riffdb_query_executor::QueryExecutionRequest<'_>],
+    ) -> Result<
+        Vec<riffdb_query_executor::QueryOwnedSnapshot>,
+        riffdb_query_executor::QueryExecutionError,
+    > {
+        struct EmptyView;
+        impl riffdb_query_executor::QueryReadView for EmptyView {
+            type Error = ();
+
+            fn fault(&self, _error: &Self::Error) -> riffdb_query_executor::QueryBackendFault {
+                riffdb_query_executor::QueryBackendFault::Unavailable
+            }
+
+            fn application_head(&self) -> u64 {
+                0
+            }
+
+            fn point(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                _predicates: &[riffdb_query_executor::BoundPredicate],
+            ) -> Result<Option<riffdb_query_executor::QueryRow>, Self::Error> {
+                Ok(None)
+            }
+
+            fn dependent_point_batch(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                predicates: &[Vec<riffdb_query_executor::BoundPredicate>],
+            ) -> Result<Vec<Option<riffdb_query_executor::QueryRow>>, Self::Error> {
+                Ok(vec![None; predicates.len()])
+            }
+
+            fn scan(
+                &mut self,
+                _step: &riffdb_query_ir::QueryAccessStep,
+                _predicates: &[riffdb_query_executor::BoundPredicate],
+                _limit: u64,
+                _after: Option<&[u8]>,
+            ) -> Result<riffdb_query_executor::QueryScanPage, Self::Error> {
+                Ok(riffdb_query_executor::QueryScanPage::exact_end(
+                    Vec::new(),
+                    0,
+                ))
+            }
+        }
+
+        riffdb_query_executor::validate_query_execution_group(requests)?;
+        let mut view = EmptyView;
+        requests
+            .iter()
+            .map(|request| {
+                riffdb_query_executor::execute_in_snapshot(
+                    request.program(),
+                    request.parameters(),
+                    &mut view,
+                )
+            })
+            .collect()
+    }
 }
 
 #[derive(Default)]

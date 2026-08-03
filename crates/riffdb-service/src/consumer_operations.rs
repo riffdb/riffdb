@@ -6,16 +6,18 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use riffdb_catalog::{ResolvedReactiveEventStream, SymbolicEventEnvelope};
+use riffdb_contract_ir::ExecutionClass;
 use riffdb_errors::PublicError;
 use riffdb_policy::{
-    AuditClass, AuthorizedOperation, EventConsumerOperationTarget, OperationRequest,
-    OperationTenantScope, OutputClassification, PartitionConstraint,
+    AuditClass, AuthorizedOperation, CommandExecutionClass, Decision, EventConsumerOperationTarget,
+    OperationRequest, OperationTenantScope, OutputClassification, PartitionConstraint,
 };
+use riffdb_query_executor::{QueryExecutionRequest, QueryOwnedSnapshot};
 use riffdb_types::{
-    EventConsumerName, EventConsumerRevision, EventDeliveryAttempt, EventId, EventLeaseToken,
-    PartitionKey, PartitionKeyHash, QueryParameterHash, ReactiveModuleHash, ReactiveOperationName,
-    ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceOperationV1, TenantScope, Timestamp,
-    event_consumer_identity_hash,
+    CommitSequence, EventConsumerName, EventConsumerRevision, EventDeliveryAttempt, EventId,
+    EventLeaseToken, PartitionKey, PartitionKeyHash, QueryParameterHash, ReactiveModuleHash,
+    ReactiveOperationName, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceOperationV1,
+    TenantScope, Timestamp, event_consumer_identity_hash,
 };
 
 use crate::event_operations::{TailWaitError, wait_for_tail_notification};
@@ -24,9 +26,12 @@ use crate::symbolic_query::query_parameter_hash;
 use crate::wait::{ControlledWaitError, wait_with_control};
 use crate::{
     AuthoritativeCommitNotification, AuthoritativeCommitSubscriptionRequest,
-    CommitNotificationSource, InternalDefect, PageLimit, PortAdmissionError, PortDriverStopped,
-    QueryParameters, RequestContext, RiffDbService, RiffDbServiceInner, ServiceAuditTargetMap,
-    ServiceDtoError, ServiceFailure, ServiceFuture, ServiceResult,
+    AvailableContextualReaction, CommitNotificationSource, ConsumeContextualSubscriptionResult,
+    ContextualCausationClaimsV1, ContextualHydration, ContextualWorkItem, ExecuteCommandResult,
+    ExecuteContextualReactionRequest, InternalDefect, PageLimit, PortAdmissionError,
+    PortDriverStopped, QueryParameters, ReactionIdempotencyValue, RequestContext, RiffDbService,
+    RiffDbServiceInner, ServiceAuditTargetMap, ServiceDtoError, ServiceFailure, ServiceFuture,
+    ServiceResult, SubmittedFieldIdentity,
 };
 
 /// Maximum selected events retained while coordinating one consumer transition.
@@ -463,6 +468,23 @@ pub enum EventConsumerPortRequest {
         /// Exact immutable consumer identity.
         identity: EventConsumerPortIdentity,
     },
+    /// Validate one exact live lease without mutating durable consumer state.
+    ValidateLease {
+        /// Exact immutable consumer identity.
+        identity: EventConsumerPortIdentity,
+        /// Catalog-resolved stream partition.
+        partition_hash: PartitionKeyHash,
+        /// Leased event.
+        event_id: EventId,
+        /// Exact attempt number.
+        attempt: EventDeliveryAttempt,
+        /// Attempt-specific opaque token.
+        token: EventLeaseToken,
+        /// Restore fence.
+        history_incarnation: u64,
+        /// Canonical current time used for exclusive-expiry validation.
+        observed_at: Timestamp,
+    },
     /// Lease a catalog-selected window.
     Lease {
         /// Exact immutable consumer identity.
@@ -552,6 +574,8 @@ pub struct EventConsumerPortLease {
 pub enum EventConsumerPortResponse {
     /// Optional consumer status.
     Status(Option<EventConsumerStatus>),
+    /// Exact read-only lease validation result.
+    LeaseValidation(EventConsumerLeaseValidation),
     /// Lease result and required post-operation status.
     Leased {
         /// Closed transition result.
@@ -563,6 +587,19 @@ pub enum EventConsumerPortResponse {
     },
     /// Mutation result.
     Mutated(EventConsumerMutationResult),
+}
+
+/// Closed public-service classification of exact lease validation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EventConsumerLeaseValidation {
+    /// Every requested fence matches a currently live attempt.
+    Live,
+    /// The consumer does not exist.
+    NotFound,
+    /// The attempt identity is stale or no longer leased.
+    Stale,
+    /// The exact lease expired.
+    Expired,
 }
 
 /// Closed lower-port failure.
@@ -650,7 +687,15 @@ impl EventConsumerServiceApplication for RiffDbService {
         self.spawn_operation(
             ServiceOperationV1::ConsumeEventStream,
             ingress,
-            async move { consume(service, context, request).await },
+            async move {
+                consume_stream(
+                    service,
+                    context,
+                    request,
+                    ServiceOperationV1::ConsumeEventStream,
+                )
+                .await
+            },
         )
     }
 
@@ -664,7 +709,16 @@ impl EventConsumerServiceApplication for RiffDbService {
         self.spawn_operation(
             ServiceOperationV1::AcknowledgeEventStream,
             ingress,
-            async move { acknowledge(service, context, request, None).await },
+            async move {
+                acknowledge(
+                    service,
+                    context,
+                    request,
+                    None,
+                    ServiceOperationV1::AcknowledgeEventStream,
+                )
+                .await
+            },
         )
     }
 
@@ -680,7 +734,14 @@ impl EventConsumerServiceApplication for RiffDbService {
             ingress,
             async move {
                 let delay = request.retry_delay();
-                acknowledge(service, context, request.lease, Some(delay)).await
+                acknowledge(
+                    service,
+                    context,
+                    request.lease,
+                    Some(delay),
+                    ServiceOperationV1::NegativeAcknowledgeEventStream,
+                )
+                .await
             },
         )
     }
@@ -723,7 +784,15 @@ impl EventConsumerServiceApplication for RiffDbService {
         self.spawn_operation(
             ServiceOperationV1::GetEventStreamConsumerStatus,
             ingress,
-            async move { status(service, context, selection).await },
+            async move {
+                status(
+                    service,
+                    context,
+                    selection,
+                    ServiceOperationV1::GetEventStreamConsumerStatus,
+                )
+                .await
+            },
         )
     }
 }
@@ -731,7 +800,8 @@ impl EventConsumerServiceApplication for RiffDbService {
 struct PreparedConsumer {
     catalog: riffdb_catalog::ActiveCatalogSnapshot,
     operation: riffdb_query_module::CompiledReactiveOperationV1,
-    parameters: BTreeMap<String, riffdb_types::CanonicalValue>,
+    stream_operation: riffdb_query_module::CompiledReactiveOperationV1,
+    stream_parameters: BTreeMap<String, riffdb_types::CanonicalValue>,
     partition: PartitionKey,
     partition_hash: PartitionKeyHash,
     parameter_hash: QueryParameterHash,
@@ -750,7 +820,7 @@ impl PreparedConsumer {
 
     fn resolve_stream(&self) -> ServiceResult<ResolvedReactiveEventStream> {
         self.catalog
-            .resolve_reactive_event_stream(&self.operation, self.parameters.clone())
+            .resolve_reactive_event_stream(&self.stream_operation, self.stream_parameters.clone())
             .map_err(|_| invalid_consumer_request())
     }
 
@@ -810,12 +880,6 @@ async fn prepare_consumer(
         .operation(selection.operation_name().as_str())
         .cloned()
         .ok_or_else(invalid_consumer_request)?;
-    if !matches!(
-        compiled.plan(),
-        riffdb_query_module::ReactiveOperationPlanV1::Stream { .. }
-    ) {
-        return Err(invalid_consumer_request());
-    }
     let parameters = selection
         .parameters()
         .iter()
@@ -823,15 +887,50 @@ async fn prepare_consumer(
         .collect::<BTreeMap<_, _>>();
     let parameter_hash =
         query_parameter_hash(selection.parameters()).ok_or_else(invalid_consumer_request)?;
+    let contextual = matches!(
+        operation,
+        ServiceOperationV1::ConsumeContextualSubscription
+            | ServiceOperationV1::AcknowledgeContextualSubscription
+            | ServiceOperationV1::NegativeAcknowledgeContextualSubscription
+            | ServiceOperationV1::GetContextualSubscriptionStatus
+            | ServiceOperationV1::ExecuteContextualReaction
+    );
+    let (stream_operation, stream_parameters) = match compiled.plan() {
+        riffdb_query_module::ReactiveOperationPlanV1::Stream { .. } if !contextual => {
+            (compiled.clone(), parameters.clone())
+        }
+        riffdb_query_module::ReactiveOperationPlanV1::Subscription {
+            stream_name,
+            stream_hash,
+            stream_arguments,
+            ..
+        } if contextual => {
+            let stream_operation = module
+                .plan()
+                .operation(stream_name.as_str())
+                .filter(|stream| stream.identity() == *stream_hash)
+                .cloned()
+                .ok_or_else(invalid_consumer_request)?;
+            let stream_parameters = riffdb_query_module::bind_reactive_arguments(
+                stream_arguments,
+                &parameters,
+                &BTreeMap::new(),
+            )
+            .map_err(|_| invalid_consumer_request())?;
+            (stream_operation, stream_parameters)
+        }
+        _ => return Err(invalid_consumer_request()),
+    };
     let stream = catalog
-        .resolve_reactive_event_stream(&compiled, parameters.clone())
+        .resolve_reactive_event_stream(&stream_operation, stream_parameters.clone())
         .map_err(|_| invalid_consumer_request())?;
     let partition = stream.partition_key().clone();
     let partition_hash = stream.partition_hash();
     Ok(PreparedConsumer {
         catalog,
         operation: compiled,
-        parameters,
+        stream_operation,
+        stream_parameters,
         partition,
         partition_hash,
         parameter_hash,
@@ -875,6 +974,24 @@ fn policy_request(
         }
         ServiceOperationV1::GetEventStreamConsumerStatus => {
             OperationRequest::get_event_stream_consumer_status(target)
+        }
+        ServiceOperationV1::ConsumeContextualSubscription => {
+            OperationRequest::consume_contextual_subscription(
+                target,
+                NonZeroU16::new(u16::from(requested_rows)).ok_or_else(invalid_consumer_request)?,
+            )
+        }
+        ServiceOperationV1::AcknowledgeContextualSubscription => {
+            OperationRequest::acknowledge_contextual_subscription(target)
+        }
+        ServiceOperationV1::NegativeAcknowledgeContextualSubscription => {
+            OperationRequest::negative_acknowledge_contextual_subscription(target)
+        }
+        ServiceOperationV1::GetContextualSubscriptionStatus => {
+            OperationRequest::get_contextual_subscription_status(target)
+        }
+        ServiceOperationV1::ExecuteContextualReaction => {
+            OperationRequest::execute_contextual_reaction(target)
         }
         _ => return Err(invalid_consumer_request()),
     })
@@ -1044,20 +1161,50 @@ async fn submit_consumer_mutation(
     }
 }
 
-async fn consume(
+enum ConsumerDispatchResult {
+    Stream(ConsumeEventStreamResult),
+    Contextual(ConsumeContextualSubscriptionResult),
+}
+
+async fn consume_stream(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
     request: ConsumeEventStreamRequest,
+    operation: ServiceOperationV1,
 ) -> ServiceResult<ConsumeEventStreamResult> {
-    const OPERATION: ServiceOperationV1 = ServiceOperationV1::ConsumeEventStream;
+    match consume_dispatch(service, context, request, operation).await? {
+        ConsumerDispatchResult::Stream(result) => Ok(result),
+        ConsumerDispatchResult::Contextual(_) => Err(invalid_consumer_request()),
+    }
+}
+
+async fn consume_dispatch(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    request: ConsumeEventStreamRequest,
+    operation: ServiceOperationV1,
+) -> ServiceResult<ConsumerDispatchResult> {
     const MAX_STATE_CHANGE_RETRIES: u8 = 8;
     const MAX_NOTIFICATIONS: u16 = 256;
-    let prepared = prepare_consumer(&service, &context, request.selection, OPERATION).await?;
+    let prepared = prepare_consumer(&service, &context, request.selection, operation).await?;
+    let (batch_limit, in_flight_limit, lease) = match prepared.operation.plan() {
+        riffdb_query_module::ReactiveOperationPlanV1::Subscription { limits, .. } => (
+            limits.batch(),
+            limits.in_flight(),
+            Duration::from_secs(u64::from(limits.lease_seconds())),
+        ),
+        riffdb_query_module::ReactiveOperationPlanV1::Stream { .. } => {
+            (request.batch_limit, request.in_flight_limit, request.lease)
+        }
+        riffdb_query_module::ReactiveOperationPlanV1::Watch { .. } => {
+            return Err(invalid_consumer_request());
+        }
+    };
     let begun = begin_consumer(
         &service,
         &context,
         &prepared,
-        policy_request(&prepared, OPERATION, request.batch_limit)?,
+        policy_request(&prepared, operation, batch_limit)?,
     )
     .await?;
     let initial_status = match inspect_consumer(&service, &context, &begun, &prepared).await {
@@ -1086,8 +1233,10 @@ async fn consume(
         let after = prepared
             .checkpoint_after(initial_status.as_ref())
             .map(EventId::commit_sequence);
-        match establish_consumer_notification_source(&service, &context, &begun, &prepared, after)
-            .await
+        match establish_consumer_notification_source(
+            &service, &context, &begun, &prepared, after, operation,
+        )
+        .await
         {
             Ok(source) => Some(source),
             Err(failure) => {
@@ -1102,7 +1251,7 @@ async fn consume(
             Instant::now()
                 .checked_add(request.maximum_wait)
                 .ok_or_else(|| {
-                    service.internal_failure(OPERATION, InternalDefect::ProofMismatch)
+                    service.internal_failure(operation, InternalDefect::ProofMismatch)
                 })?,
         )
     };
@@ -1134,17 +1283,17 @@ async fn consume(
             .providers
             .consumer_clock
             .as_ref()
-            .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
+            .ok_or_else(|| service.internal_failure(operation, InternalDefect::ProofMismatch))?
             .now()
             .map_err(|_| PublicError::storage_unavailable())?;
-        let expires_at = add_duration(observed_at, request.lease)
-            .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+        let expires_at = add_duration(observed_at, lease)
+            .ok_or_else(|| service.internal_failure(operation, InternalDefect::ProofMismatch))?;
         let token_source = service
             .providers
             .event_lease_tokens
             .as_ref()
-            .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
-        let tokens = (0..request.batch_limit)
+            .ok_or_else(|| service.internal_failure(operation, InternalDefect::ProofMismatch))?;
+        let tokens = (0..batch_limit)
             .map(|_| token_source.generate())
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| PublicError::storage_unavailable())?;
@@ -1166,8 +1315,8 @@ async fn consume(
                 expires_at,
                 selected_events: event_ids,
                 tokens,
-                batch_limit: request.batch_limit,
-                in_flight_limit: request.in_flight_limit,
+                batch_limit,
+                in_flight_limit,
             },
         )
         .await;
@@ -1183,7 +1332,7 @@ async fn consume(
             status,
         } = response
         else {
-            let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+            let failure = service.internal_failure(operation, InternalDefect::ProofMismatch);
             return Err(finish_failure(&service, &context, &begun, failure).await);
         };
         if result == EventConsumerMutationResult::StateChanged {
@@ -1200,11 +1349,11 @@ async fn consume(
             .await);
         }
         if result != EventConsumerMutationResult::Applied {
-            let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+            let failure = service.internal_failure(operation, InternalDefect::ProofMismatch);
             return Err(finish_failure(&service, &context, &begun, failure).await);
         }
         let status = status
-            .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+            .ok_or_else(|| service.internal_failure(operation, InternalDefect::ProofMismatch))?;
         let mut events = window.into_events();
         let mut consumed = Vec::with_capacity(leases.len());
         for lease in leases {
@@ -1212,7 +1361,7 @@ async fn consume(
                 .iter()
                 .position(|event| event.event_id() == lease.event_id)
                 .ok_or_else(|| {
-                    service.internal_failure(OPERATION, InternalDefect::ProofMismatch)
+                    service.internal_failure(operation, InternalDefect::ProofMismatch)
                 })?;
             let event = events.remove(index);
             consumed.push(ConsumedEvent::new(
@@ -1223,14 +1372,16 @@ async fn consume(
             ));
         }
         if !consumed.is_empty() || window_had_events || notification_source.is_none() {
-            finish_success(&service, &context, &begun).await?;
-            return Ok(ConsumeEventStreamResult::new(consumed, status, false));
+            return finalize_consumer_delivery(
+                &service, &context, &begun, &prepared, consumed, status, false, operation,
+            )
+            .await;
         }
         let source = notification_source
             .as_mut()
-            .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+            .ok_or_else(|| service.internal_failure(operation, InternalDefect::ProofMismatch))?;
         let deadline = wait_deadline
-            .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+            .ok_or_else(|| service.internal_failure(operation, InternalDefect::ProofMismatch))?;
         match wait_for_tail_notification(
             context.control(),
             service.providers.deadline_scheduler.as_ref(),
@@ -1253,9 +1404,18 @@ async fn consume(
             }
             Err(TailWaitError::MaximumWait) => {
                 let authorization = begun.reauthorize(&service, &context).await?;
-                ensure_consumer_authorization(&service, &authorization, OPERATION, &prepared)?;
-                finish_success(&service, &context, &begun).await?;
-                return Ok(ConsumeEventStreamResult::new(Vec::new(), status, true));
+                ensure_consumer_authorization(&service, &authorization, operation, &prepared)?;
+                return finalize_consumer_delivery(
+                    &service,
+                    &context,
+                    &begun,
+                    &prepared,
+                    Vec::new(),
+                    status,
+                    true,
+                    operation,
+                )
+                .await;
             }
             Err(TailWaitError::Cancelled) => {
                 return Err(finish_controlled(
@@ -1293,12 +1453,319 @@ async fn consume(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn finalize_consumer_delivery(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    begun: &BegunInvocation,
+    prepared: &PreparedConsumer,
+    consumed: Vec<ConsumedEvent>,
+    status: EventConsumerStatus,
+    wait_timed_out: bool,
+    operation: ServiceOperationV1,
+) -> ServiceResult<ConsumerDispatchResult> {
+    if operation == ServiceOperationV1::ConsumeContextualSubscription {
+        let result = hydrate_contextual_delivery(
+            service,
+            context,
+            prepared,
+            consumed,
+            status,
+            wait_timed_out,
+        )
+        .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(failure) => return Err(finish_failure(service, context, begun, failure).await),
+        };
+        let authorization = begun.reauthorize(service, context).await?;
+        ensure_consumer_authorization(service, &authorization, operation, prepared)?;
+        finish_success(service, context, begun).await?;
+        Ok(ConsumerDispatchResult::Contextual(result))
+    } else {
+        finish_success(service, context, begun).await?;
+        Ok(ConsumerDispatchResult::Stream(
+            ConsumeEventStreamResult::new(consumed, status, wait_timed_out),
+        ))
+    }
+}
+
+async fn hydrate_contextual_delivery(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    prepared: &PreparedConsumer,
+    consumed: Vec<ConsumedEvent>,
+    status: EventConsumerStatus,
+    wait_timed_out: bool,
+) -> ServiceResult<ConsumeContextualSubscriptionResult> {
+    let riffdb_query_module::ReactiveOperationPlanV1::Subscription {
+        hydrations,
+        reactions,
+        ..
+    } = prepared.operation.plan()
+    else {
+        return Err(service.internal_failure(
+            ServiceOperationV1::ConsumeContextualSubscription,
+            InternalDefect::ProofMismatch,
+        ));
+    };
+    if consumed.is_empty() {
+        return Ok(ConsumeContextualSubscriptionResult::new(
+            Vec::new(),
+            status,
+            wait_timed_out,
+        ));
+    }
+    let query_modules = service.providers.query_modules.as_ref().ok_or_else(|| {
+        service.internal_failure(
+            ServiceOperationV1::ConsumeContextualSubscription,
+            InternalDefect::ProofMismatch,
+        )
+    })?;
+    let mut compiled_hydrations = Vec::with_capacity(hydrations.len());
+    for hydration in hydrations {
+        let module = wait_with_control(
+            context.control(),
+            service.providers.deadline_scheduler.as_ref(),
+            query_modules.prepare_query_module(
+                context.control(),
+                prepared.catalog.bundle().clone(),
+                hydration.module_hash(),
+            ),
+        )
+        .await
+        .map_err(controlled_failure)?
+        .map_err(|error| match error {
+            crate::QueryModuleReadError::Unavailable => PublicError::storage_unavailable().into(),
+            crate::QueryModuleReadError::Integrity => service.internal_failure(
+                ServiceOperationV1::ConsumeContextualSubscription,
+                InternalDefect::ProofMismatch,
+            ),
+        })?
+        .ok_or_else(|| {
+            service.internal_failure(
+                ServiceOperationV1::ConsumeContextualSubscription,
+                InternalDefect::ProofMismatch,
+            )
+        })?;
+        let query = module
+            .module()
+            .query(hydration.query_name())
+            .filter(|query| query.program().identity().hash() == hydration.plan_hash())
+            .ok_or_else(|| {
+                service.internal_failure(
+                    ServiceOperationV1::ConsumeContextualSubscription,
+                    InternalDefect::ProofMismatch,
+                )
+            })?;
+        compiled_hydrations.push((hydration, query.shared_program()));
+    }
+    let executor = service.providers.query_executor.as_ref().ok_or_else(|| {
+        service.internal_failure(
+            ServiceOperationV1::ConsumeContextualSubscription,
+            InternalDefect::ProofMismatch,
+        )
+    })?;
+    let selection_parameters = prepared
+        .selection
+        .parameters()
+        .iter()
+        .map(|(name, value)| (name.to_owned(), value.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut items = Vec::with_capacity(consumed.len());
+    for delivery in consumed {
+        let event_fields = delivery
+            .event()
+            .fields()
+            .iter()
+            .map(|field| (field.name().to_owned(), field.value().clone()))
+            .collect::<BTreeMap<_, _>>();
+        let parameters = compiled_hydrations
+            .iter()
+            .map(|(hydration, _)| {
+                riffdb_query_module::bind_reactive_arguments(
+                    hydration.arguments(),
+                    &selection_parameters,
+                    &event_fields,
+                )
+                .ok()
+                .and_then(QueryParameters::checked)
+                .ok_or_else(|| {
+                    service.internal_failure(
+                        ServiceOperationV1::ConsumeContextualSubscription,
+                        InternalDefect::ProofMismatch,
+                    )
+                })
+            })
+            .collect::<ServiceResult<Vec<_>>>()?;
+        let requests = compiled_hydrations
+            .iter()
+            .zip(&parameters)
+            .map(|((_, program), parameters)| {
+                QueryExecutionRequest::new(program.as_ref(), parameters)
+            })
+            .collect::<Vec<_>>();
+        let snapshots = executor.execute_query_group(&requests).map_err(|_| {
+            service.internal_failure(
+                ServiceOperationV1::ConsumeContextualSubscription,
+                InternalDefect::ProofMismatch,
+            )
+        })?;
+        let context_head =
+            validate_contextual_snapshot_head(&snapshots, delivery.event().event_id()).ok_or_else(
+                || {
+                    service.internal_failure(
+                        ServiceOperationV1::ConsumeContextualSubscription,
+                        InternalDefect::ProofMismatch,
+                    )
+                },
+            )?;
+        let hydrated = compiled_hydrations
+            .iter()
+            .zip(snapshots)
+            .map(|((dependency, _), snapshot)| {
+                ContextualHydration::new(
+                    dependency.name().to_owned(),
+                    snapshot.outcome().to_owned(),
+                    snapshot.into_fields(),
+                )
+            })
+            .collect();
+        let available_reactions =
+            filter_contextual_reactions(service, context, prepared, &delivery, reactions)?;
+        items.push(ContextualWorkItem::new(
+            delivery,
+            context_head,
+            hydrated,
+            available_reactions,
+        ));
+    }
+    Ok(ConsumeContextualSubscriptionResult::new(
+        items,
+        status,
+        wait_timed_out,
+    ))
+}
+
+fn validate_contextual_snapshot_head(
+    snapshots: &[QueryOwnedSnapshot],
+    event_id: EventId,
+) -> Option<CommitSequence> {
+    let first = snapshots.first()?.application_head();
+    (snapshots
+        .iter()
+        .all(|snapshot| snapshot.application_head() == first)
+        && first >= event_id.commit_sequence().get())
+    .then(|| CommitSequence::new(first))
+    .flatten()
+}
+
+fn filter_contextual_reactions(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    prepared: &PreparedConsumer,
+    delivery: &ConsumedEvent,
+    reactions: &[riffdb_query_ir::ReactiveCommandDependencyV1],
+) -> ServiceResult<Vec<AvailableContextualReaction>> {
+    let codec = service
+        .providers
+        .contextual_causation
+        .as_ref()
+        .ok_or_else(|| {
+            service.internal_failure(
+                ServiceOperationV1::ConsumeContextualSubscription,
+                InternalDefect::ProofMismatch,
+            )
+        })?;
+    let pointer = prepared.catalog.pointer();
+    let mut available = Vec::with_capacity(reactions.len());
+    for reaction in reactions {
+        let command = prepared
+            .catalog
+            .bundle()
+            .bundle()
+            .command(reaction.internal_command_id())
+            .ok_or_else(|| {
+                service.internal_failure(
+                    ServiceOperationV1::ConsumeContextualSubscription,
+                    InternalDefect::ProofMismatch,
+                )
+            })?;
+        let class = match command.execution_class() {
+            ExecutionClass::ReadOnly => CommandExecutionClass::ReadOnly,
+            ExecutionClass::IdempotentMutation => CommandExecutionClass::Mutation,
+        };
+        let request = OperationRequest::execute_command(
+            pointer.lineage().clone(),
+            pointer.contract_version(),
+            reaction.internal_command_id(),
+            class,
+            prepared.partition.clone(),
+        );
+        match service
+            .providers
+            .policy
+            .authorize(context.principal(), request)
+        {
+            Ok(Decision::Deny(_)) => continue,
+            Ok(Decision::Allow(authorization))
+                if authorization.database_id() == service.identity.database_id()
+                    && authorization.environment() == service.identity.environment()
+                    && authorization.operation() == ServiceOperationV1::ExecuteCommand => {}
+            Ok(Decision::Allow(_) | Decision::PrepareCapabilityMutation(_)) => {
+                return Err(service.internal_failure(
+                    ServiceOperationV1::ConsumeContextualSubscription,
+                    InternalDefect::ProofMismatch,
+                ));
+            }
+            Err(_) => return Err(PublicError::storage_unavailable().into()),
+        }
+        let claims = ContextualCausationClaimsV1::new(
+            service.identity.database_id(),
+            service.identity.history_incarnation(),
+            prepared.selection.module_hash(),
+            prepared.operation.identity(),
+            prepared.selection.operation_name().clone(),
+            prepared.parameter_hash,
+            prepared.selection.consumer_name().clone(),
+            delivery.event().event_id(),
+            delivery.attempt(),
+            delivery.token(),
+            context.principal().principal_id().clone(),
+            context.principal().capability_revision(),
+            reaction.internal_command_id(),
+            delivery.expires_at(),
+            delivery.event().root_request_id(),
+        )
+        .map_err(|_| {
+            service.internal_failure(
+                ServiceOperationV1::ConsumeContextualSubscription,
+                InternalDefect::ProofMismatch,
+            )
+        })?;
+        let token = codec.seal(&claims).map_err(|_| {
+            service.internal_failure(
+                ServiceOperationV1::ConsumeContextualSubscription,
+                InternalDefect::ProofMismatch,
+            )
+        })?;
+        available.push(AvailableContextualReaction::new(
+            reaction.reaction_name().to_owned(),
+            reaction.command_name().to_owned(),
+            reaction.internal_command_id(),
+            token,
+        ));
+    }
+    Ok(available)
+}
+
 async fn establish_consumer_notification_source(
     service: &RiffDbServiceInner,
     context: &RequestContext,
     begun: &BegunInvocation,
     prepared: &PreparedConsumer,
     after: Option<riffdb_types::CommitSequence>,
+    operation: ServiceOperationV1,
 ) -> ServiceResult<Box<dyn CommitNotificationSource>> {
     let permit = wait_with_control(
         context.control(),
@@ -1312,19 +1779,9 @@ async fn establish_consumer_notification_source(
     .map_err(controlled_failure)?
     .map_err(map_admission)?;
     let authorization = begun.reauthorize(service, context).await?;
-    ensure_consumer_authorization(
-        service,
-        &authorization,
-        ServiceOperationV1::ConsumeEventStream,
-        prepared,
-    )?;
+    ensure_consumer_authorization(service, &authorization, operation, prepared)?;
     let request = AuthoritativeCommitSubscriptionRequest::new(after, PageLimit::default())
-        .map_err(|_| {
-            service.internal_failure(
-                ServiceOperationV1::ConsumeEventStream,
-                InternalDefect::ProofMismatch,
-            )
-        })?;
+        .map_err(|_| service.internal_failure(operation, InternalDefect::ProofMismatch))?;
     let receipt = permit.submit(request).map_err(map_admission)?;
     match wait_with_control(
         context.control(),
@@ -1341,17 +1798,269 @@ async fn establish_consumer_notification_source(
     }
 }
 
-async fn acknowledge(
+pub(crate) async fn consume_contextual_events(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    selection: EventConsumerSelection,
+    maximum_wait: Duration,
+) -> ServiceResult<ConsumeContextualSubscriptionResult> {
+    let request = ConsumeEventStreamRequest::new(selection, 1, 1, MIN_CONSUMER_LEASE, maximum_wait)
+        .map_err(|_| invalid_consumer_request())?;
+    match consume_dispatch(
+        service,
+        context,
+        request,
+        ServiceOperationV1::ConsumeContextualSubscription,
+    )
+    .await?
+    {
+        ConsumerDispatchResult::Contextual(result) => Ok(result),
+        ConsumerDispatchResult::Stream(_) => Err(invalid_consumer_request()),
+    }
+}
+
+pub(crate) async fn acknowledge_contextual_event(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
     lease: EventConsumerLeaseSelection,
     retry_delay: Option<Duration>,
 ) -> ServiceResult<EventConsumerMutationResult> {
     let operation = if retry_delay.is_some() {
-        ServiceOperationV1::NegativeAcknowledgeEventStream
+        ServiceOperationV1::NegativeAcknowledgeContextualSubscription
     } else {
-        ServiceOperationV1::AcknowledgeEventStream
+        ServiceOperationV1::AcknowledgeContextualSubscription
     };
+    acknowledge(service, context, lease, retry_delay, operation).await
+}
+
+pub(crate) async fn contextual_consumer_status(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    selection: EventConsumerSelection,
+) -> ServiceResult<Option<EventConsumerStatus>> {
+    status(
+        service,
+        context,
+        selection,
+        ServiceOperationV1::GetContextualSubscriptionStatus,
+    )
+    .await
+}
+
+pub(crate) async fn execute_contextual_reaction_operation(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    request: ExecuteContextualReactionRequest,
+) -> ServiceResult<ExecuteCommandResult> {
+    let (selection, token, reaction_name, command_request) = request.into_parts();
+    let codec = service
+        .providers
+        .contextual_causation
+        .as_ref()
+        .ok_or_else(|| {
+            service.internal_failure(
+                ServiceOperationV1::ExecuteContextualReaction,
+                InternalDefect::ProofMismatch,
+            )
+        })?;
+    let claims = codec
+        .open(&token)
+        .map_err(|_| PublicError::authorization_denied())?;
+    let prepared = prepare_consumer(
+        &service,
+        &context,
+        selection,
+        ServiceOperationV1::ExecuteContextualReaction,
+    )
+    .await?;
+    if claims.database_id() != service.identity.database_id()
+        || claims.history_incarnation() != service.identity.history_incarnation()
+        || claims.module_hash() != prepared.selection.module_hash()
+        || claims.operation_hash() != prepared.operation.identity()
+        || claims.operation_name() != prepared.selection.operation_name()
+        || claims.parameter_hash() != prepared.parameter_hash
+        || claims.consumer_name() != prepared.selection.consumer_name()
+        || claims.principal_id() != context.principal().principal_id()
+        || claims.capability_revision() != context.principal().capability_revision()
+    {
+        return Err(PublicError::authorization_denied().into());
+    }
+    let riffdb_query_module::ReactiveOperationPlanV1::Subscription { reactions, .. } =
+        prepared.operation.plan()
+    else {
+        return Err(service.internal_failure(
+            ServiceOperationV1::ExecuteContextualReaction,
+            InternalDefect::ProofMismatch,
+        ));
+    };
+    let reaction = reactions
+        .iter()
+        .find(|reaction| reaction.reaction_name() == reaction_name)
+        .filter(|reaction| {
+            reaction.internal_command_id() == claims.command_id()
+                && reaction.command_name() == command_request.command().as_str()
+        })
+        .ok_or_else(PublicError::authorization_denied)?;
+    let command = prepared
+        .catalog
+        .bundle()
+        .bundle()
+        .command(reaction.internal_command_id())
+        .ok_or_else(|| {
+            service.internal_failure(
+                ServiceOperationV1::ExecuteContextualReaction,
+                InternalDefect::ProofMismatch,
+            )
+        })?;
+    let command_request =
+        bind_reaction_idempotency(&claims, &reaction_name, command, command_request)?;
+    let begun = begin_consumer(
+        &service,
+        &context,
+        &prepared,
+        policy_request(&prepared, ServiceOperationV1::ExecuteContextualReaction, 1)?,
+    )
+    .await?;
+    let observed_at = service
+        .providers
+        .consumer_clock
+        .as_ref()
+        .ok_or_else(|| {
+            service.internal_failure(
+                ServiceOperationV1::ExecuteContextualReaction,
+                InternalDefect::ProofMismatch,
+            )
+        })?
+        .now()
+        .map_err(|_| PublicError::storage_unavailable())?;
+    let validation = submit_consumer_mutation(
+        &service,
+        &context,
+        &begun,
+        &prepared,
+        EventConsumerPortRequest::ValidateLease {
+            identity: prepared.port_identity(),
+            partition_hash: prepared.partition_hash,
+            event_id: claims.event_id(),
+            attempt: claims.attempt(),
+            token: claims.lease_token(),
+            history_incarnation: claims.history_incarnation(),
+            observed_at,
+        },
+    )
+    .await;
+    let validation = match validation {
+        Ok(EventConsumerPortResponse::LeaseValidation(validation)) => validation,
+        Ok(_) => {
+            let failure = service.internal_failure(
+                ServiceOperationV1::ExecuteContextualReaction,
+                InternalDefect::ProofMismatch,
+            );
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+        Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+    };
+    let admit_new = match validation {
+        EventConsumerLeaseValidation::Live if observed_at < claims.expires_at() => true,
+        EventConsumerLeaseValidation::Expired if observed_at >= claims.expires_at() => false,
+        EventConsumerLeaseValidation::Live
+        | EventConsumerLeaseValidation::Expired
+        | EventConsumerLeaseValidation::NotFound
+        | EventConsumerLeaseValidation::Stale => {
+            return Err(finish_failure(
+                &service,
+                &context,
+                &begun,
+                PublicError::authorization_denied().into(),
+            )
+            .await);
+        }
+    };
+    let mode = crate::command_operations::CommandInvocationMode::Contextual {
+        causation: crate::command_operations::TrustedCommandCausation {
+            causing_event_id: claims.event_id(),
+            root_request_id: claims.root_request_id(),
+        },
+        admit_new,
+    };
+    match crate::command_operations::execute_command(&service, &context, &command_request, mode)
+        .await
+    {
+        Ok(result) => {
+            finish_success(&service, &context, &begun).await?;
+            Ok(result)
+        }
+        Err(failure) => Err(finish_failure(&service, &context, &begun, failure).await),
+    }
+}
+
+pub(crate) fn bind_reaction_idempotency(
+    claims: &ContextualCausationClaimsV1,
+    reaction_name: &str,
+    command: &riffdb_contract_ir::CommandPlan,
+    request: crate::ExecuteCommandRequest,
+) -> ServiceResult<crate::ExecuteCommandRequest> {
+    let target = command
+        .idempotency_input()
+        .ok_or_else(invalid_consumer_request)?;
+    let field = command
+        .input()
+        .record()
+        .field(target)
+        .ok_or_else(invalid_consumer_request)?;
+    let uuid_input = field.value_type().tag() == riffdb_contract_ir::ValueTypeTag::Uuid;
+    let expected = crate::derive_reaction_idempotency(claims, reaction_name, uuid_input)
+        .map_err(|_| invalid_consumer_request())?;
+    let expected = match expected {
+        ReactionIdempotencyValue::String(value) => {
+            crate::SubmittedValue::string(value).map_err(|_| invalid_consumer_request())?
+        }
+        ReactionIdempotencyValue::Uuid(value) => crate::SubmittedValue::Uuid(value),
+    };
+    let mut matches = 0_u8;
+    let mut fields = Vec::with_capacity(request.input().len().saturating_add(1));
+    for submitted in request.input().fields() {
+        let identity_matches = match submitted.identity() {
+            SubmittedFieldIdentity::Id(id) => *id == target,
+            SubmittedFieldIdentity::Name(name) => name.as_str() == field.name(),
+            SubmittedFieldIdentity::IdAndName { id, name } => {
+                *id == target && name.as_str() == field.name()
+            }
+        };
+        if identity_matches {
+            matches = matches.saturating_add(1);
+            fields.push(crate::SubmittedField::new(
+                submitted.identity().clone(),
+                expected.clone(),
+            ));
+        } else {
+            fields.push(submitted.clone());
+        }
+    }
+    match matches {
+        0 => fields.push(crate::SubmittedField::new(
+            SubmittedFieldIdentity::Id(target),
+            expected,
+        )),
+        1 => {}
+        _ => return Err(PublicError::authorization_denied().into()),
+    }
+    let input = crate::SubmittedRecord::new(fields).map_err(|_| invalid_consumer_request())?;
+    crate::ExecuteCommandRequest::new(
+        request.command().clone(),
+        request.expected_contract_version(),
+        input,
+    )
+    .map_err(|_| invalid_consumer_request())
+}
+
+async fn acknowledge(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    lease: EventConsumerLeaseSelection,
+    retry_delay: Option<Duration>,
+    operation: ServiceOperationV1,
+) -> ServiceResult<EventConsumerMutationResult> {
     if lease.history_incarnation() != service.identity.history_incarnation() {
         return Err(PublicError::history_incarnation_mismatch().into());
     }
@@ -1497,14 +2206,14 @@ async fn status(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
     selection: EventConsumerSelection,
+    operation: ServiceOperationV1,
 ) -> ServiceResult<Option<EventConsumerStatus>> {
-    const OPERATION: ServiceOperationV1 = ServiceOperationV1::GetEventStreamConsumerStatus;
-    let prepared = prepare_consumer(&service, &context, selection, OPERATION).await?;
+    let prepared = prepare_consumer(&service, &context, selection, operation).await?;
     let begun = begin_consumer(
         &service,
         &context,
         &prepared,
-        policy_request(&prepared, OPERATION, 1)?,
+        policy_request(&prepared, operation, 1)?,
     )
     .await?;
     let result = inspect_consumer(&service, &context, &begun, &prepared).await;
@@ -1548,14 +2257,24 @@ fn ensure_consumer_authorization(
     let obligations = authorization.obligations();
     let expected_audit = match operation {
         ServiceOperationV1::ConsumeEventStream
-        | ServiceOperationV1::GetEventStreamConsumerStatus => AuditClass::AdministrativeRead,
+        | ServiceOperationV1::GetEventStreamConsumerStatus
+        | ServiceOperationV1::ConsumeContextualSubscription
+        | ServiceOperationV1::GetContextualSubscriptionStatus => AuditClass::AdministrativeRead,
         ServiceOperationV1::AcknowledgeEventStream
         | ServiceOperationV1::NegativeAcknowledgeEventStream
         | ServiceOperationV1::SeekEventStreamConsumer
-        | ServiceOperationV1::RetireEventStreamConsumer => AuditClass::ControlPlaneMutation,
+        | ServiceOperationV1::RetireEventStreamConsumer
+        | ServiceOperationV1::AcknowledgeContextualSubscription
+        | ServiceOperationV1::NegativeAcknowledgeContextualSubscription
+        | ServiceOperationV1::ExecuteContextualReaction => AuditClass::ControlPlaneMutation,
         _ => return Err(service.internal_failure(operation, InternalDefect::ProofMismatch)),
     };
-    let expected_output = if operation == ServiceOperationV1::ConsumeEventStream {
+    let expected_output = if matches!(
+        operation,
+        ServiceOperationV1::ConsumeEventStream
+            | ServiceOperationV1::ConsumeContextualSubscription
+            | ServiceOperationV1::ExecuteContextualReaction
+    ) {
         OutputClassification::PolicyFilteredApplicationData
     } else {
         OutputClassification::AdministrativeRedactedData
@@ -1679,7 +2398,7 @@ fn event_predecessor(event_id: EventId) -> Option<EventId> {
     }
 }
 
-fn invalid_consumer_request() -> ServiceFailure {
+pub(crate) fn invalid_consumer_request() -> ServiceFailure {
     PublicError::validation(
         riffdb_errors::ValidationIssues::new(vec![riffdb_errors::ValidationIssue::new(
             riffdb_errors::ValidationCode::InvalidValue,

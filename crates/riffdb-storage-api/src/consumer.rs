@@ -1372,6 +1372,63 @@ pub fn coordinate_consumer_status<R: EventConsumerRepository>(
         .map(|snapshot| snapshot.as_ref().map(status_from_snapshot))
 }
 
+/// Closed result of validating one exact live lease without mutating it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CoordinatedConsumerLeaseValidationV1 {
+    /// Every durable lease fence matches and the exclusive expiry is future.
+    Live,
+    /// The consumer does not exist.
+    NotFound,
+    /// The consumer exists but the requested attempt is not its exact live lease.
+    Stale,
+    /// The exact lease exists but its exclusive expiry has elapsed.
+    Expired,
+}
+
+/// Validates one exact consumer lease in one bounded storage snapshot.
+#[allow(clippy::too_many_arguments)]
+pub fn coordinate_consumer_lease_validation<R: EventConsumerRepository>(
+    repository: &R,
+    identity: &EventConsumerIdentityV1,
+    partition_hash: PartitionKeyHash,
+    event_id: EventId,
+    attempt: EventDeliveryAttempt,
+    token: EventLeaseToken,
+    history_incarnation: u64,
+    observed_at: Timestamp,
+) -> Result<CoordinatedConsumerLeaseValidationV1, StorageError> {
+    let Some(snapshot) = repository.inspect_event_consumer(identity.identity_hash())? else {
+        return Ok(CoordinatedConsumerLeaseValidationV1::NotFound);
+    };
+    if snapshot.consumer().identity() != identity
+        || snapshot.consumer().partition_hash() != partition_hash
+        || snapshot.consumer().history_incarnation() != history_incarnation
+    {
+        return Err(invariant_error("consumer lease identity fence mismatch"));
+    }
+    let Ok(index) = delivery_index(snapshot.deliveries(), event_id) else {
+        return Ok(CoordinatedConsumerLeaseValidationV1::Stale);
+    };
+    match snapshot.deliveries()[index].state() {
+        ConsumerDeliveryStateV1::Leased {
+            attempt: live_attempt,
+            token: live_token,
+            expires_at,
+        } if live_attempt == attempt && live_token == token => {
+            if observed_at < expires_at {
+                Ok(CoordinatedConsumerLeaseValidationV1::Live)
+            } else {
+                Ok(CoordinatedConsumerLeaseValidationV1::Expired)
+            }
+        }
+        ConsumerDeliveryStateV1::Leased { .. }
+        | ConsumerDeliveryStateV1::Retry { .. }
+        | ConsumerDeliveryStateV1::DeadLettered { .. } => {
+            Ok(CoordinatedConsumerLeaseValidationV1::Stale)
+        }
+    }
+}
+
 /// Atomically leases selected events under the inspected revision.
 pub fn coordinate_consumer_lease<R: EventConsumerRepository>(
     repository: &mut R,

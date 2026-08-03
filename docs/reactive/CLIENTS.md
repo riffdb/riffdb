@@ -46,6 +46,29 @@ workers that keep one gRPC stream open. TypeScript and Python expose generated
 async iterators and operation-specific acknowledgement helpers; reconnecting
 the iterator uses the same durable consumer identity.
 
+## Contextual agent subscriptions
+
+Generated contextual clients expose one operation-specific `next`, ack, nack,
+status, and reaction helper. A pull returns zero or one work item. The item
+contains the typed event, one authoritative `context_head`, bounded named-query
+hydrations, exact lease evidence, and only the declared reactions currently
+authorized for the caller.
+
+Pass the returned work item to generated reaction and acknowledgement methods;
+do not reconstruct its token fields. RiffDB derives the reaction command's
+idempotency input from the immutable subscription identity, event ID, command,
+and reaction name. Caller-provided idempotency input is replaced before command
+validation. A retry after an uncertain response therefore resolves the same
+outcome. Acknowledge only after the reaction outcome or intended external work
+is durable.
+
+Context is recomputed on redelivery from one shared snapshot at or beyond the
+event sequence. It is not persisted in the consumer record. Available means
+the command is authorized at delivery time, not that its business preconditions
+will succeed. Reaction execution performs fresh authorization and validates the
+sealed token, live lease, restore incarnation, database, partition, principal,
+and target command.
+
 ## Live named queries
 
 Generated watch methods return the closed `Snapshot`, `Patch`, `Reset`,
@@ -108,6 +131,13 @@ MCP exposes the fixed underscore-only tools `riffdb_event_next`,
 artifacts additionally contain exact operation-specific underscore-only names
 and JSON Schemas. Every call resolves current authorization and uses the same
 application service as gRPC, CLI, and the SDKs.
+
+Contextual roles additionally expose `riffdb_contextual_next`,
+`riffdb_contextual_ack`, `riffdb_contextual_nack`,
+`riffdb_contextual_status`, and `riffdb_contextual_react`, plus generated
+operation-specific tools. The reaction call forwards the causation token from
+the work item; possession of that token never bypasses current policy or lease
+validation.
 
 An MCP `notifications/resources/updated` message is only a payload-free wakeup
 hint. Its parameters contain one authorized resource URI and no event,

@@ -86,7 +86,13 @@ impl CommandApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(ServiceOperationV1::ExecuteCommand, ingress, async move {
-            execute_command(service.as_ref(), context, request).await
+            execute_command(
+                service.as_ref(),
+                &context,
+                &request,
+                CommandInvocationMode::Ordinary,
+            )
+            .await
         })
     }
 
@@ -163,12 +169,41 @@ impl CheckedOutcomeCatalog {
     }
 }
 
-async fn execute_command(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TrustedCommandCausation {
+    pub(crate) causing_event_id: riffdb_types::EventId,
+    pub(crate) root_request_id: riffdb_types::RequestId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CommandInvocationMode {
+    Ordinary,
+    Contextual {
+        causation: TrustedCommandCausation,
+        admit_new: bool,
+    },
+}
+
+impl CommandInvocationMode {
+    const fn admits_new(self) -> bool {
+        matches!(
+            self,
+            Self::Ordinary
+                | Self::Contextual {
+                    admit_new: true,
+                    ..
+                }
+        )
+    }
+}
+
+pub(crate) async fn execute_command(
     service: &RiffDbServiceInner,
-    context: RequestContext,
-    request: ExecuteCommandRequest,
+    context: &RequestContext,
+    request: &ExecuteCommandRequest,
+    mode: CommandInvocationMode,
 ) -> ServiceResult<ExecuteCommandResult> {
-    let active = prepare_active_command(service, &context, &request).await?;
+    let active = prepare_active_command(service, context, request).await?;
     let targets = ServiceAuditTargetMap::execute_command(
         active.catalog_request.lineage().clone(),
         active.catalog_request.version(),
@@ -183,10 +218,14 @@ async fn execute_command(
 
     match active.resolved.plan().execution_class() {
         ExecutionClass::ReadOnly => {
-            execute_read_only(service, &context, &request, active, targets).await
+            if mode == CommandInvocationMode::Ordinary {
+                execute_read_only(service, context, request, active, targets).await
+            } else {
+                Err(crate::consumer_operations::invalid_consumer_request())
+            }
         }
         ExecutionClass::IdempotentMutation => {
-            execute_mutation(service, &context, &request, active, targets).await
+            execute_mutation(service, context, request, active, targets, mode).await
         }
     }
 }
@@ -449,6 +488,7 @@ async fn execute_mutation(
     request: &ExecuteCommandRequest,
     active: ActiveCommand,
     targets: ServiceAuditTargetsV1,
+    mode: CommandInvocationMode,
 ) -> ServiceResult<ExecuteCommandResult> {
     service.classify_intrinsic_prestart(
         context,
@@ -603,6 +643,20 @@ async fn execute_mutation(
         }
 
         let invocation = begun.as_ref().expect("mutation begins before admission");
+        if matches!(
+            inspection.plan_selection(),
+            CommandIdempotencyPlanSelection::Absent
+        ) && !mode.admits_new()
+        {
+            return Err(finish_failure(
+                service,
+                context,
+                invocation,
+                PublicError::authorization_denied().into(),
+                TerminalKind::Ordinary,
+            )
+            .await);
+        }
         // Capacity admission precedes re-authorization and preparation construction.
         // Per preparation-attempt item: never hold item N capacity while admitting N+1.
         let permit = match admit_command_capacity(service, context, &normalized).await {
@@ -760,6 +814,12 @@ async fn execute_mutation(
         .and_then(|preparation| preparation.with_audited_lifecycle(Box::new(started)))
         .and_then(|preparation| {
             preparation.with_post_evaluation_authorizer(Box::new(post_evaluation_authorizer))
+        })
+        .and_then(|preparation| match mode {
+            CommandInvocationMode::Ordinary => Ok(preparation),
+            CommandInvocationMode::Contextual { causation, .. } => {
+                preparation.with_causation(causation.causing_event_id, causation.root_request_id)
+            }
         }) {
             Ok(preparation) => preparation,
             Err(_) => {
@@ -1894,10 +1954,12 @@ fn extract_idempotency_key(
         .ok()
         .map(|index| &normalized.fields()[index].1)
         .ok_or(())?;
-    let CanonicalValue::String(value) = value else {
-        return Err(());
+    let value = match value {
+        CanonicalValue::String(value) => value.as_str().to_owned(),
+        CanonicalValue::Uuid(value) => canonical_uuid_text(value),
+        _ => return Err(()),
     };
-    IdempotencyKey::new(value.as_str().to_owned()).map_err(|_| ())
+    IdempotencyKey::new(value).map_err(|_| ())
 }
 
 fn extract_submitted_idempotency_key(
@@ -1923,14 +1985,43 @@ fn extract_submitted_idempotency_key(
             Ok(_) | Err(_) => {}
         }
     }
-    if let Some(SubmittedValue::String(value)) = candidate
-        && let Ok(key) = IdempotencyKey::new(value.as_str().to_owned())
-    {
-        return Ok(key);
+    if let Some(value) = candidate {
+        let value = match value {
+            SubmittedValue::String(value) => Some(value.as_str().to_owned()),
+            SubmittedValue::Uuid(value) => Some(canonical_uuid_text(value)),
+            _ => None,
+        };
+        if let Some(value) = value
+            && let Ok(key) = IdempotencyKey::new(value)
+        {
+            return Ok(key);
+        }
     }
 
     let normalized = normalize_command_input(plan, schema, plan, submitted)?;
     extract_idempotency_key(plan, &normalized).map_err(|()| InputPreparationError::Integrity)
+}
+
+fn canonical_uuid_text(bytes: &[u8; 16]) -> String {
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    )
 }
 
 fn map_committed_outcome(

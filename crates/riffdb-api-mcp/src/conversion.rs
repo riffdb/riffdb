@@ -593,6 +593,72 @@ pub enum McpFixedToolRequest {
         /// Optional opaque reconnect cursor.
         cursor: Option<Vec<u8>>,
     },
+    /// `riffdb_contextual_next`.
+    ContextualNext {
+        /// Exact reactive-module hash.
+        module_hash: [u8; 32],
+        /// Exact contextual operation name.
+        operation_name: String,
+        /// Natural symbolic parameters.
+        parameters: Map<String, Value>,
+        /// Durable consumer name.
+        consumer_name: String,
+        /// Bounded long-poll duration.
+        maximum_wait_nanos: u64,
+    },
+    /// `riffdb_contextual_ack` or `riffdb_contextual_nack`.
+    ContextualLeaseMutation {
+        /// True for negative acknowledge.
+        nack: bool,
+        /// Exact reactive-module hash.
+        module_hash: [u8; 32],
+        /// Exact contextual operation name.
+        operation_name: String,
+        /// Natural symbolic parameters.
+        parameters: Map<String, Value>,
+        /// Durable consumer name.
+        consumer_name: String,
+        /// Stable event identity.
+        event_id: (u64, u32),
+        /// Opaque attempt token.
+        lease_token: Vec<u8>,
+        /// Restore-incarnation fence.
+        history_incarnation: u64,
+        /// Bounded negative-acknowledge delay.
+        retry_delay_nanos: u64,
+    },
+    /// `riffdb_contextual_status`.
+    ContextualStatus {
+        /// Exact reactive-module hash.
+        module_hash: [u8; 32],
+        /// Exact contextual operation name.
+        operation_name: String,
+        /// Natural symbolic parameters.
+        parameters: Map<String, Value>,
+        /// Durable consumer name.
+        consumer_name: String,
+    },
+    /// `riffdb_contextual_react`.
+    ContextualReaction {
+        /// Exact reactive-module hash.
+        module_hash: [u8; 32],
+        /// Exact contextual operation name.
+        operation_name: String,
+        /// Natural symbolic parameters.
+        parameters: Map<String, Value>,
+        /// Durable consumer name.
+        consumer_name: String,
+        /// Declared reaction name.
+        reaction_name: String,
+        /// Opaque server-issued causation proof.
+        causation_token: Vec<u8>,
+        /// Target compiled command name.
+        command_name: String,
+        /// Natural name-addressed command input.
+        input: Map<String, Value>,
+        /// Optional active-version precondition.
+        expected_contract_version: Option<u64>,
+    },
 }
 
 /// Decodes one already-schema-validated fixed-tool input.
@@ -826,6 +892,53 @@ pub fn decode_fixed_tool_request(
                     .cursor
                     .map(|value| decode_base64(&value))
                     .transpose()?,
+            })
+        }
+        26 => {
+            let request: RawContextualNext = arguments.deserialize().map_err(conversion)?;
+            Ok(McpFixedToolRequest::ContextualNext {
+                module_hash: parse_hash32(&request.module_hash)?,
+                operation_name: request.operation_name,
+                parameters: request.parameters,
+                consumer_name: request.consumer_name,
+                maximum_wait_nanos: request.maximum_wait_nanos,
+            })
+        }
+        27 | 28 => {
+            let request: RawEventLease = arguments.deserialize().map_err(conversion)?;
+            Ok(McpFixedToolRequest::ContextualLeaseMutation {
+                nack: tag == 28,
+                module_hash: parse_hash32(&request.module_hash)?,
+                operation_name: request.operation_name,
+                parameters: request.parameters,
+                consumer_name: request.consumer_name,
+                event_id: parse_event_id(&request.event_id)?,
+                lease_token: parse_hex_bytes(&request.lease_token)?,
+                history_incarnation: parse_u64(&request.history_incarnation)?,
+                retry_delay_nanos: request.retry_delay_nanos.unwrap_or(0),
+            })
+        }
+        29 => {
+            let request: RawEventStatus = arguments.deserialize().map_err(conversion)?;
+            Ok(McpFixedToolRequest::ContextualStatus {
+                module_hash: parse_hash32(&request.module_hash)?,
+                operation_name: request.operation_name,
+                parameters: request.parameters,
+                consumer_name: request.consumer_name,
+            })
+        }
+        30 => {
+            let request: RawContextualReaction = arguments.deserialize().map_err(conversion)?;
+            Ok(McpFixedToolRequest::ContextualReaction {
+                module_hash: parse_hash32(&request.module_hash)?,
+                operation_name: request.operation_name,
+                parameters: request.parameters,
+                consumer_name: request.consumer_name,
+                reaction_name: request.reaction_name,
+                causation_token: decode_base64(&request.causation_token)?,
+                command_name: request.command_name,
+                input: request.input,
+                expected_contract_version: parse_optional_u64(request.expected_contract_version)?,
             })
         }
         _ => Err(McpConversionError),
@@ -1104,6 +1217,16 @@ pub enum McpFixedResultBranch {
     EventStatusCompleted,
     /// One live-query update completed.
     QueryWatchCompleted,
+    /// Contextual work pull completed.
+    ContextualNextCompleted,
+    /// Contextual acknowledge completed.
+    ContextualAckCompleted,
+    /// Contextual negative acknowledge completed.
+    ContextualNackCompleted,
+    /// Contextual status completed.
+    ContextualStatusCompleted,
+    /// Contextual reaction completed.
+    ContextualReactionCompleted,
 }
 
 impl McpFixedResultBranch {
@@ -1143,6 +1266,11 @@ impl McpFixedResultBranch {
             Self::EventSeekCompleted => 23,
             Self::EventStatusCompleted => 24,
             Self::QueryWatchCompleted => 25,
+            Self::ContextualNextCompleted => 26,
+            Self::ContextualAckCompleted => 27,
+            Self::ContextualNackCompleted => 28,
+            Self::ContextualStatusCompleted => 29,
+            Self::ContextualReactionCompleted => 30,
         }
     }
 
@@ -1190,7 +1318,12 @@ impl McpFixedResultBranch {
             | Self::EventNackCompleted
             | Self::EventSeekCompleted
             | Self::EventStatusCompleted
-            | Self::QueryWatchCompleted => "completed",
+            | Self::QueryWatchCompleted
+            | Self::ContextualNextCompleted
+            | Self::ContextualAckCompleted
+            | Self::ContextualNackCompleted
+            | Self::ContextualStatusCompleted
+            | Self::ContextualReactionCompleted => "completed",
         }
     }
 
@@ -1366,6 +1499,33 @@ struct RawEventNext {
     lease_seconds: u64,
     #[serde(default = "default_event_wait")]
     maximum_wait_nanos: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawContextualNext {
+    module_hash: String,
+    operation_name: String,
+    #[serde(default)]
+    parameters: Map<String, Value>,
+    consumer_name: String,
+    #[serde(default = "default_event_wait")]
+    maximum_wait_nanos: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawContextualReaction {
+    module_hash: String,
+    operation_name: String,
+    #[serde(default)]
+    parameters: Map<String, Value>,
+    consumer_name: String,
+    reaction_name: String,
+    causation_token: String,
+    command_name: String,
+    input: Map<String, Value>,
+    expected_contract_version: Option<String>,
 }
 
 #[derive(Deserialize)]

@@ -53,6 +53,11 @@ service EventService {
   rpc SeekEventStreamConsumer(SeekEventStreamConsumerRequest) returns (EventConsumerMutationResponse);
   rpc RetireEventStreamConsumer(RetireEventStreamConsumerRequest) returns (EventConsumerMutationResponse);
   rpc GetEventStreamConsumerStatus(GetEventStreamConsumerStatusRequest) returns (GetEventStreamConsumerStatusResponse);
+  rpc ConsumeContextualSubscription(ConsumeContextualSubscriptionRequest) returns (ConsumeContextualSubscriptionResponse);
+  rpc AcknowledgeContextualSubscription(AcknowledgeContextualSubscriptionRequest) returns (EventConsumerMutationResponse);
+  rpc NegativeAcknowledgeContextualSubscription(NegativeAcknowledgeContextualSubscriptionRequest) returns (EventConsumerMutationResponse);
+  rpc GetContextualSubscriptionStatus(GetContextualSubscriptionStatusRequest) returns (GetEventStreamConsumerStatusResponse);
+  rpc ExecuteContextualReaction(ExecuteContextualReactionRequest) returns (ExecuteCommandResponse);
 }
 
 service AdminService {

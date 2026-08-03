@@ -120,7 +120,7 @@ fn semantic_wire_vectors() -> Vec<(&'static str, CanonicalStoredEnvelopeV1)> {
         "riffdb.storage.v1.StoredPendingAdmissionV1",
         assert_round_trip(
             atomic.expected_pending().clone(),
-            encode_pending_admission_v1,
+            encode_pending_admission_legacy_v1_fixture,
             decode_pending_admission_v1,
         ),
     ));
@@ -131,7 +131,7 @@ fn semantic_wire_vectors() -> Vec<(&'static str, CanonicalStoredEnvelopeV1)> {
                 atomic.expected_pending().clone(),
                 ExecutionFailureCode::ArithmeticFault,
             ),
-            encode_execution_failed_v1,
+            encode_execution_failed_legacy_v1_fixture,
             decode_execution_failed_v1,
         ),
     ));
@@ -139,7 +139,7 @@ fn semantic_wire_vectors() -> Vec<(&'static str, CanonicalStoredEnvelopeV1)> {
         "riffdb.storage.v1.StoredOutcomeV1",
         assert_round_trip(
             atomic.stored_outcome().clone(),
-            encode_stored_outcome_v1,
+            encode_stored_outcome_legacy_v1_fixture,
             decode_stored_outcome_v1,
         ),
     ));
@@ -163,7 +163,7 @@ fn semantic_wire_vectors() -> Vec<(&'static str, CanonicalStoredEnvelopeV1)> {
         "riffdb.storage.v1.StoredProvenanceRecordV1",
         assert_round_trip(
             atomic.provenance().clone(),
-            encode_provenance_record_v1,
+            encode_provenance_record_legacy_v1_fixture,
             decode_provenance_record_v1,
         ),
     ));

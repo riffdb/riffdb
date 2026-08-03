@@ -76,8 +76,8 @@ pub enum McpToolGenerationError {
     InvalidSchema,
 }
 
-/// Generates the exact MCP actions for each stream and watch in one immutable
-/// reactive module. Contextual subscriptions remain owned by WP-420.
+/// Generates the exact MCP actions for each stream, watch, and contextual
+/// subscription in one immutable reactive module.
 pub fn generate_mcp_reactive_tools(
     module: &ReactiveModulePlanV1,
     contract: &ContractBundle,
@@ -87,8 +87,8 @@ pub fn generate_mcp_reactive_tools(
     for operation in module.operations() {
         let parameters = match operation.plan() {
             ReactiveOperationPlanV1::Stream { parameters, .. }
-            | ReactiveOperationPlanV1::Watch { parameters, .. } => parameters,
-            ReactiveOperationPlanV1::Subscription { .. } => continue,
+            | ReactiveOperationPlanV1::Watch { parameters, .. }
+            | ReactiveOperationPlanV1::Subscription { parameters, .. } => parameters,
         };
         let parameter_properties = parameters
             .iter()
@@ -103,12 +103,28 @@ pub fn generate_mcp_reactive_tools(
             .iter()
             .map(|parameter| Value::String(parameter.name().to_owned()))
             .collect::<Vec<_>>();
-        let actions: &[&str] = match operation.plan() {
-            ReactiveOperationPlanV1::Stream { .. } => &["ack", "nack", "next", "seek", "status"],
-            ReactiveOperationPlanV1::Watch { .. } => &["watch"],
-            ReactiveOperationPlanV1::Subscription { .. } => &[],
+        let actions = match operation.plan() {
+            ReactiveOperationPlanV1::Stream { .. } => ["ack", "nack", "next", "seek", "status"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+            ReactiveOperationPlanV1::Watch { .. } => vec!["watch".to_owned()],
+            ReactiveOperationPlanV1::Subscription { reactions, .. } => {
+                let mut actions = vec![
+                    "ack".to_owned(),
+                    "nack".to_owned(),
+                    "next".to_owned(),
+                    "status".to_owned(),
+                ];
+                actions.extend(
+                    reactions
+                        .iter()
+                        .map(|reaction| format!("react_{}", snake(reaction.reaction_name()))),
+                );
+                actions
+            }
         };
-        for action in actions {
+        for action in &actions {
             let name = format!(
                 "{}_{}_{}",
                 snake(module.name()),
@@ -129,7 +145,7 @@ pub fn generate_mcp_reactive_tools(
                 }),
             );
             let mut required = vec![Value::String("parameters".to_owned())];
-            if matches!(*action, "ack" | "nack") {
+            if matches!(action.as_str(), "ack" | "nack") {
                 properties.insert("event_id".to_owned(), json!({"type":"string"}));
                 properties.insert("lease_token".to_owned(), json!({"type":"string"}));
                 properties.insert(
@@ -141,19 +157,74 @@ pub fn generate_mcp_reactive_tools(
                         .map(|name| Value::String(name.to_owned())),
                 );
             }
-            if matches!(*action, "next" | "ack" | "nack" | "seek" | "status") {
+            if matches!(action.as_str(), "next" | "ack" | "nack" | "seek" | "status")
+                || action.starts_with("react_")
+            {
                 properties.insert(
                     "consumer_name".to_owned(),
                     json!({"type":"string", "pattern":"^[A-Za-z][A-Za-z0-9_-]{0,63}$"}),
                 );
                 required.push(Value::String("consumer_name".to_owned()));
             }
-            if *action == "seek" {
+            if action == "seek" {
                 properties.insert("checkpoint".to_owned(), json!({"type":"string"}));
                 required.push(Value::String("checkpoint".to_owned()));
             }
-            if *action == "watch" {
+            if action == "watch" {
                 properties.insert("cursor".to_owned(), json!({"type":["string", "null"]}));
+            }
+            if action.starts_with("react_") {
+                let reaction = match operation.plan() {
+                    ReactiveOperationPlanV1::Subscription { reactions, .. } => reactions
+                        .iter()
+                        .find(|reaction| {
+                            action == &format!("react_{}", snake(reaction.reaction_name()))
+                        })
+                        .expect("action was built from one declared reaction"),
+                    _ => unreachable!("reaction actions are subscription-only"),
+                };
+                let command = contract
+                    .commands()
+                    .iter()
+                    .find(|command| command.name() == reaction.command_name())
+                    .expect("reactive compiler retained exact command dependency");
+                let command_properties = command
+                    .input()
+                    .record()
+                    .fields()
+                    .iter()
+                    .filter(|field| command.idempotency_input() != Some(field.id()))
+                    .map(|field| {
+                        (
+                            field.name().to_owned(),
+                            mcp_contract_type_schema(field.value_type(), contract),
+                        )
+                    })
+                    .collect::<Map<_, _>>();
+                let command_required = command
+                    .input()
+                    .record()
+                    .fields()
+                    .iter()
+                    .filter(|field| command.idempotency_input() != Some(field.id()))
+                    .map(|field| Value::String(field.name().to_owned()))
+                    .collect::<Vec<_>>();
+                properties.insert(
+                    "causation_token".to_owned(),
+                    json!({"type":"string", "contentEncoding":"base64"}),
+                );
+                properties.insert(
+                    "input".to_owned(),
+                    json!({
+                        "type":"object",
+                        "additionalProperties":false,
+                        "properties":command_properties,
+                        "required":command_required,
+                    }),
+                );
+                required.extend(
+                    ["causation_token", "input"].map(|name| Value::String(name.to_owned())),
+                );
             }
             let input = json!({
                 "$schema": MCP_SCHEMA_DIALECT,
@@ -700,7 +771,7 @@ pub fn generate_rust_application_client(
     if !reactive_modules.is_empty() {
         output.push_str(
             "\nuse riffdb_client_rust::generated::{GeneratedEventConsumer, GeneratedLiveQuery};\n\
-             use riffdb_client_rust::{ApplicationEvent, ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerStatus, ApplicationEventMutationResult, ApplicationLiveQueryUpdate, ApplicationReactiveOperation, EventConsumerOptions, LiveQueryCheckpoint, LiveQueryCursor, TypedEventBatch, TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream};\n",
+             use riffdb_client_rust::{ApplicationEvent, ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerStatus, ApplicationEventMutationResult, ApplicationLiveQueryUpdate, ApplicationReactiveOperation, EventConsumerOptions, LiveQueryCheckpoint, LiveQueryCursor, TypedContextualBatch, TypedContextualWorkItem, TypedEventBatch, TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream};\n",
         );
     }
     for reactive in reactive_modules {
@@ -848,7 +919,54 @@ fn emit_rust_reactive_module(
                 )
                 .expect("string");
             }
-            ReactiveOperationPlanV1::Subscription { .. } => {}
+            ReactiveOperationPlanV1::Subscription {
+                parameters,
+                stream_name,
+                reactions,
+                ..
+            } => {
+                let name = pascal(operation.name().as_str());
+                let stream = pascal(stream_name.as_str());
+                emit_rust_reactive_parameters(output, &name, parameters, contract);
+                writeln!(
+                    output,
+                    "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {name}Consumer {{\n    pub parameters: {name}Params,\n    pub consumer_name: String,\n}}\npub type {name}Item = TypedContextualWorkItem<{stream}Event>;"
+                )
+                .expect("string");
+                writeln!(output, "impl GeneratedEventConsumer for {name}Consumer {{\n    type Event = {stream}Event;\n    fn event_consumer(self) -> Result<ApplicationEventConsumer, ApplicationClientError> {{\n        let mut parameters = BTreeMap::new();").expect("string");
+                for parameter in parameters {
+                    writeln!(
+                        output,
+                        "        parameters.insert({:?}.to_owned(), {});",
+                        parameter.name(),
+                        rust_reactive_application_value(
+                            parameter.type_name(),
+                            &format!("self.parameters.{}", rust_identifier(parameter.name())),
+                            contract,
+                        )
+                    )
+                    .expect("string");
+                }
+                writeln!(
+                    output,
+                    "        ApplicationEventConsumer::new(ApplicationReactiveOperation::new({}_REACTIVE_MODULE_HASH, {:?}, parameters)?, self.consumer_name)\n    }}\n    fn decode_event(event: ApplicationEvent) -> Result<Self::Event, ApplicationClientError> {{\n        <{stream}Consumer as GeneratedEventConsumer>::decode_event(event)\n    }}\n}}\nimpl {client_name} {{\n    pub async fn next_{method}(&mut self, consumer: {name}Consumer, maximum_wait_nanos: u64) -> Result<TypedContextualBatch<{stream}Event>, ApplicationClientError> {{\n        self.client.consume_generated_contextual(consumer, maximum_wait_nanos, &self.metadata).await\n    }}\n    pub async fn ack_{method}(&mut self, consumer: &{name}Consumer, item: &{name}Item) -> Result<ApplicationEventMutationResult, ApplicationClientError> {{\n        let identity = consumer.clone().event_consumer()?;\n        self.client.acknowledge_contextual_item(&identity, item.evidence(), &self.metadata).await\n    }}\n    pub async fn nack_{method}(&mut self, consumer: &{name}Consumer, item: &{name}Item, retry_delay_nanos: u64) -> Result<ApplicationEventMutationResult, ApplicationClientError> {{\n        let identity = consumer.clone().event_consumer()?;\n        self.client.negative_acknowledge_contextual_item(&identity, item.evidence(), retry_delay_nanos, &self.metadata).await\n    }}\n    pub async fn {method}_status(&mut self, consumer: &{name}Consumer) -> Result<Option<ApplicationEventConsumerStatus>, ApplicationClientError> {{\n        let identity = consumer.clone().event_consumer()?;\n        self.client.contextual_subscription_status(&identity, &self.metadata).await\n    }}",
+                    screaming_snake(reactive.name()),
+                    operation.name().as_str(),
+                    method = snake(operation.name().as_str()),
+                )
+                .expect("string");
+                for reaction in reactions {
+                    let command = reaction.command_name();
+                    writeln!(
+                        output,
+                        "    pub async fn react_{reaction_method}(&mut self, consumer: &{name}Consumer, item: &{name}Item, command: &{command}Input) -> Result<TypedCommandResult<{command}Outcome>, ApplicationClientError> {{\n        let identity = consumer.clone().event_consumer()?;\n        let reaction = item.evidence().available_reactions.iter().find(|reaction| reaction.name == {reaction_name:?} && reaction.command_name == {command:?}).ok_or(ApplicationClientError::InvalidResponse)?;\n        self.client.execute_generated_contextual_reaction(&identity, reaction, command, &self.metadata).await.map_err(Into::into)\n    }}",
+                        reaction_method = snake(reaction.reaction_name()),
+                        reaction_name = reaction.reaction_name(),
+                    )
+                    .expect("string");
+                }
+                writeln!(output, "}}\n").expect("string");
+            }
         }
     }
 }
@@ -1967,6 +2085,10 @@ export interface ReactiveEventDelivery<E> { readonly eventId: string; readonly e
 export interface ReactiveConsumerStatus { readonly revision: bigint; readonly checkpoint: string; readonly historyIncarnation: bigint; readonly liveLeases: number; readonly retries: number; readonly deadLetters: number; }
 export interface ReactiveConsumerBatch<E> { readonly events: ReadonlyArray<ReactiveEventDelivery<E>>; readonly waitTimedOut: boolean; readonly status: ReactiveConsumerStatus; }
 export interface ReactiveConsumerOptions { readonly batchLimit?: number; readonly inFlightLimit?: number; readonly leaseSeconds?: number; readonly maximumWaitMs?: number; }
+export interface ContextualHydration { readonly name: string; readonly outcome: string; readonly fields: Readonly<Record<string, unknown>>; }
+export interface ContextualReaction { readonly name: string; readonly commandName: string; readonly commandId: number; readonly causationToken: string; }
+export interface ContextualWorkItem<E> { readonly delivery: ReactiveEventDelivery<E>; readonly contextHead: bigint; readonly hydrations: ReadonlyArray<ContextualHydration>; readonly availableReactions: ReadonlyArray<ContextualReaction>; }
+export interface ContextualBatch<E> { readonly items: ReadonlyArray<ContextualWorkItem<E>>; readonly waitTimedOut: boolean; readonly status: ReactiveConsumerStatus; }
 export type ReactiveEventMutationResult = "applied" | "state_changed" | "not_found" | "outstanding_lease" | "stale_lease" | "lease_expired";
 export type LiveQueryPatchOperation =
   | { readonly type: "insert"; readonly index: number; readonly record: Readonly<Record<string, unknown>> }
@@ -1985,6 +2107,11 @@ export interface ReactiveApplicationTransport {
   negativeAcknowledgeEvent<P>(request: ReactiveConsumerRequest<P>, delivery: ReactiveEventDelivery<unknown>, retryDelayMs?: number): Promise<ReactiveEventMutationResult>;
   seekEventConsumer<P>(request: ReactiveConsumerRequest<P>, checkpoint: string): Promise<ReactiveEventMutationResult>;
   eventConsumerStatus<P>(request: ReactiveConsumerRequest<P>): Promise<ReactiveConsumerStatus | undefined>;
+  consumeContextualSubscription<P, E>(request: ReactiveConsumerRequest<P>, maximumWaitMs?: number): Promise<ContextualBatch<E>>;
+  acknowledgeContextualItem<P>(request: ReactiveConsumerRequest<P>, item: ContextualWorkItem<unknown>): Promise<ReactiveEventMutationResult>;
+  negativeAcknowledgeContextualItem<P>(request: ReactiveConsumerRequest<P>, item: ContextualWorkItem<unknown>, retryDelayMs?: number): Promise<ReactiveEventMutationResult>;
+  contextualSubscriptionStatus<P>(request: ReactiveConsumerRequest<P>): Promise<ReactiveConsumerStatus | undefined>;
+  executeContextualReaction<P, I, R>(request: ReactiveConsumerRequest<P>, reaction: ContextualReaction, command: CommandRequest<I, R>): Promise<TypedCommandResult<R>>;
   watchNamedQuery<P, T>(request: { readonly reactiveModuleHash: string; readonly operationName: string; readonly parameters: P; readonly parameterSchema: ReactiveParameterSchema; readonly cursor?: string }): AsyncIterable<LiveQueryUpdate<T>>;
 }
 export interface LiveStore<T> { readonly current: T | undefined; readonly connected: boolean; subscribe(listener: (value: T | undefined) => void): () => void; connect(updates: AsyncIterable<LiveQueryUpdate<T>>): Promise<void>; close(): void; }
@@ -2075,7 +2202,20 @@ async function* applicationSseRelay<T>(authorized: () => Promise<boolean>, updat
                 )
                 .expect("string");
             }
-            ReactiveOperationPlanV1::Subscription { .. } => {}
+            ReactiveOperationPlanV1::Subscription {
+                parameters,
+                stream_name,
+                ..
+            } => {
+                let name = pascal(operation.name().as_str());
+                let stream = pascal(stream_name.as_str());
+                emit_typescript_reactive_parameters(output, &name, parameters, contract);
+                writeln!(
+                    output,
+                    "export type {name}Item = ContextualWorkItem<{stream}Event>;\nexport type {name}Batch = ContextualBatch<{stream}Event>;"
+                )
+                .expect("string");
+            }
         }
     }
     let client_name = format!(
@@ -2120,7 +2260,31 @@ async function* applicationSseRelay<T>(authorized: () => Promise<boolean>, updat
                 )
                 .expect("string");
             }
-            ReactiveOperationPlanV1::Subscription { .. } => {}
+            ReactiveOperationPlanV1::Subscription { reactions, .. } => {
+                let name = pascal(operation.name().as_str());
+                let request = format!(
+                    "{{ reactiveModuleHash: {}_REACTIVE_MODULE_HASH, operationName: {:?}, parameters, parameterSchema: {name}ParameterSchema, consumerName }}",
+                    screaming_snake(reactive.name()),
+                    operation.name().as_str(),
+                );
+                writeln!(
+                    output,
+                    "  public next{name}(parameters: {name}Params, consumerName: string, maximumWaitMs = 30000): Promise<{name}Batch> {{ return this.transport.consumeContextualSubscription({request}, maximumWaitMs); }}\n  public ack{name}(parameters: {name}Params, consumerName: string, item: {name}Item): Promise<ReactiveEventMutationResult> {{ return this.transport.acknowledgeContextualItem({request}, item); }}\n  public nack{name}(parameters: {name}Params, consumerName: string, item: {name}Item, retryDelayMs = 0): Promise<ReactiveEventMutationResult> {{ return this.transport.negativeAcknowledgeContextualItem({request}, item, retryDelayMs); }}\n  public {status}Status(parameters: {name}Params, consumerName: string): Promise<ReactiveConsumerStatus | undefined> {{ return this.transport.contextualSubscriptionStatus({request}); }}",
+                    status = camel(operation.name().as_str()),
+                )
+                .expect("string");
+                for reaction in reactions {
+                    let command = reaction.command_name();
+                    writeln!(
+                        output,
+                        "  public react{reaction_method}(parameters: {name}Params, consumerName: string, item: {name}Item, input: {command}Input): Promise<TypedCommandResult<{command}Outcome>> {{ const reaction = item.availableReactions.find((value) => value.name === {reaction_name:?} && value.commandName === {command:?}); if (reaction === undefined) throw new Error(\"contextual reaction is unavailable\"); return this.transport.executeContextualReaction({request}, reaction, {command_function}(input)); }}",
+                        reaction_method = pascal(reaction.reaction_name()),
+                        reaction_name = reaction.reaction_name(),
+                        command_function = camel(command),
+                    )
+                    .expect("string");
+                }
+            }
         }
     }
     writeln!(output, "}}\n").expect("string");

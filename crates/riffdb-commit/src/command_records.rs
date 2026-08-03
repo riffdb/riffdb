@@ -674,7 +674,7 @@ fn build_atomic_command_record_set(
         .map(StoredDurableEventV1::event_id)
         .collect::<Vec<_>>();
 
-    let stored_outcome = StoredOutcomeV1::new(
+    let stored_outcome = StoredOutcomeV1::new_with_causation(
         pending.identity().clone(),
         sequence,
         pending.admission_request_id(),
@@ -689,12 +689,13 @@ fn build_atomic_command_record_set(
         pending.provenance_claims().clone(),
         intent.provenance_id(),
         durability_mode,
+        pending.causation(),
     )?;
     let affected_entities = entities
         .iter()
         .map(|mutation| AffectedEntityV1::from_record(mutation.post_image()))
         .collect();
-    let provenance = StoredProvenanceRecordV1::new(
+    let provenance = StoredProvenanceRecordV1::new_with_causation(
         intent.provenance_id(),
         sequence,
         pending.identity().clone(),
@@ -709,6 +710,7 @@ fn build_atomic_command_record_set(
         affected_entities,
         event_ids.clone(),
         pending.provenance_claims().clone(),
+        pending.causation(),
     )?;
     let entity_references = entities
         .iter()

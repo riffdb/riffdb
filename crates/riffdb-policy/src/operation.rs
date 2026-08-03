@@ -836,6 +836,22 @@ enum OperationKind {
         operation_name: ReactiveOperationName,
         target: ApplicationQueryTarget,
     },
+    ConsumeContextualSubscription {
+        target: EventConsumerOperationTarget,
+        requested_rows: NonZeroU16,
+    },
+    AcknowledgeContextualSubscription {
+        target: EventConsumerOperationTarget,
+    },
+    NegativeAcknowledgeContextualSubscription {
+        target: EventConsumerOperationTarget,
+    },
+    GetContextualSubscriptionStatus {
+        target: EventConsumerOperationTarget,
+    },
+    ExecuteContextualReaction {
+        target: EventConsumerOperationTarget,
+    },
     DescribeEvent {
         lineage: ContractLineage,
         version: ContractVersion,
@@ -1329,6 +1345,44 @@ impl OperationRequest {
         }))
     }
 
+    /// Constructs one bounded contextual pull request.
+    #[must_use]
+    pub const fn consume_contextual_subscription(
+        target: EventConsumerOperationTarget,
+        requested_rows: NonZeroU16,
+    ) -> Self {
+        Self(OperationKind::ConsumeContextualSubscription {
+            target,
+            requested_rows,
+        })
+    }
+
+    /// Constructs one contextual acknowledgement request.
+    #[must_use]
+    pub const fn acknowledge_contextual_subscription(target: EventConsumerOperationTarget) -> Self {
+        Self(OperationKind::AcknowledgeContextualSubscription { target })
+    }
+
+    /// Constructs one contextual negative acknowledgement request.
+    #[must_use]
+    pub const fn negative_acknowledge_contextual_subscription(
+        target: EventConsumerOperationTarget,
+    ) -> Self {
+        Self(OperationKind::NegativeAcknowledgeContextualSubscription { target })
+    }
+
+    /// Constructs one contextual consumer-status request.
+    #[must_use]
+    pub const fn get_contextual_subscription_status(target: EventConsumerOperationTarget) -> Self {
+        Self(OperationKind::GetContextualSubscriptionStatus { target })
+    }
+
+    /// Constructs one causal-reaction admission request.
+    #[must_use]
+    pub const fn execute_contextual_reaction(target: EventConsumerOperationTarget) -> Self {
+        Self(OperationKind::ExecuteContextualReaction { target })
+    }
+
     /// Returns the exact closed service operation.
     #[must_use]
     pub const fn operation(&self) -> ServiceOperationV1 {
@@ -1394,6 +1448,21 @@ impl OperationRequest {
                 ServiceOperationV1::GetEventStreamConsumerStatus
             }
             OperationKind::WatchNamedQuery { .. } => ServiceOperationV1::WatchNamedQuery,
+            OperationKind::ConsumeContextualSubscription { .. } => {
+                ServiceOperationV1::ConsumeContextualSubscription
+            }
+            OperationKind::AcknowledgeContextualSubscription { .. } => {
+                ServiceOperationV1::AcknowledgeContextualSubscription
+            }
+            OperationKind::NegativeAcknowledgeContextualSubscription { .. } => {
+                ServiceOperationV1::NegativeAcknowledgeContextualSubscription
+            }
+            OperationKind::GetContextualSubscriptionStatus { .. } => {
+                ServiceOperationV1::GetContextualSubscriptionStatus
+            }
+            OperationKind::ExecuteContextualReaction { .. } => {
+                ServiceOperationV1::ExecuteContextualReaction
+            }
         }
     }
 
@@ -1551,6 +1620,17 @@ impl OperationRequest {
                     target.operation_name.clone(),
                 ))
             }
+            OperationKind::ConsumeContextualSubscription { target, .. }
+            | OperationKind::AcknowledgeContextualSubscription { target }
+            | OperationKind::NegativeAcknowledgeContextualSubscription { target }
+            | OperationKind::GetContextualSubscriptionStatus { target }
+            | OperationKind::ExecuteContextualReaction { target } => {
+                PermissionRequirement::Exact(CapabilityPermissionV1::ConsumeContextualSubscription(
+                    target.lineage.clone(),
+                    target.module_hash,
+                    target.operation_name.clone(),
+                ))
+            }
             OperationKind::SeekEventStreamConsumer { target }
             | OperationKind::RetireEventStreamConsumer { target } => {
                 PermissionRequirement::Exact(CapabilityPermissionV1::SeekEventStreamConsumer(
@@ -1611,6 +1691,13 @@ impl OperationRequest {
             | OperationKind::GetEventStreamConsumerStatus { target } => {
                 Some(&target.scope.tenant_scope)
             }
+            OperationKind::ConsumeContextualSubscription { target, .. }
+            | OperationKind::AcknowledgeContextualSubscription { target }
+            | OperationKind::NegativeAcknowledgeContextualSubscription { target }
+            | OperationKind::GetContextualSubscriptionStatus { target }
+            | OperationKind::ExecuteContextualReaction { target } => {
+                Some(&target.scope.tenant_scope)
+            }
             _ => None,
         }
     }
@@ -1648,6 +1735,13 @@ impl OperationRequest {
             | OperationKind::SeekEventStreamConsumer { target }
             | OperationKind::RetireEventStreamConsumer { target }
             | OperationKind::GetEventStreamConsumerStatus { target } => {
+                PartitionRequirement::Exact(&target.scope.partition)
+            }
+            OperationKind::ConsumeContextualSubscription { target, .. }
+            | OperationKind::AcknowledgeContextualSubscription { target }
+            | OperationKind::NegativeAcknowledgeContextualSubscription { target }
+            | OperationKind::GetContextualSubscriptionStatus { target }
+            | OperationKind::ExecuteContextualReaction { target } => {
                 PartitionRequirement::Exact(&target.scope.partition)
             }
             OperationKind::ScanIndex { .. } | OperationKind::QueryProjection { .. } => {
@@ -1692,6 +1786,9 @@ impl OperationRequest {
                 Some(*requested_rows)
             }
             OperationKind::ConsumeEventStream { requested_rows, .. } => Some(*requested_rows),
+            OperationKind::ConsumeContextualSubscription { requested_rows, .. } => {
+                Some(*requested_rows)
+            }
             _ => None,
         }
     }
@@ -1716,8 +1813,17 @@ impl OperationRequest {
             | OperationKind::RetireEventStreamConsumer { .. } => {
                 Some(AuditClass::ControlPlaneMutation)
             }
+            OperationKind::AcknowledgeContextualSubscription { .. }
+            | OperationKind::NegativeAcknowledgeContextualSubscription { .. }
+            | OperationKind::ExecuteContextualReaction { .. } => {
+                Some(AuditClass::ControlPlaneMutation)
+            }
             OperationKind::ConsumeEventStream { .. }
             | OperationKind::GetEventStreamConsumerStatus { .. } => {
+                Some(AuditClass::AdministrativeRead)
+            }
+            OperationKind::ConsumeContextualSubscription { .. }
+            | OperationKind::GetContextualSubscriptionStatus { .. } => {
                 Some(AuditClass::AdministrativeRead)
             }
             OperationKind::GetCommit { .. }
@@ -1751,6 +1857,10 @@ impl OperationRequest {
             OperationKind::ConsumeEventStream { .. } => {
                 OutputClassification::PolicyFilteredApplicationData
             }
+            OperationKind::ConsumeContextualSubscription { .. }
+            | OperationKind::ExecuteContextualReaction { .. } => {
+                OutputClassification::PolicyFilteredApplicationData
+            }
             OperationKind::DeployContract { .. }
             | OperationKind::DeployQueryModule { .. }
             | OperationKind::DeployReactiveModule { .. }
@@ -1772,6 +1882,11 @@ impl OperationRequest {
             | OperationKind::SeekEventStreamConsumer { .. }
             | OperationKind::RetireEventStreamConsumer { .. }
             | OperationKind::GetEventStreamConsumerStatus { .. } => {
+                OutputClassification::AdministrativeRedactedData
+            }
+            OperationKind::AcknowledgeContextualSubscription { .. }
+            | OperationKind::NegativeAcknowledgeContextualSubscription { .. }
+            | OperationKind::GetContextualSubscriptionStatus { .. } => {
                 OutputClassification::AdministrativeRedactedData
             }
             _ => OutputClassification::PublicMetadata,
@@ -2235,13 +2350,21 @@ mod tests {
                 application_query_target(),
             )
             .expect("matching live query target"),
+            OperationRequest::consume_contextual_subscription(
+                event_consumer_target(),
+                NonZeroU16::new(8).expect("nonzero"),
+            ),
+            OperationRequest::acknowledge_contextual_subscription(event_consumer_target()),
+            OperationRequest::negative_acknowledge_contextual_subscription(event_consumer_target()),
+            OperationRequest::get_contextual_subscription_status(event_consumer_target()),
+            OperationRequest::execute_contextual_reaction(event_consumer_target()),
         ]
     }
 
     #[test]
     fn request_inventory_covers_every_shared_operation() {
         let requests = requests();
-        assert_eq!(requests.len(), 41);
+        assert_eq!(requests.len(), 46);
         // WP-408 needs the durable audit tag; WP-409 owns its public policy request.
         let policy_operations = ServiceOperationV1::ALL
             .into_iter()
@@ -2276,13 +2399,13 @@ mod tests {
                 }
             }
         }
-        assert_eq!(kinds.len(), 27);
+        assert_eq!(kinds.len(), 28);
         assert_eq!(
             kinds
                 .into_iter()
                 .map(CapabilityPermissionKindV1::tag)
                 .collect::<Vec<_>>(),
-            (1..=24).chain([0x1b, 0x1c, 0x1d]).collect::<Vec<_>>()
+            (1..=24).chain([0x1b, 0x1c, 0x1d, 0x1e]).collect::<Vec<_>>()
         );
     }
 

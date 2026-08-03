@@ -96,11 +96,13 @@ pub enum HashDomain {
     ContractMigrationValidation,
     /// One bounded command-batch source, item, or checkpoint document.
     CommandBatch,
+    /// Generated contextual-reaction idempotency.
+    ContextualReaction,
 }
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 36] = [
         Self::CanonicalValue,
         Self::Source,
         Self::MigrationSource,
@@ -136,6 +138,7 @@ impl HashDomain {
         Self::ContractMigrationJournal,
         Self::ContractMigrationValidation,
         Self::CommandBatch,
+        Self::ContextualReaction,
     ];
 
     /// Returns the immutable ASCII v1 domain label.
@@ -176,6 +179,7 @@ impl HashDomain {
             Self::ContractMigrationJournal => "riffdb.contract-migration-journal/v1",
             Self::ContractMigrationValidation => "riffdb.contract-migration-validation/v1",
             Self::CommandBatch => "riffdb.command-batch/v1",
+            Self::ContextualReaction => "riffdb.contextual-reaction/v1",
         }
     }
 }
@@ -187,17 +191,24 @@ pub enum KeyedHashDomain {
     IdempotencyKey,
     /// Decoded opaque capability-token lookup.
     CapabilityToken,
+    /// Server-sealed contextual causation token.
+    ContextualCausation,
 }
 
 impl KeyedHashDomain {
     /// Every registered keyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 2] = [Self::IdempotencyKey, Self::CapabilityToken];
+    pub const ALL: [Self; 3] = [
+        Self::IdempotencyKey,
+        Self::CapabilityToken,
+        Self::ContextualCausation,
+    ];
 
     /// Returns the immutable ASCII v1 domain label.
     pub const fn label(self) -> &'static str {
         match self {
             Self::IdempotencyKey => "riffdb.idempotency-key/v1",
             Self::CapabilityToken => "riffdb.capability-token/v1",
+            Self::ContextualCausation => "riffdb.contextual-causation/v1",
         }
     }
 }

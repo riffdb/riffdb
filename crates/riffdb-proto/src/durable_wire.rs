@@ -256,6 +256,23 @@ shape!(PROVENANCE [
     repeated_message(13, MAX_COMMAND_ITEMS, &EVENT_ID),
     message(14, &PROVENANCE_CLAIMS),
 ]);
+shape!(COMMAND_CAUSATION [
+    message(1, &EVENT_ID),
+    fixed_bytes(2, 16),
+]);
+shape!(PENDING_ADMISSION_V2 [
+    message(1, &PENDING_ADMISSION),
+    message(2, &COMMAND_CAUSATION),
+]);
+shape!(EXECUTION_FAILED_V2[message(1, &PENDING_ADMISSION_V2)]);
+shape!(OUTCOME_V2 [
+    message(1, &OUTCOME),
+    message(2, &COMMAND_CAUSATION),
+]);
+shape!(PROVENANCE_V2 [
+    message(1, &PROVENANCE),
+    message(2, &COMMAND_CAUSATION),
+]);
 shape!(COMMITTED_MUTATION [
     message(1, &EXPECTED_ENTITY_STATE),
     message(2, &ENTITY_RECORD),
@@ -612,7 +629,7 @@ shape!(PROJECTION_CONTROL [
     message(7, &PROJECTION_FAILURE),
 ]);
 
-const ROOTS: [&Shape; 53] = [
+const ROOTS: [&Shape; 57] = [
     &Shape { rules: &[] },
     &Shape {
         rules: &[fixed_bytes(1, 16)],
@@ -697,6 +714,10 @@ const ROOTS: [&Shape; 53] = [
     &EVENT_CONSUMER,
     &EVENT_CONSUMER_DELIVERY,
     &SERVICE_AUDIT_V2,
+    &PENDING_ADMISSION_V2,
+    &EXECUTION_FAILED_V2,
+    &OUTCOME_V2,
+    &PROVENANCE_V2,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

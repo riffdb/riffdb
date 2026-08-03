@@ -537,6 +537,41 @@ impl RiffDbClient {
         v1::GetEventStreamConsumerStatusRequest,
         v1::GetEventStreamConsumerStatusResponse
     );
+    unary!(
+        consume_contextual_subscription,
+        event,
+        consume_contextual_subscription,
+        v1::ConsumeContextualSubscriptionRequest,
+        v1::ConsumeContextualSubscriptionResponse
+    );
+    unary!(
+        acknowledge_contextual_subscription,
+        event,
+        acknowledge_contextual_subscription,
+        v1::AcknowledgeContextualSubscriptionRequest,
+        v1::EventConsumerMutationResponse
+    );
+    unary!(
+        negative_acknowledge_contextual_subscription,
+        event,
+        negative_acknowledge_contextual_subscription,
+        v1::NegativeAcknowledgeContextualSubscriptionRequest,
+        v1::EventConsumerMutationResponse
+    );
+    unary!(
+        get_contextual_subscription_status,
+        event,
+        get_contextual_subscription_status,
+        v1::GetContextualSubscriptionStatusRequest,
+        v1::GetEventStreamConsumerStatusResponse
+    );
+    unary!(
+        execute_contextual_reaction,
+        event,
+        execute_contextual_reaction,
+        v1::ExecuteContextualReactionRequest,
+        v1::ExecuteCommandResponse
+    );
     unary!(health, admin, health, v1::HealthRequest, v1::HealthResponse);
     unary!(stats, admin, stats, v1::StatsRequest, v1::StatsResponse);
     unary!(

@@ -9,20 +9,22 @@ use riffdb_types::{
 use crate::{
     AffectedEntityV1, CommittedEntityMutationV1, CommittedEntityReferenceV2, DurabilityMode,
     EncodedPageItem, EventReferenceV2, IndexMigrationRowEvidence, IndexMigrationSemanticRow,
-    LegacyStoredIndexEpochV1, PartitionIndexTarget, StoredCommitRecordV1, StoredDurableEventV1,
-    StoredEntityRecordV1, StoredEventRouteV1, StoredExecutionFailedV1, StoredIndexEntryV1,
-    StoredIndexEntryV2, StoredIndexEpochV1, StoredOutcomeV1, StoredPendingAdmissionV1,
-    StoredProvenanceRecordV1, StoredReadDependenciesV1, StoredReadDependencyV1,
+    LegacyStoredIndexEpochV1, PartitionIndexTarget, StoredCommandCausationV1, StoredCommitRecordV1,
+    StoredDurableEventV1, StoredEntityRecordV1, StoredEventRouteV1, StoredExecutionFailedV1,
+    StoredIndexEntryV1, StoredIndexEntryV2, StoredIndexEpochV1, StoredOutcomeV1,
+    StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
+    StoredReadDependencyV1,
 };
 
 use super::{
     CanonicalStoredEnvelopeV1, DurableCodecError, actor_from_proto, actor_to_proto,
     binding_from_proto, binding_to_proto, canonical_record_from_bytes, claims_from_proto,
     claims_to_proto, declared_outcome_from_proto, declared_outcome_to_proto, decode_message,
-    encode_message, entity_target_from_proto, entity_target_to_proto, epoch_from_proto,
-    epoch_to_proto, event_id_from_proto, event_id_to_proto, expected_from_proto, expected_to_proto,
-    fixed, identity_from_proto, identity_to_proto, logical_time_from_proto, plan_from_proto,
-    plan_to_proto, require, storage_result, structural_prefix_from_bytes, timestamp_to_proto,
+    decode_record_variant, encode_message, entity_target_from_proto, entity_target_to_proto,
+    epoch_from_proto, epoch_to_proto, event_id_from_proto, event_id_to_proto, expected_from_proto,
+    expected_to_proto, fixed, identity_from_proto, identity_to_proto, logical_time_from_proto,
+    plan_from_proto, plan_to_proto, require, storage_result, structural_prefix_from_bytes,
+    timestamp_to_proto,
 };
 
 pub(super) const ENTITY: &str = "riffdb.storage.v1.StoredEntityRecordV1";
@@ -31,11 +33,15 @@ const LEGACY_INDEX_ENTRY: &str = "riffdb.storage.v1.StoredIndexEntryV1";
 pub(super) const INDEX_EPOCH: &str = "riffdb.storage.v1.StoredIndexGenerationV2";
 const LEGACY_INDEX_EPOCH: &str = "riffdb.storage.v1.StoredIndexEpochV1";
 const PENDING: &str = "riffdb.storage.v1.StoredPendingAdmissionV1";
+const PENDING_V2: &str = "riffdb.storage.v1.StoredPendingAdmissionV2";
 const EXECUTION_FAILED: &str = "riffdb.storage.v1.StoredExecutionFailedV1";
+const EXECUTION_FAILED_V2: &str = "riffdb.storage.v1.StoredExecutionFailedV2";
 pub(super) const OUTCOME: &str = "riffdb.storage.v1.StoredOutcomeV1";
+pub(super) const OUTCOME_V2: &str = "riffdb.storage.v1.StoredOutcomeV2";
 pub(super) const EVENT: &str = "riffdb.storage.v1.StoredDurableEventV1";
 pub(super) const EVENT_ROUTE: &str = "riffdb.storage.v1.StoredEventRouteV1";
 pub(super) const PROVENANCE: &str = "riffdb.storage.v1.StoredProvenanceRecordV1";
+pub(super) const PROVENANCE_V2: &str = "riffdb.storage.v1.StoredProvenanceRecordV2";
 pub(super) const COMMIT: &str = "riffdb.storage.v1.StoredCommitRecordV3";
 const COMMIT_V2: &str = "riffdb.storage.v1.StoredCommitRecordV2";
 const LEGACY_COMMIT: &str = "riffdb.storage.v1.StoredCommitRecordV1";
@@ -228,6 +234,42 @@ fn pending_from_proto(
         actor_from_proto(require(value.actor)?)?,
         PartitionKey::from_bytes(value.partition_key).map_err(|_| DurableCodecError::corrupt())?,
         claims_from_proto(require(value.provenance_claims)?)?,
+    ))
+}
+
+fn pending_v2_to_proto(value: &StoredPendingAdmissionV1) -> wire::StoredPendingAdmissionV2 {
+    wire::StoredPendingAdmissionV2 {
+        base: Some(pending_to_proto(value)),
+        causation: value.causation().map(causation_to_proto),
+    }
+}
+
+fn pending_v2_from_proto(
+    value: wire::StoredPendingAdmissionV2,
+) -> Result<StoredPendingAdmissionV1, DurableCodecError> {
+    let base = pending_from_proto(require(value.base)?)?;
+    match value.causation {
+        Some(causation) => storage_result(base.with_causation(causation_from_proto(causation)?)),
+        None => Ok(base),
+    }
+}
+
+pub(super) fn causation_to_proto(
+    value: StoredCommandCausationV1,
+) -> wire::StoredCommandCausationV1 {
+    wire::StoredCommandCausationV1 {
+        causing_event_id: Some(event_id_to_proto(value.causing_event_id())),
+        root_request_id: value.root_request_id().as_bytes().to_vec(),
+    }
+}
+
+fn causation_from_proto(
+    value: wire::StoredCommandCausationV1,
+) -> Result<StoredCommandCausationV1, DurableCodecError> {
+    Ok(StoredCommandCausationV1::new(
+        event_id_from_proto(require(value.causing_event_id)?)?,
+        RequestId::from_bytes(fixed(value.root_request_id)?)
+            .map_err(|_| DurableCodecError::corrupt())?,
     ))
 }
 
@@ -514,14 +556,29 @@ pub fn encode_legacy_index_epoch_v1_fixture(
 pub fn encode_pending_admission_v1(
     value: &StoredPendingAdmissionV1,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
-    encode_message(PENDING, &pending_to_proto(value))
+    encode_message(PENDING_V2, &pending_v2_to_proto(value))
+}
+
+#[cfg(test)]
+pub(super) fn encode_pending_admission_legacy_v1_fixture(
+    value: &StoredPendingAdmissionV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    super::encode_legacy_message(PENDING, &pending_to_proto(value))
 }
 
 /// Decodes one pending command admission.
 pub fn decode_pending_admission_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredPendingAdmissionV1>, DurableCodecError> {
-    decode_message::<wire::StoredPendingAdmissionV1, _, _>(PENDING, encoded, pending_from_proto)
+    if decode_record_variant(encoded, PENDING_V2, PENDING)? {
+        decode_message::<wire::StoredPendingAdmissionV2, _, _>(
+            PENDING_V2,
+            encoded,
+            pending_v2_from_proto,
+        )
+    } else {
+        decode_message::<wire::StoredPendingAdmissionV1, _, _>(PENDING, encoded, pending_from_proto)
+    }
 }
 
 /// Encodes one terminal deterministic execution failure.
@@ -529,6 +586,19 @@ pub fn encode_execution_failed_v1(
     value: &StoredExecutionFailedV1,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
     encode_message(
+        EXECUTION_FAILED_V2,
+        &wire::StoredExecutionFailedV2 {
+            pending: Some(pending_v2_to_proto(value.pending())),
+            code: execution_code_to_proto(value.code()),
+        },
+    )
+}
+
+#[cfg(test)]
+pub(super) fn encode_execution_failed_legacy_v1_fixture(
+    value: &StoredExecutionFailedV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    super::encode_legacy_message(
         EXECUTION_FAILED,
         &wire::StoredExecutionFailedV1 {
             pending: Some(pending_to_proto(value.pending())),
@@ -541,12 +611,25 @@ pub fn encode_execution_failed_v1(
 pub fn decode_execution_failed_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredExecutionFailedV1>, DurableCodecError> {
-    decode_message::<wire::StoredExecutionFailedV1, _, _>(EXECUTION_FAILED, encoded, |value| {
-        Ok(StoredExecutionFailedV1::new(
-            pending_from_proto(require(value.pending)?)?,
-            execution_code_from_proto(value.code)?,
-        ))
-    })
+    if decode_record_variant(encoded, EXECUTION_FAILED_V2, EXECUTION_FAILED)? {
+        decode_message::<wire::StoredExecutionFailedV2, _, _>(
+            EXECUTION_FAILED_V2,
+            encoded,
+            |value| {
+                Ok(StoredExecutionFailedV1::new(
+                    pending_v2_from_proto(require(value.pending)?)?,
+                    execution_code_from_proto(value.code)?,
+                ))
+            },
+        )
+    } else {
+        decode_message::<wire::StoredExecutionFailedV1, _, _>(EXECUTION_FAILED, encoded, |value| {
+            Ok(StoredExecutionFailedV1::new(
+                pending_from_proto(require(value.pending)?)?,
+                execution_code_from_proto(value.code)?,
+            ))
+        })
+    }
 }
 
 /// Encodes the one complete terminal idempotency outcome row.
@@ -554,51 +637,78 @@ pub fn encode_stored_outcome_v1(
     value: &StoredOutcomeV1,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
     encode_message(
-        OUTCOME,
-        &wire::StoredOutcomeV1 {
-            identity: Some(identity_to_proto(value.identity())),
-            commit_sequence: value.commit_sequence().get(),
-            admission_request_id: value.admission_request_id().as_bytes().to_vec(),
-            plan: Some(plan_to_proto(value.plan())),
-            canonical_input_hash: value.canonical_input_hash().as_bytes().to_vec(),
-            actor: Some(actor_to_proto(value.actor())),
-            logical_time: Some(timestamp_to_proto(value.logical_time().timestamp())),
-            partition_hash: value.partition_hash().as_bytes().to_vec(),
-            conflict_hashes: hashes_to_proto(value.conflict_hashes()),
-            declared_outcome: Some(declared_outcome_to_proto(value.declared_outcome())),
-            admitted_claims: Some(claims_to_proto(value.admitted_claims())),
-            provenance_id: value.provenance_id().as_bytes().to_vec(),
-            durability_mode: durability_to_proto(value.durability_mode()),
-            partition_key: value.partition_key().as_bytes().to_vec(),
+        OUTCOME_V2,
+        &wire::StoredOutcomeV2 {
+            base: Some(outcome_to_proto(value)),
+            causation: value.causation().map(causation_to_proto),
         },
     )
+}
+
+#[cfg(test)]
+pub(super) fn encode_stored_outcome_legacy_v1_fixture(
+    value: &StoredOutcomeV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    super::encode_legacy_message(OUTCOME, &outcome_to_proto(value))
+}
+
+fn outcome_to_proto(value: &StoredOutcomeV1) -> wire::StoredOutcomeV1 {
+    wire::StoredOutcomeV1 {
+        identity: Some(identity_to_proto(value.identity())),
+        commit_sequence: value.commit_sequence().get(),
+        admission_request_id: value.admission_request_id().as_bytes().to_vec(),
+        plan: Some(plan_to_proto(value.plan())),
+        canonical_input_hash: value.canonical_input_hash().as_bytes().to_vec(),
+        actor: Some(actor_to_proto(value.actor())),
+        logical_time: Some(timestamp_to_proto(value.logical_time().timestamp())),
+        partition_hash: value.partition_hash().as_bytes().to_vec(),
+        conflict_hashes: hashes_to_proto(value.conflict_hashes()),
+        declared_outcome: Some(declared_outcome_to_proto(value.declared_outcome())),
+        admitted_claims: Some(claims_to_proto(value.admitted_claims())),
+        provenance_id: value.provenance_id().as_bytes().to_vec(),
+        durability_mode: durability_to_proto(value.durability_mode()),
+        partition_key: value.partition_key().as_bytes().to_vec(),
+    }
+}
+
+fn outcome_from_proto(value: wire::StoredOutcomeV1) -> Result<StoredOutcomeV1, DurableCodecError> {
+    storage_result(StoredOutcomeV1::new(
+        identity_from_proto(require(value.identity)?)?,
+        CommitSequence::new(value.commit_sequence).ok_or_else(DurableCodecError::corrupt)?,
+        RequestId::from_bytes(fixed(value.admission_request_id)?)
+            .map_err(|_| DurableCodecError::corrupt())?,
+        plan_from_proto(require(value.plan)?)?,
+        CanonicalInputHash::from_bytes(fixed(value.canonical_input_hash)?),
+        actor_from_proto(require(value.actor)?)?,
+        logical_time_from_proto(require(value.logical_time)?)?,
+        PartitionKey::from_bytes(value.partition_key).map_err(|_| DurableCodecError::corrupt())?,
+        PartitionKeyHash::from_bytes(fixed(value.partition_hash)?),
+        hashes_from_proto(value.conflict_hashes)?,
+        declared_outcome_from_proto(require(value.declared_outcome)?)?,
+        claims_from_proto(require(value.admitted_claims)?)?,
+        ProvenanceId::from_bytes(fixed(value.provenance_id)?)
+            .map_err(|_| DurableCodecError::corrupt())?,
+        durability_from_proto(value.durability_mode)?,
+    ))
 }
 
 /// Decodes the one complete terminal idempotency outcome row.
 pub fn decode_stored_outcome_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredOutcomeV1>, DurableCodecError> {
-    decode_message::<wire::StoredOutcomeV1, _, _>(OUTCOME, encoded, |value| {
-        storage_result(StoredOutcomeV1::new(
-            identity_from_proto(require(value.identity)?)?,
-            CommitSequence::new(value.commit_sequence).ok_or_else(DurableCodecError::corrupt)?,
-            RequestId::from_bytes(fixed(value.admission_request_id)?)
-                .map_err(|_| DurableCodecError::corrupt())?,
-            plan_from_proto(require(value.plan)?)?,
-            CanonicalInputHash::from_bytes(fixed(value.canonical_input_hash)?),
-            actor_from_proto(require(value.actor)?)?,
-            logical_time_from_proto(require(value.logical_time)?)?,
-            PartitionKey::from_bytes(value.partition_key)
-                .map_err(|_| DurableCodecError::corrupt())?,
-            PartitionKeyHash::from_bytes(fixed(value.partition_hash)?),
-            hashes_from_proto(value.conflict_hashes)?,
-            declared_outcome_from_proto(require(value.declared_outcome)?)?,
-            claims_from_proto(require(value.admitted_claims)?)?,
-            ProvenanceId::from_bytes(fixed(value.provenance_id)?)
-                .map_err(|_| DurableCodecError::corrupt())?,
-            durability_from_proto(value.durability_mode)?,
-        ))
-    })
+    if decode_record_variant(encoded, OUTCOME_V2, OUTCOME)? {
+        decode_message::<wire::StoredOutcomeV2, _, _>(OUTCOME_V2, encoded, |value| {
+            let base = outcome_from_proto(require(value.base)?)?;
+            match value.causation {
+                Some(causation) => {
+                    storage_result(base.with_causation(causation_from_proto(causation)?))
+                }
+                None => Ok(base),
+            }
+        })
+    } else {
+        decode_message::<wire::StoredOutcomeV1, _, _>(OUTCOME, encoded, outcome_from_proto)
+    }
 }
 
 /// Encodes one standalone authoritative durable event.
@@ -634,78 +744,111 @@ pub fn encode_provenance_record_v1(
     value: &StoredProvenanceRecordV1,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
     encode_message(
-        PROVENANCE,
-        &wire::StoredProvenanceRecordV1 {
-            provenance_id: value.provenance_id().as_bytes().to_vec(),
-            commit_sequence: value.commit_sequence().get(),
-            identity: Some(identity_to_proto(value.identity())),
-            admission_request_id: value.admission_request_id().as_bytes().to_vec(),
-            plan: Some(plan_to_proto(value.plan())),
-            canonical_input_hash: value.canonical_input_hash().as_bytes().to_vec(),
-            actor: Some(actor_to_proto(value.actor())),
-            logical_time: Some(timestamp_to_proto(value.logical_time().timestamp())),
-            partition_hash: value.partition_hash().as_bytes().to_vec(),
-            conflict_hashes: hashes_to_proto(value.conflict_hashes()),
-            outcome_id: value.outcome_id().get(),
-            affected_entities: value
-                .affected_entities()
-                .iter()
-                .map(|value| wire::AffectedEntityV1 {
-                    target: Some(entity_target_to_proto(value.target())),
-                    entity_version: value.entity_version().get(),
-                })
-                .collect(),
-            event_ids: value
-                .event_ids()
-                .iter()
-                .copied()
-                .map(event_id_to_proto)
-                .collect(),
-            admitted_claims: Some(claims_to_proto(value.admitted_claims())),
+        PROVENANCE_V2,
+        &wire::StoredProvenanceRecordV2 {
+            base: Some(provenance_to_proto(value)),
+            causation: value.causation().map(causation_to_proto),
         },
     )
+}
+
+#[cfg(test)]
+pub(super) fn encode_provenance_record_legacy_v1_fixture(
+    value: &StoredProvenanceRecordV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    super::encode_legacy_message(PROVENANCE, &provenance_to_proto(value))
+}
+
+fn provenance_to_proto(value: &StoredProvenanceRecordV1) -> wire::StoredProvenanceRecordV1 {
+    wire::StoredProvenanceRecordV1 {
+        provenance_id: value.provenance_id().as_bytes().to_vec(),
+        commit_sequence: value.commit_sequence().get(),
+        identity: Some(identity_to_proto(value.identity())),
+        admission_request_id: value.admission_request_id().as_bytes().to_vec(),
+        plan: Some(plan_to_proto(value.plan())),
+        canonical_input_hash: value.canonical_input_hash().as_bytes().to_vec(),
+        actor: Some(actor_to_proto(value.actor())),
+        logical_time: Some(timestamp_to_proto(value.logical_time().timestamp())),
+        partition_hash: value.partition_hash().as_bytes().to_vec(),
+        conflict_hashes: hashes_to_proto(value.conflict_hashes()),
+        outcome_id: value.outcome_id().get(),
+        affected_entities: value
+            .affected_entities()
+            .iter()
+            .map(|value| wire::AffectedEntityV1 {
+                target: Some(entity_target_to_proto(value.target())),
+                entity_version: value.entity_version().get(),
+            })
+            .collect(),
+        event_ids: value
+            .event_ids()
+            .iter()
+            .copied()
+            .map(event_id_to_proto)
+            .collect(),
+        admitted_claims: Some(claims_to_proto(value.admitted_claims())),
+    }
 }
 
 /// Decodes one immutable command provenance record.
 pub fn decode_provenance_record_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredProvenanceRecordV1>, DurableCodecError> {
-    decode_message::<wire::StoredProvenanceRecordV1, _, _>(PROVENANCE, encoded, |value| {
-        let affected_entities = value
-            .affected_entities
-            .into_iter()
-            .map(|value| {
-                Ok(AffectedEntityV1::from_stored_parts(
-                    entity_target_from_proto(require(value.target)?)?,
-                    EntityVersion::new(value.entity_version)
-                        .ok_or_else(DurableCodecError::corrupt)?,
-                ))
-            })
-            .collect::<Result<Vec<_>, DurableCodecError>>()?;
-        let event_ids = value
-            .event_ids
-            .into_iter()
-            .map(event_id_from_proto)
-            .collect::<Result<Vec<_>, _>>()?;
-        storage_result(StoredProvenanceRecordV1::new(
-            ProvenanceId::from_bytes(fixed(value.provenance_id)?)
-                .map_err(|_| DurableCodecError::corrupt())?,
-            CommitSequence::new(value.commit_sequence).ok_or_else(DurableCodecError::corrupt)?,
-            identity_from_proto(require(value.identity)?)?,
-            RequestId::from_bytes(fixed(value.admission_request_id)?)
-                .map_err(|_| DurableCodecError::corrupt())?,
-            plan_from_proto(require(value.plan)?)?,
-            CanonicalInputHash::from_bytes(fixed(value.canonical_input_hash)?),
-            actor_from_proto(require(value.actor)?)?,
-            logical_time_from_proto(require(value.logical_time)?)?,
-            PartitionKeyHash::from_bytes(fixed(value.partition_hash)?),
-            hashes_from_proto(value.conflict_hashes)?,
-            OutcomeId::new(value.outcome_id).ok_or_else(DurableCodecError::corrupt)?,
-            affected_entities,
-            event_ids,
-            claims_from_proto(require(value.admitted_claims)?)?,
-        ))
-    })
+    if decode_record_variant(encoded, PROVENANCE_V2, PROVENANCE)? {
+        decode_message::<wire::StoredProvenanceRecordV2, _, _>(PROVENANCE_V2, encoded, |value| {
+            let base = provenance_from_proto(require(value.base)?)?;
+            match value.causation {
+                Some(causation) => {
+                    storage_result(base.with_causation(causation_from_proto(causation)?))
+                }
+                None => Ok(base),
+            }
+        })
+    } else {
+        decode_message::<wire::StoredProvenanceRecordV1, _, _>(
+            PROVENANCE,
+            encoded,
+            provenance_from_proto,
+        )
+    }
+}
+
+fn provenance_from_proto(
+    value: wire::StoredProvenanceRecordV1,
+) -> Result<StoredProvenanceRecordV1, DurableCodecError> {
+    let affected_entities = value
+        .affected_entities
+        .into_iter()
+        .map(|value| {
+            Ok(AffectedEntityV1::from_stored_parts(
+                entity_target_from_proto(require(value.target)?)?,
+                EntityVersion::new(value.entity_version).ok_or_else(DurableCodecError::corrupt)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, DurableCodecError>>()?;
+    let event_ids = value
+        .event_ids
+        .into_iter()
+        .map(event_id_from_proto)
+        .collect::<Result<Vec<_>, _>>()?;
+    storage_result(StoredProvenanceRecordV1::new(
+        ProvenanceId::from_bytes(fixed(value.provenance_id)?)
+            .map_err(|_| DurableCodecError::corrupt())?,
+        CommitSequence::new(value.commit_sequence).ok_or_else(DurableCodecError::corrupt)?,
+        identity_from_proto(require(value.identity)?)?,
+        RequestId::from_bytes(fixed(value.admission_request_id)?)
+            .map_err(|_| DurableCodecError::corrupt())?,
+        plan_from_proto(require(value.plan)?)?,
+        CanonicalInputHash::from_bytes(fixed(value.canonical_input_hash)?),
+        actor_from_proto(require(value.actor)?)?,
+        logical_time_from_proto(require(value.logical_time)?)?,
+        PartitionKeyHash::from_bytes(fixed(value.partition_hash)?),
+        hashes_from_proto(value.conflict_hashes)?,
+        OutcomeId::new(value.outcome_id).ok_or_else(DurableCodecError::corrupt)?,
+        affected_entities,
+        event_ids,
+        claims_from_proto(require(value.admitted_claims)?)?,
+    ))
 }
 
 fn entity_reference_to_proto(

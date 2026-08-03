@@ -44,6 +44,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/catalog.proto",
     "riffdb/storage/v1/common.proto",
     "riffdb/storage/v1/consumer_v1.proto",
+    "riffdb/storage/v1/contextual_causation_v2.proto",
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_route_v1.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
@@ -71,6 +72,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/catalog.proto",
     "riffdb/storage/v1/common.proto",
     "riffdb/storage/v1/consumer_v1.proto",
+    "riffdb/storage/v1/contextual_causation_v2.proto",
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_route_v1.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
@@ -419,6 +421,26 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "ServiceAuditRecordV2",
         PayloadBound::Admission,
     ),
+    durable(
+        "contextual_causation_v2.proto",
+        "StoredPendingAdmissionV2",
+        PayloadBound::Admission,
+    ),
+    durable(
+        "contextual_causation_v2.proto",
+        "StoredExecutionFailedV2",
+        PayloadBound::Admission,
+    ),
+    durable(
+        "contextual_causation_v2.proto",
+        "StoredOutcomeV2",
+        PayloadBound::Document,
+    ),
+    durable(
+        "contextual_causation_v2.proto",
+        "StoredProvenanceRecordV2",
+        PayloadBound::EnvelopeMaximum,
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -467,9 +489,18 @@ const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("CommitService", "SubscribeCommits", true),
     ("CommitService", "TraceProvenance", false),
     ("EventService", "DescribeEvent", false),
+    ("EventService", "AcknowledgeContextualSubscription", false),
     ("EventService", "AcknowledgeEventStream", false),
+    ("EventService", "ConsumeContextualSubscription", false),
     ("EventService", "ConsumeEventStream", false),
+    ("EventService", "ExecuteContextualReaction", false),
+    ("EventService", "GetContextualSubscriptionStatus", false),
     ("EventService", "GetEventStreamConsumerStatus", false),
+    (
+        "EventService",
+        "NegativeAcknowledgeContextualSubscription",
+        false,
+    ),
     ("EventService", "NegativeAcknowledgeEventStream", false),
     ("EventService", "ReplayEvents", false),
     ("EventService", "RetireEventStreamConsumer", false),
@@ -788,6 +819,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let service_audit_v2_record = durable_registry
         .get(current_v1_record_count + 23)
         .ok_or_else(|| io::Error::other("durable service-audit-v2 registry is incomplete"))?;
+    let contextual_causation_v2_records = durable_registry
+        .get(current_v1_record_count + 24..current_v1_record_count + 28)
+        .ok_or_else(|| {
+            io::Error::other("durable contextual-causation-v2 registry is incomplete")
+        })?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -982,6 +1018,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/durable-service-audit-v2-record-bound.bin",
         &durable_record_bounds(std::slice::from_ref(service_audit_v2_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-contextual-causation-v2-schema-hashes.bin",
+        &durable_schema_hashes(contextual_causation_v2_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-contextual-causation-v2-record-bounds.bin",
+        &durable_record_bounds(contextual_causation_v2_records),
     )?;
     write_artifact(
         &output_root,
@@ -1250,9 +1296,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 53 {
+    if DURABLE_RECORDS.len() != 57 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 53 records").into(),
+            io::Error::other("readable durable registry must contain exactly 57 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1276,9 +1322,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 115 || enum_count != 15 {
+    if message_count != 120 || enum_count != 15 {
         return Err(io::Error::other(format!(
-            "storage schema must contain 114 semantic messages plus StoredEnvelope and 15 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain 119 semantic messages plus StoredEnvelope and 15 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1527,13 +1573,19 @@ fn durable_writable_registry_fixture(
     let service_audit_v2 = records
         .get(current_v1_record_count + 23)
         .ok_or_else(|| io::Error::other("durable registry is missing ServiceAuditRecordV2"))?;
+    let contextual_causation_v2 = records
+        .get(current_v1_record_count + 24..current_v1_record_count + 28)
+        .ok_or_else(|| {
+            io::Error::other("durable registry is missing contextual causation V2 records")
+        })?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
         .chain(std::iter::once(generation_v2))
-        .chain(legacy[10..14].iter())
+        .chain(contextual_causation_v2[..3].iter())
+        .chain(legacy[13..14].iter())
         .chain(std::iter::once(outbox_v2))
-        .chain(legacy[15..16].iter())
+        .chain(contextual_causation_v2[3..].iter())
         .chain(std::iter::once(commit_v3))
         .chain(legacy[17..21].iter())
         .chain(std::iter::once(service_audit_v2))
@@ -1842,16 +1894,23 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
                 _ => format!(".{package}.{method}Request"),
             };
             let output_type = match *method {
-                "Execute" => ".riffdb.v1.ExecuteCommandResponse".to_owned(),
+                "Execute" | "ExecuteContextualReaction" => {
+                    ".riffdb.v1.ExecuteCommandResponse".to_owned()
+                }
                 "ExecuteBatch" => ".riffdb.v1.ExecuteCommandBatchResponse".to_owned(),
                 "SubscribeCommits" => ".riffdb.v1.CommitNotification".to_owned(),
                 "WatchNamedQuery" => ".riffdb.v1.LiveQueryUpdate".to_owned(),
                 "StreamEventConsumer" => ".riffdb.v1.ConsumeEventStreamResponse".to_owned(),
                 "AcknowledgeEventStream"
+                | "AcknowledgeContextualSubscription"
+                | "NegativeAcknowledgeContextualSubscription"
                 | "NegativeAcknowledgeEventStream"
                 | "SeekEventStreamConsumer"
                 | "RetireEventStreamConsumer" => {
                     ".riffdb.v1.EventConsumerMutationResponse".to_owned()
+                }
+                "GetContextualSubscriptionStatus" => {
+                    ".riffdb.v1.GetEventStreamConsumerStatusResponse".to_owned()
                 }
                 _ => format!(".{package}.{method}Response"),
             };
@@ -1869,7 +1928,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
 
     if actual != expected {
         return Err(io::Error::other(format!(
-            "service inventory differs from the accepted seven-service, forty-eight-RPC baseline: expected {expected:?}, found {actual:?}"
+            "service inventory differs from the accepted seven-service, fifty-three-RPC baseline: expected {expected:?}, found {actual:?}"
         ))
         .into());
     }

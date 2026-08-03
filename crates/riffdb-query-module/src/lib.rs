@@ -42,9 +42,9 @@ pub use python_generation::{
     generate_python_client,
 };
 pub use reactive_module::{
-    ReactiveModuleCompilationError, canonicalize_reactive_source, compile_reactive_source,
-    decode_and_validate_reactive_module, reactive_module_query_dependencies,
-    reactive_query_catalog,
+    ReactiveArgumentBindingError, ReactiveModuleCompilationError, bind_reactive_arguments,
+    canonicalize_reactive_source, compile_reactive_source, decode_and_validate_reactive_module,
+    reactive_module_query_dependencies, reactive_query_catalog,
 };
 
 use riffdb_contract_ir::ContractBundle;

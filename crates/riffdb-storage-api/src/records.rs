@@ -526,6 +526,7 @@ pub struct StoredOutcomeV1 {
     admitted_claims: StoredAdmittedProvenanceClaimsV1,
     provenance_id: ProvenanceId,
     durability_mode: DurabilityMode,
+    causation: Option<crate::StoredCommandCausationV1>,
 }
 
 impl StoredOutcomeV1 {
@@ -547,11 +548,51 @@ impl StoredOutcomeV1 {
         provenance_id: ProvenanceId,
         durability_mode: DurabilityMode,
     ) -> Result<Self, StorageValueError> {
+        Self::new_with_causation(
+            identity,
+            commit_sequence,
+            admission_request_id,
+            plan,
+            canonical_input_hash,
+            actor,
+            logical_time,
+            partition_key,
+            partition_hash,
+            conflict_hashes,
+            declared_outcome,
+            admitted_claims,
+            provenance_id,
+            durability_mode,
+            None,
+        )
+    }
+
+    /// Constructs a terminal outcome with optional server-validated causation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_causation(
+        identity: IdempotencyIdentity,
+        commit_sequence: CommitSequence,
+        admission_request_id: RequestId,
+        plan: ExecutablePlanRef,
+        canonical_input_hash: CanonicalInputHash,
+        actor: AdmittedActorContext,
+        logical_time: LogicalTime,
+        partition_key: PartitionKey,
+        partition_hash: PartitionKeyHash,
+        conflict_hashes: Vec<ConflictKeyHash>,
+        declared_outcome: DeclaredOutcome,
+        admitted_claims: StoredAdmittedProvenanceClaimsV1,
+        provenance_id: ProvenanceId,
+        durability_mode: DurabilityMode,
+        causation: Option<crate::StoredCommandCausationV1>,
+    ) -> Result<Self, StorageValueError> {
         if identity.contract_lineage() != plan.contract_lineage()
             || identity.command_id() != plan.command_id()
             || identity.principal_id() != actor.principal_id()
             || identity.tenant_scope() != actor.tenant_scope()
             || hash_partition_key(partition_key.as_bytes()) != partition_hash
+            || causation
+                .is_some_and(|value| value.causing_event_id().commit_sequence() >= commit_sequence)
         {
             return Err(StorageValueError::IdentityMismatch);
         }
@@ -571,6 +612,7 @@ impl StoredOutcomeV1 {
             admitted_claims,
             provenance_id,
             durability_mode,
+            causation,
         })
     }
 
@@ -658,6 +700,24 @@ impl StoredOutcomeV1 {
     #[must_use]
     pub const fn durability_mode(&self) -> DurabilityMode {
         self.durability_mode
+    }
+
+    /// Returns server-validated causation for a contextual reaction.
+    #[must_use]
+    pub const fn causation(&self) -> Option<crate::StoredCommandCausationV1> {
+        self.causation
+    }
+
+    /// Upgrades one decoded V1 base into its V2 causal successor.
+    pub fn with_causation(
+        mut self,
+        causation: crate::StoredCommandCausationV1,
+    ) -> Result<Self, StorageValueError> {
+        if self.causation.is_some() {
+            return Err(StorageValueError::InvalidShape);
+        }
+        self.causation = Some(causation);
+        Ok(self)
     }
 
     pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
@@ -1063,6 +1123,7 @@ pub struct StoredProvenanceRecordV1 {
     affected_entities: Vec<AffectedEntityV1>,
     event_ids: Vec<EventId>,
     admitted_claims: StoredAdmittedProvenanceClaimsV1,
+    causation: Option<crate::StoredCommandCausationV1>,
 }
 
 impl StoredProvenanceRecordV1 {
@@ -1084,6 +1145,44 @@ impl StoredProvenanceRecordV1 {
         event_ids: Vec<EventId>,
         admitted_claims: StoredAdmittedProvenanceClaimsV1,
     ) -> Result<Self, StorageValueError> {
+        Self::new_with_causation(
+            provenance_id,
+            commit_sequence,
+            identity,
+            admission_request_id,
+            plan,
+            canonical_input_hash,
+            actor,
+            logical_time,
+            partition_hash,
+            conflict_hashes,
+            outcome_id,
+            affected_entities,
+            event_ids,
+            admitted_claims,
+            None,
+        )
+    }
+
+    /// Constructs the V2 causal successor while preserving the V1 base shape.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_causation(
+        provenance_id: ProvenanceId,
+        commit_sequence: CommitSequence,
+        identity: IdempotencyIdentity,
+        admission_request_id: RequestId,
+        plan: ExecutablePlanRef,
+        canonical_input_hash: CanonicalInputHash,
+        actor: AdmittedActorContext,
+        logical_time: LogicalTime,
+        partition_hash: PartitionKeyHash,
+        conflict_hashes: Vec<ConflictKeyHash>,
+        outcome_id: OutcomeId,
+        affected_entities: Vec<AffectedEntityV1>,
+        event_ids: Vec<EventId>,
+        admitted_claims: StoredAdmittedProvenanceClaimsV1,
+        causation: Option<crate::StoredCommandCausationV1>,
+    ) -> Result<Self, StorageValueError> {
         if affected_entities.len() > MAX_ENTITY_MUTATIONS || event_ids.len() > MAX_EVENT_INTENTS {
             return Err(StorageValueError::LimitExceeded);
         }
@@ -1091,6 +1190,8 @@ impl StoredProvenanceRecordV1 {
             || identity.command_id() != plan.command_id()
             || identity.principal_id() != actor.principal_id()
             || identity.tenant_scope() != actor.tenant_scope()
+            || causation
+                .is_some_and(|value| value.causing_event_id().commit_sequence() >= commit_sequence)
         {
             return Err(StorageValueError::IdentityMismatch);
         }
@@ -1119,6 +1220,7 @@ impl StoredProvenanceRecordV1 {
             affected_entities,
             event_ids,
             admitted_claims,
+            causation,
         })
     }
 
@@ -1206,6 +1308,26 @@ impl StoredProvenanceRecordV1 {
         &self.admitted_claims
     }
 
+    /// Returns causal context only for a V2 contextual-reaction record.
+    #[must_use]
+    pub const fn causation(&self) -> Option<crate::StoredCommandCausationV1> {
+        self.causation
+    }
+
+    /// Upgrades one decoded V1 base into its V2 causal successor.
+    pub fn with_causation(
+        mut self,
+        causation: crate::StoredCommandCausationV1,
+    ) -> Result<Self, StorageValueError> {
+        if self.causation.is_some()
+            || causation.causing_event_id().commit_sequence() >= self.commit_sequence
+        {
+            return Err(StorageValueError::InvalidShape);
+        }
+        self.causation = Some(causation);
+        Ok(self)
+    }
+
     pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
         stored_provenance_semantic_bytes(
             &self.identity,
@@ -1215,7 +1337,9 @@ impl StoredProvenanceRecordV1 {
             self.affected_entities.iter().map(AffectedEntityV1::target),
             self.event_ids.len(),
             &self.admitted_claims,
-        )
+        )?
+        .checked_add(if self.causation.is_some() { 28 } else { 0 })
+        .ok_or(StorageValueError::SizeOverflow)
     }
 }
 
@@ -1879,6 +2003,7 @@ impl AtomicCommandRecordSet {
             || expected_pending.actor() != stored_outcome.actor()
             || expected_pending.logical_time() != stored_outcome.logical_time()
             || expected_pending.provenance_claims() != stored_outcome.admitted_claims()
+            || expected_pending.causation() != stored_outcome.causation()
             || expected_pending.partition_key() != stored_outcome.partition_key()
             || hash_partition_key(expected_pending.partition_key().as_bytes())
                 != stored_outcome.partition_hash()
@@ -1923,6 +2048,7 @@ impl AtomicCommandRecordSet {
             || provenance.conflict_hashes() != commit.conflict_hashes()
             || provenance.outcome_id() != commit.declared_outcome().outcome_id()
             || provenance.admitted_claims() != stored_outcome.admitted_claims()
+            || provenance.causation() != stored_outcome.causation()
             || stored_outcome.provenance_id() != write_plan.intent().provenance_id()
             || stored_outcome.partition_hash() != write_plan.intent().partition_hash()
             || stored_outcome.conflict_hashes() != write_plan.intent().conflict_hashes()

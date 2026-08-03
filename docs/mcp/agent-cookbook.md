@@ -139,3 +139,24 @@ agent or application to clear retained query data and stop.
 coalescible wakeup hint, never an event delivery or acknowledgement. Retrieve
 work through an authorized reactive tool and rely on the durable checkpoint or
 cursor for correctness. See [Reactive Application Clients](../reactive/CLIENTS.md).
+
+## Contextual work and reactions
+
+Use `riffdb_contextual_next` for an agent subscription. One call returns at
+most one leased event, fresh named-query hydrations sharing one
+`context_head`, and the currently authorized declared reactions. Use only a
+reaction returned in that item.
+
+Call `riffdb_contextual_react` with the exact reaction name and causation token
+from the item. RiffDB derives and binds the command idempotency value, validates
+the live lease and current authority, and records the causing event with the
+command provenance. If the response is uncertain, repeat the same reaction;
+do not invent a replacement command identity. An expired token can resolve an
+already committed exact reaction but cannot admit a new command.
+
+After durable success, call `riffdb_contextual_ack` with the event ID, lease
+token, and history incarnation. Use `riffdb_contextual_nack` for a bounded
+retry and `riffdb_contextual_status` to inspect durable progress. A redelivered
+item has freshly recomputed context and may expose a different authorized
+reaction set. MCP notifications remain payload-free hints; they never consume
+or acknowledge contextual work.

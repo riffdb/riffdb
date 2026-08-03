@@ -7369,6 +7369,180 @@ fn validate_get_event_stream_consumer_status_response(
     }
 }
 
+fn validate_consume_contextual_subscription_request(
+    message: &v1::ConsumeContextualSubscriptionRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    validate_event_consumer_selection(message.selection.as_ref())?;
+    if message.maximum_wait_nanos > 30_000_000_000 {
+        return Err(PublicWireError::InvalidValue);
+    }
+    Ok(())
+}
+
+fn validate_contextual_query_row(row: &v1::ContextualQueryRow) -> Result<(), PublicWireError> {
+    validate_event_symbol(&row.entity)?;
+    if row.fields.len() > 1_024 {
+        return Err(PublicWireError::TooManyItems);
+    }
+    let mut prior = None;
+    for field in &row.fields {
+        validate_event_symbol(&field.name)?;
+        if prior.is_some_and(|value: &str| value >= field.name.as_str()) {
+            return Err(PublicWireError::NonCanonical);
+        }
+        validate_value(
+            field
+                .value
+                .as_ref()
+                .ok_or(PublicWireError::MissingRequiredField)?,
+        )
+        .map_err(|_| PublicWireError::InvalidValue)?;
+        prior = Some(field.name.as_str());
+    }
+    Ok(())
+}
+
+fn validate_contextual_hydration(
+    hydration: &v1::ContextualHydration,
+) -> Result<(), PublicWireError> {
+    validate_event_symbol(&hydration.name)?;
+    validate_event_symbol(&hydration.outcome)?;
+    if hydration.fields.len() > 1_024 {
+        return Err(PublicWireError::TooManyItems);
+    }
+    let mut prior = None;
+    for field in &hydration.fields {
+        validate_event_symbol(&field.name)?;
+        if prior.is_some_and(|value: &str| value >= field.name.as_str()) {
+            return Err(PublicWireError::NonCanonical);
+        }
+        let cardinality = v1::ContextualQueryCardinality::try_from(field.cardinality)
+            .map_err(|_| PublicWireError::InvalidValue)?;
+        let valid_count = match cardinality {
+            v1::ContextualQueryCardinality::One => field.rows.len() == 1,
+            v1::ContextualQueryCardinality::Maybe => field.rows.len() <= 1,
+            v1::ContextualQueryCardinality::Many => field.rows.len() <= MAX_PAGE_ITEMS,
+            v1::ContextualQueryCardinality::Unspecified => false,
+        };
+        if !valid_count {
+            return Err(PublicWireError::InvalidValue);
+        }
+        for row in &field.rows {
+            validate_contextual_query_row(row)?;
+        }
+        prior = Some(field.name.as_str());
+    }
+    Ok(())
+}
+
+fn validate_consume_contextual_subscription_response(
+    message: &v1::ConsumeContextualSubscriptionResponse,
+) -> Result<(), PublicWireError> {
+    if message.items.len() > 1 || (message.wait_timed_out && !message.items.is_empty()) {
+        return Err(PublicWireError::TooManyItems);
+    }
+    validate_event_consumer_status(message.status.as_ref())?;
+    let history_incarnation = message
+        .status
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+        .history_incarnation;
+    for item in &message.items {
+        if item.context_head == 0
+            || item.hydrations.len() > 16
+            || item.available_reactions.len() > 64
+        {
+            return Err(PublicWireError::TooManyItems);
+        }
+        let delivery = item
+            .delivery
+            .as_ref()
+            .ok_or(PublicWireError::MissingRequiredField)?;
+        let event = delivery
+            .event
+            .as_ref()
+            .ok_or(PublicWireError::MissingRequiredField)?;
+        validate_symbolic_event(event)?;
+        if event.history_incarnation != history_incarnation
+            || !(1..=10).contains(&delivery.attempt)
+            || delivery.lease_token.len() != 32
+        {
+            return Err(PublicWireError::InvalidValue);
+        }
+        validate_timestamp(delivery.expires_at.as_ref())?;
+        for hydration in &item.hydrations {
+            validate_contextual_hydration(hydration)?;
+        }
+        for reaction in &item.available_reactions {
+            validate_event_symbol(&reaction.name)?;
+            validate_event_symbol(&reaction.command_name)?;
+            if reaction.command_id == 0
+                || reaction.causation_token.len() <= 32
+                || reaction.causation_token.len() > 1_024
+            {
+                return Err(PublicWireError::InvalidValue);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_acknowledge_contextual_subscription_request(
+    message: &v1::AcknowledgeContextualSubscriptionRequest,
+) -> Result<(), PublicWireError> {
+    validate_consumer_lease_request_parts(
+        &message.request_id,
+        message.selection.as_ref(),
+        message.event_id.as_ref(),
+        &message.lease_token,
+        message.history_incarnation,
+    )
+}
+
+fn validate_negative_acknowledge_contextual_subscription_request(
+    message: &v1::NegativeAcknowledgeContextualSubscriptionRequest,
+) -> Result<(), PublicWireError> {
+    validate_consumer_lease_request_parts(
+        &message.request_id,
+        message.selection.as_ref(),
+        message.event_id.as_ref(),
+        &message.lease_token,
+        message.history_incarnation,
+    )?;
+    if message.retry_delay_nanos > 3_600_000_000_000 {
+        return Err(PublicWireError::InvalidValue);
+    }
+    Ok(())
+}
+
+fn validate_get_contextual_subscription_status_request(
+    message: &v1::GetContextualSubscriptionStatusRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    validate_event_consumer_selection(message.selection.as_ref())
+}
+
+fn validate_execute_contextual_reaction_request(
+    message: &v1::ExecuteContextualReactionRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    validate_event_consumer_selection(message.selection.as_ref())?;
+    validate_event_symbol(&message.reaction_name)?;
+    if message.causation_token.len() <= 32 || message.causation_token.len() > 1_024 {
+        return Err(PublicWireError::InvalidValue);
+    }
+    let command = message
+        .command
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?;
+    request_id(&command.request_id)?;
+    if command.request_id != message.request_id {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    crate::validate_execute_request(command).map_err(|_| PublicWireError::InconsistentFields)
+}
+
 fn validate_watch_named_query_request(
     message: &v1::WatchNamedQueryRequest,
 ) -> Result<(), PublicWireError> {
@@ -7718,6 +7892,60 @@ impl_public_message!(
     &[],
     preflight_noop,
     validate_get_event_stream_consumer_status_request
+);
+impl_public_message!(
+    v1::ConsumeContextualSubscriptionRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    3,
+    &[],
+    &[],
+    preflight_noop,
+    validate_consume_contextual_subscription_request
+);
+impl_public_message!(
+    v1::ConsumeContextualSubscriptionResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    3,
+    &[1],
+    &[],
+    preflight_noop,
+    validate_consume_contextual_subscription_response
+);
+impl_public_message!(
+    v1::AcknowledgeContextualSubscriptionRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    5,
+    &[],
+    &[],
+    preflight_noop,
+    validate_acknowledge_contextual_subscription_request
+);
+impl_public_message!(
+    v1::NegativeAcknowledgeContextualSubscriptionRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    6,
+    &[],
+    &[],
+    preflight_noop,
+    validate_negative_acknowledge_contextual_subscription_request
+);
+impl_public_message!(
+    v1::GetContextualSubscriptionStatusRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_noop,
+    validate_get_contextual_subscription_status_request
+);
+impl_public_message!(
+    v1::ExecuteContextualReactionRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    5,
+    &[],
+    &[],
+    preflight_noop,
+    validate_execute_contextual_reaction_request
 );
 impl_public_message!(
     v1::EventConsumerMutationResponse,

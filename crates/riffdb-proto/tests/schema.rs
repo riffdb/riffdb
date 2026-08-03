@@ -457,7 +457,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 48);
+    assert_eq!(methods.len(), 53);
     let descriptor_order = descriptors
         .file
         .iter()
@@ -534,6 +534,11 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "SeekEventStreamConsumer",
             "RetireEventStreamConsumer",
             "GetEventStreamConsumerStatus",
+            "ConsumeContextualSubscription",
+            "AcknowledgeContextualSubscription",
+            "NegativeAcknowledgeContextualSubscription",
+            "GetContextualSubscriptionStatus",
+            "ExecuteContextualReaction",
         ]
     );
     assert_eq!(
@@ -666,6 +671,17 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         "GetEventStreamConsumerStatusRequest",
         "EventConsumerMutationResponse",
         "GetEventStreamConsumerStatusResponse",
+        "ConsumeContextualSubscriptionRequest",
+        "ConsumeContextualSubscriptionResponse",
+        "ContextualQueryRow",
+        "ContextualQueryField",
+        "ContextualHydration",
+        "AvailableContextualReaction",
+        "ContextualWorkItem",
+        "AcknowledgeContextualSubscriptionRequest",
+        "NegativeAcknowledgeContextualSubscriptionRequest",
+        "GetContextualSubscriptionStatusRequest",
+        "ExecuteContextualReactionRequest",
     ];
     assert!(
         completed
@@ -677,7 +693,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        220
+        231
     );
     assert_eq!(
         messages

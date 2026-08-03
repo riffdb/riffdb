@@ -229,6 +229,7 @@ pub struct CommandExecutionPreparation {
     control: CommandRequestControl,
     audited_lifecycle: Option<AuditedCommandLifecycle>,
     post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
+    causation: Option<riffdb_storage_api::StoredCommandCausationV1>,
 }
 
 pub(crate) struct AuditedCommandLifecycle {
@@ -315,6 +316,7 @@ impl CommandExecutionPreparation {
             control,
             audited_lifecycle: None,
             post_evaluation_authorizer: None,
+            causation: None,
         })
     }
 
@@ -358,6 +360,22 @@ impl CommandExecutionPreparation {
         Ok(self)
     }
 
+    /// Attaches server-validated contextual causation before coordinator admission.
+    pub fn with_causation(
+        mut self,
+        causing_event_id: riffdb_types::EventId,
+        root_request_id: RequestId,
+    ) -> Result<Self, CommandExecutionPreparationError> {
+        if self.causation.is_some() {
+            return Err(CommandExecutionPreparationError::proof_mismatch());
+        }
+        self.causation = Some(riffdb_storage_api::StoredCommandCausationV1::new(
+            causing_event_id,
+            root_request_id,
+        ));
+        Ok(self)
+    }
+
     pub(crate) fn telemetry_identity(&self) -> (CommandId, ServiceIngressKindV1) {
         (self.resolved_plan.reference().command_id(), self.ingress)
     }
@@ -380,6 +398,7 @@ impl CommandExecutionPreparation {
             cancellation,
             audited_lifecycle: self.audited_lifecycle,
             post_evaluation_authorizer: self.post_evaluation_authorizer,
+            causation: self.causation,
         }
     }
 }
@@ -402,6 +421,7 @@ pub(crate) struct CommandExecutionPreparationParts {
     pub(crate) cancellation: CancellationToken,
     pub(crate) audited_lifecycle: Option<AuditedCommandLifecycle>,
     pub(crate) post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
+    pub(crate) causation: Option<riffdb_storage_api::StoredCommandCausationV1>,
 }
 
 #[cfg(test)]

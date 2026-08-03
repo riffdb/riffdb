@@ -1554,6 +1554,15 @@ const fn operation_name(operation: ServiceOperationV1) -> &'static str {
         ServiceOperationV1::RetireEventStreamConsumer => "retire_event_stream_consumer",
         ServiceOperationV1::GetEventStreamConsumerStatus => "get_event_stream_consumer_status",
         ServiceOperationV1::WatchNamedQuery => "watch_named_query",
+        ServiceOperationV1::ConsumeContextualSubscription => "consume_contextual_subscription",
+        ServiceOperationV1::AcknowledgeContextualSubscription => {
+            "acknowledge_contextual_subscription"
+        }
+        ServiceOperationV1::NegativeAcknowledgeContextualSubscription => {
+            "negative_acknowledge_contextual_subscription"
+        }
+        ServiceOperationV1::GetContextualSubscriptionStatus => "get_contextual_subscription_status",
+        ServiceOperationV1::ExecuteContextualReaction => "execute_contextual_reaction",
     }
 }
 

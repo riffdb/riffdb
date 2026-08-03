@@ -781,6 +781,152 @@ fn append_symbolic_tools(
         result_schema,
     });
     append_reactive_tools(tools, manifest)?;
+    append_contextual_tools(tools, manifest)?;
+    Ok(())
+}
+
+fn append_contextual_tools(
+    tools: &mut Vec<FixedToolDefinition>,
+    manifest: &mut Vec<String>,
+) -> Result<(), RegistryError> {
+    let identity = serde_json::json!({
+        "module_hash": {"type":"string", "pattern":"^[0-9a-f]{64}$"},
+        "operation_name": {"type":"string", "pattern":"^[A-Za-z_][A-Za-z0-9_]{0,255}$"},
+        "parameters": {"type":"object"},
+        "consumer_name": {"type":"string", "minLength":1, "maxLength":64}
+    });
+    let specs = [
+        (
+            26,
+            "riffdb_contextual_next",
+            "Lease contextual work",
+            "ConsumeContextualSubscription",
+            "ConsumeContextualSubscription",
+            true,
+            false,
+        ),
+        (
+            27,
+            "riffdb_contextual_ack",
+            "Acknowledge contextual work",
+            "AcknowledgeContextualSubscription",
+            "AcknowledgeContextualSubscription",
+            true,
+            false,
+        ),
+        (
+            28,
+            "riffdb_contextual_nack",
+            "Negative acknowledge contextual work",
+            "NegativeAcknowledgeContextualSubscription",
+            "NegativeAcknowledgeContextualSubscription",
+            true,
+            false,
+        ),
+        (
+            29,
+            "riffdb_contextual_status",
+            "Read contextual consumer status",
+            "GetContextualSubscriptionStatus",
+            "GetContextualSubscriptionStatus",
+            true,
+            true,
+        ),
+        (
+            30,
+            "riffdb_contextual_react",
+            "Execute contextual reaction",
+            "ExecuteContextualReaction",
+            "ExecuteContextualReaction",
+            false,
+            false,
+        ),
+    ];
+    for (kind, name, title, method, operation, idempotent, read_only) in specs {
+        let mut properties = identity.as_object().cloned().ok_or(RegistryError)?;
+        let mut required = vec![
+            "module_hash",
+            "operation_name",
+            "parameters",
+            "consumer_name",
+        ];
+        if kind == 26 {
+            properties.insert("maximum_wait_nanos".to_owned(), serde_json::json!({"type":"integer", "minimum":0, "maximum":30_000_000_000_u64, "default":30_000_000_000_u64}));
+        }
+        if matches!(kind, 27 | 28) {
+            properties.insert(
+                "event_id".to_owned(),
+                serde_json::json!({"type":"string", "minLength":3, "maxLength":32}),
+            );
+            properties.insert(
+                "lease_token".to_owned(),
+                serde_json::json!({"type":"string", "pattern":"^[0-9a-f]{64}$"}),
+            );
+            properties.insert(
+                "history_incarnation".to_owned(),
+                serde_json::json!({"type":"string", "pattern":"^[1-9][0-9]*$"}),
+            );
+            required.extend(["event_id", "lease_token", "history_incarnation"]);
+            if kind == 28 {
+                properties.insert("retry_delay_nanos".to_owned(), serde_json::json!({"type":"integer", "minimum":0, "maximum":3_600_000_000_000_u64, "default":0}));
+            }
+        }
+        if kind == 30 {
+            properties.insert(
+                "reaction_name".to_owned(),
+                serde_json::json!({"type":"string", "minLength":1, "maxLength":256}),
+            );
+            properties.insert("causation_token".to_owned(), serde_json::json!({"type":"string", "contentEncoding":"base64", "minLength":44, "maxLength":1368}));
+            properties.insert(
+                "command_name".to_owned(),
+                serde_json::json!({"type":"string", "minLength":1, "maxLength":128}),
+            );
+            properties.insert("input".to_owned(), serde_json::json!({"type":"object"}));
+            properties.insert(
+                "expected_contract_version".to_owned(),
+                serde_json::json!({"type":"string", "pattern":"^[1-9][0-9]*$"}),
+            );
+            required.extend(["reaction_name", "causation_token", "command_name", "input"]);
+        }
+        let input_id = format!("riffdb.fixed-tool/{name}/input/v1");
+        let result_id = format!("riffdb.fixed-tool/{name}/result/v1");
+        let input_schema = generated_schema(
+            input_id.clone(),
+            serde_json::json!({
+                "$schema": SCHEMA_DIALECT, "type":"object", "additionalProperties":false,
+                "properties":properties, "required":required,
+            }),
+        )?;
+        let result_schema =
+            generated_schema(result_id.clone(), wrapped_result_schema("completed"))?;
+        manifest.extend([input_id, result_id]);
+        tools.push(FixedToolDefinition {
+            kind,
+            name: name.to_owned(),
+            title: title.to_owned(),
+            description: format!("Run the authorized {title} operation."),
+            risk_class: if kind == 30 {
+                "application_mutation"
+            } else {
+                "reactive_application"
+            }
+            .to_owned(),
+            grpc_service: "EventService".to_owned(),
+            grpc_method: method.to_owned(),
+            service_operation: operation.to_owned(),
+            request_converter_id: format!("riffdb.mcp.contextual.{kind}.request/v1"),
+            result_converter_id: format!("riffdb.mcp.contextual.{kind}.result/v1"),
+            result_branches: vec!["completed".to_owned()],
+            annotations: FixedToolAnnotations {
+                read_only_hint: read_only,
+                destructive_hint: kind == 30,
+                idempotent_hint: idempotent,
+                open_world_hint: false,
+            },
+            input_schema,
+            result_schema,
+        });
+    }
     Ok(())
 }
 
@@ -1511,8 +1657,8 @@ mod tests {
     #[test]
     fn fixed_registry_reproduces_every_accepted_schema_identity() {
         let registry = fixed_tool_registry().expect("accepted fixed registry loads");
-        assert_eq!(registry.tools().len(), 25);
-        assert_eq!(registry.artifact_manifest().len(), 51);
+        assert_eq!(registry.tools().len(), 30);
+        assert_eq!(registry.artifact_manifest().len(), 61);
         assert_eq!(registry.operation_schemas().len(), 2);
         assert!(registry.fixed_schema_bytes() > EXPECTED_FIXED_SCHEMA_BYTES);
         assert!(registry.fixed_schema_bytes() <= MAX_FIXED_SCHEMA_BYTES);
@@ -1595,6 +1741,11 @@ mod tests {
             ("riffdb_event_seek", false, true),
             ("riffdb_event_status", true, false),
             ("riffdb_query_watch", true, false),
+            ("riffdb_contextual_next", false, false),
+            ("riffdb_contextual_ack", false, false),
+            ("riffdb_contextual_nack", false, false),
+            ("riffdb_contextual_status", true, false),
+            ("riffdb_contextual_react", false, true),
         ];
         for (name, read_only, destructive) in expected {
             let tool = registry.by_name(name).expect("reactive fixed tool");

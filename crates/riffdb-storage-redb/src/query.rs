@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use redb::{ReadOnlyTable, ReadTransaction, TableDefinition};
 use riffdb_query_executor::{
     BoundPredicate, QueryBackendFault, QueryContinuation, QueryExecutionError, QueryExecutionPort,
-    QueryOwnedSnapshot, QueryParameters, QueryReadView, QueryRow, QueryScanPage,
-    execute_page_in_snapshot,
+    QueryExecutionRequest, QueryOwnedSnapshot, QueryParameters, QueryReadView, QueryRow,
+    QueryScanPage, execute_in_snapshot, execute_page_in_snapshot, validate_query_execution_group,
 };
 use riffdb_query_ir::{
     AccessDirection, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryPredicateOperator,
@@ -120,6 +120,35 @@ impl QueryExecutionPort for RedbOperationalPorts {
             parameters,
         };
         execute_page_in_snapshot(program, parameters, prior, &mut view)
+    }
+
+    fn execute_query_group(
+        &self,
+        requests: &[QueryExecutionRequest<'_>],
+    ) -> Result<Vec<QueryOwnedSnapshot>, QueryExecutionError> {
+        validate_query_execution_group(requests)?;
+        let transaction = self.begin_read().map_err(map_storage_query_error)?;
+        let commits = open_query_table(&transaction, COMMITS, QueryTableKind::Commits)
+            .map_err(map_storage_query_error)?;
+        let head = read_commit_head(&transaction, &commits)
+            .map_err(map_storage_query_error)?
+            .map_or(0, riffdb_types::CommitSequence::get);
+        drop(commits);
+        requests
+            .iter()
+            .map(|request| {
+                let mut view = RedbQueryView {
+                    transaction: &transaction,
+                    entities: None,
+                    indexes: None,
+                    epochs: None,
+                    head,
+                    program: request.program(),
+                    parameters: request.parameters(),
+                };
+                execute_in_snapshot(request.program(), request.parameters(), &mut view)
+            })
+            .collect()
     }
 }
 

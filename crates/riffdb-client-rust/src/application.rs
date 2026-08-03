@@ -513,7 +513,7 @@ fn generated_transport_batch_policy(item_concurrency: usize) -> (usize, usize) {
     (transport_batch_size, transport_concurrency)
 }
 
-fn typed_command_result<T>(
+pub(crate) fn typed_command_result<T>(
     outcome: T,
     response: v1::ExecuteCommandResponse,
 ) -> Result<TypedCommandResult<T>, GeneratedExecutionError> {
@@ -935,6 +935,14 @@ impl ApplicationCommand {
             input,
         })
     }
+
+    pub(crate) fn into_idempotent_command(
+        self,
+    ) -> Result<IdempotentCommand, ApplicationClientError> {
+        let input = lower_value(ApplicationValue::Record(self.input))?;
+        IdempotentCommand::new(self.name, self.expected_contract_version, input)
+            .map_err(|_| ApplicationClientError::InvalidInput)
+    }
 }
 
 /// Query result cardinality declared in RiffQL.
@@ -1015,6 +1023,24 @@ pub struct ApplicationCommandResult {
     pub replayed: bool,
     /// Durable outcome locator when present.
     pub outcome_uri: Option<String>,
+}
+
+pub(crate) fn raise_application_command_result(
+    response: v1::ExecuteCommandResponse,
+) -> Result<ApplicationCommandResult, ApplicationClientError> {
+    Ok(ApplicationCommandResult {
+        outcome: (!response.outcome_type.is_empty()).then_some(response.outcome_type),
+        outcome_value: response.outcome.map(raise_value).transpose()?,
+        commit_sequence: (response.commit_sequence != 0).then_some(response.commit_sequence),
+        contract_version: response.contract_version,
+        plan_hash: response
+            .plan_hash
+            .try_into()
+            .map_err(|_| ApplicationClientError::InvalidResponse)?,
+        replayed: response.status
+            == v1::execute_command_response::CompletionStatus::Replayed as i32,
+        outcome_uri: response.outcome_uri,
+    })
 }
 
 /// Closed application-client failure.
@@ -1132,27 +1158,12 @@ impl RiffDbClient {
         metadata: &CallMetadata,
     ) -> Result<ApplicationCommandResult, ApplicationClientError> {
         let command_name = command.name.clone();
-        let input = lower_value(ApplicationValue::Record(command.input))?;
-        let command =
-            IdempotentCommand::new(command.name, command.expected_contract_version, input)
-                .map_err(|_| ApplicationClientError::InvalidInput)?;
+        let command = command.into_idempotent_command()?;
         let response = self
             .execute_with_retry(&command, attempts, metadata)
             .await
             .map_err(|error| contextualize_command_client_error(error, &command_name))?;
-        Ok(ApplicationCommandResult {
-            outcome: (!response.outcome_type.is_empty()).then_some(response.outcome_type),
-            outcome_value: response.outcome.map(raise_value).transpose()?,
-            commit_sequence: (response.commit_sequence != 0).then_some(response.commit_sequence),
-            contract_version: response.contract_version,
-            plan_hash: response
-                .plan_hash
-                .try_into()
-                .map_err(|_| ApplicationClientError::InvalidResponse)?,
-            replayed: response.status
-                == v1::execute_command_response::CompletionStatus::Replayed as i32,
-            outcome_uri: response.outcome_uri,
-        })
+        raise_application_command_result(response)
     }
 }
 

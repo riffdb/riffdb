@@ -7,7 +7,8 @@
 use std::sync::Arc;
 
 use riffdb_query_executor::{
-    QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryOwnedSnapshot, QueryParameters,
+    QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryExecutionRequest,
+    QueryOwnedSnapshot, QueryParameters,
 };
 use riffdb_query_ir::QueryAccessProgramV1;
 use riffdb_storage_api::{
@@ -92,6 +93,13 @@ impl QueryExecutionPort for RedbSharedPorts {
         prior: Option<&QueryContinuation>,
     ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
         QueryExecutionPort::execute_query_page(&self.operational(), program, parameters, prior)
+    }
+
+    fn execute_query_group(
+        &self,
+        requests: &[QueryExecutionRequest<'_>],
+    ) -> Result<Vec<QueryOwnedSnapshot>, QueryExecutionError> {
+        QueryExecutionPort::execute_query_group(&self.operational(), requests)
     }
 }
 

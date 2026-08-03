@@ -888,7 +888,7 @@ fn command_admission_is_private_move_only_and_orders_external_calls_exactly() {
         "IdempotencyRecheckExecutor::new(repository)",
         ".recheck(idempotency)",
         "lower_provenance_claims(&parts.authorization)",
-        "StoredPendingAdmissionV1::new(",
+        "StoredPendingAdmissionV1::new_with_causation(",
         "AdmissionRequestV1::new(lookup_candidates.clone(), &context)",
         "candidate(lowered, context, true, lookup_candidates)",
         "AdmissionResultV1::Resumed(existing)",

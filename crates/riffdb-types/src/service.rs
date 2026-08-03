@@ -93,11 +93,21 @@ pub enum ServiceOperationV1 {
     GetEventStreamConsumerStatus,
     /// Establish and advance one exact live named-query watch.
     WatchNamedQuery,
+    /// Pull one bounded contextual work batch.
+    ConsumeContextualSubscription,
+    /// Acknowledge one exact contextual work lease.
+    AcknowledgeContextualSubscription,
+    /// Negatively acknowledge one exact contextual work lease.
+    NegativeAcknowledgeContextualSubscription,
+    /// Read one exact contextual consumer status.
+    GetContextualSubscriptionStatus,
+    /// Execute one causally fenced contextual reaction.
+    ExecuteContextualReaction,
 }
 
 impl ServiceOperationV1 {
     /// Every accepted v1 service operation, in tag order.
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 45] = [
         Self::ValidateContract,
         Self::ExplainCommand,
         Self::DeployContract,
@@ -138,6 +148,11 @@ impl ServiceOperationV1 {
         Self::RetireEventStreamConsumer,
         Self::GetEventStreamConsumerStatus,
         Self::WatchNamedQuery,
+        Self::ConsumeContextualSubscription,
+        Self::AcknowledgeContextualSubscription,
+        Self::NegativeAcknowledgeContextualSubscription,
+        Self::GetContextualSubscriptionStatus,
+        Self::ExecuteContextualReaction,
     ];
 
     /// Returns the stable v1 semantic tag.
@@ -184,6 +199,11 @@ impl ServiceOperationV1 {
             Self::RetireEventStreamConsumer => 0x26,
             Self::GetEventStreamConsumerStatus => 0x27,
             Self::WatchNamedQuery => 0x28,
+            Self::ConsumeContextualSubscription => 0x29,
+            Self::AcknowledgeContextualSubscription => 0x2a,
+            Self::NegativeAcknowledgeContextualSubscription => 0x2b,
+            Self::GetContextualSubscriptionStatus => 0x2c,
+            Self::ExecuteContextualReaction => 0x2d,
         }
     }
 
@@ -231,6 +251,11 @@ impl ServiceOperationV1 {
             0x26 => Some(Self::RetireEventStreamConsumer),
             0x27 => Some(Self::GetEventStreamConsumerStatus),
             0x28 => Some(Self::WatchNamedQuery),
+            0x29 => Some(Self::ConsumeContextualSubscription),
+            0x2a => Some(Self::AcknowledgeContextualSubscription),
+            0x2b => Some(Self::NegativeAcknowledgeContextualSubscription),
+            0x2c => Some(Self::GetContextualSubscriptionStatus),
+            0x2d => Some(Self::ExecuteContextualReaction),
             _ => None,
         }
     }
@@ -680,7 +705,7 @@ mod tests {
             );
         }
         assert_eq!(ServiceOperationV1::from_tag(0), None);
-        assert_eq!(ServiceOperationV1::from_tag(0x29), None);
+        assert_eq!(ServiceOperationV1::from_tag(0x2e), None);
         assert_eq!(ServiceOperationV1::from_tag(u8::MAX), None);
     }
 

@@ -10,13 +10,14 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyModule, PyType};
 use riffdb_client_rust::{
-    ApplicationCardinality, ApplicationClientError, ApplicationCommand, ApplicationContract,
-    ApplicationEventBatch, ApplicationEventCheckpoint, ApplicationEventId,
-    ApplicationEventLeaseEvidence, ApplicationEventMutationResult, ApplicationLiveQueryUpdate,
-    ApplicationReactiveOperation, ApplicationRecord, ApplicationValue, AttemptBudget,
-    BearerCredential, CallMetadata, ClientError, DatabaseAlias, DetailsFreeStatus,
-    EventConsumerOptions, LiveQueryCursor, NamedQuery, QueryOptions, StableApplicationClient,
-    TraceParent, load_protected_bearer_credential,
+    ApplicationCardinality, ApplicationClientError, ApplicationCommand, ApplicationContextualBatch,
+    ApplicationContextualReaction, ApplicationContract, ApplicationEventBatch,
+    ApplicationEventCheckpoint, ApplicationEventId, ApplicationEventLeaseEvidence,
+    ApplicationEventMutationResult, ApplicationLiveQueryUpdate, ApplicationReactiveOperation,
+    ApplicationRecord, ApplicationValue, AttemptBudget, BearerCredential, CallMetadata,
+    ClientError, DatabaseAlias, DetailsFreeStatus, EventConsumerOptions, LiveQueryCursor,
+    NamedQuery, QueryOptions, StableApplicationClient, TraceParent,
+    load_protected_bearer_credential,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -292,6 +293,107 @@ impl NativeAsyncClient {
         })
     }
 
+    fn consume_contextual_subscription<'py>(
+        &self,
+        py: Python<'py>,
+        request: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let request = parse_contextual_consumer(&request)?;
+        let mut client = self.client()?;
+        let metadata = self.metadata.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let batch = client
+                .consume_contextual_subscription(
+                    &request.consumer,
+                    request.maximum_wait_nanos,
+                    &metadata,
+                )
+                .await
+                .map_err(application_client_error)?;
+            render_contextual_batch(batch)
+        })
+    }
+
+    fn mutate_contextual_subscription<'py>(
+        &self,
+        py: Python<'py>,
+        request: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let request = parse_reactive_mutation(&request)?;
+        let mut client = self.client()?;
+        let metadata = self.metadata.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let result = match request.action.as_str() {
+                "ack" => {
+                    client
+                        .acknowledge_contextual_lease(
+                            &request.consumer,
+                            &request.evidence,
+                            &metadata,
+                        )
+                        .await
+                }
+                "nack" => {
+                    client
+                        .negative_acknowledge_contextual_lease(
+                            &request.consumer,
+                            &request.evidence,
+                            request.retry_delay_nanos,
+                            &metadata,
+                        )
+                        .await
+                }
+                _ => return Err(native_error("invalid_input", None)),
+            }
+            .map_err(application_client_error)?;
+            render_event_mutation(result)
+        })
+    }
+
+    fn contextual_subscription_status<'py>(
+        &self,
+        py: Python<'py>,
+        request: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let consumer = parse_reactive_identity(&request)?;
+        let mut client = self.client()?;
+        let metadata = self.metadata.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let result = client
+                .contextual_subscription_status(&consumer, &metadata)
+                .await
+                .map_err(application_client_error)?;
+            serialize(
+                &result
+                    .map(event_status_json)
+                    .unwrap_or(serde_json::Value::Null),
+            )
+        })
+    }
+
+    fn execute_contextual_reaction<'py>(
+        &self,
+        py: Python<'py>,
+        request: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let request = parse_contextual_reaction(&request)?;
+        let mut client = self.client()?;
+        let metadata = self.metadata.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let result = client
+                .execute_contextual_reaction(
+                    &request.consumer,
+                    &request.reaction,
+                    request.command,
+                    &metadata,
+                )
+                .await
+                .map_err(application_client_error)?;
+            validate_command_identity(&request.expected, &result)?;
+            render_command_result(result)
+        })
+    }
+
     fn mutate_event_consumer<'py>(
         &self,
         py: Python<'py>,
@@ -447,6 +549,45 @@ struct ParsedReactiveConsumer {
     options: EventConsumerOptions,
 }
 
+struct ParsedContextualConsumer {
+    consumer: riffdb_client_rust::ApplicationEventConsumer,
+    maximum_wait_nanos: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContextualConsumerRequest {
+    reactive_module_hash: String,
+    operation_name: String,
+    parameters: BTreeMap<String, Value>,
+    consumer_name: String,
+    maximum_wait_nanos: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContextualReactionRequest {
+    reactive_module_hash: String,
+    operation_name: String,
+    parameters: BTreeMap<String, Value>,
+    consumer_name: String,
+    reaction_name: String,
+    command_id: u32,
+    causation_token: String,
+    contract_lineage: String,
+    contract_version: u64,
+    command_name: String,
+    plan_hash: String,
+    input: BTreeMap<String, Value>,
+}
+
+struct ParsedContextualReaction {
+    consumer: riffdb_client_rust::ApplicationEventConsumer,
+    reaction: ApplicationContextualReaction,
+    command: ApplicationCommand,
+    expected: CommandResponseIdentity,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReactiveIdentityRequest {
@@ -537,6 +678,63 @@ fn parse_reactive_consumer(source: &str) -> PyResult<ParsedReactiveConsumer> {
             in_flight_limit: request.in_flight_limit.unwrap_or(16),
             lease_seconds: request.lease_seconds.unwrap_or(60),
             maximum_wait_nanos: request.maximum_wait_nanos.unwrap_or(30_000_000_000),
+        },
+    })
+}
+
+fn parse_contextual_consumer(source: &str) -> PyResult<ParsedContextualConsumer> {
+    let request: ContextualConsumerRequest = parse_json(source)?;
+    let maximum_wait_nanos = request.maximum_wait_nanos.unwrap_or(30_000_000_000);
+    if maximum_wait_nanos > 30_000_000_000 {
+        return Err(native_error("invalid_input", None));
+    }
+    Ok(ParsedContextualConsumer {
+        consumer: reactive_consumer(
+            request.reactive_module_hash,
+            request.operation_name,
+            request.parameters,
+            request.consumer_name,
+        )?,
+        maximum_wait_nanos,
+    })
+}
+
+fn parse_contextual_reaction(source: &str) -> PyResult<ParsedContextualReaction> {
+    let request: ContextualReactionRequest = parse_json(source)?;
+    if request.contract_lineage.is_empty() || request.contract_lineage.len() > 256 {
+        return Err(native_error("invalid_input", None));
+    }
+    let plan_hash = parse_hash(&request.plan_hash)?;
+    let mut budget = ValueBudget::default();
+    let input = request
+        .input
+        .into_iter()
+        .map(|(name, value)| Ok((name, parse_value(value, 0, &mut budget)?)))
+        .collect::<PyResult<BTreeMap<_, _>>>()?;
+    let command = ApplicationCommand::new(
+        request.command_name.clone(),
+        Some(request.contract_version),
+        input,
+    )
+    .map_err(application_client_error)?;
+    Ok(ParsedContextualReaction {
+        consumer: reactive_consumer(
+            request.reactive_module_hash,
+            request.operation_name,
+            request.parameters,
+            request.consumer_name,
+        )?,
+        reaction: ApplicationContextualReaction::checked(
+            request.reaction_name,
+            request.command_name,
+            request.command_id,
+            parse_hex(&request.causation_token)?,
+        )
+        .map_err(application_client_error)?,
+        command,
+        expected: CommandResponseIdentity {
+            contract_version: request.contract_version,
+            plan_hash,
         },
     })
 }
@@ -931,6 +1129,77 @@ fn render_event_batch(batch: ApplicationEventBatch) -> PyResult<String> {
         .collect::<Vec<_>>();
     serialize(&json!({
         "events": events,
+        "status": event_status_json(batch.status),
+        "wait_timed_out": batch.wait_timed_out,
+    }))
+}
+
+fn render_contextual_batch(batch: ApplicationContextualBatch) -> PyResult<String> {
+    let items = batch
+        .items
+        .into_iter()
+        .map(|item| {
+            let delivery = item.delivery;
+            let event = delivery.event;
+            let hydrations = item
+                .hydrations
+                .into_iter()
+                .map(|hydration| {
+                    let fields = hydration
+                        .fields
+                        .into_iter()
+                        .map(|(name, field)| {
+                            let value = match field.cardinality {
+                                ApplicationCardinality::One => field
+                                    .records
+                                    .into_iter()
+                                    .next()
+                                    .map(record_to_json)
+                                    .unwrap_or(Value::Null),
+                                ApplicationCardinality::Maybe => field
+                                    .records
+                                    .into_iter()
+                                    .next()
+                                    .map(record_to_json)
+                                    .unwrap_or(Value::Null),
+                                ApplicationCardinality::Many => Value::Array(
+                                    field.records.into_iter().map(record_to_json).collect(),
+                                ),
+                            };
+                            (name, value)
+                        })
+                        .collect::<Map<_, _>>();
+                    json!({"name": hydration.name, "outcome": hydration.outcome, "fields": fields})
+                })
+                .collect::<Vec<_>>();
+            let available_reactions = item
+                .available_reactions
+                .into_iter()
+                .map(|reaction| {
+                    json!({
+                        "name": reaction.name,
+                        "command_name": reaction.command_name,
+                        "command_id": reaction.command_id,
+                        "causation_token": hex(reaction.causation_token()),
+                    })
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "event_id": format!("{}:{}", event.id.commit_sequence, event.id.event_ordinal),
+                "type": event.name,
+                "event": event.fields.into_iter().map(|(name, value)| (name, value_to_json(value))).collect::<Map<_, _>>(),
+                "attempt": delivery.attempt,
+                "lease_token": hex(&delivery.lease_token),
+                "expires_at": {"seconds": delivery.expires_at.0, "nanos": delivery.expires_at.1},
+                "history_incarnation": event.history_incarnation,
+                "context_head": item.context_head,
+                "hydrations": hydrations,
+                "available_reactions": available_reactions,
+            })
+        })
+        .collect::<Vec<_>>();
+    serialize(&json!({
+        "items": items,
         "status": event_status_json(batch.status),
         "wait_timed_out": batch.wait_timed_out,
     }))

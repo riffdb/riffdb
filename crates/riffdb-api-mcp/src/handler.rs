@@ -357,7 +357,7 @@ impl McpDynamicToolDefinition {
 /// One policy-visible tool item in canonical fixed-then-dynamic order.
 #[derive(Clone, Debug)]
 pub enum McpToolDiscoveryItem {
-    /// One exact accepted fixed-tool tag in `1..=25`.
+    /// One exact accepted fixed-tool tag in `1..=30`.
     Fixed(u8),
     /// One compiler-owned dynamic command tool.
     Dynamic(Box<McpDynamicToolDefinition>),
@@ -405,7 +405,7 @@ fn tool_items_are_canonical(items: &[McpToolDiscoveryItem]) -> bool {
     for item in items {
         match item {
             McpToolDiscoveryItem::Fixed(tag) if dynamic.is_none() => {
-                if !(1..=25).contains(tag) || fixed.is_some_and(|prior| prior >= *tag) {
+                if !(1..=30).contains(tag) || fixed.is_some_and(|prior| prior >= *tag) {
                     return false;
                 }
                 fixed = Some(*tag);
@@ -3024,7 +3024,7 @@ mod tests {
             }
         );
 
-        let fixed_items: Vec<_> = (1..=25).map(McpToolDiscoveryItem::Fixed).collect();
+        let fixed_items: Vec<_> = (1..=30).map(McpToolDiscoveryItem::Fixed).collect();
         let fixed = tool_page_schema_components(&fixed_items, registry).expect("fixed page ledger");
         let emitted_fixed_bytes = registry
             .tools()

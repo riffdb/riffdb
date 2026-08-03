@@ -95,6 +95,8 @@ pub(crate) fn event_mutation(
         21 => McpFixedResultBranch::EventAckCompleted,
         22 => McpFixedResultBranch::EventNackCompleted,
         23 => McpFixedResultBranch::EventSeekCompleted,
+        27 => McpFixedResultBranch::ContextualAckCompleted,
+        28 => McpFixedResultBranch::ContextualNackCompleted,
         _ => return Err(ResponseConversionError),
     };
     compose(
@@ -118,6 +120,95 @@ pub(crate) fn event_status(
         24,
         McpFixedResultBranch::EventStatusCompleted,
         Some(payload_from(&payload)?),
+    )
+}
+
+pub(crate) fn contextual_status(
+    response: v1::GetEventStreamConsumerStatusResponse,
+) -> Result<McpToolResult, ResponseConversionError> {
+    use v1::get_event_stream_consumer_status_response::Result;
+    let payload = match response.result.ok_or(ResponseConversionError)? {
+        Result::NotFound(_) => serde_json::json!({"found": false}),
+        Result::Found(status) => {
+            serde_json::json!({"found": true, "status": consumer_status(&status)?})
+        }
+    };
+    compose(
+        29,
+        McpFixedResultBranch::ContextualStatusCompleted,
+        Some(payload_from(&payload)?),
+    )
+}
+
+pub(crate) fn contextual_next(
+    response: v1::ConsumeContextualSubscriptionResponse,
+) -> Result<McpToolResult, ResponseConversionError> {
+    let status = response.status.as_ref().ok_or(ResponseConversionError)?;
+    let items = response
+        .items
+        .into_iter()
+        .map(|item| {
+            let delivery = item.delivery.ok_or(ResponseConversionError)?;
+            let event = delivery.event.ok_or(ResponseConversionError)?;
+            let event_id = event.event_id.ok_or(ResponseConversionError)?;
+            let expires = delivery.expires_at.ok_or(ResponseConversionError)?;
+            let fields = event
+                .fields
+                .into_iter()
+                .map(|field| {
+                    Ok(serde_json::json!({
+                        "name":field.name,
+                        "value":presented_value(field.value.ok_or(ResponseConversionError)?)?,
+                    }))
+                })
+                .collect::<Result<Vec<_>, ResponseConversionError>>()?;
+            let hydrations = item
+                .hydrations
+                .into_iter()
+                .map(|hydration| {
+                    let fields = hydration
+                        .fields
+                        .into_iter()
+                        .map(|field| {
+                            let cardinality = match v1::ContextualQueryCardinality::try_from(field.cardinality).ok() {
+                                Some(v1::ContextualQueryCardinality::One) => "one",
+                                Some(v1::ContextualQueryCardinality::Maybe) => "maybe",
+                                Some(v1::ContextualQueryCardinality::Many) => "many",
+                                _ => return Err(ResponseConversionError),
+                            };
+                            let rows = field.rows.into_iter().map(|row| {
+                                let values = row.fields.into_iter().map(|value| {
+                                    Ok((value.name, serde_json::to_value(presented_value(value.value.ok_or(ResponseConversionError)?)?).map_err(|_| ResponseConversionError)?))
+                                }).collect::<Result<serde_json::Map<_, _>, ResponseConversionError>>()?;
+                                Ok(serde_json::json!({"entity":row.entity,"fields":values}))
+                            }).collect::<Result<Vec<_>, ResponseConversionError>>()?;
+                            Ok(serde_json::json!({"name":field.name,"cardinality":cardinality,"rows":rows}))
+                        })
+                        .collect::<Result<Vec<_>, ResponseConversionError>>()?;
+                    Ok(serde_json::json!({"name":hydration.name,"outcome":hydration.outcome,"fields":fields}))
+                })
+                .collect::<Result<Vec<_>, ResponseConversionError>>()?;
+            let reactions = item.available_reactions.into_iter().map(|reaction| serde_json::json!({
+                "name":reaction.name,
+                "command_name":reaction.command_name,
+                "command_id":reaction.command_id,
+                "causation_token":base64::engine::general_purpose::STANDARD.encode(reaction.causation_token),
+            })).collect::<Vec<_>>();
+            Ok(serde_json::json!({
+                "event":{"event_id":format!("{}:{}",event_id.commit_sequence,event_id.event_ordinal),"event_name":event.event_name,"fields":fields},
+                "attempt":delivery.attempt,"lease_token":lower_hex(&delivery.lease_token),
+                "expires_at":{"seconds":expires.seconds.to_string(),"nanos":expires.nanos},
+                "history_incarnation":event.history_incarnation.to_string(),
+                "context_head":item.context_head.to_string(),"hydrations":hydrations,"available_reactions":reactions,
+            }))
+        })
+        .collect::<Result<Vec<_>, ResponseConversionError>>()?;
+    compose(
+        26,
+        McpFixedResultBranch::ContextualNextCompleted,
+        Some(payload_from(&serde_json::json!({
+            "items":items,"status":consumer_status(status)?,"wait_timed_out":response.wait_timed_out,
+        }))?),
     )
 }
 
@@ -820,6 +911,24 @@ pub(crate) fn execute_query(
 pub(crate) fn run_command(
     response: v1::ExecuteCommandResponse,
 ) -> Result<McpToolResult, ResponseConversionError> {
+    command_response(19, McpFixedResultBranch::CommandCompleted, response)
+}
+
+pub(crate) fn contextual_reaction(
+    response: v1::ExecuteCommandResponse,
+) -> Result<McpToolResult, ResponseConversionError> {
+    command_response(
+        30,
+        McpFixedResultBranch::ContextualReactionCompleted,
+        response,
+    )
+}
+
+fn command_response(
+    tag: u8,
+    branch: McpFixedResultBranch,
+    response: v1::ExecuteCommandResponse,
+) -> Result<McpToolResult, ResponseConversionError> {
     let status =
         match v1::execute_command_response::CompletionStatus::try_from(response.status).ok() {
             Some(v1::execute_command_response::CompletionStatus::Committed) => "committed",
@@ -847,11 +956,7 @@ pub(crate) fn run_command(
             .then_some(response.durability_mode),
         "outcome_uri": response.outcome_uri,
     });
-    compose(
-        19,
-        McpFixedResultBranch::CommandCompleted,
-        Some(payload_from(&payload)?),
-    )
+    compose(tag, branch, Some(payload_from(&payload)?))
 }
 
 fn public_natural_value(value: v1::Value) -> Result<serde_json::Value, ResponseConversionError> {

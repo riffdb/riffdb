@@ -969,6 +969,38 @@ impl PublicGrpcMcpBackend {
                     .ok_or(McpBackendError::TargetUnavailable)?;
                 response::query_watch(update)
             }
+            FixedGrpcRequest::ContextualNext(request) => response::contextual_next(
+                client
+                    .consume_contextual_subscription(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?,
+            ),
+            FixedGrpcRequest::ContextualAck(request) => response::event_mutation(
+                27,
+                client
+                    .acknowledge_contextual_subscription(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?,
+            ),
+            FixedGrpcRequest::ContextualNack(request) => response::event_mutation(
+                28,
+                client
+                    .negative_acknowledge_contextual_subscription(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?,
+            ),
+            FixedGrpcRequest::ContextualStatus(request) => response::contextual_status(
+                client
+                    .get_contextual_subscription_status(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?,
+            ),
+            FixedGrpcRequest::ContextualReaction(request) => response::contextual_reaction(
+                client
+                    .execute_contextual_reaction(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?,
+            ),
         }
         .map_err(|_| McpBackendError::InvalidResponse)
     }

@@ -391,12 +391,15 @@ fn validate_idempotency(
         ));
         return None;
     };
-    let valid = input.field.value_type.tag() == ValueTypeTag::String
-        && input
+    let valid = match input.field.value_type.tag() {
+        ValueTypeTag::Uuid => true,
+        ValueTypeTag::String => input
             .field
             .value_type
             .byte_bound()
-            .is_some_and(|maximum| (1..=128).contains(&maximum));
+            .is_some_and(|maximum| (1..=128).contains(&maximum)),
+        _ => false,
+    };
     if valid {
         Some(field_id)
     } else {
@@ -535,6 +538,27 @@ mod tests {
     #[test]
     fn canonical_budget_commands_validate() {
         validate(include_str!("../../../contracts/examples/budget.riff")).expect("budget commands");
+    }
+
+    #[test]
+    fn direct_uuid_idempotency_input_is_valid() {
+        validate(
+            r#"
+contract UuidIdempotency version 1 {
+  entity Row { key (id: uuid) field value: i64 }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  command Change {
+    input request_key: uuid
+    input id: uuid
+    idempotency_key request_key
+    mutate Row(id) as row else Missing { id: id }
+    set row.value = 1
+    return Changed { row: row }
+  }
+}
+"#,
+        )
+        .expect("UUID idempotency command");
     }
 
     #[test]

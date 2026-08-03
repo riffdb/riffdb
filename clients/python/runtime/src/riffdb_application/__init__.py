@@ -517,6 +517,117 @@ class AsyncApplicationTransport:
             except Exception as error:
                 raise _translate_native(error) from None
 
+    async def _consume_contextual_subscription(
+        self, **request: object
+    ) -> dict[str, object] | None:
+        self._require_open()
+        request.setdefault("maximum_wait_nanos", 30_000_000_000)
+        try:
+            encoded = json.dumps(request, separators=(",", ":"))
+            batch = json.loads(await self._client.consume_contextual_subscription(encoded))
+            if not isinstance(batch, dict) or not isinstance(batch.get("items"), list):
+                raise ProtocolError("the native RiffDB contextual response was invalid")
+            items = batch["items"]
+            if len(items) > 1 or any(not isinstance(item, dict) for item in items):
+                raise ProtocolError("the native RiffDB contextual work item was invalid")
+            return items[0] if items else None
+        except (
+            ProtocolError,
+            InvalidInput,
+            RiffDbApplicationError,
+            ConnectionFailure,
+            OutcomeUnknown,
+        ):
+            raise
+        except Exception as error:
+            raise _translate_native(error) from None
+
+    async def _acknowledge_contextual_item(self, **request: object) -> str:
+        return await self._mutate_contextual_item(request, "ack", 0)
+
+    async def _negative_acknowledge_contextual_item(self, **request: object) -> str:
+        retry_delay = request.pop("retry_delay_nanos", 0)
+        if type(retry_delay) is not int:
+            raise InvalidInput("contextual retry delay is invalid")
+        return await self._mutate_contextual_item(request, "nack", retry_delay)
+
+    async def _mutate_contextual_item(
+        self, request: dict[str, object], action: str, retry_delay_nanos: int
+    ) -> str:
+        self._require_open()
+        item = request.pop("item", None)
+        try:
+            request.update(
+                action=action,
+                event_id=getattr(item, "event_id"),
+                lease_token=getattr(item, "lease_token"),
+                history_incarnation=getattr(item, "history_incarnation"),
+                retry_delay_nanos=retry_delay_nanos,
+            )
+            encoded = json.dumps(request, separators=(",", ":"))
+            result = json.loads(await self._client.mutate_contextual_subscription(encoded))
+            if not isinstance(result, dict) or not isinstance(result.get("result"), str):
+                raise ProtocolError("the native RiffDB contextual mutation was invalid")
+            return str(result["result"])
+        except (
+            ProtocolError,
+            InvalidInput,
+            RiffDbApplicationError,
+            ConnectionFailure,
+            OutcomeUnknown,
+        ):
+            raise
+        except (AttributeError, TypeError):
+            raise InvalidInput("contextual work item evidence is invalid") from None
+        except Exception as error:
+            raise _translate_native(error) from None
+
+    async def _contextual_subscription_status(
+        self, **request: object
+    ) -> dict[str, object] | None:
+        self._require_open()
+        try:
+            encoded = json.dumps(request, separators=(",", ":"))
+            result = json.loads(await self._client.contextual_subscription_status(encoded))
+            if result is not None and not isinstance(result, dict):
+                raise ProtocolError("the native RiffDB contextual status was invalid")
+            return result
+        except (
+            ProtocolError,
+            InvalidInput,
+            RiffDbApplicationError,
+            ConnectionFailure,
+            OutcomeUnknown,
+        ):
+            raise
+        except Exception as error:
+            raise _translate_native(error) from None
+
+    async def _execute_contextual_reaction(
+        self, **request: object
+    ) -> TypedCommandResult[dict[str, object]]:
+        self._require_open()
+        expected_plan = request["plan_hash"]
+        expected_version = request["contract_version"]
+        try:
+            encoded = json.dumps(request, separators=(",", ":"))
+            result = _command_result(
+                json.loads(await self._client.execute_contextual_reaction(encoded))
+            )
+            if result.plan_hash != expected_plan or result.contract_version != expected_version:
+                raise ProtocolError("RiffDB contextual reaction identity mismatch")
+            return result
+        except (
+            ProtocolError,
+            InvalidInput,
+            RiffDbApplicationError,
+            ConnectionFailure,
+            OutcomeUnknown,
+        ):
+            raise
+        except Exception as error:
+            raise _translate_native(error) from None
+
     async def _acknowledge_event(self, **request: object) -> str:
         request["action"] = "ack"
         request["retry_delay_nanos"] = None

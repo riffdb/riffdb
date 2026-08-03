@@ -12,7 +12,7 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 58;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 62;
 /// Number of durable semantic roles accepted for current writes.
 pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 47;
 /// Number of durable semantic roles accepted for current writes.
@@ -162,6 +162,14 @@ const SERVICE_AUDIT_V2_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
 const SERVICE_AUDIT_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-service-audit-v2-record-bound.bin"
+));
+const CONTEXTUAL_CAUSATION_V2_SCHEMA_HASH_BYTES: &[u8; 128] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-contextual-causation-v2-schema-hashes.bin"
+));
+const CONTEXTUAL_CAUSATION_V2_RECORD_BOUND_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-contextual-causation-v2-record-bounds.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
@@ -792,6 +800,61 @@ const SERVICE_AUDIT_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_
 )
 .with_compact_identity(22, 2);
 
+const fn contextual_causation_v2_schema_hash(index: usize) -> SchemaHash {
+    let mut bytes = [0_u8; 32];
+    let mut offset = 0;
+    while offset < bytes.len() {
+        bytes[offset] = CONTEXTUAL_CAUSATION_V2_SCHEMA_HASH_BYTES[index * 32 + offset];
+        offset += 1;
+    }
+    SchemaHash::from_bytes(bytes)
+}
+
+const fn contextual_causation_v2_record_bound(index: usize, offset: usize) -> usize {
+    let start = index * 8 + offset;
+    u32::from_be_bytes([
+        CONTEXTUAL_CAUSATION_V2_RECORD_BOUND_BYTES[start],
+        CONTEXTUAL_CAUSATION_V2_RECORD_BOUND_BYTES[start + 1],
+        CONTEXTUAL_CAUSATION_V2_RECORD_BOUND_BYTES[start + 2],
+        CONTEXTUAL_CAUSATION_V2_RECORD_BOUND_BYTES[start + 3],
+    ]) as usize
+}
+
+macro_rules! contextual_causation_v2_schema {
+    ($index:literal, $name:literal, $message:ty, $compact_tag:literal) => {
+        RecordSchema::new_current(
+            concat!("riffdb.storage.v1.", $name),
+            contextual_causation_v2_schema_hash($index),
+            contextual_causation_v2_record_bound($index, 0),
+            contextual_causation_v2_record_bound($index, 4),
+            preflight_payload::<{ 53 + $index }>,
+            validate_payload::<{ 53 + $index }, $message>,
+        )
+        .with_compact_identity($compact_tag, 2)
+    };
+}
+
+const PENDING_ADMISSION_V2_RECORD_SCHEMA: RecordSchema<'static> = contextual_causation_v2_schema!(
+    0,
+    "StoredPendingAdmissionV2",
+    v1::StoredPendingAdmissionV2,
+    11
+);
+const EXECUTION_FAILED_V2_RECORD_SCHEMA: RecordSchema<'static> = contextual_causation_v2_schema!(
+    1,
+    "StoredExecutionFailedV2",
+    v1::StoredExecutionFailedV2,
+    12
+);
+const OUTCOME_V2_RECORD_SCHEMA: RecordSchema<'static> =
+    contextual_causation_v2_schema!(2, "StoredOutcomeV2", v1::StoredOutcomeV2, 13);
+const PROVENANCE_V2_RECORD_SCHEMA: RecordSchema<'static> = contextual_causation_v2_schema!(
+    3,
+    "StoredProvenanceRecordV2",
+    v1::StoredProvenanceRecordV2,
+    16
+);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -943,6 +1006,16 @@ readable_message!(
     EVENT_CONSUMER_DELIVERY_V1_RECORD_SCHEMA
 );
 readable_message!(v1::ServiceAuditRecordV2, SERVICE_AUDIT_V2_RECORD_SCHEMA);
+readable_message!(
+    v1::StoredPendingAdmissionV2,
+    PENDING_ADMISSION_V2_RECORD_SCHEMA
+);
+readable_message!(
+    v1::StoredExecutionFailedV2,
+    EXECUTION_FAILED_V2_RECORD_SCHEMA
+);
+readable_message!(v1::StoredOutcomeV2, OUTCOME_V2_RECORD_SCHEMA);
+readable_message!(v1::StoredProvenanceRecordV2, PROVENANCE_V2_RECORD_SCHEMA);
 
 writable_message!(v1::StoredStorageFormatVersionV1);
 writable_message!(v1::StoredDatabaseIdentityV1);
@@ -952,11 +1025,7 @@ writable_message!(v1::StoredContractBundleV1);
 writable_message!(v1::ActiveCatalogPointerV1);
 writable_message!(v1::StoredCatalogAdministrationV1);
 writable_message!(v1::StoredEntityRecordV1);
-writable_message!(v1::StoredPendingAdmissionV1);
-writable_message!(v1::StoredExecutionFailedV1);
-writable_message!(v1::StoredOutcomeV1);
 writable_message!(v1::StoredDurableEventV1);
-writable_message!(v1::StoredProvenanceRecordV1);
 writable_message!(v1::CapabilityRecordV1);
 writable_message!(v1::CapabilityTokenLookupV1);
 writable_message!(v1::CapabilityBootstrapMarkerV1);
@@ -991,6 +1060,10 @@ writable_message!(v1::StoredReactiveModuleAdministrationV1);
 writable_message!(v1::StoredEventConsumerV1);
 writable_message!(v1::StoredEventConsumerDeliveryV1);
 writable_message!(v1::ServiceAuditRecordV2);
+writable_message!(v1::StoredPendingAdmissionV2);
+writable_message!(v1::StoredExecutionFailedV2);
+writable_message!(v1::StoredOutcomeV2);
+writable_message!(v1::StoredProvenanceRecordV2);
 
 /// Encodes one sealed generated message after the same allocation-free shape preflight.
 pub fn encode_current_message<M: WritableRecordMessage>(
@@ -1110,6 +1183,10 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     EVENT_CONSUMER_V1_RECORD_SCHEMA,
     EVENT_CONSUMER_DELIVERY_V1_RECORD_SCHEMA,
     SERVICE_AUDIT_V2_RECORD_SCHEMA,
+    PENDING_ADMISSION_V2_RECORD_SCHEMA,
+    EXECUTION_FAILED_V2_RECORD_SCHEMA,
+    OUTCOME_V2_RECORD_SCHEMA,
+    PROVENANCE_V2_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -1129,12 +1206,12 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     CURRENT_V1_RECORD_SCHEMAS[7],
     INDEX_V2_RECORD_SCHEMA,
     INDEX_GENERATION_V2_RECORD_SCHEMA,
-    CURRENT_V1_RECORD_SCHEMAS[10],
-    CURRENT_V1_RECORD_SCHEMAS[11],
-    CURRENT_V1_RECORD_SCHEMAS[12],
+    PENDING_ADMISSION_V2_RECORD_SCHEMA,
+    EXECUTION_FAILED_V2_RECORD_SCHEMA,
+    OUTCOME_V2_RECORD_SCHEMA,
     CURRENT_V1_RECORD_SCHEMAS[13],
     OUTBOX_INTENT_V2_RECORD_SCHEMA,
-    CURRENT_V1_RECORD_SCHEMAS[15],
+    PROVENANCE_V2_RECORD_SCHEMA,
     COMMIT_V3_RECORD_SCHEMA,
     CURRENT_V1_RECORD_SCHEMAS[17],
     CURRENT_V1_RECORD_SCHEMAS[18],

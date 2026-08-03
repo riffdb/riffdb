@@ -693,7 +693,7 @@ mod tests {
                 ServiceAuditTargetMap::event_consumer(
                     lineage.clone(),
                     reactive_module_hash,
-                    reactive_operation_name,
+                    reactive_operation_name.clone(),
                     consumer_identity_hash,
                 )
                 .expect("canonical targets"),
@@ -702,6 +702,56 @@ mod tests {
                 ServiceOperationV1::WatchNamedQuery,
                 ServiceAuditTargetMap::symbolic_query(lineage.clone(), version)
                     .expect("canonical targets"),
+            ),
+            (
+                ServiceOperationV1::ConsumeContextualSubscription,
+                ServiceAuditTargetMap::event_consumer(
+                    lineage.clone(),
+                    reactive_module_hash,
+                    reactive_operation_name.clone(),
+                    consumer_identity_hash,
+                )
+                .expect("canonical targets"),
+            ),
+            (
+                ServiceOperationV1::AcknowledgeContextualSubscription,
+                ServiceAuditTargetMap::event_consumer(
+                    lineage.clone(),
+                    reactive_module_hash,
+                    reactive_operation_name.clone(),
+                    consumer_identity_hash,
+                )
+                .expect("canonical targets"),
+            ),
+            (
+                ServiceOperationV1::NegativeAcknowledgeContextualSubscription,
+                ServiceAuditTargetMap::event_consumer(
+                    lineage.clone(),
+                    reactive_module_hash,
+                    reactive_operation_name.clone(),
+                    consumer_identity_hash,
+                )
+                .expect("canonical targets"),
+            ),
+            (
+                ServiceOperationV1::GetContextualSubscriptionStatus,
+                ServiceAuditTargetMap::event_consumer(
+                    lineage.clone(),
+                    reactive_module_hash,
+                    reactive_operation_name.clone(),
+                    consumer_identity_hash,
+                )
+                .expect("canonical targets"),
+            ),
+            (
+                ServiceOperationV1::ExecuteContextualReaction,
+                ServiceAuditTargetMap::event_consumer(
+                    lineage.clone(),
+                    reactive_module_hash,
+                    reactive_operation_name,
+                    consumer_identity_hash,
+                )
+                .expect("canonical targets"),
             ),
         ];
 
@@ -720,7 +770,7 @@ mod tests {
 
         let expected_nonempty_lengths = [
             0, 2, 1, 0, 1, 2, 1, 2, 2, 2, 2, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
         ];
         assert_eq!(
             mapped.each_ref().map(|(_, targets)| targets.len()),
