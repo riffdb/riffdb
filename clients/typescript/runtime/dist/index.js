@@ -105,6 +105,118 @@ export class CliApplicationTransport {
         }
         return typed;
     }
+    async *consumeEventStream(request, options = {}) {
+        validateReactiveRequest(request);
+        const batchLimit = boundedInteger(options.batchLimit ?? 1, 1, 64);
+        const inFlightLimit = boundedInteger(options.inFlightLimit ?? 16, 1, 64);
+        const leaseSeconds = boundedInteger(options.leaseSeconds ?? 60, 5, 900);
+        const maximumWaitMs = boundedInteger(options.maximumWaitMs ?? 30_000, 0, 30_000);
+        while (true) {
+            const args = this.reactiveArguments(request);
+            args.push("event", "consume", "--module-hash", request.reactiveModuleHash, "--operation", request.operationName, "--consumer-name", request.consumerName, "--batch-limit", String(batchLimit), "--in-flight-limit", String(inFlightLimit), "--lease-seconds", String(leaseSeconds), "--wait-nanos", String(maximumWaitMs * 1_000_000));
+            addReactiveParameters(args, request.parameters, request.parameterSchema);
+            const envelope = await this.invokeArguments(args);
+            const result = exactObject(envelope.result);
+            const status = decodeReactiveConsumerStatus(result.status);
+            const historyIncarnation = status.historyIncarnation;
+            const events = expectArray(result.events).map((value) => {
+                const delivery = exactObject(value);
+                const fields = Object.fromEntries(expectArray(delivery.fields).map((field) => {
+                    const item = exactObject(field);
+                    return [expectSymbol(item.name), decodeTagged(item.value)];
+                }));
+                const expiration = exactObject(delivery.expires_at);
+                return {
+                    eventId: expectBoundedString(delivery.event_id, 64),
+                    event: { type: expectSymbol(delivery.event_name), ...fields },
+                    attempt: positiveNumber(delivery.attempt),
+                    leaseToken: expectHash(delivery.lease_token),
+                    expiresAt: `${expectBoundedString(expiration.seconds, 32)}.${String(boundedInteger(expiration.nanos, 0, 999_999_999)).padStart(9, "0")}`,
+                    historyIncarnation,
+                };
+            });
+            yield { events, waitTimedOut: result.wait_timed_out === true, status };
+        }
+    }
+    async acknowledgeEvent(request, delivery) {
+        return this.mutateEventLease("ack", request, delivery);
+    }
+    async negativeAcknowledgeEvent(request, delivery, retryDelayMs = 0) {
+        return this.mutateEventLease("nack", request, delivery, retryDelayMs);
+    }
+    async seekEventConsumer(request, checkpoint) {
+        validateReactiveRequest(request);
+        const args = this.reactiveArguments(request);
+        args.push("event", "seek", "--module-hash", request.reactiveModuleHash, "--operation", request.operationName, "--consumer-name", request.consumerName, "--checkpoint", expectBoundedString(checkpoint, 64));
+        addReactiveParameters(args, request.parameters, request.parameterSchema);
+        return decodeEventMutationResult((await this.invokeArguments(args)).result);
+    }
+    async eventConsumerStatus(request) {
+        validateReactiveRequest(request);
+        const args = this.reactiveArguments(request);
+        args.push("event", "status", "--module-hash", request.reactiveModuleHash, "--operation", request.operationName, "--consumer-name", request.consumerName);
+        addReactiveParameters(args, request.parameters, request.parameterSchema);
+        const result = exactObject((await this.invokeArguments(args)).result);
+        if (result.found !== true)
+            return undefined;
+        return decodeReactiveConsumerStatus(result.status);
+    }
+    async *watchNamedQuery(request) {
+        if (!HASH.test(request.reactiveModuleHash) || !SYMBOL.test(request.operationName)) {
+            throw new Error("invalid reactive operation identity");
+        }
+        let cursor = request.cursor;
+        while (true) {
+            const args = this.baseArguments();
+            args.push("query", "watch", request.operationName, "--module-hash", request.reactiveModuleHash);
+            addReactiveParameters(args, request.parameters, request.parameterSchema);
+            if (cursor !== undefined)
+                args.push("--cursor", cursor);
+            const result = exactObject((await this.invokeArguments(args)).result);
+            const type = expectSymbol(result.type);
+            if (type === "terminal") {
+                yield {
+                    type,
+                    reason: expectSymbol(result.reason),
+                    ...liveTerminalFrontier(result.last_frontier),
+                };
+                return;
+            }
+            cursor = expectBoundedString(result.cursor, 16_384);
+            const frontier = exactObject(result.frontier);
+            const applicationHead = nonnegativeBigInt(frontier.application_head);
+            const historyIncarnation = positiveBigInt(frontier.history_incarnation);
+            if (type === "snapshot") {
+                yield { type, value: decodeLiveValue(result.result), cursor, applicationHead, historyIncarnation };
+            }
+            else if (type === "reset") {
+                yield { type, reason: expectSymbol(result.reason), value: decodeLiveValue(result.result), cursor, applicationHead, historyIncarnation };
+            }
+            else if (type === "patch") {
+                yield { type, resultField: expectSymbol(result.result_field), operations: expectArray(result.operations).map(decodeLivePatchOperation), cursor, applicationHead, historyIncarnation };
+            }
+            else if (type === "checkpoint") {
+                yield { type, cursor, applicationHead, historyIncarnation };
+            }
+            else {
+                throw new Error("invalid RiffDB live query update");
+            }
+        }
+    }
+    async mutateEventLease(action, request, delivery, retryDelayMs = 0) {
+        validateReactiveRequest(request);
+        const delay = boundedInteger(retryDelayMs, 0, 3_600_000);
+        const args = this.reactiveArguments(request);
+        args.push("event", action, "--module-hash", request.reactiveModuleHash, "--operation", request.operationName, "--consumer-name", request.consumerName, "--event-id", expectBoundedString(delivery.eventId, 64), "--lease-token", expectHash(delivery.leaseToken), "--history-incarnation", delivery.historyIncarnation.toString());
+        if (action === "nack")
+            args.push("--retry-delay-nanos", String(delay * 1_000_000));
+        addReactiveParameters(args, request.parameters, request.parameterSchema);
+        return decodeEventMutationResult((await this.invokeArguments(args)).result);
+    }
+    reactiveArguments(request) {
+        validateReactiveRequest(request);
+        return this.baseArguments();
+    }
     baseArguments(attemptBudget) {
         const args = [
             "--endpoint", this.options.endpoint,
@@ -152,6 +264,24 @@ export class CliApplicationTransport {
         finally {
             await rm(directory, { recursive: true, force: true });
         }
+    }
+    async invokeArguments(args) {
+        let stdout;
+        try {
+            ({ stdout } = await executeFile(this.options.riffdbPath, args, {
+                encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES, timeout: 35_000,
+            }));
+        }
+        catch (error) {
+            const candidate = exactObject(error);
+            stdout = typeof candidate.stdout === "string" ? candidate.stdout : "";
+        }
+        const envelope = exactObject(JSON.parse(stdout));
+        if (envelope.schema !== "riffdb.cli.output/v1")
+            throw new Error("invalid RiffDB CLI envelope");
+        if (envelope.ok !== true)
+            throw new Error("RiffDB reactive operation failed");
+        return envelope;
     }
 }
 function validateIdentity(value) {
@@ -485,6 +615,213 @@ function exactObject(value) {
     if (typeof value !== "object" || value === null || Array.isArray(value))
         return fail();
     return value;
+}
+function expectArray(value) {
+    if (!Array.isArray(value) || value.length > 100_000)
+        throw new Error("invalid RiffDB collection");
+    return value;
+}
+function boundedInteger(value, minimum, maximum) {
+    if (typeof value !== "number" || !Number.isInteger(value) || value < minimum || value > maximum) {
+        throw new Error("invalid bounded integer");
+    }
+    return value;
+}
+function nonnegativeBigInt(value) {
+    if (typeof value !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(value)) {
+        throw new Error("invalid nonnegative integer");
+    }
+    return BigInt(value);
+}
+function validateReactiveRequest(request) {
+    if (!HASH.test(request.reactiveModuleHash)
+        || !SYMBOL.test(request.operationName)
+        || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(request.consumerName)) {
+        throw new Error("invalid reactive consumer identity");
+    }
+}
+function addReactiveParameters(args, parameters, parameterSchema) {
+    const values = exactObject(parameters);
+    if (parameterSchema.kind !== "record")
+        throw new Error("invalid reactive parameter schema");
+    const schemas = new Map(parameterSchema.fields.map((field) => [field.name, field.schema]));
+    const entries = Object.entries(values).sort(([left], [right]) => left.localeCompare(right));
+    if (entries.length > 256 || entries.length !== schemas.size) {
+        throw new Error("invalid reactive parameters");
+    }
+    for (const [name, value] of entries) {
+        const schema = schemas.get(name);
+        if (!SYMBOL.test(name) || schema === undefined) {
+            throw new Error("invalid reactive parameter name");
+        }
+        args.push("--parameter", `${name}=${JSON.stringify(encodeCliReactiveValue(value, schema))}`);
+    }
+}
+function encodeCliReactiveValue(value, schema) {
+    switch (schema.kind) {
+        case "bool":
+            if (typeof value !== "boolean")
+                return fail();
+            return { type: "bool", value };
+        case "i64":
+            if (typeof value !== "bigint" || value < -(1n << 63n) || value > (1n << 63n) - 1n)
+                return fail();
+            return { type: "i64", value: value.toString() };
+        case "u64":
+            if (typeof value !== "bigint" || value < 0n || value > (1n << 64n) - 1n)
+                return fail();
+            return { type: "u64", value: value.toString() };
+        case "string":
+        case "cursor":
+            return { type: "string", value: expectBoundedString(value, 262_144) };
+        case "uuid":
+            if (typeof value !== "string" || !UUID.test(value))
+                return fail();
+            return { type: "uuid", value };
+        case "enum":
+            {
+                const name = expectSymbol(value);
+                const variantId = schema.variants?.[name];
+                if (schema.typeId === undefined || variantId === undefined)
+                    return fail();
+                return { type: "enum", type_id: positiveNumber(schema.typeId), variant_id: positiveNumber(variantId), name };
+            }
+        case "bytes":
+            if (!(value instanceof Uint8Array) || value.byteLength > 1_048_576)
+                return fail();
+            return { type: "bytes", value: Buffer.from(value).toString("base64") };
+        case "date":
+            return { type: "date", days_since_unix_epoch: boundedInteger(value, -2_147_483_648, 2_147_483_647) };
+        case "timestamp": {
+            const timestamp = exactObject(value);
+            if (typeof timestamp.seconds !== "bigint"
+                || timestamp.seconds < -(1n << 63n)
+                || timestamp.seconds > (1n << 63n) - 1n)
+                return fail();
+            return {
+                type: "timestamp",
+                seconds: timestamp.seconds.toString(),
+                nanos: boundedInteger(timestamp.nanos, 0, 999_999_999),
+            };
+        }
+        case "decimal": {
+            const decimal = encodeDecimal(value);
+            if (schema.precision === undefined || schema.scale === undefined
+                || decimal.scale !== schema.scale
+                || (decimal.precision !== undefined && decimal.precision !== schema.precision))
+                return fail();
+            return { type: "decimal", ...decimal, precision: schema.precision };
+        }
+        case "money": {
+            const money = exactObject(value);
+            return {
+                type: "money",
+                currency: schema.currency === undefined ? fail() : expectCurrency(schema.currency),
+                amount: (() => {
+                    const amount = encodeDecimal(money.amount);
+                    if (money.currency !== schema.currency || schema.precision === undefined || schema.scale === undefined
+                        || amount.scale !== schema.scale
+                        || (amount.precision !== undefined && amount.precision !== schema.precision))
+                        return fail();
+                    return { ...amount, precision: schema.precision };
+                })(),
+            };
+        }
+        case "limit":
+            return { type: "u64", value: String(boundedInteger(value, 1, 500)) };
+        case "optional":
+        case "list":
+        case "record":
+            throw new Error("invalid reactive parameter schema");
+    }
+}
+function decodeReactiveConsumerStatus(value) {
+    const status = exactObject(value);
+    return {
+        revision: positiveBigInt(status.revision),
+        checkpoint: expectBoundedString(status.checkpoint, 64),
+        historyIncarnation: positiveBigInt(status.history_incarnation),
+        liveLeases: nonnegativeNumber(status.live_leases),
+        retries: nonnegativeNumber(status.retries),
+        deadLetters: nonnegativeNumber(status.dead_letters),
+    };
+}
+function decodeEventMutationResult(value) {
+    const result = expectSymbol(exactObject(value).result);
+    if (result === "applied" || result === "state_changed" || result === "not_found"
+        || result === "outstanding_lease" || result === "stale_lease" || result === "lease_expired") {
+        return result;
+    }
+    throw new Error("invalid RiffDB consumer mutation result");
+}
+function decodeLiveValue(value) {
+    const result = exactObject(value);
+    const output = { outcome: expectSymbol(result.outcome) };
+    for (const rawField of expectArray(result.fields)) {
+        const field = exactObject(rawField);
+        const name = expectSymbol(field.name);
+        const records = expectArray(field.records).map((rawRecord) => {
+            const record = exactObject(rawRecord);
+            return Object.fromEntries(expectArray(record.fields).map((rawValue) => {
+                const item = exactObject(rawValue);
+                return [expectSymbol(item.name), decodeTagged(item.value)];
+            }));
+        });
+        const cardinality = boundedInteger(field.cardinality, 1, 3);
+        if ((cardinality === 1 && records.length !== 1) || (cardinality === 2 && records.length > 1)) {
+            throw new Error("invalid RiffDB live query cardinality");
+        }
+        output[name] = cardinality === 3 ? records : (records[0] ?? null);
+    }
+    return output;
+}
+function decodeLivePatchOperation(value) {
+    const operation = exactObject(value);
+    const type = expectSymbol(operation.type);
+    if (type === "insert" || type === "replace") {
+        return {
+            type,
+            index: boundedInteger(operation.index, 0, 65_535),
+            record: decodeLiveRecord(operation.record),
+        };
+    }
+    if (type === "remove") {
+        return {
+            type,
+            index: boundedInteger(operation.index, 0, 65_535),
+            key: decodeLiveValueRecord(operation.key),
+        };
+    }
+    if (type === "move") {
+        return {
+            type,
+            from: boundedInteger(operation.from, 0, 65_535),
+            to: boundedInteger(operation.to, 0, 65_535),
+            key: decodeLiveValueRecord(operation.key),
+        };
+    }
+    throw new Error("invalid RiffDB live patch operation");
+}
+function decodeLiveRecord(value) {
+    const record = exactObject(value);
+    expectSymbol(record.entity);
+    return decodeLiveValueRecord(record.fields);
+}
+function decodeLiveValueRecord(value) {
+    const record = exactObject(value);
+    return Object.fromEntries(Object.entries(record).map(([name, field]) => {
+        expectSymbol(name);
+        return [name, decodeTagged(field)];
+    }));
+}
+function liveTerminalFrontier(value) {
+    if (value === null || value === undefined)
+        return {};
+    const frontier = exactObject(value);
+    return {
+        lastApplicationHead: nonnegativeBigInt(frontier.application_head),
+        historyIncarnation: positiveBigInt(frontier.history_incarnation),
+    };
 }
 function expectSymbol(value) {
     if (typeof value !== "string" || !SYMBOL.test(value))

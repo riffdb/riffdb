@@ -29,7 +29,7 @@ const MAX_GENERATED_BATCH_CONCURRENCY: usize = 128;
 /// surface.
 #[derive(Clone)]
 pub struct StableApplicationClient {
-    inner: RiffDbClient,
+    pub(crate) inner: RiffDbClient,
 }
 
 impl StableApplicationClient {
@@ -737,6 +737,15 @@ pub enum ApplicationValue {
     Uuid(ApplicationUuid),
     /// Contract enum variant name lowered without caller-visible numeric IDs.
     Enum(String),
+    /// Compiler-generated stable enum identity. Application code uses the name.
+    EnumIdentity {
+        /// Stable enum type identifier pinned by the application lock.
+        type_id: u32,
+        /// Stable enum variant identifier pinned by the application lock.
+        variant_id: u32,
+        /// Symbolic variant name retained for checked presentation.
+        name: String,
+    },
     /// Opaque bytes.
     Bytes(Vec<u8>),
     /// Days since the Unix epoch.
@@ -1224,7 +1233,7 @@ fn lower_contract(contract: ApplicationContract) -> Option<app_v1::ContractSelec
     }
 }
 
-fn lower_value(value: ApplicationValue) -> Result<v1::Value, ApplicationClientError> {
+pub(crate) fn lower_value(value: ApplicationValue) -> Result<v1::Value, ApplicationClientError> {
     use v1::value::Kind;
     let kind = match value {
         ApplicationValue::Null => Kind::NullValue(v1::NullValue::NullValue as i32),
@@ -1262,6 +1271,20 @@ fn lower_value(value: ApplicationValue) -> Result<v1::Value, ApplicationClientEr
             })
         }
         ApplicationValue::Enum(_) => return Err(ApplicationClientError::InvalidInput),
+        ApplicationValue::EnumIdentity {
+            type_id,
+            variant_id,
+            name,
+        } if type_id != 0 && variant_id != 0 && !name.is_empty() && name.len() <= 256 => {
+            Kind::EnumValue(v1::EnumValue {
+                type_id,
+                variant_id,
+                name,
+            })
+        }
+        ApplicationValue::EnumIdentity { .. } => {
+            return Err(ApplicationClientError::InvalidInput);
+        }
         ApplicationValue::Bytes(value) => Kind::BytesValue(value),
         ApplicationValue::Date(days_since_unix_epoch) => Kind::DateValue(v1::Date {
             days_since_unix_epoch,
@@ -1379,7 +1402,7 @@ fn raise_query_result(
     })
 }
 
-fn raise_value(value: v1::Value) -> Result<ApplicationValue, ApplicationClientError> {
+pub(crate) fn raise_value(value: v1::Value) -> Result<ApplicationValue, ApplicationClientError> {
     use v1::value::Kind;
     match value.kind.ok_or(ApplicationClientError::InvalidResponse)? {
         Kind::NullValue(_) => Ok(ApplicationValue::Null),

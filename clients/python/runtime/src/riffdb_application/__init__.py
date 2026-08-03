@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
@@ -483,6 +483,133 @@ class AsyncApplicationTransport:
             raise
         except Exception as error:
             raise _translate_native(error) from None
+
+    async def _consume_event_stream(self, **request: object) -> AsyncIterator[dict[str, object]]:
+        self._require_open()
+        request.setdefault("batch_limit", 1)
+        request.setdefault("in_flight_limit", 16)
+        request.setdefault("lease_seconds", 60)
+        request.setdefault("maximum_wait_nanos", 30_000_000_000)
+        while not self._closed:
+            try:
+                encoded = json.dumps(request, separators=(",", ":"))
+                batch = json.loads(await self._client.consume_event_stream(encoded))
+                if not isinstance(batch, dict) or not isinstance(batch.get("events"), list):
+                    raise ProtocolError("the native RiffDB event response was invalid")
+                for raw in batch["events"]:
+                    if not isinstance(raw, dict) or not isinstance(raw.get("fields"), dict):
+                        raise ProtocolError("the native RiffDB event delivery was invalid")
+                    yield {
+                        "type": raw.get("type"),
+                        **raw["fields"],
+                        "_delivery": {
+                            key: value for key, value in raw.items() if key != "fields"
+                        },
+                    }
+            except (
+                ProtocolError,
+                InvalidInput,
+                RiffDbApplicationError,
+                ConnectionFailure,
+                OutcomeUnknown,
+            ):
+                raise
+            except Exception as error:
+                raise _translate_native(error) from None
+
+    async def _acknowledge_event(self, **request: object) -> str:
+        request["action"] = "ack"
+        request["retry_delay_nanos"] = None
+        return await self._mutate_event_consumer(request)
+
+    async def _negative_acknowledge_event(self, **request: object) -> str:
+        request["action"] = "nack"
+        return await self._mutate_event_consumer(request)
+
+    async def _mutate_event_consumer(self, request: dict[str, object]) -> str:
+        self._require_open()
+        try:
+            encoded = json.dumps(request, separators=(",", ":"))
+            result = json.loads(await self._client.mutate_event_consumer(encoded))
+            if not isinstance(result, dict) or not isinstance(result.get("result"), str):
+                raise ProtocolError("the native RiffDB consumer mutation was invalid")
+            return str(result["result"])
+        except (
+            ProtocolError,
+            InvalidInput,
+            RiffDbApplicationError,
+            ConnectionFailure,
+            OutcomeUnknown,
+        ):
+            raise
+        except Exception as error:
+            raise _translate_native(error) from None
+
+    async def _seek_event_consumer(self, **request: object) -> str:
+        self._require_open()
+        try:
+            encoded = json.dumps(request, separators=(",", ":"))
+            result = json.loads(await self._client.seek_event_consumer(encoded))
+            if not isinstance(result, dict) or not isinstance(result.get("result"), str):
+                raise ProtocolError("the native RiffDB consumer seek was invalid")
+            return str(result["result"])
+        except (
+            ProtocolError,
+            InvalidInput,
+            RiffDbApplicationError,
+            ConnectionFailure,
+            OutcomeUnknown,
+        ):
+            raise
+        except Exception as error:
+            raise _translate_native(error) from None
+
+    async def _event_consumer_status(self, **request: object) -> dict[str, object] | None:
+        self._require_open()
+        try:
+            encoded = json.dumps(request, separators=(",", ":"))
+            result = json.loads(await self._client.event_consumer_status(encoded))
+            if result is not None and not isinstance(result, dict):
+                raise ProtocolError("the native RiffDB consumer status was invalid")
+            return result
+        except (
+            ProtocolError,
+            InvalidInput,
+            RiffDbApplicationError,
+            ConnectionFailure,
+            OutcomeUnknown,
+        ):
+            raise
+        except Exception as error:
+            raise _translate_native(error) from None
+
+    async def _watch_named_query(self, **request: object) -> AsyncIterator[dict[str, object]]:
+        self._require_open()
+        cursor = request.get("cursor")
+        while not self._closed:
+            request["cursor"] = cursor
+            try:
+                encoded = json.dumps(request, separators=(",", ":"))
+                update = json.loads(await self._client.watch_named_query(encoded))
+                if not isinstance(update, dict) or not isinstance(update.get("type"), str):
+                    raise ProtocolError("the native RiffDB live update was invalid")
+                yield update
+                if update["type"] == "terminal":
+                    return
+                next_cursor = update.get("cursor")
+                if not isinstance(next_cursor, str):
+                    raise ProtocolError("the native RiffDB live cursor was invalid")
+                cursor = next_cursor
+            except (
+                ProtocolError,
+                InvalidInput,
+                RiffDbApplicationError,
+                ConnectionFailure,
+                OutcomeUnknown,
+            ):
+                raise
+            except Exception as error:
+                raise _translate_native(error) from None
 
     async def _command_batch(
         self,

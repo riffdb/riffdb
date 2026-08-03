@@ -780,6 +780,206 @@ fn append_symbolic_tools(
         input_schema,
         result_schema,
     });
+    append_reactive_tools(tools, manifest)?;
+    Ok(())
+}
+
+fn append_reactive_tools(
+    tools: &mut Vec<FixedToolDefinition>,
+    manifest: &mut Vec<String>,
+) -> Result<(), RegistryError> {
+    let identity = serde_json::json!({
+        "module_hash": {"type":"string", "pattern":"^[0-9a-f]{64}$"},
+        "operation_name": {"type":"string", "pattern":"^[A-Za-z_][A-Za-z0-9_]{0,255}$"},
+        "parameters": {"type":"object"},
+        "consumer_name": {"type":"string", "minLength":1, "maxLength":64}
+    });
+    let specs = [
+        (
+            20,
+            "riffdb_event_next",
+            "Lease next events",
+            "Lease one bounded authorized event batch.",
+            "ConsumeEventStream",
+            "ConsumeEventStream",
+            false,
+            false,
+            false,
+        ),
+        (
+            21,
+            "riffdb_event_ack",
+            "Acknowledge event",
+            "Acknowledge one exact authorized event lease.",
+            "AcknowledgeEventStream",
+            "AcknowledgeEventStream",
+            false,
+            false,
+            true,
+        ),
+        (
+            22,
+            "riffdb_event_nack",
+            "Negative acknowledge event",
+            "Release or delay one exact authorized event lease.",
+            "NegativeAcknowledgeEventStream",
+            "NegativeAcknowledgeEventStream",
+            false,
+            false,
+            true,
+        ),
+        (
+            23,
+            "riffdb_event_seek",
+            "Seek event consumer",
+            "Move one exact consumer checkpoint under explicit seek authority.",
+            "SeekEventStreamConsumer",
+            "SeekEventStreamConsumer",
+            false,
+            true,
+            true,
+        ),
+        (
+            24,
+            "riffdb_event_status",
+            "Read event consumer status",
+            "Read bounded status for one exact authorized event consumer.",
+            "GetEventStreamConsumerStatus",
+            "GetEventStreamConsumerStatus",
+            true,
+            false,
+            true,
+        ),
+        (
+            25,
+            "riffdb_query_watch",
+            "Watch named query",
+            "Retrieve one authorized closed live-query update; reconnect with its opaque cursor.",
+            "WatchNamedQuery",
+            "WatchNamedQuery",
+            true,
+            false,
+            true,
+        ),
+    ];
+    for (kind, name, title, description, method, operation, read_only, destructive, idempotent) in
+        specs
+    {
+        let mut properties = identity.as_object().cloned().ok_or(RegistryError)?;
+        let required = if kind == 25 {
+            properties.remove("consumer_name");
+            properties.insert(
+                "cursor".to_owned(),
+                serde_json::json!({"type":"string", "minLength":2, "maxLength":5464}),
+            );
+            vec!["module_hash", "operation_name", "parameters"]
+        } else if kind == 20 {
+            properties.insert(
+                "batch_limit".to_owned(),
+                serde_json::json!({"type":"integer", "minimum":1, "maximum":64, "default":1}),
+            );
+            properties.insert(
+                "in_flight_limit".to_owned(),
+                serde_json::json!({"type":"integer", "minimum":1, "maximum":64, "default":16}),
+            );
+            properties.insert(
+                "lease_seconds".to_owned(),
+                serde_json::json!({"type":"integer", "minimum":5, "maximum":900, "default":60}),
+            );
+            properties.insert("maximum_wait_nanos".to_owned(), serde_json::json!({"type":"integer", "minimum":0, "maximum":30_000_000_000_u64, "default":30_000_000_000_u64}));
+            vec![
+                "module_hash",
+                "operation_name",
+                "parameters",
+                "consumer_name",
+            ]
+        } else {
+            if matches!(kind, 21 | 22) {
+                properties.insert(
+                    "event_id".to_owned(),
+                    serde_json::json!({"type":"string", "minLength":3, "maxLength":32}),
+                );
+                properties.insert(
+                    "lease_token".to_owned(),
+                    serde_json::json!({"type":"string", "pattern":"^[0-9a-f]{64}$"}),
+                );
+                properties.insert(
+                    "history_incarnation".to_owned(),
+                    serde_json::json!({"type":"string", "pattern":"^[1-9][0-9]*$"}),
+                );
+                if kind == 22 {
+                    properties.insert(
+                        "retry_delay_nanos".to_owned(),
+                        serde_json::json!({"type":"integer", "minimum":0, "maximum":3_600_000_000_000_u64}),
+                    );
+                }
+            }
+            if kind == 23 {
+                properties.insert(
+                    "checkpoint".to_owned(),
+                    serde_json::json!({"type":"string", "minLength":3, "maxLength":32}),
+                );
+            }
+            let mut values = vec![
+                "module_hash",
+                "operation_name",
+                "parameters",
+                "consumer_name",
+            ];
+            if matches!(kind, 21 | 22) {
+                values.extend(["event_id", "lease_token", "history_incarnation"]);
+            }
+            if kind == 23 {
+                values.push("checkpoint");
+            }
+            values
+        };
+        let input_id = format!("riffdb.fixed-tool/{name}/input/v1");
+        let result_id = format!("riffdb.fixed-tool/{name}/result/v1");
+        let input_schema = generated_schema(
+            input_id.clone(),
+            serde_json::json!({
+                "$schema": SCHEMA_DIALECT,
+                "type":"object", "additionalProperties":false,
+                "properties": properties,
+                "required": required,
+            }),
+        )?;
+        let result_schema =
+            generated_schema(result_id.clone(), wrapped_result_schema("completed"))?;
+        manifest.extend([input_id, result_id]);
+        tools.push(FixedToolDefinition {
+            kind,
+            name: name.to_owned(),
+            title: title.to_owned(),
+            description: description.to_owned(),
+            risk_class: if destructive {
+                "consumer_control"
+            } else {
+                "reactive_application"
+            }
+            .to_owned(),
+            grpc_service: if kind == 25 {
+                "ApplicationQueryService"
+            } else {
+                "EventService"
+            }
+            .to_owned(),
+            grpc_method: method.to_owned(),
+            service_operation: operation.to_owned(),
+            request_converter_id: format!("riffdb.mcp.reactive.{kind}.request/v1"),
+            result_converter_id: format!("riffdb.mcp.reactive.{kind}.result/v1"),
+            result_branches: vec!["completed".to_owned()],
+            annotations: FixedToolAnnotations {
+                read_only_hint: read_only,
+                destructive_hint: destructive,
+                idempotent_hint: idempotent,
+                open_world_hint: false,
+            },
+            input_schema,
+            result_schema,
+        });
+    }
     Ok(())
 }
 
@@ -1311,8 +1511,8 @@ mod tests {
     #[test]
     fn fixed_registry_reproduces_every_accepted_schema_identity() {
         let registry = fixed_tool_registry().expect("accepted fixed registry loads");
-        assert_eq!(registry.tools().len(), 19);
-        assert_eq!(registry.artifact_manifest().len(), 39);
+        assert_eq!(registry.tools().len(), 25);
+        assert_eq!(registry.artifact_manifest().len(), 51);
         assert_eq!(registry.operation_schemas().len(), 2);
         assert!(registry.fixed_schema_bytes() > EXPECTED_FIXED_SCHEMA_BYTES);
         assert!(registry.fixed_schema_bytes() <= MAX_FIXED_SCHEMA_BYTES);
@@ -1383,6 +1583,27 @@ mod tests {
         assert!(registry.by_name("RIFFDB.CONTRACT.DEPLOY").is_none());
         assert!(registry.by_name("riffdb_contract_deploy ").is_none());
         assert!(registry.by_name("riffdb.contract.unknown").is_none());
+    }
+
+    #[test]
+    fn reactive_fixed_tools_are_underscore_named_and_risk_classified() {
+        let registry = fixed_tool_registry().expect("accepted fixed registry loads");
+        let expected = [
+            ("riffdb_event_next", false, false),
+            ("riffdb_event_ack", false, false),
+            ("riffdb_event_nack", false, false),
+            ("riffdb_event_seek", false, true),
+            ("riffdb_event_status", true, false),
+            ("riffdb_query_watch", true, false),
+        ];
+        for (name, read_only, destructive) in expected {
+            let tool = registry.by_name(name).expect("reactive fixed tool");
+            assert_eq!(tool.annotations.read_only_hint, read_only);
+            assert_eq!(tool.annotations.destructive_hint, destructive);
+            assert!(!tool.name().contains('.'));
+            assert!(tool.input_schema().canonical_bytes() <= MAX_SCHEMA_BYTES);
+            assert!(tool.result_schema().canonical_bytes() <= MAX_SCHEMA_BYTES);
+        }
     }
 
     #[test]

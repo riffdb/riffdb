@@ -5,6 +5,7 @@ import pickle
 import unittest
 from dataclasses import dataclass
 from decimal import Decimal
+from enum import StrEnum
 from typing import Annotated
 from uuid import UUID
 
@@ -21,7 +22,12 @@ from riffdb_application import (
     Timestamp,
 )
 from riffdb_application import _native
-from riffdb_application._binding import decode_record, decode_variant, encode_record
+from riffdb_application._binding import (
+    decode_record,
+    decode_variant,
+    encode_reactive_record,
+    encode_record,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +40,16 @@ class Values:
     when: Timestamp
     day: RiffDate
     payload: bytes
+
+
+class ReactiveState(StrEnum):
+    OPEN = "Open"
+
+
+@dataclass(frozen=True, slots=True)
+class ReactiveParameters:
+    amount: Decimal
+    state: ReactiveState
 
 
 class RuntimeTests(unittest.TestCase):
@@ -78,6 +94,35 @@ class RuntimeTests(unittest.TestCase):
         )
         self.assertEqual(value.amount, Decimal("-0.01"))
         self.assertEqual(value.payload, b"\x00\xff")
+
+    def test_reactive_parameters_pin_decimal_and_enum_identity(self) -> None:
+        encoded = encode_reactive_record(
+            ReactiveParameters(amount=Decimal("12.30"), state=ReactiveState.OPEN),
+            {
+                "amount": {"kind": "decimal", "precision": 8, "scale": 2},
+                "state": {
+                    "kind": "enum",
+                    "type_id": 4,
+                    "variants": {"Open": 9},
+                },
+            },
+        )
+        self.assertEqual(encoded["amount"]["precision"], 8)
+        self.assertEqual(encoded["state"]["type_id"], 4)
+        self.assertEqual(encoded["state"]["variant_id"], 9)
+
+        with self.assertRaises(InvalidInput):
+            encode_reactive_record(
+                ReactiveParameters(amount=Decimal("12.3"), state=ReactiveState.OPEN),
+                {
+                    "amount": {"kind": "decimal", "precision": 8, "scale": 2},
+                    "state": {
+                        "kind": "enum",
+                        "type_id": 4,
+                        "variants": {"Open": 9},
+                    },
+                },
+            )
 
     def test_public_conversion_failures_are_closed(self) -> None:
         with self.assertRaises(InvalidInput):

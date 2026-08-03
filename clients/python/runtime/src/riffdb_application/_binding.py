@@ -142,6 +142,46 @@ def encode_record(value: object) -> dict[str, dict[str, object]]:
         raise InvalidInput("generated application input is invalid") from None
 
 
+def encode_reactive_record(
+    value: object,
+    schema: dict[str, dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    try:
+        encoded = _encode_record(value)
+        if set(encoded) != set(schema):
+            raise ValueError("reactive parameter schema mismatch")
+        for name, metadata in schema.items():
+            item = encoded[name]
+            kind = metadata.get("kind")
+            if item.get("kind") != kind:
+                raise ValueError("reactive parameter kind mismatch")
+            if kind == "decimal":
+                if item.get("scale") != metadata.get("scale"):
+                    raise ValueError("reactive decimal scale mismatch")
+                item["precision"] = metadata["precision"]
+            elif kind == "money":
+                amount = item.get("amount")
+                if (
+                    item.get("currency") != metadata.get("currency")
+                    or not isinstance(amount, dict)
+                    or amount.get("scale") != metadata.get("scale")
+                ):
+                    raise ValueError("reactive money type mismatch")
+                amount["precision"] = metadata["precision"]
+            elif kind == "enum":
+                variants = metadata.get("variants")
+                variant = item.get("value")
+                if not isinstance(variants, dict) or variant not in variants:
+                    raise ValueError("reactive enum variant mismatch")
+                item["type_id"] = metadata["type_id"]
+                item["variant_id"] = variants[variant]
+        return encoded
+    except (KeyError, TypeError, ValueError, OverflowError):
+        from . import InvalidInput
+
+        raise InvalidInput("generated reactive parameters are invalid") from None
+
+
 def _decode_decimal(value: object) -> Decimal:
     if not isinstance(value, dict) or value.get("$riffdb") != "decimal":
         raise TypeError("invalid RiffDB decimal response")

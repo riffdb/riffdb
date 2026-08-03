@@ -32,11 +32,14 @@ pub use application_source::{
     MAX_APPLICATION_MIGRATIONS, MAX_APPLICATION_SOURCE_BYTES,
 };
 pub use generation::{
-    GeneratedMcpCommand, GeneratedMcpTool, McpToolGenerationError, generate_mcp_commands,
-    generate_mcp_tools, generate_rust_client, generate_typescript_client,
+    GeneratedMcpCommand, GeneratedMcpReactiveTool, GeneratedMcpTool, McpToolGenerationError,
+    generate_mcp_commands, generate_mcp_reactive_tools, generate_mcp_tools,
+    generate_rust_application_client, generate_rust_client, generate_typescript_application_client,
+    generate_typescript_client,
 };
 pub use python_generation::{
-    PythonGenerationError, PythonGenerationLocation, generate_python_client,
+    PythonGenerationError, PythonGenerationLocation, generate_python_application_client,
+    generate_python_client,
 };
 pub use reactive_module::{
     ReactiveModuleCompilationError, canonicalize_reactive_source, compile_reactive_source,

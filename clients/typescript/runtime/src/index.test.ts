@@ -157,3 +157,67 @@ process.stdout.write(JSON.stringify({
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("reactive consumers preserve typed parameters, delivery values, status, and lease outcomes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "riffdb-typescript-reactive-"));
+  const executable = join(directory, "riffdb-fake.cjs");
+  await writeFile(executable, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const parameters = args.flatMap((value, index) => value === "--parameter" ? [args[index + 1]] : []);
+const expected = [
+  'count={"type":"i64","value":"9223372036854775807"}',
+  'workspace_id={"type":"uuid","value":"01900000-0000-7000-8000-000000000001"}',
+];
+if (JSON.stringify(parameters) !== JSON.stringify(expected)) process.exit(9);
+const mutation = args.includes("ack");
+process.stdout.write(JSON.stringify({
+  schema: "riffdb.cli.output/v1",
+  ok: true,
+  result: mutation ? { result: "stale_lease" } : {
+    events: [{
+      event_id: "7:0", event_name: "RowChanged", attempt: 1,
+      lease_token: "${"a".repeat(64)}", history_incarnation: "3",
+      expires_at: { seconds: "12", nanos: 4 },
+      fields: [{ name: "value", value: { type: "i64", value: "42" } }],
+    }],
+    wait_timed_out: false,
+    status: { revision: "2", checkpoint: "before-first", history_incarnation: "3", live_leases: 1, retries: 0, dead_letters: 0 },
+  },
+}) + "\\n");
+`);
+  await chmod(executable, 0o700);
+  try {
+    const transport = new CliApplicationTransport({
+      riffdbPath: executable,
+      endpoint: "http://127.0.0.1:7443",
+      credentialFile: join(directory, "credential"),
+    });
+    const request = {
+      reactiveModuleHash: "b".repeat(64),
+      operationName: "RowChanges",
+      parameters: {
+        count: 9_223_372_036_854_775_807n,
+        workspace_id: "01900000-0000-7000-8000-000000000001",
+      },
+      parameterSchema: {
+        kind: "record" as const,
+        fields: [
+          { name: "count", schema: { kind: "i64" as const } },
+          { name: "workspace_id", schema: { kind: "uuid" as const } },
+        ],
+      },
+      consumerName: "Worker_1",
+    };
+    const iterator = transport.consumeEventStream<typeof request.parameters, { readonly type: "RowChanged"; readonly value: bigint }>(request)[Symbol.asyncIterator]();
+    const batch = await iterator.next();
+    assert.equal(batch.done, false);
+    assert.equal(batch.value?.events[0]?.event.value, 42n);
+    assert.equal(batch.value?.status.historyIncarnation, 3n);
+    const delivery = batch.value?.events[0];
+    assert.ok(delivery);
+    assert.equal(await transport.acknowledgeEvent(request, delivery), "stale_lease");
+    await iterator.return?.();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

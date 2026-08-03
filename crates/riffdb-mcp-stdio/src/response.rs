@@ -29,6 +29,276 @@ pub(crate) struct ResponseConversionError;
 #[derive(Serialize)]
 struct Unit {}
 
+pub(crate) fn event_next(
+    response: v1::ConsumeEventStreamResponse,
+) -> Result<McpToolResult, ResponseConversionError> {
+    let status = response.status.as_ref().ok_or(ResponseConversionError)?;
+    let events = response
+        .events
+        .into_iter()
+        .map(|delivery| {
+            let event = delivery.event.ok_or(ResponseConversionError)?;
+            let event_id = event.event_id.ok_or(ResponseConversionError)?;
+            let expires = delivery.expires_at.ok_or(ResponseConversionError)?;
+            let fields = event
+                .fields
+                .into_iter()
+                .map(|field| {
+                    Ok(serde_json::json!({
+                        "name": field.name,
+                        "value": presented_value(field.value.ok_or(ResponseConversionError)?)?,
+                    }))
+                })
+                .collect::<Result<Vec<_>, ResponseConversionError>>()?;
+            Ok(serde_json::json!({
+                "event_id": format!("{}:{}", event_id.commit_sequence, event_id.event_ordinal),
+                "event_name": event.event_name,
+                "writer_contract_version": event.writer_contract_version.to_string(),
+                "command_name": event.command_name,
+                "actor_kind": actor_kind_name(event.actor_kind)?,
+                "provenance_uri": event.provenance_uri,
+                "history_incarnation": event.history_incarnation.to_string(),
+                "fields": fields,
+                "attempt": delivery.attempt,
+                "lease_token": lower_hex(&delivery.lease_token),
+                "expires_at": {"seconds": expires.seconds.to_string(), "nanos": expires.nanos},
+            }))
+        })
+        .collect::<Result<Vec<_>, ResponseConversionError>>()?;
+    compose(
+        20,
+        McpFixedResultBranch::EventNextCompleted,
+        Some(payload_from(&serde_json::json!({
+            "events": events,
+            "status": consumer_status(status)?,
+            "wait_timed_out": response.wait_timed_out,
+        }))?),
+    )
+}
+
+pub(crate) fn event_mutation(
+    tag: u8,
+    response: v1::EventConsumerMutationResponse,
+) -> Result<McpToolResult, ResponseConversionError> {
+    let result = match v1::EventConsumerMutationResult::try_from(response.result)
+        .map_err(|_| ResponseConversionError)?
+    {
+        v1::EventConsumerMutationResult::Applied => "applied",
+        v1::EventConsumerMutationResult::StateChanged => "state_changed",
+        v1::EventConsumerMutationResult::NotFound => "not_found",
+        v1::EventConsumerMutationResult::OutstandingLease => "outstanding_lease",
+        v1::EventConsumerMutationResult::StaleLease => "stale_lease",
+        v1::EventConsumerMutationResult::LeaseExpired => "lease_expired",
+        v1::EventConsumerMutationResult::Unspecified => return Err(ResponseConversionError),
+    };
+    let branch = match tag {
+        21 => McpFixedResultBranch::EventAckCompleted,
+        22 => McpFixedResultBranch::EventNackCompleted,
+        23 => McpFixedResultBranch::EventSeekCompleted,
+        _ => return Err(ResponseConversionError),
+    };
+    compose(
+        tag,
+        branch,
+        Some(payload_from(&serde_json::json!({"result": result}))?),
+    )
+}
+
+pub(crate) fn event_status(
+    response: v1::GetEventStreamConsumerStatusResponse,
+) -> Result<McpToolResult, ResponseConversionError> {
+    use v1::get_event_stream_consumer_status_response::Result;
+    let payload = match response.result.ok_or(ResponseConversionError)? {
+        Result::NotFound(_) => serde_json::json!({"found": false}),
+        Result::Found(status) => {
+            serde_json::json!({"found": true, "status": consumer_status(&status)?})
+        }
+    };
+    compose(
+        24,
+        McpFixedResultBranch::EventStatusCompleted,
+        Some(payload_from(&payload)?),
+    )
+}
+
+pub(crate) fn query_watch(
+    update: v1::LiveQueryUpdate,
+) -> Result<McpToolResult, ResponseConversionError> {
+    use v1::live_query_update::Update;
+    let payload = match update.update.ok_or(ResponseConversionError)? {
+        Update::Snapshot(value) => serde_json::json!({
+            "type":"snapshot", "result": live_result(value.result)?,
+            "frontier": live_frontier(value.frontier)?, "cursor": McpPresentedBytes::new(value.cursor),
+        }),
+        Update::Patch(value) => serde_json::json!({
+            "type":"patch", "result_field":value.result_field,
+            "operations": value.operations.into_iter().map(live_patch_operation).collect::<Result<Vec<_>, _>>()?, "frontier": live_frontier(value.frontier)?,
+            "cursor": McpPresentedBytes::new(value.cursor),
+        }),
+        Update::Reset(value) => serde_json::json!({
+            "type":"reset", "reason":live_reset_reason(value.reason)?, "result":live_result(value.result)?,
+            "frontier":live_frontier(value.frontier)?, "cursor":McpPresentedBytes::new(value.cursor),
+        }),
+        Update::Checkpoint(value) => serde_json::json!({
+            "type":"checkpoint", "frontier":live_frontier(value.frontier)?,
+            "cursor":McpPresentedBytes::new(value.cursor),
+        }),
+        Update::Terminal(value) => serde_json::json!({
+            "type":"terminal", "reason":live_terminal_reason(value.reason)?,
+            "last_frontier":live_frontier(value.last_frontier)?,
+        }),
+    };
+    compose(
+        25,
+        McpFixedResultBranch::QueryWatchCompleted,
+        Some(payload_from(&payload)?),
+    )
+}
+
+fn consumer_status(
+    status: &v1::EventConsumerStatus,
+) -> Result<serde_json::Value, ResponseConversionError> {
+    let checkpoint = status
+        .checkpoint
+        .as_ref()
+        .and_then(|checkpoint| checkpoint.position.as_ref())
+        .ok_or(ResponseConversionError)?;
+    let checkpoint = match checkpoint {
+        v1::event_consumer_checkpoint::Position::BeforeFirst(_) => "before-first".to_owned(),
+        v1::event_consumer_checkpoint::Position::AfterEventId(value) => {
+            format!("{}:{}", value.commit_sequence, value.event_ordinal)
+        }
+    };
+    Ok(serde_json::json!({
+        "revision":status.revision.to_string(), "checkpoint":checkpoint,
+        "history_incarnation":status.history_incarnation.to_string(),
+        "live_leases":status.live_leases, "retries":status.retries, "dead_letters":status.dead_letters,
+    }))
+}
+
+fn live_frontier(
+    frontier: Option<v1::LiveQueryFrontier>,
+) -> Result<serde_json::Value, ResponseConversionError> {
+    let value = frontier.ok_or(ResponseConversionError)?;
+    Ok(serde_json::json!({
+        "history_incarnation":value.history_incarnation.to_string(),
+        "application_head":value.application_head.to_string(),
+    }))
+}
+
+fn live_result(
+    result: Option<v1::LiveQueryResult>,
+) -> Result<serde_json::Value, ResponseConversionError> {
+    let result = result.ok_or(ResponseConversionError)?;
+    let identity = result.identity.ok_or(ResponseConversionError)?;
+    let fields = result.fields.into_iter().map(|field| {
+        let records = field.records.into_iter().map(|record| {
+            let fields = record.fields.ok_or(ResponseConversionError)?.fields.into_iter().map(|field| {
+                Ok((field.name, serde_json::to_value(presented_value(field.value.ok_or(ResponseConversionError)?)?).map_err(|_| ResponseConversionError)?))
+            }).collect::<Result<serde_json::Map<_, _>, ResponseConversionError>>()?;
+            Ok(serde_json::json!({"entity":record.entity, "fields":fields}))
+        }).collect::<Result<Vec<_>, ResponseConversionError>>()?;
+        Ok(serde_json::json!({"name":field.name, "cardinality":live_cardinality(field.cardinality)?, "records":records}))
+    }).collect::<Result<Vec<_>, ResponseConversionError>>()?;
+    Ok(serde_json::json!({
+        "identity": {
+            "contract_lineage": identity.contract_lineage,
+            "contract_version": identity.contract_version.to_string(),
+            "contract_bundle_hash": lower_hex(&identity.contract_bundle_hash),
+            "query_name": identity.query_name,
+            "query_module_hash": lower_hex(&identity.query_module_hash),
+            "query_plan_hash": lower_hex(&identity.query_plan_hash),
+        },
+        "outcome":result.outcome, "fields":fields
+    }))
+}
+
+fn live_patch_operation(
+    value: v1::LiveQueryPatchOperation,
+) -> Result<serde_json::Value, ResponseConversionError> {
+    use v1::live_query_patch_operation::Operation;
+    Ok(match value.operation.ok_or(ResponseConversionError)? {
+        Operation::Insert(value) => serde_json::json!({
+            "type":"insert", "index":value.index, "record":live_record(value.record)?,
+        }),
+        Operation::Remove(value) => serde_json::json!({
+            "type":"remove", "index":value.index, "key":live_key(value.key)?,
+        }),
+        Operation::Replace(value) => serde_json::json!({
+            "type":"replace", "index":value.index, "record":live_record(value.record)?,
+        }),
+        Operation::Move(value) => serde_json::json!({
+            "type":"move", "from":value.from, "to":value.to, "key":live_key(value.key)?,
+        }),
+    })
+}
+
+fn live_record(
+    value: Option<v1::LiveQueryResultRecord>,
+) -> Result<serde_json::Value, ResponseConversionError> {
+    let value = value.ok_or(ResponseConversionError)?;
+    Ok(serde_json::json!({
+        "entity": value.entity,
+        "fields": live_key(value.fields)?,
+    }))
+}
+
+fn live_key(value: Option<v1::ValueRecord>) -> Result<serde_json::Value, ResponseConversionError> {
+    let value = value.ok_or(ResponseConversionError)?;
+    value
+        .fields
+        .into_iter()
+        .map(|field| {
+            Ok(serde_json::json!({
+                "name": field.name,
+                "value": presented_value(field.value.ok_or(ResponseConversionError)?)?,
+            }))
+        })
+        .collect::<Result<Vec<_>, ResponseConversionError>>()
+        .map(serde_json::Value::Array)
+}
+
+fn live_cardinality(value: i32) -> Result<&'static str, ResponseConversionError> {
+    match v1::LiveQueryResultCardinality::try_from(value).map_err(|_| ResponseConversionError)? {
+        v1::LiveQueryResultCardinality::One => Ok("one"),
+        v1::LiveQueryResultCardinality::Maybe => Ok("maybe"),
+        v1::LiveQueryResultCardinality::Many => Ok("many"),
+        v1::LiveQueryResultCardinality::Unspecified => Err(ResponseConversionError),
+    }
+}
+
+fn live_reset_reason(value: i32) -> Result<&'static str, ResponseConversionError> {
+    match v1::LiveQueryResetReason::try_from(value).map_err(|_| ResponseConversionError)? {
+        v1::LiveQueryResetReason::OutcomeChanged => Ok("outcome_changed"),
+        v1::LiveQueryResetReason::DiffLimitExceeded => Ok("diff_limit_exceeded"),
+        v1::LiveQueryResetReason::DefinitionChanged => Ok("definition_changed"),
+        v1::LiveQueryResetReason::HistoryChanged => Ok("history_changed"),
+        v1::LiveQueryResetReason::CursorExpired => Ok("cursor_expired"),
+        v1::LiveQueryResetReason::Unspecified => Err(ResponseConversionError),
+    }
+}
+
+fn live_terminal_reason(value: i32) -> Result<&'static str, ResponseConversionError> {
+    match v1::LiveQueryTerminalReason::try_from(value).map_err(|_| ResponseConversionError)? {
+        v1::LiveQueryTerminalReason::AuthorizationChanged => Ok("authorization_changed"),
+        v1::LiveQueryTerminalReason::BufferPressure => Ok("buffer_pressure"),
+        v1::LiveQueryTerminalReason::LifetimeExpired => Ok("lifetime_expired"),
+        v1::LiveQueryTerminalReason::ServiceUnavailable => Ok("service_unavailable"),
+        v1::LiveQueryTerminalReason::IntegrityFailure => Ok("integrity_failure"),
+        v1::LiveQueryTerminalReason::DefinitionChanged => Ok("definition_changed"),
+        v1::LiveQueryTerminalReason::Unspecified => Err(ResponseConversionError),
+    }
+}
+
+fn actor_kind_name(value: i32) -> Result<&'static str, ResponseConversionError> {
+    match v1::ActorKind::try_from(value).map_err(|_| ResponseConversionError)? {
+        v1::ActorKind::Human => Ok("human"),
+        v1::ActorKind::Agent => Ok("agent"),
+        v1::ActorKind::Service => Ok("service"),
+        v1::ActorKind::Unspecified => Err(ResponseConversionError),
+    }
+}
+
 pub(crate) fn validate_contract(
     response: v1::ValidateContractResponse,
 ) -> Result<McpToolResult, ResponseConversionError> {

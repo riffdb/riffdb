@@ -145,7 +145,11 @@ impl InputValue {
                 variant_id,
                 name,
             } => {
-                if type_id == 0 || variant_id == 0 {
+                if (type_id == 0 || variant_id == 0)
+                    && (type_id != 0
+                        || variant_id != 0
+                        || name.as_deref().is_none_or(str::is_empty))
+                {
                     return Err(ValueError);
                 }
                 v1::value::Kind::EnumValue(v1::EnumValue {
@@ -557,6 +561,22 @@ mod tests {
             serde_json::to_string(&OutputValue(&value)).expect("render"),
             r#"{"type":"i64","value":"-9223372036854775808"}"#
         );
+    }
+
+    #[test]
+    fn symbolic_enum_name_is_available_to_schema_resolved_application_operations() {
+        let input: InputValue =
+            serde_json::from_str(r#"{"type":"enum","type_id":0,"variant_id":0,"name":"Open"}"#)
+                .expect("symbolic enum");
+        let value = input.into_proto().expect("name-addressed proto");
+        assert!(matches!(
+            value.kind,
+            Some(v1::value::Kind::EnumValue(v1::EnumValue {
+                type_id: 0,
+                variant_id: 0,
+                ref name,
+            })) if name == "Open"
+        ));
     }
 
     #[test]

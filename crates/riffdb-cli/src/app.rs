@@ -2083,6 +2083,7 @@ async fn query_command(
         QueryCommand::Explain { .. } => CommandIdentity::QueryExplain,
         QueryCommand::Run { .. } => CommandIdentity::QueryRun,
         QueryCommand::RunNamed { .. } => CommandIdentity::QueryRunNamed,
+        QueryCommand::Watch { .. } => CommandIdentity::QueryWatch,
         QueryCommand::Deploy { .. } => CommandIdentity::QueryDeploy,
         QueryCommand::Module { .. } => CommandIdentity::QueryModule,
         QueryCommand::Repl { .. } => CommandIdentity::QueryRepl,
@@ -2245,6 +2246,56 @@ async fn query_command(
                 read_after_commit,
             )
             .await
+        }
+        QueryCommand::Watch {
+            module_hash,
+            operation,
+            parameters,
+            cursor,
+        } => {
+            let module_hash = match parse_hash(&module_hash) {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            let parameters = match reactive_parameters(parameters) {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            let cursor = match cursor
+                .map(|value| STANDARD.decode(value).map_err(|_| ()))
+                .transpose()
+            {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            let request_id = match request_id() {
+                Ok(value) => value,
+                Err(error) => return client_error(identity, &error),
+            };
+            match client
+                .watch_named_query(
+                    v1::WatchNamedQueryRequest {
+                        request_id,
+                        reactive_module_hash: module_hash,
+                        operation_name: operation,
+                        parameters,
+                        cursor,
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(mut stream) => match stream.message().await {
+                    Ok(Some(update)) => render_live_query_update(&update),
+                    Ok(None) => local_error(
+                        identity,
+                        "stream_closed",
+                        "live query closed before producing an update",
+                    ),
+                    Err(error) => client_error(identity, &error),
+                },
+                Err(error) => client_error(identity, &error),
+            }
         }
         QueryCommand::Deploy {
             directory,
@@ -3463,6 +3514,20 @@ fn event_consumer_selection(args: EventConsumerArgs) -> Result<v1::EventConsumer
     })
 }
 
+fn reactive_parameters(values: Vec<String>) -> Result<Vec<v1::LiveQueryParameter>, ()> {
+    values
+        .into_iter()
+        .map(|parameter| {
+            let (name, value) = parameter.split_once('=').ok_or(())?;
+            let value: InputValue = serde_json::from_str(value).map_err(|_| ())?;
+            Ok(v1::LiveQueryParameter {
+                name: name.to_owned(),
+                value: Some(value.into_proto().map_err(|_| ())?),
+            })
+        })
+        .collect()
+}
+
 fn event_consumer_lease_input(
     consumer: EventConsumerArgs,
     event_id: &str,
@@ -3562,6 +3627,158 @@ fn render_event_description(response: &v1::DescribeEventResponse) -> Terminal {
         }
     };
     success(CommandIdentity::EventDescribe, "described", &result)
+}
+
+fn render_live_query_update(update: &v1::LiveQueryUpdate) -> Terminal {
+    use v1::live_query_update::Update;
+    let value = match update.update.as_ref() {
+        Some(Update::Snapshot(snapshot)) => serde_json::json!({
+            "type": "snapshot",
+            "result": snapshot.result.as_ref().map(live_query_result_json),
+            "frontier": snapshot.frontier.as_ref().map(live_frontier_json),
+            "cursor": STANDARD.encode(&snapshot.cursor),
+        }),
+        Some(Update::Patch(patch)) => serde_json::json!({
+            "type": "patch",
+            "result_field": patch.result_field,
+            "operations": patch.operations.iter().map(live_patch_operation_json).collect::<Vec<_>>(),
+            "frontier": patch.frontier.as_ref().map(live_frontier_json),
+            "cursor": STANDARD.encode(&patch.cursor),
+        }),
+        Some(Update::Reset(reset)) => {
+            let reason = v1::LiveQueryResetReason::try_from(reset.reason)
+                .ok()
+                .filter(|value| *value != v1::LiveQueryResetReason::Unspecified)
+                .map(live_reset_reason);
+            serde_json::json!({
+                "type": "reset",
+                "reason": reason,
+                "result": reset.result.as_ref().map(live_query_result_json),
+                "frontier": reset.frontier.as_ref().map(live_frontier_json),
+                "cursor": STANDARD.encode(&reset.cursor),
+            })
+        }
+        Some(Update::Checkpoint(checkpoint)) => serde_json::json!({
+            "type": "checkpoint",
+            "frontier": checkpoint.frontier.as_ref().map(live_frontier_json),
+            "cursor": STANDARD.encode(&checkpoint.cursor),
+        }),
+        Some(Update::Terminal(terminal)) => {
+            let reason = v1::LiveQueryTerminalReason::try_from(terminal.reason)
+                .ok()
+                .filter(|value| *value != v1::LiveQueryTerminalReason::Unspecified)
+                .map(live_terminal_reason);
+            serde_json::json!({
+                "type": "terminal",
+                "reason": reason,
+                "last_frontier": terminal.last_frontier.as_ref().map(live_frontier_json),
+            })
+        }
+        None => {
+            return local_error(
+                CommandIdentity::QueryWatch,
+                "invalid_response",
+                "live query update is incomplete",
+            );
+        }
+    };
+    success(CommandIdentity::QueryWatch, "update", &value)
+}
+
+fn live_frontier_json(frontier: &v1::LiveQueryFrontier) -> serde_json::Value {
+    serde_json::json!({
+        "history_incarnation": frontier.history_incarnation.to_string(),
+        "application_head": frontier.application_head.to_string(),
+    })
+}
+
+fn live_query_result_json(result: &v1::LiveQueryResult) -> serde_json::Value {
+    serde_json::json!({
+        "identity": result.identity.as_ref().map(|identity| serde_json::json!({
+            "contract_lineage": identity.contract_lineage,
+            "contract_version": identity.contract_version.to_string(),
+            "contract_bundle_hash": hex(&identity.contract_bundle_hash),
+            "query_name": identity.query_name,
+            "query_module_hash": hex(&identity.query_module_hash),
+            "query_plan_hash": hex(&identity.query_plan_hash),
+        })),
+        "outcome": result.outcome,
+        "fields": result.fields.iter().map(|field| serde_json::json!({
+            "name": field.name,
+            "cardinality": field.cardinality,
+            "records": field.records.iter().map(|record| serde_json::json!({
+                "entity": record.entity,
+                "fields": record.fields.as_ref().map(|fields| fields.fields.iter().map(|field| serde_json::json!({
+                    "name": field.name,
+                    "value": field.value.as_ref().and_then(|value| serde_json::to_value(crate::value::OutputValue(value)).ok()),
+                })).collect::<Vec<_>>()),
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn live_patch_operation_json(operation: &v1::LiveQueryPatchOperation) -> serde_json::Value {
+    use v1::live_query_patch_operation::Operation;
+    match operation.operation.as_ref() {
+        Some(Operation::Insert(value)) => serde_json::json!({
+            "type": "insert", "index": value.index, "record": value.record.as_ref().map(live_record_json),
+        }),
+        Some(Operation::Remove(value)) => serde_json::json!({
+            "type": "remove", "index": value.index, "key": value.key.as_ref().map(live_value_record_json),
+        }),
+        Some(Operation::Replace(value)) => serde_json::json!({
+            "type": "replace", "index": value.index, "record": value.record.as_ref().map(live_record_json),
+        }),
+        Some(Operation::Move(value)) => serde_json::json!({
+            "type": "move", "from": value.from, "to": value.to, "key": value.key.as_ref().map(live_value_record_json),
+        }),
+        None => serde_json::Value::Null,
+    }
+}
+
+fn live_record_json(record: &v1::LiveQueryResultRecord) -> serde_json::Value {
+    serde_json::json!({
+        "entity": record.entity,
+        "fields": record.fields.as_ref().map(live_value_record_json),
+    })
+}
+
+fn live_value_record_json(record: &v1::ValueRecord) -> serde_json::Value {
+    serde_json::Value::Object(
+        record
+            .fields
+            .iter()
+            .filter_map(|field| {
+                Some((
+                    field.name.clone(),
+                    serde_json::to_value(crate::value::OutputValue(field.value.as_ref()?)).ok()?,
+                ))
+            })
+            .collect(),
+    )
+}
+
+const fn live_reset_reason(value: v1::LiveQueryResetReason) -> &'static str {
+    match value {
+        v1::LiveQueryResetReason::OutcomeChanged => "outcome_changed",
+        v1::LiveQueryResetReason::DiffLimitExceeded => "diff_limit_exceeded",
+        v1::LiveQueryResetReason::DefinitionChanged => "definition_changed",
+        v1::LiveQueryResetReason::HistoryChanged => "history_changed",
+        v1::LiveQueryResetReason::CursorExpired => "cursor_expired",
+        v1::LiveQueryResetReason::Unspecified => "unspecified",
+    }
+}
+
+const fn live_terminal_reason(value: v1::LiveQueryTerminalReason) -> &'static str {
+    match value {
+        v1::LiveQueryTerminalReason::AuthorizationChanged => "authorization_changed",
+        v1::LiveQueryTerminalReason::BufferPressure => "buffer_pressure",
+        v1::LiveQueryTerminalReason::LifetimeExpired => "lifetime_expired",
+        v1::LiveQueryTerminalReason::ServiceUnavailable => "service_unavailable",
+        v1::LiveQueryTerminalReason::IntegrityFailure => "integrity_failure",
+        v1::LiveQueryTerminalReason::DefinitionChanged => "definition_changed",
+        v1::LiveQueryTerminalReason::Unspecified => "unspecified",
+    }
 }
 
 fn render_event_page(
@@ -5925,6 +6142,9 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Query {
             command: QueryCommand::RunNamed { .. },
         } => CommandIdentity::QueryRunNamed,
+        TopLevel::Query {
+            command: QueryCommand::Watch { .. },
+        } => CommandIdentity::QueryWatch,
         TopLevel::Query {
             command: QueryCommand::Deploy { .. },
         } => CommandIdentity::QueryDeploy,

@@ -80,3 +80,9 @@ npm start -- <endpoint> <credential-file> <riffdb-path>
 The starter serves `/item`, executes one generated idempotent command, performs
 one generated page-shaped read with the returned read-after-commit fence, and
 returns only the typed observation. Browser code never receives the credential.
+
+Application Source V4 additionally generates typed event async iterators, live
+query update unions, a framework-neutral live store, and an application-server
+SSE relay. The relay retains the RiffDB credential server-side and requires an
+application-owned authorization callback. See [Reactive Application
+Clients](../reactive/CLIENTS.md).

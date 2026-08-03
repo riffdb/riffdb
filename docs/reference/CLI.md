@@ -289,6 +289,7 @@ Commands:
   explain
   run
   run-named
+  watch      Receives one closed update from an exact generated live named query
   deploy
   module
   repl
@@ -1177,6 +1178,29 @@ Options:
       --contract-version <VERSION>
       --credential-file <PATH>
   -h, --help                                 Print help
+```
+
+#### `riffdb query watch`
+
+```text
+Receives one closed update from an exact generated live named query
+
+Usage: riffdb query watch [OPTIONS] --module-hash <64_HEX_CHARS> <OPERATION>
+
+Arguments:
+  <OPERATION>
+
+Options:
+      --config <PATH>
+      --module-hash <64_HEX_CHARS>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --parameter <NAME=JSON_VALUE>
+      --cursor <BASE64_CURSOR>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
 ```
 
 #### `riffdb query deploy`

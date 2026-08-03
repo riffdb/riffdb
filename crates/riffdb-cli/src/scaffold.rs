@@ -13,10 +13,12 @@ use riffdb_diagnostics::{
 use riffdb_query_module::{
     ApplicationLock, ApplicationManifest, ApplicationMigrationLockInput, ApplicationSourceManifest,
     ApplicationSourceTenantScope, CONTRACT_BUNDLE_ARTIFACT_PATH, GeneratedApplicationArtifact,
-    GeneratedApplicationArtifactKind, GeneratedMcpCommand, GeneratedMcpTool, NamedQuerySource,
-    PythonGenerationError, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
-    compile_application_role, compile_application_role_v2, compile_reactive_source,
-    generate_mcp_commands, generate_mcp_tools, generate_python_client, generate_rust_client,
+    GeneratedApplicationArtifactKind, GeneratedMcpCommand, GeneratedMcpReactiveTool,
+    GeneratedMcpTool, NamedQuerySource, PythonGenerationError, QueryModule, QueryModuleCandidate,
+    QueryModuleName, QueryModuleVersion, compile_application_role, compile_application_role_v2,
+    compile_reactive_source, generate_mcp_commands, generate_mcp_reactive_tools,
+    generate_mcp_tools, generate_python_application_client, generate_python_client,
+    generate_rust_application_client, generate_rust_client, generate_typescript_application_client,
     generate_typescript_client,
 };
 use riffdb_types::{TenantId, hash_generated_artifact, hash_source};
@@ -198,7 +200,7 @@ fn generate_legacy_application(manifest_path: &Path) -> Result<(), ScaffoldError
     let tools = generate_mcp_tools(&module).map_err(|_| ScaffoldError::GenerateMcp)?;
     let commands =
         generate_mcp_commands(&module, &contract).map_err(|_| ScaffoldError::GenerateMcp)?;
-    let generated_mcp = render_mcp_manifest(&manifest, &tools, &commands)?;
+    let generated_mcp = render_mcp_manifest(&manifest, &tools, &commands, &[])?;
     write_file(
         root,
         manifest.generation().rust(),
@@ -973,7 +975,15 @@ fn compile_symbolic_application_mode(
     let tools = generate_mcp_tools(module).map_err(|_| ScaffoldError::GenerateMcp)?;
     let commands =
         generate_mcp_commands(module, &contract).map_err(|_| ScaffoldError::GenerateMcp)?;
-    let generated_mcp = render_mcp_manifest(&exact, &tools, &commands)?;
+    let reactive_tools = reactive_modules
+        .iter()
+        .map(|module| generate_mcp_reactive_tools(module, &contract))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ScaffoldError::GenerateMcp)?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let generated_mcp = render_mcp_manifest(&exact, &tools, &commands, &reactive_tools)?;
     let mut outputs = vec![
         (
             EXACT_MANIFEST_PATH.to_owned(),
@@ -981,11 +991,12 @@ fn compile_symbolic_application_mode(
         ),
         (
             source.generation().rust().to_owned(),
-            generate_rust_client(module, &contract).into_bytes(),
+            generate_rust_application_client(module, &contract, &reactive_modules).into_bytes(),
         ),
         (
             source.generation().typescript().to_owned(),
-            generate_typescript_client(module, &contract).into_bytes(),
+            generate_typescript_application_client(module, &contract, &reactive_modules)
+                .into_bytes(),
         ),
         (
             source.generation().mcp().to_owned(),
@@ -995,7 +1006,7 @@ fn compile_symbolic_application_mode(
     if let Some(path) = source.generation().python() {
         outputs.push((
             path.to_owned(),
-            generate_python_client(module, &contract)
+            generate_python_application_client(module, &contract, &reactive_modules)
                 .map_err(|error| {
                     python_generation_diagnostic(
                         source.contract().source(),
@@ -1294,7 +1305,7 @@ pub(crate) fn create_application(
     let tools = generate_mcp_tools(&module).map_err(|_| ScaffoldError::GenerateMcp)?;
     let commands =
         generate_mcp_commands(&module, &contract).map_err(|_| ScaffoldError::GenerateMcp)?;
-    let generated_mcp = render_mcp_manifest(&manifest, &tools, &commands)?;
+    let generated_mcp = render_mcp_manifest(&manifest, &tools, &commands, &[])?;
     let generated_rust = generate_rust_client(&module, &contract);
     let generated_typescript = generate_typescript_client(&module, &contract);
     let generated_python = python
@@ -1988,6 +1999,7 @@ fn render_mcp_manifest(
     manifest: &ApplicationManifest,
     tools: &[GeneratedMcpTool],
     commands: &[GeneratedMcpCommand],
+    reactive_tools: &[GeneratedMcpReactiveTool],
 ) -> Result<String, ScaffoldError> {
     let tools = tools
         .iter()
@@ -2032,11 +2044,35 @@ fn render_mcp_manifest(
             }))
         })
         .collect::<Result<Vec<_>, ScaffoldError>>()?;
+    let reactive_tools = reactive_tools
+        .iter()
+        .map(|tool| {
+            Ok(json!({
+                "name": tool.name,
+                "title": tool.title,
+                "description": tool.description,
+                "reactive_module_hash": hex(&tool.reactive_module_hash),
+                "input_schema": serde_json::from_str::<serde_json::Value>(&tool.input_schema)
+                    .map_err(|_| ScaffoldError::GenerateMcp)?,
+                "result_schema": serde_json::from_str::<serde_json::Value>(&tool.result_schema)
+                    .map_err(|_| ScaffoldError::GenerateMcp)?,
+                "annotations": {
+                    "readOnlyHint": tool.name.ends_with("_next")
+                        || tool.name.ends_with("_status")
+                        || tool.name.ends_with("_watch"),
+                    "destructiveHint": tool.name.ends_with("_seek"),
+                    "idempotentHint": true,
+                    "openWorldHint": false,
+                },
+            }))
+        })
+        .collect::<Result<Vec<_>, ScaffoldError>>()?;
     let value = json!({
         "schema": "riffdb-generated-mcp-tools-v1",
         "application_manifest_hash": hex(manifest.identity().as_bytes()),
         "tools": tools,
         "commands": commands,
+        "reactive_tools": reactive_tools,
     });
     let mut output =
         serde_json::to_string_pretty(&value).map_err(|_| ScaffoldError::GenerateMcp)?;

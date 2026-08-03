@@ -5,7 +5,9 @@ use std::fmt::{self, Write as _};
 
 use riffdb_contract_ir::{ContractBundle, RecordTypeRef, ValueType, ValueTypeTag};
 use riffdb_contract_syntax::ast::{Binding, Declaration, EntityItem, OutcomeExpression};
-use riffdb_query_ir::NamedTypeSchema;
+use riffdb_query_ir::{
+    NamedTypeSchema, ReactiveModulePlanV1, ReactiveOperationPlanV1, ReactiveParameterV1,
+};
 use riffdb_riffql_syntax::{FieldSelection, Selection};
 
 use crate::QueryModule;
@@ -533,6 +535,302 @@ pub fn generate_python_client(
         output.pop();
     }
     Ok(output)
+}
+
+/// Generates one complete Python application module including native-backed
+/// async reactive iterators. The presentation layer never imports gRPC.
+pub fn generate_python_application_client(
+    module: &QueryModule,
+    contract: &ContractBundle,
+    reactive_modules: &[ReactiveModulePlanV1],
+) -> Result<String, PythonGenerationError> {
+    let mut output = generate_python_client(module, contract)?;
+    if reactive_modules.is_empty() {
+        return Ok(output);
+    }
+    output.push_str(
+        "\n\nfrom collections.abc import AsyncIterator\nfrom typing import Any\n\
+         from riffdb_application._binding import decode_record, encode_reactive_record\n\n",
+    );
+    for reactive in reactive_modules {
+        emit_python_reactive_module(&mut output, module, contract, reactive);
+    }
+    Ok(output)
+}
+
+fn emit_python_reactive_module(
+    output: &mut String,
+    module: &QueryModule,
+    contract: &ContractBundle,
+    reactive: &ReactiveModulePlanV1,
+) {
+    writeln!(
+        output,
+        "{}_REACTIVE_MODULE_HASH: Final[str] = {:?}\n",
+        screaming_snake(reactive.name()),
+        hex(reactive.identity().as_bytes())
+    )
+    .expect("String writes cannot fail");
+    for operation in reactive.operations() {
+        match operation.plan() {
+            ReactiveOperationPlanV1::Stream {
+                parameters, events, ..
+            } => {
+                let name = pascal(operation.name().as_str());
+                emit_python_reactive_parameters(output, &name, parameters, contract);
+                for event in events {
+                    writeln!(
+                        output,
+                        "@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}{}:",
+                        pascal(event.name())
+                    )
+                    .expect("String writes cannot fail");
+                    writeln!(
+                        output,
+                        "    type: Literal[{:?}] = field(default={:?}, init=False)",
+                        event.name(),
+                        event.name()
+                    )
+                    .expect("String writes cannot fail");
+                    for field in event.fields() {
+                        writeln!(
+                            output,
+                            "    {}: {}",
+                            python_identifier(field.name()),
+                            python_reactive_type(field.type_name(), contract)
+                        )
+                        .expect("String writes cannot fail");
+                    }
+                    output.push('\n');
+                }
+                write!(output, "{name}Event: TypeAlias = ").expect("String writes cannot fail");
+                for (index, event) in events.iter().enumerate() {
+                    if index != 0 {
+                        output.push_str(" | ");
+                    }
+                    write!(output, "{name}{}", pascal(event.name()))
+                        .expect("String writes cannot fail");
+                }
+                output.push_str("\n\n");
+                writeln!(
+                    output,
+                    "@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}Delivery:\n    event: {name}Event\n    event_id: str\n    attempt: int\n    lease_token: str\n    expires_at: dict[str, Any]\n    history_incarnation: int\n"
+                )
+                .expect("String writes cannot fail");
+            }
+            ReactiveOperationPlanV1::Watch {
+                parameters, query, ..
+            } => {
+                let name = pascal(operation.name().as_str());
+                emit_python_reactive_parameters(output, &name, parameters, contract);
+                for variant in ["Snapshot", "Patch", "Reset", "Checkpoint", "Terminal"] {
+                    writeln!(
+                        output,
+                        "@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}{variant}:\n    type: Literal[{:?}] = field(default={:?}, init=False)\n    value: {}Result | None = None\n    cursor: str | None = None\n    metadata: dict[str, Any] = field(default_factory=dict)\n",
+                        variant.to_ascii_lowercase(),
+                        variant.to_ascii_lowercase(),
+                        query.query_name()
+                    )
+                    .expect("String writes cannot fail");
+                }
+                writeln!(
+                    output,
+                    "{name}Update: TypeAlias = {name}Snapshot | {name}Patch | {name}Reset | {name}Checkpoint | {name}Terminal\n"
+                )
+                .expect("String writes cannot fail");
+            }
+            ReactiveOperationPlanV1::Subscription { .. } => {}
+        }
+    }
+    let base = pascal(module.contract_lineage().as_str());
+    writeln!(
+        output,
+        "class Async{base}ReactiveClient(Async{base}Client):"
+    )
+    .expect("String writes cannot fail");
+    let mut emitted = false;
+    for operation in reactive.operations() {
+        match operation.plan() {
+            ReactiveOperationPlanV1::Stream { events, .. } => {
+                emitted = true;
+                let name = pascal(operation.name().as_str());
+                writeln!(output, "    async def {method}(self, parameters: {name}Params, consumer_name: str) -> AsyncIterator[{name}Delivery]:\n        variants = {{", method = python_identifier(&snake(operation.name().as_str()))).expect("String writes cannot fail");
+                for event in events {
+                    writeln!(
+                        output,
+                        "            {:?}: {name}{},",
+                        event.name(),
+                        pascal(event.name())
+                    )
+                    .expect("String writes cannot fail");
+                }
+                writeln!(
+                    output,
+                    "        }}\n        async for item in self._transport._consume_event_stream(reactive_module_hash={}_REACTIVE_MODULE_HASH, operation_name={:?}, parameters=encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA), consumer_name=consumer_name):\n            raw = dict(item)\n            event_type = raw.pop(\"type\")\n            delivery = raw.pop(\"_delivery\")\n            event_class = variants.get(event_type)\n            if event_class is None: raise ValueError(\"undeclared RiffDB event\")\n            yield {name}Delivery(event=decode_record(event_class, raw), event_id=delivery[\"event_id\"], attempt=delivery[\"attempt\"], lease_token=delivery[\"lease_token\"], expires_at=delivery[\"expires_at\"], history_incarnation=delivery[\"history_incarnation\"])\n",
+                    screaming_snake(reactive.name()),
+                    operation.name().as_str()
+                )
+                .expect("String writes cannot fail");
+                writeln!(
+                    output,
+                    "    async def ack_{method}(self, parameters: {name}Params, consumer_name: str, delivery: {name}Delivery) -> str:\n        encoded = encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA)\n        return await self._transport._acknowledge_event(reactive_module_hash={module}_REACTIVE_MODULE_HASH, operation_name={operation:?}, parameters=encoded, consumer_name=consumer_name, event_id=delivery.event_id, lease_token=delivery.lease_token, history_incarnation=delivery.history_incarnation)\n\n    async def nack_{method}(self, parameters: {name}Params, consumer_name: str, delivery: {name}Delivery, retry_delay_nanos: int = 0) -> str:\n        encoded = encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA)\n        return await self._transport._negative_acknowledge_event(reactive_module_hash={module}_REACTIVE_MODULE_HASH, operation_name={operation:?}, parameters=encoded, consumer_name=consumer_name, event_id=delivery.event_id, lease_token=delivery.lease_token, history_incarnation=delivery.history_incarnation, retry_delay_nanos=retry_delay_nanos)\n\n    async def seek_{method}(self, parameters: {name}Params, consumer_name: str, checkpoint: str = \"before-first\") -> str:\n        encoded = encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA)\n        return await self._transport._seek_event_consumer(reactive_module_hash={module}_REACTIVE_MODULE_HASH, operation_name={operation:?}, parameters=encoded, consumer_name=consumer_name, checkpoint=checkpoint)\n\n    async def {method}_status(self, parameters: {name}Params, consumer_name: str) -> dict[str, Any] | None:\n        encoded = encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA)\n        return await self._transport._event_consumer_status(reactive_module_hash={module}_REACTIVE_MODULE_HASH, operation_name={operation:?}, parameters=encoded, consumer_name=consumer_name)\n",
+                    method = python_identifier(&snake(operation.name().as_str())),
+                    module = screaming_snake(reactive.name()),
+                    operation = operation.name().as_str(),
+                )
+                .expect("String writes cannot fail");
+            }
+            ReactiveOperationPlanV1::Watch { query, .. } => {
+                emitted = true;
+                let name = pascal(operation.name().as_str());
+                writeln!(output, "    async def watch_{method}(self, parameters: {name}Params, cursor: str | None = None) -> AsyncIterator[{name}Update]:\n        outcomes = {{", method = python_identifier(&snake(operation.name().as_str()))).expect("String writes cannot fail");
+                let query_module = module
+                    .query(query.query_name())
+                    .expect("reactive compiler retained exact query dependency");
+                for branch in query_module.program().surface().schemas().results() {
+                    writeln!(
+                        output,
+                        "            {:?}: {}{},",
+                        branch.name(),
+                        pascal(query.query_name()),
+                        pascal(branch.name())
+                    )
+                    .expect("String writes cannot fail");
+                }
+                writeln!(
+                    output,
+                    "        }}\n        variants = {{\"snapshot\": {name}Snapshot, \"patch\": {name}Patch, \"reset\": {name}Reset, \"checkpoint\": {name}Checkpoint, \"terminal\": {name}Terminal}}\n        encoded = encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA)\n        async for update in self._transport._watch_named_query(reactive_module_hash={}_REACTIVE_MODULE_HASH, operation_name={:?}, parameters=encoded, cursor=cursor):\n            kind = update[\"type\"]\n            update_class = variants.get(kind)\n            if update_class is None: raise ValueError(\"undeclared RiffDB live update\")\n            value = decode_variant(outcomes, update[\"value\"]) if kind in {{\"snapshot\", \"reset\"}} else None\n            yield update_class(value=value, cursor=update.get(\"cursor\"), metadata={{key: value for key, value in update.items() if key not in {{\"type\", \"value\", \"cursor\"}}}})\n",
+                    screaming_snake(reactive.name()),
+                    operation.name().as_str()
+                )
+                .expect("String writes cannot fail");
+            }
+            ReactiveOperationPlanV1::Subscription { .. } => {}
+        }
+    }
+    if !emitted {
+        output.push_str("    pass\n");
+    }
+}
+
+fn emit_python_reactive_parameters(
+    output: &mut String,
+    operation: &str,
+    parameters: &[ReactiveParameterV1],
+    contract: &ContractBundle,
+) {
+    writeln!(
+        output,
+        "@dataclass(frozen=True, slots=True, kw_only=True)\nclass {operation}Params:"
+    )
+    .expect("String writes cannot fail");
+    for parameter in parameters {
+        writeln!(
+            output,
+            "    {}: {}",
+            python_identifier(parameter.name()),
+            python_reactive_type(parameter.type_name(), contract)
+        )
+        .expect("String writes cannot fail");
+    }
+    if parameters.is_empty() {
+        output.push_str("    pass\n");
+    }
+    let schema = parameters
+        .iter()
+        .map(|parameter| {
+            (
+                parameter.name().to_owned(),
+                python_reactive_schema(parameter.type_name(), contract),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    writeln!(
+        output,
+        "\n{operation}_PARAMETER_SCHEMA: dict[str, dict[str, object]] = {}\n",
+        serde_json::to_string(&schema).expect("reactive schema JSON")
+    )
+    .expect("String writes cannot fail");
+}
+
+fn python_reactive_schema(type_name: &str, contract: &ContractBundle) -> serde_json::Value {
+    if let Some(enumeration) = contract
+        .schema()
+        .enums()
+        .iter()
+        .find(|value| value.name() == type_name)
+    {
+        return serde_json::json!({
+            "kind": "enum",
+            "type_id": enumeration.id().get(),
+            "variants": enumeration.variants().iter().map(|variant| {
+                (variant.name().to_owned(), serde_json::json!(variant.id().get()))
+            }).collect::<serde_json::Map<_, _>>(),
+        });
+    }
+    if let Some((precision, scale)) = decimal_type_parts(type_name) {
+        return serde_json::json!({"kind":"decimal", "precision":precision, "scale":scale});
+    }
+    if let Some(currency) = money_type_currency(type_name) {
+        return serde_json::json!({"kind":"money", "precision":38, "scale":2, "currency":currency});
+    }
+    let kind = if type_name.starts_with("bytes<") {
+        "bytes"
+    } else if type_name.starts_with("string<") || type_name == "cursor" {
+        "string"
+    } else if type_name == "limit" {
+        "u64"
+    } else {
+        type_name
+    };
+    serde_json::json!({"kind":kind})
+}
+
+fn decimal_type_parts(type_name: &str) -> Option<(u8, u8)> {
+    let body = type_name.strip_prefix("decimal<")?.strip_suffix('>')?;
+    let (precision, scale) = body.split_once(',')?;
+    Some((precision.parse().ok()?, scale.parse().ok()?))
+}
+
+fn money_type_currency(type_name: &str) -> Option<String> {
+    type_name
+        .strip_prefix("money<")?
+        .strip_suffix('>')
+        .map(str::to_owned)
+}
+
+fn python_reactive_type(type_name: &str, contract: &ContractBundle) -> String {
+    if contract
+        .schema()
+        .enums()
+        .iter()
+        .any(|value| value.name() == type_name)
+    {
+        return pascal(type_name);
+    }
+    if type_name.starts_with("decimal<") {
+        return "Decimal".to_owned();
+    }
+    if type_name.starts_with("money<") {
+        return "Money".to_owned();
+    }
+    if type_name.starts_with("bytes<") {
+        return "bytes".to_owned();
+    }
+    if type_name.starts_with("string<") {
+        return "str".to_owned();
+    }
+    match type_name {
+        "bool" => "bool",
+        "i64" | "u64" => "int",
+        "uuid" => "UUID",
+        "date" => "RiffDate",
+        "timestamp" => "Timestamp",
+        "limit" => "int",
+        "cursor" => "str",
+        _ => "str",
+    }
+    .to_owned()
 }
 
 fn emit_client(

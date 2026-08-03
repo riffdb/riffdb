@@ -7,9 +7,36 @@ use riffdb_proto::v1;
 use riffdb_types::RequestId;
 
 use crate::{
-    ApplicationClientError, CommandShapeError, IdempotentCommand, NamedQuery, NamedQueryResult,
-    QueryOptions,
+    ApplicationClientError, ApplicationEvent, ApplicationEventConsumer, ApplicationLiveQueryUpdate,
+    ApplicationReactiveOperation, CommandShapeError, IdempotentCommand, NamedQuery,
+    NamedQueryResult, QueryOptions,
 };
+
+/// One exact generated durable event-stream selection and decoder.
+pub trait GeneratedEventConsumer {
+    /// Closed generated event union.
+    type Event;
+
+    /// Constructs the exact immutable consumer selection.
+    fn event_consumer(self) -> Result<ApplicationEventConsumer, ApplicationClientError>;
+
+    /// Decodes one already authorized selected event by symbolic names only.
+    fn decode_event(event: ApplicationEvent) -> Result<Self::Event, ApplicationClientError>;
+}
+
+/// One exact generated live named-query watch and closed update decoder.
+pub trait GeneratedLiveQuery {
+    /// Closed generated update union.
+    type Update;
+
+    /// Constructs the exact immutable watch operation.
+    fn live_operation(self) -> Result<ApplicationReactiveOperation, ApplicationClientError>;
+
+    /// Decodes one structurally checked application-safe update.
+    fn decode_update(
+        update: ApplicationLiveQueryUpdate,
+    ) -> Result<Self::Update, ApplicationClientError>;
+}
 
 /// One exact named query shape emitted from an immutable query module.
 pub trait GeneratedQuery {

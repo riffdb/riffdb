@@ -4,7 +4,10 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use riffdb_contract_ir::{CommandPlan, ContractBundle, RecordTypeRef, ValueType, ValueTypeTag};
-use riffdb_query_ir::{NamedQuerySchemas, NamedTypeSchema, PageBound, max_query_page_take};
+use riffdb_query_ir::{
+    NamedQuerySchemas, NamedTypeSchema, PageBound, ReactiveModulePlanV1, ReactiveOperationPlanV1,
+    max_query_page_take,
+};
 use serde_json::{Map, Value, json};
 
 use crate::QueryModule;
@@ -47,6 +50,23 @@ pub struct GeneratedMcpCommand {
     pub plan_hash: [u8; 32],
 }
 
+/// One compiler-owned generated MCP operation for a reactive stream or watch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GeneratedMcpReactiveTool {
+    /// Stable underscore-only module, operation, and action name.
+    pub name: String,
+    /// Human-facing title.
+    pub title: String,
+    /// Bounded safe description.
+    pub description: String,
+    /// Canonical input JSON Schema.
+    pub input_schema: String,
+    /// Canonical result JSON Schema.
+    pub result_schema: String,
+    /// Exact immutable reactive-module identity.
+    pub reactive_module_hash: [u8; 32],
+}
+
 /// Closed generated-tool failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum McpToolGenerationError {
@@ -54,6 +74,253 @@ pub enum McpToolGenerationError {
     NameCollision,
     /// A generated schema could not be serialized.
     InvalidSchema,
+}
+
+/// Generates the exact MCP actions for each stream and watch in one immutable
+/// reactive module. Contextual subscriptions remain owned by WP-420.
+pub fn generate_mcp_reactive_tools(
+    module: &ReactiveModulePlanV1,
+    contract: &ContractBundle,
+) -> Result<Vec<GeneratedMcpReactiveTool>, McpToolGenerationError> {
+    let mut tools = Vec::new();
+    let mut names = BTreeSet::new();
+    for operation in module.operations() {
+        let parameters = match operation.plan() {
+            ReactiveOperationPlanV1::Stream { parameters, .. }
+            | ReactiveOperationPlanV1::Watch { parameters, .. } => parameters,
+            ReactiveOperationPlanV1::Subscription { .. } => continue,
+        };
+        let parameter_properties = parameters
+            .iter()
+            .map(|parameter| {
+                (
+                    parameter.name().to_owned(),
+                    reactive_type_schema(parameter.type_name(), contract),
+                )
+            })
+            .collect::<Map<_, _>>();
+        let parameter_required = parameters
+            .iter()
+            .map(|parameter| Value::String(parameter.name().to_owned()))
+            .collect::<Vec<_>>();
+        let actions: &[&str] = match operation.plan() {
+            ReactiveOperationPlanV1::Stream { .. } => &["ack", "nack", "next", "seek", "status"],
+            ReactiveOperationPlanV1::Watch { .. } => &["watch"],
+            ReactiveOperationPlanV1::Subscription { .. } => &[],
+        };
+        for action in actions {
+            let name = format!(
+                "{}_{}_{}",
+                snake(module.name()),
+                snake(operation.name().as_str()),
+                action
+            );
+            if !names.insert(name.clone()) {
+                return Err(McpToolGenerationError::NameCollision);
+            }
+            let mut properties = Map::new();
+            properties.insert(
+                "parameters".to_owned(),
+                json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": parameter_properties,
+                    "required": parameter_required,
+                }),
+            );
+            let mut required = vec![Value::String("parameters".to_owned())];
+            if matches!(*action, "ack" | "nack") {
+                properties.insert("event_id".to_owned(), json!({"type":"string"}));
+                properties.insert("lease_token".to_owned(), json!({"type":"string"}));
+                properties.insert(
+                    "history_incarnation".to_owned(),
+                    json!({"type":"string", "pattern":"^[1-9][0-9]*$"}),
+                );
+                required.extend(
+                    ["event_id", "lease_token", "history_incarnation"]
+                        .map(|name| Value::String(name.to_owned())),
+                );
+            }
+            if matches!(*action, "next" | "ack" | "nack" | "seek" | "status") {
+                properties.insert(
+                    "consumer_name".to_owned(),
+                    json!({"type":"string", "pattern":"^[A-Za-z][A-Za-z0-9_-]{0,63}$"}),
+                );
+                required.push(Value::String("consumer_name".to_owned()));
+            }
+            if *action == "seek" {
+                properties.insert("checkpoint".to_owned(), json!({"type":"string"}));
+                required.push(Value::String("checkpoint".to_owned()));
+            }
+            if *action == "watch" {
+                properties.insert("cursor".to_owned(), json!({"type":["string", "null"]}));
+            }
+            let input = json!({
+                "$schema": MCP_SCHEMA_DIALECT,
+                "type": "object",
+                "additionalProperties": false,
+                "properties": properties,
+                "required": required,
+            });
+            let result = json!({
+                "$schema": MCP_SCHEMA_DIALECT,
+                "type": "object",
+                "additionalProperties": true,
+            });
+            tools.push(GeneratedMcpReactiveTool {
+                title: format!("{} {}", action, operation.name().as_str()),
+                description: format!(
+                    "Run the authorized {} action for exact reactive operation {}.",
+                    action,
+                    operation.name().as_str()
+                ),
+                name,
+                input_schema: serde_json::to_string(&input)
+                    .map_err(|_| McpToolGenerationError::InvalidSchema)?,
+                result_schema: serde_json::to_string(&result)
+                    .map_err(|_| McpToolGenerationError::InvalidSchema)?,
+                reactive_module_hash: *module.identity().as_bytes(),
+            });
+        }
+    }
+    tools.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(tools)
+}
+
+fn reactive_type_schema(type_name: &str, contract: &ContractBundle) -> Value {
+    let tagged = |kind: &str, properties: Map<String, Value>, required: Vec<&str>| {
+        let mut properties = properties;
+        properties.insert("type".to_owned(), json!({"const":kind}));
+        json!({
+            "type":"object",
+            "additionalProperties":false,
+            "properties":properties,
+            "required": required.into_iter().chain(["type"]).collect::<Vec<_>>(),
+        })
+    };
+    if let Some(enumeration) = contract
+        .schema()
+        .enums()
+        .iter()
+        .find(|value| value.name() == type_name)
+    {
+        let variants = enumeration
+            .variants()
+            .iter()
+            .map(|variant| {
+                tagged(
+                    "enum",
+                    Map::from_iter([
+                        (
+                            "type_id".to_owned(),
+                            json!({"const":enumeration.id().get()}),
+                        ),
+                        ("variant_id".to_owned(), json!({"const":variant.id().get()})),
+                        ("name".to_owned(), json!({"const":variant.name()})),
+                    ]),
+                    vec!["type_id", "variant_id", "name"],
+                )
+            })
+            .collect::<Vec<_>>();
+        return json!({"oneOf": variants});
+    }
+    if let Some((precision, scale)) = decimal_type_parts(type_name) {
+        return tagged(
+            "decimal",
+            Map::from_iter([
+                (
+                    "coefficient_twos_complement".to_owned(),
+                    json!({"type":"string","contentEncoding":"base64"}),
+                ),
+                ("precision".to_owned(), json!({"const":precision})),
+                ("scale".to_owned(), json!({"const":scale})),
+            ]),
+            vec!["coefficient_twos_complement", "precision", "scale"],
+        );
+    }
+    let (kind, properties, required) = if let Some(currency) = money_type_currency(type_name) {
+        (
+            "money",
+            Map::from_iter([
+                ("currency".to_owned(), json!({"const":currency})),
+                (
+                    "amount".to_owned(),
+                    json!({
+                        "type":"object", "additionalProperties":false,
+                        "properties":{
+                            "coefficient_twos_complement":{"type":"string","contentEncoding":"base64"},
+                            "precision":{"const":38}, "scale":{"const":2}
+                        },
+                        "required":["coefficient_twos_complement","precision","scale"]
+                    }),
+                ),
+            ]),
+            vec!["currency", "amount"],
+        )
+    } else if type_name == "bool" {
+        (
+            "bool",
+            Map::from_iter([("value".to_owned(), json!({"type":"boolean"}))]),
+            vec!["value"],
+        )
+    } else if matches!(type_name, "i64" | "u64") {
+        let pattern = if type_name == "i64" {
+            "^-?(0|[1-9][0-9]*)$"
+        } else {
+            "^(0|[1-9][0-9]*)$"
+        };
+        (
+            type_name,
+            Map::from_iter([(
+                "value".to_owned(),
+                json!({"type":"string","pattern":pattern}),
+            )]),
+            vec!["value"],
+        )
+    } else if type_name == "uuid" {
+        (
+            "uuid",
+            Map::from_iter([("value".to_owned(), json!({"type":"string","format":"uuid"}))]),
+            vec!["value"],
+        )
+    } else if type_name == "date" {
+        (
+            "date",
+            Map::from_iter([(
+                "days_since_unix_epoch".to_owned(),
+                json!({"type":"integer"}),
+            )]),
+            vec!["days_since_unix_epoch"],
+        )
+    } else if type_name == "timestamp" {
+        (
+            "timestamp",
+            Map::from_iter([
+                ("seconds".to_owned(), json!({"type":"string"})),
+                (
+                    "nanos".to_owned(),
+                    json!({"type":"integer","minimum":0,"maximum":999999999}),
+                ),
+            ]),
+            vec!["seconds", "nanos"],
+        )
+    } else if type_name.starts_with("bytes<") {
+        (
+            "bytes",
+            Map::from_iter([(
+                "value".to_owned(),
+                json!({"type":"string","contentEncoding":"base64"}),
+            )]),
+            vec!["value"],
+        )
+    } else {
+        (
+            "string",
+            Map::from_iter([("value".to_owned(), json!({"type":"string"}))]),
+            vec!["value"],
+        )
+    };
+    tagged(kind, properties, required)
 }
 
 /// Generates deterministic read-only MCP tool artifacts for every named query.
@@ -419,6 +686,319 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
     emit_rust_client_facade(&mut output, module, &commands);
     emit_rust_runtime_helpers(&mut output);
     output
+}
+
+/// Generates one complete Rust application client including exact reactive
+/// stream and watch bindings.
+#[must_use]
+pub fn generate_rust_application_client(
+    module: &QueryModule,
+    contract: &ContractBundle,
+    reactive_modules: &[ReactiveModulePlanV1],
+) -> String {
+    let mut output = generate_rust_client(module, contract);
+    if !reactive_modules.is_empty() {
+        output.push_str(
+            "\nuse riffdb_client_rust::generated::{GeneratedEventConsumer, GeneratedLiveQuery};\n\
+             use riffdb_client_rust::{ApplicationEvent, ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerStatus, ApplicationEventMutationResult, ApplicationLiveQueryUpdate, ApplicationReactiveOperation, EventConsumerOptions, LiveQueryCheckpoint, LiveQueryCursor, TypedEventBatch, TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream};\n",
+        );
+    }
+    for reactive in reactive_modules {
+        emit_rust_reactive_module(&mut output, module, contract, reactive);
+    }
+    output
+}
+
+fn emit_rust_reactive_module(
+    output: &mut String,
+    module: &QueryModule,
+    contract: &ContractBundle,
+    reactive: &ReactiveModulePlanV1,
+) {
+    writeln!(
+        output,
+        "\npub const {}_REACTIVE_MODULE_HASH: [u8; 32] = {:?};",
+        screaming_snake(reactive.name()),
+        reactive.identity().as_bytes()
+    )
+    .expect("string");
+    let client_name = format!("{}Client", pascal(module.contract_lineage().as_str()));
+    for operation in reactive.operations() {
+        match operation.plan() {
+            ReactiveOperationPlanV1::Stream {
+                parameters, events, ..
+            } => {
+                let name = pascal(operation.name().as_str());
+                emit_rust_reactive_parameters(output, &name, parameters, contract);
+                writeln!(
+                    output,
+                    "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {name}Consumer {{\n    pub parameters: {name}Params,\n    pub consumer_name: String,\n}}"
+                )
+                .expect("string");
+                for event in events {
+                    writeln!(
+                        output,
+                        "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {name}{} {{",
+                        pascal(event.name())
+                    )
+                    .expect("string");
+                    for field in event.fields() {
+                        writeln!(
+                            output,
+                            "    pub {}: {},",
+                            rust_identifier(field.name()),
+                            rust_reactive_type(field.type_name(), contract)
+                        )
+                        .expect("string");
+                    }
+                    writeln!(output, "}}\n").expect("string");
+                }
+                writeln!(
+                    output,
+                    "#[derive(Clone, Debug, Eq, PartialEq)]\npub enum {name}Event {{"
+                )
+                .expect("string");
+                for event in events {
+                    writeln!(
+                        output,
+                        "    {}({name}{}),",
+                        pascal(event.name()),
+                        pascal(event.name())
+                    )
+                    .expect("string");
+                }
+                writeln!(output, "}}\npub type {name}Delivery = riffdb_client_rust::TypedEventDelivery<{name}Event>;").expect("string");
+                writeln!(output, "impl GeneratedEventConsumer for {name}Consumer {{\n    type Event = {name}Event;\n    fn event_consumer(self) -> Result<ApplicationEventConsumer, ApplicationClientError> {{\n        let mut parameters = BTreeMap::new();").expect("string");
+                for parameter in parameters {
+                    writeln!(
+                        output,
+                        "        parameters.insert({:?}.to_owned(), {});",
+                        parameter.name(),
+                        rust_reactive_application_value(
+                            parameter.type_name(),
+                            &format!("self.parameters.{}", rust_identifier(parameter.name())),
+                            contract,
+                        )
+                    )
+                    .expect("string");
+                }
+                writeln!(
+                    output,
+                    "        ApplicationEventConsumer::new(ApplicationReactiveOperation::new({}_REACTIVE_MODULE_HASH, {:?}, parameters)?, self.consumer_name)\n    }}\n    fn decode_event(event: ApplicationEvent) -> Result<Self::Event, ApplicationClientError> {{\n        let mut fields = event.fields;\n        let decoded = match event.name.as_str() {{",
+                    screaming_snake(reactive.name()),
+                    operation.name().as_str()
+                )
+                .expect("string");
+                for event in events {
+                    writeln!(
+                        output,
+                        "            {:?} => {name}Event::{}({name}{} {{",
+                        event.name(),
+                        pascal(event.name()),
+                        pascal(event.name())
+                    )
+                    .expect("string");
+                    for field in event.fields() {
+                        writeln!(
+                            output,
+                            "                {}: {}(take_application_value(&mut fields, {:?})?)?,",
+                            rust_identifier(field.name()),
+                            rust_reactive_decoder(field.type_name(), contract),
+                            field.name()
+                        )
+                        .expect("string");
+                    }
+                    writeln!(output, "            }}),").expect("string");
+                }
+                writeln!(
+                    output,
+                    "            _ => return Err(ApplicationClientError::InvalidResponse),\n        }};\n        if !fields.is_empty() {{ return Err(ApplicationClientError::InvalidResponse); }}\n        Ok(decoded)\n    }}\n}}\nimpl {client_name} {{\n    pub async fn next_{method}(&mut self, consumer: {name}Consumer, options: EventConsumerOptions) -> Result<TypedEventBatch<{name}Event>, ApplicationClientError> {{\n        self.client.consume_generated_events(consumer, options, &self.metadata).await\n    }}\n    pub async fn ack_{method}(&mut self, consumer: &{name}Consumer, delivery: &{name}Delivery) -> Result<ApplicationEventMutationResult, ApplicationClientError> {{\n        let identity = consumer.clone().event_consumer()?;\n        self.client.acknowledge_event(&identity, delivery.evidence(), &self.metadata).await\n    }}\n    pub async fn nack_{method}(&mut self, consumer: &{name}Consumer, delivery: &{name}Delivery, retry_delay_nanos: u64) -> Result<ApplicationEventMutationResult, ApplicationClientError> {{\n        let identity = consumer.clone().event_consumer()?;\n        self.client.negative_acknowledge_event(&identity, delivery.evidence(), retry_delay_nanos, &self.metadata).await\n    }}\n    pub async fn seek_{method}(&mut self, consumer: &{name}Consumer, checkpoint: ApplicationEventCheckpoint) -> Result<ApplicationEventMutationResult, ApplicationClientError> {{\n        let identity = consumer.clone().event_consumer()?;\n        self.client.seek_event_consumer(&identity, checkpoint, &self.metadata).await\n    }}\n    pub async fn {method}_status(&mut self, consumer: &{name}Consumer) -> Result<Option<ApplicationEventConsumerStatus>, ApplicationClientError> {{\n        let identity = consumer.clone().event_consumer()?;\n        self.client.event_consumer_status(&identity, &self.metadata).await\n    }}\n}}\n",
+                    method = snake(operation.name().as_str())
+                )
+                .expect("string");
+            }
+            ReactiveOperationPlanV1::Watch {
+                parameters, query, ..
+            } => {
+                let name = pascal(operation.name().as_str());
+                emit_rust_reactive_parameters(output, &name, parameters, contract);
+                writeln!(output, "#[derive(Clone, Debug, Eq, PartialEq)]\npub enum {name}Update {{\n    Snapshot(TypedLiveQuerySnapshot<{}Result>),\n    Patch(riffdb_client_rust::LiveQueryPatch),\n    Reset(TypedLiveQueryReset<{}Result>),\n    Checkpoint(riffdb_client_rust::LiveQueryCheckpoint),\n    Terminal(riffdb_client_rust::LiveQueryTerminal),\n}}", pascal(query.query_name()), pascal(query.query_name())).expect("string");
+                writeln!(output, "impl GeneratedLiveQuery for {name}Params {{\n    type Update = {name}Update;\n    fn live_operation(self) -> Result<ApplicationReactiveOperation, ApplicationClientError> {{\n        let mut parameters = BTreeMap::new();").expect("string");
+                for parameter in parameters {
+                    writeln!(
+                        output,
+                        "        parameters.insert({:?}.to_owned(), {});",
+                        parameter.name(),
+                        rust_reactive_application_value(
+                            parameter.type_name(),
+                            &format!("self.{}", rust_identifier(parameter.name())),
+                            contract,
+                        )
+                    )
+                    .expect("string");
+                }
+                writeln!(
+                    output,
+                    "        ApplicationReactiveOperation::new({}_REACTIVE_MODULE_HASH, {:?}, parameters)\n    }}\n    fn decode_update(update: ApplicationLiveQueryUpdate) -> Result<Self::Update, ApplicationClientError> {{\n        match update {{\n            ApplicationLiveQueryUpdate::Snapshot {{ result, cursor, history_incarnation, application_head }} => Ok({name}Update::Snapshot(TypedLiveQuerySnapshot {{ result: <{}Query as GeneratedQuery>::decode_result(result)?, checkpoint: LiveQueryCheckpoint {{ history_incarnation, application_head, cursor }} }})),\n            ApplicationLiveQueryUpdate::Patch(value) => Ok({name}Update::Patch(value)),\n            ApplicationLiveQueryUpdate::Reset {{ reason, result, cursor, history_incarnation, application_head }} => Ok({name}Update::Reset(TypedLiveQueryReset {{ reason, result: <{}Query as GeneratedQuery>::decode_result(result)?, checkpoint: LiveQueryCheckpoint {{ history_incarnation, application_head, cursor }} }})),\n            ApplicationLiveQueryUpdate::Checkpoint(value) => Ok({name}Update::Checkpoint(value)),\n            ApplicationLiveQueryUpdate::Terminal(value) => Ok({name}Update::Terminal(value)),\n        }}\n    }}\n}}\nimpl {client_name} {{\n    pub async fn watch_{method}(&mut self, parameters: {name}Params, cursor: Option<LiveQueryCursor>) -> Result<TypedLiveQueryStream<{name}Params>, ApplicationClientError> {{\n        self.client.watch_generated_query(parameters, cursor, &self.metadata).await\n    }}\n}}\n",
+                    screaming_snake(reactive.name()),
+                    operation.name().as_str(),
+                    pascal(query.query_name()),
+                    pascal(query.query_name()),
+                    method = snake(operation.name().as_str())
+                )
+                .expect("string");
+            }
+            ReactiveOperationPlanV1::Subscription { .. } => {}
+        }
+    }
+}
+
+fn emit_rust_reactive_parameters(
+    output: &mut String,
+    operation: &str,
+    parameters: &[riffdb_query_ir::ReactiveParameterV1],
+    contract: &ContractBundle,
+) {
+    writeln!(
+        output,
+        "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {operation}Params {{"
+    )
+    .expect("string");
+    for parameter in parameters {
+        writeln!(
+            output,
+            "    pub {}: {},",
+            rust_identifier(parameter.name()),
+            rust_reactive_type(parameter.type_name(), contract)
+        )
+        .expect("string");
+    }
+    writeln!(output, "}}\n").expect("string");
+}
+
+fn rust_reactive_type(type_name: &str, contract: &ContractBundle) -> &'static str {
+    if contract
+        .schema()
+        .enums()
+        .iter()
+        .any(|value| value.name() == type_name)
+    {
+        return "String";
+    }
+    if type_name.starts_with("decimal<") {
+        return "DecimalValue";
+    }
+    if type_name.starts_with("money<") {
+        return "MoneyValue";
+    }
+    if type_name.starts_with("bytes<") {
+        return "Vec<u8>";
+    }
+    if type_name.starts_with("string<") {
+        return "String";
+    }
+    match type_name {
+        "bool" => "bool",
+        "i64" => "i64",
+        "u64" => "u64",
+        "uuid" => "String",
+        "date" => "i32",
+        "timestamp" => "TimestampValue",
+        "limit" => "u64",
+        "cursor" => "String",
+        _ => "String",
+    }
+}
+
+fn rust_reactive_application_value(
+    type_name: &str,
+    access: &str,
+    contract: &ContractBundle,
+) -> String {
+    if let Some(enumeration) = contract
+        .schema()
+        .enums()
+        .iter()
+        .find(|value| value.name() == type_name)
+    {
+        let variants = enumeration
+            .variants()
+            .iter()
+            .map(|variant| {
+                format!(
+                    "{:?} => ApplicationValue::EnumIdentity {{ type_id: {}, variant_id: {}, name: {access}.clone() }},",
+                    variant.name(),
+                    enumeration.id().get(),
+                    variant.id().get()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        return format!(
+            "match {access}.as_str() {{ {variants} _ => return Err(ApplicationClientError::InvalidInput), }}"
+        );
+    }
+    if let Some((precision, _scale)) = decimal_type_parts(type_name) {
+        return format!(
+            "ApplicationValue::Decimal {{ coefficient_twos_complement: {access}.coefficient_twos_complement, scale: {access}.scale, precision: Some({precision}) }}"
+        );
+    }
+    if type_name.starts_with("money<") {
+        return format!(
+            "ApplicationValue::Money {{ currency: {access}.currency, amount: Box::new(ApplicationValue::Decimal {{ coefficient_twos_complement: {access}.amount.coefficient_twos_complement, scale: {access}.amount.scale, precision: Some(38) }}) }}"
+        );
+    }
+    if type_name.starts_with("bytes<") {
+        return format!("ApplicationValue::Bytes({access})");
+    }
+    if type_name.starts_with("string<") || type_name == "cursor" {
+        return format!("ApplicationValue::String({access})");
+    }
+    match type_name {
+        "bool" => format!("ApplicationValue::Bool({access})"),
+        "i64" => format!("ApplicationValue::I64({access})"),
+        "u64" => format!("ApplicationValue::U64({access})"),
+        "uuid" => format!("ApplicationValue::Uuid(ApplicationUuid::from_text({access})?)"),
+        "date" => format!("ApplicationValue::Date({access})"),
+        "timestamp" => format!(
+            "ApplicationValue::Timestamp {{ seconds: {access}.seconds, nanos: {access}.nanos }}"
+        ),
+        "limit" => format!("ApplicationValue::U64({access})"),
+        _ => format!("ApplicationValue::String({access})"),
+    }
+}
+
+fn rust_reactive_decoder(type_name: &str, contract: &ContractBundle) -> &'static str {
+    if contract
+        .schema()
+        .enums()
+        .iter()
+        .any(|value| value.name() == type_name)
+    {
+        return "application_enum";
+    }
+    if type_name.starts_with("decimal<") {
+        return "application_decimal";
+    }
+    if type_name.starts_with("money<") {
+        return "(|value| { if let ApplicationValue::Money { currency, amount } = value { Ok(MoneyValue { currency, amount: application_decimal(*amount)? }) } else { Err(ApplicationClientError::InvalidResponse) } })";
+    }
+    if type_name.starts_with("bytes<") {
+        return "application_bytes";
+    }
+    if type_name.starts_with("string<") || type_name == "cursor" {
+        return "application_string";
+    }
+    match type_name {
+        "bool" => "application_bool",
+        "i64" => "application_i64",
+        "u64" => "application_u64",
+        "uuid" => "application_uuid",
+        "date" => "application_date",
+        "timestamp" => "application_timestamp",
+        "limit" => "application_u64",
+        _ => "application_string",
+    }
 }
 
 fn emit_rust_common_value_types(output: &mut String) {
@@ -1344,6 +1924,328 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
     }
     emit_typescript_client_facade(&mut output, module, &commands);
     output
+}
+
+/// Generates one complete TypeScript application client including typed async
+/// iterators, a framework-neutral live store, and a credential-free SSE relay
+/// adapter for application servers.
+#[must_use]
+pub fn generate_typescript_application_client(
+    module: &QueryModule,
+    contract: &ContractBundle,
+    reactive_modules: &[ReactiveModulePlanV1],
+) -> String {
+    let mut output = generate_typescript_client(module, contract);
+    for reactive in reactive_modules {
+        emit_typescript_reactive_module(&mut output, module, contract, reactive);
+    }
+    output
+}
+
+fn emit_typescript_reactive_module(
+    output: &mut String,
+    module: &QueryModule,
+    contract: &ContractBundle,
+    reactive: &ReactiveModulePlanV1,
+) {
+    writeln!(
+        output,
+        "\nexport const {}_REACTIVE_MODULE_HASH = \"{}\" as const;",
+        screaming_snake(reactive.name()),
+        hex(reactive.identity().as_bytes())
+    )
+    .expect("string");
+    output.push_str(
+        r#"export type ReactiveParameterSchema =
+  | { readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "bytes" | "date" | "timestamp" | "cursor" | "limit" }
+  | { readonly kind: "decimal"; readonly precision: number; readonly scale: number }
+  | { readonly kind: "money"; readonly precision: number; readonly scale: number; readonly currency: string }
+  | { readonly kind: "enum"; readonly typeId: number; readonly variants: Readonly<Record<string, number>> }
+  | { readonly kind: "record"; readonly fields: ReadonlyArray<{ readonly name: string; readonly schema: ReactiveParameterSchema }> };
+export interface ReactiveConsumerRequest<P> { readonly reactiveModuleHash: string; readonly operationName: string; readonly parameters: P; readonly parameterSchema: ReactiveParameterSchema; readonly consumerName: string; }
+export interface ReactiveEventDelivery<E> { readonly eventId: string; readonly event: E; readonly attempt: number; readonly leaseToken: string; readonly expiresAt: string; readonly historyIncarnation: bigint; }
+export interface ReactiveConsumerStatus { readonly revision: bigint; readonly checkpoint: string; readonly historyIncarnation: bigint; readonly liveLeases: number; readonly retries: number; readonly deadLetters: number; }
+export interface ReactiveConsumerBatch<E> { readonly events: ReadonlyArray<ReactiveEventDelivery<E>>; readonly waitTimedOut: boolean; readonly status: ReactiveConsumerStatus; }
+export interface ReactiveConsumerOptions { readonly batchLimit?: number; readonly inFlightLimit?: number; readonly leaseSeconds?: number; readonly maximumWaitMs?: number; }
+export type ReactiveEventMutationResult = "applied" | "state_changed" | "not_found" | "outstanding_lease" | "stale_lease" | "lease_expired";
+export type LiveQueryPatchOperation =
+  | { readonly type: "insert"; readonly index: number; readonly record: Readonly<Record<string, unknown>> }
+  | { readonly type: "remove"; readonly index: number; readonly key: Readonly<Record<string, unknown>> }
+  | { readonly type: "replace"; readonly index: number; readonly record: Readonly<Record<string, unknown>> }
+  | { readonly type: "move"; readonly from: number; readonly to: number; readonly key: Readonly<Record<string, unknown>> };
+export type LiveQueryUpdate<T> =
+  | { readonly type: "snapshot"; readonly value: T; readonly cursor: string; readonly applicationHead: bigint; readonly historyIncarnation: bigint }
+  | { readonly type: "patch"; readonly resultField: string; readonly operations: ReadonlyArray<LiveQueryPatchOperation>; readonly cursor: string; readonly applicationHead: bigint; readonly historyIncarnation: bigint }
+  | { readonly type: "reset"; readonly reason: string; readonly value: T; readonly cursor: string; readonly applicationHead: bigint; readonly historyIncarnation: bigint }
+  | { readonly type: "checkpoint"; readonly cursor: string; readonly applicationHead: bigint; readonly historyIncarnation: bigint }
+  | { readonly type: "terminal"; readonly reason: string; readonly lastApplicationHead?: bigint; readonly historyIncarnation?: bigint };
+export interface ReactiveApplicationTransport {
+  consumeEventStream<P, E>(request: ReactiveConsumerRequest<P>, options?: ReactiveConsumerOptions): AsyncIterable<ReactiveConsumerBatch<E>>;
+  acknowledgeEvent<P>(request: ReactiveConsumerRequest<P>, delivery: ReactiveEventDelivery<unknown>): Promise<ReactiveEventMutationResult>;
+  negativeAcknowledgeEvent<P>(request: ReactiveConsumerRequest<P>, delivery: ReactiveEventDelivery<unknown>, retryDelayMs?: number): Promise<ReactiveEventMutationResult>;
+  seekEventConsumer<P>(request: ReactiveConsumerRequest<P>, checkpoint: string): Promise<ReactiveEventMutationResult>;
+  eventConsumerStatus<P>(request: ReactiveConsumerRequest<P>): Promise<ReactiveConsumerStatus | undefined>;
+  watchNamedQuery<P, T>(request: { readonly reactiveModuleHash: string; readonly operationName: string; readonly parameters: P; readonly parameterSchema: ReactiveParameterSchema; readonly cursor?: string }): AsyncIterable<LiveQueryUpdate<T>>;
+}
+export interface LiveStore<T> { readonly current: T | undefined; readonly connected: boolean; subscribe(listener: (value: T | undefined) => void): () => void; connect(updates: AsyncIterable<LiveQueryUpdate<T>>): Promise<void>; close(): void; }
+function createLiveStore<T>(): LiveStore<T> {
+  let current: T | undefined;
+  let connected = false;
+  const listeners = new Set<(value: T | undefined) => void>();
+  const publish = (): void => { for (const listener of listeners) listener(current); };
+  return {
+    get current() { return current; }, get connected() { return connected; },
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    async connect(updates) { connected = true; try { for await (const update of updates) { if (update.type === "snapshot" || update.type === "reset") { current = update.value; publish(); } else if (update.type === "patch") { current = applyLivePatch(current, update); publish(); } else if (update.type === "terminal") { current = undefined; publish(); break; } } } finally { connected = false; } },
+    close() { connected = false; current = undefined; publish(); listeners.clear(); },
+  };
+}
+function applyLivePatch<T>(current: T | undefined, update: Extract<LiveQueryUpdate<T>, { readonly type: "patch" }>): T {
+  if (current === undefined || typeof current !== "object" || current === null || Array.isArray(current)) throw new Error("live patch has no current result");
+  const root = current as Record<string, unknown>;
+  const existing = root[update.resultField];
+  if (!Array.isArray(existing)) throw new Error("live patch result field is not a collection");
+  const records = existing.slice();
+  for (const operation of update.operations) {
+    if (operation.type === "insert") { if (operation.index > records.length) throw new Error("live patch insert index is invalid"); records.splice(operation.index, 0, operation.record); }
+    else if (operation.type === "replace") { if (operation.index >= records.length) throw new Error("live patch replace index is invalid"); records[operation.index] = operation.record; }
+    else if (operation.type === "remove") { if (operation.index >= records.length || !liveKeyMatches(records[operation.index], operation.key)) throw new Error("live patch remove key is invalid"); records.splice(operation.index, 1); }
+    else { if (operation.from >= records.length || operation.to >= records.length || !liveKeyMatches(records[operation.from], operation.key)) throw new Error("live patch move key is invalid"); const [record] = records.splice(operation.from, 1); records.splice(operation.to, 0, record); }
+  }
+  return { ...root, [update.resultField]: records } as T;
+}
+function liveKeyMatches(value: unknown, key: Readonly<Record<string, unknown>>): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return Object.entries(key).every(([name, expected]) => Object.is(record[name], expected));
+}
+async function* applicationSseRelay<T>(authorized: () => Promise<boolean>, updates: AsyncIterable<LiveQueryUpdate<T>>): AsyncIterable<string> {
+  for await (const update of updates) { if (!(await authorized())) throw new Error("application authorization denied"); yield `event: ${update.type}\ndata: ${JSON.stringify(update, (_key, value) => typeof value === "bigint" ? value.toString() : value)}\n\n`; }
+}
+"#,
+    );
+    for operation in reactive.operations() {
+        match operation.plan() {
+            ReactiveOperationPlanV1::Stream {
+                parameters, events, ..
+            } => {
+                let name = pascal(operation.name().as_str());
+                emit_typescript_reactive_parameters(output, &name, parameters, contract);
+                for event in events {
+                    writeln!(
+                        output,
+                        "export interface {name}{} {{ readonly type: \"{}\";",
+                        pascal(event.name()),
+                        event.name()
+                    )
+                    .expect("string");
+                    for field in event.fields() {
+                        writeln!(
+                            output,
+                            "  readonly {}: {};",
+                            ts_identifier(field.name()),
+                            ts_reactive_type(field.type_name(), contract)
+                        )
+                        .expect("string");
+                    }
+                    writeln!(output, "}}\n").expect("string");
+                }
+                write!(output, "export type {name}Event = ").expect("string");
+                for (index, event) in events.iter().enumerate() {
+                    if index != 0 {
+                        output.push_str(" | ");
+                    }
+                    write!(output, "{name}{}", pascal(event.name())).expect("string");
+                }
+                writeln!(
+                    output,
+                    ";\nexport type {name}Delivery = ReactiveEventDelivery<{name}Event>;\nexport type {name}Stream = AsyncIterable<ReactiveConsumerBatch<{name}Event>>;"
+                )
+                .expect("string");
+            }
+            ReactiveOperationPlanV1::Watch {
+                parameters, query, ..
+            } => {
+                let name = pascal(operation.name().as_str());
+                emit_typescript_reactive_parameters(output, &name, parameters, contract);
+                writeln!(
+                    output,
+                    "export type {name}Update = LiveQueryUpdate<{}Result>;",
+                    query.query_name()
+                )
+                .expect("string");
+            }
+            ReactiveOperationPlanV1::Subscription { .. } => {}
+        }
+    }
+    let client_name = format!(
+        "{}ReactiveClient",
+        pascal(module.contract_lineage().as_str())
+    );
+    writeln!(
+        output,
+        "export class {client_name} {{\n  public constructor(private readonly transport: ReactiveApplicationTransport) {{}}"
+    )
+    .expect("string");
+    for operation in reactive.operations() {
+        match operation.plan() {
+            ReactiveOperationPlanV1::Stream { .. } => {
+                let name = pascal(operation.name().as_str());
+                writeln!(
+                    output,
+                    "  public {method}(parameters: {name}Params, consumerName: string, options: ReactiveConsumerOptions = {{}}): AsyncIterable<ReactiveConsumerBatch<{name}Event>> {{ return this.transport.consumeEventStream({{ reactiveModuleHash: {}_REACTIVE_MODULE_HASH, operationName: \"{}\", parameters, parameterSchema: {name}ParameterSchema, consumerName }}, options); }}",
+                    screaming_snake(reactive.name()),
+                    operation.name().as_str(),
+                    method = camel(operation.name().as_str())
+                )
+                .expect("string");
+                writeln!(
+                    output,
+                    "  public ack{method}(parameters: {name}Params, consumerName: string, delivery: {name}Delivery): Promise<ReactiveEventMutationResult> {{ return this.transport.acknowledgeEvent({{ reactiveModuleHash: {module}_REACTIVE_MODULE_HASH, operationName: {operation:?}, parameters, parameterSchema: {name}ParameterSchema, consumerName }}, delivery); }}\n  public nack{method}(parameters: {name}Params, consumerName: string, delivery: {name}Delivery, retryDelayMs = 0): Promise<ReactiveEventMutationResult> {{ return this.transport.negativeAcknowledgeEvent({{ reactiveModuleHash: {module}_REACTIVE_MODULE_HASH, operationName: {operation:?}, parameters, parameterSchema: {name}ParameterSchema, consumerName }}, delivery, retryDelayMs); }}\n  public seek{method}(parameters: {name}Params, consumerName: string, checkpoint = \"before-first\"): Promise<ReactiveEventMutationResult> {{ return this.transport.seekEventConsumer({{ reactiveModuleHash: {module}_REACTIVE_MODULE_HASH, operationName: {operation:?}, parameters, parameterSchema: {name}ParameterSchema, consumerName }}, checkpoint); }}\n  public {status_method}Status(parameters: {name}Params, consumerName: string): Promise<ReactiveConsumerStatus | undefined> {{ return this.transport.eventConsumerStatus({{ reactiveModuleHash: {module}_REACTIVE_MODULE_HASH, operationName: {operation:?}, parameters, parameterSchema: {name}ParameterSchema, consumerName }}); }}",
+                    method = pascal(operation.name().as_str()),
+                    status_method = camel(operation.name().as_str()),
+                    module = screaming_snake(reactive.name()),
+                    operation = operation.name().as_str(),
+                )
+                .expect("string");
+            }
+            ReactiveOperationPlanV1::Watch { .. } => {
+                let name = pascal(operation.name().as_str());
+                writeln!(
+                    output,
+                    "  public watch{method}(parameters: {name}Params, cursor?: string): AsyncIterable<{name}Update> {{ return this.transport.watchNamedQuery({{ reactiveModuleHash: {}_REACTIVE_MODULE_HASH, operationName: \"{}\", parameters, parameterSchema: {name}ParameterSchema, ...(cursor === undefined ? {{}} : {{ cursor }}) }}); }}",
+                    screaming_snake(reactive.name()),
+                    operation.name().as_str(),
+                    method = pascal(operation.name().as_str())
+                )
+                .expect("string");
+            }
+            ReactiveOperationPlanV1::Subscription { .. } => {}
+        }
+    }
+    writeln!(output, "}}\n").expect("string");
+    for operation in reactive.operations() {
+        if let ReactiveOperationPlanV1::Watch { query, .. } = operation.plan() {
+            let name = pascal(operation.name().as_str());
+            writeln!(
+                output,
+                "export function create{name}Store(): LiveStore<{}Result> {{ return createLiveStore(); }}\nexport function create{name}SseRelay(authorized: () => Promise<boolean>, updates: AsyncIterable<{name}Update>): AsyncIterable<string> {{ return applicationSseRelay(authorized, updates); }}",
+                query.query_name()
+            )
+            .expect("string");
+        }
+    }
+}
+
+fn emit_typescript_reactive_parameters(
+    output: &mut String,
+    operation: &str,
+    parameters: &[riffdb_query_ir::ReactiveParameterV1],
+    contract: &ContractBundle,
+) {
+    writeln!(output, "export interface {operation}Params {{").expect("string");
+    for parameter in parameters {
+        writeln!(
+            output,
+            "  readonly {}: {};",
+            ts_identifier(parameter.name()),
+            ts_reactive_type(parameter.type_name(), contract)
+        )
+        .expect("string");
+    }
+    writeln!(output, "}}").expect("string");
+    writeln!(
+        output,
+        "export const {operation}ParameterSchema: ReactiveParameterSchema = {{ kind: \"record\", fields: ["
+    )
+    .expect("string");
+    for parameter in parameters {
+        writeln!(
+            output,
+            "  {{ name: {:?}, schema: {} }},",
+            parameter.name(),
+            ts_reactive_schema(parameter.type_name(), contract)
+        )
+        .expect("string");
+    }
+    writeln!(output, "] }};\n").expect("string");
+}
+
+fn ts_reactive_type(type_name: &str, contract: &ContractBundle) -> String {
+    if contract
+        .schema()
+        .enums()
+        .iter()
+        .any(|value| value.name() == type_name)
+    {
+        return pascal(type_name);
+    }
+    if type_name.starts_with("decimal<") {
+        return "{ readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision?: number }".to_owned();
+    }
+    if type_name.starts_with("money<") {
+        return "{ readonly currency: string; readonly amount: { readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision?: number } }".to_owned();
+    }
+    if type_name.starts_with("bytes<") {
+        return "Uint8Array".to_owned();
+    }
+    match type_name {
+        "bool" => "boolean",
+        "i64" | "u64" => "bigint",
+        "date" | "limit" => "number",
+        "timestamp" => "{ readonly seconds: bigint; readonly nanos: number }",
+        "uuid" | "cursor" => "string",
+        value if value.starts_with("string<") => "string",
+        _ => "never",
+    }
+    .to_owned()
+}
+
+fn ts_reactive_schema(type_name: &str, contract: &ContractBundle) -> String {
+    if let Some(enumeration) = contract
+        .schema()
+        .enums()
+        .iter()
+        .find(|value| value.name() == type_name)
+    {
+        let variants = enumeration
+            .variants()
+            .iter()
+            .map(|variant| format!("{:?}: {}", variant.name(), variant.id().get()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!(
+            "{{ kind: \"enum\", typeId: {}, variants: {{ {variants} }} }}",
+            enumeration.id().get()
+        );
+    }
+    if let Some((precision, scale)) = decimal_type_parts(type_name) {
+        return format!("{{ kind: \"decimal\", precision: {precision}, scale: {scale} }}");
+    }
+    if let Some(currency) = money_type_currency(type_name) {
+        return format!("{{ kind: \"money\", precision: 38, scale: 2, currency: {currency:?} }}");
+    }
+    let kind = if type_name.starts_with("bytes<") {
+        "bytes"
+    } else if type_name.starts_with("string<") {
+        "string"
+    } else {
+        type_name
+    };
+    format!("{{ kind: {kind:?} }}")
+}
+
+fn decimal_type_parts(type_name: &str) -> Option<(u8, u8)> {
+    let body = type_name.strip_prefix("decimal<")?.strip_suffix('>')?;
+    let (precision, scale) = body.split_once(',')?;
+    Some((precision.parse().ok()?, scale.parse().ok()?))
+}
+
+fn money_type_currency(type_name: &str) -> Option<String> {
+    type_name
+        .strip_prefix("money<")?
+        .strip_suffix('>')
+        .map(str::to_owned)
 }
 
 fn emit_typescript_application_errors(output: &mut String) {
