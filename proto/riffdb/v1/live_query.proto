@@ -1,0 +1,147 @@
+syntax = "proto3";
+
+package riffdb.v1;
+
+import "riffdb/v1/value.proto";
+
+// One canonical name-addressed watch parameter.
+message LiveQueryParameter {
+  string name = 1;
+  Value value = 2;
+}
+
+// Exact immutable reactive operation and optional resume evidence.
+message WatchNamedQueryRequest {
+  bytes request_id = 1;
+  bytes reactive_module_hash = 2;
+  string operation_name = 3;
+  repeated LiveQueryParameter parameters = 4;
+  optional bytes cursor = 5;
+}
+
+message LiveQueryFrontier {
+  uint64 history_incarnation = 1;
+  uint64 application_head = 2;
+}
+
+message LiveQueryIdentity {
+  string contract_lineage = 1;
+  uint64 contract_version = 2;
+  bytes contract_bundle_hash = 3;
+  string query_name = 4;
+  bytes query_module_hash = 5;
+  bytes query_plan_hash = 6;
+}
+
+message LiveQueryResultRecord {
+  string entity = 1;
+  ValueRecord fields = 2;
+}
+
+enum LiveQueryResultCardinality {
+  LIVE_QUERY_RESULT_CARDINALITY_UNSPECIFIED = 0;
+  LIVE_QUERY_RESULT_CARDINALITY_ONE = 1;
+  LIVE_QUERY_RESULT_CARDINALITY_MAYBE = 2;
+  LIVE_QUERY_RESULT_CARDINALITY_MANY = 3;
+}
+
+message LiveQueryResultField {
+  string name = 1;
+  LiveQueryResultCardinality cardinality = 2;
+  repeated LiveQueryResultRecord records = 3;
+}
+
+message LiveQueryResult {
+  LiveQueryIdentity identity = 1;
+  string outcome = 2;
+  repeated LiveQueryResultField fields = 3;
+}
+
+message LiveQuerySnapshot {
+  LiveQueryResult result = 1;
+  LiveQueryFrontier frontier = 2;
+  bytes cursor = 3;
+}
+
+message LiveQueryInsert {
+  uint32 index = 1;
+  LiveQueryResultRecord record = 2;
+}
+
+message LiveQueryRemove {
+  uint32 index = 1;
+  ValueRecord key = 2;
+}
+
+message LiveQueryReplace {
+  uint32 index = 1;
+  LiveQueryResultRecord record = 2;
+}
+
+message LiveQueryMove {
+  uint32 from = 1;
+  uint32 to = 2;
+  ValueRecord key = 3;
+}
+
+message LiveQueryPatchOperation {
+  oneof operation {
+    LiveQueryInsert insert = 1;
+    LiveQueryRemove remove = 2;
+    LiveQueryReplace replace = 3;
+    LiveQueryMove move = 4;
+  }
+}
+
+message LiveQueryPatch {
+  string result_field = 1;
+  repeated LiveQueryPatchOperation operations = 2;
+  LiveQueryFrontier frontier = 3;
+  bytes cursor = 4;
+}
+
+enum LiveQueryResetReason {
+  LIVE_QUERY_RESET_REASON_UNSPECIFIED = 0;
+  LIVE_QUERY_RESET_REASON_OUTCOME_CHANGED = 1;
+  LIVE_QUERY_RESET_REASON_DIFF_LIMIT_EXCEEDED = 2;
+  LIVE_QUERY_RESET_REASON_DEFINITION_CHANGED = 3;
+  LIVE_QUERY_RESET_REASON_HISTORY_CHANGED = 4;
+  LIVE_QUERY_RESET_REASON_CURSOR_EXPIRED = 5;
+}
+
+message LiveQueryReset {
+  LiveQueryResetReason reason = 1;
+  LiveQueryResult result = 2;
+  LiveQueryFrontier frontier = 3;
+  bytes cursor = 4;
+}
+
+message LiveQueryCheckpoint {
+  LiveQueryFrontier frontier = 1;
+  bytes cursor = 2;
+}
+
+enum LiveQueryTerminalReason {
+  LIVE_QUERY_TERMINAL_REASON_UNSPECIFIED = 0;
+  LIVE_QUERY_TERMINAL_REASON_AUTHORIZATION_CHANGED = 1;
+  LIVE_QUERY_TERMINAL_REASON_BUFFER_PRESSURE = 2;
+  LIVE_QUERY_TERMINAL_REASON_LIFETIME_EXPIRED = 3;
+  LIVE_QUERY_TERMINAL_REASON_SERVICE_UNAVAILABLE = 4;
+  LIVE_QUERY_TERMINAL_REASON_INTEGRITY_FAILURE = 5;
+  LIVE_QUERY_TERMINAL_REASON_DEFINITION_CHANGED = 6;
+}
+
+message LiveQueryTerminal {
+  LiveQueryTerminalReason reason = 1;
+  LiveQueryFrontier last_frontier = 2;
+}
+
+message LiveQueryUpdate {
+  oneof update {
+    LiveQuerySnapshot snapshot = 1;
+    LiveQueryPatch patch = 2;
+    LiveQueryReset reset = 3;
+    LiveQueryCheckpoint checkpoint = 4;
+    LiveQueryTerminal terminal = 5;
+  }
+}

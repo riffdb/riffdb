@@ -315,6 +315,7 @@ pub trait ApplicationService:
     + crate::SymbolicQueryApplication
     + crate::ProjectedQueryApplication
     + crate::EventConsumerServiceApplication
+    + crate::LiveNamedQueryApplication
 {
 }
 
@@ -330,5 +331,6 @@ impl<T> ApplicationService for T where
         + crate::SymbolicQueryApplication
         + crate::ProjectedQueryApplication
         + crate::EventConsumerServiceApplication
+        + crate::LiveNamedQueryApplication
 {
 }

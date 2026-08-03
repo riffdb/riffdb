@@ -1833,6 +1833,157 @@ query GetBudget(
         }
     });
 }
+
+#[test]
+fn live_named_query_closes_snapshot_catchup_reconnect_and_revocation() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use riffdb_catalog::{ValidatedQueryModule, ValidatedReactiveModule};
+    use riffdb_query_module::{
+        NamedQuerySource, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+    };
+    use riffdb_service::{
+        AuthoritativeCommitNotification, LiveNamedQueryApplication, LiveNamedQuerySelection,
+        LiveQueryUpdate, QueryModuleReadPort, QueryParameters, ReactiveModuleReadPort,
+        WatchLiveNamedQueryRequest,
+    };
+    use riffdb_types::{
+        CanonicalValue, CapabilityPermissionV1, CommitSequence, ReactiveOperationName,
+    };
+    use support::{
+        EmptyQueryExecutor, FixedLiveQueryClock, FixedQueryModulePort, FixedReactiveModulePort,
+        ServiceHarness,
+    };
+
+    const REACTIVE: &str = r#"
+reactive BudgetLive version 1 {
+  watch BudgetWatch($fiscal_year: Budget.fiscal_year, $organization_id: Budget.organization_id) query GetBudget updates reset;
+}
+"#;
+
+    run_async(async move {
+        let seed = ServiceHarness::operations();
+        let contract = seed.active_validated_bundle();
+        let query_module = ValidatedQueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("budget_live").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![NamedQuerySource::new("GetBudget", GET_BUDGET_QUERY).expect("query source")],
+            )
+            .expect("module candidate"),
+            &contract,
+        )
+        .expect("validated query module");
+        let reactive_module = ValidatedReactiveModule::compile(
+            REACTIVE,
+            &contract,
+            std::slice::from_ref(&query_module),
+        )
+        .expect("validated reactive module");
+        let reactive_hash = reactive_module.identity();
+        let operation_name = ReactiveOperationName::new("BudgetWatch").expect("operation name");
+        let permission = CapabilityPermissionV1::WatchNamedQuery(
+            contract.lineage().clone(),
+            reactive_hash,
+            operation_name.clone(),
+        );
+        drop(seed);
+
+        let harness = ServiceHarness::live_named_queries(
+            Arc::new(EmptyQueryExecutor),
+            Arc::new(FixedQueryModulePort::new(query_module)) as Arc<dyn QueryModuleReadPort>,
+            Arc::new(FixedReactiveModulePort::new(reactive_module))
+                as Arc<dyn ReactiveModuleReadPort>,
+            Arc::new(FixedLiveQueryClock),
+            vec![permission],
+        );
+        let first = CommitSequence::first();
+        harness.set_read_commit_snapshot(harness.commit_snapshot(first));
+        harness.configure_commit_subscription(
+            vec![AuthoritativeCommitNotification::Advanced(first)],
+            true,
+        );
+        let parameters = QueryParameters::checked(BTreeMap::from([
+            ("fiscal_year".to_owned(), CanonicalValue::I64(2026)),
+            (
+                "organization_id".to_owned(),
+                CanonicalValue::Uuid([0x31; 16]),
+            ),
+        ]))
+        .expect("canonical parameters");
+        let selection = LiveNamedQuerySelection::new(reactive_hash, operation_name, parameters);
+
+        let (context, _cancellation) = harness.context(0xb1);
+        let service = harness.service.clone();
+        let first_selection = selection.clone();
+        let establishing = tokio::spawn(async move {
+            service
+                .watch_live_named_query(context, WatchLiveNamedQueryRequest::new(first_selection))
+                .await
+        });
+        harness.wait_for_commit_subscription_submission().await;
+        harness.release_commit_subscription_source();
+        let result = establishing
+            .await
+            .expect("establishment task")
+            .expect("watch establishes");
+        let mut subscription = result.into_subscription();
+        let snapshot_cursor = match subscription.next().await.expect("initial snapshot") {
+            LiveQueryUpdate::Snapshot(snapshot) => snapshot.cursor().clone(),
+            other => panic!("expected snapshot, got {other:?}"),
+        };
+        match subscription.next().await.expect("racing commit update") {
+            LiveQueryUpdate::Checkpoint(checkpoint) => {
+                assert_eq!(checkpoint.frontier().application_head(), first.get());
+            }
+            other => panic!("expected checkpoint, got {other:?}"),
+        }
+        assert_eq!(harness.commit_subscription_acknowledgements(), [first]);
+        drop(subscription);
+
+        harness.configure_commit_subscription(Vec::new(), false);
+        let (context, _cancellation) = harness.context(0xb2);
+        let resumed = harness
+            .service
+            .watch_live_named_query(
+                context,
+                WatchLiveNamedQueryRequest::new(selection.clone()).with_cursor(snapshot_cursor),
+            )
+            .await
+            .expect("resume establishes");
+        let mut resumed = resumed.into_subscription();
+        assert!(matches!(
+            resumed.next().await.expect("resumed snapshot"),
+            LiveQueryUpdate::Snapshot(_)
+        ));
+        drop(resumed);
+
+        harness.configure_commit_subscription(
+            vec![AuthoritativeCommitNotification::Advanced(first)],
+            false,
+        );
+        let (context, _cancellation) = harness.context(0xb3);
+        let revoked = harness
+            .service
+            .watch_live_named_query(context, WatchLiveNamedQueryRequest::new(selection))
+            .await
+            .expect("revocation watch establishes");
+        let mut revoked = revoked.into_subscription();
+        assert!(matches!(
+            revoked.next().await.expect("initial before revocation"),
+            LiveQueryUpdate::Snapshot(_)
+        ));
+        harness.deny_after_next_policy_allows(1);
+        assert!(matches!(
+            revoked.next().await.expect("typed revocation terminal"),
+            LiveQueryUpdate::Terminal(terminal)
+                if terminal.reason() == riffdb_service::LiveQueryTerminalReason::AuthorizationChanged
+        ));
+        assert!(harness.commit_subscription_source_dropped());
+    });
+}
+
 /// Source and permission fixture shared by the read-path safe-point tests.
 const GET_BUDGET_QUERY: &str = r#"
 query GetBudget(

@@ -96,6 +96,8 @@ fn every_client_vector_passes_its_strict_public_boundary() {
             "riffdb.v1.ScanIndexResponse" => decode::<v1::ScanIndexResponse>(&bytes),
             "riffdb.v1.QueryProjectionRequest" => decode::<v1::QueryProjectionRequest>(&bytes),
             "riffdb.v1.QueryProjectionResponse" => decode::<v1::QueryProjectionResponse>(&bytes),
+            "riffdb.v1.WatchNamedQueryRequest" => decode::<v1::WatchNamedQueryRequest>(&bytes),
+            "riffdb.v1.LiveQueryUpdate" => decode::<v1::LiveQueryUpdate>(&bytes),
             "riffdb.v1.GetProjectionStatusRequest" => {
                 decode::<v1::GetProjectionStatusRequest>(&bytes)
             }
@@ -146,8 +148,8 @@ fn every_client_vector_passes_its_strict_public_boundary() {
         }
         count += 1;
     }
-    assert_eq!(count, 134);
-    assert_eq!(rpcs.len(), 25);
+    assert_eq!(count, 141);
+    assert_eq!(rpcs.len(), 26);
     assert_eq!(request_rpcs, rpcs);
     assert_eq!(visible_rpcs, rpcs);
 }
@@ -779,6 +781,38 @@ fn expected_enum_values() -> BTreeSet<String> {
                 "OFFLINE_MAINTENANCE_FAILURE_CLASS_INTERNAL_FAILURE",
             ][..],
         ),
+        (
+            "riffdb.v1.LiveQueryResultCardinality",
+            &[
+                "LIVE_QUERY_RESULT_CARDINALITY_UNSPECIFIED",
+                "LIVE_QUERY_RESULT_CARDINALITY_ONE",
+                "LIVE_QUERY_RESULT_CARDINALITY_MAYBE",
+                "LIVE_QUERY_RESULT_CARDINALITY_MANY",
+            ][..],
+        ),
+        (
+            "riffdb.v1.LiveQueryResetReason",
+            &[
+                "LIVE_QUERY_RESET_REASON_UNSPECIFIED",
+                "LIVE_QUERY_RESET_REASON_OUTCOME_CHANGED",
+                "LIVE_QUERY_RESET_REASON_DIFF_LIMIT_EXCEEDED",
+                "LIVE_QUERY_RESET_REASON_DEFINITION_CHANGED",
+                "LIVE_QUERY_RESET_REASON_HISTORY_CHANGED",
+                "LIVE_QUERY_RESET_REASON_CURSOR_EXPIRED",
+            ][..],
+        ),
+        (
+            "riffdb.v1.LiveQueryTerminalReason",
+            &[
+                "LIVE_QUERY_TERMINAL_REASON_UNSPECIFIED",
+                "LIVE_QUERY_TERMINAL_REASON_AUTHORIZATION_CHANGED",
+                "LIVE_QUERY_TERMINAL_REASON_BUFFER_PRESSURE",
+                "LIVE_QUERY_TERMINAL_REASON_LIFETIME_EXPIRED",
+                "LIVE_QUERY_TERMINAL_REASON_SERVICE_UNAVAILABLE",
+                "LIVE_QUERY_TERMINAL_REASON_INTEGRITY_FAILURE",
+                "LIVE_QUERY_TERMINAL_REASON_DEFINITION_CHANGED",
+            ][..],
+        ),
     ] {
         for (number, name) in names.iter().enumerate() {
             assert!(values.insert(format!("enum-value {enumeration} {number} {name}")));
@@ -878,6 +912,11 @@ fn expected_optional_registry() -> BTreeSet<String> {
             "riffdb.v1.SubscribeCommitsRequest.observed_history_incarnation",
             "CommitService.SubscribeCommits:request:from-head",
             "CommitService.SubscribeCommits:request:from-head-with-observed-incarnation",
+        ),
+        (
+            "riffdb.v1.WatchNamedQueryRequest.cursor",
+            "QueryService.WatchNamedQuery:request:fresh",
+            "QueryService.WatchNamedQuery:request:resume",
         ),
     ]
     .into_iter()
@@ -1087,6 +1126,11 @@ fn optional_field_present(field: &str, vector: &FixtureVector<'_>) -> bool {
             .observed_history_incarnation
             .is_some()
         }
+        "riffdb.v1.WatchNamedQueryRequest.cursor" => {
+            strict_decode::<v1::WatchNamedQueryRequest>(vector, "riffdb.v1.WatchNamedQueryRequest")
+                .cursor
+                .is_some()
+        }
         _ => panic!("unknown optional-field registry entry: {field}"),
     }
 }
@@ -1215,7 +1259,7 @@ fn assert_unspecified_enum_rejected(enumeration: &str, message_type: &str, bytes
 #[test]
 fn wp137_enum_optional_and_page_registry_is_complete() {
     let (vectors, registry) = fixture_sections();
-    assert_eq!(vectors.len(), 134);
+    assert_eq!(vectors.len(), 141);
 
     let expected_enums = expected_enum_values();
     let expected_optionals = expected_optional_registry();

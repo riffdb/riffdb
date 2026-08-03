@@ -30,6 +30,7 @@
 - [Contract Migrations](contracts/MIGRATIONS.md)
 - [Domain Events](contracts/DOMAIN-EVENTS.md)
 - [Reactive Modules](reactive/MODULES.md)
+- [Live Named Queries](reactive/LIVE-QUERIES.md)
 - [Safe Application Profiles](getting-started/SAFE-APPLICATION-PROFILES.md)
 - [Authoring Diagnostics](getting-started/AUTHORING-DIAGNOSTICS.md)
 - [Application Errors](getting-started/APPLICATION-ERRORS.md)

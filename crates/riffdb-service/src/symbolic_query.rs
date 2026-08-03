@@ -1141,7 +1141,7 @@ impl ExecuteSymbolicQueryResult {
         }
     }
 
-    fn from_snapshot(
+    pub(crate) fn from_snapshot(
         program: &QueryAccessProgramV1,
         snapshot: QueryOwnedSnapshot,
         enum_variant_names: SharedEnumVariantNames,
@@ -1176,6 +1176,17 @@ impl ExecuteSymbolicQueryResult {
             enum_variant_names,
             next_cursor: None,
         }
+    }
+
+    pub(crate) fn from_named_snapshot(
+        program: &QueryAccessProgramV1,
+        module_hash: QueryModuleHash,
+        snapshot: QueryOwnedSnapshot,
+        enum_variant_names: SharedEnumVariantNames,
+    ) -> Self {
+        let mut result = Self::from_snapshot(program, snapshot, enum_variant_names);
+        result.identity = SymbolicQueryIdentity::from_named(program, module_hash);
+        result
     }
 
     /// Exact compiled identity.
@@ -1250,6 +1261,10 @@ impl ExecuteSymbolicQueryResult {
         self.enum_variant_names
             .get(&(type_id, variant_id))
             .map(String::as_str)
+    }
+
+    pub(crate) fn shared_enum_variant_names(&self) -> SharedEnumVariantNames {
+        Arc::clone(&self.enum_variant_names)
     }
 
     /// Opaque continuation token, when this page is not final.
@@ -2000,7 +2015,7 @@ async fn execute_named_query(
     .await
 }
 
-async fn load_query_module(
+pub(crate) async fn load_query_module(
     service: &RiffDbServiceInner,
     context: &RequestContext,
     contract: riffdb_catalog::ValidatedContractBundle,
@@ -2587,7 +2602,7 @@ pub(crate) fn query_parameter_hash(
     Some(hash_query_parameters(&bytes))
 }
 
-fn application_query_target(
+pub(crate) fn application_query_target(
     bundle: &riffdb_contract_ir::ContractBundle,
     program: &QueryAccessProgramV1,
     parameters: &QueryParameters,
@@ -2663,7 +2678,7 @@ fn application_query_target(
     .ok()
 }
 
-fn execute_authorized_query_page(
+pub(crate) fn execute_authorized_query_page(
     authorization: &AuthorizedApplicationQuery,
     executor: &dyn riffdb_query_executor::QueryExecutionPort,
     program: &QueryAccessProgramV1,
@@ -2688,7 +2703,7 @@ fn execute_authorized_query_page(
     executor.execute_query_page(program, parameters, prior)
 }
 
-fn execution_failure(
+pub(crate) fn execution_failure(
     service: &RiffDbServiceInner,
     operation: ServiceOperationV1,
     error: QueryExecutionError,

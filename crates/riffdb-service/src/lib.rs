@@ -16,6 +16,7 @@ mod cursor;
 mod dto;
 mod event_operations;
 mod failure;
+mod live_query;
 mod maintenance_operations;
 mod migration_operations;
 mod orchestration;
@@ -39,6 +40,7 @@ pub use cursor::*;
 pub use dto::*;
 pub use event_operations::*;
 pub use failure::*;
+pub use live_query::*;
 pub use maintenance_operations::{
     RecoveryOfflineMaintenanceService, RestoreRetryOfflineMaintenanceService,
 };

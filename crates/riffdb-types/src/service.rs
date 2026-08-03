@@ -91,11 +91,13 @@ pub enum ServiceOperationV1 {
     RetireEventStreamConsumer,
     /// Read one exact durable event consumer status.
     GetEventStreamConsumerStatus,
+    /// Establish and advance one exact live named-query watch.
+    WatchNamedQuery,
 }
 
 impl ServiceOperationV1 {
     /// Every accepted v1 service operation, in tag order.
-    pub const ALL: [Self; 39] = [
+    pub const ALL: [Self; 40] = [
         Self::ValidateContract,
         Self::ExplainCommand,
         Self::DeployContract,
@@ -135,6 +137,7 @@ impl ServiceOperationV1 {
         Self::SeekEventStreamConsumer,
         Self::RetireEventStreamConsumer,
         Self::GetEventStreamConsumerStatus,
+        Self::WatchNamedQuery,
     ];
 
     /// Returns the stable v1 semantic tag.
@@ -180,6 +183,7 @@ impl ServiceOperationV1 {
             Self::SeekEventStreamConsumer => 0x25,
             Self::RetireEventStreamConsumer => 0x26,
             Self::GetEventStreamConsumerStatus => 0x27,
+            Self::WatchNamedQuery => 0x28,
         }
     }
 
@@ -226,6 +230,7 @@ impl ServiceOperationV1 {
             0x25 => Some(Self::SeekEventStreamConsumer),
             0x26 => Some(Self::RetireEventStreamConsumer),
             0x27 => Some(Self::GetEventStreamConsumerStatus),
+            0x28 => Some(Self::WatchNamedQuery),
             _ => None,
         }
     }
@@ -660,7 +665,7 @@ mod tests {
 
     #[test]
     fn service_operation_registry_is_exact_and_closed() {
-        let expected: Vec<u8> = (0x01..=0x27).collect();
+        let expected: Vec<u8> = (0x01..=0x28).collect();
         assert_eq!(
             ServiceOperationV1::ALL
                 .into_iter()
@@ -675,7 +680,7 @@ mod tests {
             );
         }
         assert_eq!(ServiceOperationV1::from_tag(0), None);
-        assert_eq!(ServiceOperationV1::from_tag(0x28), None);
+        assert_eq!(ServiceOperationV1::from_tag(0x29), None);
         assert_eq!(ServiceOperationV1::from_tag(u8::MAX), None);
     }
 

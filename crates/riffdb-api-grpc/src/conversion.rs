@@ -38,28 +38,30 @@ use riffdb_service::{
     GetProjectionStatusRequest, GetProjectionStatusResult, GetQueryModuleRequest,
     HealthComponentKind, HealthComponentStatus, HealthRequest, HealthResult, HealthStatus,
     JournaledCommandResult, JournaledCompletion, ListPendingOutboxDeliveriesRequest,
-    ListPendingOutboxDeliveriesResult, NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact,
-    NamedSymbolicQueryRequest, NegativeAcknowledgeEventStreamRequest,
-    NormalCreateCapabilityRequest, NormalCreateCapabilityResult,
-    OfflineMaintenanceObservationFailure, OfflineMaintenanceObservationPhase,
-    OfflineMaintenanceOperationObservation, OfflineMaintenanceStartDisposition,
-    OfflineMaintenanceStartResult, OperationSchemaArtifact, OperationSchemaCatalog,
-    OperationSchemaCatalogIdentity, OperationSchemaIdentity, OutboxDeliveryState,
-    OutcomeResourceLocator, PageLimit, PageRequest, PreBootstrapLifecycle, ProjectionFailureCode,
-    ProjectionLifecycle, ProjectionUnavailableReason, ProvenanceSelection, PublishedApplyMode,
-    QueryModuleActiveExpectation, QueryModuleDeploymentDisposition, QueryModuleInspection,
-    QueryProjectionRequest, QueryProjectionResult, ReactiveModuleDeploymentDisposition,
-    ReplayEventsRequest, ReplayEventsResult, ResolveCommandOutcomeRequest,
-    ResolveCommandOutcomeResult, ResourceDescriptor, ResourceDescriptorRef, ResourceDiscoveryKind,
-    RestoreOfflineBackupRequest, RevokeCapabilityRequest, RevokeCapabilityResult,
-    ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult,
-    SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue, SeekEventStreamConsumerRequest, SourceName,
-    StatisticsRequest, StatisticsResult, SubmittedDecimal, SubmittedEnum, SubmittedField,
-    SubmittedFieldIdentity, SubmittedMoney, SubmittedRecord, SubmittedValue,
-    SubscribeToCommitsRequest, SymbolicContractSelector, SymbolicDiagnostic, SymbolicEvent,
-    SymbolicQueryIdentity, SymbolicQueryParameters, SymbolicQuerySchema, SymbolicQuerySource,
-    SymbolicResultField, SymbolicResultRecord, TailEventsRequest, TailEventsResult,
-    TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
+    ListPendingOutboxDeliveriesResult, LiveNamedQuerySelection, LiveQueryCursor,
+    LiveQueryPatchOperation, LiveQueryResetReason, LiveQueryTerminalReason, LiveQueryUpdate,
+    NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact, NamedSymbolicQueryRequest,
+    NegativeAcknowledgeEventStreamRequest, NormalCreateCapabilityRequest,
+    NormalCreateCapabilityResult, OfflineMaintenanceObservationFailure,
+    OfflineMaintenanceObservationPhase, OfflineMaintenanceOperationObservation,
+    OfflineMaintenanceStartDisposition, OfflineMaintenanceStartResult, OperationSchemaArtifact,
+    OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
+    OutboxDeliveryState, OutcomeResourceLocator, PageLimit, PageRequest, PreBootstrapLifecycle,
+    ProjectionFailureCode, ProjectionLifecycle, ProjectionUnavailableReason, ProvenanceSelection,
+    PublishedApplyMode, QueryModuleActiveExpectation, QueryModuleDeploymentDisposition,
+    QueryModuleInspection, QueryProjectionRequest, QueryProjectionResult,
+    ReactiveModuleDeploymentDisposition, ReplayEventsRequest, ReplayEventsResult,
+    ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, ResourceDescriptor,
+    ResourceDescriptorRef, ResourceDiscoveryKind, RestoreOfflineBackupRequest,
+    RevokeCapabilityRequest, RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult,
+    ScanIndexRequest, ScanIndexResult, SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue,
+    SeekEventStreamConsumerRequest, SourceName, StatisticsRequest, StatisticsResult,
+    SubmittedDecimal, SubmittedEnum, SubmittedField, SubmittedFieldIdentity, SubmittedMoney,
+    SubmittedRecord, SubmittedValue, SubscribeToCommitsRequest, SymbolicContractSelector,
+    SymbolicDiagnostic, SymbolicEvent, SymbolicQueryIdentity, SymbolicQueryParameters,
+    SymbolicQuerySchema, SymbolicQuerySource, SymbolicResultField, SymbolicResultRecord,
+    TailEventsRequest, TailEventsResult, TraceProvenanceRequest, TraceProvenanceResult,
+    ValidateContractRequest, WatchLiveNamedQueryRequest,
 };
 use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, ApplicationRoleHash, Audience, BackupNameV1,
@@ -535,6 +537,298 @@ pub fn execute_symbolic_query_result_to_proto(
         application_head,
         fields,
         next_cursor: next_cursor.map(|cursor| URL_SAFE_NO_PAD.encode(cursor.as_bytes())),
+    })
+}
+
+/// Converts one exact public live-watch request.
+pub fn watch_named_query_request_from_proto(
+    value: v1::WatchNamedQueryRequest,
+) -> Result<(RequestId, WatchLiveNamedQueryRequest), Status> {
+    let request_id = request_id_from_bytes(&value.request_id)?;
+    let module_hash = ReactiveModuleHash::from_bytes(
+        value
+            .reactive_module_hash
+            .try_into()
+            .map_err(|_| invalid_request())?,
+    );
+    let operation_name =
+        ReactiveOperationName::new(value.operation_name).map_err(|_| invalid_request())?;
+    let mut parameters = std::collections::BTreeMap::new();
+    for parameter in value.parameters {
+        if parameter.name.is_empty()
+            || parameters
+                .insert(
+                    parameter.name,
+                    canonical_value_from_proto(parameter.value.ok_or_else(invalid_request)?)
+                        .map_err(|_| invalid_request())?,
+                )
+                .is_some()
+        {
+            return Err(invalid_request());
+        }
+    }
+    let parameters =
+        riffdb_service::QueryParameters::checked(parameters).ok_or_else(invalid_request)?;
+    let selection = LiveNamedQuerySelection::new(module_hash, operation_name, parameters);
+    let mut request = WatchLiveNamedQueryRequest::new(selection);
+    if let Some(cursor) = value.cursor {
+        request = request.with_cursor(LiveQueryCursor::new(cursor).map_err(|_| invalid_request())?);
+    }
+    Ok((request_id, request))
+}
+
+fn live_frontier_to_proto(frontier: riffdb_service::LiveQueryFrontier) -> v1::LiveQueryFrontier {
+    v1::LiveQueryFrontier {
+        history_incarnation: frontier.history_incarnation(),
+        application_head: frontier.application_head(),
+    }
+}
+
+fn name_live_enum_values(
+    value: &mut v1::Value,
+    resolve: &impl Fn(u32, u32) -> Option<String>,
+) -> Result<(), Status> {
+    use v1::value::Kind;
+    match value.kind.as_mut().ok_or_else(invalid_service_response)? {
+        Kind::EnumValue(enumeration) => {
+            enumeration.name = resolve(enumeration.type_id, enumeration.variant_id)
+                .ok_or_else(invalid_service_response)?;
+        }
+        Kind::ListValue(values) => {
+            for value in &mut values.values {
+                name_live_enum_values(value, resolve)?;
+            }
+        }
+        Kind::RecordValue(record) => {
+            for field in &mut record.fields {
+                name_live_enum_values(
+                    field.value.as_mut().ok_or_else(invalid_service_response)?,
+                    resolve,
+                )?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn live_record_to_proto(
+    record: &SymbolicResultRecord,
+    resolve: &impl Fn(u32, u32) -> Option<String>,
+) -> Result<v1::LiveQueryResultRecord, Status> {
+    let fields = record
+        .fields()
+        .iter()
+        .map(|(name, value)| {
+            let mut value =
+                canonical_value_to_proto(value).map_err(|_| invalid_service_response())?;
+            name_live_enum_values(&mut value, resolve)?;
+            Ok(v1::ValueField {
+                field_id: None,
+                name: name.to_string(),
+                value: Some(value),
+            })
+        })
+        .collect::<Result<Vec<_>, Status>>()?;
+    Ok(v1::LiveQueryResultRecord {
+        entity: record.entity().to_owned(),
+        fields: Some(v1::ValueRecord { fields }),
+    })
+}
+
+fn live_result_to_proto(
+    result: &ExecuteSymbolicQueryResult,
+) -> Result<v1::LiveQueryResult, Status> {
+    let identity = result.identity();
+    let query_name = identity.name().ok_or_else(invalid_service_response)?;
+    let query_module_hash = identity
+        .module_hash()
+        .ok_or_else(invalid_service_response)?;
+    let resolve = |type_id, variant_id| {
+        result
+            .enum_variant_name(type_id, variant_id)
+            .map(str::to_owned)
+    };
+    let fields = result
+        .fields()
+        .iter()
+        .map(|(name, field)| {
+            let (cardinality, records) = match field {
+                SymbolicResultField::One(record) => (
+                    v1::LiveQueryResultCardinality::One,
+                    vec![live_record_to_proto(record, &resolve)?],
+                ),
+                SymbolicResultField::Maybe(record) => (
+                    v1::LiveQueryResultCardinality::Maybe,
+                    record
+                        .as_ref()
+                        .map(|record| live_record_to_proto(record, &resolve))
+                        .transpose()?
+                        .into_iter()
+                        .collect(),
+                ),
+                SymbolicResultField::Many(records) => (
+                    v1::LiveQueryResultCardinality::Many,
+                    records
+                        .iter()
+                        .map(|record| live_record_to_proto(record, &resolve))
+                        .collect::<Result<Vec<_>, _>>()?,
+                ),
+            };
+            Ok(v1::LiveQueryResultField {
+                name: name.clone(),
+                cardinality: cardinality as i32,
+                records,
+            })
+        })
+        .collect::<Result<Vec<_>, Status>>()?;
+    Ok(v1::LiveQueryResult {
+        identity: Some(v1::LiveQueryIdentity {
+            contract_lineage: identity.lineage().as_str().to_owned(),
+            contract_version: identity.version().get(),
+            contract_bundle_hash: identity.bundle_hash().into_bytes().to_vec(),
+            query_name: query_name.to_owned(),
+            query_module_hash: query_module_hash.into_bytes().to_vec(),
+            query_plan_hash: identity.plan_hash().into_bytes().to_vec(),
+        }),
+        outcome: result.outcome().to_owned(),
+        fields,
+    })
+}
+
+fn live_key_to_proto(
+    key: &riffdb_service::LiveQueryPublicKey,
+    resolve: &impl Fn(u32, u32) -> Option<String>,
+) -> Result<v1::ValueRecord, Status> {
+    let fields = key
+        .fields()
+        .iter()
+        .map(|(name, value)| {
+            let mut value =
+                canonical_value_to_proto(value).map_err(|_| invalid_service_response())?;
+            name_live_enum_values(&mut value, resolve)?;
+            Ok(v1::ValueField {
+                field_id: None,
+                name: name.clone(),
+                value: Some(value),
+            })
+        })
+        .collect::<Result<Vec<_>, Status>>()?;
+    Ok(v1::ValueRecord { fields })
+}
+
+/// Converts one bounded closed live update without exposing internal keys.
+pub fn live_query_update_to_proto(update: &LiveQueryUpdate) -> Result<v1::LiveQueryUpdate, Status> {
+    use v1::live_query_patch_operation::Operation;
+    use v1::live_query_update::Update;
+
+    let update = match update {
+        LiveQueryUpdate::Snapshot(snapshot) => Update::Snapshot(v1::LiveQuerySnapshot {
+            result: Some(live_result_to_proto(snapshot.result())?),
+            frontier: Some(live_frontier_to_proto(snapshot.frontier())),
+            cursor: snapshot.cursor().as_bytes().to_vec(),
+        }),
+        LiveQueryUpdate::Reset(reset) => {
+            let reason = match reset.reason() {
+                LiveQueryResetReason::OutcomeChanged => v1::LiveQueryResetReason::OutcomeChanged,
+                LiveQueryResetReason::DiffLimitExceeded => {
+                    v1::LiveQueryResetReason::DiffLimitExceeded
+                }
+                LiveQueryResetReason::DefinitionChanged => {
+                    v1::LiveQueryResetReason::DefinitionChanged
+                }
+                LiveQueryResetReason::HistoryChanged => v1::LiveQueryResetReason::HistoryChanged,
+                LiveQueryResetReason::CursorExpired => v1::LiveQueryResetReason::CursorExpired,
+            };
+            Update::Reset(v1::LiveQueryReset {
+                reason: reason as i32,
+                result: Some(live_result_to_proto(reset.result())?),
+                frontier: Some(live_frontier_to_proto(reset.frontier())),
+                cursor: reset.cursor().as_bytes().to_vec(),
+            })
+        }
+        LiveQueryUpdate::Checkpoint(checkpoint) => Update::Checkpoint(v1::LiveQueryCheckpoint {
+            frontier: Some(live_frontier_to_proto(checkpoint.frontier())),
+            cursor: checkpoint.cursor().as_bytes().to_vec(),
+        }),
+        LiveQueryUpdate::Terminal(terminal) => {
+            let reason = match terminal.reason() {
+                LiveQueryTerminalReason::AuthorizationChanged => {
+                    v1::LiveQueryTerminalReason::AuthorizationChanged
+                }
+                LiveQueryTerminalReason::BufferPressure => {
+                    v1::LiveQueryTerminalReason::BufferPressure
+                }
+                LiveQueryTerminalReason::LifetimeExpired => {
+                    v1::LiveQueryTerminalReason::LifetimeExpired
+                }
+                LiveQueryTerminalReason::ServiceUnavailable => {
+                    v1::LiveQueryTerminalReason::ServiceUnavailable
+                }
+                LiveQueryTerminalReason::IntegrityFailure => {
+                    v1::LiveQueryTerminalReason::IntegrityFailure
+                }
+                LiveQueryTerminalReason::DefinitionChanged => {
+                    v1::LiveQueryTerminalReason::DefinitionChanged
+                }
+            };
+            Update::Terminal(v1::LiveQueryTerminal {
+                reason: reason as i32,
+                last_frontier: Some(live_frontier_to_proto(terminal.last_frontier())),
+            })
+        }
+        LiveQueryUpdate::Patch(patch) => {
+            let resolve = |type_id, variant_id| {
+                patch
+                    .enum_variant_name(type_id, variant_id)
+                    .map(str::to_owned)
+            };
+            let operations = patch
+                .operations()
+                .iter()
+                .map(|operation| {
+                    let operation = match operation {
+                        LiveQueryPatchOperation::Insert { index, record } => {
+                            Operation::Insert(v1::LiveQueryInsert {
+                                index: u32::from(*index),
+                                record: Some(live_record_to_proto(record, &resolve)?),
+                            })
+                        }
+                        LiveQueryPatchOperation::Remove { index, key } => {
+                            Operation::Remove(v1::LiveQueryRemove {
+                                index: u32::from(*index),
+                                key: Some(live_key_to_proto(key, &resolve)?),
+                            })
+                        }
+                        LiveQueryPatchOperation::Replace { index, record } => {
+                            Operation::Replace(v1::LiveQueryReplace {
+                                index: u32::from(*index),
+                                record: Some(live_record_to_proto(record, &resolve)?),
+                            })
+                        }
+                        LiveQueryPatchOperation::Move { from, to, key } => {
+                            Operation::Move(v1::LiveQueryMove {
+                                from: u32::from(*from),
+                                to: u32::from(*to),
+                                key: Some(live_key_to_proto(key, &resolve)?),
+                            })
+                        }
+                    };
+                    Ok(v1::LiveQueryPatchOperation {
+                        operation: Some(operation),
+                    })
+                })
+                .collect::<Result<Vec<_>, Status>>()?;
+            Update::Patch(v1::LiveQueryPatch {
+                result_field: patch.result_field().to_owned(),
+                operations,
+                frontier: Some(live_frontier_to_proto(patch.frontier())),
+                cursor: patch.cursor().as_bytes().to_vec(),
+            })
+        }
+    };
+    Ok(v1::LiveQueryUpdate {
+        update: Some(update),
     })
 }
 

@@ -40,7 +40,7 @@ atomic with a command, while external delivery is not. Projection state is
 versioned by generation and frontier and can be rebuilt from authoritative
 history.
 
-## Planned reactive application path
+## Reactive application path
 
 The accepted P8 architecture reuses authoritative domain events; it does not
 create a second event store. The current compiler-proved event partition and
@@ -48,14 +48,14 @@ derived route-index foundations let the catalog materialize bounded symbolic
 replay from immutable events, commits, writer plans, and provenance. The route
 index owns ordering evidence, not payload bytes.
 
-The planned durable consumer state is operational metadata owned by a dedicated
+Durable consumer state is operational metadata owned by a dedicated
 service coordinator and semantic storage operations. Lease, acknowledgement,
 retry, dead-letter, and seek transitions will assign no application commit
 sequence and cannot mutate entity state. Possessing a cursor or lease token
 will grant no authority; the service reauthorizes the exact database, reactive
 definition, partition, and principal for every operation.
 
-A planned live named query executes once in a consistent snapshot at frontier
+A live named query executes once in a consistent snapshot at frontier
 `S`, then catches up from authoritative commits after `S`. Compiler-derived
 invalidation may conservatively rerun the bounded query, while public clients
 receive only the closed snapshot, patch, reset, checkpoint, and terminal
@@ -64,10 +64,11 @@ authorized named-query hydration in one snapshot. Only a later reaction command
 writes authoritative state, with causing-event provenance committed atomically
 through the normal command path.
 
-When implemented, gRPC, CLI, generated SDK, and MCP adapters consume the same
-API-neutral reactive services. MCP notifications are payload-free wakeups.
-Browser clients use an application-owned authenticated relay; they never
-receive a RiffDB capability or direct database connection.
+The current live-query adapter is gRPC over the shared API-neutral service.
+WP-419 adds CLI, generated SDK, MCP, and application-owned browser relay
+adapters over those same semantics. MCP notifications remain payload-free
+wakeups, and browser clients never receive a RiffDB capability or direct
+database connection.
 
 ## Crate ownership
 

@@ -301,6 +301,8 @@ impl ProductionGraphBuilder {
         let admission_clock = clocks.admission();
         let administration_clock = clocks.administration();
         let consumer_clock: Arc<dyn EventConsumerClock> = Arc::new(administration_clock.clone());
+        let live_query_clock: Arc<dyn riffdb_service::LiveQueryClock> =
+            Arc::new(administration_clock.clone());
         let event_lease_tokens: Arc<dyn EventLeaseTokenSource> =
             Arc::new(ProductionEventLeaseTokenSource);
         let hosted_request_ids = identifiers.request_ids();
@@ -523,6 +525,7 @@ impl ProductionGraphBuilder {
         .with_query_modules(query_modules)
         .with_reactive_modules(reactive_modules)
         .with_event_consumers(event_consumers, consumer_clock, event_lease_tokens)
+        .with_live_query_clock(live_query_clock)
         .with_columnar(columnar)
         .with_offline_maintenance(offline_maintenance)
         .with_contract_migration(migration);

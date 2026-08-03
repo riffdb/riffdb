@@ -26,18 +26,19 @@ use crate::{
     GetActiveContractResult, GetCommitResult, GetContractMigrationOperationResult,
     GetContractVersionResult, GetEntityResult, GetOfflineMaintenanceOperationResult,
     GetProjectionStatusResult, HealthReport, HealthResult, IndexRowView, IndexScanFence,
-    JournaledCommandResult, ListPendingOutboxDeliveriesResult, NamedQueryToolDescriptor,
-    NamedQueryToolSchemaArtifact, NormalCreateCapabilityResult,
-    OfflineMaintenanceOperationObservation, OfflineMaintenanceStartResult, OperationSchemaArtifact,
-    OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
-    OutboxDeliverySummary, Page, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
-    ProvenanceClaimsView, ProvenanceView, QueryModuleInspection, QueryProjectionResult,
-    ReadOnlyCommandResult, ReplayEventsResult, ResolveCommandOutcomeResult, ResourceDescriptor,
-    ResourceDescriptorRef, RevokeCapabilityResult, ScanCommitsResult, ScanIndexResult,
-    SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue, ServiceFailure, StatisticsResult,
-    SubscribeToCommitsResult, SymbolicDiagnostic, SymbolicEvent, SymbolicEventField,
-    SymbolicQueryIdentity, SymbolicQuerySchema, SymbolicResultField, SymbolicResultRecord,
-    TailEventsResult, TraceProvenanceResult,
+    JournaledCommandResult, ListPendingOutboxDeliveriesResult, LiveQueryPatchOperation,
+    LiveQueryUpdate, NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact,
+    NormalCreateCapabilityResult, OfflineMaintenanceOperationObservation,
+    OfflineMaintenanceStartResult, OperationSchemaArtifact, OperationSchemaCatalog,
+    OperationSchemaCatalogIdentity, OperationSchemaIdentity, OutboxDeliverySummary, Page,
+    ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot, ProvenanceClaimsView,
+    ProvenanceView, QueryModuleInspection, QueryProjectionResult, ReadOnlyCommandResult,
+    ReplayEventsResult, ResolveCommandOutcomeResult, ResourceDescriptor, ResourceDescriptorRef,
+    RevokeCapabilityResult, ScanCommitsResult, ScanIndexResult, SchemaBoundOutcomeRecord,
+    SchemaBoundOutcomeValue, ServiceFailure, StatisticsResult, SubscribeToCommitsResult,
+    SymbolicDiagnostic, SymbolicEvent, SymbolicEventField, SymbolicQueryIdentity,
+    SymbolicQuerySchema, SymbolicResultField, SymbolicResultRecord, TailEventsResult,
+    TraceProvenanceResult, WatchLiveNamedQueryResult,
 };
 
 /// Exact POC ceiling for one API-neutral unary result or visible stream item.
@@ -349,6 +350,51 @@ impl ServiceResponseCharge for ExecuteSymbolicQueryResult {
         }
         if self.next_cursor().is_some() {
             charge.bytes(crate::CURSOR_TOKEN_BYTES)?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for LiveQueryUpdate {}
+
+impl ServiceResponseCharge for LiveQueryUpdate {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(4)?;
+        match self {
+            LiveQueryUpdate::Snapshot(snapshot) => {
+                charge.nested(snapshot.result())?;
+                charge.bytes(snapshot.cursor().as_bytes().len())?;
+            }
+            LiveQueryUpdate::Reset(reset) => {
+                charge.nested(reset.result())?;
+                charge.bytes(reset.cursor().as_bytes().len())?;
+            }
+            LiveQueryUpdate::Checkpoint(checkpoint) => {
+                charge.bytes(checkpoint.cursor().as_bytes().len())?;
+            }
+            LiveQueryUpdate::Patch(patch) => {
+                charge.bytes(patch.result_field().len())?;
+                charge.bytes(patch.cursor().as_bytes().len())?;
+                for operation in patch.operations() {
+                    match operation {
+                        LiveQueryPatchOperation::Insert { record, .. }
+                        | LiveQueryPatchOperation::Replace { record, .. } => {
+                            charge_symbolic_record(&mut charge, record)?;
+                        }
+                        LiveQueryPatchOperation::Remove { key, .. }
+                        | LiveQueryPatchOperation::Move { key, .. } => {
+                            for (name, value) in key.fields() {
+                                charge.bytes(name.len())?;
+                                charge.nested(value)?;
+                            }
+                        }
+                    }
+                }
+            }
+            LiveQueryUpdate::Terminal(_) => {}
         }
         Ok(charge.finish())
     }
@@ -1386,6 +1432,15 @@ impl ServiceResponseCharge for SubscribeToCommitsResult {
     }
 }
 
+impl ServiceResponseCharge for WatchLiveNamedQueryResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        // Establishment releases only the opaque in-process continuation.
+        fixed_charge(1)
+    }
+}
+
 impl ServiceResponseCharge for ProvenanceView {
     fn service_response_charge_v1(
         &self,
@@ -2010,6 +2065,7 @@ seal_response_types!(
     ScanCommitsResult,
     CommitSubscriptionEvent,
     SubscribeToCommitsResult,
+    WatchLiveNamedQueryResult,
     ProvenanceView,
     TraceProvenanceResult,
     HealthResult,

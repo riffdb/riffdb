@@ -7369,6 +7369,213 @@ fn validate_get_event_stream_consumer_status_response(
     }
 }
 
+fn validate_watch_named_query_request(
+    message: &v1::WatchNamedQueryRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    hash(&message.reactive_module_hash)?;
+    validate_event_symbol(&message.operation_name)?;
+    if message.parameters.len() > 1_024
+        || message
+            .cursor
+            .as_ref()
+            .is_some_and(|cursor| cursor.is_empty() || cursor.len() > 4_096)
+    {
+        return Err(PublicWireError::TooManyItems);
+    }
+    let mut prior = None;
+    for parameter in &message.parameters {
+        validate_event_symbol(&parameter.name)?;
+        if prior.is_some_and(|value: &str| value >= parameter.name.as_str()) {
+            return Err(PublicWireError::NonCanonical);
+        }
+        validate_value(
+            parameter
+                .value
+                .as_ref()
+                .ok_or(PublicWireError::MissingRequiredField)?,
+        )
+        .map_err(|_| PublicWireError::InvalidValue)?;
+        prior = Some(parameter.name.as_str());
+    }
+    Ok(())
+}
+
+fn validate_live_query_frontier(
+    frontier: Option<&v1::LiveQueryFrontier>,
+) -> Result<(), PublicWireError> {
+    let frontier = frontier.ok_or(PublicWireError::MissingRequiredField)?;
+    if frontier.history_incarnation == 0 {
+        return Err(PublicWireError::InvalidValue);
+    }
+    Ok(())
+}
+
+fn validate_live_value_record(record: Option<&v1::ValueRecord>) -> Result<(), PublicWireError> {
+    let record = record.ok_or(PublicWireError::MissingRequiredField)?;
+    validate_value_record(record).map_err(|_| PublicWireError::InvalidValue)?;
+    let mut prior = None;
+    for field in &record.fields {
+        if field.field_id.is_some() || !valid_name(&field.name) {
+            return Err(PublicWireError::InvalidValue);
+        }
+        if prior.is_some_and(|value: &str| value >= field.name.as_str()) {
+            return Err(PublicWireError::NonCanonical);
+        }
+        prior = Some(field.name.as_str());
+    }
+    Ok(())
+}
+
+fn validate_live_query_record(
+    record: Option<&v1::LiveQueryResultRecord>,
+) -> Result<(), PublicWireError> {
+    let record = record.ok_or(PublicWireError::MissingRequiredField)?;
+    validate_event_symbol(&record.entity)?;
+    validate_live_value_record(record.fields.as_ref())
+}
+
+fn validate_live_query_result(result: Option<&v1::LiveQueryResult>) -> Result<(), PublicWireError> {
+    let result = result.ok_or(PublicWireError::MissingRequiredField)?;
+    let identity = result
+        .identity
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?;
+    if !valid_bounded_text(&identity.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+        || identity.contract_version == 0
+    {
+        return Err(PublicWireError::InvalidValue);
+    }
+    hash(&identity.contract_bundle_hash)?;
+    validate_event_symbol(&identity.query_name)?;
+    hash(&identity.query_module_hash)?;
+    hash(&identity.query_plan_hash)?;
+    validate_event_symbol(&result.outcome)?;
+    if result.fields.len() > 64 {
+        return Err(PublicWireError::TooManyItems);
+    }
+    let mut prior = None;
+    for field in &result.fields {
+        validate_event_symbol(&field.name)?;
+        if prior.is_some_and(|value: &str| value >= field.name.as_str()) {
+            return Err(PublicWireError::NonCanonical);
+        }
+        let cardinality = v1::LiveQueryResultCardinality::try_from(field.cardinality)
+            .map_err(|_| PublicWireError::InvalidValue)?;
+        let valid_count = match cardinality {
+            v1::LiveQueryResultCardinality::One => field.records.len() == 1,
+            v1::LiveQueryResultCardinality::Maybe => field.records.len() <= 1,
+            v1::LiveQueryResultCardinality::Many => field.records.len() <= 4_096,
+            v1::LiveQueryResultCardinality::Unspecified => false,
+        };
+        if !valid_count {
+            return Err(PublicWireError::TooManyItems);
+        }
+        for record in &field.records {
+            validate_live_query_record(Some(record))?;
+        }
+        prior = Some(field.name.as_str());
+    }
+    Ok(())
+}
+
+fn validate_live_cursor(cursor: &[u8]) -> Result<(), PublicWireError> {
+    if cursor.is_empty() || cursor.len() > 4_096 {
+        Err(PublicWireError::InvalidBytes)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_live_query_update(message: &v1::LiveQueryUpdate) -> Result<(), PublicWireError> {
+    use v1::live_query_patch_operation::Operation;
+    use v1::live_query_update::Update;
+    match message
+        .update
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        Update::Snapshot(snapshot) => {
+            validate_live_query_result(snapshot.result.as_ref())?;
+            validate_live_query_frontier(snapshot.frontier.as_ref())?;
+            validate_live_cursor(&snapshot.cursor)
+        }
+        Update::Reset(reset) => {
+            match v1::LiveQueryResetReason::try_from(reset.reason)
+                .map_err(|_| PublicWireError::InvalidValue)?
+            {
+                v1::LiveQueryResetReason::Unspecified => {
+                    return Err(PublicWireError::InvalidValue);
+                }
+                v1::LiveQueryResetReason::OutcomeChanged
+                | v1::LiveQueryResetReason::DiffLimitExceeded
+                | v1::LiveQueryResetReason::DefinitionChanged
+                | v1::LiveQueryResetReason::HistoryChanged
+                | v1::LiveQueryResetReason::CursorExpired => {}
+            }
+            validate_live_query_result(reset.result.as_ref())?;
+            validate_live_query_frontier(reset.frontier.as_ref())?;
+            validate_live_cursor(&reset.cursor)
+        }
+        Update::Checkpoint(checkpoint) => {
+            validate_live_query_frontier(checkpoint.frontier.as_ref())?;
+            validate_live_cursor(&checkpoint.cursor)
+        }
+        Update::Terminal(terminal) => {
+            if matches!(
+                v1::LiveQueryTerminalReason::try_from(terminal.reason)
+                    .map_err(|_| PublicWireError::InvalidValue)?,
+                v1::LiveQueryTerminalReason::Unspecified
+            ) {
+                return Err(PublicWireError::InvalidValue);
+            }
+            validate_live_query_frontier(terminal.last_frontier.as_ref())
+        }
+        Update::Patch(patch) => {
+            validate_event_symbol(&patch.result_field)?;
+            validate_live_query_frontier(patch.frontier.as_ref())?;
+            validate_live_cursor(&patch.cursor)?;
+            if patch.operations.is_empty() || patch.operations.len() > 500 {
+                return Err(PublicWireError::TooManyItems);
+            }
+            for operation in &patch.operations {
+                match operation
+                    .operation
+                    .as_ref()
+                    .ok_or(PublicWireError::MissingRequiredField)?
+                {
+                    Operation::Insert(insert) => {
+                        if insert.index > u32::from(u16::MAX) {
+                            return Err(PublicWireError::InvalidValue);
+                        }
+                        validate_live_query_record(insert.record.as_ref())?;
+                    }
+                    Operation::Remove(remove) => {
+                        if remove.index > u32::from(u16::MAX) {
+                            return Err(PublicWireError::InvalidValue);
+                        }
+                        validate_live_value_record(remove.key.as_ref())?;
+                    }
+                    Operation::Replace(replace) => {
+                        if replace.index > u32::from(u16::MAX) {
+                            return Err(PublicWireError::InvalidValue);
+                        }
+                        validate_live_query_record(replace.record.as_ref())?;
+                    }
+                    Operation::Move(movement) => {
+                        if movement.from > u32::from(u16::MAX) || movement.to > u32::from(u16::MAX)
+                        {
+                            return Err(PublicWireError::InvalidValue);
+                        }
+                        validate_live_value_record(movement.key.as_ref())?;
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 macro_rules! impl_public_message {
     ($type:ty, $maximum:expr, $maximum_field:expr, $repeated:expr, $oneofs:expr, $preflight:path, $validate:path) => {
         impl PublicMessage for $type {
@@ -8017,6 +8224,25 @@ impl_public_message!(
     validate_get_contract_migration_operation_response
 );
 
+impl_public_message!(
+    v1::WatchNamedQueryRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    5,
+    &[4],
+    &[],
+    preflight_noop,
+    validate_watch_named_query_request
+);
+impl_public_message!(
+    v1::LiveQueryUpdate,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    5,
+    &[],
+    &[&[1, 2, 3, 4, 5]],
+    preflight_noop,
+    validate_live_query_update
+);
+
 impl PublicMessage for v1::ExecuteCommandRequest {
     const MAX_ENCODED_BYTES: usize = crate::MAX_EXECUTE_REQUEST_BYTES;
 
@@ -8128,5 +8354,82 @@ impl PublicMessage for v1::ExecuteCommandBatchResponse {
             return Err(PublicWireError::InconsistentFields);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod live_query_tests {
+    use super::*;
+
+    fn request_id_bytes() -> Vec<u8> {
+        RequestId::from_unix_milliseconds_and_random(1, [2; 10])
+            .expect("valid uuidv7")
+            .into_bytes()
+            .to_vec()
+    }
+
+    fn value(value: u64) -> v1::Value {
+        v1::Value {
+            kind: Some(v1::value::Kind::U64Value(value)),
+        }
+    }
+
+    #[test]
+    fn live_watch_request_requires_canonical_parameters_and_bounded_cursor() {
+        let mut request = v1::WatchNamedQueryRequest {
+            request_id: request_id_bytes(),
+            reactive_module_hash: vec![1; 32],
+            operation_name: "WatchItems".to_owned(),
+            parameters: vec![
+                v1::LiveQueryParameter {
+                    name: "z".to_owned(),
+                    value: Some(value(1)),
+                },
+                v1::LiveQueryParameter {
+                    name: "a".to_owned(),
+                    value: Some(value(2)),
+                },
+            ],
+            cursor: None,
+        };
+        assert_eq!(
+            validate_public_message(&request),
+            Err(PublicWireError::NonCanonical)
+        );
+        request
+            .parameters
+            .sort_by(|left, right| left.name.cmp(&right.name));
+        assert_eq!(validate_public_message(&request), Ok(()));
+        request.cursor = Some(vec![0; 4_097]);
+        assert!(validate_public_message(&request).is_err());
+    }
+
+    #[test]
+    fn live_update_is_closed_and_restore_fenced() {
+        let mut update = v1::LiveQueryUpdate {
+            update: Some(v1::live_query_update::Update::Checkpoint(
+                v1::LiveQueryCheckpoint {
+                    frontier: Some(v1::LiveQueryFrontier {
+                        history_incarnation: 1,
+                        application_head: 7,
+                    }),
+                    cursor: vec![1],
+                },
+            )),
+        };
+        assert_eq!(validate_public_message(&update), Ok(()));
+        let Some(v1::live_query_update::Update::Checkpoint(checkpoint)) = update.update.as_mut()
+        else {
+            panic!("checkpoint")
+        };
+        checkpoint
+            .frontier
+            .as_mut()
+            .expect("frontier")
+            .history_incarnation = 0;
+        assert_eq!(
+            validate_public_message(&update),
+            Err(PublicWireError::InvalidValue)
+        );
     }
 }

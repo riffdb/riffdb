@@ -830,6 +830,12 @@ enum OperationKind {
     GetEventStreamConsumerStatus {
         target: EventConsumerOperationTarget,
     },
+    WatchNamedQuery {
+        lineage: ContractLineage,
+        module_hash: ReactiveModuleHash,
+        operation_name: ReactiveOperationName,
+        target: ApplicationQueryTarget,
+    },
     DescribeEvent {
         lineage: ContractLineage,
         version: ContractVersion,
@@ -1305,6 +1311,24 @@ impl OperationRequest {
         Self(OperationKind::GetEventStreamConsumerStatus { target })
     }
 
+    /// Constructs one exact live named-query watch request.
+    pub fn watch_named_query(
+        lineage: ContractLineage,
+        module_hash: ReactiveModuleHash,
+        operation_name: ReactiveOperationName,
+        target: ApplicationQueryTarget,
+    ) -> Result<Self, OperationRequestError> {
+        if target.lineage != lineage {
+            return Err(OperationRequestError::ApplicationQueryContractMismatch);
+        }
+        Ok(Self(OperationKind::WatchNamedQuery {
+            lineage,
+            module_hash,
+            operation_name,
+            target,
+        }))
+    }
+
     /// Returns the exact closed service operation.
     #[must_use]
     pub const fn operation(&self) -> ServiceOperationV1 {
@@ -1369,6 +1393,7 @@ impl OperationRequest {
             OperationKind::GetEventStreamConsumerStatus { .. } => {
                 ServiceOperationV1::GetEventStreamConsumerStatus
             }
+            OperationKind::WatchNamedQuery { .. } => ServiceOperationV1::WatchNamedQuery,
         }
     }
 
@@ -1451,6 +1476,16 @@ impl OperationRequest {
                 lineage.clone(),
                 *module_hash,
                 query_name.clone(),
+            )),
+            OperationKind::WatchNamedQuery {
+                lineage,
+                module_hash,
+                operation_name,
+                ..
+            } => PermissionRequirement::Exact(CapabilityPermissionV1::WatchNamedQuery(
+                lineage.clone(),
+                *module_hash,
+                operation_name.clone(),
             )),
             OperationKind::ExecuteCommand {
                 lineage,
@@ -1566,6 +1601,7 @@ impl OperationRequest {
             }
             OperationKind::ExecuteAdHocQuery { target }
             | OperationKind::ExecuteNamedQuery { target, .. }
+            | OperationKind::WatchNamedQuery { target, .. }
             | OperationKind::ExecuteProjectedQuery { target } => Some(&target.scope.tenant_scope),
             OperationKind::ConsumeEventStream { target, .. }
             | OperationKind::AcknowledgeEventStream { target }
@@ -1602,6 +1638,7 @@ impl OperationRequest {
             }
             OperationKind::ExecuteAdHocQuery { target }
             | OperationKind::ExecuteNamedQuery { target, .. }
+            | OperationKind::WatchNamedQuery { target, .. }
             | OperationKind::ExecuteProjectedQuery { target } => {
                 PartitionRequirement::Exact(&target.scope.partition)
             }
@@ -1707,6 +1744,7 @@ impl OperationRequest {
             | OperationKind::QueryProjection { .. }
             | OperationKind::ExecuteAdHocQuery { .. }
             | OperationKind::ExecuteNamedQuery { .. }
+            | OperationKind::WatchNamedQuery { .. }
             | OperationKind::ExecuteProjectedQuery { .. } => {
                 OutputClassification::PolicyFilteredApplicationData
             }
@@ -1778,6 +1816,7 @@ impl OperationRequest {
         match &self.0 {
             OperationKind::ExecuteAdHocQuery { target }
             | OperationKind::ExecuteNamedQuery { target, .. }
+            | OperationKind::WatchNamedQuery { target, .. }
             | OperationKind::ExecuteProjectedQuery { target } => Some(target),
             _ => None,
         }
@@ -2179,7 +2218,7 @@ mod tests {
                 version(),
                 NonZeroU16::new(10).expect("nonzero"),
             ),
-            OperationRequest::deploy_reactive_module(lineage, version(), bundle_hash(4)),
+            OperationRequest::deploy_reactive_module(lineage.clone(), version(), bundle_hash(4)),
             OperationRequest::consume_event_stream(
                 event_consumer_target(),
                 NonZeroU16::new(10).expect("nonzero"),
@@ -2189,13 +2228,20 @@ mod tests {
             OperationRequest::seek_event_stream_consumer(event_consumer_target()),
             OperationRequest::retire_event_stream_consumer(event_consumer_target()),
             OperationRequest::get_event_stream_consumer_status(event_consumer_target()),
+            OperationRequest::watch_named_query(
+                lineage,
+                ReactiveModuleHash::from_bytes([10; 32]),
+                ReactiveOperationName::new("WorkspaceBoard").expect("operation"),
+                application_query_target(),
+            )
+            .expect("matching live query target"),
         ]
     }
 
     #[test]
     fn request_inventory_covers_every_shared_operation() {
         let requests = requests();
-        assert_eq!(requests.len(), 40);
+        assert_eq!(requests.len(), 41);
         // WP-408 needs the durable audit tag; WP-409 owns its public policy request.
         let policy_operations = ServiceOperationV1::ALL
             .into_iter()
@@ -2230,13 +2276,13 @@ mod tests {
                 }
             }
         }
-        assert_eq!(kinds.len(), 26);
+        assert_eq!(kinds.len(), 27);
         assert_eq!(
             kinds
                 .into_iter()
                 .map(CapabilityPermissionKindV1::tag)
                 .collect::<Vec<_>>(),
-            (1..=24).chain([0x1b, 0x1c]).collect::<Vec<_>>()
+            (1..=24).chain([0x1b, 0x1c, 0x1d]).collect::<Vec<_>>()
         );
     }
 

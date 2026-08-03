@@ -7,10 +7,13 @@ use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_compiler::compile_query;
 use riffdb_query_executor::{
     BoundPredicate, QueryContinuation, QueryExecutionError, QueryParameters, QueryReadView,
-    QueryResultValue, QueryRow, QueryScanPage, execute_in_snapshot, execute_page_in_snapshot,
+    QueryResultValue, QueryRow, QueryScanPage, bind_live_query_dependencies, execute_in_snapshot,
+    execute_page_in_snapshot,
 };
-use riffdb_query_ir::QueryAccessStep;
-use riffdb_query_ir::SymbolicCatalog;
+use riffdb_query_ir::{
+    LiveInvalidationPrecisionV1, LiveQueryPlanError, LiveQueryPlanV1, LiveUpdateStrategyV1,
+    QueryAccessStep, ReactiveUpdateModeV1, SymbolicCatalog,
+};
 use riffdb_riffql_syntax::parse_query;
 use riffdb_types::{CanonicalValue, EnumTypeId, EnumVariantId, Timestamp};
 
@@ -32,6 +35,34 @@ query OpenTickets(
     outcomes Found
 }
 "#;
+const EXACT_TICKET: &str = r#"
+query ExactTicket(
+    $organization_id: Organization.organization_id,
+    $ticket_id: Ticket.ticket_id,
+) {
+    one ticket from Ticket
+        where organization_id == $organization_id
+            && ticket_id == $ticket_id
+        else NotFound
+    return Found { ticket: ticket { organization_id ticket_id status } }
+    outcomes Found | NotFound
+}
+"#;
+const PATCHABLE_TICKETS: &str = r#"
+query PatchableTickets(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == TicketStatus.Open
+        order by ticket_id asc
+        take 5
+    return Found { tickets: tickets { organization_id ticket_id status } }
+    outcomes Found
+}
+"#;
 
 struct FakeView {
     head: u64,
@@ -44,6 +75,71 @@ struct FakeView {
     last_after: Option<Vec<u8>>,
     scan_epoch: u64,
     continue_first_scan: bool,
+}
+
+#[test]
+fn live_plans_bind_exact_points_and_keep_scans_conservative() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let exact =
+        compile_query(&parse_query(EXACT_TICKET).expect("query"), &catalog).expect("exact program");
+    let patchable = compile_query(&parse_query(PATCHABLE_TICKETS).expect("query"), &catalog)
+        .expect("patchable program");
+    let parameters = QueryParameters::checked(BTreeMap::from([
+        ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+        ("project_id".to_owned(), CanonicalValue::Uuid([2; 16])),
+        ("ticket_id".to_owned(), CanonicalValue::Uuid([3; 16])),
+    ]))
+    .expect("parameters");
+
+    let exact_plan =
+        LiveQueryPlanV1::derive(&exact, ReactiveUpdateModeV1::Reset, &[]).expect("exact live plan");
+    assert_eq!(
+        exact_plan.dependencies()[0].precision(),
+        LiveInvalidationPrecisionV1::ExactEntity
+    );
+    let exact_dependencies =
+        bind_live_query_dependencies(&exact, &parameters).expect("bound exact dependency");
+    assert!(exact_dependencies[0].entity_key().is_some());
+
+    let patch_plan = LiveQueryPlanV1::derive(
+        &patchable,
+        ReactiveUpdateModeV1::Patch,
+        &["organization_id".to_owned(), "ticket_id".to_owned()],
+    )
+    .expect("keyed patch plan");
+    assert_eq!(
+        patch_plan.dependencies()[0].precision(),
+        LiveInvalidationPrecisionV1::PartitionEntity
+    );
+    assert!(matches!(
+        patch_plan.update_strategy(),
+        LiveUpdateStrategyV1::Patch { result_field, key_fields }
+            if result_field == "tickets"
+                && key_fields == &["organization_id".to_owned(), "ticket_id".to_owned()]
+    ));
+    let scan_dependencies =
+        bind_live_query_dependencies(&patchable, &parameters).expect("bound scan dependency");
+    assert!(scan_dependencies[0].entity_key().is_none());
+    assert_eq!(
+        scan_dependencies[0].partition_hash(),
+        exact_dependencies[0].partition_hash()
+    );
+
+    let paginated = compile_query(&parse_query(TICKET_PAGE).expect("query"), &catalog)
+        .expect("paginated program");
+    assert_eq!(
+        LiveQueryPlanV1::derive(&paginated, ReactiveUpdateModeV1::Reset, &[]),
+        Err(LiveQueryPlanError::PaginatedQuery)
+    );
+    assert_eq!(
+        LiveQueryPlanV1::derive(
+            &patchable,
+            ReactiveUpdateModeV1::Patch,
+            &["not_selected".to_owned()],
+        ),
+        Err(LiveQueryPlanError::InvalidPatchShape)
+    );
 }
 
 impl QueryReadView for FakeView {

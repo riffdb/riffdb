@@ -913,6 +913,15 @@ mod tests {
         );
     }
 
+    impl riffdb_service::LiveNamedQueryApplication for ClosedApplicationService {
+        denied_operation!(
+            watch_live_named_query,
+            RequestContext,
+            riffdb_service::WatchLiveNamedQueryRequest,
+            riffdb_service::WatchLiveNamedQueryResult
+        );
+    }
+
     impl riffdb_service::ProjectedQueryApplication for ClosedApplicationService {
         denied_operation!(
             execute_projected_query,
