@@ -38,6 +38,11 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   guarantee.
 - There is no general SQL surface, arbitrary transaction callback, analytical
   join engine, distributed transaction, replication, failover, or consensus.
+- Reactive applications are partition-local and bounded. P8 does not provide
+  raw CDC, global or cross-partition order, physical time-based event
+  retention, exactly-once external effects, event-sourced reconstruction,
+  persisted hydration, direct browser credentials, webhooks, connectors,
+  arbitrary callbacks, or in-process agent inference.
 - Contract migration source, canonical artifacts, Application Source V3, Lock
   V4, read-only planning, dedicated authorization, public check/apply/status,
   Gate-A through Gate-C memory semantics, redb staged execution, crash recovery,

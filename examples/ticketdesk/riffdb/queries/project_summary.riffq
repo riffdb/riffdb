@@ -1,0 +1,32 @@
+query ProjectSummary(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $status: TicketStatus,
+) {
+    one project from Project
+        where organization_id == $organization_id
+            && project_id == $project_id
+        else NotFound
+
+    many recent_tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == project.project_id
+            && status == $status
+        order by ticket_id desc
+        take 10
+
+    return Found {
+        project: project {
+            project_id
+            name
+        }
+        recent_tickets: recent_tickets {
+            ticket_id
+            title
+            status
+            updated_at
+        }
+    }
+
+    outcomes Found | NotFound
+}

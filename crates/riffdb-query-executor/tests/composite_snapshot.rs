@@ -19,6 +19,7 @@ use riffdb_types::{CanonicalValue, EnumTypeId, EnumVariantId, Timestamp};
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
 const TICKET_PAGE: &str = include_str!("../../../queries/ticketdesk/ticket_page.riffq");
+const TICKET_PAGE_PAGED: &str = include_str!("../../../queries/ticketdesk/ticket_page_paged.riffq");
 const PROJECT_MEMBERS: &str = include_str!("../../../queries/ticketdesk/project_members.riffq");
 const OPEN_TICKETS: &str = r#"
 query OpenTickets(
@@ -126,7 +127,11 @@ fn live_plans_bind_exact_points_and_keep_scans_conservative() {
         exact_dependencies[0].partition_hash()
     );
 
-    let paginated = compile_query(&parse_query(TICKET_PAGE).expect("query"), &catalog)
+    let complete = compile_query(&parse_query(TICKET_PAGE).expect("query"), &catalog)
+        .expect("complete watchable program");
+    assert!(LiveQueryPlanV1::derive(&complete, ReactiveUpdateModeV1::Reset, &[]).is_ok());
+
+    let paginated = compile_query(&parse_query(TICKET_PAGE_PAGED).expect("query"), &catalog)
         .expect("paginated program");
     assert_eq!(
         LiveQueryPlanV1::derive(&paginated, ReactiveUpdateModeV1::Reset, &[]),

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TicketDesk</title>
+    <link rel="stylesheet" href="/app.css">
+  </head>
+  <body>
+    <header>
+      <div>
+        <p class="eyebrow">RiffDB application</p>
+        <h1>TicketDesk</h1>
+      </div>
+      <output id="connection" class="status">Disconnected</output>
+    </header>
+    <main>
+      <form id="selection">
+        <label>Organization <input name="organization_id" required maxlength="128"></label>
+        <label>Project <input name="project_id" required maxlength="128"></label>
+        <label>Ticket <input name="ticket_id" required maxlength="128"></label>
+        <button type="submit">Connect</button>
+      </form>
+      <section aria-labelledby="queue-heading">
+        <h2 id="queue-heading">Queue</h2>
+        <div id="queue" class="empty">No live snapshot</div>
+      </section>
+      <section aria-labelledby="ticket-heading">
+        <h2 id="ticket-heading">Ticket</h2>
+        <div id="ticket" class="empty">No live snapshot</div>
+      </section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -646,7 +646,6 @@ impl AppBackend for RiffDbPublicBackend {
                 .ticket_page(TicketPageParams {
                     organization_id: uuid_text(organization_id),
                     ticket_id: uuid_text(ticket_id),
-                    comments_after: None,
                 })
                 .await
                 .map_err(map_app)?

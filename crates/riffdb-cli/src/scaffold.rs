@@ -360,6 +360,7 @@ pub(crate) fn refresh_application_lock_from_pinned_bundle(
         lock.schema(),
         riffdb_query_module::APPLICATION_LOCK_SCHEMA_V3
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V4
+            | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V5
     ) {
         return Ok(PinnedLockRefresh::NotPinned);
     }
@@ -674,6 +675,7 @@ fn compile_for_existing_lock(
         lock.schema(),
         riffdb_query_module::APPLICATION_LOCK_SCHEMA_V3
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V4
+            | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V5
     ) {
         let artifact = lock.contract_bundle_artifact().ok_or_else(|| {
             lock_diagnostic(

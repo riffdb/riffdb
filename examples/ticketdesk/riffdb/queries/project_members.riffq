@@ -1,0 +1,20 @@
+query ProjectMembers(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $after: Cursor?,
+) {
+    many memberships from ProjectMember
+        where organization_id == $organization_id
+            && project_id == $project_id
+        order by user_id asc
+        take 100 after $after
+
+    return Found {
+        members: memberships {
+            user_id
+            role
+        }
+    }
+
+    outcomes Found
+}

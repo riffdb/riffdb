@@ -63,6 +63,7 @@
 - [Multiple Databases](operations/MULTIPLE-DATABASES.md)
 - [Backup and Restore](backup-restore.md)
 - [Contract Migration Acceptance](operations/CONTRACT-MIGRATION-ACCEPTANCE.md)
+- [TicketDesk Reactive Acceptance](operations/TICKETDESK-REACTIVE-ACCEPTANCE.md)
 - [Upgrade, Reset, and Removal](upgrade-removal.md)
 - [Troubleshooting](operations/TROUBLESHOOTING.md)
 - [Security Posture](security.md)

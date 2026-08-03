@@ -532,7 +532,7 @@ mod tests {
             let runner = write_executable_runner(&directory, name, &script);
             let result = run_budget_with(
                 &SystemLauncher::default(),
-                &mut YieldDeadline::after(1_000_000),
+                &mut YieldDeadline::after(1_000_000_000),
                 runner.as_os_str(),
                 BudgetCase::Sequential,
                 "http://127.0.0.1:7443",

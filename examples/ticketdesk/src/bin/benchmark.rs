@@ -100,7 +100,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ticket_page(TicketPageParams {
                 organization_id: uuid(1_000),
                 ticket_id: uuid(40_000),
-                comments_after: None,
             })
             .await?
         else {
