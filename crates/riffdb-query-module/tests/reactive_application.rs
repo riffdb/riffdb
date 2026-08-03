@@ -8,8 +8,11 @@ use riffdb_query_module::{
     ApplicationLock, ApplicationSourceManifest, GeneratedApplicationArtifact,
     GeneratedApplicationArtifactKind, NamedQuerySource, QueryModule, QueryModuleCandidate,
     QueryModuleName, QueryModuleVersion, compile_application_role_v2, compile_reactive_source,
+    generate_mcp_reactive_tools, generate_python_application_client,
+    generate_rust_application_client, generate_typescript_application_client,
 };
 use riffdb_types::{CapabilityPermissionKindV1, CapabilityPermissionV1};
+use serde_json::Value;
 
 const CONTRACT: &str = r#"
 contract ReactiveRows version 1 {
@@ -171,4 +174,136 @@ fn v5_lock_and_role_bind_every_reactive_identity_without_implicit_seek() {
         permission,
         CapabilityPermissionV1::SeekEventStreamConsumer(..)
     )));
+}
+
+#[test]
+fn reactive_generation_is_exact_typed_and_transport_neutral() {
+    let contract = compile_contract_source(CONTRACT).expect("contract");
+    let query_module = QueryModule::compile(
+        QueryModuleCandidate::new(
+            QueryModuleName::new("rows").expect("name"),
+            QueryModuleVersion::new(1).expect("version"),
+            vec![NamedQuerySource::new("GetRow", QUERY).expect("query")],
+        )
+        .expect("candidate"),
+        &contract,
+    )
+    .expect("query module");
+    let reactive =
+        compile_reactive_source(REACTIVE, &contract, std::slice::from_ref(&query_module))
+            .expect("reactive module");
+
+    let rust =
+        generate_rust_application_client(&query_module, &contract, std::slice::from_ref(&reactive));
+    for required in [
+        "pub struct RowChangesConsumer",
+        "pub enum RowChangesEvent",
+        "pub enum RowWatchUpdate",
+        "pub async fn watch_row_watch",
+        "pub async fn next_row_changes",
+    ] {
+        assert!(rust.contains(required), "missing Rust surface: {required}");
+    }
+    assert!(!rust.contains("riffdb_proto"));
+
+    let typescript = generate_typescript_application_client(
+        &query_module,
+        &contract,
+        std::slice::from_ref(&reactive),
+    );
+    for required in [
+        "export type RowChangesEvent",
+        "export type RowWatchUpdate",
+        "AsyncIterable<ReactiveConsumerBatch<RowChangesEvent>>",
+        "createRowWatchStore",
+        "createRowWatchSseRelay",
+        "export type ReactiveParameterSchema",
+        "parameterSchema: RowChangesParameterSchema",
+        "ReactiveEventMutationResult",
+        "applyLivePatch",
+    ] {
+        assert!(
+            typescript.contains(required),
+            "missing TypeScript surface: {required}"
+        );
+    }
+    assert!(!typescript.contains("Authorization: Bearer"));
+
+    let python = generate_python_application_client(
+        &query_module,
+        &contract,
+        std::slice::from_ref(&reactive),
+    )
+    .expect("Python client");
+    for required in [
+        "RowChangesEvent: TypeAlias",
+        "class RowWatchSnapshot",
+        "async def row_changes",
+        "async def watch_row_watch",
+        "AsyncIterator[RowWatchUpdate]",
+        "encode_reactive_record(parameters, RowChanges_PARAMETER_SCHEMA)",
+        "RowChanges_PARAMETER_SCHEMA",
+    ] {
+        assert!(
+            python.contains(required),
+            "missing Python surface: {required}"
+        );
+    }
+    assert!(!python.contains("grpc"));
+
+    let tools = generate_mcp_reactive_tools(&reactive, &contract).expect("MCP reactive tools");
+    let names = tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [
+            "row_activity_row_changes_ack",
+            "row_activity_row_changes_nack",
+            "row_activity_row_changes_next",
+            "row_activity_row_changes_seek",
+            "row_activity_row_changes_status",
+            "row_activity_row_watch_watch",
+        ]
+    );
+    assert!(names.iter().all(|name| !name.contains('.')));
+    let next_schema: Value = serde_json::from_str(
+        &tools
+            .iter()
+            .find(|tool| tool.name.ends_with("_next"))
+            .expect("next tool")
+            .input_schema,
+    )
+    .expect("MCP input schema");
+    assert_eq!(
+        next_schema["properties"]["parameters"]["properties"]["organization_id"]["properties"]["type"]
+            ["const"],
+        "uuid"
+    );
+}
+
+#[test]
+fn cross_language_reactive_fixture_freezes_cursor_tools_and_payload_free_wakeup() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/application-parity/reactive-observation-v1.json"
+    ))
+    .expect("canonical reactive parity fixture");
+    assert_eq!(fixture["schema"], "riffdb.application-reactive-parity/v1");
+    assert_eq!(fixture["cursor"]["external_base64"], "AQIDBA==");
+    assert_eq!(fixture["terminal_requires_clear"], true);
+    let notification = fixture["mcp"]["notification"]
+        .as_object()
+        .expect("notification object");
+    assert_eq!(notification.len(), 2);
+    let params = notification["params"]
+        .as_object()
+        .expect("notification parameters");
+    assert_eq!(params.keys().collect::<Vec<_>>(), vec!["uri"]);
+    for forbidden in fixture["mcp"]["notification_forbidden_keys"]
+        .as_array()
+        .expect("forbidden key inventory")
+    {
+        assert!(!params.contains_key(forbidden.as_str().expect("key")));
+    }
 }

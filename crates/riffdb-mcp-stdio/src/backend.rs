@@ -924,6 +924,51 @@ impl PublicGrpcMcpBackend {
                     .await
                     .authenticated_client_result(&self.client_activity)?,
             ),
+            FixedGrpcRequest::EventNext(request) => response::event_next(
+                client
+                    .consume_event_stream(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?,
+            ),
+            FixedGrpcRequest::EventAck(request) => response::event_mutation(
+                21,
+                client
+                    .acknowledge_event_stream(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?,
+            ),
+            FixedGrpcRequest::EventNack(request) => response::event_mutation(
+                22,
+                client
+                    .negative_acknowledge_event_stream(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?,
+            ),
+            FixedGrpcRequest::EventSeek(request) => response::event_mutation(
+                23,
+                client
+                    .seek_event_stream_consumer(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?,
+            ),
+            FixedGrpcRequest::EventStatus(request) => response::event_status(
+                client
+                    .get_event_stream_consumer_status(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?,
+            ),
+            FixedGrpcRequest::QueryWatch(request) => {
+                let mut stream = client
+                    .watch_named_query(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?;
+                let update = stream
+                    .message()
+                    .await
+                    .authenticated_client_result(&self.client_activity)?
+                    .ok_or(McpBackendError::TargetUnavailable)?;
+                response::query_watch(update)
+            }
         }
         .map_err(|_| McpBackendError::InvalidResponse)
     }
@@ -1778,6 +1823,7 @@ fn application_result_value(value: ApplicationValue) -> Result<serde_json::Value
         ApplicationValue::String(value) | ApplicationValue::Enum(value) => {
             Ok(serde_json::Value::String(value))
         }
+        ApplicationValue::EnumIdentity { name, .. } => Ok(serde_json::Value::String(name)),
         ApplicationValue::Uuid(value) => Ok(serde_json::Value::String(value.into_string())),
         ApplicationValue::Bytes(value) => Ok(serde_json::Value::String(base64::Engine::encode(
             &base64::engine::general_purpose::STANDARD,

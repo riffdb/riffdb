@@ -408,6 +408,17 @@ pub(crate) enum QueryCommand {
         #[command(flatten)]
         contract: ContractSelectionArgs,
     },
+    /// Receives one closed update from an exact generated live named query.
+    Watch {
+        #[arg(long = "module-hash", value_name = "64_HEX_CHARS")]
+        module_hash: String,
+        #[arg(value_name = "OPERATION")]
+        operation: String,
+        #[arg(long = "parameter", value_name = "NAME=JSON_VALUE")]
+        parameters: Vec<String>,
+        #[arg(long, value_name = "BASE64_CURSOR")]
+        cursor: Option<String>,
+    },
     Deploy {
         #[arg(value_name = "QUERY_DIRECTORY")]
         directory: OsString,

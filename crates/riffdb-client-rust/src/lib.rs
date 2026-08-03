@@ -14,6 +14,7 @@ mod credential_file;
 mod ids;
 mod maintenance;
 mod metadata;
+mod reactive;
 mod status;
 
 /// Boundaries implemented by contract-generated ergonomic modules.
@@ -56,6 +57,15 @@ pub use maintenance::{
 pub use metadata::{
     BearerCredential, BootstrapCallMetadata, BootstrapCredential, CallMetadata, MetadataError,
     TraceParent,
+};
+pub use reactive::{
+    ApplicationEvent, ApplicationEventBatch, ApplicationEventCheckpoint, ApplicationEventConsumer,
+    ApplicationEventConsumerStatus, ApplicationEventDelivery, ApplicationEventId,
+    ApplicationEventLeaseEvidence, ApplicationEventMutationResult, ApplicationEventResponseStream,
+    ApplicationLiveQueryStream, ApplicationLiveQueryUpdate, ApplicationReactiveOperation,
+    EventConsumerOptions, LiveQueryCheckpoint, LiveQueryCursor, LiveQueryPatch,
+    LiveQueryPatchOperation, LiveQueryTerminal, TypedEventBatch, TypedEventDelivery,
+    TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream,
 };
 pub use status::{
     ClientError, DetailsFreeStatus, OutcomeUnknown, ProtocolFailure, ProtocolFailureKind,

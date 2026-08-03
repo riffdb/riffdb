@@ -518,6 +518,81 @@ pub enum McpFixedToolRequest {
         /// Optional active contract version precondition.
         expected_contract_version: Option<u64>,
     },
+    /// `riffdb_event_next`.
+    EventNext {
+        /// Exact reactive-module hash.
+        module_hash: [u8; 32],
+        /// Exact stream operation name.
+        operation_name: String,
+        /// Natural symbolic parameters.
+        parameters: Map<String, Value>,
+        /// Durable consumer name.
+        consumer_name: String,
+        /// Batch bound.
+        batch_limit: u32,
+        /// In-flight bound.
+        in_flight_limit: u32,
+        /// Lease duration.
+        lease_seconds: u64,
+        /// Long-poll bound.
+        maximum_wait_nanos: u64,
+    },
+    /// `riffdb_event_ack` or `riffdb_event_nack`.
+    EventLeaseMutation {
+        /// True for negative acknowledge.
+        nack: bool,
+        /// Exact reactive-module hash.
+        module_hash: [u8; 32],
+        /// Exact stream operation name.
+        operation_name: String,
+        /// Natural symbolic parameters.
+        parameters: Map<String, Value>,
+        /// Durable consumer name.
+        consumer_name: String,
+        /// Stable event commit sequence and ordinal.
+        event_id: (u64, u32),
+        /// Opaque attempt token.
+        lease_token: Vec<u8>,
+        /// Restore-incarnation fence.
+        history_incarnation: u64,
+        /// Bounded nack delay.
+        retry_delay_nanos: u64,
+    },
+    /// `riffdb_event_seek`.
+    EventSeek {
+        /// Exact reactive-module hash.
+        module_hash: [u8; 32],
+        /// Exact stream operation name.
+        operation_name: String,
+        /// Natural symbolic parameters.
+        parameters: Map<String, Value>,
+        /// Durable consumer name.
+        consumer_name: String,
+        /// Before-first or an exact selected event.
+        checkpoint: Option<(u64, u32)>,
+    },
+    /// `riffdb_event_status`.
+    EventStatus {
+        /// Exact reactive-module hash.
+        module_hash: [u8; 32],
+        /// Exact stream operation name.
+        operation_name: String,
+        /// Natural symbolic parameters.
+        parameters: Map<String, Value>,
+        /// Durable consumer name.
+        consumer_name: String,
+    },
+    /// `riffdb_query_watch` returns one authorized update; notifications remain payload-free.
+    QueryWatch {
+        /// Exact reactive-module hash.
+        module_hash: [u8; 32],
+        /// Exact watch operation name.
+        operation_name: String,
+        /// Natural symbolic parameters.
+        parameters: Map<String, Value>,
+        /// Optional opaque reconnect cursor.
+        cursor: Option<Vec<u8>>,
+    },
 }
 
 /// Decodes one already-schema-validated fixed-tool input.
@@ -691,6 +766,66 @@ pub fn decode_fixed_tool_request(
                 command_name: request.command_name,
                 input: request.input,
                 expected_contract_version: parse_optional_u64(request.expected_contract_version)?,
+            })
+        }
+        20 => {
+            let request: RawEventNext = arguments.deserialize().map_err(conversion)?;
+            Ok(McpFixedToolRequest::EventNext {
+                module_hash: parse_hash32(&request.module_hash)?,
+                operation_name: request.operation_name,
+                parameters: request.parameters,
+                consumer_name: request.consumer_name,
+                batch_limit: request.batch_limit,
+                in_flight_limit: request.in_flight_limit,
+                lease_seconds: request.lease_seconds,
+                maximum_wait_nanos: request.maximum_wait_nanos,
+            })
+        }
+        21 | 22 => {
+            let request: RawEventLease = arguments.deserialize().map_err(conversion)?;
+            Ok(McpFixedToolRequest::EventLeaseMutation {
+                nack: tag == 22,
+                module_hash: parse_hash32(&request.module_hash)?,
+                operation_name: request.operation_name,
+                parameters: request.parameters,
+                consumer_name: request.consumer_name,
+                event_id: parse_event_id(&request.event_id)?,
+                lease_token: parse_hex_bytes(&request.lease_token)?,
+                history_incarnation: parse_u64(&request.history_incarnation)?,
+                retry_delay_nanos: request.retry_delay_nanos.unwrap_or(0),
+            })
+        }
+        23 => {
+            let request: RawEventSeek = arguments.deserialize().map_err(conversion)?;
+            Ok(McpFixedToolRequest::EventSeek {
+                module_hash: parse_hash32(&request.module_hash)?,
+                operation_name: request.operation_name,
+                parameters: request.parameters,
+                consumer_name: request.consumer_name,
+                checkpoint: (request.checkpoint != "before-first")
+                    .then(|| parse_event_id(&request.checkpoint))
+                    .transpose()?,
+            })
+        }
+        24 => {
+            let request: RawEventStatus = arguments.deserialize().map_err(conversion)?;
+            Ok(McpFixedToolRequest::EventStatus {
+                module_hash: parse_hash32(&request.module_hash)?,
+                operation_name: request.operation_name,
+                parameters: request.parameters,
+                consumer_name: request.consumer_name,
+            })
+        }
+        25 => {
+            let request: RawQueryWatch = arguments.deserialize().map_err(conversion)?;
+            Ok(McpFixedToolRequest::QueryWatch {
+                module_hash: parse_hash32(&request.module_hash)?,
+                operation_name: request.operation_name,
+                parameters: request.parameters,
+                cursor: request
+                    .cursor
+                    .map(|value| decode_base64(&value))
+                    .transpose()?,
             })
         }
         _ => Err(McpConversionError),
@@ -957,6 +1092,18 @@ pub enum McpFixedResultBranch {
     QueryCompleted,
     /// Symbolic command completed.
     CommandCompleted,
+    /// Durable event pull completed.
+    EventNextCompleted,
+    /// Event acknowledge completed.
+    EventAckCompleted,
+    /// Event negative acknowledge completed.
+    EventNackCompleted,
+    /// Event seek completed.
+    EventSeekCompleted,
+    /// Event status completed.
+    EventStatusCompleted,
+    /// One live-query update completed.
+    QueryWatchCompleted,
 }
 
 impl McpFixedResultBranch {
@@ -990,6 +1137,12 @@ impl McpFixedResultBranch {
             Self::QueryExplainValid | Self::QueryExplainInvalid => 17,
             Self::QueryCompleted => 18,
             Self::CommandCompleted => 19,
+            Self::EventNextCompleted => 20,
+            Self::EventAckCompleted => 21,
+            Self::EventNackCompleted => 22,
+            Self::EventSeekCompleted => 23,
+            Self::EventStatusCompleted => 24,
+            Self::QueryWatchCompleted => 25,
         }
     }
 
@@ -1031,7 +1184,13 @@ impl McpFixedResultBranch {
             Self::QueryExplainValid => "valid",
             Self::QueryExplainInvalid => "invalid",
             Self::QueryCompleted => "completed",
-            Self::CommandCompleted => "completed",
+            Self::CommandCompleted
+            | Self::EventNextCompleted
+            | Self::EventAckCompleted
+            | Self::EventNackCompleted
+            | Self::EventSeekCompleted
+            | Self::EventStatusCompleted
+            | Self::QueryWatchCompleted => "completed",
         }
     }
 
@@ -1189,6 +1348,82 @@ struct RawSymbolicCommand {
     command_name: String,
     input: Map<String, Value>,
     expected_contract_version: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEventNext {
+    module_hash: String,
+    operation_name: String,
+    #[serde(default)]
+    parameters: Map<String, Value>,
+    consumer_name: String,
+    #[serde(default = "default_event_batch")]
+    batch_limit: u32,
+    #[serde(default = "default_event_in_flight")]
+    in_flight_limit: u32,
+    #[serde(default = "default_event_lease")]
+    lease_seconds: u64,
+    #[serde(default = "default_event_wait")]
+    maximum_wait_nanos: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEventLease {
+    module_hash: String,
+    operation_name: String,
+    #[serde(default)]
+    parameters: Map<String, Value>,
+    consumer_name: String,
+    event_id: String,
+    lease_token: String,
+    history_incarnation: String,
+    retry_delay_nanos: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEventSeek {
+    module_hash: String,
+    operation_name: String,
+    #[serde(default)]
+    parameters: Map<String, Value>,
+    consumer_name: String,
+    checkpoint: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEventStatus {
+    module_hash: String,
+    operation_name: String,
+    #[serde(default)]
+    parameters: Map<String, Value>,
+    consumer_name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawQueryWatch {
+    module_hash: String,
+    operation_name: String,
+    #[serde(default)]
+    parameters: Map<String, Value>,
+    cursor: Option<String>,
+}
+
+const fn default_event_batch() -> u32 {
+    1
+}
+const fn default_event_in_flight() -> u32 {
+    16
+}
+const fn default_event_lease() -> u64 {
+    60
+}
+const fn default_event_wait() -> u64 {
+    30_000_000_000
 }
 
 #[derive(Deserialize)]
@@ -1470,6 +1705,36 @@ fn parse_u64(value: &str) -> Result<u64, McpConversionError> {
     value.parse().map_err(|_| McpConversionError)
 }
 
+fn parse_hash32(value: &str) -> Result<[u8; 32], McpConversionError> {
+    parse_hex_bytes(value)?
+        .try_into()
+        .map_err(|_| McpConversionError)
+}
+
+fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, McpConversionError> {
+    if value.is_empty() || !value.len().is_multiple_of(2) || value.len() > 512 {
+        return Err(McpConversionError);
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).map_err(|_| McpConversionError)?;
+            u8::from_str_radix(pair, 16).map_err(|_| McpConversionError)
+        })
+        .collect()
+}
+
+fn parse_event_id(value: &str) -> Result<(u64, u32), McpConversionError> {
+    let (sequence, ordinal) = value.split_once(':').ok_or(McpConversionError)?;
+    let sequence = parse_u64(sequence)?;
+    let ordinal = ordinal.parse().map_err(|_| McpConversionError)?;
+    if sequence == 0 {
+        return Err(McpConversionError);
+    }
+    Ok((sequence, ordinal))
+}
+
 fn parse_i64(value: &str) -> Result<i64, McpConversionError> {
     value.parse().map_err(|_| McpConversionError)
 }
@@ -1612,6 +1877,59 @@ mod tests {
                 McpSubmittedValue::Bytes(vec![1])
             ]
         );
+    }
+
+    #[test]
+    fn reactive_fixed_requests_preserve_exact_identity_and_opaque_cursor() {
+        let request = decode_fixed_tool_request(
+            20,
+            &arguments(json!({
+                "module_hash": "07".repeat(32),
+                "operation_name": "RowChanges",
+                "parameters": {"workspace_id": "alpha"},
+                "consumer_name": "Worker_1",
+                "batch_limit": 4,
+                "in_flight_limit": 8,
+                "lease_seconds": 60,
+                "maximum_wait_nanos": 1_000_000
+            })),
+        )
+        .expect("reactive request");
+        let McpFixedToolRequest::EventNext {
+            module_hash,
+            operation_name,
+            consumer_name,
+            batch_limit,
+            ..
+        } = request
+        else {
+            panic!("wrong reactive request");
+        };
+        assert_eq!(module_hash, [7; 32]);
+        assert_eq!(operation_name, "RowChanges");
+        assert_eq!(consumer_name, "Worker_1");
+        assert_eq!(batch_limit, 4);
+
+        let watch = decode_fixed_tool_request(
+            25,
+            &arguments(json!({
+                "module_hash": "09".repeat(32),
+                "operation_name": "RowWatch",
+                "parameters": {},
+                "cursor": "AQIDBA=="
+            })),
+        )
+        .expect("watch request");
+        let McpFixedToolRequest::QueryWatch {
+            module_hash,
+            cursor,
+            ..
+        } = watch
+        else {
+            panic!("wrong watch request");
+        };
+        assert_eq!(module_hash, [9; 32]);
+        assert_eq!(cursor.as_deref(), Some([1, 2, 3, 4].as_slice()));
     }
 
     #[test]

@@ -41,6 +41,12 @@ An `optional<T>` field maps a wire null to `None` and a present value to
 to command outcomes as well as query results; application code never probes or
 removes a field by its compiler ID.
 
+Application Source V4 also generates typed durable event consumers and live
+named queries. Event deliveries retain exact lease evidence for generated
+acknowledge and negative-acknowledge methods. Live updates use a closed union;
+persist each applied cursor and clear retained results on `Terminal`. See
+[Reactive Application Clients](../reactive/CLIENTS.md).
+
 ## Retry rule
 
 Use one caller-owned idempotency key for one logical command and retain it until

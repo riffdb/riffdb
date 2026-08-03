@@ -12,6 +12,12 @@ or the private native module. Both transports delegate gRPC status validation,
 request identity, bounded retry, and uncertain-outcome behavior to the stable
 Rust application client.
 
+`AsyncApplicationTransport` also backs Application Source V4 generated event
+iterators and live named-query iterators. Generated delivery types retain the
+attempt-specific acknowledgement evidence, and live cursors are returned as
+standard padded Base64 for persistence. See [Reactive Application
+Clients](reactive/CLIENTS.md).
+
 ## Create an application
 
 Build or obtain the matching RiffDB wheel, then create a source-layout project:

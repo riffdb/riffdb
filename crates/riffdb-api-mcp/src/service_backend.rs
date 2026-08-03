@@ -13,30 +13,37 @@ use riffdb_service::{
     ApplicationErrorContextBuilder, ApplicationService, CheckSymbolicQueryResult,
     CommandToolDescriptor, CommandToolDiscoveryItem, CompactCommandToolDiscoveryItem,
     CompactResourceDescriptor, CompactResourceDescriptorRef, CompileSymbolicQueryRequest,
-    ContractSelection, ContractSource, CursorToken, DeployContractRequest, DeployContractResult,
-    DescribeSymbolicContractResult, DiscoverCommandToolsRequest, DiscoverCommandToolsResult,
-    DiscoverCommandToolsResultRef, DiscoverResourcesRequest, DiscoverResourcesResult,
-    DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryRepresentation,
-    ExecuteCommandRequest, ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult,
-    ExplainCommandRequest, ExplainCommandResult, ExplainSymbolicQueryResult, ExplainedCommand,
-    FieldSelection, GetActiveContractRequest, GetActiveContractResult, GetCommitRequest,
-    GetContractVersionRequest, GetContractVersionResult, GetEntityRequest,
-    GetProjectionStatusRequest, GetProjectionStatusResult, HealthContext, HealthRequest,
-    HealthResult, ListPendingOutboxDeliveriesRequest, NamedQueryToolDescriptor,
-    NamedSymbolicQueryRequest, OperationSchemaCatalog, PageLimit, PageRequest, ProvenanceSelection,
-    QueryProjectionRequest, RequestCancellationHandle, RequestContext, RequestControl,
-    ResolveCommandOutcomeRequest, ResourceDescriptorRef, ResourceDiscoveryKind, ScanCommitsRequest,
-    ScanIndexRequest, ServiceFailure, SourceName, SubmittedDecimal, SubmittedField,
-    SubmittedFieldIdentity, SubmittedList, SubmittedMoney, SubmittedRecord, SubmittedValue,
-    SymbolicContractSelector, SymbolicDiagnostic, SymbolicQueryIdentity, SymbolicQueryParameters,
-    SymbolicQuerySchema, SymbolicQuerySource, SymbolicResultField, SymbolicResultRecord,
-    TraceProvenanceRequest, ValidateContractRequest,
+    ConsumeEventStreamRequest, ContractSelection, ContractSource, CursorToken,
+    DeployContractRequest, DeployContractResult, DescribeSymbolicContractResult,
+    DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverCommandToolsResultRef,
+    DiscoverResourcesRequest, DiscoverResourcesResult, DiscoverResourcesResultRef,
+    DiscoveryCatalogFence, DiscoveryRepresentation, EventConsumerCheckpoint,
+    EventConsumerLeaseSelection, EventConsumerMutationResult, EventConsumerSelection,
+    EventConsumerStatus, ExecuteCommandRequest, ExecuteSymbolicQueryRequest,
+    ExecuteSymbolicQueryResult, ExplainCommandRequest, ExplainCommandResult,
+    ExplainSymbolicQueryResult, ExplainedCommand, FieldSelection, GetActiveContractRequest,
+    GetActiveContractResult, GetCommitRequest, GetContractVersionRequest, GetContractVersionResult,
+    GetEntityRequest, GetProjectionStatusRequest, GetProjectionStatusResult, HealthContext,
+    HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest, LiveNamedQuerySelection,
+    LiveQueryCursor, LiveQueryFrontier, LiveQueryPatchOperation, LiveQueryResetReason,
+    LiveQueryTerminalReason, LiveQueryUpdate, NamedQueryToolDescriptor, NamedSymbolicQueryRequest,
+    NegativeAcknowledgeEventStreamRequest, OperationSchemaCatalog, PageLimit, PageRequest,
+    ProvenanceSelection, QueryParameters, QueryProjectionRequest, RequestCancellationHandle,
+    RequestContext, RequestControl, ResolveCommandOutcomeRequest, ResourceDescriptorRef,
+    ResourceDiscoveryKind, ScanCommitsRequest, ScanIndexRequest, SeekEventStreamConsumerRequest,
+    ServiceFailure, SourceName, SubmittedDecimal, SubmittedField, SubmittedFieldIdentity,
+    SubmittedList, SubmittedMoney, SubmittedRecord, SubmittedValue, SymbolicContractSelector,
+    SymbolicDiagnostic, SymbolicQueryIdentity, SymbolicQueryParameters, SymbolicQuerySchema,
+    SymbolicQuerySource, SymbolicResultField, SymbolicResultRecord, TraceProvenanceRequest,
+    ValidateContractRequest, WatchLiveNamedQueryRequest,
 };
 use riffdb_types::{
-    Audience, CanonicalRecord, CanonicalValue, CommandId, CommitSequence, ContractLineage,
-    ContractVersion, CurrencyCode, DatabaseAlias, Date, EntityKey, EntityTypeId, EnumTypeId,
-    EnumVariantId, FieldId, FrontierPosition, IdempotencyKey, IndexEpochPosition, IndexId,
-    ProjectionId, ProvenanceId, ServiceOperationV1, Timestamp,
+    ActorKind, Audience, CanonicalRecord, CanonicalValue, CommandId, CommitSequence,
+    ContractLineage, ContractVersion, CurrencyCode, DatabaseAlias, Date, Decimal, DecimalSpec,
+    EntityKey, EntityTypeId, EnumTypeId, EnumVariantId, EventConsumerName, EventId,
+    EventLeaseToken, FieldId, FrontierPosition, IdempotencyKey, IndexEpochPosition, IndexId, Money,
+    ProjectionId, ProvenanceId, ReactiveModuleHash, ReactiveOperationName, ServiceOperationV1,
+    Timestamp,
 };
 use serde::Serialize;
 
@@ -1222,6 +1229,173 @@ impl HostedServiceMcpBackend {
                 call.complete();
                 render_symbolic_command(result)
             }
+            McpFixedToolRequest::EventNext {
+                module_hash,
+                operation_name,
+                parameters,
+                consumer_name,
+                batch_limit,
+                in_flight_limit,
+                lease_seconds,
+                maximum_wait_nanos,
+            } => {
+                let request = ConsumeEventStreamRequest::new(
+                    service_event_selection(
+                        module_hash,
+                        operation_name,
+                        parameters,
+                        consumer_name,
+                    )?,
+                    u8::try_from(batch_limit).map_err(invalid_response)?,
+                    u8::try_from(in_flight_limit).map_err(invalid_response)?,
+                    Duration::from_secs(lease_seconds),
+                    Duration::from_nanos(maximum_wait_nanos),
+                )
+                .map_err(invalid_response)?;
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::ConsumeEventStream),
+                )?;
+                let result = self
+                    .service
+                    .consume_event_stream(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_event_next(result)
+            }
+            McpFixedToolRequest::EventLeaseMutation {
+                nack,
+                module_hash,
+                operation_name,
+                parameters,
+                consumer_name,
+                event_id,
+                lease_token,
+                history_incarnation,
+                retry_delay_nanos,
+            } => {
+                let lease = service_event_lease(
+                    module_hash,
+                    operation_name,
+                    parameters,
+                    consumer_name,
+                    event_id,
+                    lease_token,
+                    history_incarnation,
+                )?;
+                let operation = if nack {
+                    ServiceOperationV1::NegativeAcknowledgeEventStream
+                } else {
+                    ServiceOperationV1::AcknowledgeEventStream
+                };
+                let mut call = self.prepare_call(invocation, McpRateTarget::Service(operation))?;
+                let result = if nack {
+                    self.service
+                        .negative_acknowledge_event_stream(
+                            call.take_context()?,
+                            NegativeAcknowledgeEventStreamRequest::new(
+                                lease,
+                                Duration::from_nanos(retry_delay_nanos),
+                            )
+                            .map_err(invalid_response)?,
+                        )
+                        .await
+                } else {
+                    self.service
+                        .acknowledge_event_stream(call.take_context()?, lease)
+                        .await
+                }
+                .map_err(map_service_failure)?;
+                call.complete();
+                render_event_mutation(if nack { 22 } else { 21 }, result)
+            }
+            McpFixedToolRequest::EventSeek {
+                module_hash,
+                operation_name,
+                parameters,
+                consumer_name,
+                checkpoint,
+            } => {
+                let selection = service_event_selection(
+                    module_hash,
+                    operation_name,
+                    parameters,
+                    consumer_name,
+                )?;
+                let checkpoint = checkpoint
+                    .map_or(Ok(EventConsumerCheckpoint::BeforeFirst), |id| {
+                        service_event_id(id).map(EventConsumerCheckpoint::After)
+                    })?;
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::SeekEventStreamConsumer),
+                )?;
+                let result = self
+                    .service
+                    .seek_event_stream_consumer(
+                        call.take_context()?,
+                        SeekEventStreamConsumerRequest::new(selection, checkpoint),
+                    )
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_event_mutation(23, result)
+            }
+            McpFixedToolRequest::EventStatus {
+                module_hash,
+                operation_name,
+                parameters,
+                consumer_name,
+            } => {
+                let selection = service_event_selection(
+                    module_hash,
+                    operation_name,
+                    parameters,
+                    consumer_name,
+                )?;
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::GetEventStreamConsumerStatus),
+                )?;
+                let result = self
+                    .service
+                    .get_event_stream_consumer_status(call.take_context()?, selection)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_event_status(result)
+            }
+            McpFixedToolRequest::QueryWatch {
+                module_hash,
+                operation_name,
+                parameters,
+                cursor,
+            } => {
+                let selection = LiveNamedQuerySelection::new(
+                    ReactiveModuleHash::from_bytes(module_hash),
+                    ReactiveOperationName::new(operation_name).map_err(invalid_response)?,
+                    canonical_parameters(parameters)?,
+                );
+                let mut request = WatchLiveNamedQueryRequest::new(selection);
+                if let Some(cursor) = cursor {
+                    request = request
+                        .with_cursor(LiveQueryCursor::new(cursor).map_err(invalid_response)?);
+                }
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::WatchNamedQuery),
+                )?;
+                let result = self
+                    .service
+                    .watch_live_named_query(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                let mut subscription = result.into_subscription();
+                let update = subscription.next().await.map_err(map_service_failure)?;
+                call.complete();
+                render_live_query_update(update)
+            }
         }
     }
 
@@ -2392,6 +2566,267 @@ fn natural_parameter(value: serde_json::Value) -> Result<SubmittedValue, McpBack
     }
 }
 
+fn canonical_tagged_parameter(
+    mut value: serde_json::Map<String, serde_json::Value>,
+) -> Result<CanonicalValue, McpBackendError> {
+    let kind = value
+        .remove("type")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or(McpBackendError::InvalidResponse)?;
+    match kind.as_str() {
+        "bool" if value.len() == 1 => value
+            .remove("value")
+            .and_then(|value| value.as_bool())
+            .map(CanonicalValue::Bool)
+            .ok_or(McpBackendError::InvalidResponse),
+        "i64" if value.len() == 1 => Ok(CanonicalValue::I64(tagged_i64(value.remove("value"))?)),
+        "u64" if value.len() == 1 => Ok(CanonicalValue::U64(tagged_u64(value.remove("value"))?)),
+        "string" if value.len() == 1 => {
+            CanonicalValue::string(tagged_text(value.remove("value"))?).map_err(invalid_response)
+        }
+        "uuid" if value.len() == 1 => {
+            parse_tagged_uuid(&tagged_text(value.remove("value"))?).map(CanonicalValue::Uuid)
+        }
+        "bytes" if value.len() == 1 => CanonicalValue::bytes(
+            base64::engine::general_purpose::STANDARD
+                .decode(tagged_text(value.remove("value"))?)
+                .map_err(invalid_response)?,
+        )
+        .map_err(invalid_response),
+        "date" if value.len() == 1 => Ok(CanonicalValue::Date(Date::new(
+            value
+                .remove("days_since_unix_epoch")
+                .and_then(|value| value.as_i64())
+                .and_then(|value| i32::try_from(value).ok())
+                .ok_or(McpBackendError::InvalidResponse)?,
+        ))),
+        "timestamp" if value.len() == 2 => Timestamp::new(
+            tagged_i64(value.remove("seconds"))?,
+            value
+                .remove("nanos")
+                .and_then(|value| value.as_u64())
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or(McpBackendError::InvalidResponse)?,
+        )
+        .map(CanonicalValue::Timestamp)
+        .map_err(invalid_response),
+        "decimal" if value.len() == 3 => {
+            canonical_tagged_decimal(value).map(CanonicalValue::Decimal)
+        }
+        "money" if value.len() == 2 => {
+            let currency = CurrencyCode::new(tagged_text(value.remove("currency"))?.as_bytes())
+                .map_err(invalid_response)?;
+            let amount = value
+                .remove("amount")
+                .and_then(|value| value.as_object().cloned())
+                .ok_or(McpBackendError::InvalidResponse)?;
+            Ok(CanonicalValue::Money(Money::new(
+                currency,
+                canonical_tagged_decimal(amount)?,
+            )))
+        }
+        "enum" if matches!(value.len(), 2 | 3) => Ok(CanonicalValue::Enum {
+            type_id: EnumTypeId::new(tagged_u32(value.remove("type_id"))?)
+                .ok_or(McpBackendError::InvalidResponse)?,
+            variant_id: EnumVariantId::new(tagged_u32(value.remove("variant_id"))?)
+                .ok_or(McpBackendError::InvalidResponse)?,
+        }),
+        _ => Err(McpBackendError::InvalidResponse),
+    }
+}
+
+fn canonical_tagged_decimal(
+    mut value: serde_json::Map<String, serde_json::Value>,
+) -> Result<Decimal, McpBackendError> {
+    if value.len() != 3 {
+        return Err(McpBackendError::InvalidResponse);
+    }
+    let coefficient = base64::engine::general_purpose::STANDARD
+        .decode(tagged_text(value.remove("coefficient_twos_complement"))?)
+        .map_err(invalid_response)?;
+    let coefficient = decode_minimal_i128(&coefficient)?;
+    let spec = DecimalSpec::new(
+        u8::try_from(tagged_u32(value.remove("precision"))?).map_err(invalid_response)?,
+        u8::try_from(tagged_u32(value.remove("scale"))?).map_err(invalid_response)?,
+    )
+    .map_err(invalid_response)?;
+    Decimal::new(spec, coefficient).map_err(invalid_response)
+}
+
+fn decode_minimal_i128(value: &[u8]) -> Result<i128, McpBackendError> {
+    if value.is_empty() || value.len() > 16 {
+        return Err(McpBackendError::InvalidResponse);
+    }
+    if value.len() > 1
+        && ((value[0] == 0 && value[1] & 0x80 == 0) || (value[0] == 0xff && value[1] & 0x80 != 0))
+    {
+        return Err(McpBackendError::InvalidResponse);
+    }
+    let fill = if value[0] & 0x80 == 0 { 0 } else { 0xff };
+    let mut bytes = [fill; 16];
+    bytes[16 - value.len()..].copy_from_slice(value);
+    Ok(i128::from_be_bytes(bytes))
+}
+
+fn tagged_text(value: Option<serde_json::Value>) -> Result<String, McpBackendError> {
+    value
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or(McpBackendError::InvalidResponse)
+}
+
+fn tagged_i64(value: Option<serde_json::Value>) -> Result<i64, McpBackendError> {
+    let value = tagged_text(value)?;
+    if !canonical_signed_text(&value) {
+        return Err(McpBackendError::InvalidResponse);
+    }
+    value.parse().map_err(|_| McpBackendError::InvalidResponse)
+}
+
+fn tagged_u64(value: Option<serde_json::Value>) -> Result<u64, McpBackendError> {
+    let value = tagged_text(value)?;
+    if !canonical_unsigned_text(&value) {
+        return Err(McpBackendError::InvalidResponse);
+    }
+    value.parse().map_err(|_| McpBackendError::InvalidResponse)
+}
+
+fn canonical_signed_text(value: &str) -> bool {
+    value == "0"
+        || value
+            .strip_prefix('-')
+            .is_some_and(canonical_nonzero_digits)
+        || canonical_nonzero_digits(value)
+}
+
+fn canonical_unsigned_text(value: &str) -> bool {
+    value == "0" || canonical_nonzero_digits(value)
+}
+
+fn canonical_nonzero_digits(value: &str) -> bool {
+    value
+        .as_bytes()
+        .first()
+        .is_some_and(|first| matches!(first, b'1'..=b'9'))
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn tagged_u32(value: Option<serde_json::Value>) -> Result<u32, McpBackendError> {
+    value
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or(McpBackendError::InvalidResponse)
+}
+
+fn parse_tagged_uuid(value: &str) -> Result<[u8; 16], McpBackendError> {
+    if value.len() != 36
+        || !value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()
+            }
+        })
+    {
+        return Err(McpBackendError::InvalidResponse);
+    }
+    let compact = value
+        .bytes()
+        .filter(|byte| *byte != b'-')
+        .collect::<Vec<_>>();
+    if compact.len() != 32 {
+        return Err(McpBackendError::InvalidResponse);
+    }
+    let mut output = [0_u8; 16];
+    for (index, pair) in compact.chunks_exact(2).enumerate() {
+        output[index] =
+            u8::from_str_radix(std::str::from_utf8(pair).map_err(invalid_response)?, 16)
+                .map_err(invalid_response)?;
+    }
+    Ok(output)
+}
+
+fn canonical_parameters(
+    values: serde_json::Map<String, serde_json::Value>,
+) -> Result<QueryParameters, McpBackendError> {
+    let values = values
+        .into_iter()
+        .map(|(name, value)| Ok((name, canonical_natural_parameter(value)?)))
+        .collect::<Result<BTreeMap<_, _>, McpBackendError>>()?;
+    QueryParameters::checked(values).ok_or(McpBackendError::InvalidResponse)
+}
+
+fn canonical_natural_parameter(
+    value: serde_json::Value,
+) -> Result<CanonicalValue, McpBackendError> {
+    match value {
+        serde_json::Value::Null => Ok(CanonicalValue::Null),
+        serde_json::Value::Bool(value) => Ok(CanonicalValue::Bool(value)),
+        serde_json::Value::Number(value) => {
+            if let Some(value) = value.as_u64() {
+                Ok(CanonicalValue::U64(value))
+            } else {
+                value
+                    .as_i64()
+                    .map(CanonicalValue::I64)
+                    .ok_or(McpBackendError::InvalidResponse)
+            }
+        }
+        serde_json::Value::String(value) => CanonicalValue::string(value).map_err(invalid_response),
+        serde_json::Value::Array(values) => CanonicalValue::list(
+            values
+                .into_iter()
+                .map(canonical_natural_parameter)
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+        .map_err(invalid_response),
+        serde_json::Value::Object(value) => canonical_tagged_parameter(value),
+    }
+}
+
+fn service_event_selection(
+    module_hash: [u8; 32],
+    operation_name: String,
+    parameters: serde_json::Map<String, serde_json::Value>,
+    consumer_name: String,
+) -> Result<EventConsumerSelection, McpBackendError> {
+    Ok(EventConsumerSelection::new(
+        ReactiveModuleHash::from_bytes(module_hash),
+        ReactiveOperationName::new(operation_name).map_err(invalid_response)?,
+        canonical_parameters(parameters)?,
+        EventConsumerName::new(consumer_name).map_err(invalid_response)?,
+    ))
+}
+
+fn service_event_id(value: (u64, u32)) -> Result<EventId, McpBackendError> {
+    Ok(EventId::new(
+        CommitSequence::new(value.0).ok_or(McpBackendError::InvalidResponse)?,
+        value.1,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn service_event_lease(
+    module_hash: [u8; 32],
+    operation_name: String,
+    parameters: serde_json::Map<String, serde_json::Value>,
+    consumer_name: String,
+    event_id: (u64, u32),
+    lease_token: Vec<u8>,
+    history_incarnation: u64,
+) -> Result<EventConsumerLeaseSelection, McpBackendError> {
+    EventConsumerLeaseSelection::new(
+        service_event_selection(module_hash, operation_name, parameters, consumer_name)?,
+        service_event_id(event_id)?,
+        EventLeaseToken::from_bytes(
+            lease_token
+                .try_into()
+                .map_err(|_| McpBackendError::InvalidResponse)?,
+        ),
+        history_incarnation,
+    )
+    .map_err(invalid_response)
+}
+
 fn contract_version_from_u64(value: u64) -> Result<ContractVersion, McpBackendError> {
     ContractVersion::new(value).ok_or(McpBackendError::InvalidResponse)
 }
@@ -3110,6 +3545,39 @@ fn render_symbolic_explain(
 fn render_symbolic_execution(
     result: &ExecuteSymbolicQueryResult,
 ) -> Result<McpToolResult, McpBackendError> {
+    let payload = symbolic_execution_payload(result)?;
+    compose(
+        18,
+        McpFixedResultBranch::QueryCompleted,
+        Some(payload_from(&payload)?),
+    )
+}
+
+fn symbolic_execution_payload(
+    result: &ExecuteSymbolicQueryResult,
+) -> Result<serde_json::Value, McpBackendError> {
+    let mut payload = live_symbolic_result_payload(result)?;
+    let object = payload
+        .as_object_mut()
+        .ok_or(McpBackendError::InvalidResponse)?;
+    object.insert(
+        "application_head".to_owned(),
+        serde_json::json!(result.application_head().to_string()),
+    );
+    object.insert(
+        "next_cursor".to_owned(),
+        serde_json::json!(
+            result
+                .next_cursor()
+                .map(|cursor| encode_mcp_cursor(*cursor.as_bytes()))
+        ),
+    );
+    Ok(payload)
+}
+
+fn live_symbolic_result_payload(
+    result: &ExecuteSymbolicQueryResult,
+) -> Result<serde_json::Value, McpBackendError> {
     let fields = result
         .fields()
         .iter()
@@ -3129,20 +3597,222 @@ fn render_symbolic_execution(
             }))
         })
         .collect::<Result<Vec<_>, McpBackendError>>()?;
-    let payload = serde_json::json!({
+    Ok(serde_json::json!({
         "identity": symbolic_identity_payload(result.identity()),
         "outcome": result.outcome(),
-        "application_head": result.application_head().to_string(),
         "fields": fields,
-        "next_cursor": result
-            .next_cursor()
-            .map(|cursor| encode_mcp_cursor(*cursor.as_bytes())),
-    });
+    }))
+}
+
+fn render_event_next(
+    result: riffdb_service::ConsumeEventStreamResult,
+) -> Result<McpToolResult, McpBackendError> {
+    let events = result
+        .events()
+        .iter()
+        .map(|delivery| {
+            let event = delivery.event();
+            let id = event.event_id();
+            let fields = event
+                .fields()
+                .iter()
+                .map(|field| {
+                    Ok(serde_json::json!({
+                        "name": field.name(),
+                        "value": presented_value(field.value())?,
+                    }))
+                })
+                .collect::<Result<Vec<_>, McpBackendError>>()?;
+            let actor_kind = match event.actor_kind() {
+                ActorKind::Human => "human",
+                ActorKind::Agent => "agent",
+                ActorKind::Service => "service",
+            };
+            Ok(serde_json::json!({
+                "event_id": format!("{}:{}", id.commit_sequence().get(), id.event_ordinal()),
+                "event_name": event.event_name(),
+                "writer_contract_version": event.writer_contract_version().get().to_string(),
+                "command_name": event.command_name(),
+                "actor_kind": actor_kind,
+                "provenance_uri": format_provenance_locator(event.provenance_id()),
+                "history_incarnation": event.history_incarnation().to_string(),
+                "fields": fields,
+                "attempt": delivery.attempt().get(),
+                "lease_token": lower_hex(delivery.token().as_bytes()),
+                "expires_at": {
+                    "seconds": delivery.expires_at().seconds().to_string(),
+                    "nanos": delivery.expires_at().nanos(),
+                },
+            }))
+        })
+        .collect::<Result<Vec<_>, McpBackendError>>()?;
     compose(
-        18,
-        McpFixedResultBranch::QueryCompleted,
+        20,
+        McpFixedResultBranch::EventNextCompleted,
+        Some(payload_from(&serde_json::json!({
+            "events": events,
+            "status": event_consumer_status_payload(result.status()),
+            "wait_timed_out": result.wait_timed_out(),
+        }))?),
+    )
+}
+
+fn render_event_mutation(
+    tag: u8,
+    result: EventConsumerMutationResult,
+) -> Result<McpToolResult, McpBackendError> {
+    let result = match result {
+        EventConsumerMutationResult::Applied => "applied",
+        EventConsumerMutationResult::StateChanged => "state_changed",
+        EventConsumerMutationResult::NotFound => "not_found",
+        EventConsumerMutationResult::OutstandingLease => "outstanding_lease",
+        EventConsumerMutationResult::StaleLease => "stale_lease",
+        EventConsumerMutationResult::LeaseExpired => "lease_expired",
+    };
+    let branch = match tag {
+        21 => McpFixedResultBranch::EventAckCompleted,
+        22 => McpFixedResultBranch::EventNackCompleted,
+        23 => McpFixedResultBranch::EventSeekCompleted,
+        _ => return Err(McpBackendError::InvalidResponse),
+    };
+    compose(
+        tag,
+        branch,
+        Some(payload_from(&serde_json::json!({"result": result}))?),
+    )
+}
+
+fn render_event_status(
+    result: Option<EventConsumerStatus>,
+) -> Result<McpToolResult, McpBackendError> {
+    let payload = result.map_or_else(
+        || serde_json::json!({"found": false}),
+        |status| serde_json::json!({"found": true, "status": event_consumer_status_payload(&status)}),
+    );
+    compose(
+        24,
+        McpFixedResultBranch::EventStatusCompleted,
         Some(payload_from(&payload)?),
     )
+}
+
+fn event_consumer_status_payload(status: &EventConsumerStatus) -> serde_json::Value {
+    let checkpoint = match status.checkpoint() {
+        EventConsumerCheckpoint::BeforeFirst => "before-first".to_owned(),
+        EventConsumerCheckpoint::After(id) => {
+            format!("{}:{}", id.commit_sequence().get(), id.event_ordinal())
+        }
+    };
+    serde_json::json!({
+        "revision": status.revision().get().to_string(),
+        "checkpoint": checkpoint,
+        "history_incarnation": status.history_incarnation().to_string(),
+        "live_leases": status.live_leases(),
+        "retries": status.retries(),
+        "dead_letters": status.dead_letters(),
+    })
+}
+
+fn render_live_query_update(update: LiveQueryUpdate) -> Result<McpToolResult, McpBackendError> {
+    let payload = match update {
+        LiveQueryUpdate::Snapshot(value) => serde_json::json!({
+            "type": "snapshot",
+            "result": live_symbolic_result_payload(value.result())?,
+            "frontier": live_frontier_payload(value.frontier()),
+            "cursor": McpPresentedBytes::new(value.cursor().as_bytes().to_vec()),
+        }),
+        LiveQueryUpdate::Patch(value) => serde_json::json!({
+            "type": "patch",
+            "result_field": value.result_field(),
+            "operations": value.operations().iter().map(live_patch_operation_payload).collect::<Result<Vec<_>, _>>()?,
+            "frontier": live_frontier_payload(value.frontier()),
+            "cursor": McpPresentedBytes::new(value.cursor().as_bytes().to_vec()),
+        }),
+        LiveQueryUpdate::Reset(value) => serde_json::json!({
+            "type": "reset",
+            "reason": live_reset_reason(value.reason()),
+            "result": live_symbolic_result_payload(value.result())?,
+            "frontier": live_frontier_payload(value.frontier()),
+            "cursor": McpPresentedBytes::new(value.cursor().as_bytes().to_vec()),
+        }),
+        LiveQueryUpdate::Checkpoint(value) => serde_json::json!({
+            "type": "checkpoint",
+            "frontier": live_frontier_payload(value.frontier()),
+            "cursor": McpPresentedBytes::new(value.cursor().as_bytes().to_vec()),
+        }),
+        LiveQueryUpdate::Terminal(value) => serde_json::json!({
+            "type": "terminal",
+            "reason": live_terminal_reason(value.reason()),
+            "last_frontier": live_frontier_payload(value.last_frontier()),
+        }),
+    };
+    compose(
+        25,
+        McpFixedResultBranch::QueryWatchCompleted,
+        Some(payload_from(&payload)?),
+    )
+}
+
+fn live_frontier_payload(value: LiveQueryFrontier) -> serde_json::Value {
+    serde_json::json!({
+        "history_incarnation": value.history_incarnation().to_string(),
+        "application_head": value.application_head().to_string(),
+    })
+}
+
+fn live_patch_operation_payload(
+    operation: &LiveQueryPatchOperation,
+) -> Result<serde_json::Value, McpBackendError> {
+    Ok(match operation {
+        LiveQueryPatchOperation::Insert { index, record } => serde_json::json!({
+            "type": "insert", "index": index, "record": live_record_payload(record)?,
+        }),
+        LiveQueryPatchOperation::Remove { index, key } => serde_json::json!({
+            "type": "remove", "index": index,
+            "key": key.fields().iter().map(|(name, value)| Ok(serde_json::json!({"name": name, "value": presented_value(value)?}))).collect::<Result<Vec<_>, McpBackendError>>()?,
+        }),
+        LiveQueryPatchOperation::Replace { index, record } => serde_json::json!({
+            "type": "replace", "index": index, "record": live_record_payload(record)?,
+        }),
+        LiveQueryPatchOperation::Move { from, to, key } => serde_json::json!({
+            "type": "move", "from": from, "to": to,
+            "key": key.fields().iter().map(|(name, value)| Ok(serde_json::json!({"name": name, "value": presented_value(value)?}))).collect::<Result<Vec<_>, McpBackendError>>()?,
+        }),
+    })
+}
+
+fn live_record_payload(
+    record: &SymbolicResultRecord,
+) -> Result<serde_json::Value, McpBackendError> {
+    let fields = record
+        .fields()
+        .iter()
+        .map(|(name, value)| {
+            Ok(serde_json::json!({"name": name, "value": presented_value(value)?}))
+        })
+        .collect::<Result<Vec<_>, McpBackendError>>()?;
+    Ok(serde_json::json!({"entity": record.entity(), "fields": fields}))
+}
+
+const fn live_reset_reason(value: LiveQueryResetReason) -> &'static str {
+    match value {
+        LiveQueryResetReason::OutcomeChanged => "outcome_changed",
+        LiveQueryResetReason::DiffLimitExceeded => "diff_limit_exceeded",
+        LiveQueryResetReason::DefinitionChanged => "definition_changed",
+        LiveQueryResetReason::HistoryChanged => "history_changed",
+        LiveQueryResetReason::CursorExpired => "cursor_expired",
+    }
+}
+
+const fn live_terminal_reason(value: LiveQueryTerminalReason) -> &'static str {
+    match value {
+        LiveQueryTerminalReason::AuthorizationChanged => "authorization_changed",
+        LiveQueryTerminalReason::BufferPressure => "buffer_pressure",
+        LiveQueryTerminalReason::LifetimeExpired => "lifetime_expired",
+        LiveQueryTerminalReason::ServiceUnavailable => "service_unavailable",
+        LiveQueryTerminalReason::IntegrityFailure => "integrity_failure",
+        LiveQueryTerminalReason::DefinitionChanged => "definition_changed",
+    }
 }
 
 fn render_dynamic_named_query(
@@ -4931,5 +5601,44 @@ mod tests {
             })
         );
         assert_eq!(value["contract_version"], "1");
+    }
+
+    #[test]
+    fn hosted_reactive_parameters_preserve_exact_scalar_identity() {
+        assert!(matches!(
+            canonical_natural_parameter(serde_json::json!({
+                "type":"uuid",
+                "value":"01900000-0000-7000-8000-000000000001"
+            })),
+            Ok(CanonicalValue::Uuid(_))
+        ));
+        assert!(matches!(
+            canonical_natural_parameter(serde_json::json!({
+                "type":"i64",
+                "value":"-9223372036854775808"
+            })),
+            Ok(CanonicalValue::I64(i64::MIN))
+        ));
+        assert!(matches!(
+            canonical_natural_parameter(serde_json::json!({
+                "type":"enum",
+                "type_id":4,
+                "variant_id":9,
+                "name":"Open"
+            })),
+            Ok(CanonicalValue::Enum { type_id, variant_id })
+                if type_id.get() == 4 && variant_id.get() == 9
+        ));
+    }
+
+    #[test]
+    fn hosted_reactive_parameter_spellings_fail_closed() {
+        for invalid in [
+            serde_json::json!({"type":"i64", "value":"01"}),
+            serde_json::json!({"type":"u64", "value":"-1"}),
+            serde_json::json!({"type":"uuid", "value":"01900000-0000-7000-8000-00000000000A"}),
+        ] {
+            assert!(canonical_natural_parameter(invalid).is_err());
+        }
     }
 }

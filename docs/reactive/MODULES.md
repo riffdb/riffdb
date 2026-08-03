@@ -123,18 +123,20 @@ incarnation. Outstanding pre-restore lease tokens then fail closed, and the
 consumer resumes from its restored checkpoint. Consumers in sibling named
 databases remain isolated.
 
-## Current delivery boundary
+## Delivery boundary
 
-WP-416 provides the grammar, compiler, exact application artifacts, and role
-permissions. WP-417 provides immutable publication, durable pull and gRPC
+The public surface includes immutable publication, durable pull and gRPC
 stream consumption, leases, acknowledgement, retry, dead-letter, recovery,
-seek, retire, status, and retention fencing. WP-418 provides API-neutral live
-query execution, compiler-derived invalidation, cursor reconnect, and the
-checked gRPC stream described in [Live Named Queries](LIVE-QUERIES.md).
-Generated reactive Rust, TypeScript, Python, CLI, MCP, and browser-relay
-conveniences remain in WP-419; contextual work-item execution remains in
-WP-420. MCP has no direct storage path and does not receive reactive tools until
-WP-419.
+seek, retire, status, and retention fencing. Live queries use compiler-derived
+invalidation, checked cursor reconnect, and the update protocol described in
+[Live Named Queries](LIVE-QUERIES.md). Generated Rust, TypeScript, Python, MCP,
+CLI, and application-owned browser relay helpers adapt those same operations as
+described in [Reactive Application Clients](CLIENTS.md).
+
+Contextual work items that combine an event, freshly authorized hydration, and
+causally fenced command reactions are a later surface. A normal event consumer
+does not imply hydrated context or command authority. MCP has no direct storage
+path, and its resource notifications contain no event or context payload.
 
 See [Domain Events](../contracts/DOMAIN-EVENTS.md), [Immutable Query
 Modules](../riffql/MODULES.md), and [Application Source and Exact

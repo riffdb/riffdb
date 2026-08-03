@@ -94,3 +94,48 @@ Deployed named-query tools use the compiler-owned
 `<module_snake>_<query_snake>` name, advertise the generated parameter and
 result schemas, and execute one named query in one snapshot. They never submit
 ad-hoc RiffQL or gain raw entity/index authority.
+
+## Reactive operations
+
+Reactive application roles may discover `riffdb_event_next`,
+`riffdb_event_ack`, `riffdb_event_nack`, `riffdb_event_seek`,
+`riffdb_event_status`, and `riffdb_query_watch`, filtered by their exact
+permissions. Tool names contain underscores rather than dots for broad MCP host
+compatibility.
+
+Reactive parameters use the exact tagged scalar objects advertised by each
+tool schema. This prevents JSON number precision loss and preserves durable
+type identity. For example, UUID and signed-integer parameters are written as:
+
+```json
+{
+  "parameters": {
+    "workspace_id": {
+      "type": "uuid",
+      "value": "01900000-0000-7000-8000-000000000001"
+    },
+    "after_sequence": { "type": "i64", "value": "42" }
+  },
+  "consumer_name": "Worker_1"
+}
+```
+
+Decimals include their fixed `precision` and `scale`; enums include the
+compiler-pinned `type_id`, `variant_id`, and display `name`. Use the generated
+schema rather than guessing these identities.
+
+Treat event delivery as at least once. Perform the intended idempotent work,
+then acknowledge with the exact event ID, lease token, and history incarnation
+returned by `riffdb_event_next`. A lease token is not authority and may be stale
+after retry, restore, or expiry. Seek requires separate administrative
+authority.
+
+Persist the cursor from each applied `riffdb_query_watch` update. Snapshot and
+reset replace local state; patch applies its ordered closed operations;
+checkpoint advances the cursor without changing state; terminal requires the
+agent or application to clear retained query data and stop.
+
+`notifications/resources/updated` contains only a resource URI. It is a
+coalescible wakeup hint, never an event delivery or acknowledgement. Retrieve
+work through an authorized reactive tool and rely on the durable checkpoint or
+cursor for correctness. See [Reactive Application Clients](../reactive/CLIENTS.md).
