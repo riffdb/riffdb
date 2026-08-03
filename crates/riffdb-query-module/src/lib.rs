@@ -39,7 +39,8 @@ pub use python_generation::{
     PythonGenerationError, PythonGenerationLocation, generate_python_client,
 };
 pub use reactive_module::{
-    ReactiveModuleCompilationError, compile_reactive_source, decode_and_validate_reactive_module,
+    ReactiveModuleCompilationError, canonicalize_reactive_source, compile_reactive_source,
+    decode_and_validate_reactive_module, reactive_module_query_dependencies,
     reactive_query_catalog,
 };
 
@@ -58,6 +59,10 @@ use riffdb_types::{
 };
 use std::fmt;
 
+pub use riffdb_query_ir::{
+    CompiledReactiveOperationV1, ReactiveModulePlanV1, ReactiveOperationPlanV1,
+    ReactivePredicateNodeV1,
+};
 pub use riffdb_types::{QueryModuleName, QueryModuleVersion};
 
 const MODULE_MAGIC: &[u8] = b"RIFFDB-QUERY-MODULE\0";

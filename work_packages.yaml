@@ -6714,16 +6714,21 @@ work_packages:
   objective: Implement bounded partition-ordered at-least-once consumers with durable checkpoints, leases, ack/nack,
     retry, dead-letter, seek, restart recovery, and shared public adapters.
   requirements: [CON-001, CON-002, CON-003, CON-004, CON-005, CON-006, CON-007, CON-008]
-  required_adrs: [ADR-0004, ADR-0007, ADR-0019, ADR-0049, ADR-0063, ADR-0072, ADR-0073, ADR-0080]
+  required_adrs: [ADR-0004, ADR-0007, ADR-0019, ADR-0049, ADR-0063, ADR-0072, ADR-0073, ADR-0080,
+    ADR-0085]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**, crates/riffdb-types/**,
+    crates/riffdb-errors/**, crates/riffdb-query-module/**, crates/riffdb-catalog/**, crates/riffdb-commit/**,
     crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
     crates/riffdb-policy/**, crates/riffdb-service/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
-    crates/riffdb-client-rust/**, crates/riffdb-server/**, crates/riffdb-cli/**, fixtures/reactive/**,
-    fixtures/proto/**, tests/**, scripts/**, docs/**]
+    crates/riffdb-client-rust/**, crates/riffdb-server/**, crates/riffdb-cli/**,
+    crates/riffdb-observability/**, fixtures/reactive/**, fixtures/proto/**, tests/**, scripts/**,
+    docs/**]
   deliverables:
+  - Immutable exact reactive-module publication and catalog resolution through the shared control plane
   - Versioned consumer/checkpoint/lease/sparse-ack/dead-letter formats and one atomic ConsumerCoordinator
   - Bounded next/ack/nack/seek/status service operations, pull and gRPC streaming, long poll, and exact authorization
   - Startup lease recovery, incarnation mismatch, module change, corruption, backup/restore, and sibling isolation behavior
+  - Consumer-aware retention fencing plus explicit authorized seek/retire release behavior
   - Deterministic schedule and process-crash matrix covering every delivery/checkpoint transition without sleeps
   acceptance_commands:
   - cargo test -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-service --all-features

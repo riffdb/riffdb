@@ -500,6 +500,8 @@ pub enum StoredAdministrationAuditRecordV1 {
     Catalog(crate::StoredCatalogAdministrationV1),
     /// Immutable query-module activation.
     QueryModule(crate::StoredQueryModuleAdministrationV1),
+    /// Immutable reactive-module publication.
+    ReactiveModule(crate::StoredReactiveModuleAdministrationV1),
     /// Capability bootstrap, creation, or revocation.
     Capability(crate::StoredCapabilityAdministrationV1),
     /// Application-service invocation phase.
@@ -515,6 +517,7 @@ impl StoredAdministrationAuditRecordV1 {
         match self {
             Self::Catalog(record) => record.administration_sequence(),
             Self::QueryModule(record) => record.administration_sequence(),
+            Self::ReactiveModule(record) => record.administration_sequence(),
             Self::Capability(record) => record.administration_sequence(),
             Self::Service(record) => record.administration_sequence(),
             Self::Retention(record) => record.administration_sequence(),

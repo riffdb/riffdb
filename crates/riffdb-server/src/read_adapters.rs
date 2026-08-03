@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use riffdb_catalog::{
     ActiveCatalogSnapshot, CatalogError, CatalogErrorKind, CatalogPreparationResult,
-    QueryModuleCatalogError, ResolvedExecutablePlan, ValidatedContractBundle, ValidatedQueryModule,
+    QueryModuleCatalogError, ReactiveModuleCatalogError, ResolvedExecutablePlan,
+    ValidatedContractBundle, ValidatedQueryModule, ValidatedReactiveModule,
     prepare_catalog_activation, resolve_executable_plan,
 };
 use riffdb_contract_ir::ContractBundle;
@@ -24,13 +25,15 @@ use riffdb_service::{
     AuthoritativeEntitySnapshot, AuthoritativeEventReplayRequest, AuthoritativeIndexPage,
     AuthoritativeIndexRequest, AuthoritativeIndexRow, AuthoritativeJournaledOutcome,
     AuthoritativeOutcomeFacts, AuthoritativeOutcomeRequest, AuthoritativeOutcomeSelectorRef,
-    AuthoritativeOutcomeSnapshot, AuthoritativeProvenanceSnapshot, AuthoritativeReadError,
-    AuthoritativeReadPort, AuthoritativeSchemaBinding, BoxPortCapacityPermit,
-    CapabilityRevokeTargetSnapshot, CatalogExecutablePlanRequest, CatalogReadPort,
-    CommandDurability, CommitNotificationSource, ContractVersionReadPermit, DeclaredOutcomeView,
-    DurableEventView, OutcomeLocatorDigestEvidence, PortAdmissionError, PortDriverStopped,
-    PortFuture, PresentCapabilityRevokeTargetSnapshot, ProvenanceClaimsView, QueryModuleReadError,
-    QueryModuleReadPort, RequestControl,
+    AuthoritativeOutcomeSnapshot, AuthoritativeProvenanceSnapshot,
+    AuthoritativeReactiveEventWindow, AuthoritativeReactiveEventWindowRequest,
+    AuthoritativeReadError, AuthoritativeReadPort, AuthoritativeSchemaBinding,
+    BoxPortCapacityPermit, CapabilityRevokeTargetSnapshot, CatalogExecutablePlanRequest,
+    CatalogReadPort, CommandDurability, CommitNotificationSource, ContractVersionReadPermit,
+    DeclaredOutcomeView, DurableEventView, OutcomeLocatorDigestEvidence, PortAdmissionError,
+    PortDriverStopped, PortFuture, PresentCapabilityRevokeTargetSnapshot, ProvenanceClaimsView,
+    QueryModuleReadError, QueryModuleReadPort, ReactiveModuleReadError, ReactiveModuleReadPort,
+    RequestControl,
 };
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, AdmissionLookupResultV1, AdmissionRepository, AuthoritativePointReader,
@@ -39,15 +42,17 @@ use riffdb_storage_api::{
     ExecutablePlanRef, FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
     FilteredAuthoritativeScanReader, IdempotencyIdentity, IdempotencyKeyDigest,
     IdempotencyLookupCandidatesV1, IndexPartitionFilter, IndexPartitionFilterScope,
-    IndexRangePrefixBuilder, IndexRangeTarget, QueryModuleRepository, ReadableDigestKey,
-    ReadableIdempotencyDigestInventory, StorageError, StorageErrorKind, StorageScanLimit,
-    StoredAdmissionStateV1, StoredCommitRecordV1, StoredPendingAdmissionV1,
+    IndexRangePrefixBuilder, IndexRangeTarget, QueryModuleRepository, ReactiveModuleRepository,
+    ReadableDigestKey, ReadableIdempotencyDigestInventory, StorageError, StorageErrorKind,
+    StorageScanLimit, StoredAdmissionStateV1, StoredCommitRecordV1, StoredPendingAdmissionV1,
     StoredProvenanceRecordV1,
 };
 use riffdb_types::{
     CanonicalValue, CapabilityId, CommitSequence, ContractLineage, ContractVersion, DatabaseId,
-    Environment, QueryModuleHash,
+    Environment, QueryModuleHash, ReactiveModuleHash,
 };
+
+const MAX_REACTIVE_EVENT_WINDOW_ROUTE_PAGES: u16 = 256;
 
 use crate::notifications::FirstCommitNotificationHub;
 use crate::port_driver::{BlockingPortDriver, BlockingPortExecutor};
@@ -56,6 +61,7 @@ use crate::storage::SharedRedbOperationalPorts;
 type ContractVersionRequest = (ContractLineage, ContractVersion);
 type DeploymentRequest = (ContractBundle, Option<ContractVersion>);
 type QueryModuleReadRequest = (ValidatedContractBundle, Option<QueryModuleHash>);
+type ReactiveModuleReadRequest = (ValidatedContractBundle, ReactiveModuleHash);
 const MAX_HOT_HISTORICAL_CONTRACTS: usize = 4_096;
 const MAX_HOT_QUERY_MODULES: usize = 4_096;
 const MAX_HOT_EXECUTABLE_PLANS: usize = 4_096;
@@ -244,6 +250,11 @@ pub(crate) struct ServerCatalogReadPort {
         Option<ValidatedQueryModule>,
         QueryModuleReadError,
     >,
+    reactive_module: BlockingPortExecutor<
+        ReactiveModuleReadRequest,
+        Option<ValidatedReactiveModule>,
+        ReactiveModuleReadError,
+    >,
     /// Shared with the blocking executor for non-blocking cache-hit inline lookup.
     module_storage: SharedRedbOperationalPorts,
     module_cache: Arc<Mutex<QueryModulePlanCache>>,
@@ -333,6 +344,12 @@ impl ServerCatalogReadPort {
             )
         });
 
+        let reactive_storage = storage.clone();
+        let reactive_module =
+            driver.executor(move |(contract, module_hash): ReactiveModuleReadRequest| {
+                resolve_reactive_module_on_pool(&reactive_storage, contract, module_hash)
+            });
+
         let deployment = driver.executor(
             move |(candidate, expected_active_version): DeploymentRequest| {
                 let active = ActiveCatalogSnapshot::read(&storage)?;
@@ -348,6 +365,7 @@ impl ServerCatalogReadPort {
             executable_plan,
             deployment,
             query_module,
+            reactive_module,
             module_storage,
             module_cache,
         }
@@ -458,6 +476,20 @@ impl QueryModuleReadPort for ServerCatalogReadPort {
     }
 }
 
+impl ReactiveModuleReadPort for ServerCatalogReadPort {
+    fn prepare_reactive_module<'a>(
+        &'a self,
+        control: &'a RequestControl,
+        contract: ValidatedContractBundle,
+        module_hash: ReactiveModuleHash,
+    ) -> PortFuture<'a, Option<ValidatedReactiveModule>, ReactiveModuleReadError> {
+        submit_reactive_module(
+            self.reactive_module.reserve_async(control),
+            (contract, module_hash),
+        )
+    }
+}
+
 /// Answers a query-module lookup from process-local state, or declines.
 ///
 /// This is the inline fast path and it is deliberately incapable of failing.
@@ -535,6 +567,31 @@ fn resolve_query_module_on_pool(
     Ok(module)
 }
 
+fn resolve_reactive_module_on_pool(
+    storage: &SharedRedbOperationalPorts,
+    contract: ValidatedContractBundle,
+    module_hash: ReactiveModuleHash,
+) -> Result<Option<ValidatedReactiveModule>, ReactiveModuleReadError> {
+    let Some(stored) = ReactiveModuleRepository::read_reactive_module(storage, module_hash)
+        .map_err(map_reactive_module_storage)?
+    else {
+        return Ok(None);
+    };
+    let mut query_modules = Vec::with_capacity(stored.query_module_hashes().len());
+    for dependency in stored.query_module_hashes() {
+        let query = QueryModuleRepository::read_query_module(storage, *dependency)
+            .map_err(map_reactive_module_storage)?
+            .ok_or(ReactiveModuleReadError::Integrity)?;
+        query_modules.push(
+            ValidatedQueryModule::from_stored(&query, &contract)
+                .map_err(|_| ReactiveModuleReadError::Integrity)?,
+        );
+    }
+    ValidatedReactiveModule::from_stored(&stored, &contract, &query_modules)
+        .map(Some)
+        .map_err(map_reactive_module_catalog)
+}
+
 impl fmt::Debug for ServerCatalogReadPort {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ServerCatalogReadPort([REDACTED])")
@@ -546,6 +603,11 @@ pub(crate) struct ServerAuthoritativeReadPort {
     event_replay: BlockingPortExecutor<
         AuthoritativeEventReplayRequest,
         riffdb_catalog::SymbolicEventReplayPage,
+        AuthoritativeReadError,
+    >,
+    reactive_event_window: BlockingPortExecutor<
+        AuthoritativeReactiveEventWindowRequest,
+        AuthoritativeReactiveEventWindow,
         AuthoritativeReadError,
     >,
     entity: BlockingPortExecutor<
@@ -620,6 +682,12 @@ impl ServerAuthoritativeReadPort {
                 })
         });
 
+        let reactive_event_storage = storage.clone();
+        let reactive_event_window =
+            driver.executor(move |request: AuthoritativeReactiveEventWindowRequest| {
+                read_reactive_event_window(&reactive_event_storage, request)
+            });
+
         let index_storage = storage.clone();
         let index = driver.executor(move |request| scan_index(&index_storage, request));
 
@@ -660,6 +728,7 @@ impl ServerAuthoritativeReadPort {
 
         Self {
             event_replay,
+            reactive_event_window,
             entity,
             index,
             outcome,
@@ -673,6 +742,21 @@ impl ServerAuthoritativeReadPort {
 }
 
 impl AuthoritativeReadPort for ServerAuthoritativeReadPort {
+    fn reserve_reactive_event_window<'a>(
+        &'a self,
+        control: &'a RequestControl,
+    ) -> PortFuture<
+        'a,
+        BoxPortCapacityPermit<
+            AuthoritativeReactiveEventWindowRequest,
+            AuthoritativeReactiveEventWindow,
+            AuthoritativeReadError,
+        >,
+        PortAdmissionError,
+    > {
+        ready_port_reservation(self.reactive_event_window.reserve_async(control))
+    }
+
     fn reserve_replay_events<'a>(
         &'a self,
         control: &'a RequestControl,
@@ -802,6 +886,46 @@ impl AuthoritativeReadPort for ServerAuthoritativeReadPort {
     }
 }
 
+fn read_reactive_event_window(
+    storage: &SharedRedbOperationalPorts,
+    request: AuthoritativeReactiveEventWindowRequest,
+) -> Result<AuthoritativeReactiveEventWindow, AuthoritativeReadError> {
+    let (stream, after, limit, history_incarnation) = request.into_parts();
+    let route_limit = EventRoutePageLimit::new(
+        std::num::NonZeroU16::new(limit).ok_or(AuthoritativeReadError::Integrity)?,
+    )
+    .map_err(|_| AuthoritativeReadError::Integrity)?;
+    let mut position = riffdb_catalog::EventReplayPosition::Initial { after };
+    let mut selected = Vec::with_capacity(usize::from(limit));
+
+    for _ in 0..MAX_REACTIVE_EVENT_WINDOW_ROUTE_PAGES {
+        let page = stream
+            .replay_page(storage, position, route_limit, history_incarnation)
+            .map_err(|error| match error.kind() {
+                riffdb_catalog::EventReplayErrorKind::Storage(StorageErrorKind::Unavailable) => {
+                    AuthoritativeReadError::Unavailable
+                }
+                _ => AuthoritativeReadError::Integrity,
+            })?;
+        let observed_upper = page.observed_upper();
+        let continuation = page.continuation();
+        for event in page.into_items() {
+            if selected.len() == usize::from(limit) {
+                break;
+            }
+            selected.push(event);
+        }
+        if selected.len() == usize::from(limit) || continuation.is_none() {
+            return AuthoritativeReactiveEventWindow::new(selected, observed_upper)
+                .ok_or(AuthoritativeReadError::Integrity);
+        }
+        position = riffdb_catalog::EventReplayPosition::Continue(
+            continuation.ok_or(AuthoritativeReadError::Integrity)?,
+        );
+    }
+    Err(AuthoritativeReadError::Unavailable)
+}
+
 impl fmt::Debug for ServerAuthoritativeReadPort {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ServerAuthoritativeReadPort([REDACTED])")
@@ -876,12 +1000,58 @@ where
     })
 }
 
+fn submit_reactive_module<'a, Request, Response, F>(
+    reservation: F,
+    request: Request,
+) -> PortFuture<'a, Response, ReactiveModuleReadError>
+where
+    Request: Send + 'a,
+    Response: Send + 'a,
+    F: std::future::Future<
+            Output = Result<
+                BoxPortCapacityPermit<Request, Response, ReactiveModuleReadError>,
+                PortAdmissionError,
+            >,
+        > + Send
+        + 'a,
+{
+    Box::pin(async move {
+        let permit = reservation
+            .await
+            .map_err(|_| ReactiveModuleReadError::Unavailable)?;
+        let receipt = permit
+            .submit(request)
+            .map_err(|_| ReactiveModuleReadError::Unavailable)?;
+        match receipt.completion().await {
+            Ok(result) => result,
+            Err(PortDriverStopped) => Err(ReactiveModuleReadError::Unavailable),
+        }
+    })
+}
+
 fn map_query_module_storage(_: StorageError) -> QueryModuleReadError {
     QueryModuleReadError::Unavailable
 }
 
 fn map_query_module_catalog(_: QueryModuleCatalogError) -> QueryModuleReadError {
     QueryModuleReadError::Integrity
+}
+
+fn map_reactive_module_storage(error: StorageError) -> ReactiveModuleReadError {
+    match error.kind() {
+        StorageErrorKind::CorruptData
+        | StorageErrorKind::IncompatibleFormat
+        | StorageErrorKind::InvariantViolation
+        | StorageErrorKind::SequenceExhausted => ReactiveModuleReadError::Integrity,
+        StorageErrorKind::Unavailable
+        | StorageErrorKind::CommitStatusUnknown
+        | StorageErrorKind::LimitExceeded
+        | StorageErrorKind::HistoryPruned => ReactiveModuleReadError::Unavailable,
+    }
+}
+
+fn map_reactive_module_catalog(_: ReactiveModuleCatalogError) -> ReactiveModuleReadError {
+    ReactiveModuleReadError::Integrity
 }
 
 fn submit_authoritative<'a, Request, Response, F>(

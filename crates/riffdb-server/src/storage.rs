@@ -23,32 +23,36 @@ use riffdb_storage_api::{
     CapabilityRevokeAwaitingDecision, CapabilityRevokeCandidateTransaction,
     CapabilityRevokeCandidateV1, CapabilityRevokeIntentV1, CapabilityRevokeResult,
     CatalogActivationIntentV1, CatalogActivationResult, CatalogAdministrationRepository,
-    CatalogRepository, CommitScanPageV1, CommitScanRequest, EventRouteScanRequestV1,
-    EventRouteScanV1, ExecutionFailureAdmissionResult, ExecutionFailureTransitionPort,
-    ExecutionFailureTransitionRequestV1, FilteredAuthoritativeIndexScanPage,
-    FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader, IdempotencyIdentity,
-    IdempotencyLookupCandidatesV1, OutboxClaimV1, OutboxDeadLetterV1, OutboxPageLimit,
-    OutboxRenewV1, OutboxRepository, OutboxRetryV1, OutboxStatusReadResultV1, OutboxSucceedV1,
-    OutboxTransitionResultV1, PartitionEventRouteReader, PendingOutboxScanV1,
-    ProjectionApplyRequestV1, ProjectionApplyResult, ProjectionApplySnapshot,
-    ProjectionApplySnapshotReader, ProjectionApplySnapshotRequest, ProjectionControlOperation,
-    ProjectionControlResult, ProjectionControlScanV1, ProjectionMutationRepository,
-    ProjectionQueryReader, ProjectionQueryRequest, ProjectionQueryResult,
-    ProjectionRecoveryPageLimit, ProjectionRecoveryRepository,
-    ProjectionRecoveryValidationRequestV1, ProjectionRecoveryValidationResultV1, ProjectionStatus,
-    QueryModuleActivationIntentV1, QueryModuleActivationResult,
-    QueryModuleAdministrationRepository, QueryModuleRepository, ReadSnapshot,
+    CatalogRepository, CommitScanPageV1, CommitScanRequest, EventConsumerRepository,
+    EventConsumerSnapshotV1, EventConsumerTransitionResultV1, EventConsumerTransitionV1,
+    EventRouteScanRequestV1, EventRouteScanV1, ExecutionFailureAdmissionResult,
+    ExecutionFailureTransitionPort, ExecutionFailureTransitionRequestV1,
+    FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
+    FilteredAuthoritativeScanReader, IdempotencyIdentity, IdempotencyLookupCandidatesV1,
+    OutboxClaimV1, OutboxDeadLetterV1, OutboxPageLimit, OutboxRenewV1, OutboxRepository,
+    OutboxRetryV1, OutboxStatusReadResultV1, OutboxSucceedV1, OutboxTransitionResultV1,
+    PartitionEventRouteReader, PendingOutboxScanV1, ProjectionApplyRequestV1,
+    ProjectionApplyResult, ProjectionApplySnapshot, ProjectionApplySnapshotReader,
+    ProjectionApplySnapshotRequest, ProjectionControlOperation, ProjectionControlResult,
+    ProjectionControlScanV1, ProjectionMutationRepository, ProjectionQueryReader,
+    ProjectionQueryRequest, ProjectionQueryResult, ProjectionRecoveryPageLimit,
+    ProjectionRecoveryRepository, ProjectionRecoveryValidationRequestV1,
+    ProjectionRecoveryValidationResultV1, ProjectionStatus, QueryModuleActivationIntentV1,
+    QueryModuleActivationResult, QueryModuleAdministrationRepository, QueryModuleRepository,
+    ReactiveModuleAdministrationRepository, ReactiveModulePublicationIntentV1,
+    ReactiveModulePublicationResult, ReactiveModuleRepository, ReadSnapshot,
     ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
     SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind, StorageScanLimit,
     StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1,
     StoredContractMigrationEdgeV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
-    StoredProvenanceRecordV1, StoredQueryModuleV1, UndeliveredOutboxStatusScanRequestV1,
-    UndeliveredOutboxStatusScanV1,
+    StoredProvenanceRecordV1, StoredQueryModuleV1, StoredReactiveModuleV1,
+    UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1,
 };
 use riffdb_storage_redb::{RedbOperationalPorts, RedbSharedPorts};
 use riffdb_types::{
     CapabilityId, CapabilityTokenDigest, CommitSequence, ContractBundleHash, ContractLineage,
-    ContractVersion, EventId, ProvenanceId, QueryModuleHash,
+    ContractVersion, EventConsumerIdentityHash, EventId, ProvenanceId, QueryModuleHash,
+    ReactiveModuleHash,
 };
 
 /// A cloneable handle to the sole activated redb semantic-port bundle.
@@ -835,6 +839,58 @@ impl QueryModuleAdministrationRepository for SharedRedbOperationalPorts {
             return Err(self.current_view_failure(error));
         }
         Ok(result)
+    }
+}
+
+impl ReactiveModuleAdministrationRepository for SharedRedbOperationalPorts {
+    fn publish_reactive_module(
+        &mut self,
+        intent: &ReactiveModulePublicationIntentV1,
+    ) -> Result<ReactiveModulePublicationResult, StorageError> {
+        self.cell.with_mut(|ports| {
+            ReactiveModuleAdministrationRepository::publish_reactive_module(ports, intent)
+        })
+    }
+}
+
+impl ReactiveModuleRepository for SharedRedbOperationalPorts {
+    fn read_reactive_module(
+        &self,
+        module_hash: ReactiveModuleHash,
+    ) -> Result<Option<StoredReactiveModuleV1>, StorageError> {
+        self.cell
+            .with_mut(|ports| ReactiveModuleRepository::read_reactive_module(ports, module_hash))
+    }
+}
+
+impl EventConsumerRepository for SharedRedbOperationalPorts {
+    fn inspect_event_consumer(
+        &self,
+        consumer_identity_hash: EventConsumerIdentityHash,
+    ) -> Result<Option<EventConsumerSnapshotV1>, StorageError> {
+        self.cell.with_mut(|ports| {
+            EventConsumerRepository::inspect_event_consumer(ports, consumer_identity_hash)
+        })
+    }
+
+    fn transition_event_consumer(
+        &mut self,
+        transition: EventConsumerTransitionV1,
+    ) -> Result<EventConsumerTransitionResultV1, StorageError> {
+        self.cell
+            .with_mut(|ports| EventConsumerRepository::transition_event_consumer(ports, transition))
+    }
+
+    fn inspect_event_consumer_inventory(
+        &self,
+    ) -> Result<Vec<EventConsumerSnapshotV1>, StorageError> {
+        self.cell
+            .with_mut(|ports| EventConsumerRepository::inspect_event_consumer_inventory(ports))
+    }
+
+    fn event_consumer_retention_low_water(&self) -> Result<Option<u64>, StorageError> {
+        self.cell
+            .with_mut(|ports| EventConsumerRepository::event_consumer_retention_low_water(ports))
     }
 }
 
@@ -1719,10 +1775,13 @@ mod tests {
                 + ServiceAuditAppendRepository
                 + CatalogAdministrationRepository
                 + QueryModuleAdministrationRepository
+                + ReactiveModuleAdministrationRepository
                 + CapabilityAdministrationTransactionPort
                 + CapabilityBootstrapAdministrationRepository
                 + CatalogRepository
                 + QueryModuleRepository
+                + ReactiveModuleRepository
+                + EventConsumerRepository
                 + CapabilityReader
                 + CapabilityInventoryReader
                 + AuthoritativePointReader

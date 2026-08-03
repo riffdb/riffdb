@@ -4,6 +4,7 @@
 
 mod administration;
 mod application;
+mod consumer;
 mod derived;
 mod gate;
 mod integrity_administration;

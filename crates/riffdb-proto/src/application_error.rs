@@ -211,6 +211,7 @@ const fn proto_operation(value: DomainOperation) -> app_v1::ApplicationOperation
         DomainOperation::ExplainQuery => app_v1::ApplicationOperation::ExplainQuery,
         DomainOperation::ExecuteQuery => app_v1::ApplicationOperation::ExecuteQuery,
         DomainOperation::DeployQueryModule => app_v1::ApplicationOperation::DeployQueryModule,
+        DomainOperation::DeployReactiveModule => app_v1::ApplicationOperation::DeployReactiveModule,
         DomainOperation::GetQueryModule => app_v1::ApplicationOperation::GetQueryModule,
         DomainOperation::ExecuteCommand => app_v1::ApplicationOperation::ExecuteCommand,
         DomainOperation::BatchCommand => app_v1::ApplicationOperation::BatchCommand,
@@ -228,6 +229,9 @@ fn domain_operation(value: i32) -> Result<DomainOperation, ApplicationErrorWireE
         Ok(app_v1::ApplicationOperation::ExecuteQuery) => Ok(DomainOperation::ExecuteQuery),
         Ok(app_v1::ApplicationOperation::DeployQueryModule) => {
             Ok(DomainOperation::DeployQueryModule)
+        }
+        Ok(app_v1::ApplicationOperation::DeployReactiveModule) => {
+            Ok(DomainOperation::DeployReactiveModule)
         }
         Ok(app_v1::ApplicationOperation::GetQueryModule) => Ok(DomainOperation::GetQueryModule),
         Ok(app_v1::ApplicationOperation::ExecuteCommand) => Ok(DomainOperation::ExecuteCommand),

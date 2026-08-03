@@ -321,6 +321,26 @@ fn expected_enum_values() -> BTreeSet<String> {
             "CAPABILITY_PERMISSION_KIND_MIGRATE_CONTRACT",
         ),
         (
+            "riffdb.v1.CapabilityPermissionKind",
+            27,
+            "CAPABILITY_PERMISSION_KIND_CONSUME_EVENT_STREAM",
+        ),
+        (
+            "riffdb.v1.CapabilityPermissionKind",
+            28,
+            "CAPABILITY_PERMISSION_KIND_SEEK_EVENT_STREAM_CONSUMER",
+        ),
+        (
+            "riffdb.v1.CapabilityPermissionKind",
+            29,
+            "CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY",
+        ),
+        (
+            "riffdb.v1.CapabilityPermissionKind",
+            30,
+            "CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION",
+        ),
+        (
             "riffdb.v1.ContractMigrationApplyConfirmation",
             0,
             "CONTRACT_MIGRATION_APPLY_CONFIRMATION_UNSPECIFIED",
@@ -534,6 +554,41 @@ fn expected_enum_values() -> BTreeSet<String> {
             "riffdb.v1.DiscoveryRepresentation",
             2,
             "DISCOVERY_REPRESENTATION_COMPACT_OBSERVATION",
+        ),
+        (
+            "riffdb.v1.EventConsumerMutationResult",
+            0,
+            "EVENT_CONSUMER_MUTATION_RESULT_UNSPECIFIED",
+        ),
+        (
+            "riffdb.v1.EventConsumerMutationResult",
+            1,
+            "EVENT_CONSUMER_MUTATION_RESULT_APPLIED",
+        ),
+        (
+            "riffdb.v1.EventConsumerMutationResult",
+            2,
+            "EVENT_CONSUMER_MUTATION_RESULT_STATE_CHANGED",
+        ),
+        (
+            "riffdb.v1.EventConsumerMutationResult",
+            3,
+            "EVENT_CONSUMER_MUTATION_RESULT_NOT_FOUND",
+        ),
+        (
+            "riffdb.v1.EventConsumerMutationResult",
+            4,
+            "EVENT_CONSUMER_MUTATION_RESULT_OUTSTANDING_LEASE",
+        ),
+        (
+            "riffdb.v1.EventConsumerMutationResult",
+            5,
+            "EVENT_CONSUMER_MUTATION_RESULT_STALE_LEASE",
+        ),
+        (
+            "riffdb.v1.EventConsumerMutationResult",
+            6,
+            "EVENT_CONSUMER_MUTATION_RESULT_LEASE_EXPIRED",
         ),
         (
             "riffdb.v1.ExecutionFailureCode",

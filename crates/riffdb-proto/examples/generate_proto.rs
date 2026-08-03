@@ -43,6 +43,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/capability_migration.proto",
     "riffdb/storage/v1/catalog.proto",
     "riffdb/storage/v1/common.proto",
+    "riffdb/storage/v1/consumer_v1.proto",
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_route_v1.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
@@ -54,8 +55,10 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/migration_v1.proto",
     "riffdb/storage/v1/outbox.proto",
     "riffdb/storage/v1/projection.proto",
+    "riffdb/storage/v1/reactive_module_v1.proto",
     "riffdb/storage/v1/registry_v2.proto",
     "riffdb/storage/v1/service_audit_request_index_v1.proto",
+    "riffdb/storage/v1/service_audit_v2.proto",
     "riffdb/storage/v1/validated_prefix_checkpoint_v1.proto",
     "riffdb/storage/v1/retention_watermark_v1.proto",
 ];
@@ -67,6 +70,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/capability_migration.proto",
     "riffdb/storage/v1/catalog.proto",
     "riffdb/storage/v1/common.proto",
+    "riffdb/storage/v1/consumer_v1.proto",
     "riffdb/storage/v1/envelope.proto",
     "riffdb/storage/v1/event_route_v1.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
@@ -78,8 +82,10 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/migration_v1.proto",
     "riffdb/storage/v1/outbox.proto",
     "riffdb/storage/v1/projection.proto",
+    "riffdb/storage/v1/reactive_module_v1.proto",
     "riffdb/storage/v1/registry_v2.proto",
     "riffdb/storage/v1/service_audit_request_index_v1.proto",
+    "riffdb/storage/v1/service_audit_v2.proto",
     "riffdb/storage/v1/validated_prefix_checkpoint_v1.proto",
     "riffdb/storage/v1/retention_watermark_v1.proto",
     "riffdb/v1/admin.proto",
@@ -102,6 +108,37 @@ const DOCUMENT_PAYLOAD_BOUND: usize = 2 * 1024 * 1024;
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: [u8; 32] = [
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
     0xa9, 0x48, 0x34, 0x06, 0x84, 0x75, 0x31, 0xf3, 0x4d, 0x5f, 0xb3, 0xf1, 0x8d, 0x40, 0xb3, 0x42,
+];
+const PRE_WP416_CAPABILITY_SCHEMA_HASH: [u8; 32] = [
+    0xde, 0xe2, 0x39, 0x8e, 0xbb, 0xc7, 0x18, 0x24, 0x47, 0x1f, 0xe5, 0xa5, 0xf9, 0x6f, 0xcb, 0xeb,
+    0xdd, 0xe0, 0x9e, 0x51, 0x1f, 0xe6, 0xc1, 0x15, 0x31, 0xc2, 0xb3, 0x02, 0x10, 0xf9, 0xe6, 0xbf,
+];
+const PRE_WP416_CAPABILITY_FILE_SCHEMA_HASHES: &[(&str, [u8; 32])] = &[
+    ("CapabilityRecordV1", PRE_WP416_CAPABILITY_SCHEMA_HASH),
+    (
+        "CapabilityTokenLookupV1",
+        [
+            0xe0, 0x06, 0x96, 0xf3, 0xd2, 0xc1, 0x10, 0xc5, 0xb2, 0xb9, 0x96, 0x85, 0xe7, 0x98,
+            0x7f, 0x72, 0x04, 0xd2, 0xf9, 0x57, 0x6f, 0x8b, 0x41, 0xc5, 0xfc, 0xd5, 0xa8, 0x94,
+            0xc7, 0x46, 0xbc, 0x86,
+        ],
+    ),
+    (
+        "CapabilityBootstrapMarkerV1",
+        [
+            0x12, 0x04, 0xe2, 0x70, 0x16, 0x96, 0x88, 0x24, 0x4b, 0xc4, 0x89, 0x07, 0x1d, 0xb7,
+            0x0c, 0x7d, 0x24, 0x81, 0x11, 0x1a, 0x97, 0x0d, 0x5a, 0x9d, 0xa4, 0x20, 0xad, 0x7b,
+            0x93, 0x34, 0xe4, 0xea,
+        ],
+    ),
+    (
+        "CapabilityAdministrationAuditV1",
+        [
+            0x28, 0xd4, 0xa9, 0xd5, 0xf6, 0x3e, 0xb9, 0xf5, 0xba, 0xcb, 0x20, 0x42, 0xaf, 0x50,
+            0xd4, 0x7e, 0xa3, 0x95, 0x32, 0xbc, 0x2e, 0xf6, 0x0c, 0x3d, 0xc5, 0x2a, 0x45, 0x0c,
+            0xc7, 0xb4, 0x9a, 0x46,
+        ],
+    ),
 ];
 
 #[derive(Clone, Copy)]
@@ -356,6 +393,31 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "StoredRetentionAdministrationV1",
         PayloadBound::Tiny,
     ),
+    durable(
+        "reactive_module_v1.proto",
+        "StoredReactiveModuleV1",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "reactive_module_v1.proto",
+        "StoredReactiveModuleAdministrationV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "consumer_v1.proto",
+        "StoredEventConsumerV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "consumer_v1.proto",
+        "StoredEventConsumerDeliveryV1",
+        PayloadBound::Tiny,
+    ),
+    durable(
+        "service_audit_v2.proto",
+        "ServiceAuditRecordV2",
+        PayloadBound::Admission,
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -379,6 +441,7 @@ const CRC_32C: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
 const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("ApplicationQueryService", "CheckQuery", false),
     ("ApplicationQueryService", "DeployQueryModule", false),
+    ("ApplicationQueryService", "DeployReactiveModule", false),
     ("ApplicationQueryService", "DescribeContract", false),
     ("ApplicationQueryService", "ExecuteProjectedQuery", false),
     ("ApplicationQueryService", "ExecuteQuery", false),
@@ -403,7 +466,14 @@ const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("CommitService", "SubscribeCommits", true),
     ("CommitService", "TraceProvenance", false),
     ("EventService", "DescribeEvent", false),
+    ("EventService", "AcknowledgeEventStream", false),
+    ("EventService", "ConsumeEventStream", false),
+    ("EventService", "GetEventStreamConsumerStatus", false),
+    ("EventService", "NegativeAcknowledgeEventStream", false),
     ("EventService", "ReplayEvents", false),
+    ("EventService", "RetireEventStreamConsumer", false),
+    ("EventService", "SeekEventStreamConsumer", false),
+    ("EventService", "StreamEventConsumer", true),
     ("EventService", "TailEvents", false),
     ("ContractService", "DeployContract", false),
     ("ContractService", "DiscoverCommandTools", false),
@@ -705,6 +775,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| {
             io::Error::other("durable retention-administration registry is incomplete")
         })?;
+    let reactive_consumer_v1_records = durable_registry
+        .get(current_v1_record_count + 19..current_v1_record_count + 23)
+        .ok_or_else(|| io::Error::other("durable reactive/consumer registry is incomplete"))?;
+    let service_audit_v2_record = durable_registry
+        .get(current_v1_record_count + 23)
+        .ok_or_else(|| io::Error::other("durable service-audit-v2 registry is incomplete"))?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -879,6 +955,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/durable-retention-administration-v1-record-bound.bin",
         &durable_record_bounds(std::slice::from_ref(retention_administration_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-reactive-consumer-v1-schema-hashes.bin",
+        &durable_schema_hashes(reactive_consumer_v1_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-reactive-consumer-v1-record-bounds.bin",
+        &durable_record_bounds(reactive_consumer_v1_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-service-audit-v2-schema-hash.bin",
+        &service_audit_v2_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-service-audit-v2-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(service_audit_v2_record)),
     )?;
     write_artifact(
         &output_root,
@@ -1147,9 +1243,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 48 {
+    if DURABLE_RECORDS.len() != 53 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 48 records").into(),
+            io::Error::other("readable durable registry must contain exactly 53 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1159,7 +1255,7 @@ fn build_durable_registry(
             .any(|file| file.package() != "riffdb.storage.v1")
     {
         return Err(io::Error::other(
-            "storage descriptor must contain exactly the twenty-one riffdb.storage.v1 sources",
+            "storage descriptor must contain exactly the declared riffdb.storage.v1 sources",
         )
         .into());
     }
@@ -1173,9 +1269,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 103 || enum_count != 15 {
+    if message_count != 115 || enum_count != 15 {
         return Err(io::Error::other(format!(
-            "storage schema must contain 102 semantic messages plus StoredEnvelope and 15 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain 114 semantic messages plus StoredEnvelope and 15 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1318,7 +1414,7 @@ fn durable_readable_registry_fixture(
     let mut output = durable_registry_fixture(records);
     output = output.replacen(
         &format!("records {}", records.len()),
-        &format!("records {}", records.len() + 1),
+        &format!("records {}", records.len() + 5),
         1,
     );
     let _ = write!(
@@ -1335,6 +1431,26 @@ fn durable_readable_registry_fixture(
         let _ = write!(output, "{byte:02x}");
     }
     output.push('\n');
+    for (name, schema_hash) in PRE_WP416_CAPABILITY_FILE_SCHEMA_HASHES {
+        let record = records
+            .iter()
+            .find(|record| record.name == *name)
+            .ok_or_else(|| io::Error::other(format!("missing {name}")))?;
+        let _ = write!(
+            output,
+            "{} source={} message={} descriptor-bytes={} max-payload-bytes={} max-envelope-bytes={} schema-hash=",
+            record.record_type,
+            record.source,
+            record.name,
+            record.descriptor_bytes,
+            record.max_payload_bytes,
+            record.max_envelope_bytes,
+        );
+        for byte in schema_hash {
+            let _ = write!(output, "{byte:02x}");
+        }
+        output.push('\n');
+    }
     Ok(output)
 }
 
@@ -1398,6 +1514,12 @@ fn durable_writable_registry_fixture(
     let retention_administration = records.get(current_v1_record_count + 18).ok_or_else(|| {
         io::Error::other("durable registry is missing StoredRetentionAdministrationV1")
     })?;
+    let reactive_consumer_v1 = records
+        .get(current_v1_record_count + 19..current_v1_record_count + 23)
+        .ok_or_else(|| io::Error::other("durable registry is missing reactive/consumer records"))?;
+    let service_audit_v2 = records
+        .get(current_v1_record_count + 23)
+        .ok_or_else(|| io::Error::other("durable registry is missing ServiceAuditRecordV2"))?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -1406,7 +1528,9 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(outbox_v2))
         .chain(legacy[15..16].iter())
         .chain(std::iter::once(commit_v3))
-        .chain(legacy[17..].iter())
+        .chain(legacy[17..21].iter())
+        .chain(std::iter::once(service_audit_v2))
+        .chain(legacy[22..].iter())
         .chain(query_modules.iter())
         .chain(std::iter::once(history_incarnation))
         .chain(std::iter::once(service_audit_request_index))
@@ -1418,10 +1542,11 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(retention_holds))
         .chain(std::iter::once(history_tombstone))
         .chain(std::iter::once(retention_administration))
+        .chain(reactive_consumer_v1.iter())
         .chain(std::iter::once(registry_v2));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 14);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 18);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {
@@ -1706,12 +1831,20 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
             let input_type = match *method {
                 "Execute" => ".riffdb.v1.ExecuteCommandRequest".to_owned(),
                 "ExecuteBatch" => ".riffdb.v1.ExecuteCommandBatchRequest".to_owned(),
+                "StreamEventConsumer" => ".riffdb.v1.ConsumeEventStreamRequest".to_owned(),
                 _ => format!(".{package}.{method}Request"),
             };
             let output_type = match *method {
                 "Execute" => ".riffdb.v1.ExecuteCommandResponse".to_owned(),
                 "ExecuteBatch" => ".riffdb.v1.ExecuteCommandBatchResponse".to_owned(),
                 "SubscribeCommits" => ".riffdb.v1.CommitNotification".to_owned(),
+                "StreamEventConsumer" => ".riffdb.v1.ConsumeEventStreamResponse".to_owned(),
+                "AcknowledgeEventStream"
+                | "NegativeAcknowledgeEventStream"
+                | "SeekEventStreamConsumer"
+                | "RetireEventStreamConsumer" => {
+                    ".riffdb.v1.EventConsumerMutationResponse".to_owned()
+                }
                 _ => format!(".{package}.{method}Response"),
             };
             (
@@ -1728,7 +1861,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
 
     if actual != expected {
         return Err(io::Error::other(format!(
-            "service inventory differs from the accepted seven-service, thirty-nine-RPC baseline: expected {expected:?}, found {actual:?}"
+            "service inventory differs from the accepted seven-service, forty-seven-RPC baseline: expected {expected:?}, found {actual:?}"
         ))
         .into());
     }

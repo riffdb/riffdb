@@ -457,7 +457,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 39);
+    assert_eq!(methods.len(), 47);
     let descriptor_order = descriptors
         .file
         .iter()
@@ -481,6 +481,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "ExplainQuery",
             "ExecuteQuery",
             "DeployQueryModule",
+            "DeployReactiveModule",
             "GetQueryModule",
             "ExecuteProjectedQuery",
         ]
@@ -521,7 +522,18 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
     );
     assert_eq!(
         descriptor_order["EventService"],
-        vec!["DescribeEvent", "ReplayEvents", "TailEvents"]
+        vec![
+            "DescribeEvent",
+            "ReplayEvents",
+            "TailEvents",
+            "ConsumeEventStream",
+            "StreamEventConsumer",
+            "AcknowledgeEventStream",
+            "NegativeAcknowledgeEventStream",
+            "SeekEventStreamConsumer",
+            "RetireEventStreamConsumer",
+            "GetEventStreamConsumerStatus",
+        ]
     );
     assert_eq!(
         descriptor_order["AdminService"],
@@ -561,7 +573,10 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .filter(|method| method.5)
             .map(|method| (method.0.as_str(), method.1.as_str()))
             .collect::<Vec<_>>(),
-        vec![("CommitService", "SubscribeCommits")]
+        vec![
+            ("CommitService", "SubscribeCommits"),
+            ("EventService", "StreamEventConsumer"),
+        ]
     );
 
     let messages = message_map(&descriptors);
@@ -635,6 +650,20 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         "ReplayEventsResponse",
         "TailEventsRequest",
         "TailEventsResponse",
+        "EventConsumerParameter",
+        "EventConsumerSelection",
+        "EventConsumerCheckpoint",
+        "EventConsumerStatus",
+        "ConsumedEvent",
+        "ConsumeEventStreamRequest",
+        "ConsumeEventStreamResponse",
+        "AcknowledgeEventStreamRequest",
+        "NegativeAcknowledgeEventStreamRequest",
+        "SeekEventStreamConsumerRequest",
+        "RetireEventStreamConsumerRequest",
+        "GetEventStreamConsumerStatusRequest",
+        "EventConsumerMutationResponse",
+        "GetEventStreamConsumerStatusResponse",
     ];
     assert!(
         completed
@@ -646,7 +675,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        187
+        202
     );
     assert_eq!(
         messages

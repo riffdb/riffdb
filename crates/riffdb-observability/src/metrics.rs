@@ -1546,6 +1546,13 @@ const fn operation_name(operation: ServiceOperationV1) -> &'static str {
         ServiceOperationV1::ReplayEvents => "replay_events",
         ServiceOperationV1::TailEvents => "tail_events",
         ServiceOperationV1::ExecuteProjectedQuery => "execute_projected_query",
+        ServiceOperationV1::DeployReactiveModule => "deploy_reactive_module",
+        ServiceOperationV1::ConsumeEventStream => "consume_event_stream",
+        ServiceOperationV1::AcknowledgeEventStream => "acknowledge_event_stream",
+        ServiceOperationV1::NegativeAcknowledgeEventStream => "negative_acknowledge_event_stream",
+        ServiceOperationV1::SeekEventStreamConsumer => "seek_event_stream_consumer",
+        ServiceOperationV1::RetireEventStreamConsumer => "retire_event_stream_consumer",
+        ServiceOperationV1::GetEventStreamConsumerStatus => "get_event_stream_consumer_status",
     }
 }
 

@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/common.proto";
+
+message StoredReactiveModuleV1 {
+  string module_name = 1;
+  uint64 module_version = 2;
+  bytes module_hash = 3;
+  string contract_lineage = 4;
+  uint64 contract_version = 5;
+  bytes contract_bundle_hash = 6;
+  bytes source_hash = 7;
+  repeated bytes query_module_hashes = 8;
+  bytes canonical_source = 9;
+  bytes canonical_module = 10;
+}
+
+message StoredReactiveModuleAdministrationV1 {
+  uint64 administration_sequence = 1;
+  bytes request_id = 2;
+  TimestampV1 timestamp = 3;
+  AuditPrincipalV1 principal = 4;
+  bytes module_hash = 5;
+  optional string approval_id = 6;
+}

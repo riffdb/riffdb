@@ -15,8 +15,9 @@ use riffdb_storage_api::{
     AuditPrincipalV1, AuditedAdmissionRepository, CapabilityAdministrationTransactionPort,
     CapabilityBootstrapAdministrationRepository, CatalogAdministrationRepository,
     ExecutionFailureTransitionPort, QueryModuleAdministrationRepository,
-    ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
-    SnapshotReader, StorageError, StorageValueError,
+    ReactiveModuleAdministrationRepository, ServiceAuditAppendIntentV1,
+    ServiceAuditAppendRepository, ServiceAuditAppendResult, SnapshotReader, StorageError,
+    StorageValueError,
 };
 use tokio::runtime;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
@@ -40,9 +41,11 @@ use crate::{
         CapabilityBootstrapTerminalPreparation, CapabilityCreateExecutionResult,
         CapabilityCreatePreparation, CapabilityRevokeExecutionResult, CapabilityRevokePreparation,
         CatalogDeploymentPreparation, CatalogDeploymentResult, ControlPlaneExecutionError,
-        QueryModuleDeploymentPreparation, QueryModuleDeploymentResult, drive_capability_bootstrap,
-        drive_capability_bootstrap_terminal, drive_capability_create, drive_capability_revoke,
-        drive_catalog_deployment, drive_query_module_deployment,
+        QueryModuleDeploymentPreparation, QueryModuleDeploymentResult,
+        ReactiveModulePublicationExecutionResult, ReactiveModulePublicationPreparation,
+        drive_capability_bootstrap, drive_capability_bootstrap_terminal, drive_capability_create,
+        drive_capability_revoke, drive_catalog_deployment, drive_query_module_deployment,
+        drive_reactive_module_publication,
     },
     idempotency_inspection::{
         CommandIdempotencyInspectionError, CommandIdempotencyInspectionRequest,
@@ -718,6 +721,21 @@ impl ControlPlaneExecutionCapacityPermit {
         Ok(QueryModuleDeploymentReceipt { receiver })
     }
 
+    /// Submits one exact-contract immutable reactive-module publication.
+    pub fn submit_reactive_module_publication(
+        self,
+        preparation: ReactiveModulePublicationPreparation,
+    ) -> Result<ReactiveModulePublicationReceipt, ControlPlaneExecutionAdmissionError> {
+        let (permit, submission) = self.into_submission()?;
+        let (completion, receiver) = oneshot::channel();
+        let _sender = permit.send(CoordinatorMessage::ReactiveModulePublication {
+            preparation: Box::new(preparation),
+            completion,
+        });
+        drop(submission);
+        Ok(ReactiveModulePublicationReceipt { receiver })
+    }
+
     /// Submits one freshly authorized normal capability creation.
     pub fn submit_capability_create(
         self,
@@ -830,6 +848,10 @@ macro_rules! control_plane_receipt {
 
 control_plane_receipt!(CatalogDeploymentReceipt, CatalogDeploymentResult);
 control_plane_receipt!(QueryModuleDeploymentReceipt, QueryModuleDeploymentResult);
+control_plane_receipt!(
+    ReactiveModulePublicationReceipt,
+    ReactiveModulePublicationExecutionResult
+);
 control_plane_receipt!(CapabilityCreateReceipt, CapabilityCreateExecutionResult);
 control_plane_receipt!(CapabilityRevokeReceipt, CapabilityRevokeExecutionResult);
 control_plane_receipt!(
@@ -1390,6 +1412,7 @@ impl RunningCommandCoordinator {
             + ServiceAuditAppendRepository
             + CatalogAdministrationRepository
             + QueryModuleAdministrationRepository
+            + ReactiveModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
             + CapabilityBootstrapAdministrationRepository
             + Send
@@ -1439,6 +1462,7 @@ impl RunningCommandCoordinator {
             + ServiceAuditAppendRepository
             + CatalogAdministrationRepository
             + QueryModuleAdministrationRepository
+            + ReactiveModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
             + CapabilityBootstrapAdministrationRepository
             + Clone
@@ -1492,6 +1516,7 @@ impl RunningCommandCoordinator {
             + ServiceAuditAppendRepository
             + CatalogAdministrationRepository
             + QueryModuleAdministrationRepository
+            + ReactiveModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
             + CapabilityBootstrapAdministrationRepository
             + Send
@@ -1536,6 +1561,7 @@ impl RunningCommandCoordinator {
             + ServiceAuditAppendRepository
             + CatalogAdministrationRepository
             + QueryModuleAdministrationRepository
+            + ReactiveModuleAdministrationRepository
             + CapabilityAdministrationTransactionPort
             + CapabilityBootstrapAdministrationRepository
             + Send
@@ -1876,6 +1902,12 @@ enum CoordinatorMessage {
         completion:
             oneshot::Sender<Result<QueryModuleDeploymentResult, ControlPlaneExecutionError>>,
     },
+    ReactiveModulePublication {
+        preparation: Box<ReactiveModulePublicationPreparation>,
+        completion: oneshot::Sender<
+            Result<ReactiveModulePublicationExecutionResult, ControlPlaneExecutionError>,
+        >,
+    },
     CapabilityCreate {
         preparation: Box<CapabilityCreatePreparation>,
         completion:
@@ -1976,6 +2008,11 @@ trait CoordinatorActorOperations: Send {
         preparation: QueryModuleDeploymentPreparation,
     ) -> Result<QueryModuleDeploymentResult, ControlPlaneExecutionError>;
 
+    fn publish_reactive_module(
+        &mut self,
+        preparation: ReactiveModulePublicationPreparation,
+    ) -> Result<ReactiveModulePublicationExecutionResult, ControlPlaneExecutionError>;
+
     fn create_capability(
         &mut self,
         preparation: CapabilityCreatePreparation,
@@ -2021,6 +2058,7 @@ where
         + ServiceAuditAppendRepository
         + CatalogAdministrationRepository
         + QueryModuleAdministrationRepository
+        + ReactiveModuleAdministrationRepository
         + CapabilityAdministrationTransactionPort
         + CapabilityBootstrapAdministrationRepository
         + Send,
@@ -2065,6 +2103,18 @@ where
         preparation: QueryModuleDeploymentPreparation,
     ) -> Result<QueryModuleDeploymentResult, ControlPlaneExecutionError> {
         drive_query_module_deployment(
+            &mut self.repository,
+            self.administration_clock.as_ref(),
+            &self.lifecycle,
+            preparation,
+        )
+    }
+
+    fn publish_reactive_module(
+        &mut self,
+        preparation: ReactiveModulePublicationPreparation,
+    ) -> Result<ReactiveModulePublicationExecutionResult, ControlPlaneExecutionError> {
+        drive_reactive_module_publication(
             &mut self.repository,
             self.administration_clock.as_ref(),
             &self.lifecycle,
@@ -2248,6 +2298,13 @@ where
         &mut self,
         _: QueryModuleDeploymentPreparation,
     ) -> Result<QueryModuleDeploymentResult, ControlPlaneExecutionError> {
+        Err(ControlPlaneExecutionError::coordinator_stopped())
+    }
+
+    fn publish_reactive_module(
+        &mut self,
+        _: ReactiveModulePublicationPreparation,
+    ) -> Result<ReactiveModulePublicationExecutionResult, ControlPlaneExecutionError> {
         Err(ControlPlaneExecutionError::coordinator_stopped())
     }
 
@@ -2720,6 +2777,12 @@ impl CommandWriter {
             } => {
                 self.execute_query_module_deployment(*preparation, completion);
             }
+            CoordinatorMessage::ReactiveModulePublication {
+                preparation,
+                completion,
+            } => {
+                self.execute_reactive_module_publication(*preparation, completion);
+            }
             CoordinatorMessage::CapabilityCreate {
                 preparation,
                 completion,
@@ -3020,6 +3083,17 @@ impl CommandWriter {
         let _receiver_may_be_dropped = completion.send(result);
     }
 
+    fn execute_reactive_module_publication(
+        &mut self,
+        preparation: ReactiveModulePublicationPreparation,
+        completion: oneshot::Sender<
+            Result<ReactiveModulePublicationExecutionResult, ControlPlaneExecutionError>,
+        >,
+    ) {
+        let result = self.operations.publish_reactive_module(preparation);
+        let _receiver_may_be_dropped = completion.send(result);
+    }
+
     fn execute_capability_create(
         &mut self,
         preparation: CapabilityCreatePreparation,
@@ -3297,6 +3371,9 @@ fn reject_message_fenced(message: CoordinatorMessage) {
         CoordinatorMessage::QueryModuleDeployment { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
         }
+        CoordinatorMessage::ReactiveModulePublication { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
+        }
         CoordinatorMessage::CapabilityCreate { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
         }
@@ -3333,6 +3410,9 @@ fn reject_message_stopped(message: CoordinatorMessage) {
         CoordinatorMessage::QueryModuleDeployment { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
         }
+        CoordinatorMessage::ReactiveModulePublication { completion, .. } => {
+            let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
+        }
         CoordinatorMessage::CapabilityCreate { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
         }
@@ -3366,6 +3446,7 @@ fn command_grouping_class(message: &CoordinatorMessage) -> CommandGroupingClass 
         | CoordinatorMessage::ReadOnlyCommand { .. }
         | CoordinatorMessage::CatalogDeployment { .. }
         | CoordinatorMessage::QueryModuleDeployment { .. }
+        | CoordinatorMessage::ReactiveModulePublication { .. }
         | CoordinatorMessage::CapabilityCreate { .. }
         | CoordinatorMessage::CapabilityRevoke { .. }
         | CoordinatorMessage::CapabilityBootstrap { .. }

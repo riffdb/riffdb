@@ -4,11 +4,13 @@ use std::{error::Error, fmt, num::NonZeroU16};
 
 use riffdb_types::{
     ActorId, CanonicalValue, CapabilityPermissionKindV1, CapabilityPermissionV1, CommandId,
-    CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, EntityTypeId, FieldId,
-    IndexId, MAX_CAPABILITY_FIELD_VISIBILITY, MAX_PROJECTION_GROUP_COMPONENTS, PartitionKey,
-    ProjectionGeneration, ProjectionGroupPrefixBuilder, ProjectionId, ProjectionIdentity,
-    ProvenanceId, QueryCostVectorV1, QueryModuleHash, QueryOperationName, QueryPlanHash,
-    ScopedPartitionV1, ServiceIngressKindV1, ServiceOperationV1, TenantScope,
+    CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, EntityTypeId,
+    EventConsumerName, FieldId, IndexId, MAX_CAPABILITY_FIELD_VISIBILITY,
+    MAX_PROJECTION_GROUP_COMPONENTS, PartitionKey, ProjectionGeneration,
+    ProjectionGroupPrefixBuilder, ProjectionId, ProjectionIdentity, ProvenanceId,
+    QueryCostVectorV1, QueryModuleHash, QueryOperationName, QueryParameterHash, QueryPlanHash,
+    ReactiveModuleHash, ReactiveOperationName, ScopedPartitionV1, ServiceIngressKindV1,
+    ServiceOperationV1, TenantScope,
 };
 
 use crate::{
@@ -576,6 +578,102 @@ impl fmt::Debug for ApplicationQueryTarget {
     }
 }
 
+/// Complete policy identity for one exact durable event consumer operation.
+#[derive(Clone, Eq, PartialEq)]
+pub struct EventConsumerOperationTarget {
+    lineage: ContractLineage,
+    version: ContractVersion,
+    bundle_hash: ContractBundleHash,
+    module_hash: ReactiveModuleHash,
+    operation_name: ReactiveOperationName,
+    parameter_hash: QueryParameterHash,
+    consumer_name: EventConsumerName,
+    scope: ExactDataScope,
+}
+
+impl EventConsumerOperationTarget {
+    /// Constructs one exact consumer target and its checked data scope.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new(
+        lineage: ContractLineage,
+        version: ContractVersion,
+        bundle_hash: ContractBundleHash,
+        module_hash: ReactiveModuleHash,
+        operation_name: ReactiveOperationName,
+        parameter_hash: QueryParameterHash,
+        consumer_name: EventConsumerName,
+        tenant_scope: OperationTenantScope,
+        partition: PartitionKey,
+    ) -> Self {
+        let scope = ExactDataScope::new(tenant_scope, lineage.clone(), partition);
+        Self {
+            lineage,
+            version,
+            bundle_hash,
+            module_hash,
+            operation_name,
+            parameter_hash,
+            consumer_name,
+            scope,
+        }
+    }
+
+    /// Borrows the exact contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Returns the exact contract version.
+    #[must_use]
+    pub const fn version(&self) -> ContractVersion {
+        self.version
+    }
+
+    /// Returns the exact contract artifact identity.
+    #[must_use]
+    pub const fn bundle_hash(&self) -> ContractBundleHash {
+        self.bundle_hash
+    }
+
+    /// Returns the immutable reactive module identity.
+    #[must_use]
+    pub const fn module_hash(&self) -> ReactiveModuleHash {
+        self.module_hash
+    }
+
+    /// Borrows the exact symbolic operation name.
+    #[must_use]
+    pub const fn operation_name(&self) -> &ReactiveOperationName {
+        &self.operation_name
+    }
+
+    /// Returns the canonical parameter identity.
+    #[must_use]
+    pub const fn parameter_hash(&self) -> QueryParameterHash {
+        self.parameter_hash
+    }
+
+    /// Borrows the bounded application-selected consumer name.
+    #[must_use]
+    pub const fn consumer_name(&self) -> &EventConsumerName {
+        &self.consumer_name
+    }
+
+    /// Borrows the exact routed partition.
+    #[must_use]
+    pub const fn partition(&self) -> &ScopedPartitionV1 {
+        &self.scope.partition
+    }
+}
+
+impl fmt::Debug for EventConsumerOperationTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("EventConsumerOperationTarget([REDACTED])")
+    }
+}
+
 impl ExactDataScope {
     fn new(
         tenant_scope: OperationTenantScope,
@@ -707,6 +805,30 @@ enum OperationKind {
         lineage: ContractLineage,
         version: ContractVersion,
         bundle_hash: ContractBundleHash,
+    },
+    DeployReactiveModule {
+        lineage: ContractLineage,
+        version: ContractVersion,
+        bundle_hash: ContractBundleHash,
+    },
+    ConsumeEventStream {
+        target: EventConsumerOperationTarget,
+        requested_rows: NonZeroU16,
+    },
+    AcknowledgeEventStream {
+        target: EventConsumerOperationTarget,
+    },
+    NegativeAcknowledgeEventStream {
+        target: EventConsumerOperationTarget,
+    },
+    SeekEventStreamConsumer {
+        target: EventConsumerOperationTarget,
+    },
+    RetireEventStreamConsumer {
+        target: EventConsumerOperationTarget,
+    },
+    GetEventStreamConsumerStatus {
+        target: EventConsumerOperationTarget,
     },
     DescribeEvent {
         lineage: ContractLineage,
@@ -1127,6 +1249,62 @@ impl OperationRequest {
         })
     }
 
+    /// Constructs one exact immutable reactive-module deployment request.
+    #[must_use]
+    pub const fn deploy_reactive_module(
+        lineage: ContractLineage,
+        version: ContractVersion,
+        bundle_hash: ContractBundleHash,
+    ) -> Self {
+        Self(OperationKind::DeployReactiveModule {
+            lineage,
+            version,
+            bundle_hash,
+        })
+    }
+
+    /// Constructs one bounded pull or stream-establishment request.
+    #[must_use]
+    pub const fn consume_event_stream(
+        target: EventConsumerOperationTarget,
+        requested_rows: NonZeroU16,
+    ) -> Self {
+        Self(OperationKind::ConsumeEventStream {
+            target,
+            requested_rows,
+        })
+    }
+
+    /// Constructs one exact acknowledgement request.
+    #[must_use]
+    pub const fn acknowledge_event_stream(target: EventConsumerOperationTarget) -> Self {
+        Self(OperationKind::AcknowledgeEventStream { target })
+    }
+
+    /// Constructs one exact negative-acknowledgement request.
+    #[must_use]
+    pub const fn negative_acknowledge_event_stream(target: EventConsumerOperationTarget) -> Self {
+        Self(OperationKind::NegativeAcknowledgeEventStream { target })
+    }
+
+    /// Constructs one authorized consumer seek request.
+    #[must_use]
+    pub const fn seek_event_stream_consumer(target: EventConsumerOperationTarget) -> Self {
+        Self(OperationKind::SeekEventStreamConsumer { target })
+    }
+
+    /// Constructs one authorized consumer retirement request.
+    #[must_use]
+    pub const fn retire_event_stream_consumer(target: EventConsumerOperationTarget) -> Self {
+        Self(OperationKind::RetireEventStreamConsumer { target })
+    }
+
+    /// Constructs one exact consumer status request.
+    #[must_use]
+    pub const fn get_event_stream_consumer_status(target: EventConsumerOperationTarget) -> Self {
+        Self(OperationKind::GetEventStreamConsumerStatus { target })
+    }
+
     /// Returns the exact closed service operation.
     #[must_use]
     pub const fn operation(&self) -> ServiceOperationV1 {
@@ -1174,6 +1352,23 @@ impl OperationRequest {
             OperationKind::DescribeEvent { .. } => ServiceOperationV1::DescribeEvent,
             OperationKind::ReplayEvents { .. } => ServiceOperationV1::ReplayEvents,
             OperationKind::TailEvents { .. } => ServiceOperationV1::TailEvents,
+            OperationKind::DeployReactiveModule { .. } => ServiceOperationV1::DeployReactiveModule,
+            OperationKind::ConsumeEventStream { .. } => ServiceOperationV1::ConsumeEventStream,
+            OperationKind::AcknowledgeEventStream { .. } => {
+                ServiceOperationV1::AcknowledgeEventStream
+            }
+            OperationKind::NegativeAcknowledgeEventStream { .. } => {
+                ServiceOperationV1::NegativeAcknowledgeEventStream
+            }
+            OperationKind::SeekEventStreamConsumer { .. } => {
+                ServiceOperationV1::SeekEventStreamConsumer
+            }
+            OperationKind::RetireEventStreamConsumer { .. } => {
+                ServiceOperationV1::RetireEventStreamConsumer
+            }
+            OperationKind::GetEventStreamConsumerStatus { .. } => {
+                ServiceOperationV1::GetEventStreamConsumerStatus
+            }
         }
     }
 
@@ -1197,6 +1392,11 @@ impl OperationRequest {
                 version,
                 bundle_hash,
             } => Some((lineage, version, bundle_hash, Some(version))),
+            OperationKind::DeployReactiveModule {
+                lineage,
+                version,
+                bundle_hash,
+            } => Some((lineage, version, bundle_hash, Some(version))),
             _ => None,
         }
     }
@@ -1213,7 +1413,9 @@ impl OperationRequest {
                 lineage.clone(),
                 *command_id,
             )),
-            OperationKind::DeployContract { .. } | OperationKind::DeployQueryModule { .. } => {
+            OperationKind::DeployContract { .. }
+            | OperationKind::DeployQueryModule { .. }
+            | OperationKind::DeployReactiveModule { .. } => {
                 PermissionRequirement::Kind(Kind::DeployContract)
             }
             OperationKind::GetActiveContract
@@ -1304,6 +1506,24 @@ impl OperationRequest {
             OperationKind::ReplayEvents { .. } | OperationKind::TailEvents { .. } => {
                 PermissionRequirement::Kind(Kind::ReadCommit)
             }
+            OperationKind::ConsumeEventStream { target, .. }
+            | OperationKind::AcknowledgeEventStream { target }
+            | OperationKind::NegativeAcknowledgeEventStream { target }
+            | OperationKind::GetEventStreamConsumerStatus { target } => {
+                PermissionRequirement::Exact(CapabilityPermissionV1::ConsumeEventStream(
+                    target.lineage.clone(),
+                    target.module_hash,
+                    target.operation_name.clone(),
+                ))
+            }
+            OperationKind::SeekEventStreamConsumer { target }
+            | OperationKind::RetireEventStreamConsumer { target } => {
+                PermissionRequirement::Exact(CapabilityPermissionV1::SeekEventStreamConsumer(
+                    target.lineage.clone(),
+                    target.module_hash,
+                    target.operation_name.clone(),
+                ))
+            }
             OperationKind::TraceProvenance { .. } => {
                 PermissionRequirement::Kind(Kind::ReadProvenance)
             }
@@ -1347,6 +1567,14 @@ impl OperationRequest {
             OperationKind::ExecuteAdHocQuery { target }
             | OperationKind::ExecuteNamedQuery { target, .. }
             | OperationKind::ExecuteProjectedQuery { target } => Some(&target.scope.tenant_scope),
+            OperationKind::ConsumeEventStream { target, .. }
+            | OperationKind::AcknowledgeEventStream { target }
+            | OperationKind::NegativeAcknowledgeEventStream { target }
+            | OperationKind::SeekEventStreamConsumer { target }
+            | OperationKind::RetireEventStreamConsumer { target }
+            | OperationKind::GetEventStreamConsumerStatus { target } => {
+                Some(&target.scope.tenant_scope)
+            }
             _ => None,
         }
     }
@@ -1375,6 +1603,14 @@ impl OperationRequest {
             OperationKind::ExecuteAdHocQuery { target }
             | OperationKind::ExecuteNamedQuery { target, .. }
             | OperationKind::ExecuteProjectedQuery { target } => {
+                PartitionRequirement::Exact(&target.scope.partition)
+            }
+            OperationKind::ConsumeEventStream { target, .. }
+            | OperationKind::AcknowledgeEventStream { target }
+            | OperationKind::NegativeAcknowledgeEventStream { target }
+            | OperationKind::SeekEventStreamConsumer { target }
+            | OperationKind::RetireEventStreamConsumer { target }
+            | OperationKind::GetEventStreamConsumerStatus { target } => {
                 PartitionRequirement::Exact(&target.scope.partition)
             }
             OperationKind::ScanIndex { .. } | OperationKind::QueryProjection { .. } => {
@@ -1418,6 +1654,7 @@ impl OperationRequest {
             | OperationKind::ListPendingOutboxDeliveries { requested_rows } => {
                 Some(*requested_rows)
             }
+            OperationKind::ConsumeEventStream { requested_rows, .. } => Some(*requested_rows),
             _ => None,
         }
     }
@@ -1430,10 +1667,21 @@ impl OperationRequest {
             } => Some(AuditClass::CommandMutation),
             OperationKind::DeployContract { .. }
             | OperationKind::DeployQueryModule { .. }
+            | OperationKind::DeployReactiveModule { .. }
             | OperationKind::CreateCapability { .. }
             | OperationKind::RevokeCapability { .. }
             | OperationKind::RevokeAbsentCapability { .. } => {
                 Some(AuditClass::ControlPlaneMutation)
+            }
+            OperationKind::AcknowledgeEventStream { .. }
+            | OperationKind::NegativeAcknowledgeEventStream { .. }
+            | OperationKind::SeekEventStreamConsumer { .. }
+            | OperationKind::RetireEventStreamConsumer { .. } => {
+                Some(AuditClass::ControlPlaneMutation)
+            }
+            OperationKind::ConsumeEventStream { .. }
+            | OperationKind::GetEventStreamConsumerStatus { .. } => {
+                Some(AuditClass::AdministrativeRead)
             }
             OperationKind::GetCommit { .. }
             | OperationKind::ScanCommits { .. }
@@ -1462,8 +1710,12 @@ impl OperationRequest {
             | OperationKind::ExecuteProjectedQuery { .. } => {
                 OutputClassification::PolicyFilteredApplicationData
             }
+            OperationKind::ConsumeEventStream { .. } => {
+                OutputClassification::PolicyFilteredApplicationData
+            }
             OperationKind::DeployContract { .. }
             | OperationKind::DeployQueryModule { .. }
+            | OperationKind::DeployReactiveModule { .. }
             | OperationKind::GetCommit { .. }
             | OperationKind::ScanCommits { .. }
             | OperationKind::SubscribeToCommits
@@ -1475,6 +1727,13 @@ impl OperationRequest {
             | OperationKind::RevokeCapability { .. }
             | OperationKind::RevokeAbsentCapability { .. }
             | OperationKind::ListPendingOutboxDeliveries { .. } => {
+                OutputClassification::AdministrativeRedactedData
+            }
+            OperationKind::AcknowledgeEventStream { .. }
+            | OperationKind::NegativeAcknowledgeEventStream { .. }
+            | OperationKind::SeekEventStreamConsumer { .. }
+            | OperationKind::RetireEventStreamConsumer { .. }
+            | OperationKind::GetEventStreamConsumerStatus { .. } => {
                 OutputClassification::AdministrativeRedactedData
             }
             _ => OutputClassification::PublicMetadata,
@@ -1804,6 +2063,20 @@ mod tests {
         .expect("valid target")
     }
 
+    fn event_consumer_target() -> EventConsumerOperationTarget {
+        EventConsumerOperationTarget::new(
+            lineage(),
+            version(),
+            bundle_hash(4),
+            ReactiveModuleHash::from_bytes([10; 32]),
+            ReactiveOperationName::new("WorkspaceEvents").expect("operation"),
+            QueryParameterHash::from_bytes([11; 32]),
+            EventConsumerName::new("worker-1").expect("consumer"),
+            OperationTenantScope::global_only(),
+            partition(),
+        )
+    }
+
     fn projection_identity() -> ProjectionIdentity {
         ProjectionIdentity::new(
             lineage(),
@@ -1902,17 +2175,27 @@ mod tests {
                 NonZeroU16::new(10).expect("nonzero"),
             ),
             OperationRequest::tail_events(
-                lineage,
+                lineage.clone(),
                 version(),
                 NonZeroU16::new(10).expect("nonzero"),
             ),
+            OperationRequest::deploy_reactive_module(lineage, version(), bundle_hash(4)),
+            OperationRequest::consume_event_stream(
+                event_consumer_target(),
+                NonZeroU16::new(10).expect("nonzero"),
+            ),
+            OperationRequest::acknowledge_event_stream(event_consumer_target()),
+            OperationRequest::negative_acknowledge_event_stream(event_consumer_target()),
+            OperationRequest::seek_event_stream_consumer(event_consumer_target()),
+            OperationRequest::retire_event_stream_consumer(event_consumer_target()),
+            OperationRequest::get_event_stream_consumer_status(event_consumer_target()),
         ]
     }
 
     #[test]
     fn request_inventory_covers_every_shared_operation() {
         let requests = requests();
-        assert_eq!(requests.len(), 33);
+        assert_eq!(requests.len(), 40);
         // WP-408 needs the durable audit tag; WP-409 owns its public policy request.
         let policy_operations = ServiceOperationV1::ALL
             .into_iter()
@@ -1947,13 +2230,13 @@ mod tests {
                 }
             }
         }
-        assert_eq!(kinds.len(), 24);
+        assert_eq!(kinds.len(), 26);
         assert_eq!(
             kinds
                 .into_iter()
                 .map(CapabilityPermissionKindV1::tag)
                 .collect::<Vec<_>>(),
-            (1..=24).collect::<Vec<_>>()
+            (1..=24).chain([0x1b, 0x1c]).collect::<Vec<_>>()
         );
     }
 
@@ -2141,5 +2424,60 @@ mod tests {
         );
         assert_ne!(first, different_bundle);
         assert_ne!(first, different_expectation);
+    }
+
+    #[test]
+    fn consumer_authority_separates_delivery_from_seek_and_retirement() {
+        let consume = OperationRequest::consume_event_stream(
+            event_consumer_target(),
+            NonZeroU16::new(10).expect("nonzero"),
+        );
+        let seek = OperationRequest::seek_event_stream_consumer(event_consumer_target());
+        let retire = OperationRequest::retire_event_stream_consumer(event_consumer_target());
+
+        assert!(matches!(
+            consume.permission_requirement(),
+            Some(PermissionRequirement::Exact(
+                CapabilityPermissionV1::ConsumeEventStream(..)
+            ))
+        ));
+        for request in [seek, retire] {
+            assert!(matches!(
+                request.permission_requirement(),
+                Some(PermissionRequirement::Exact(
+                    CapabilityPermissionV1::SeekEventStreamConsumer(..)
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn consumer_target_binds_parameters_name_and_partition() {
+        let baseline = event_consumer_target();
+        let different_parameter = EventConsumerOperationTarget::new(
+            lineage(),
+            version(),
+            bundle_hash(4),
+            ReactiveModuleHash::from_bytes([10; 32]),
+            ReactiveOperationName::new("WorkspaceEvents").expect("operation"),
+            QueryParameterHash::from_bytes([12; 32]),
+            EventConsumerName::new("worker-1").expect("consumer"),
+            OperationTenantScope::global_only(),
+            partition(),
+        );
+        let different_name = EventConsumerOperationTarget::new(
+            lineage(),
+            version(),
+            bundle_hash(4),
+            ReactiveModuleHash::from_bytes([10; 32]),
+            ReactiveOperationName::new("WorkspaceEvents").expect("operation"),
+            QueryParameterHash::from_bytes([11; 32]),
+            EventConsumerName::new("worker-2").expect("consumer"),
+            OperationTenantScope::global_only(),
+            partition(),
+        );
+
+        assert_ne!(baseline, different_parameter);
+        assert_ne!(baseline, different_name);
     }
 }

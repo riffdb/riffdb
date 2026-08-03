@@ -1,9 +1,9 @@
 use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{
     AdministrationSequence, ApprovalId, CapabilityId, CommandId, CommitSequence, ContractLineage,
-    ContractVersion, EntityTypeId, IndexId, ProjectionId, ProvenanceId, RequestId,
-    ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceAuditTargetsV1,
-    ServiceIngressKindV1, ServiceOperationV1,
+    ContractVersion, EntityTypeId, EventConsumerIdentityHash, IndexId, ProjectionId, ProvenanceId,
+    ReactiveModuleHash, ReactiveOperationName, RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1,
+    ServiceAuditTargetV1, ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1,
 };
 
 use crate::{EncodedPageItem, StoredServiceAuditRecordV1};
@@ -14,7 +14,8 @@ use super::{
     timestamp_from_proto, timestamp_to_proto,
 };
 
-const AUDIT: &str = "riffdb.storage.v1.ServiceAuditRecordV1";
+const AUDIT_V1: &str = "riffdb.storage.v1.ServiceAuditRecordV1";
+const AUDIT_V2: &str = "riffdb.storage.v1.ServiceAuditRecordV2";
 const SERVICE_AUDIT_REQUEST_INDEX: &str = "riffdb.storage.v1.StoredServiceAuditRequestIndexV1";
 
 /// Durable secondary-index value binding one request identity to one audit sequence.
@@ -99,7 +100,69 @@ fn ingress_from_proto(value: i32) -> Result<ServiceIngressKindV1, DurableCodecEr
     ServiceIngressKindV1::from_tag(tag).ok_or_else(DurableCodecError::corrupt)
 }
 
-fn target_to_proto(value: &ServiceAuditTargetV1) -> wire::ServiceAuditTargetV1 {
+fn target_to_proto_v2(value: &ServiceAuditTargetV1) -> wire::ServiceAuditTargetV2 {
+    use wire::service_audit_target_v2::Target;
+    let target = match value {
+        ServiceAuditTargetV1::ContractLineage(lineage) => {
+            Target::ContractLineage(lineage.as_str().to_owned())
+        }
+        ServiceAuditTargetV1::ContractVersion { lineage, version } => {
+            Target::ContractVersion(wire::ContractVersionAuditTargetV1 {
+                contract_lineage: lineage.as_str().to_owned(),
+                contract_version: version.get(),
+            })
+        }
+        ServiceAuditTargetV1::EntityType {
+            lineage,
+            entity_type_id,
+        } => Target::EntityType(wire::EntityTypeAuditTargetV1 {
+            contract_lineage: lineage.as_str().to_owned(),
+            entity_type_id: entity_type_id.get(),
+        }),
+        ServiceAuditTargetV1::Command {
+            lineage,
+            command_id,
+        } => Target::Command(wire::CommandAuditTargetV1 {
+            contract_lineage: lineage.as_str().to_owned(),
+            command_id: command_id.get(),
+        }),
+        ServiceAuditTargetV1::Projection {
+            lineage,
+            projection_id,
+        } => Target::Projection(wire::ProjectionAuditTargetV1 {
+            contract_lineage: lineage.as_str().to_owned(),
+            projection_id: projection_id.get(),
+        }),
+        ServiceAuditTargetV1::Index { lineage, index_id } => {
+            Target::Index(wire::IndexAuditTargetV1 {
+                contract_lineage: lineage.as_str().to_owned(),
+                index_id: index_id.get(),
+            })
+        }
+        ServiceAuditTargetV1::Commit(sequence) => Target::CommitSequence(sequence.get()),
+        ServiceAuditTargetV1::Provenance(id) => Target::ProvenanceId(id.as_bytes().to_vec()),
+        ServiceAuditTargetV1::Capability(id) => Target::CapabilityId(id.as_bytes().to_vec()),
+        ServiceAuditTargetV1::EventConsumer {
+            lineage,
+            module_hash,
+            operation_name,
+            consumer_identity_hash,
+        } => Target::EventConsumer(wire::EventConsumerAuditTargetV2 {
+            contract_lineage: lineage.as_str().to_owned(),
+            reactive_module_hash: module_hash.as_bytes().to_vec(),
+            operation_name: operation_name.as_str().to_owned(),
+            consumer_identity_hash: consumer_identity_hash.as_bytes().to_vec(),
+        }),
+    };
+    wire::ServiceAuditTargetV2 {
+        target: Some(target),
+    }
+}
+
+#[cfg(test)]
+fn target_to_proto_v1(
+    value: &ServiceAuditTargetV1,
+) -> Result<wire::ServiceAuditTargetV1, DurableCodecError> {
     use wire::service_audit_target_v1::Target;
     let target = match value {
         ServiceAuditTargetV1::ContractLineage(lineage) => {
@@ -141,10 +204,13 @@ fn target_to_proto(value: &ServiceAuditTargetV1) -> wire::ServiceAuditTargetV1 {
         ServiceAuditTargetV1::Commit(sequence) => Target::CommitSequence(sequence.get()),
         ServiceAuditTargetV1::Provenance(id) => Target::ProvenanceId(id.as_bytes().to_vec()),
         ServiceAuditTargetV1::Capability(id) => Target::CapabilityId(id.as_bytes().to_vec()),
+        ServiceAuditTargetV1::EventConsumer { .. } => {
+            return Err(DurableCodecError::invariant());
+        }
     };
-    wire::ServiceAuditTargetV1 {
+    Ok(wire::ServiceAuditTargetV1 {
         target: Some(target),
-    }
+    })
 }
 
 fn lineage(value: String) -> Result<ContractLineage, DurableCodecError> {
@@ -192,6 +258,56 @@ fn target_from_proto(
     })
 }
 
+fn target_from_proto_v2(
+    value: wire::ServiceAuditTargetV2,
+) -> Result<ServiceAuditTargetV1, DurableCodecError> {
+    use wire::service_audit_target_v2::Target;
+    Ok(match require(value.target)? {
+        Target::ContractLineage(value) => ServiceAuditTargetV1::ContractLineage(lineage(value)?),
+        Target::ContractVersion(value) => ServiceAuditTargetV1::ContractVersion {
+            lineage: lineage(value.contract_lineage)?,
+            version: ContractVersion::new(value.contract_version)
+                .ok_or_else(DurableCodecError::corrupt)?,
+        },
+        Target::EntityType(value) => ServiceAuditTargetV1::EntityType {
+            lineage: lineage(value.contract_lineage)?,
+            entity_type_id: EntityTypeId::new(value.entity_type_id)
+                .ok_or_else(DurableCodecError::corrupt)?,
+        },
+        Target::Command(value) => ServiceAuditTargetV1::Command {
+            lineage: lineage(value.contract_lineage)?,
+            command_id: CommandId::new(value.command_id).ok_or_else(DurableCodecError::corrupt)?,
+        },
+        Target::Projection(value) => ServiceAuditTargetV1::Projection {
+            lineage: lineage(value.contract_lineage)?,
+            projection_id: ProjectionId::new(value.projection_id)
+                .ok_or_else(DurableCodecError::corrupt)?,
+        },
+        Target::Index(value) => ServiceAuditTargetV1::Index {
+            lineage: lineage(value.contract_lineage)?,
+            index_id: IndexId::new(value.index_id).ok_or_else(DurableCodecError::corrupt)?,
+        },
+        Target::CommitSequence(value) => ServiceAuditTargetV1::Commit(
+            CommitSequence::new(value).ok_or_else(DurableCodecError::corrupt)?,
+        ),
+        Target::ProvenanceId(value) => ServiceAuditTargetV1::Provenance(
+            ProvenanceId::from_bytes(fixed(value)?).map_err(|_| DurableCodecError::corrupt())?,
+        ),
+        Target::CapabilityId(value) => ServiceAuditTargetV1::Capability(
+            CapabilityId::from_bytes(fixed(value)?).map_err(|_| DurableCodecError::corrupt())?,
+        ),
+        Target::EventConsumer(value) => ServiceAuditTargetV1::EventConsumer {
+            lineage: lineage(value.contract_lineage)?,
+            module_hash: ReactiveModuleHash::from_bytes(fixed(value.reactive_module_hash)?),
+            operation_name: ReactiveOperationName::new(value.operation_name)
+                .map_err(|_| DurableCodecError::corrupt())?,
+            consumer_identity_hash: EventConsumerIdentityHash::from_bytes(fixed(
+                value.consumer_identity_hash,
+            )?),
+        },
+    })
+}
+
 fn link_to_proto(value: ServiceAuditLinkV1) -> wire::ServiceAuditLinkV1 {
     use wire::service_audit_link_v1::Link;
     let link = match value {
@@ -231,12 +347,38 @@ fn link_from_proto(
     })
 }
 
-/// Encodes one durable API-neutral service-audit record.
-pub fn encode_service_audit_record_v1(
+/// Encodes one current durable API-neutral service-audit record.
+pub fn encode_service_audit_record_v2(
     value: &StoredServiceAuditRecordV1,
 ) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
     encode_message(
-        AUDIT,
+        AUDIT_V2,
+        &wire::ServiceAuditRecordV2 {
+            administration_sequence: value.administration_sequence().get(),
+            request_id: value.request_id().as_bytes().to_vec(),
+            timestamp: Some(timestamp_to_proto(value.timestamp())),
+            operation: i32::from(value.operation().tag()),
+            phase: i32::from(value.phase().tag()),
+            principal: value.principal().map(audit_principal_to_proto),
+            ingress: i32::from(value.ingress().tag()),
+            targets: value
+                .targets()
+                .as_slice()
+                .iter()
+                .map(target_to_proto_v2)
+                .collect(),
+            approval_id: value.approval_id().map(|value| value.as_str().to_owned()),
+            link: Some(link_to_proto(value.link())),
+        },
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn encode_service_audit_record_legacy_v1(
+    value: &StoredServiceAuditRecordV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    super::encode_readable_compact_message(
+        AUDIT_V1,
         &wire::ServiceAuditRecordV1 {
             administration_sequence: value.administration_sequence().get(),
             request_id: value.request_id().as_bytes().to_vec(),
@@ -249,19 +391,19 @@ pub fn encode_service_audit_record_v1(
                 .targets()
                 .as_slice()
                 .iter()
-                .map(target_to_proto)
-                .collect(),
+                .map(target_to_proto_v1)
+                .collect::<Result<Vec<_>, _>>()?,
             approval_id: value.approval_id().map(|value| value.as_str().to_owned()),
             link: Some(link_to_proto(value.link())),
         },
     )
 }
 
-/// Decodes one durable API-neutral service-audit record.
+/// Decodes one frozen V1 durable API-neutral service-audit record.
 pub fn decode_service_audit_record_v1(
     encoded: &[u8],
 ) -> Result<EncodedPageItem<StoredServiceAuditRecordV1>, DurableCodecError> {
-    decode_message::<wire::ServiceAuditRecordV1, _, _>(AUDIT, encoded, |value| {
+    decode_message::<wire::ServiceAuditRecordV1, _, _>(AUDIT_V1, encoded, |value| {
         let raw_targets = value
             .targets
             .into_iter()
@@ -294,4 +436,59 @@ pub fn decode_service_audit_record_v1(
             link_from_proto(require(value.link)?)?,
         ))
     })
+}
+
+/// Decodes one current V2 durable API-neutral service-audit record.
+pub fn decode_service_audit_record_v2(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<StoredServiceAuditRecordV1>, DurableCodecError> {
+    decode_message::<wire::ServiceAuditRecordV2, _, _>(AUDIT_V2, encoded, |value| {
+        let raw_targets = value
+            .targets
+            .into_iter()
+            .map(target_from_proto_v2)
+            .collect::<Result<Vec<_>, _>>()?;
+        let targets = ServiceAuditTargetsV1::new(raw_targets.clone())
+            .map_err(|_| DurableCodecError::corrupt())?;
+        if targets.as_slice() != raw_targets {
+            return Err(DurableCodecError::corrupt());
+        }
+        storage_result(StoredServiceAuditRecordV1::from_stored_parts(
+            AdministrationSequence::new(value.administration_sequence)
+                .ok_or_else(DurableCodecError::corrupt)?,
+            RequestId::from_bytes(fixed(value.request_id)?)
+                .map_err(|_| DurableCodecError::corrupt())?,
+            timestamp_from_proto(require(value.timestamp)?)?,
+            operation_from_proto(value.operation)?,
+            phase_from_proto(value.phase)?,
+            value
+                .principal
+                .map(audit_principal_from_proto)
+                .transpose()?,
+            ingress_from_proto(value.ingress)?,
+            targets,
+            value
+                .approval_id
+                .map(ApprovalId::new)
+                .transpose()
+                .map_err(|_| DurableCodecError::corrupt())?,
+            link_from_proto(require(value.link)?)?,
+        ))
+    })
+}
+
+/// Decodes either readable service-audit generation into the semantic record.
+pub fn decode_service_audit_record(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<StoredServiceAuditRecordV1>, DurableCodecError> {
+    let decoded = riffdb_proto::durable::readable_record_registry()
+        .decode(encoded)
+        .map_err(DurableCodecError::from_decode_envelope)?;
+    match decoded.record_type() {
+        AUDIT_V1 => decode_service_audit_record_v1(encoded),
+        AUDIT_V2 => decode_service_audit_record_v2(encoded),
+        _ => Err(DurableCodecError::new(
+            super::DurableCodecErrorKind::UnexpectedRecordType,
+        )),
+    }
 }

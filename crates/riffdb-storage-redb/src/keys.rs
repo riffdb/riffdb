@@ -12,9 +12,10 @@ use riffdb_storage_api::{
 use riffdb_types::{
     AdministrationSequence, CapabilityId, CapabilityTokenDigest, CommitSequence,
     ContractBundleHash, ContractLineage, ContractMigrationOperationId, ContractVersion,
-    DIGEST_SCHEME_V1, DigestKeyId, EntityKey, EntityTypeId, EventId, IndexEntryKey, IndexId,
-    MAX_CONTRACT_LINEAGE_BYTES, PartitionKey, PartitionKeyHash, ProjectionApplyKey,
-    ProjectionFrontierKey, ProjectionGroupKey, ProvenanceId, QueryModuleHash, RequestId,
+    DIGEST_SCHEME_V1, DigestKeyId, EntityKey, EntityTypeId, EventConsumerIdentityHash, EventId,
+    IndexEntryKey, IndexId, MAX_CONTRACT_LINEAGE_BYTES, PartitionKey, PartitionKeyHash,
+    ProjectionApplyKey, ProjectionFrontierKey, ProjectionGroupKey, ProvenanceId, QueryModuleHash,
+    ReactiveModuleHash, RequestId,
 };
 
 pub(crate) const SINGLETON_KEY: [u8; 1] = [0x01];
@@ -28,6 +29,63 @@ const CAPABILITY_TOKEN_KEY_BYTES: usize = 1 + 1 + 4 + 32;
 const AUDIT_KEY_BYTES: usize = 1 + U64_KEY_BYTES;
 const AUDIT_BY_REQUEST_KEY_BYTES: usize = UUID_KEY_BYTES + U64_KEY_BYTES;
 const MIGRATION_RETIREMENT_KEY_BYTES: usize = 32;
+const EVENT_CONSUMER_DELIVERY_KEY_BYTES: usize = 32 + EVENT_KEY_BYTES;
+
+pub(crate) const fn encode_reactive_module_key(hash: ReactiveModuleHash) -> [u8; 32] {
+    hash.into_bytes()
+}
+
+pub(crate) fn decode_reactive_module_key(
+    bytes: &[u8],
+) -> Result<ReactiveModuleHash, PhysicalKeyError> {
+    let hash = ReactiveModuleHash::from_bytes(exact_array(bytes)?);
+    require_canonical(bytes, &encode_reactive_module_key(hash))?;
+    Ok(hash)
+}
+
+pub(crate) const fn encode_event_consumer_key(hash: EventConsumerIdentityHash) -> [u8; 32] {
+    hash.into_bytes()
+}
+
+pub(crate) fn decode_event_consumer_key(
+    bytes: &[u8],
+) -> Result<EventConsumerIdentityHash, PhysicalKeyError> {
+    let hash = EventConsumerIdentityHash::from_bytes(exact_array(bytes)?);
+    require_canonical(bytes, &encode_event_consumer_key(hash))?;
+    Ok(hash)
+}
+
+pub(crate) fn encode_event_consumer_delivery_key(
+    hash: EventConsumerIdentityHash,
+    event_id: EventId,
+) -> [u8; EVENT_CONSUMER_DELIVERY_KEY_BYTES] {
+    let mut bytes = [0_u8; EVENT_CONSUMER_DELIVERY_KEY_BYTES];
+    bytes[..32].copy_from_slice(hash.as_bytes());
+    bytes[32..].copy_from_slice(&event_id.to_be_bytes());
+    bytes
+}
+
+pub(crate) fn decode_event_consumer_delivery_key(
+    bytes: &[u8],
+) -> Result<(EventConsumerIdentityHash, EventId), PhysicalKeyError> {
+    let bytes = exact_array::<EVENT_CONSUMER_DELIVERY_KEY_BYTES>(bytes)?;
+    let hash = EventConsumerIdentityHash::from_bytes(
+        bytes[..32]
+            .try_into()
+            .map_err(|_| PhysicalKeyError::InvalidLength)?,
+    );
+    let event_id = EventId::from_be_bytes(
+        bytes[32..]
+            .try_into()
+            .map_err(|_| PhysicalKeyError::InvalidLength)?,
+    )
+    .ok_or(PhysicalKeyError::InvalidComponent)?;
+    require_canonical(
+        bytes.as_slice(),
+        &encode_event_consumer_delivery_key(hash, event_id),
+    )?;
+    Ok((hash, event_id))
+}
 
 /// Redacted failure to structurally decode one physical table key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -1,15 +1,20 @@
 //! Bounded symbolic replay over partition-local authoritative event routes.
 
+use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 
+use riffdb_query_module::{
+    CompiledReactiveOperationV1, ReactiveOperationPlanV1, ReactivePredicateNodeV1,
+};
 use riffdb_storage_api::{
     AuthoritativePointReader, EventRouteContinuationV1, EventRoutePageLimit,
     EventRouteScanRequestV1, EventRouteUpperFenceV1, PartitionEventRouteReader, StorageErrorKind,
 };
 use riffdb_types::{
-    ActorKind, CanonicalValue, ContractVersion, EventId, PartitionKeyHash, PlanHash, ProvenanceId,
-    RequestId, Timestamp,
+    ActorKind, CanonicalValue, ContractVersion, EventId, PartitionKey, PartitionKeyHash, PlanHash,
+    ProvenanceId, RequestId, Timestamp, decode_canonical_value, hash_partition_key,
 };
 
 use crate::{
@@ -95,6 +100,118 @@ pub enum EventReplayPosition {
 pub struct ResolvedEventReplay {
     materializer: ResolvedEventMaterializer,
     partition_hash: PartitionKeyHash,
+}
+
+/// One exact immutable reactive stream resolved to a single partition-route scan.
+pub struct ResolvedReactiveEventStream {
+    materializers: Vec<ResolvedEventMaterializer>,
+    partition_key: PartitionKey,
+    partition_hash: PartitionKeyHash,
+    parameters: BTreeMap<String, CanonicalValue>,
+    predicate: Vec<ReactivePredicateNodeV1>,
+}
+
+impl ResolvedReactiveEventStream {
+    /// Returns the complete policy-visible partition key.
+    #[must_use]
+    pub const fn partition_key(&self) -> &PartitionKey {
+        &self.partition_key
+    }
+
+    /// Returns the storage routing hash derived from that complete key.
+    #[must_use]
+    pub const fn partition_hash(&self) -> PartitionKeyHash {
+        self.partition_hash
+    }
+
+    /// Reads one bounded route page and materializes every selected event type in route order.
+    pub fn replay_page<R>(
+        &self,
+        reader: &R,
+        position: EventReplayPosition,
+        limit: EventRoutePageLimit,
+        history_incarnation: u64,
+    ) -> Result<SymbolicEventReplayPage, EventReplayError>
+    where
+        R: PartitionEventRouteReader + AuthoritativePointReader,
+    {
+        let request = match position {
+            EventReplayPosition::Initial { after } => {
+                EventRouteScanRequestV1::initial(self.partition_hash, after, limit)
+            }
+            EventReplayPosition::Continue(continuation) => {
+                if continuation.partition_hash() != self.partition_hash {
+                    return Err(EventReplayError::integrity());
+                }
+                EventRouteScanRequestV1::continuing(continuation, limit)
+            }
+        };
+        let routes = reader
+            .scan_partition_event_routes(request)
+            .map_err(|error| EventReplayError {
+                kind: EventReplayErrorKind::Storage(error.kind()),
+            })?;
+        let mut items = Vec::new();
+        for encoded_route in routes.items() {
+            let route = *encoded_route.value();
+            let Some(materializer) = self
+                .materializers
+                .iter()
+                .find(|candidate| candidate.event_type_id() == route.event_type_id())
+            else {
+                continue;
+            };
+            let event = reader
+                .read_durable_event(route.event_id())
+                .map_err(|error| EventReplayError {
+                    kind: EventReplayErrorKind::Storage(error.kind()),
+                })?
+                .ok_or_else(EventReplayError::integrity)?;
+            let commit = reader
+                .read_commit(route.event_id().commit_sequence())
+                .map_err(|error| EventReplayError {
+                    kind: EventReplayErrorKind::Storage(error.kind()),
+                })?
+                .ok_or_else(EventReplayError::integrity)?;
+            if route.event_id() != event.event_id()
+                || route.event_type_id() != event.event_type_id()
+                || route.event_hash() != event.event_hash()
+                || commit.commit_sequence() != route.event_id().commit_sequence()
+                || commit.partition_hash() != self.partition_hash
+                || !commit.events().iter().any(|candidate| candidate == &event)
+            {
+                return Err(EventReplayError::integrity());
+            }
+            let view = materializer.materialize_routed_event(
+                commit.plan(),
+                self.partition_hash,
+                route,
+                &event,
+            )?;
+            if !predicate_matches(&self.predicate, &self.parameters, &view)? {
+                continue;
+            }
+            items.push(SymbolicEventEnvelope {
+                view,
+                occurred_at: commit.logical_time().timestamp(),
+                request_id: commit.admission_request_id(),
+                actor_kind: commit.actor().actor_kind(),
+                provenance_id: commit.provenance_id(),
+                history_incarnation,
+            });
+        }
+        Ok(SymbolicEventReplayPage {
+            items,
+            continuation: routes.continuation(),
+            inclusive_upper: routes.inclusive_upper(),
+        })
+    }
+}
+
+impl fmt::Debug for ResolvedReactiveEventStream {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ResolvedReactiveEventStream([CHECKED])")
+    }
 }
 
 impl ResolvedEventReplay {
@@ -201,6 +318,12 @@ impl SymbolicEventReplayPage {
     #[must_use]
     pub fn items(&self) -> &[SymbolicEventEnvelope] {
         &self.items
+    }
+
+    /// Consumes the page into matching symbolic events.
+    #[must_use]
+    pub fn into_items(self) -> Vec<SymbolicEventEnvelope> {
+        self.items
     }
 
     /// Returns the internal continuation for opaque service-cursor issuance.
@@ -359,5 +482,196 @@ impl ActiveCatalogSnapshot {
             materializer,
             partition_hash,
         })
+    }
+
+    /// Resolves one compiled event-stream operation and its exact canonical parameters.
+    pub fn resolve_reactive_event_stream(
+        &self,
+        operation: &CompiledReactiveOperationV1,
+        parameters: BTreeMap<String, CanonicalValue>,
+    ) -> Result<ResolvedReactiveEventStream, EventReplayError> {
+        let ReactiveOperationPlanV1::Stream {
+            parameters: declared,
+            partition,
+            events,
+            predicate,
+        } = operation.plan()
+        else {
+            return Err(invalid_reactive_selection());
+        };
+        if declared.len() != parameters.len()
+            || declared
+                .iter()
+                .any(|parameter| !parameters.contains_key(parameter.name()))
+        {
+            return Err(invalid_reactive_selection());
+        }
+        let partition_values = partition
+            .iter()
+            .map(|binding| {
+                parameters
+                    .get(binding.parameter())
+                    .cloned()
+                    .map(|value| (binding.field(), value))
+                    .ok_or_else(invalid_reactive_selection)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut materializers = Vec::with_capacity(events.len());
+        let mut partition_key = None;
+        for event in events {
+            let materializer = self.resolve_event_materializer(
+                event.name(),
+                event.fields().iter().map(|field| field.name()),
+            )?;
+            let key = materializer.derive_partition_key(
+                partition_values
+                    .iter()
+                    .map(|(name, value)| (*name, value.clone())),
+            )?;
+            if partition_key
+                .as_ref()
+                .is_some_and(|expected| expected != &key)
+            {
+                return Err(EventReplayError::integrity());
+            }
+            partition_key = Some(key);
+            materializers.push(materializer);
+        }
+        let partition_key = partition_key.ok_or_else(invalid_reactive_selection)?;
+        let partition_hash = hash_partition_key(partition_key.as_bytes());
+        Ok(ResolvedReactiveEventStream {
+            materializers,
+            partition_key,
+            partition_hash,
+            parameters,
+            predicate: predicate.clone(),
+        })
+    }
+}
+
+fn invalid_reactive_selection() -> EventReplayError {
+    EventReplayError {
+        kind: EventReplayErrorKind::Materialization(EventMaterializationErrorKind::UnknownSymbol),
+    }
+}
+
+enum PredicateValue {
+    Scalar(CanonicalValue),
+    Boolean(bool),
+}
+
+fn predicate_matches(
+    predicate: &[ReactivePredicateNodeV1],
+    parameters: &BTreeMap<String, CanonicalValue>,
+    event: &SymbolicEventView,
+) -> Result<bool, EventReplayError> {
+    if predicate.is_empty() {
+        return Ok(true);
+    }
+    let mut stack = Vec::new();
+    for node in predicate {
+        match node {
+            ReactivePredicateNodeV1::EventField(name, _) => {
+                let value = event
+                    .fields()
+                    .iter()
+                    .find(|field| field.name() == name)
+                    .map(|field| field.value().clone())
+                    .ok_or_else(EventReplayError::integrity)?;
+                stack.push(PredicateValue::Scalar(value));
+            }
+            ReactivePredicateNodeV1::Parameter(name, _) => {
+                let value = parameters
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(EventReplayError::integrity)?;
+                stack.push(PredicateValue::Scalar(value));
+            }
+            ReactivePredicateNodeV1::Literal(_, encoded) => {
+                let value =
+                    decode_canonical_value(encoded).map_err(|_| EventReplayError::integrity())?;
+                stack.push(PredicateValue::Scalar(value));
+            }
+            ReactivePredicateNodeV1::Equal
+            | ReactivePredicateNodeV1::NotEqual
+            | ReactivePredicateNodeV1::Less
+            | ReactivePredicateNodeV1::LessEqual
+            | ReactivePredicateNodeV1::Greater
+            | ReactivePredicateNodeV1::GreaterEqual => {
+                let right = pop_scalar(&mut stack)?;
+                let left = pop_scalar(&mut stack)?;
+                let result = match node {
+                    ReactivePredicateNodeV1::Equal => left == right,
+                    ReactivePredicateNodeV1::NotEqual => left != right,
+                    ReactivePredicateNodeV1::Less => {
+                        scalar_order(&left, &right) == Some(Ordering::Less)
+                    }
+                    ReactivePredicateNodeV1::LessEqual => scalar_order(&left, &right)
+                        .is_some_and(|ordering| ordering != Ordering::Greater),
+                    ReactivePredicateNodeV1::Greater => {
+                        scalar_order(&left, &right) == Some(Ordering::Greater)
+                    }
+                    ReactivePredicateNodeV1::GreaterEqual => scalar_order(&left, &right)
+                        .is_some_and(|ordering| ordering != Ordering::Less),
+                    _ => unreachable!(),
+                };
+                stack.push(PredicateValue::Boolean(result));
+            }
+            ReactivePredicateNodeV1::And | ReactivePredicateNodeV1::Or => {
+                let right = pop_boolean(&mut stack)?;
+                let left = pop_boolean(&mut stack)?;
+                stack.push(PredicateValue::Boolean(
+                    if matches!(node, ReactivePredicateNodeV1::And) {
+                        left && right
+                    } else {
+                        left || right
+                    },
+                ));
+            }
+        }
+    }
+    match stack.pop() {
+        Some(PredicateValue::Boolean(value)) if stack.is_empty() => Ok(value),
+        _ => Err(EventReplayError::integrity()),
+    }
+}
+
+fn pop_scalar(stack: &mut Vec<PredicateValue>) -> Result<CanonicalValue, EventReplayError> {
+    match stack.pop() {
+        Some(PredicateValue::Scalar(value)) => Ok(value),
+        _ => Err(EventReplayError::integrity()),
+    }
+}
+
+fn pop_boolean(stack: &mut Vec<PredicateValue>) -> Result<bool, EventReplayError> {
+    match stack.pop() {
+        Some(PredicateValue::Boolean(value)) => Ok(value),
+        _ => Err(EventReplayError::integrity()),
+    }
+}
+
+fn scalar_order(left: &CanonicalValue, right: &CanonicalValue) -> Option<Ordering> {
+    match (left, right) {
+        (CanonicalValue::I64(left), CanonicalValue::I64(right)) => left.partial_cmp(right),
+        (CanonicalValue::U64(left), CanonicalValue::U64(right)) => left.partial_cmp(right),
+        (CanonicalValue::String(left), CanonicalValue::String(right)) => {
+            left.as_str().partial_cmp(right.as_str())
+        }
+        (CanonicalValue::Timestamp(left), CanonicalValue::Timestamp(right)) => {
+            left.partial_cmp(right)
+        }
+        (CanonicalValue::Date(left), CanonicalValue::Date(right)) => left.partial_cmp(right),
+        (CanonicalValue::Uuid(left), CanonicalValue::Uuid(right)) => left.partial_cmp(right),
+        (
+            CanonicalValue::Enum {
+                type_id: left_type,
+                variant_id: left_variant,
+            },
+            CanonicalValue::Enum {
+                type_id: right_type,
+                variant_id: right_variant,
+            },
+        ) if left_type == right_type => left_variant.partial_cmp(right_variant),
+        _ => None,
     }
 }

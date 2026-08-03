@@ -7,6 +7,8 @@ mod clocks;
 mod columnar_adapter;
 mod columnar_worker;
 mod config;
+mod consumer_adapter;
+mod consumer_token;
 mod cursor;
 mod daemon;
 mod hosted_mcp;

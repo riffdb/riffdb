@@ -231,29 +231,29 @@ fn canonical_keys_records_and_event_hashes_are_revalidated() {
 
 #[test]
 fn audit_target_shape_order_and_cardinality_fail_closed() {
-    use wire::service_audit_target_v1::Target;
+    use wire::service_audit_target_v2::Target;
 
-    const AUDIT: &str = "riffdb.storage.v1.ServiceAuditRecordV1";
+    const AUDIT: &str = "riffdb.storage.v1.ServiceAuditRecordV2";
     let canonical =
-        encode_service_audit_record_v1(&sample::service_audit_record()).expect("audit encodes");
-    let message = payload_message::<wire::ServiceAuditRecordV1>(canonical.as_bytes());
+        encode_service_audit_record_v2(&sample::service_audit_record()).expect("audit encodes");
+    let message = payload_message::<wire::ServiceAuditRecordV2>(canonical.as_bytes());
     assert_eq!(message.targets.len(), 9, "sample carries every target kind");
 
     let mut reversed = message.clone();
     reversed.targets.reverse();
-    assert_corrupt(decode_service_audit_record_v1(&checked_envelope(
+    assert_corrupt(decode_service_audit_record_v2(&checked_envelope(
         AUDIT, &reversed,
     )));
 
     let mut duplicate = message.clone();
     duplicate.targets.push(duplicate.targets[0].clone());
-    assert_corrupt(decode_service_audit_record_v1(&checked_envelope(
+    assert_corrupt(decode_service_audit_record_v2(&checked_envelope(
         AUDIT, &duplicate,
     )));
 
     let mut missing_kind = message.clone();
     missing_kind.targets[0].target = None;
-    assert_corrupt(decode_service_audit_record_v1(&checked_envelope(
+    assert_corrupt(decode_service_audit_record_v2(&checked_envelope(
         AUDIT,
         &missing_kind,
     )));
@@ -268,7 +268,7 @@ fn audit_target_shape_order_and_cardinality_fail_closed() {
         })
         .expect("sample commit target");
     *commit = 0;
-    assert_corrupt(decode_service_audit_record_v1(&checked_envelope(
+    assert_corrupt(decode_service_audit_record_v2(&checked_envelope(
         AUDIT,
         &zero_commit,
     )));
@@ -283,7 +283,7 @@ fn audit_target_shape_order_and_cardinality_fail_closed() {
         })
         .expect("sample lineage-scoped target");
     lineage.clear();
-    assert_corrupt(decode_service_audit_record_v1(&checked_envelope(
+    assert_corrupt(decode_service_audit_record_v2(&checked_envelope(
         AUDIT,
         &wrong_lineage,
     )));
@@ -291,7 +291,7 @@ fn audit_target_shape_order_and_cardinality_fail_closed() {
     let mut over_limit = message;
     over_limit.targets = vec![over_limit.targets[0].clone(); 17];
     assert_error_kind(
-        decode_service_audit_record_v1(&raw_envelope(AUDIT, over_limit.encode_to_vec())),
+        decode_service_audit_record_v2(&raw_envelope(AUDIT, over_limit.encode_to_vec())),
         DurableCodecErrorKind::LimitExceeded,
     );
 }

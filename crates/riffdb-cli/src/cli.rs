@@ -569,6 +569,72 @@ pub(crate) enum EventCommand {
         #[arg(long = "observed-history-incarnation", value_name = "INCARNATION")]
         observed_history_incarnation: Option<String>,
     },
+    /// Leases one bounded batch from a named reactive event stream.
+    Consume {
+        #[command(flatten)]
+        consumer: EventConsumerArgs,
+        #[arg(long, default_value = "1", value_name = "1..64")]
+        batch_limit: String,
+        #[arg(long, default_value = "16", value_name = "1..64")]
+        in_flight_limit: String,
+        #[arg(long, default_value = "60", value_name = "5..900")]
+        lease_seconds: String,
+        #[arg(long, default_value = "0", value_name = "NANOSECONDS")]
+        wait_nanos: String,
+    },
+    /// Acknowledges one exact live event lease.
+    Ack {
+        #[command(flatten)]
+        consumer: EventConsumerArgs,
+        #[arg(long, value_name = "COMMIT:ORDINAL")]
+        event_id: String,
+        #[arg(long, value_name = "64_HEX_CHARS")]
+        lease_token: String,
+        #[arg(long, value_name = "INCARNATION")]
+        history_incarnation: String,
+    },
+    /// Negatively acknowledges one exact live event lease.
+    Nack {
+        #[command(flatten)]
+        consumer: EventConsumerArgs,
+        #[arg(long, value_name = "COMMIT:ORDINAL")]
+        event_id: String,
+        #[arg(long, value_name = "64_HEX_CHARS")]
+        lease_token: String,
+        #[arg(long, value_name = "INCARNATION")]
+        history_incarnation: String,
+        #[arg(long, default_value = "0", value_name = "NANOSECONDS")]
+        retry_delay_nanos: String,
+    },
+    /// Moves a consumer checkpoint after exact seek authorization.
+    Seek {
+        #[command(flatten)]
+        consumer: EventConsumerArgs,
+        #[arg(long, value_name = "before-first|COMMIT:ORDINAL")]
+        checkpoint: String,
+    },
+    /// Retires one consumer and releases its retention fence.
+    Retire {
+        #[command(flatten)]
+        consumer: EventConsumerArgs,
+    },
+    /// Reads bounded status for one exact consumer.
+    Status {
+        #[command(flatten)]
+        consumer: EventConsumerArgs,
+    },
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct EventConsumerArgs {
+    #[arg(long, value_name = "64_HEX_CHARS")]
+    pub(crate) module_hash: String,
+    #[arg(long, value_name = "OPERATION")]
+    pub(crate) operation: String,
+    #[arg(long = "parameter", value_name = "NAME=JSON_VALUE")]
+    pub(crate) parameters: Vec<String>,
+    #[arg(long, value_name = "CONSUMER")]
+    pub(crate) consumer_name: String,
 }
 
 #[derive(Debug, Subcommand)]

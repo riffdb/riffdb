@@ -54,6 +54,15 @@ const QUERY_MODULE_RECORDS: &[(&str, &str)] = &[
     ("ActiveQueryModulePointerV1", "catalog.proto"),
     ("StoredQueryModuleAdministrationV1", "catalog.proto"),
 ];
+const REACTIVE_CONSUMER_RECORDS: &[(&str, &str)] = &[
+    ("StoredReactiveModuleV1", "reactive_module_v1.proto"),
+    (
+        "StoredReactiveModuleAdministrationV1",
+        "reactive_module_v1.proto",
+    ),
+    ("StoredEventConsumerV1", "consumer_v1.proto"),
+    ("StoredEventConsumerDeliveryV1", "consumer_v1.proto"),
+];
 
 const DURABLE_WIRE_VECTORS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -170,6 +179,10 @@ fn storage_source_import_and_type_inventory_is_exact() {
             ),
             ("riffdb/storage/v1/common.proto".to_owned(), vec![]),
             (
+                "riffdb/storage/v1/consumer_v1.proto".to_owned(),
+                vec!["riffdb/storage/v1/common.proto"],
+            ),
+            (
                 "riffdb/storage/v1/entity_references_v3.proto".to_owned(),
                 vec![
                     "riffdb/storage/v1/application.proto",
@@ -223,6 +236,10 @@ fn storage_source_import_and_type_inventory_is_exact() {
                 "riffdb/storage/v1/projection.proto".to_owned(),
                 vec!["riffdb/storage/v1/common.proto"],
             ),
+            (
+                "riffdb/storage/v1/reactive_module_v1.proto".to_owned(),
+                vec!["riffdb/storage/v1/common.proto"],
+            ),
             ("riffdb/storage/v1/registry_v2.proto".to_owned(), vec![]),
             (
                 "riffdb/storage/v1/retention_watermark_v1.proto".to_owned(),
@@ -231,6 +248,13 @@ fn storage_source_import_and_type_inventory_is_exact() {
             (
                 "riffdb/storage/v1/service_audit_request_index_v1.proto".to_owned(),
                 vec![],
+            ),
+            (
+                "riffdb/storage/v1/service_audit_v2.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/audit.proto",
+                    "riffdb/storage/v1/common.proto",
+                ],
             ),
             (
                 "riffdb/storage/v1/validated_prefix_checkpoint_v1.proto".to_owned(),
@@ -251,8 +275,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        103,
-        "102 semantic messages plus the unchanged StoredEnvelope"
+        115,
+        "114 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -281,9 +305,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 43);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 49);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 43);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 47);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 58);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 47);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -324,12 +348,23 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredRetentionHoldsV1".to_owned());
     readable_names.push("riffdb.storage.v1.StoredHistoryTombstoneV1".to_owned());
     readable_names.push("riffdb.storage.v1.StoredRetentionAdministrationV1".to_owned());
+    readable_names.extend(
+        REACTIVE_CONSUMER_RECORDS
+            .iter()
+            .map(|(name, _)| format!("riffdb.storage.v1.{name}")),
+    );
+    readable_names.push("riffdb.storage.v1.ServiceAuditRecordV2".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
+    readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
+    readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
+    readable_names.push("riffdb.storage.v1.CapabilityBootstrapMarkerV1".to_owned());
+    readable_names.push("riffdb.storage.v1.CapabilityAdministrationAuditV1".to_owned());
     let mut writable_names = legacy_names.clone();
     writable_names[8] = format!("riffdb.storage.v1.{}", INDEX_V2_RECORD.0);
     writable_names[9] = "riffdb.storage.v1.StoredIndexGenerationV2".to_owned();
     writable_names[14] = "riffdb.storage.v1.StoredOutboxIntentV2".to_owned();
     writable_names[16] = "riffdb.storage.v1.StoredCommitRecordV3".to_owned();
+    writable_names[21] = "riffdb.storage.v1.ServiceAuditRecordV2".to_owned();
     writable_names.extend(
         QUERY_MODULE_RECORDS
             .iter()
@@ -348,6 +383,11 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredRetentionHoldsV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredHistoryTombstoneV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredRetentionAdministrationV1".to_owned());
+    writable_names.extend(
+        REACTIVE_CONSUMER_RECORDS
+            .iter()
+            .map(|(name, _)| format!("riffdb.storage.v1.{name}")),
+    );
     writable_names.push("riffdb.storage.v1.StoredRecordRegistryV2".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
@@ -407,7 +447,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
         assert!(readable_record_schema(&record_type).is_some());
     }
     let legacy_capability = READABLE_RECORD_SCHEMAS
-        .last()
+        .get(READABLE_RECORD_SCHEMA_COUNT - 5)
         .expect("pre-WP280 capability reader");
     assert_eq!(
         legacy_capability.record_type(),
@@ -416,6 +456,14 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     assert_eq!(
         schema_hash_hex(legacy_capability),
         "cb42c4ebbce8280123f8b34d4dcde74ca9483406847531f34d5fb3f18d40b342"
+    );
+    assert_eq!(
+        schema_hash_hex(
+            READABLE_RECORD_SCHEMAS
+                .get(READABLE_RECORD_SCHEMA_COUNT - 4)
+                .expect("pre-WP416 capability reader")
+        ),
+        "dee2398ebbc71824471fe5a5f96fcbebdde09e511fe6c11531c2b30210f9e6bf"
     );
     assert_eq!(
         READABLE_RECORD_SCHEMAS
@@ -468,8 +516,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 49);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 43);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 58);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 47);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -567,7 +615,7 @@ fn pre_wp280_capability_payload_remains_readable_under_its_original_hash() {
         .expect("capability golden");
     let payload = decode_lower_hex(line.split('\t').nth(1).expect("capability payload column"));
     let legacy = READABLE_RECORD_SCHEMAS
-        .last()
+        .get(READABLE_RECORD_SCHEMA_COUNT - 5)
         .expect("pre-WP280 capability reader");
     let envelope = encode(legacy, &payload).expect("old payload is canonical under old hash");
     let decoded = readable_record_registry()
@@ -600,11 +648,14 @@ fn semantic_optional_wire_presence_is_exact() {
         "CapabilityPermissionV1.query_module_hash",
         "CapabilityPermissionV1.query_name",
         "CapabilityPermissionV1.application_role_hash",
+        "CapabilityPermissionV1.reactive_module_hash",
+        "CapabilityPermissionV1.reactive_operation_name",
         "CapabilityPermissionV1.stable_id",
         "OutboxDeadLetterV1.last_safe_error",
         "OutboxRetryMetadataV1.last_safe_error",
         "ProjectionFailureV1.at_sequence",
         "ServiceAuditRecordV1.approval_id",
+        "ServiceAuditRecordV2.approval_id",
         "StoredAdmittedProvenanceClaimsV1.approval_id",
         "StoredAdmittedProvenanceClaimsV1.reason",
         "StoredAdmittedProvenanceClaimsV1.source_commit",
@@ -619,6 +670,8 @@ fn semantic_optional_wire_presence_is_exact() {
         "StoredHistoryTombstoneV1.previous_tombstone_hash",
         "StoredProjectionControlV1.published_apply_mode",
         "StoredQueryModuleAdministrationV1.approval_id",
+        "StoredEventConsumerV1.checkpoint",
+        "StoredReactiveModuleAdministrationV1.approval_id",
         "StoredRetentionWatermarkV1.chain_root_registry_digest",
         "StoredValidatedPrefixCheckpointV1.previous_checkpoint_hash",
     ]
@@ -631,6 +684,7 @@ fn semantic_optional_wire_presence_is_exact() {
         ("StoredCatalogAdministrationV1", "previous_active"),
         ("CapabilityAdministrationAuditV1", "initiator"),
         ("ServiceAuditRecordV1", "principal"),
+        ("ServiceAuditRecordV2", "principal"),
         ("OutboxRetryMetadataV1", "next_attempt_at"),
         ("StoredProjectionControlV1", "published"),
         ("StoredProjectionControlV1", "candidate"),
@@ -710,6 +764,21 @@ fn closed_oneof_and_enum_registries_are_exact() {
                 ],
             ),
             (
+                "riffdb.storage.v1.ServiceAuditTargetV2.target".to_owned(),
+                vec![
+                    ("contract_lineage", 1),
+                    ("contract_version", 2),
+                    ("entity_type", 3),
+                    ("command", 4),
+                    ("projection", 5),
+                    ("index", 6),
+                    ("commit_sequence", 7),
+                    ("provenance_id", 8),
+                    ("capability_id", 9),
+                    ("event_consumer", 10),
+                ],
+            ),
+            (
                 "riffdb.storage.v1.StoredAdministrationSequenceAllocatorV1.state".to_owned(),
                 vec![("next_administration_sequence", 1), ("exhausted", 2)],
             ),
@@ -725,6 +794,10 @@ fn closed_oneof_and_enum_registries_are_exact() {
                     ("delivered", 4),
                     ("dead_letter", 5),
                 ],
+            ),
+            (
+                "riffdb.storage.v1.StoredEventConsumerDeliveryV1.state".to_owned(),
+                vec![("leased", 4), ("retry", 5), ("dead_lettered", 6)],
             ),
             (
                 "riffdb.storage.v1.StoredReadDependencyV1.dependency".to_owned(),
@@ -758,7 +831,7 @@ fn closed_oneof_and_enum_registries_are_exact() {
         [
             ("ActorKindV1", "ACTOR_KIND_UNSPECIFIED=0,ACTOR_KIND_HUMAN=1,ACTOR_KIND_AGENT=2,ACTOR_KIND_SERVICE=3"),
             ("CapabilityAdministrationOperationV1", "CAPABILITY_ADMINISTRATION_OPERATION_UNSPECIFIED=0,CAPABILITY_ADMINISTRATION_OPERATION_BOOTSTRAP=1,CAPABILITY_ADMINISTRATION_OPERATION_CREATE=2,CAPABILITY_ADMINISTRATION_OPERATION_REVOKE=3"),
-            ("CapabilityPermissionKindV1", "CAPABILITY_PERMISSION_KIND_UNSPECIFIED=0,CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT=1,CAPABILITY_PERMISSION_KIND_READ_CONTRACT=2,CAPABILITY_PERMISSION_KIND_EXPLAIN_COMMAND=3,CAPABILITY_PERMISSION_KIND_DEPLOY_CONTRACT=4,CAPABILITY_PERMISSION_KIND_INVOKE_COMMAND=5,CAPABILITY_PERMISSION_KIND_READ_ENTITY=6,CAPABILITY_PERMISSION_KIND_SCAN_INDEX=7,CAPABILITY_PERMISSION_KIND_QUERY_PROJECTION=8,CAPABILITY_PERMISSION_KIND_READ_PROJECTION_STATUS=9,CAPABILITY_PERMISSION_KIND_READ_COMMIT=10,CAPABILITY_PERMISSION_KIND_SCAN_COMMITS=11,CAPABILITY_PERMISSION_KIND_SUBSCRIBE_COMMITS=12,CAPABILITY_PERMISSION_KIND_READ_PROVENANCE=13,CAPABILITY_PERMISSION_KIND_INSPECT_OUTBOX=14,CAPABILITY_PERMISSION_KIND_READ_HEALTH=15,CAPABILITY_PERMISSION_KIND_READ_STATISTICS=16,CAPABILITY_PERMISSION_KIND_CREATE_CAPABILITY=17,CAPABILITY_PERMISSION_KIND_REVOKE_CAPABILITY=18,CAPABILITY_PERMISSION_KIND_ADMINISTER_CAPABILITIES=19,CAPABILITY_PERMISSION_KIND_CHECK_AD_HOC_QUERY=20,CAPABILITY_PERMISSION_KIND_EXPLAIN_AD_HOC_QUERY=21,CAPABILITY_PERMISSION_KIND_EXECUTE_AD_HOC_QUERY=22,CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY=23,CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY=24,CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY=25"),
+            ("CapabilityPermissionKindV1", "CAPABILITY_PERMISSION_KIND_UNSPECIFIED=0,CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT=1,CAPABILITY_PERMISSION_KIND_READ_CONTRACT=2,CAPABILITY_PERMISSION_KIND_EXPLAIN_COMMAND=3,CAPABILITY_PERMISSION_KIND_DEPLOY_CONTRACT=4,CAPABILITY_PERMISSION_KIND_INVOKE_COMMAND=5,CAPABILITY_PERMISSION_KIND_READ_ENTITY=6,CAPABILITY_PERMISSION_KIND_SCAN_INDEX=7,CAPABILITY_PERMISSION_KIND_QUERY_PROJECTION=8,CAPABILITY_PERMISSION_KIND_READ_PROJECTION_STATUS=9,CAPABILITY_PERMISSION_KIND_READ_COMMIT=10,CAPABILITY_PERMISSION_KIND_SCAN_COMMITS=11,CAPABILITY_PERMISSION_KIND_SUBSCRIBE_COMMITS=12,CAPABILITY_PERMISSION_KIND_READ_PROVENANCE=13,CAPABILITY_PERMISSION_KIND_INSPECT_OUTBOX=14,CAPABILITY_PERMISSION_KIND_READ_HEALTH=15,CAPABILITY_PERMISSION_KIND_READ_STATISTICS=16,CAPABILITY_PERMISSION_KIND_CREATE_CAPABILITY=17,CAPABILITY_PERMISSION_KIND_REVOKE_CAPABILITY=18,CAPABILITY_PERMISSION_KIND_ADMINISTER_CAPABILITIES=19,CAPABILITY_PERMISSION_KIND_CHECK_AD_HOC_QUERY=20,CAPABILITY_PERMISSION_KIND_EXPLAIN_AD_HOC_QUERY=21,CAPABILITY_PERMISSION_KIND_EXECUTE_AD_HOC_QUERY=22,CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY=23,CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY=24,CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY=25,CAPABILITY_PERMISSION_KIND_CONSUME_EVENT_STREAM=27,CAPABILITY_PERMISSION_KIND_SEEK_EVENT_STREAM_CONSUMER=28,CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY=29,CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION=30"),
             ("ContractMigrationJournalStepV1", "CONTRACT_MIGRATION_JOURNAL_STEP_UNSPECIFIED=0,CONTRACT_MIGRATION_JOURNAL_STEP_TRANSFORMING=1,CONTRACT_MIGRATION_JOURNAL_STEP_REBUILDING_PROJECTIONS=2,CONTRACT_MIGRATION_JOURNAL_STEP_VALIDATING=3,CONTRACT_MIGRATION_JOURNAL_STEP_READY_FOR_CUTOVER=4,CONTRACT_MIGRATION_JOURNAL_STEP_COMPLETE=5"),
             ("DurabilityModeV1", "DURABILITY_MODE_UNSPECIFIED=0,DURABILITY_MODE_SYNC=1,DURABILITY_MODE_GROUP=2,DURABILITY_MODE_MEMORY=3"),
             ("ExecutionFailureCodeV1", "EXECUTION_FAILURE_CODE_UNSPECIFIED=0,EXECUTION_FAILURE_CODE_ARITHMETIC_FAULT=1,EXECUTION_FAILURE_CODE_RESOURCE_LIMIT=2,EXECUTION_FAILURE_CODE_UNIQUE_CONFLICT=3"),

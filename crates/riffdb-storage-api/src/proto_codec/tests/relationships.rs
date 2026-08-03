@@ -20,7 +20,7 @@ use super::{hex, sample};
 const OUTCOME: &str = "riffdb.storage.v1.StoredOutcomeV1";
 const COMMIT: &str = "riffdb.storage.v1.StoredCommitRecordV1";
 const PROVENANCE: &str = "riffdb.storage.v1.StoredProvenanceRecordV1";
-const SERVICE_AUDIT: &str = "riffdb.storage.v1.ServiceAuditRecordV1";
+const SERVICE_AUDIT: &str = "riffdb.storage.v1.ServiceAuditRecordV2";
 const CAPABILITY_ADMINISTRATION: &str = "riffdb.storage.v1.CapabilityAdministrationAuditV1";
 const CAPABILITY_RECORD: &str = "riffdb.storage.v1.CapabilityRecordV1";
 const CAPABILITY_LOOKUP: &str = "riffdb.storage.v1.CapabilityTokenLookupV1";
@@ -124,9 +124,9 @@ fn compound_bootstrap_records_freeze_the_complete_linked_graph() {
     assert_compound_bootstrap_graph(&graph);
 
     let service_start =
-        encode_service_audit_record_v1(&graph.service_start).expect("service start encodes");
+        encode_service_audit_record_v2(&graph.service_start).expect("service start encodes");
     assert_eq!(
-        decode_service_audit_record_v1(service_start.as_bytes())
+        decode_service_audit_record_v2(service_start.as_bytes())
             .expect("service start decodes")
             .value(),
         &graph.service_start
@@ -532,7 +532,7 @@ fn append_compound_bootstrap_relationship(fixture: &mut String) {
         (
             "service-start",
             SERVICE_AUDIT,
-            encode_service_audit_record_v1(&graph.service_start)
+            encode_service_audit_record_v2(&graph.service_start)
                 .expect("bootstrap service start encodes"),
         ),
         (

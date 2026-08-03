@@ -10,27 +10,32 @@ use riffdb_api_grpc::{
 use riffdb_errors::PublicError;
 use riffdb_service::{
     AdministrationApplication, CheckSymbolicQueryResult, CommandApplication, CommitApplication,
-    CompileSymbolicQueryRequest, ContractApplication, ContractValidationResult,
-    CreateCapabilityInvocation, CreateCapabilityResult, CreateOfflineBackupRequest,
-    DeployContractRequest, DeployContractResult, DeployQueryModuleRequest, DeployQueryModuleResult,
-    DescribeEventRequest, DescribeEventResult, DescribeSymbolicContractResult,
-    DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverResourcesRequest,
-    DiscoverResourcesResult, DiscoveryApplication, EventServiceApplication, ExecuteCommandRequest,
-    ExecuteCommandResult, ExecuteProjectedQueryRequest, ExecuteProjectedQueryResult,
-    ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult, ExplainCommandRequest,
-    ExplainCommandResult, ExplainSymbolicQueryResult, GetActiveContractRequest,
-    GetActiveContractResult, GetCommitRequest, GetCommitResult, GetContractVersionRequest,
-    GetContractVersionResult, GetEntityRequest, GetEntityResult,
-    GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
-    GetProjectionStatusRequest, GetProjectionStatusResult, GetQueryModuleRequest, HealthContext,
-    HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest,
-    ListPendingOutboxDeliveriesResult, NamedSymbolicQueryRequest, OfflineMaintenanceApplication,
-    OfflineMaintenanceStartResult, ProjectedQueryApplication, QueryApplication,
-    QueryModuleInspection, QueryProjectionRequest, QueryProjectionResult, ReplayEventsRequest,
-    ReplayEventsResult, RequestContext, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
-    RestoreOfflineBackupInvocation, RevokeCapabilityRequest, RevokeCapabilityResult,
-    ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult, ServiceFuture,
-    StatisticsRequest, StatisticsResult, SubscribeToCommitsRequest, SubscribeToCommitsResult,
+    CompileSymbolicQueryRequest, ConsumeEventStreamRequest, ConsumeEventStreamResult,
+    ContractApplication, ContractValidationResult, CreateCapabilityInvocation,
+    CreateCapabilityResult, CreateOfflineBackupRequest, DeployContractRequest,
+    DeployContractResult, DeployQueryModuleRequest, DeployQueryModuleResult,
+    DeployReactiveModuleRequest, DeployReactiveModuleResult, DescribeEventRequest,
+    DescribeEventResult, DescribeSymbolicContractResult, DiscoverCommandToolsRequest,
+    DiscoverCommandToolsResult, DiscoverResourcesRequest, DiscoverResourcesResult,
+    DiscoveryApplication, EventConsumerLeaseSelection, EventConsumerMutationResult,
+    EventConsumerSelection, EventConsumerServiceApplication, EventConsumerStatus,
+    EventServiceApplication, ExecuteCommandRequest, ExecuteCommandResult,
+    ExecuteProjectedQueryRequest, ExecuteProjectedQueryResult, ExecuteSymbolicQueryRequest,
+    ExecuteSymbolicQueryResult, ExplainCommandRequest, ExplainCommandResult,
+    ExplainSymbolicQueryResult, GetActiveContractRequest, GetActiveContractResult,
+    GetCommitRequest, GetCommitResult, GetContractVersionRequest, GetContractVersionResult,
+    GetEntityRequest, GetEntityResult, GetOfflineMaintenanceOperationRequest,
+    GetOfflineMaintenanceOperationResult, GetProjectionStatusRequest, GetProjectionStatusResult,
+    GetQueryModuleRequest, HealthContext, HealthRequest, HealthResult,
+    ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
+    NamedSymbolicQueryRequest, NegativeAcknowledgeEventStreamRequest,
+    OfflineMaintenanceApplication, OfflineMaintenanceStartResult, ProjectedQueryApplication,
+    QueryApplication, QueryModuleInspection, QueryProjectionRequest, QueryProjectionResult,
+    ReplayEventsRequest, ReplayEventsResult, RequestContext, ResolveCommandOutcomeRequest,
+    ResolveCommandOutcomeResult, RestoreOfflineBackupInvocation, RevokeCapabilityRequest,
+    RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest,
+    ScanIndexResult, SeekEventStreamConsumerRequest, ServiceFuture, StatisticsRequest,
+    StatisticsResult, SubscribeToCommitsRequest, SubscribeToCommitsResult,
     SymbolicContractSelector, SymbolicQueryApplication, TailEventsRequest, TailEventsResult,
     TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
 };
@@ -227,6 +232,35 @@ delegate_operation! {
     }
 }
 
+delegate_operation! {
+    EventConsumerServiceApplication {
+        consume_event_stream(
+            context: RequestContext,
+            request: ConsumeEventStreamRequest
+        ) -> ConsumeEventStreamResult => ConsumeEventStream;
+        acknowledge_event_stream(
+            context: RequestContext,
+            request: EventConsumerLeaseSelection
+        ) -> EventConsumerMutationResult => AcknowledgeEventStream;
+        negative_acknowledge_event_stream(
+            context: RequestContext,
+            request: NegativeAcknowledgeEventStreamRequest
+        ) -> EventConsumerMutationResult => NegativeAcknowledgeEventStream;
+        seek_event_stream_consumer(
+            context: RequestContext,
+            request: SeekEventStreamConsumerRequest
+        ) -> EventConsumerMutationResult => SeekEventStreamConsumer;
+        retire_event_stream_consumer(
+            context: RequestContext,
+            request: EventConsumerSelection
+        ) -> EventConsumerMutationResult => RetireEventStreamConsumer;
+        get_event_stream_consumer_status(
+            context: RequestContext,
+            request: EventConsumerSelection
+        ) -> Option<EventConsumerStatus> => GetEventStreamConsumerStatus;
+    }
+}
+
 impl AdministrationApplication for LifecycleApplicationService {
     fn health(
         &self,
@@ -377,6 +411,10 @@ delegate_operation! {
             context: RequestContext,
             request: DeployQueryModuleRequest
         ) -> DeployQueryModuleResult => DeployQueryModule;
+        deploy_reactive_module(
+            context: RequestContext,
+            request: DeployReactiveModuleRequest
+        ) -> DeployReactiveModuleResult => DeployReactiveModule;
         get_query_module(
             context: RequestContext,
             request: GetQueryModuleRequest

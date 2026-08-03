@@ -213,7 +213,7 @@ fn semantic_wire_vectors() -> Vec<(&'static str, CanonicalStoredEnvelopeV1)> {
         "riffdb.storage.v1.ServiceAuditRecordV1",
         assert_round_trip(
             sample::service_audit_record(),
-            encode_service_audit_record_v1,
+            encode_service_audit_record_legacy_v1,
             decode_service_audit_record_v1,
         ),
     ));
@@ -281,6 +281,11 @@ fn every_registered_semantic_record_round_trips_in_registry_order() {
     assert_round_trip(atomic.commit().clone(), encode_commit_record_v1, |bytes| {
         decode_commit_record_v3(bytes, atomic.events().to_vec())
     });
+    assert_round_trip(
+        sample::service_audit_record(),
+        encode_service_audit_record_v2,
+        decode_service_audit_record,
+    );
 }
 
 #[test]

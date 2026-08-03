@@ -36,8 +36,9 @@ use crate::batch::{
 use crate::cli::{
     ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli, CommandCommand,
     CommitCommand, ContractCommand, ContractSelectionArgs, DemoCommand, EntityCommand,
-    EventCommand, MigrationCommand, OutputMode, ProjectionCommand, QueryCommand, RetentionCommand,
-    RetentionHoldCommand, RevocationReason, RoleActorKind, RoleCommand, ServerCommand, TopLevel,
+    EventCommand, EventConsumerArgs, MigrationCommand, OutputMode, ProjectionCommand, QueryCommand,
+    RetentionCommand, RetentionHoldCommand, RevocationReason, RoleActorKind, RoleCommand,
+    ServerCommand, TopLevel,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -74,6 +75,10 @@ struct ApplicationDeploymentState {
     query_modules_deployed: Vec<String>,
     #[serde(default)]
     query_module_identities: Vec<ApplicationDeploymentQueryModuleState>,
+    #[serde(default)]
+    reactive_modules_deployed: Vec<String>,
+    #[serde(default)]
+    reactive_module_identities: Vec<ApplicationDeploymentReactiveModuleState>,
     role: Option<ApplicationDeploymentRoleState>,
     seeds_completed: Vec<String>,
 }
@@ -81,6 +86,14 @@ struct ApplicationDeploymentState {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ApplicationDeploymentQueryModuleState {
+    module_name: String,
+    module_version: u64,
+    module_hash: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ApplicationDeploymentReactiveModuleState {
     module_name: String,
     module_version: u64,
     module_hash: String,
@@ -922,6 +935,16 @@ async fn application_command(
         }
         prepared_query_modules.push(queries);
     }
+    let mut prepared_reactive_modules =
+        Vec::with_capacity(locked.manifest().reactive_modules().len());
+    for module in locked.manifest().reactive_modules() {
+        let path = locked.root().join(module.source());
+        let source = match read_file(&path, 1_048_576).and_then(utf8) {
+            Ok(source) => source,
+            Err(error) => return input_terminal(identity, error),
+        };
+        prepared_reactive_modules.push(source);
+    }
     let prepared_role = match provision_role.as_deref() {
         Some(role) => {
             let manifest_path = locked.manifest_path().as_os_str().to_owned();
@@ -985,6 +1008,8 @@ async fn application_command(
         state.contract_bundle_hash.clear();
         state.query_modules_deployed.clear();
         state.query_module_identities.clear();
+        state.reactive_modules_deployed.clear();
+        state.reactive_module_identities.clear();
         state.seeds_completed.clear();
     }
     let metadata = match required_metadata(identity, config, environment) {
@@ -1281,6 +1306,131 @@ async fn application_command(
             });
         state
             .query_module_identities
+            .sort_by(|left, right| left.module_name.cmp(&right.module_name));
+        if persist_deployment_state(&state_path, &state).is_err() {
+            return local_error(
+                identity,
+                "deployment_state_write_failed",
+                "durable deployment progress could not be retained",
+            );
+        }
+    }
+
+    let mut query_module_hashes = locked
+        .manifest()
+        .query_modules()
+        .iter()
+        .map(|module| module.module_hash().as_bytes().to_vec())
+        .collect::<Vec<_>>();
+    query_module_hashes.sort();
+    for (module, source) in locked
+        .manifest()
+        .reactive_modules()
+        .iter()
+        .zip(prepared_reactive_modules)
+    {
+        let request_id = match request_id() {
+            Ok(request_id) => request_id,
+            Err(error) => return client_error(identity, &error),
+        };
+        let response = match client
+            .deploy_reactive_module(
+                app_v1::DeployReactiveModuleRequest {
+                    contract: Some(app_v1::ContractSelector {
+                        lineage: locked_contract.lineage().to_owned(),
+                        version: locked_contract.version(),
+                        bundle_hash: locked_contract.bundle_hash().as_bytes().to_vec(),
+                    }),
+                    source,
+                    query_module_hashes: query_module_hashes.clone(),
+                    request_id,
+                },
+                &metadata,
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => return client_error(identity, &error),
+        };
+        if response.module.as_ref().is_some_and(|descriptor| {
+            descriptor.module_name != module.name()
+                || descriptor.module_version != module.version()
+                || descriptor.module_hash.as_slice() != module.module_hash().as_bytes()
+                || descriptor.contract_lineage != locked_contract.lineage()
+                || descriptor.contract_version != locked_contract.version()
+                || descriptor.contract_bundle_hash.as_slice()
+                    != locked_contract.bundle_hash().as_bytes()
+        }) {
+            return local_error(
+                identity,
+                "locked_reactive_module_identity_mismatch",
+                "the deployed reactive module identity does not match the exact application lock",
+            );
+        }
+        match app_v1::ReactiveModuleDeploymentOutcome::try_from(response.outcome).ok() {
+            Some(
+                app_v1::ReactiveModuleDeploymentOutcome::Published
+                | app_v1::ReactiveModuleDeploymentOutcome::AlreadyPublished,
+            ) => {}
+            Some(app_v1::ReactiveModuleDeploymentOutcome::VersionConflict) => {
+                return local_error(
+                    identity,
+                    "reactive_module_version_conflict",
+                    "the locked reactive module version conflicts with retained state",
+                );
+            }
+            Some(app_v1::ReactiveModuleDeploymentOutcome::ContractUnavailable) => {
+                return local_error(
+                    identity,
+                    "reactive_module_contract_unavailable",
+                    "the locked reactive module contract is unavailable",
+                );
+            }
+            Some(app_v1::ReactiveModuleDeploymentOutcome::QueryModuleUnavailable) => {
+                return local_error(
+                    identity,
+                    "reactive_module_query_module_unavailable",
+                    "an exact query module required by the locked reactive module is unavailable",
+                );
+            }
+            Some(app_v1::ReactiveModuleDeploymentOutcome::Unspecified) | None => {
+                return local_error(
+                    identity,
+                    "reactive_module_deployment_result_invalid",
+                    "reactive module deployment returned no terminal result",
+                );
+            }
+        }
+        if response.module.is_none() {
+            return local_error(
+                identity,
+                "reactive_module_deployment_identity_absent",
+                "reactive module deployment returned no verifiable module identity",
+            );
+        }
+        interrupt_application_deployment_after(environment, "reactive_module_remote");
+        if !state
+            .reactive_modules_deployed
+            .iter()
+            .any(|name| name == module.name())
+        {
+            state
+                .reactive_modules_deployed
+                .push(module.name().to_owned());
+            state.reactive_modules_deployed.sort();
+        }
+        state
+            .reactive_module_identities
+            .retain(|retained| retained.module_name != module.name());
+        state
+            .reactive_module_identities
+            .push(ApplicationDeploymentReactiveModuleState {
+                module_name: module.name().to_owned(),
+                module_version: module.version(),
+                module_hash: hex(module.module_hash().as_bytes()),
+            });
+        state
+            .reactive_module_identities
             .sort_by(|left, right| left.module_name.cmp(&right.module_name));
         if persist_deployment_state(&state_path, &state).is_err() {
             return local_error(
@@ -1731,6 +1881,8 @@ fn load_deployment_state(
             contract_bundle_hash: String::new(),
             query_modules_deployed: Vec::new(),
             query_module_identities: Vec::new(),
+            reactive_modules_deployed: Vec::new(),
+            reactive_module_identities: Vec::new(),
             role: None,
             seeds_completed: Vec::new(),
         });
@@ -1750,6 +1902,8 @@ fn load_deployment_state(
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         || state.query_modules_deployed.len() > 4_096
         || state.query_module_identities.len() > 4_096
+        || state.reactive_modules_deployed.len() > 4_096
+        || state.reactive_module_identities.len() > 4_096
         || state.seeds_completed.len() > 4_096
         || (!state.contract_bundle_hash.is_empty()
             && (state.contract_bundle_hash.len() != 64
@@ -1776,6 +1930,28 @@ fn load_deployment_state(
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
                 || !state
                     .query_modules_deployed
+                    .iter()
+                    .any(|name| name == &identity.module_name)
+        })
+        || state
+            .reactive_modules_deployed
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        || state
+            .reactive_module_identities
+            .windows(2)
+            .any(|pair| pair[0].module_name >= pair[1].module_name)
+        || state.reactive_module_identities.iter().any(|identity| {
+            identity.module_name.is_empty()
+                || identity.module_name.len() > 256
+                || identity.module_version == 0
+                || identity.module_hash.len() != 64
+                || !identity
+                    .module_hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                || !state
+                    .reactive_modules_deployed
                     .iter()
                     .any(|name| name == &identity.module_name)
         })
@@ -2963,6 +3139,12 @@ async fn event_command(
         EventCommand::Describe { .. } => CommandIdentity::EventDescribe,
         EventCommand::Replay { .. } => CommandIdentity::EventReplay,
         EventCommand::Tail { .. } => CommandIdentity::EventTail,
+        EventCommand::Consume { .. } => CommandIdentity::EventConsume,
+        EventCommand::Ack { .. } => CommandIdentity::EventAck,
+        EventCommand::Nack { .. } => CommandIdentity::EventNack,
+        EventCommand::Seek { .. } => CommandIdentity::EventSeek,
+        EventCommand::Retire { .. } => CommandIdentity::EventRetire,
+        EventCommand::Status { .. } => CommandIdentity::EventStatus,
     };
     let metadata = match required_metadata(identity, config, environment) {
         Ok(metadata) => metadata,
@@ -3091,7 +3273,219 @@ async fn event_command(
                 Err(error) => client_error(identity, &error),
             }
         }
+        EventCommand::Consume {
+            consumer,
+            batch_limit,
+            in_flight_limit,
+            lease_seconds,
+            wait_nanos,
+        } => {
+            let selection = match event_consumer_selection(consumer) {
+                Ok(selection) => selection,
+                Err(()) => return invalid_input(identity),
+            };
+            let parsed = (
+                batch_limit.parse::<u32>(),
+                in_flight_limit.parse::<u32>(),
+                parse_u64(&lease_seconds),
+                parse_u64(&wait_nanos),
+            );
+            let (Ok(batch_limit), Ok(in_flight_limit), Ok(lease_seconds), Ok(maximum_wait_nanos)) =
+                parsed
+            else {
+                return invalid_input(identity);
+            };
+            match client
+                .consume_event_stream(
+                    v1::ConsumeEventStreamRequest {
+                        request_id,
+                        selection: Some(selection),
+                        batch_limit,
+                        in_flight_limit,
+                        lease_seconds,
+                        maximum_wait_nanos,
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => render_consume_response(&response),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        EventCommand::Ack {
+            consumer,
+            event_id,
+            lease_token,
+            history_incarnation,
+        } => {
+            let Some((selection, event_id, lease_token, history_incarnation)) =
+                event_consumer_lease_input(consumer, &event_id, &lease_token, &history_incarnation)
+            else {
+                return invalid_input(identity);
+            };
+            match client
+                .acknowledge_event_stream(
+                    v1::AcknowledgeEventStreamRequest {
+                        request_id,
+                        selection: Some(selection),
+                        event_id: Some(event_id),
+                        lease_token,
+                        history_incarnation,
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => render_consumer_mutation(identity, &response),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        EventCommand::Nack {
+            consumer,
+            event_id,
+            lease_token,
+            history_incarnation,
+            retry_delay_nanos,
+        } => {
+            let Some((selection, event_id, lease_token, history_incarnation)) =
+                event_consumer_lease_input(consumer, &event_id, &lease_token, &history_incarnation)
+            else {
+                return invalid_input(identity);
+            };
+            let Ok(retry_delay_nanos) = parse_u64(&retry_delay_nanos) else {
+                return invalid_input(identity);
+            };
+            match client
+                .negative_acknowledge_event_stream(
+                    v1::NegativeAcknowledgeEventStreamRequest {
+                        request_id,
+                        selection: Some(selection),
+                        event_id: Some(event_id),
+                        lease_token,
+                        history_incarnation,
+                        retry_delay_nanos,
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => render_consumer_mutation(identity, &response),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        EventCommand::Seek {
+            consumer,
+            checkpoint,
+        } => {
+            let selection = match event_consumer_selection(consumer) {
+                Ok(selection) => selection,
+                Err(()) => return invalid_input(identity),
+            };
+            let checkpoint = match parse_consumer_checkpoint(&checkpoint) {
+                Ok(checkpoint) => checkpoint,
+                Err(()) => return invalid_input(identity),
+            };
+            match client
+                .seek_event_stream_consumer(
+                    v1::SeekEventStreamConsumerRequest {
+                        request_id,
+                        selection: Some(selection),
+                        checkpoint: Some(checkpoint),
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => render_consumer_mutation(identity, &response),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        EventCommand::Retire { consumer } => {
+            let selection = match event_consumer_selection(consumer) {
+                Ok(selection) => selection,
+                Err(()) => return invalid_input(identity),
+            };
+            match client
+                .retire_event_stream_consumer(
+                    v1::RetireEventStreamConsumerRequest {
+                        request_id,
+                        selection: Some(selection),
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => render_consumer_mutation(identity, &response),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        EventCommand::Status { consumer } => {
+            let selection = match event_consumer_selection(consumer) {
+                Ok(selection) => selection,
+                Err(()) => return invalid_input(identity),
+            };
+            match client
+                .get_event_stream_consumer_status(
+                    v1::GetEventStreamConsumerStatusRequest {
+                        request_id,
+                        selection: Some(selection),
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => render_consumer_status(&response),
+                Err(error) => client_error(identity, &error),
+            }
+        }
     }
+}
+
+fn event_consumer_selection(args: EventConsumerArgs) -> Result<v1::EventConsumerSelection, ()> {
+    let parameters = args
+        .parameters
+        .into_iter()
+        .map(|parameter| {
+            let (name, value) = parameter.split_once('=').ok_or(())?;
+            let value: InputValue = serde_json::from_str(value).map_err(|_| ())?;
+            Ok(v1::EventConsumerParameter {
+                name: name.to_owned(),
+                value: Some(value.into_proto().map_err(|_| ())?),
+            })
+        })
+        .collect::<Result<Vec<_>, ()>>()?;
+    Ok(v1::EventConsumerSelection {
+        reactive_module_hash: parse_hash(&args.module_hash)?,
+        operation_name: args.operation,
+        parameters,
+        consumer_name: args.consumer_name,
+    })
+}
+
+fn event_consumer_lease_input(
+    consumer: EventConsumerArgs,
+    event_id: &str,
+    lease_token: &str,
+    history_incarnation: &str,
+) -> Option<(v1::EventConsumerSelection, v1::EventId, Vec<u8>, u64)> {
+    Some((
+        event_consumer_selection(consumer).ok()?,
+        parse_event_id(event_id).ok()?,
+        parse_hash(lease_token).ok()?,
+        parse_nonzero_u64(history_incarnation).ok()?,
+    ))
+}
+
+fn parse_consumer_checkpoint(value: &str) -> Result<v1::EventConsumerCheckpoint, ()> {
+    let position = if value == "before-first" {
+        v1::event_consumer_checkpoint::Position::BeforeFirst(v1::Unit {})
+    } else {
+        v1::event_consumer_checkpoint::Position::AfterEventId(parse_event_id(value)?)
+    };
+    Ok(v1::EventConsumerCheckpoint {
+        position: Some(position),
+    })
 }
 
 fn event_selection(
@@ -3198,6 +3592,116 @@ fn render_event_page(
         "wait_timed_out": wait_timed_out,
     });
     success(identity, "read", &result)
+}
+
+fn render_consume_response(response: &v1::ConsumeEventStreamResponse) -> Terminal {
+    let Some(status) = response.status.as_ref() else {
+        return local_error(
+            CommandIdentity::EventConsume,
+            "invalid_response",
+            "consumer response is incomplete",
+        );
+    };
+    let events = response
+        .events
+        .iter()
+        .map(|consumed| {
+            let event = consumed.event.as_ref();
+            serde_json::json!({
+                "event_id": event.and_then(|value| value.event_id.as_ref()).map(|id| format!("{}:{}", id.commit_sequence, id.event_ordinal)),
+                "event_name": event.map(|value| value.event_name.as_str()),
+                "writer_contract_version": event.map(|value| value.writer_contract_version.to_string()),
+                "command_name": event.map(|value| value.command_name.as_str()),
+                "request_id": event.map(|value| format_uuid(&value.request_id)),
+                "root_request_id": event.map(|value| format_uuid(&value.root_request_id)),
+                "fields": event.map(|value| value.fields.iter().map(|field| serde_json::json!({
+                    "name": field.name,
+                    "value": field.value.as_ref().and_then(|value| serde_json::to_value(crate::value::OutputValue(value)).ok()),
+                })).collect::<Vec<_>>()),
+                "attempt": consumed.attempt,
+                "lease_token": hex(&consumed.lease_token),
+                "expires_at": consumed.expires_at.as_ref().map(|time| serde_json::json!({
+                    "seconds": time.seconds.to_string(),
+                    "nanos": time.nanos,
+                })),
+            })
+        })
+        .collect::<Vec<_>>();
+    let result = serde_json::json!({
+        "events": events,
+        "status": consumer_status_json(status),
+        "wait_timed_out": response.wait_timed_out,
+    });
+    success(CommandIdentity::EventConsume, "leased", &result)
+}
+
+fn render_consumer_mutation(
+    identity: CommandIdentity,
+    response: &v1::EventConsumerMutationResponse,
+) -> Terminal {
+    let result = v1::EventConsumerMutationResult::try_from(response.result)
+        .ok()
+        .filter(|value| *value != v1::EventConsumerMutationResult::Unspecified)
+        .map(|value| match value {
+            v1::EventConsumerMutationResult::Applied => "applied",
+            v1::EventConsumerMutationResult::StateChanged => "state_changed",
+            v1::EventConsumerMutationResult::NotFound => "not_found",
+            v1::EventConsumerMutationResult::OutstandingLease => "outstanding_lease",
+            v1::EventConsumerMutationResult::StaleLease => "stale_lease",
+            v1::EventConsumerMutationResult::LeaseExpired => "lease_expired",
+            v1::EventConsumerMutationResult::Unspecified => unreachable!(),
+        });
+    let Some(result) = result else {
+        return local_error(
+            identity,
+            "invalid_response",
+            "consumer result is incomplete",
+        );
+    };
+    success(identity, "updated", &serde_json::json!({"result": result}))
+}
+
+fn render_consumer_status(response: &v1::GetEventStreamConsumerStatusResponse) -> Terminal {
+    let result = match response.result.as_ref() {
+        Some(v1::get_event_stream_consumer_status_response::Result::NotFound(_)) => {
+            serde_json::json!({"found": false})
+        }
+        Some(v1::get_event_stream_consumer_status_response::Result::Found(status)) => {
+            serde_json::json!({"found": true, "status": consumer_status_json(status)})
+        }
+        None => {
+            return local_error(
+                CommandIdentity::EventStatus,
+                "invalid_response",
+                "consumer status is incomplete",
+            );
+        }
+    };
+    success(CommandIdentity::EventStatus, "read", &result)
+}
+
+fn consumer_status_json(status: &v1::EventConsumerStatus) -> serde_json::Value {
+    let checkpoint =
+        status
+            .checkpoint
+            .as_ref()
+            .and_then(|checkpoint| match checkpoint.position.as_ref()? {
+                v1::event_consumer_checkpoint::Position::BeforeFirst(_) => {
+                    Some("before-first".to_owned())
+                }
+                v1::event_consumer_checkpoint::Position::AfterEventId(event_id) => Some(format!(
+                    "{}:{}",
+                    event_id.commit_sequence, event_id.event_ordinal
+                )),
+            });
+    serde_json::json!({
+        "revision": status.revision.to_string(),
+        "checkpoint": checkpoint,
+        "history_incarnation": status.history_incarnation.to_string(),
+        "live_leases": status.live_leases,
+        "retries": status.retries,
+        "dead_letters": status.dead_letters,
+    })
 }
 
 async fn bind_compiled_role(
@@ -5387,6 +5891,24 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Event {
             command: EventCommand::Tail { .. },
         } => CommandIdentity::EventTail,
+        TopLevel::Event {
+            command: EventCommand::Consume { .. },
+        } => CommandIdentity::EventConsume,
+        TopLevel::Event {
+            command: EventCommand::Ack { .. },
+        } => CommandIdentity::EventAck,
+        TopLevel::Event {
+            command: EventCommand::Nack { .. },
+        } => CommandIdentity::EventNack,
+        TopLevel::Event {
+            command: EventCommand::Seek { .. },
+        } => CommandIdentity::EventSeek,
+        TopLevel::Event {
+            command: EventCommand::Retire { .. },
+        } => CommandIdentity::EventRetire,
+        TopLevel::Event {
+            command: EventCommand::Status { .. },
+        } => CommandIdentity::EventStatus,
         TopLevel::Projection { .. } => CommandIdentity::ProjectionQuery,
         TopLevel::Query {
             command: QueryCommand::Describe { .. },
@@ -5875,6 +6397,16 @@ mod tests {
                 module_version: 1,
                 module_hash: "de".repeat(32),
             });
+        state
+            .reactive_modules_deployed
+            .push("EaActivity".to_owned());
+        state
+            .reactive_module_identities
+            .push(ApplicationDeploymentReactiveModuleState {
+                module_name: "EaActivity".to_owned(),
+                module_version: 1,
+                module_hash: "df".repeat(32),
+            });
         state.role = Some(ApplicationDeploymentRoleState {
             role_name: "EaApplication".to_owned(),
             role_identity: "ef".repeat(32),
@@ -5926,6 +6458,8 @@ mod tests {
             .expect("legacy state remains resumable");
         assert!(legacy.contract_bundle_hash.is_empty());
         assert!(legacy.query_module_identities.is_empty());
+        assert!(legacy.reactive_modules_deployed.is_empty());
+        assert!(legacy.reactive_module_identities.is_empty());
         fs::remove_dir_all(directory).expect("fixture cleanup");
     }
 

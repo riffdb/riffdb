@@ -13,19 +13,21 @@ use crate::{
     BuildInfo, CheckSymbolicQueryResult, CheckedSymbolicQuery, CommandToolDescriptor,
     CommandToolDiscoveryItem, CommitScanFence, CommitSubscriptionEvent, CommitView,
     CompactCommandToolDescriptor, CompactCommandToolDiscoveryItem, CompactNamedQueryToolDescriptor,
-    CompactResourceDescriptor, CompactResourceDescriptorRef, ContractDescriptor,
-    ContractMigrationOperationObservation, ContractMigrationStartResult, ContractValidationResult,
-    CreateCapabilityResult, CursorToken, DeclaredOutcomeView, DeployContractResult,
-    DeployQueryModuleResult, DescribeEventResult, DescribeSymbolicContractResult,
-    DiscoverCommandToolsResult, DiscoverCommandToolsResultRef, DiscoverResourcesResult,
-    DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryCatalogStateRef, DurableEventView,
-    EntityView, EventDescriptor, EventFieldDescriptor, EventPage, ExecuteCommandResult,
-    ExecuteProjectedQueryResult, ExecuteSymbolicQueryResult, ExplainCommandResult,
-    ExplainSymbolicQueryResult, GeneratedSchemaIdentity, GetActiveContractResult, GetCommitResult,
-    GetContractMigrationOperationResult, GetContractVersionResult, GetEntityResult,
-    GetOfflineMaintenanceOperationResult, GetProjectionStatusResult, HealthReport, HealthResult,
-    IndexRowView, IndexScanFence, JournaledCommandResult, ListPendingOutboxDeliveriesResult,
-    NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact, NormalCreateCapabilityResult,
+    CompactResourceDescriptor, CompactResourceDescriptorRef, ConsumeEventStreamResult,
+    ConsumedEvent, ContractDescriptor, ContractMigrationOperationObservation,
+    ContractMigrationStartResult, ContractValidationResult, CreateCapabilityResult, CursorToken,
+    DeclaredOutcomeView, DeployContractResult, DeployQueryModuleResult, DeployReactiveModuleResult,
+    DescribeEventResult, DescribeSymbolicContractResult, DiscoverCommandToolsResult,
+    DiscoverCommandToolsResultRef, DiscoverResourcesResult, DiscoverResourcesResultRef,
+    DiscoveryCatalogFence, DiscoveryCatalogStateRef, DurableEventView, EntityView,
+    EventConsumerMutationResult, EventConsumerStatus, EventDescriptor, EventFieldDescriptor,
+    EventPage, ExecuteCommandResult, ExecuteProjectedQueryResult, ExecuteSymbolicQueryResult,
+    ExplainCommandResult, ExplainSymbolicQueryResult, GeneratedSchemaIdentity,
+    GetActiveContractResult, GetCommitResult, GetContractMigrationOperationResult,
+    GetContractVersionResult, GetEntityResult, GetOfflineMaintenanceOperationResult,
+    GetProjectionStatusResult, HealthReport, HealthResult, IndexRowView, IndexScanFence,
+    JournaledCommandResult, ListPendingOutboxDeliveriesResult, NamedQueryToolDescriptor,
+    NamedQueryToolSchemaArtifact, NormalCreateCapabilityResult,
     OfflineMaintenanceOperationObservation, OfflineMaintenanceStartResult, OperationSchemaArtifact,
     OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
     OutboxDeliverySummary, Page, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
@@ -439,6 +441,36 @@ impl ServiceResponseCharge for DeployQueryModuleResult {
         charge.bytes(module.contract_hash().as_bytes().len())?;
         for query in module.query_names() {
             charge.bytes(query.len())?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for DeployReactiveModuleResult {}
+
+impl ServiceResponseCharge for DeployReactiveModuleResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        let module = self.module();
+        charge.bytes(module.name().len())?;
+        charge.fields(3)?;
+        charge.bytes(module.hash().as_bytes().len())?;
+        charge_lineage(&mut charge, module.contract_lineage())?;
+        charge.fields(1)?;
+        charge.bytes(module.contract_hash().as_bytes().len())?;
+        for hash in module.query_module_hashes() {
+            charge.bytes(hash.as_bytes().len())?;
+        }
+        for operation in module.operation_names() {
+            charge.bytes(operation.len())?;
+        }
+        if matches!(
+            self.outcome(),
+            crate::ReactiveModuleDeploymentDisposition::QueryModuleUnavailable(_)
+        ) {
+            charge.bytes(32)?;
         }
         Ok(charge.finish())
     }
@@ -1200,6 +1232,66 @@ impl ServiceResponseCharge for SymbolicEvent {
         charge.bytes(16 * 3)?;
         charge.bytes(56)?;
         charge.repeated(self.fields())?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for ConsumedEvent {}
+impl ServiceResponseCharge for ConsumedEvent {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.nested(self.event())?;
+        charge.bytes(32)?;
+        charge.fields(3)?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for EventConsumerStatus {}
+impl ServiceResponseCharge for EventConsumerStatus {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.fields(6)?;
+        charge.bytes(48)?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for ConsumeEventStreamResult {}
+impl ServiceResponseCharge for ConsumeEventStreamResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.repeated(self.events())?;
+        charge.nested(self.status())?;
+        charge.fields(3)?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for EventConsumerMutationResult {}
+impl ServiceResponseCharge for EventConsumerMutationResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        Ok(ChargeAccumulator::message().finish())
+    }
+}
+
+impl sealed::Sealed for Option<EventConsumerStatus> {}
+impl ServiceResponseCharge for Option<EventConsumerStatus> {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        if let Some(status) = self {
+            charge.nested(status)?;
+        }
         Ok(charge.finish())
     }
 }

@@ -6,7 +6,8 @@ use std::fmt;
 use crate::limits::MAX_SERVICE_AUDIT_TARGETS;
 use crate::{
     AdministrationSequence, CapabilityId, CommandId, CommitSequence, ContractLineage,
-    ContractVersion, EntityTypeId, IndexId, ProjectionId, ProvenanceId,
+    ContractVersion, EntityTypeId, EventConsumerIdentityHash, IndexId, ProjectionId, ProvenanceId,
+    ReactiveModuleHash, ReactiveOperationName,
 };
 
 /// The closed v1 application-service operation registry.
@@ -76,11 +77,25 @@ pub enum ServiceOperationV1 {
     TailEvents,
     /// Execute one projected columnar query under a freshness policy.
     ExecuteProjectedQuery,
+    /// Publish one exact immutable reactive module.
+    DeployReactiveModule,
+    /// Pull or stream leased events from one exact symbolic stream.
+    ConsumeEventStream,
+    /// Acknowledge one exact leased event attempt.
+    AcknowledgeEventStream,
+    /// Negatively acknowledge one exact leased event attempt.
+    NegativeAcknowledgeEventStream,
+    /// Administratively seek one exact durable event consumer.
+    SeekEventStreamConsumer,
+    /// Administratively retire one exact durable event consumer.
+    RetireEventStreamConsumer,
+    /// Read one exact durable event consumer status.
+    GetEventStreamConsumerStatus,
 }
 
 impl ServiceOperationV1 {
     /// Every accepted v1 service operation, in tag order.
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 39] = [
         Self::ValidateContract,
         Self::ExplainCommand,
         Self::DeployContract,
@@ -113,6 +128,13 @@ impl ServiceOperationV1 {
         Self::ReplayEvents,
         Self::TailEvents,
         Self::ExecuteProjectedQuery,
+        Self::DeployReactiveModule,
+        Self::ConsumeEventStream,
+        Self::AcknowledgeEventStream,
+        Self::NegativeAcknowledgeEventStream,
+        Self::SeekEventStreamConsumer,
+        Self::RetireEventStreamConsumer,
+        Self::GetEventStreamConsumerStatus,
     ];
 
     /// Returns the stable v1 semantic tag.
@@ -151,6 +173,13 @@ impl ServiceOperationV1 {
             Self::ReplayEvents => 0x1e,
             Self::TailEvents => 0x1f,
             Self::ExecuteProjectedQuery => 0x20,
+            Self::DeployReactiveModule => 0x21,
+            Self::ConsumeEventStream => 0x22,
+            Self::AcknowledgeEventStream => 0x23,
+            Self::NegativeAcknowledgeEventStream => 0x24,
+            Self::SeekEventStreamConsumer => 0x25,
+            Self::RetireEventStreamConsumer => 0x26,
+            Self::GetEventStreamConsumerStatus => 0x27,
         }
     }
 
@@ -190,6 +219,13 @@ impl ServiceOperationV1 {
             0x1e => Some(Self::ReplayEvents),
             0x1f => Some(Self::TailEvents),
             0x20 => Some(Self::ExecuteProjectedQuery),
+            0x21 => Some(Self::DeployReactiveModule),
+            0x22 => Some(Self::ConsumeEventStream),
+            0x23 => Some(Self::AcknowledgeEventStream),
+            0x24 => Some(Self::NegativeAcknowledgeEventStream),
+            0x25 => Some(Self::SeekEventStreamConsumer),
+            0x26 => Some(Self::RetireEventStreamConsumer),
+            0x27 => Some(Self::GetEventStreamConsumerStatus),
             _ => None,
         }
     }
@@ -353,6 +389,17 @@ pub enum ServiceAuditTargetV1 {
     Provenance(ProvenanceId),
     /// One authorization capability.
     Capability(CapabilityId),
+    /// One exact immutable reactive operation and durable consumer identity.
+    EventConsumer {
+        /// Exact contract lineage.
+        lineage: ContractLineage,
+        /// Immutable reactive module identity.
+        module_hash: ReactiveModuleHash,
+        /// Exact stream operation name.
+        operation_name: ReactiveOperationName,
+        /// Domain-separated complete consumer identity.
+        consumer_identity_hash: EventConsumerIdentityHash,
+    },
 }
 
 impl ServiceAuditTargetV1 {
@@ -369,6 +416,7 @@ impl ServiceAuditTargetV1 {
             Self::Commit(_) => 0x07,
             Self::Provenance(_) => 0x08,
             Self::Capability(_) => 0x09,
+            Self::EventConsumer { .. } => 0x0a,
         }
     }
 
@@ -411,6 +459,19 @@ impl ServiceAuditTargetV1 {
             Self::Commit(sequence) => key.extend_from_slice(&sequence.to_be_bytes()),
             Self::Provenance(provenance_id) => key.extend_from_slice(provenance_id.as_bytes()),
             Self::Capability(capability_id) => key.extend_from_slice(capability_id.as_bytes()),
+            Self::EventConsumer {
+                lineage,
+                module_hash,
+                operation_name,
+                consumer_identity_hash,
+            } => {
+                append_lineage(&mut key, lineage);
+                key.extend_from_slice(module_hash.as_bytes());
+                let operation = operation_name.as_str().as_bytes();
+                key.extend_from_slice(&(operation.len() as u32).to_be_bytes());
+                key.extend_from_slice(operation);
+                key.extend_from_slice(consumer_identity_hash.as_bytes());
+            }
         }
         key
     }
@@ -428,6 +489,7 @@ impl fmt::Debug for ServiceAuditTargetV1 {
             Self::Commit(_) => "Commit",
             Self::Provenance(_) => "Provenance",
             Self::Capability(_) => "Capability",
+            Self::EventConsumer { .. } => "EventConsumer",
         };
         write!(formatter, "ServiceAuditTargetV1::{variant}([REDACTED])")
     }
@@ -598,7 +660,7 @@ mod tests {
 
     #[test]
     fn service_operation_registry_is_exact_and_closed() {
-        let expected: Vec<u8> = (0x01..=0x20).collect();
+        let expected: Vec<u8> = (0x01..=0x27).collect();
         assert_eq!(
             ServiceOperationV1::ALL
                 .into_iter()
@@ -613,7 +675,7 @@ mod tests {
             );
         }
         assert_eq!(ServiceOperationV1::from_tag(0), None);
-        assert_eq!(ServiceOperationV1::from_tag(0x21), None);
+        assert_eq!(ServiceOperationV1::from_tag(0x28), None);
         assert_eq!(ServiceOperationV1::from_tag(u8::MAX), None);
     }
 

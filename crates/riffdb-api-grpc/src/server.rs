@@ -1546,6 +1546,39 @@ impl ApplicationQueryService for GrpcApplication {
         Ok(Response::new(deploy_query_module_result_to_proto(&result)))
     }
 
+    async fn deploy_reactive_module(
+        &self,
+        request: Request<app_v1::DeployReactiveModuleRequest>,
+    ) -> Result<Response<app_v1::DeployReactiveModuleResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let boundary = ApplicationErrorContextBuilder::without_trace(
+            ApplicationOperation::DeployReactiveModule,
+        );
+        let original = message.clone();
+        let (request_id, request) = deploy_reactive_module_request_from_proto(message)
+            .map_err(|status| status_from_application_boundary(status, &boundary))?;
+        let application = application_context(
+            ApplicationOperation::DeployReactiveModule,
+            request_id,
+            original.contract.as_ref(),
+            None,
+        );
+        let (service, context, _cancellation) = self
+            .normal_invocation(
+                ServiceOperationV1::DeployReactiveModule,
+                &metadata,
+                request_id,
+            )
+            .map_err(|status| status_from_application_boundary(status, &application))?;
+        let result = map_application_service(
+            service.deploy_reactive_module(context, request).await,
+            &application,
+        )?;
+        Ok(Response::new(deploy_reactive_module_result_to_proto(
+            &result,
+        )))
+    }
+
     async fn get_query_module(
         &self,
         request: Request<app_v1::GetQueryModuleRequest>,
@@ -1697,6 +1730,8 @@ impl CommitService for GrpcApplication {
 
 #[tonic::async_trait]
 impl EventService for GrpcApplication {
+    type StreamEventConsumerStream = EventConsumerResponseStream;
+
     async fn describe_event(
         &self,
         request: Request<v1::DescribeEventRequest>,
@@ -1732,6 +1767,195 @@ impl EventService for GrpcApplication {
         let result = map_service(service.tail_events(context, request).await)?;
         Ok(Response::new(tail_events_result_to_proto(&result)?))
     }
+
+    async fn consume_event_stream(
+        &self,
+        request: Request<v1::ConsumeEventStreamRequest>,
+    ) -> Result<Response<v1::ConsumeEventStreamResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = consume_event_stream_request_from_proto(message)?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::ConsumeEventStream,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(service.consume_event_stream(context, request).await)?;
+        Ok(Response::new(consume_event_stream_result_to_proto(
+            &result,
+        )?))
+    }
+
+    async fn stream_event_consumer(
+        &self,
+        request: Request<v1::ConsumeEventStreamRequest>,
+    ) -> Result<Response<Self::StreamEventConsumerStream>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = consume_event_stream_request_from_proto(message)?;
+        if request.maximum_wait().is_zero() {
+            return Err(invalid_request());
+        }
+        let first = self.normal_invocation(
+            ServiceOperationV1::ConsumeEventStream,
+            &metadata,
+            request_id,
+        )?;
+        let state = EventConsumerStreamState {
+            application: self.clone(),
+            metadata,
+            request_id,
+            request,
+            next_invocation: Some(first),
+            stopped: false,
+        };
+        let stream = futures_util::stream::unfold(state, |mut state| async move {
+            if state.stopped {
+                return None;
+            }
+            let invocation = match state.next_invocation.take() {
+                Some(invocation) => Ok(invocation),
+                None => state.application.normal_invocation(
+                    ServiceOperationV1::ConsumeEventStream,
+                    &state.metadata,
+                    state.request_id,
+                ),
+            };
+            let result = match invocation {
+                Ok((service, context, cancellation)) => {
+                    let _cancellation = cancellation;
+                    match map_service(
+                        service
+                            .consume_event_stream(context, state.request.clone())
+                            .await,
+                    ) {
+                        Ok(result) => consume_event_stream_result_to_proto(&result),
+                        Err(status) => Err(status),
+                    }
+                }
+                Err(status) => Err(status),
+            };
+            if result.is_err() {
+                state.stopped = true;
+            }
+            Some((result, state))
+        });
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn acknowledge_event_stream(
+        &self,
+        request: Request<v1::AcknowledgeEventStreamRequest>,
+    ) -> Result<Response<v1::EventConsumerMutationResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = acknowledge_event_stream_request_from_proto(message)?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::AcknowledgeEventStream,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(service.acknowledge_event_stream(context, request).await)?;
+        Ok(Response::new(event_consumer_mutation_result_to_proto(
+            result,
+        )))
+    }
+
+    async fn negative_acknowledge_event_stream(
+        &self,
+        request: Request<v1::NegativeAcknowledgeEventStreamRequest>,
+    ) -> Result<Response<v1::EventConsumerMutationResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = negative_acknowledge_event_stream_request_from_proto(message)?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::NegativeAcknowledgeEventStream,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(
+            service
+                .negative_acknowledge_event_stream(context, request)
+                .await,
+        )?;
+        Ok(Response::new(event_consumer_mutation_result_to_proto(
+            result,
+        )))
+    }
+
+    async fn seek_event_stream_consumer(
+        &self,
+        request: Request<v1::SeekEventStreamConsumerRequest>,
+    ) -> Result<Response<v1::EventConsumerMutationResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = seek_event_stream_consumer_request_from_proto(message)?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::SeekEventStreamConsumer,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(service.seek_event_stream_consumer(context, request).await)?;
+        Ok(Response::new(event_consumer_mutation_result_to_proto(
+            result,
+        )))
+    }
+
+    async fn retire_event_stream_consumer(
+        &self,
+        request: Request<v1::RetireEventStreamConsumerRequest>,
+    ) -> Result<Response<v1::EventConsumerMutationResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, selection) =
+            event_consumer_selection_request_from_proto(message.request_id, message.selection)?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::RetireEventStreamConsumer,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(
+            service
+                .retire_event_stream_consumer(context, selection)
+                .await,
+        )?;
+        Ok(Response::new(event_consumer_mutation_result_to_proto(
+            result,
+        )))
+    }
+
+    async fn get_event_stream_consumer_status(
+        &self,
+        request: Request<v1::GetEventStreamConsumerStatusRequest>,
+    ) -> Result<Response<v1::GetEventStreamConsumerStatusResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, selection) =
+            event_consumer_selection_request_from_proto(message.request_id, message.selection)?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::GetEventStreamConsumerStatus,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(
+            service
+                .get_event_stream_consumer_status(context, selection)
+                .await,
+        )?;
+        Ok(Response::new(event_consumer_status_result_to_proto(
+            result.as_ref(),
+        )))
+    }
+}
+
+/// Transport stream for event-consumer pull responses.
+pub type EventConsumerResponseStream =
+    Pin<Box<dyn Stream<Item = Result<v1::ConsumeEventStreamResponse, Status>> + Send + 'static>>;
+
+struct EventConsumerStreamState {
+    application: GrpcApplication,
+    metadata: MetadataMap,
+    request_id: RequestId,
+    request: riffdb_service::ConsumeEventStreamRequest,
+    next_invocation: Option<(
+        Arc<dyn ApplicationService>,
+        RequestContext,
+        CancellationGuard,
+    )>,
+    stopped: bool,
 }
 
 #[tonic::async_trait]

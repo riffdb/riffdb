@@ -77,12 +77,41 @@ pub fn compile_reactive_source(
     contract: &ContractBundle,
     modules: &[QueryModule],
 ) -> Result<ReactiveModulePlanV1, ReactiveModuleCompilationError> {
-    let document = parse_module(source).map_err(ReactiveModuleCompilationError::Syntax)?;
-    let canonical = format_module(&document);
+    let canonical = canonicalize_reactive_source(source)?;
     let document = parse_module(&canonical).map_err(ReactiveModuleCompilationError::Syntax)?;
     let catalog = reactive_query_catalog(contract, modules)?;
     compile_reactive_module(&document, contract, &catalog)
         .map_err(ReactiveModuleCompilationError::Semantic)
+}
+
+/// Parses and deterministically formats one `.riffr` source document.
+pub fn canonicalize_reactive_source(
+    source: &str,
+) -> Result<String, ReactiveModuleCompilationError> {
+    let document = parse_module(source).map_err(ReactiveModuleCompilationError::Syntax)?;
+    Ok(format_module(&document))
+}
+
+/// Returns the exact sorted query-module identities used by one compiled module.
+#[must_use]
+pub fn reactive_module_query_dependencies(
+    module: &ReactiveModulePlanV1,
+) -> Vec<riffdb_types::QueryModuleHash> {
+    use riffdb_query_ir::ReactiveOperationPlanV1;
+
+    let mut dependencies = BTreeSet::new();
+    for operation in module.operations() {
+        match operation.plan() {
+            ReactiveOperationPlanV1::Watch { query, .. } => {
+                dependencies.insert(query.module_hash());
+            }
+            ReactiveOperationPlanV1::Subscription { hydrations, .. } => {
+                dependencies.extend(hydrations.iter().map(|query| query.module_hash()));
+            }
+            ReactiveOperationPlanV1::Stream { .. } => {}
+        }
+    }
+    dependencies.into_iter().collect()
 }
 
 /// Strictly recompiles one source and byte-compares its canonical artifact.

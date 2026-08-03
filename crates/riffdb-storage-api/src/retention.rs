@@ -613,6 +613,8 @@ pub enum RetentionFenceBinding {
     UndeliveredOutboxLowWater,
     /// Staged migration frozen application frontier.
     StagedMigrationFrozenFrontier,
+    /// Minimum unresolved durable event-consumer frontier.
+    ConsumerLowWater,
     /// No fencing inputs constrained the watermark (unbounded / open).
     Unbounded,
 }
@@ -637,6 +639,8 @@ pub struct RetentionFencingInputs {
     pub undelivered_outbox_low_water: Option<u64>,
     /// Staged migration frozen application frontier, when a stage is open.
     pub staged_migration_frozen_frontier: Option<u64>,
+    /// Minimum conservative checkpoint frontier across non-retired consumers.
+    pub consumer_low_water: Option<u64>,
 }
 
 /// Pure fencing minimum: max permissible inclusive watermark sequence.
@@ -699,6 +703,12 @@ pub fn compute_max_permissible_watermark(
         &mut binding,
         inputs.staged_migration_frozen_frontier,
         RetentionFenceBinding::StagedMigrationFrozenFrontier,
+    );
+    consider(
+        &mut min_value,
+        &mut binding,
+        inputs.consumer_low_water,
+        RetentionFenceBinding::ConsumerLowWater,
     );
 
     (min_value, binding)
@@ -778,6 +788,7 @@ mod tests {
             min_operator_hold_sequence: None,
             undelivered_outbox_low_water: None,
             staged_migration_frozen_frontier: None,
+            consumer_low_water: None,
         }
     }
 
@@ -822,6 +833,14 @@ mod tests {
         let (v, b) = compute_max_permissible_watermark(&only_mig);
         assert_eq!(v, Some(9));
         assert_eq!(b, RetentionFenceBinding::StagedMigrationFrozenFrontier);
+
+        let only_consumer = RetentionFencingInputs {
+            consumer_low_water: Some(2),
+            ..no_inputs()
+        };
+        let (v, b) = compute_max_permissible_watermark(&only_consumer);
+        assert_eq!(v, Some(2));
+        assert_eq!(b, RetentionFenceBinding::ConsumerLowWater);
     }
 
     #[test]
@@ -832,10 +851,11 @@ mod tests {
             min_operator_hold_sequence: Some(50),
             undelivered_outbox_low_water: Some(75),
             staged_migration_frozen_frontier: Some(60),
+            consumer_low_water: Some(40),
         };
         let (v, b) = compute_max_permissible_watermark(&inputs);
-        assert_eq!(v, Some(50));
-        assert_eq!(b, RetentionFenceBinding::OperatorHold);
+        assert_eq!(v, Some(40));
+        assert_eq!(b, RetentionFenceBinding::ConsumerLowWater);
     }
 
     #[test]
@@ -846,6 +866,7 @@ mod tests {
             min_operator_hold_sequence: Some(100),
             undelivered_outbox_low_water: Some(100),
             staged_migration_frozen_frontier: Some(100),
+            consumer_low_water: Some(100),
         };
         let (v, b) = compute_max_permissible_watermark(&inputs);
         assert_eq!(v, Some(1));

@@ -6,12 +6,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use riffdb_catalog::{
-    ActiveQueryModuleExpectation, PreparedQueryModuleActivation, ValidatedQueryModule,
+    ActiveQueryModuleExpectation, PreparedQueryModuleActivation, PreparedReactiveModulePublication,
+    ValidatedQueryModule, ValidatedReactiveModule,
 };
 use riffdb_commit::{
     ControlPlaneExecutionErrorKind, ControlPlaneTerminalAudit,
     QueryModuleDeploymentOutcome as CoordinatorQueryModuleDeploymentOutcome,
     QueryModuleDeploymentPreparation,
+    ReactiveModulePublicationOutcome as CoordinatorReactiveModulePublicationOutcome,
+    ReactiveModulePublicationPreparation,
 };
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_errors::{
@@ -37,8 +40,9 @@ use riffdb_riffql_syntax::{
 };
 use riffdb_types::{
     CanonicalValue, ContractBundleHash, ContractLineage, ContractVersion, QueryModuleHash,
-    QueryModuleName, QueryModuleVersion, QueryOperationName, QueryPlanHash, ServiceAuditLinkV1,
-    ServiceAuditPhaseV1, ServiceOperationV1, encode_canonical_value, hash_query_parameters,
+    QueryModuleName, QueryModuleVersion, QueryOperationName, QueryPlanHash, ReactiveModuleHash,
+    ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceOperationV1, encode_canonical_value,
+    hash_query_parameters,
 };
 
 use crate::command_operations::{SubmittedValueMaterializationError, materialize_submitted_value};
@@ -58,6 +62,10 @@ use crate::{
 pub const MAX_SYMBOLIC_QUERY_SOURCE_BYTES: usize = 262_144;
 /// Maximum access steps admitted by one interactive application request.
 pub const MAX_SYMBOLIC_QUERY_STEPS: usize = 64;
+/// Maximum reactive source bytes admitted by the application service.
+pub const MAX_REACTIVE_MODULE_SOURCE_INPUT_BYTES: usize = 1_048_576;
+/// Maximum exact query modules admitted for one reactive compilation.
+pub const MAX_REACTIVE_QUERY_MODULE_INPUTS: usize = 32;
 
 /// Bounded name-addressed values awaiting query-schema materialization.
 #[derive(Clone, Eq, PartialEq)]
@@ -698,6 +706,157 @@ impl DeployQueryModuleResult {
     }
 }
 
+/// Checked immutable reactive-module publication request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeployReactiveModuleRequest {
+    contract: SymbolicContractSelector,
+    source: String,
+    query_module_hashes: Vec<QueryModuleHash>,
+}
+
+impl DeployReactiveModuleRequest {
+    /// Validates the bounded source and canonical exact dependency inventory.
+    pub fn new(
+        contract: SymbolicContractSelector,
+        source: String,
+        query_module_hashes: Vec<QueryModuleHash>,
+    ) -> Result<Self, SymbolicQueryInputError> {
+        if source.is_empty()
+            || source.len() > MAX_REACTIVE_MODULE_SOURCE_INPUT_BYTES
+            || query_module_hashes.len() > MAX_REACTIVE_QUERY_MODULE_INPUTS
+            || query_module_hashes
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(SymbolicQueryInputError::TooLong);
+        }
+        Ok(Self {
+            contract,
+            source,
+            query_module_hashes,
+        })
+    }
+}
+
+/// Name-only immutable reactive-module descriptor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReactiveModuleDescriptor {
+    name: String,
+    version: u64,
+    hash: ReactiveModuleHash,
+    contract_lineage: ContractLineage,
+    contract_version: ContractVersion,
+    contract_hash: ContractBundleHash,
+    query_module_hashes: Vec<QueryModuleHash>,
+    operation_names: Vec<String>,
+}
+
+impl ReactiveModuleDescriptor {
+    fn from_module(module: &ValidatedReactiveModule) -> Self {
+        Self {
+            name: module.plan().name().to_owned(),
+            version: module.plan().version(),
+            hash: module.identity(),
+            contract_lineage: module.plan().contract_lineage().clone(),
+            contract_version: module.plan().contract_version(),
+            contract_hash: module.plan().contract_hash(),
+            query_module_hashes: riffdb_query_module::reactive_module_query_dependencies(
+                module.plan(),
+            ),
+            operation_names: module
+                .plan()
+                .operations()
+                .iter()
+                .map(|operation| operation.name().as_str().to_owned())
+                .collect(),
+        }
+    }
+
+    /// Symbolic module name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Positive source-declared version.
+    #[must_use]
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Immutable module identity.
+    #[must_use]
+    pub const fn hash(&self) -> ReactiveModuleHash {
+        self.hash
+    }
+
+    /// Exact contract lineage.
+    #[must_use]
+    pub const fn contract_lineage(&self) -> &ContractLineage {
+        &self.contract_lineage
+    }
+
+    /// Exact contract version.
+    #[must_use]
+    pub const fn contract_version(&self) -> ContractVersion {
+        self.contract_version
+    }
+
+    /// Exact contract bundle hash.
+    #[must_use]
+    pub const fn contract_hash(&self) -> ContractBundleHash {
+        self.contract_hash
+    }
+
+    /// Exact query-module dependencies in canonical hash order.
+    #[must_use]
+    pub fn query_module_hashes(&self) -> &[QueryModuleHash] {
+        &self.query_module_hashes
+    }
+
+    /// Reactive operation names in canonical compiler order.
+    #[must_use]
+    pub fn operation_names(&self) -> &[String] {
+        &self.operation_names
+    }
+}
+
+/// Closed immutable reactive-module publication disposition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReactiveModuleDeploymentDisposition {
+    /// A new immutable module was published.
+    Published,
+    /// The exact immutable module was already retained.
+    AlreadyPublished,
+    /// The same symbolic name and version are retained with different content.
+    ModuleVersionConflict,
+    /// The exact contract ceased to be retained before commit.
+    ContractUnavailable,
+    /// One exact query-module dependency ceased to be retained before commit.
+    QueryModuleUnavailable(QueryModuleHash),
+}
+
+/// Safe reactive-module publication response.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeployReactiveModuleResult {
+    outcome: ReactiveModuleDeploymentDisposition,
+    module: ReactiveModuleDescriptor,
+}
+
+impl DeployReactiveModuleResult {
+    /// Closed publication outcome.
+    #[must_use]
+    pub const fn outcome(&self) -> &ReactiveModuleDeploymentDisposition {
+        &self.outcome
+    }
+
+    /// Submitted immutable module identity.
+    #[must_use]
+    pub const fn module(&self) -> &ReactiveModuleDescriptor {
+        &self.module
+    }
+}
+
 /// Active or content-addressed module inspection request.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GetQueryModuleRequest {
@@ -1137,6 +1296,13 @@ pub trait SymbolicQueryApplication: Send + Sync {
         request: DeployQueryModuleRequest,
     ) -> ServiceFuture<'_, DeployQueryModuleResult>;
 
+    /// Compiles and publishes one immutable exact-contract reactive module.
+    fn deploy_reactive_module(
+        &self,
+        context: RequestContext,
+        request: DeployReactiveModuleRequest,
+    ) -> ServiceFuture<'_, DeployReactiveModuleResult>;
+
     /// Inspects an active or content-addressed module.
     fn get_query_module(
         &self,
@@ -1218,6 +1384,20 @@ impl SymbolicQueryApplication for RiffDbService {
         self.spawn_operation(ServiceOperationV1::DeployQueryModule, ingress, async move {
             deploy_module(service, context, request).await
         })
+    }
+
+    fn deploy_reactive_module(
+        &self,
+        context: RequestContext,
+        request: DeployReactiveModuleRequest,
+    ) -> ServiceFuture<'_, DeployReactiveModuleResult> {
+        let service = Arc::clone(&self.inner);
+        let ingress = context.ingress();
+        self.spawn_operation(
+            ServiceOperationV1::DeployReactiveModule,
+            ingress,
+            async move { deploy_reactive_module(service, context, request).await },
+        )
     }
 
     fn get_query_module(
@@ -1503,6 +1683,172 @@ async fn deploy_module(
             }
         })?;
     Ok(DeployQueryModuleResult {
+        outcome,
+        module: descriptor,
+    })
+}
+
+async fn deploy_reactive_module(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    request: DeployReactiveModuleRequest,
+) -> ServiceResult<DeployReactiveModuleResult> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::DeployReactiveModule;
+    let bundle =
+        prepare_selected_contract(&service, &context, request.contract.selection(), OPERATION)
+            .await?;
+    ensure_selected_hash(&request.contract, &bundle)?;
+    let operation = OperationRequest::deploy_reactive_module(
+        bundle.lineage().clone(),
+        bundle.contract_version(),
+        bundle.bundle_hash(),
+    );
+    let targets =
+        ServiceAuditTargetMap::symbolic_query(bundle.lineage().clone(), bundle.contract_version())
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let begun = service
+        .begin_invocation(&context, operation, targets, AuditScope::Intrinsic)
+        .await?;
+
+    let mut query_modules = Vec::with_capacity(request.query_module_hashes.len());
+    for hash in &request.query_module_hashes {
+        match load_query_module(&service, &context, bundle.clone(), Some(*hash), OPERATION).await {
+            Ok(Some(module)) => query_modules.push(module),
+            Ok(None) => {
+                let failure = application_validation_failure(
+                    ValidationCode::InvalidValue,
+                    ApplicationErrorCode::ModuleUnavailable,
+                );
+                return Err(finish_failure(&service, &context, &begun, failure).await);
+            }
+            Err(failure) => {
+                return Err(finish_failure(&service, &context, &begun, failure).await);
+            }
+        }
+    }
+    let module = match ValidatedReactiveModule::compile(&request.source, &bundle, &query_modules) {
+        Ok(module) => module,
+        Err(_) => {
+            let failure = application_validation_failure(
+                ValidationCode::InvalidValue,
+                ApplicationErrorCode::QueryInvalid,
+            );
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+    };
+    let descriptor = ReactiveModuleDescriptor::from_module(&module);
+    let permit = match wait_with_control(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        service.executors.control_plane.reserve_capacity(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(_)) => {
+            let failure = PublicError::storage_unavailable().into();
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+        Err(error) => {
+            let failure = controlled_failure(error);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+    };
+    let authorization = begun.reauthorize(&service, &context).await?;
+    let authorization = match (*authorization).into_catalog_deployment(
+        bundle.lineage(),
+        bundle.contract_version(),
+        bundle.bundle_hash(),
+        Some(bundle.contract_version()),
+    ) {
+        Ok(authorization) => authorization,
+        Err(_) => {
+            let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+    };
+    let preparation = match ReactiveModulePublicationPreparation::new(
+        context.request_id(),
+        PreparedReactiveModulePublication::new(module),
+        authorization,
+    ) {
+        Ok(preparation) => preparation,
+        Err(_) => {
+            let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+    };
+    let receipt = match permit.submit_reactive_module_publication(preparation) {
+        Ok(receipt) => receipt,
+        Err(_) => {
+            let failure = PublicError::storage_unavailable().into();
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+    };
+    let result = match receipt.completion().await {
+        Ok(result) => result,
+        Err(error) => {
+            let phase = if error.kind() == ControlPlaneExecutionErrorKind::OutcomeUnknown {
+                ServiceAuditPhaseV1::OutcomeUncertain
+            } else {
+                ServiceAuditPhaseV1::Failed
+            };
+            let _ = begun
+                .finish(&service, &context, phase, ServiceAuditLinkV1::None)
+                .await;
+            return Err(match error.kind() {
+                ControlPlaneExecutionErrorKind::OutcomeUnknown => {
+                    PublicError::outcome_unknown().into()
+                }
+                ControlPlaneExecutionErrorKind::AuthorizationDenied => {
+                    PublicError::authorization_denied().into()
+                }
+                ControlPlaneExecutionErrorKind::StorageUnavailable
+                | ControlPlaneExecutionErrorKind::CoordinatorStopped
+                | ControlPlaneExecutionErrorKind::CoordinatorFenced => {
+                    PublicError::storage_unavailable().into()
+                }
+                ControlPlaneExecutionErrorKind::InternalDefect => {
+                    service.internal_failure(OPERATION, InternalDefect::ProofMismatch)
+                }
+            });
+        }
+    };
+    let terminal = result.terminal_audit();
+    let outcome = match result.into_outcome() {
+        CoordinatorReactiveModulePublicationOutcome::Published(_) => {
+            ReactiveModuleDeploymentDisposition::Published
+        }
+        CoordinatorReactiveModulePublicationOutcome::AlreadyPublished(_) => {
+            ReactiveModuleDeploymentDisposition::AlreadyPublished
+        }
+        CoordinatorReactiveModulePublicationOutcome::ModuleVersionConflict => {
+            ReactiveModuleDeploymentDisposition::ModuleVersionConflict
+        }
+        CoordinatorReactiveModulePublicationOutcome::ContractUnavailable => {
+            ReactiveModuleDeploymentDisposition::ContractUnavailable
+        }
+        CoordinatorReactiveModulePublicationOutcome::QueryModuleUnavailable(hash) => {
+            ReactiveModuleDeploymentDisposition::QueryModuleUnavailable(hash)
+        }
+    };
+    let (phase, link) = match terminal {
+        ControlPlaneTerminalAudit::Succeeded(link) => (ServiceAuditPhaseV1::Succeeded, link),
+        ControlPlaneTerminalAudit::Failed => {
+            (ServiceAuditPhaseV1::Failed, ServiceAuditLinkV1::None)
+        }
+    };
+    begun
+        .finish(&service, &context, phase, link)
+        .await
+        .map_err(|_| -> ServiceFailure {
+            if phase == ServiceAuditPhaseV1::Succeeded {
+                PublicError::outcome_unknown().into()
+            } else {
+                PublicError::storage_unavailable().into()
+            }
+        })?;
+    Ok(DeployReactiveModuleResult {
         outcome,
         module: descriptor,
     })
@@ -2224,7 +2570,9 @@ fn materialization_failure(
     }
 }
 
-fn query_parameter_hash(parameters: &QueryParameters) -> Option<riffdb_types::QueryParameterHash> {
+pub(crate) fn query_parameter_hash(
+    parameters: &QueryParameters,
+) -> Option<riffdb_types::QueryParameterHash> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"RDBQPARAM\x01");
     bytes.extend_from_slice(&u32::try_from(parameters.iter().len()).ok()?.to_be_bytes());

@@ -83,6 +83,7 @@ const fn no_inputs() -> RetentionFencingInputs {
         min_operator_hold_sequence: None,
         undelivered_outbox_low_water: None,
         staged_migration_frozen_frontier: None,
+        consumer_low_water: None,
     }
 }
 
@@ -274,6 +275,59 @@ fn pre_retention_registry_migrates_on_open() {
         .status()
         .expect("status after migrate");
     assert_eq!(status.watermark_sequence, 0);
+}
+
+#[test]
+fn pre_wp417_registry_installs_reactive_consumer_tables_on_open() {
+    let root = TestRoot::new("pre-wp417-reactive-consumer-migrate");
+    initialize(&root.db());
+    {
+        let database = Database::open(root.db()).expect("open redb");
+        let write = database.begin_write().expect("write");
+        {
+            let mut meta = write
+                .open_table(TableDefinition::<&str, &[u8]>::new("meta"))
+                .expect("meta");
+            let pre = [
+                0x39, 0x5a, 0x7f, 0x77, 0xcf, 0x3a, 0x95, 0x52, 0x12, 0x95, 0x76, 0x8d, 0x57, 0xbd,
+                0x82, 0x27, 0xa1, 0x5a, 0x9d, 0xd8, 0x99, 0x28, 0xcc, 0xf9, 0x81, 0x9e, 0x79, 0x41,
+                0x12, 0x1e, 0x6e, 0x21,
+            ];
+            let encoded = riffdb_storage_api::proto_codec::encode_record_registry_v2(
+                riffdb_types::SchemaHash::from_bytes(pre),
+            )
+            .expect("encode registry");
+            meta.insert("record_registry/v2", encoded.as_bytes())
+                .expect("insert");
+        }
+        write.commit().expect("commit");
+    }
+
+    drop(RedbStore::open(root.db()).expect("migrate on open"));
+
+    let database = Database::open(root.db()).expect("open migrated redb");
+    let read = database.begin_read().expect("read");
+    for table in [
+        "reactive_modules",
+        "event_consumers",
+        "event_consumer_deliveries",
+    ] {
+        read.open_table(TableDefinition::<&[u8], &[u8]>::new(table))
+            .unwrap_or_else(|_| panic!("{table} table is installed"));
+    }
+    let meta = read
+        .open_table(TableDefinition::<&str, &[u8]>::new("meta"))
+        .expect("meta");
+    let encoded = meta
+        .get("record_registry/v2")
+        .expect("registry read")
+        .expect("registry row");
+    let observed = riffdb_storage_api::proto_codec::decode_record_registry_v2(encoded.value())
+        .expect("registry decodes");
+    assert_eq!(
+        observed.value(),
+        &riffdb_storage_api::proto_codec::current_record_registry_digest()
+    );
 }
 
 fn retention_audit_records(

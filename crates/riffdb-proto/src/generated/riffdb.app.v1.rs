@@ -275,6 +275,47 @@ pub struct DeployQueryModuleResponse {
     pub actual_active_module_hash: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeployReactiveModuleRequest {
+    #[prost(message, optional, tag = "1")]
+    pub contract: ::core::option::Option<ContractSelector>,
+    #[prost(string, tag = "2")]
+    pub source: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", repeated, tag = "3")]
+    pub query_module_hashes: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", tag = "100")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReactiveModuleDescriptor {
+    #[prost(string, tag = "1")]
+    pub module_name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub module_version: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub module_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "4")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "5")]
+    pub contract_version: u64,
+    #[prost(bytes = "vec", tag = "6")]
+    pub contract_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "7")]
+    pub query_module_hashes: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(string, repeated, tag = "8")]
+    pub operation_names: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeployReactiveModuleResponse {
+    #[prost(enumeration = "ReactiveModuleDeploymentOutcome", tag = "1")]
+    pub outcome: i32,
+    #[prost(message, optional, tag = "2")]
+    pub module: ::core::option::Option<ReactiveModuleDescriptor>,
+    #[prost(bytes = "vec", optional, tag = "3")]
+    pub unavailable_query_module_hash: ::core::option::Option<
+        ::prost::alloc::vec::Vec<u8>,
+    >,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetQueryModuleRequest {
     #[prost(message, optional, tag = "1")]
     pub contract: ::core::option::Option<ContractSelector>,
@@ -488,6 +529,7 @@ pub enum ApplicationOperation {
     ExecuteCommand = 7,
     BatchCommand = 8,
     ExecuteProjectedQuery = 9,
+    DeployReactiveModule = 10,
 }
 impl ApplicationOperation {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -508,6 +550,7 @@ impl ApplicationOperation {
             Self::ExecuteProjectedQuery => {
                 "APPLICATION_OPERATION_EXECUTE_PROJECTED_QUERY"
             }
+            Self::DeployReactiveModule => "APPLICATION_OPERATION_DEPLOY_REACTIVE_MODULE",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -524,6 +567,9 @@ impl ApplicationOperation {
             "APPLICATION_OPERATION_BATCH_COMMAND" => Some(Self::BatchCommand),
             "APPLICATION_OPERATION_EXECUTE_PROJECTED_QUERY" => {
                 Some(Self::ExecuteProjectedQuery)
+            }
+            "APPLICATION_OPERATION_DEPLOY_REACTIVE_MODULE" => {
+                Some(Self::DeployReactiveModule)
             }
             _ => None,
         }
@@ -891,6 +937,60 @@ impl QueryModuleDeploymentOutcome {
             }
             "QUERY_MODULE_DEPLOYMENT_OUTCOME_CONTRACT_UNAVAILABLE" => {
                 Some(Self::ContractUnavailable)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ReactiveModuleDeploymentOutcome {
+    Unspecified = 0,
+    Published = 1,
+    AlreadyPublished = 2,
+    VersionConflict = 3,
+    ContractUnavailable = 4,
+    QueryModuleUnavailable = 5,
+}
+impl ReactiveModuleDeploymentOutcome {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "REACTIVE_MODULE_DEPLOYMENT_OUTCOME_UNSPECIFIED",
+            Self::Published => "REACTIVE_MODULE_DEPLOYMENT_OUTCOME_PUBLISHED",
+            Self::AlreadyPublished => {
+                "REACTIVE_MODULE_DEPLOYMENT_OUTCOME_ALREADY_PUBLISHED"
+            }
+            Self::VersionConflict => {
+                "REACTIVE_MODULE_DEPLOYMENT_OUTCOME_VERSION_CONFLICT"
+            }
+            Self::ContractUnavailable => {
+                "REACTIVE_MODULE_DEPLOYMENT_OUTCOME_CONTRACT_UNAVAILABLE"
+            }
+            Self::QueryModuleUnavailable => {
+                "REACTIVE_MODULE_DEPLOYMENT_OUTCOME_QUERY_MODULE_UNAVAILABLE"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "REACTIVE_MODULE_DEPLOYMENT_OUTCOME_UNSPECIFIED" => Some(Self::Unspecified),
+            "REACTIVE_MODULE_DEPLOYMENT_OUTCOME_PUBLISHED" => Some(Self::Published),
+            "REACTIVE_MODULE_DEPLOYMENT_OUTCOME_ALREADY_PUBLISHED" => {
+                Some(Self::AlreadyPublished)
+            }
+            "REACTIVE_MODULE_DEPLOYMENT_OUTCOME_VERSION_CONFLICT" => {
+                Some(Self::VersionConflict)
+            }
+            "REACTIVE_MODULE_DEPLOYMENT_OUTCOME_CONTRACT_UNAVAILABLE" => {
+                Some(Self::ContractUnavailable)
+            }
+            "REACTIVE_MODULE_DEPLOYMENT_OUTCOME_QUERY_MODULE_UNAVAILABLE" => {
+                Some(Self::QueryModuleUnavailable)
             }
             _ => None,
         }

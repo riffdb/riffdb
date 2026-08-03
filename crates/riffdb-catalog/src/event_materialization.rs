@@ -9,7 +9,8 @@ use riffdb_storage_api::{
     DurableKeySchemaBindingV1, ExecutablePlanRef, StoredDurableEventV1, StoredEventRouteV1,
 };
 use riffdb_types::{
-    CanonicalValue, ContractVersion, EventId, PartitionKeyHash, PlanHash, hash_partition_key,
+    CanonicalValue, ContractVersion, EventId, PartitionKey, PartitionKeyHash, PlanHash,
+    hash_partition_key,
 };
 
 use crate::lineage::{LineageMaterializationProof, RecordOwnerV1, WriterRelation};
@@ -190,6 +191,14 @@ impl ResolvedEventMaterializer {
         &self,
         supplied: impl IntoIterator<Item = (&'a str, CanonicalValue)>,
     ) -> Result<PartitionKeyHash, EventMaterializationError> {
+        self.derive_partition_key(supplied)
+            .map(|key| hash_partition_key(key.as_bytes()))
+    }
+
+    pub(crate) fn derive_partition_key<'a>(
+        &self,
+        supplied: impl IntoIterator<Item = (&'a str, CanonicalValue)>,
+    ) -> Result<PartitionKey, EventMaterializationError> {
         let active_event = self
             .active_bundle
             .bundle()
@@ -234,7 +243,7 @@ impl ResolvedEventMaterializer {
             .key_schema()
             .encode_partition(&values)
             .map_err(|_| EventMaterializationError::integrity())?;
-        Ok(hash_partition_key(key.as_bytes()))
+        Ok(key)
     }
 
     /// Validates and symbolically materializes one immutable routed event.

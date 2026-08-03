@@ -112,6 +112,17 @@ pub(crate) fn inspect_administration_graph(
         StoredAdministrationAuditRecordV1::QueryModule(record) => {
             inspect_query_module_record(state, record)
         }
+        StoredAdministrationAuditRecordV1::ReactiveModule(record) => {
+            if state
+                .reactive_modules
+                .binary_search_by_key(&record.module_hash(), |module| module.module_hash())
+                .is_ok()
+            {
+                None
+            } else {
+                missing()
+            }
+        }
         StoredAdministrationAuditRecordV1::Capability(record) => {
             inspect_capability_administration(state, record)
         }
@@ -593,6 +604,7 @@ fn service_link_is_valid(state: &MemoryState, record: &StoredServiceAuditRecordV
                 }
                 StoredAdministrationAuditRecordV1::Catalog(_)
                 | StoredAdministrationAuditRecordV1::QueryModule(_)
+                | StoredAdministrationAuditRecordV1::ReactiveModule(_)
                 | StoredAdministrationAuditRecordV1::Service(_)
                 | StoredAdministrationAuditRecordV1::Retention(_) => true,
             };

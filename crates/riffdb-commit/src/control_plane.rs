@@ -2,7 +2,9 @@
 
 use std::{error::Error, fmt, num::NonZeroU32, num::NonZeroU64};
 
-use riffdb_catalog::{PreparedCatalogActivation, PreparedQueryModuleActivation};
+use riffdb_catalog::{
+    PreparedCatalogActivation, PreparedQueryModuleActivation, PreparedReactiveModulePublication,
+};
 use riffdb_policy::{
     AbsentCapabilityRevokePreparationChange, AuthorizationClock, AuthorizationClockError,
     AuthorizedCapabilityMutationPreparation, AuthorizedCatalogDeployment, CapabilityActivity,
@@ -23,15 +25,16 @@ use riffdb_storage_api::{
     CapabilityRequestedRecordV1, CapabilityRevokeAwaitingDecision,
     CapabilityRevokeCandidateTransaction, CapabilityRevokeCandidateV1, CapabilityRevokeIntentV1,
     CapabilityRevokeResult, CatalogActivationResult, CatalogAdministrationRepository,
-    QueryModuleActivationResult, QueryModuleAdministrationRepository, ServiceAuditAppendIntentV1,
-    ServiceAuditAppendRepository, ServiceAuditAppendResult, StorageError, StorageErrorKind,
-    StorageValueError, TransactionCurrentCapabilityObservationV1,
+    QueryModuleActivationResult, QueryModuleAdministrationRepository,
+    ReactiveModuleAdministrationRepository, ReactiveModulePublicationResult,
+    ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
+    StorageError, StorageErrorKind, StorageValueError, TransactionCurrentCapabilityObservationV1,
 };
 use riffdb_types::{
     AdministrationSequence, CapabilityId, CapabilityPermissionKindV1, CapabilityTokenDigest,
     ContractBundleHash, ContractLineage, ContractVersion, QueryModuleHash, QueryModuleName,
-    QueryModuleVersion, RequestId, ServiceAuditLinkV1, ServiceAuditTargetV1, ServiceAuditTargetsV1,
-    ServiceIngressKindV1, Timestamp,
+    QueryModuleVersion, ReactiveModuleHash, RequestId, ServiceAuditLinkV1, ServiceAuditTargetV1,
+    ServiceAuditTargetsV1, ServiceIngressKindV1, Timestamp,
 };
 
 use crate::{
@@ -134,6 +137,42 @@ impl QueryModuleDeploymentPreparation {
 impl fmt::Debug for QueryModuleDeploymentPreparation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("QueryModuleDeploymentPreparation([REDACTED])")
+    }
+}
+
+/// Move-only reactive-module publication bound to exact deployment authorization.
+#[must_use = "a reactive-module publication must be submitted or explicitly discarded"]
+pub struct ReactiveModulePublicationPreparation {
+    request_id: RequestId,
+    module: PreparedReactiveModulePublication,
+    authorization: AuthorizedCatalogDeployment,
+}
+
+impl ReactiveModulePublicationPreparation {
+    /// Binds a checked module to authorization for its exact contract identity.
+    pub fn new(
+        request_id: RequestId,
+        module: PreparedReactiveModulePublication,
+        authorization: AuthorizedCatalogDeployment,
+    ) -> Result<Self, ControlPlanePreparationError> {
+        let checked = module.module().plan();
+        if checked.contract_lineage() != authorization.lineage()
+            || checked.contract_version() != authorization.version()
+            || checked.contract_hash() != authorization.bundle_hash()
+        {
+            return Err(ControlPlanePreparationError::AuthorizationMismatch);
+        }
+        Ok(Self {
+            request_id,
+            module,
+            authorization,
+        })
+    }
+}
+
+impl fmt::Debug for ReactiveModulePublicationPreparation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ReactiveModulePublicationPreparation([REDACTED])")
     }
 }
 
@@ -424,6 +463,81 @@ impl QueryModuleDeploymentResult {
 impl fmt::Debug for QueryModuleDeploymentResult {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("QueryModuleDeploymentResult([REDACTED])")
+    }
+}
+
+/// Symbolic identity returned by one immutable reactive publication.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublishedReactiveModule {
+    name: String,
+    version: u64,
+    hash: ReactiveModuleHash,
+}
+
+impl PublishedReactiveModule {
+    /// Module name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Positive module version.
+    #[must_use]
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Immutable content identity.
+    #[must_use]
+    pub const fn hash(&self) -> ReactiveModuleHash {
+        self.hash
+    }
+}
+
+/// Closed semantic reactive-module publication outcome.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReactiveModulePublicationOutcome {
+    /// A new immutable module committed.
+    Published(PublishedReactiveModule),
+    /// The exact immutable module already existed.
+    AlreadyPublished(PublishedReactiveModule),
+    /// The name/version pair is retained with different bytes.
+    ModuleVersionConflict,
+    /// The exact contract is no longer retained.
+    ContractUnavailable,
+    /// One exact query-module dependency is no longer retained.
+    QueryModuleUnavailable(QueryModuleHash),
+}
+
+/// Publication result plus authoritative transition link.
+pub struct ReactiveModulePublicationExecutionResult {
+    outcome: ReactiveModulePublicationOutcome,
+    transition_sequence: Option<AdministrationSequence>,
+}
+
+impl ReactiveModulePublicationExecutionResult {
+    /// Safe semantic outcome.
+    #[must_use]
+    pub const fn outcome(&self) -> &ReactiveModulePublicationOutcome {
+        &self.outcome
+    }
+
+    /// Consumes the result after terminal service-audit handling.
+    #[must_use]
+    pub fn into_outcome(self) -> ReactiveModulePublicationOutcome {
+        self.outcome
+    }
+
+    /// Required terminal service-audit link.
+    #[must_use]
+    pub fn terminal_audit(&self) -> ControlPlaneTerminalAudit {
+        terminal_audit(self.transition_sequence)
+    }
+}
+
+impl fmt::Debug for ReactiveModulePublicationExecutionResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ReactiveModulePublicationExecutionResult([REDACTED])")
     }
 }
 
@@ -867,6 +981,86 @@ where
             outcome: QueryModuleDeploymentOutcome::ContractUnavailable,
             transition_sequence: None,
         },
+    })
+}
+
+pub(crate) fn drive_reactive_module_publication<R>(
+    repository: &mut R,
+    clock: &dyn AdministrationClock,
+    lifecycle: &dyn CommandExecutionLifecycle,
+    preparation: ReactiveModulePublicationPreparation,
+) -> Result<ReactiveModulePublicationExecutionResult, ControlPlaneExecutionError>
+where
+    R: ReactiveModuleAdministrationRepository + ?Sized,
+{
+    let ReactiveModulePublicationPreparation {
+        request_id,
+        module,
+        authorization,
+    } = preparation;
+    let published = PublishedReactiveModule {
+        name: module.module().plan().name().to_owned(),
+        version: module.module().plan().version(),
+        hash: module.module().identity(),
+    };
+    let timestamp = clock.now().map_err(|error| {
+        lifecycle.stop();
+        ControlPlaneExecutionError {
+            kind: ControlPlaneExecutionErrorKind::StorageUnavailable,
+            detail: ControlPlaneExecutionErrorDetail::AdministrationClock(error),
+        }
+    })?;
+    let principal = AuditPrincipalV1::new(
+        authorization.principal_id().clone(),
+        authorization.actor_kind(),
+        authorization.authorizing_capability_id(),
+        authorization.authorizing_revision(),
+    );
+    let approval = authorization.obligations().validated_approval().cloned();
+    let intent = module
+        .into_storage_intent(request_id, principal, timestamp, approval)
+        .map_err(|_| {
+            lifecycle.stop();
+            ControlPlaneExecutionError {
+                kind: ControlPlaneExecutionErrorKind::InternalDefect,
+                detail: ControlPlaneExecutionErrorDetail::Catalog,
+            }
+        })?;
+    let result = repository
+        .publish_reactive_module(&intent)
+        .map_err(|error| classify_write_error(error, lifecycle))?;
+    Ok(match result {
+        ReactiveModulePublicationResult::Published {
+            administration_sequence,
+            ..
+        } => ReactiveModulePublicationExecutionResult {
+            outcome: ReactiveModulePublicationOutcome::Published(published),
+            transition_sequence: Some(administration_sequence),
+        },
+        ReactiveModulePublicationResult::AlreadyPublished { .. } => {
+            ReactiveModulePublicationExecutionResult {
+                outcome: ReactiveModulePublicationOutcome::AlreadyPublished(published),
+                transition_sequence: None,
+            }
+        }
+        ReactiveModulePublicationResult::ModuleVersionConflict => {
+            ReactiveModulePublicationExecutionResult {
+                outcome: ReactiveModulePublicationOutcome::ModuleVersionConflict,
+                transition_sequence: None,
+            }
+        }
+        ReactiveModulePublicationResult::ContractUnavailable => {
+            ReactiveModulePublicationExecutionResult {
+                outcome: ReactiveModulePublicationOutcome::ContractUnavailable,
+                transition_sequence: None,
+            }
+        }
+        ReactiveModulePublicationResult::QueryModuleUnavailable { module_hash } => {
+            ReactiveModulePublicationExecutionResult {
+                outcome: ReactiveModulePublicationOutcome::QueryModuleUnavailable(module_hash),
+                transition_sequence: None,
+            }
+        }
     })
 }
 

@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 49;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 58;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 43;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 47;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -147,9 +147,41 @@ const RETENTION_ADMINISTRATION_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/proto/durable-retention-administration-v1-record-bound.bin"
 ));
+const REACTIVE_CONSUMER_V1_SCHEMA_HASH_BYTES: &[u8; 128] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-reactive-consumer-v1-schema-hashes.bin"
+));
+const REACTIVE_CONSUMER_V1_RECORD_BOUND_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-reactive-consumer-v1-record-bounds.bin"
+));
+const SERVICE_AUDIT_V2_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-service-audit-v2-schema-hash.bin"
+));
+const SERVICE_AUDIT_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/proto/durable-service-audit-v2-record-bound.bin"
+));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
     0xa9, 0x48, 0x34, 0x06, 0x84, 0x75, 0x31, 0xf3, 0x4d, 0x5f, 0xb3, 0xf1, 0x8d, 0x40, 0xb3, 0x42,
+]);
+const PRE_WP416_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
+    0xde, 0xe2, 0x39, 0x8e, 0xbb, 0xc7, 0x18, 0x24, 0x47, 0x1f, 0xe5, 0xa5, 0xf9, 0x6f, 0xcb, 0xeb,
+    0xdd, 0xe0, 0x9e, 0x51, 0x1f, 0xe6, 0xc1, 0x15, 0x31, 0xc2, 0xb3, 0x02, 0x10, 0xf9, 0xe6, 0xbf,
+]);
+const PRE_WP416_CAPABILITY_TOKEN_LOOKUP_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
+    0xe0, 0x06, 0x96, 0xf3, 0xd2, 0xc1, 0x10, 0xc5, 0xb2, 0xb9, 0x96, 0x85, 0xe7, 0x98, 0x7f, 0x72,
+    0x04, 0xd2, 0xf9, 0x57, 0x6f, 0x8b, 0x41, 0xc5, 0xfc, 0xd5, 0xa8, 0x94, 0xc7, 0x46, 0xbc, 0x86,
+]);
+const PRE_WP416_CAPABILITY_BOOTSTRAP_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
+    0x12, 0x04, 0xe2, 0x70, 0x16, 0x96, 0x88, 0x24, 0x4b, 0xc4, 0x89, 0x07, 0x1d, 0xb7, 0x0c, 0x7d,
+    0x24, 0x81, 0x11, 0x1a, 0x97, 0x0d, 0x5a, 0x9d, 0xa4, 0x20, 0xad, 0x7b, 0x93, 0x34, 0xe4, 0xea,
+]);
+const PRE_WP416_CAPABILITY_ADMINISTRATION_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
+    0x28, 0xd4, 0xa9, 0xd5, 0xf6, 0x3e, 0xb9, 0xf5, 0xba, 0xcb, 0x20, 0x42, 0xaf, 0x50, 0xd4, 0x7e,
+    0xa3, 0x95, 0x32, 0xbc, 0x2e, 0xf6, 0x0c, 0x3d, 0xc5, 0x2a, 0x45, 0x0c, 0xc7, 0xb4, 0x9a, 0x46,
 ]);
 
 const fn legacy_schema_hash(index: usize) -> SchemaHash {
@@ -360,7 +392,14 @@ macro_rules! current_schema {
             preflight_payload::<$index>,
             validate_payload::<$index, $message>,
         )
-        .with_compact_identity(($index + 1) as u8, if $index == 17 { 2 } else { 1 })
+        .with_compact_identity(
+            if $index >= 17 && $index <= 20 {
+                (30 + $index) as u8
+            } else {
+                ($index + 1) as u8
+            },
+            1,
+        )
     };
 }
 
@@ -682,6 +721,77 @@ const RETENTION_ADMINISTRATION_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordS
 )
 .with_compact_identity(42, 1);
 
+const fn reactive_consumer_schema_hash(index: usize) -> SchemaHash {
+    let mut bytes = [0_u8; 32];
+    let mut offset = 0;
+    while offset < bytes.len() {
+        bytes[offset] = REACTIVE_CONSUMER_V1_SCHEMA_HASH_BYTES[index * 32 + offset];
+        offset += 1;
+    }
+    SchemaHash::from_bytes(bytes)
+}
+
+const fn reactive_consumer_record_bound(index: usize, offset: usize) -> usize {
+    let start = index * 8 + offset;
+    u32::from_be_bytes([
+        REACTIVE_CONSUMER_V1_RECORD_BOUND_BYTES[start],
+        REACTIVE_CONSUMER_V1_RECORD_BOUND_BYTES[start + 1],
+        REACTIVE_CONSUMER_V1_RECORD_BOUND_BYTES[start + 2],
+        REACTIVE_CONSUMER_V1_RECORD_BOUND_BYTES[start + 3],
+    ]) as usize
+}
+
+macro_rules! reactive_consumer_schema {
+    ($index:literal, $name:literal, $message:ty, $compact_tag:literal) => {
+        RecordSchema::new_current(
+            concat!("riffdb.storage.v1.", $name),
+            reactive_consumer_schema_hash($index),
+            reactive_consumer_record_bound($index, 0),
+            reactive_consumer_record_bound($index, 4),
+            preflight_payload::<{ 48 + $index }>,
+            validate_payload::<{ 48 + $index }, $message>,
+        )
+        .with_compact_identity($compact_tag, 1)
+    };
+}
+
+const REACTIVE_MODULE_V1_RECORD_SCHEMA: RecordSchema<'static> =
+    reactive_consumer_schema!(0, "StoredReactiveModuleV1", v1::StoredReactiveModuleV1, 43);
+const REACTIVE_MODULE_ADMINISTRATION_V1_RECORD_SCHEMA: RecordSchema<'static> = reactive_consumer_schema!(
+    1,
+    "StoredReactiveModuleAdministrationV1",
+    v1::StoredReactiveModuleAdministrationV1,
+    44
+);
+const EVENT_CONSUMER_V1_RECORD_SCHEMA: RecordSchema<'static> =
+    reactive_consumer_schema!(2, "StoredEventConsumerV1", v1::StoredEventConsumerV1, 45);
+const EVENT_CONSUMER_DELIVERY_V1_RECORD_SCHEMA: RecordSchema<'static> = reactive_consumer_schema!(
+    3,
+    "StoredEventConsumerDeliveryV1",
+    v1::StoredEventConsumerDeliveryV1,
+    46
+);
+
+const SERVICE_AUDIT_V2_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.ServiceAuditRecordV2",
+    SchemaHash::from_bytes(*SERVICE_AUDIT_V2_SCHEMA_HASH_BYTES),
+    u32::from_be_bytes([
+        SERVICE_AUDIT_V2_RECORD_BOUND_BYTES[0],
+        SERVICE_AUDIT_V2_RECORD_BOUND_BYTES[1],
+        SERVICE_AUDIT_V2_RECORD_BOUND_BYTES[2],
+        SERVICE_AUDIT_V2_RECORD_BOUND_BYTES[3],
+    ]) as usize,
+    u32::from_be_bytes([
+        SERVICE_AUDIT_V2_RECORD_BOUND_BYTES[4],
+        SERVICE_AUDIT_V2_RECORD_BOUND_BYTES[5],
+        SERVICE_AUDIT_V2_RECORD_BOUND_BYTES[6],
+        SERVICE_AUDIT_V2_RECORD_BOUND_BYTES[7],
+    ]) as usize,
+    preflight_payload::<52>,
+    validate_payload::<52, v1::ServiceAuditRecordV2>,
+)
+.with_compact_identity(22, 2);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -822,6 +932,17 @@ readable_message!(
     v1::StoredRetentionAdministrationV1,
     RETENTION_ADMINISTRATION_V1_RECORD_SCHEMA
 );
+readable_message!(v1::StoredReactiveModuleV1, REACTIVE_MODULE_V1_RECORD_SCHEMA);
+readable_message!(
+    v1::StoredReactiveModuleAdministrationV1,
+    REACTIVE_MODULE_ADMINISTRATION_V1_RECORD_SCHEMA
+);
+readable_message!(v1::StoredEventConsumerV1, EVENT_CONSUMER_V1_RECORD_SCHEMA);
+readable_message!(
+    v1::StoredEventConsumerDeliveryV1,
+    EVENT_CONSUMER_DELIVERY_V1_RECORD_SCHEMA
+);
+readable_message!(v1::ServiceAuditRecordV2, SERVICE_AUDIT_V2_RECORD_SCHEMA);
 
 writable_message!(v1::StoredStorageFormatVersionV1);
 writable_message!(v1::StoredDatabaseIdentityV1);
@@ -840,7 +961,6 @@ writable_message!(v1::CapabilityRecordV1);
 writable_message!(v1::CapabilityTokenLookupV1);
 writable_message!(v1::CapabilityBootstrapMarkerV1);
 writable_message!(v1::CapabilityAdministrationAuditV1);
-writable_message!(v1::ServiceAuditRecordV1);
 writable_message!(v1::StoredOutboxStatusV1);
 writable_message!(v1::StoredProjectionStateV1);
 writable_message!(v1::StoredProjectionApplyV1);
@@ -866,6 +986,11 @@ writable_message!(v1::StoredRetentionWatermarkV1);
 writable_message!(v1::StoredRetentionHoldsV1);
 writable_message!(v1::StoredHistoryTombstoneV1);
 writable_message!(v1::StoredRetentionAdministrationV1);
+writable_message!(v1::StoredReactiveModuleV1);
+writable_message!(v1::StoredReactiveModuleAdministrationV1);
+writable_message!(v1::StoredEventConsumerV1);
+writable_message!(v1::StoredEventConsumerDeliveryV1);
+writable_message!(v1::ServiceAuditRecordV2);
 
 /// Encodes one sealed generated message after the same allocation-free shape preflight.
 pub fn encode_current_message<M: WritableRecordMessage>(
@@ -883,6 +1008,52 @@ const PRE_WP280_CAPABILITY_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::
     validate_pre_wp280_capability_payload,
 )
 .with_compact_identity(18, 1);
+
+const PRE_WP416_CAPABILITY_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.CapabilityRecordV1",
+    PRE_WP416_CAPABILITY_SCHEMA_HASH,
+    legacy_record_bound(17, 0),
+    legacy_record_bound(17, 4),
+    validate_pre_wp280_capability_payload,
+    validate_pre_wp280_capability_payload,
+)
+.with_compact_identity(18, 2);
+
+macro_rules! pre_wp416_capability_schema {
+    ($name:literal, $hash:expr, $index:literal, $message:ty, $tag:literal) => {
+        RecordSchema::new_current(
+            concat!("riffdb.storage.v1.", $name),
+            $hash,
+            legacy_record_bound($index, 0),
+            legacy_record_bound($index, 4),
+            preflight_payload::<$index>,
+            validate_payload::<$index, $message>,
+        )
+        .with_compact_identity($tag, 1)
+    };
+}
+
+const PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA: RecordSchema<'static> = pre_wp416_capability_schema!(
+    "CapabilityTokenLookupV1",
+    PRE_WP416_CAPABILITY_TOKEN_LOOKUP_SCHEMA_HASH,
+    18,
+    v1::CapabilityTokenLookupV1,
+    19
+);
+const PRE_WP416_CAPABILITY_BOOTSTRAP_RECORD_SCHEMA: RecordSchema<'static> = pre_wp416_capability_schema!(
+    "CapabilityBootstrapMarkerV1",
+    PRE_WP416_CAPABILITY_BOOTSTRAP_SCHEMA_HASH,
+    19,
+    v1::CapabilityBootstrapMarkerV1,
+    20
+);
+const PRE_WP416_CAPABILITY_ADMINISTRATION_RECORD_SCHEMA: RecordSchema<'static> = pre_wp416_capability_schema!(
+    "CapabilityAdministrationAuditV1",
+    PRE_WP416_CAPABILITY_ADMINISTRATION_SCHEMA_HASH,
+    20,
+    v1::CapabilityAdministrationAuditV1,
+    21
+);
 
 /// Readable durable schemas in immutable compatibility order.
 pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHEMA_COUNT] = [
@@ -934,7 +1105,16 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     RETENTION_HOLDS_V1_RECORD_SCHEMA,
     HISTORY_TOMBSTONE_V1_RECORD_SCHEMA,
     RETENTION_ADMINISTRATION_V1_RECORD_SCHEMA,
+    REACTIVE_MODULE_V1_RECORD_SCHEMA,
+    REACTIVE_MODULE_ADMINISTRATION_V1_RECORD_SCHEMA,
+    EVENT_CONSUMER_V1_RECORD_SCHEMA,
+    EVENT_CONSUMER_DELIVERY_V1_RECORD_SCHEMA,
+    SERVICE_AUDIT_V2_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
+    PRE_WP416_CAPABILITY_RECORD_SCHEMA,
+    PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
+    PRE_WP416_CAPABILITY_BOOTSTRAP_RECORD_SCHEMA,
+    PRE_WP416_CAPABILITY_ADMINISTRATION_RECORD_SCHEMA,
 ];
 
 /// Writable durable schemas in immutable role order.
@@ -960,7 +1140,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     CURRENT_V1_RECORD_SCHEMAS[18],
     CURRENT_V1_RECORD_SCHEMAS[19],
     CURRENT_V1_RECORD_SCHEMAS[20],
-    CURRENT_V1_RECORD_SCHEMAS[21],
+    SERVICE_AUDIT_V2_RECORD_SCHEMA,
     CURRENT_V1_RECORD_SCHEMAS[22],
     CURRENT_V1_RECORD_SCHEMAS[23],
     CURRENT_V1_RECORD_SCHEMAS[24],
@@ -981,6 +1161,10 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     RETENTION_HOLDS_V1_RECORD_SCHEMA,
     HISTORY_TOMBSTONE_V1_RECORD_SCHEMA,
     RETENTION_ADMINISTRATION_V1_RECORD_SCHEMA,
+    REACTIVE_MODULE_V1_RECORD_SCHEMA,
+    REACTIVE_MODULE_ADMINISTRATION_V1_RECORD_SCHEMA,
+    EVENT_CONSUMER_V1_RECORD_SCHEMA,
+    EVENT_CONSUMER_DELIVERY_V1_RECORD_SCHEMA,
     REGISTRY_V2_RECORD_SCHEMA,
 ];
 

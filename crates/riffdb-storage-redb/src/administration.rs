@@ -19,20 +19,22 @@ use riffdb_storage_api::{
     CapabilityRevokeCandidateV1, CapabilityRevokeIntentV1, CapabilityRevokeResult,
     CapabilityTokenLookupV1, CatalogActivationIntentV1, CatalogActivationResult,
     CatalogAdministrationRepository, CatalogRepository, EncodedPageItem, MAX_READABLE_DIGEST_KEYS,
-    MAX_RETAINED_QUERY_MODULES, MAX_SCAN_PAGE_BYTES, QueryModuleActivationIntentV1,
-    QueryModuleActivationResult, QueryModuleActiveExpectationV1,
-    QueryModuleAdministrationRepository, QueryModuleRepository, SequenceAllocationError,
+    MAX_RETAINED_QUERY_MODULES, MAX_RETAINED_REACTIVE_MODULES, MAX_SCAN_PAGE_BYTES,
+    QueryModuleActivationIntentV1, QueryModuleActivationResult, QueryModuleActiveExpectationV1,
+    QueryModuleAdministrationRepository, QueryModuleRepository,
+    ReactiveModuleAdministrationRepository, ReactiveModulePublicationIntentV1,
+    ReactiveModulePublicationResult, ReactiveModuleRepository, SequenceAllocationError,
     ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
     StorageError, StorageErrorKind, StorageScanLimit, StoredAdministrationAuditRecordV1,
     StoredCapabilityAdministrationV1, StoredCapabilityRecordV1, StoredCatalogAdministrationV1,
     StoredContractBundleV1, StoredContractMigrationEdgeV1, StoredContractMigrationRecordV1,
-    StoredQueryModuleAdministrationV1, StoredQueryModuleV1, StoredServiceAuditRecordV1,
-    TransactionCurrentCapabilityObservationV1,
+    StoredQueryModuleAdministrationV1, StoredQueryModuleV1, StoredReactiveModuleAdministrationV1,
+    StoredReactiveModuleV1, StoredServiceAuditRecordV1, TransactionCurrentCapabilityObservationV1,
 };
 use riffdb_types::{
     AdministrationSequence, CapabilityId, CapabilityTokenDigest, ContractBundleHash,
-    ContractLineage, ContractVersion, QueryModuleHash, RequestId, ServiceAuditLinkV1,
-    ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceOperationV1,
+    ContractLineage, ContractVersion, QueryModuleHash, ReactiveModuleHash, RequestId,
+    ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceOperationV1,
 };
 
 use crate::application::stage_admission;
@@ -41,11 +43,11 @@ use crate::codec::{
     decode_administration_sequence_allocator_v1, decode_capability_bootstrap_marker_v1,
     decode_capability_record_v1, decode_capability_token_lookup_v1, decode_commit_with_event_table,
     decode_contract_bundle_v1, decode_database_identity_v1, decode_provenance_record_v1,
-    decode_query_module_administration_v1, decode_query_module_v1,
+    decode_query_module_administration_v1, decode_query_module_v1, decode_reactive_module_v1,
     encode_active_catalog_pointer_v1, encode_administration_audit_record_v1,
     encode_administration_sequence_allocator_v1, encode_capability_bootstrap_marker_v1,
     encode_capability_record_v1, encode_capability_token_lookup_v1, encode_contract_bundle_v1,
-    encode_query_module_administration_v1, encode_query_module_v1,
+    encode_query_module_administration_v1, encode_query_module_v1, encode_reactive_module_v1,
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::hooks::RedbTestOperation;
@@ -54,13 +56,13 @@ use crate::keys::{
     encode_active_query_module_key, encode_application_sequence_key, encode_audit_key,
     encode_capability_key, encode_capability_token_key, encode_contract_bundle_key,
     encode_contract_migration_operation_key, encode_contract_write_retirement_key,
-    encode_provenance_key, encode_query_module_key,
+    encode_provenance_key, encode_query_module_key, encode_reactive_module_key,
 };
 use crate::layout::{
     AUDIT, CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS,
     CONTRACT_BUNDLES, CONTRACT_MIGRATIONS, CONTRACT_WRITE_RETIREMENTS, EVENTS, META,
     META_ADMINISTRATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP, META_DATABASE_ID, PROVENANCE,
-    QUERY_MODULE_ACTIVE, QUERY_MODULES,
+    QUERY_MODULE_ACTIVE, QUERY_MODULES, REACTIVE_MODULES,
 };
 use crate::store::{RedbOperationalPorts, RedbWriteAccess};
 
@@ -979,9 +981,159 @@ impl QueryModuleAdministrationRepository for RedbOperationalPorts {
         }
         append_audit_record(transaction, &audit_record)?;
         write_administration_allocator(transaction, allocator, next)?;
-        access.commit_for(RedbTestOperation::QueryModuleAdministration)?;
+        access.commit_for(RedbTestOperation::ReactiveModuleAdministration)?;
         Ok(QueryModuleActivationResult::Activated {
             active: requested,
+            administration_sequence: sequence,
+        })
+    }
+}
+
+fn reactive_module_from_table<T>(
+    table: &T,
+    module_hash: ReactiveModuleHash,
+) -> Result<Option<StoredReactiveModuleV1>, StorageError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let key = encode_reactive_module_key(module_hash);
+    let Some(value) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
+        return Ok(None);
+    };
+    let module = decoded_value(decode_reactive_module_v1(value.value())?);
+    if module.module_hash() != module_hash {
+        return Err(corrupt());
+    }
+    Ok(Some(module))
+}
+
+impl ReactiveModuleRepository for RedbOperationalPorts {
+    fn read_reactive_module(
+        &self,
+        module_hash: ReactiveModuleHash,
+    ) -> Result<Option<StoredReactiveModuleV1>, StorageError> {
+        let transaction = self.begin_read()?;
+        read_database_id_readonly(&transaction)?;
+        let table = transaction
+            .open_table(REACTIVE_MODULES)
+            .map_err(table_error)?;
+        reactive_module_from_table(&table, module_hash)
+    }
+}
+
+impl ReactiveModuleAdministrationRepository for RedbOperationalPorts {
+    fn publish_reactive_module(
+        &mut self,
+        intent: &ReactiveModulePublicationIntentV1,
+    ) -> Result<ReactiveModulePublicationResult, StorageError> {
+        let access = self.begin_write()?;
+        let transaction = access.transaction()?;
+        let allocator = validate_administration_tail(transaction)?;
+        let candidate = intent.module();
+
+        let bundles = transaction
+            .open_table(CONTRACT_BUNDLES)
+            .map_err(table_error)?;
+        let contract = read_contract_bundle_from_table(
+            &bundles,
+            candidate.contract_lineage(),
+            candidate.contract_version(),
+        )?;
+        drop(bundles);
+        if !contract.is_some_and(|bundle| bundle.bundle_hash() == candidate.contract_bundle_hash())
+        {
+            access.abort()?;
+            return Ok(ReactiveModulePublicationResult::ContractUnavailable);
+        }
+
+        let query_modules = transaction.open_table(QUERY_MODULES).map_err(table_error)?;
+        for dependency in candidate.query_module_hashes() {
+            let module = query_module_from_table(&query_modules, *dependency)?;
+            if !module.is_some_and(|module| {
+                module.contract_lineage() == candidate.contract_lineage()
+                    && module.contract_version() == candidate.contract_version()
+                    && module.contract_bundle_hash() == candidate.contract_bundle_hash()
+            }) {
+                drop(query_modules);
+                access.abort()?;
+                return Ok(ReactiveModulePublicationResult::QueryModuleUnavailable {
+                    module_hash: *dependency,
+                });
+            }
+        }
+        drop(query_modules);
+
+        let modules = transaction
+            .open_table(REACTIVE_MODULES)
+            .map_err(table_error)?;
+        if modules.len().map_err(precommit_storage_error)?
+            > u64::try_from(MAX_RETAINED_REACTIVE_MODULES).map_err(|_| invariant())?
+        {
+            return Err(corrupt());
+        }
+        if let Some(existing) = reactive_module_from_table(&modules, candidate.module_hash())? {
+            drop(modules);
+            access.abort()?;
+            if existing != *candidate {
+                return Err(corrupt());
+            }
+            return Ok(ReactiveModulePublicationResult::AlreadyPublished {
+                module_hash: candidate.module_hash(),
+            });
+        }
+        let mut conflict = false;
+        for entry in modules.iter().map_err(precommit_storage_error)? {
+            let (key, value) = entry.map_err(precommit_storage_error)?;
+            let module = decoded_value(decode_reactive_module_v1(value.value())?);
+            if key.value() != encode_reactive_module_key(module.module_hash()) {
+                return Err(corrupt());
+            }
+            if module.contract_lineage() == candidate.contract_lineage()
+                && module.contract_version() == candidate.contract_version()
+                && module.contract_bundle_hash() == candidate.contract_bundle_hash()
+                && module.module_name() == candidate.module_name()
+                && module.module_version() == candidate.module_version()
+            {
+                conflict = true;
+                break;
+            }
+        }
+        if conflict {
+            drop(modules);
+            access.abort()?;
+            return Ok(ReactiveModulePublicationResult::ModuleVersionConflict);
+        }
+        if modules.len().map_err(precommit_storage_error)?
+            == u64::try_from(MAX_RETAINED_REACTIVE_MODULES).map_err(|_| invariant())?
+        {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        drop(modules);
+
+        let (assigned, next) = allocate_sequences(allocator, 1)?;
+        let sequence = assigned[0];
+        let record = StoredReactiveModuleAdministrationV1::from_committed_intent(sequence, intent);
+        let encoded = encode_reactive_module_v1(candidate)?;
+        let key = encode_reactive_module_key(candidate.module_hash());
+        let mut modules = transaction
+            .open_table(REACTIVE_MODULES)
+            .map_err(table_error)?;
+        if modules
+            .insert(key.as_slice(), encoded.as_bytes())
+            .map_err(precommit_storage_error)?
+            .is_some()
+        {
+            return Err(invariant());
+        }
+        drop(modules);
+        append_audit_record(
+            transaction,
+            &StoredAdministrationAuditRecordV1::ReactiveModule(record),
+        )?;
+        write_administration_allocator(transaction, allocator, next)?;
+        access.commit_for(RedbTestOperation::QueryModuleAdministration)?;
+        Ok(ReactiveModulePublicationResult::Published {
+            module_hash: candidate.module_hash(),
             administration_sequence: sequence,
         })
     }

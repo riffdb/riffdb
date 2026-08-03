@@ -39,7 +39,8 @@ pub use capability::{
     NormalCapabilityCreateTemplate,
 };
 pub use client::{
-    CommitNotificationStream, GeneratedExecution, GeneratedExecutionError, RiffDbClient,
+    CommitNotificationStream, EventConsumerResponseStream, GeneratedExecution,
+    GeneratedExecutionError, RiffDbClient,
 };
 pub use command::{AttemptBudget, CommandShapeError, IdempotentCommand};
 pub use credential_file::{BearerCredentialFileError, load_protected_bearer_credential};
