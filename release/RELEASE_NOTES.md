@@ -30,6 +30,16 @@ publishes a fully validated same-filesystem stage atomically, fences predecessor
 writes, and recovers or rolls back before readiness. MCP and application
 drivers intentionally expose no migration operation.
 
+## Reactive Applications
+
+P8 adds compiler-proved partitioned domain-event streams, bounded durable
+consumers, live named queries, and contextual agent subscriptions. The
+TicketDesk Application Source V4 example provides queue and detail watches
+through an application-owned authenticated SSE relay and crash-safe generated
+reaction helpers across Rust, TypeScript, Python, and MCP. Reactive delivery is
+at least once and partition ordered; it is not raw CDC or exactly-once external
+effect delivery.
+
 ## License
 
 RiffDB is offered under either the MIT License or the Apache License, Version

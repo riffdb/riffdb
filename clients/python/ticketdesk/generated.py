@@ -17,8 +17,8 @@ from riffdb_application._binding import decode_variant, encode_record
 
 CONTRACT_LINEAGE: Final[str] = "TicketDesk"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "4137b07572c6efc3423411e782ca5424fb66eaf1baee117dc340c5d978e92986"
-QUERY_MODULE_HASH: Final[str] = "b30a871c771742b0c554b855df351826625294e684716a086fa586c249785843"
+CONTRACT_BUNDLE_HASH: Final[str] = "cd221ebb44c57105da5bdb2682b473e4ce4cde4d7cac540e49097450df6ec7de"
+QUERY_MODULE_HASH: Final[str] = "c1effc1f6684b2786f0b436bc691d6d9e82181d9e656902c6cbd1a553270f642"
 
 class TicketStatus(StrEnum):
     OPEN = "Open"
@@ -89,7 +89,7 @@ class ProjectMember:
     project_id: UUID
     organization_id: UUID
 
-BOARD_PAGE200_QUERY_PLAN_HASH: Final[str] = "0a1ae618490625e0847b4eb7ef01587da13dbbcc29bba077cd12954211b5dbf3"
+BOARD_PAGE200_QUERY_PLAN_HASH: Final[str] = "d0a4294c1ce4e0fe8883f4a382d445a4addf346d1ee6a39989f18521788b355a"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class BoardPage200Params:
@@ -113,7 +113,7 @@ class BoardPage200Found:
 
 BoardPage200Result: TypeAlias = BoardPage200Found
 
-BOARD_PAGE450_QUERY_PLAN_HASH: Final[str] = "ada07fe7eb69a1afec547fc808de84803e5770fffe024c52a0243d1b09483b02"
+BOARD_PAGE450_QUERY_PLAN_HASH: Final[str] = "1047c13c0665d0c7e39e332dc766b64e690e5dd577e9864ba59dd8291ddf04d4"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class BoardPage450Params:
@@ -137,7 +137,7 @@ class BoardPage450Found:
 
 BoardPage450Result: TypeAlias = BoardPage450Found
 
-BOARD_PAGE50_QUERY_PLAN_HASH: Final[str] = "5688ca0c7fc293fbe56145376105a79f70873b34f847f5750ab8ce36ed9ab292"
+BOARD_PAGE50_QUERY_PLAN_HASH: Final[str] = "35c9815474d34fbf61e5fa4d81375e9a89f1fb62ea2cccf70bd18db0aa83280e"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class BoardPage50Params:
@@ -161,7 +161,7 @@ class BoardPage50Found:
 
 BoardPage50Result: TypeAlias = BoardPage50Found
 
-GET_TICKET_QUERY_PLAN_HASH: Final[str] = "1fb6b4cbb4a7810457d07826d0cbbab74354cc82e04e5d056af7985761e0028c"
+GET_TICKET_QUERY_PLAN_HASH: Final[str] = "a3c62d90ae6fb48303631110c500933f3f06c20e141fdd1f681a484a7450ab0d"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetTicketParams:
@@ -188,7 +188,7 @@ class GetTicketNotFound:
 
 GetTicketResult: TypeAlias = GetTicketFound | GetTicketNotFound
 
-GET_USER_QUERY_PLAN_HASH: Final[str] = "df8f1ce103d2b0271fd788b82042ff5916938701c8ea086b60573516dddd6e43"
+GET_USER_QUERY_PLAN_HASH: Final[str] = "13e3d239243777fe536c33a1f309fe8a17946de357a3745a1747d42b2f958930"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetUserParams:
@@ -212,7 +212,7 @@ class GetUserNotFound:
 
 GetUserResult: TypeAlias = GetUserFound | GetUserNotFound
 
-LIST_COMMENTS_QUERY_PLAN_HASH: Final[str] = "96ac40882f95ad06a46cf9a363870a50a2430776277c079223bd090ee596d109"
+LIST_COMMENTS_QUERY_PLAN_HASH: Final[str] = "e84f36413f039176575f94ca592aed2a81b914d39aa0a89d8e5228c2c20bd6d3"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListCommentsParams:
@@ -235,7 +235,7 @@ class ListCommentsFound:
 
 ListCommentsResult: TypeAlias = ListCommentsFound
 
-LIST_TICKETS_QUERY_PLAN_HASH: Final[str] = "9cdba9d45af89abcc5b697b40dccccb231f65bd0b42f85a4466ce7b643c2793b"
+LIST_TICKETS_QUERY_PLAN_HASH: Final[str] = "995f86da488685d9b7c32d13e43893fe278793246a2b7dd33bb9c019964d335b"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListTicketsParams:
@@ -262,7 +262,7 @@ class ListTicketsFound:
 
 ListTicketsResult: TypeAlias = ListTicketsFound
 
-LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH: Final[str] = "9421f819180b7e14948853dc58e4432ad1224cca9dceabb7a0c34a3775eb0ec4"
+LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH: Final[str] = "aea9cbc9f3fb7de36b6f3504ea536921ae008204b7ef7472437f701f0c5b300c"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListTicketsByAssigneeParams:
@@ -289,7 +289,7 @@ class ListTicketsByAssigneeFound:
 
 ListTicketsByAssigneeResult: TypeAlias = ListTicketsByAssigneeFound
 
-PROJECT_MEMBERS_QUERY_PLAN_HASH: Final[str] = "f753daf428c686ace0962163f78d4e5fa72567912ad631799926c85a1221d113"
+PROJECT_MEMBERS_QUERY_PLAN_HASH: Final[str] = "273e025bc51fcf488794f28c45746c0ff180a6955d414873feac581a22708f7b"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ProjectMembersParams:
@@ -309,7 +309,7 @@ class ProjectMembersFound:
 
 ProjectMembersResult: TypeAlias = ProjectMembersFound
 
-PROJECT_SUMMARY_QUERY_PLAN_HASH: Final[str] = "7aaf205c085348d339b22021f964f54062020855709719ab6a57586a25d0af02"
+PROJECT_SUMMARY_QUERY_PLAN_HASH: Final[str] = "281b68867d9a37f1f3367fd4b63b14dd8533b60c385238cac774a3bcd5936d7e"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ProjectSummaryParams:
@@ -341,13 +341,12 @@ class ProjectSummaryNotFound:
 
 ProjectSummaryResult: TypeAlias = ProjectSummaryFound | ProjectSummaryNotFound
 
-TICKET_PAGE_QUERY_PLAN_HASH: Final[str] = "f13b9c5637e3e44f12d45750ea681523ccc19a6eb208d483f53c9f84fe42d4c0"
+TICKET_PAGE_QUERY_PLAN_HASH: Final[str] = "ac390a2d26f0d6a9e2f0587fb2fed428910c6e6175fe47de9e40c47a29a979d5"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TicketPageParams:
     organization_id: UUID
     ticket_id: UUID
-    comments_after: str | None = None
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TicketPageFoundTicket:
@@ -624,7 +623,7 @@ class CreateTicketInput:
     idempotency_key: str
     organization_id: UUID
 
-CREATE_TICKET_PLAN_HASH: Final[str] = "fa9cc24dd158569bc5b83b0287bbf1db72dc3be8f0f0f1b680d7b8ccb8c886fc"
+CREATE_TICKET_PLAN_HASH: Final[str] = "cfaebe79ac6ac9288a0b5e7982d659eacb2aad088eb87c4496ae3d5cdbe9bfc6"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateTicketCreated:
     ticket: Ticket

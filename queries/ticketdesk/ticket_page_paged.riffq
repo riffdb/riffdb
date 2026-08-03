@@ -1,0 +1,86 @@
+query TicketPagePaged(
+    $organization_id: Organization.organization_id,
+    $ticket_id: Ticket.ticket_id,
+    $comments_after: Cursor?,
+) {
+    one ticket from Ticket
+        where organization_id == $organization_id
+            && ticket_id == $ticket_id
+        else NotFound
+
+    one project from Project
+        where organization_id == $organization_id
+            && project_id == ticket.project_id
+        else IntegrityFailure
+
+    one organization from Organization
+        where organization_id == $organization_id
+        else IntegrityFailure
+
+    one reporter from AppUser
+        where organization_id == $organization_id
+            && user_id == ticket.reporter_id
+        else IntegrityFailure
+
+    maybe assignee from AppUser
+        where organization_id == $organization_id
+            && user_id == ticket.assignee_id
+
+    many comments from Comment
+        where organization_id == $organization_id
+            && ticket_id == ticket.ticket_id
+        order by created_at asc, comment_id asc
+        take 50 after $comments_after
+
+    many ticket_labels from TicketLabel
+        where organization_id == $organization_id
+            && ticket_id == ticket.ticket_id
+        order by label_id asc
+        take 50
+
+    many labels from Label
+        where organization_id == $organization_id
+            && label_id in ticket_labels.label_id
+        order by label_id asc
+        take 50
+        else IntegrityFailure
+
+    return Found {
+        ticket: ticket {
+            ticket_id
+            project_id
+            title
+            status
+            created_at
+            updated_at
+        }
+        project: project {
+            project_id
+            name
+        }
+        organization: organization {
+            organization_id
+            name
+        }
+        reporter: reporter {
+            user_id
+            display_name
+        }
+        assignee: assignee {
+            user_id
+            display_name
+        }
+        comments: comments {
+            comment_id
+            body
+            author_id
+            created_at
+        }
+        labels: labels {
+            label_id
+            name
+        }
+    }
+
+    outcomes Found | NotFound | IntegrityFailure
+}

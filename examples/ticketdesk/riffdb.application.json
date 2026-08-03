@@ -1,0 +1,77 @@
+{
+  "schema": "riffdb.application-source/v4",
+  "application": "ticketdesk-reactive",
+  "contract": {
+    "source": "riffdb/contract.riff",
+    "lineage": "TicketDesk",
+    "version": 1
+  },
+  "generation": {
+    "rust": "generated/rust/client.rs",
+    "typescript": "web/src/generated/client.ts",
+    "python": "generated/python/client.py",
+    "mcp": "generated/mcp/tools.json"
+  },
+  "migrations": [],
+  "query_modules": [
+    {
+      "name": "ticketdesk",
+      "version": 1,
+      "queries": [
+        { "name": "BoardPage200", "source": "riffdb/queries/board_page_200.riffq" },
+        { "name": "BoardPage450", "source": "riffdb/queries/board_page_450.riffq" },
+        { "name": "BoardPage50", "source": "riffdb/queries/board_page_50.riffq" },
+        { "name": "GetTicket", "source": "riffdb/queries/get_ticket.riffq" },
+        { "name": "GetUser", "source": "riffdb/queries/get_user.riffq" },
+        { "name": "ListComments", "source": "riffdb/queries/list_comments.riffq" },
+        { "name": "ListTickets", "source": "riffdb/queries/list_tickets.riffq" },
+        { "name": "ListTicketsByAssignee", "source": "riffdb/queries/list_tickets_by_assignee.riffq" },
+        { "name": "ProjectMembers", "source": "riffdb/queries/project_members.riffq" },
+        { "name": "ProjectSummary", "source": "riffdb/queries/project_summary.riffq" },
+        { "name": "TicketPage", "source": "riffdb/queries/ticket_page.riffq" },
+        { "name": "TicketPagePaged", "source": "riffdb/queries/ticket_page_paged.riffq" },
+        { "name": "TicketQueue", "source": "riffdb/queries/ticket_queue.riffq" }
+      ]
+    }
+  ],
+  "reactive_modules": [
+    {
+      "name": "TicketActivity",
+      "version": 1,
+      "source": "riffdb/reactive/ticket_activity.riffr"
+    }
+  ],
+  "roles": [
+    {
+      "name": "TicketDeskSeeder",
+      "environment": "development",
+      "tenant_scope": "global",
+      "queries": [],
+      "commands": ["CreateOrganization", "CreateUser", "CreateProject"],
+      "event_streams": [],
+      "watch_queries": [],
+      "agent_subscriptions": []
+    },
+    {
+      "name": "TicketDeskApplication",
+      "environment": "development",
+      "tenant_scope": "global",
+      "queries": ["TicketPage", "TicketQueue"],
+      "commands": ["CreateTicket", "CreateComment"],
+      "event_streams": [],
+      "watch_queries": ["TicketPageWatch", "TicketQueueWatch"],
+      "agent_subscriptions": []
+    },
+    {
+      "name": "TicketDeskAgent",
+      "environment": "development",
+      "tenant_scope": "global",
+      "queries": [],
+      "commands": ["CreateComment"],
+      "event_streams": ["TicketEvents"],
+      "watch_queries": [],
+      "agent_subscriptions": ["TriageTicket"]
+    }
+  ],
+  "seed_inputs": []
+}

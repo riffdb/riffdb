@@ -10,7 +10,7 @@ use riffdb_contract_compiler::{
     compile_contract_source, compile_contract_successor, compile_migration_source,
 };
 use riffdb_query_module::{
-    ApplicationLock, ApplicationManifest, ApplicationMigrationLockInput, ApplicationSourceManifest,
+    ApplicationLock, ApplicationMigrationLockInput, ApplicationSourceManifest,
     GeneratedApplicationArtifact, GeneratedApplicationArtifactKind, NamedQuerySource, QueryModule,
     QueryModuleCandidate, QueryModuleName, QueryModuleVersion, compile_application_role,
     generate_mcp_commands, generate_mcp_tools, generate_python_client, generate_rust_client,
@@ -18,8 +18,30 @@ use riffdb_query_module::{
 };
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
-const APPLICATION_MANIFEST: &str =
-    include_str!("../../../fixtures/application-manifests/ticketdesk-v1.json");
+const APPLICATION_SOURCE: &str = r#"{
+  "schema":"riffdb.application-source/v1",
+  "application":"ticketdesk",
+  "contract":{"source":"examples/app-baseline/contracts/ticketdesk.riff","lineage":"TicketDesk","version":1},
+  "generation":{"mcp":"fixtures/query-modules/ticketdesk.mcp.json","rust":"fixtures/query-modules/ticketdesk.rs","typescript":"clients/typescript/ticketdesk/client.ts"},
+  "query_modules":[{"name":"ticketdesk","version":1,"queries":[
+    {"name":"BoardPage200","source":"queries/ticketdesk/board_page_200.riffq"},
+    {"name":"BoardPage450","source":"queries/ticketdesk/board_page_450.riffq"},
+    {"name":"BoardPage50","source":"queries/ticketdesk/board_page_50.riffq"},
+    {"name":"GetTicket","source":"queries/ticketdesk/get_ticket.riffq"},
+    {"name":"GetUser","source":"queries/ticketdesk/get_user.riffq"},
+    {"name":"ListComments","source":"queries/ticketdesk/list_comments.riffq"},
+    {"name":"ListTickets","source":"queries/ticketdesk/list_tickets.riffq"},
+    {"name":"ListTicketsByAssignee","source":"queries/ticketdesk/list_tickets_by_assignee.riffq"},
+    {"name":"ProjectMembers","source":"queries/ticketdesk/project_members.riffq"},
+    {"name":"ProjectSummary","source":"queries/ticketdesk/project_summary.riffq"},
+    {"name":"TicketPage","source":"queries/ticketdesk/ticket_page.riffq"}
+  ]}],
+  "roles":[
+    {"name":"TicketDeskAgent","environment":"development","tenant_scope":"global","queries":["BoardPage200","BoardPage450","BoardPage50","GetTicket","GetUser","ListComments","ListTickets","ListTicketsByAssignee","ProjectMembers","ProjectSummary","TicketPage"],"commands":["AddProjectMember","AttachLabel","CloseTicketWithComment","CreateComment","CreateLabel","CreateOrganization","CreateProject","CreateTicket","CreateUser","OpenTicketWithLabels","SwapMemberRoles"]},
+    {"name":"TicketDeskApplication","environment":"development","tenant_scope":"global","queries":["BoardPage200","BoardPage450","BoardPage50","GetTicket","GetUser","ListComments","ListTickets","ListTicketsByAssignee","ProjectMembers","ProjectSummary","TicketPage"],"commands":["AddProjectMember","AttachLabel","CloseTicketWithComment","CreateComment","CreateLabel","CreateOrganization","CreateProject","CreateTicket","CreateUser","OpenTicketWithLabels","SwapMemberRoles"]}
+  ],
+  "seed_inputs":["examples/ticketdesk/seed/dev.jsonl"]
+}"#;
 const QUERIES: [(&str, &str); 11] = [
     (
         "BoardPage200",
@@ -72,8 +94,8 @@ fn main() {
         .nth(1)
         .map_or_else(|| PathBuf::from("."), PathBuf::from);
     let contract = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
-    let application = ApplicationManifest::decode_canonical(APPLICATION_MANIFEST.as_bytes())
-        .expect("canonical TicketDesk application manifest");
+    let source = ApplicationSourceManifest::parse(APPLICATION_SOURCE)
+        .expect("TicketDesk application source");
     let candidate = QueryModuleCandidate::new(
         QueryModuleName::new("ticketdesk").expect("module name"),
         QueryModuleVersion::new(1).expect("module version"),
@@ -84,6 +106,9 @@ fn main() {
     )
     .expect("module candidate");
     let module = QueryModule::compile(candidate, &contract).expect("compile query module");
+    let application = source
+        .exact_manifest(&contract, std::slice::from_ref(&module))
+        .expect("exact TicketDesk application manifest");
     assert_eq!(
         application.contract().lineage(),
         contract.lineage().as_str()
@@ -111,6 +136,11 @@ fn main() {
     fs::create_dir_all(output.join("fixtures/application-locks")).expect("lock fixture directory");
     fs::create_dir_all(output.join("clients/typescript/ticketdesk")).expect("client directory");
     fs::create_dir_all(output.join("clients/python/ticketdesk")).expect("client directory");
+    fs::write(
+        output.join("fixtures/application-manifests/ticketdesk-v1.json"),
+        application.canonical_bytes(),
+    )
+    .expect("manifest fixture");
     fs::write(
         output.join("fixtures/query-modules/ticketdesk.rs"),
         generate_rust_client(&module, &contract),

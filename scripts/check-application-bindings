@@ -64,6 +64,10 @@ fi
 
 npm --prefix clients/typescript/runtime run check
 npm --prefix examples/agent-alpha/web run check
+npm --prefix examples/ticketdesk/web run check
+npm --prefix examples/ticketdesk/web run build
+npm --prefix examples/ticketdesk/web test
+./scripts/check-application-boundary examples/ticketdesk/web
 node --experimental-strip-types --check clients/typescript/ticketdesk/client.ts
 cargo test --quiet -p riffdb-query-module --all-features
 cargo test --quiet -p riffdb-client-rust --all-features

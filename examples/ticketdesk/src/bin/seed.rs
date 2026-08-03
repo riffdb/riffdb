@@ -271,7 +271,6 @@ async fn verify_named_pages(
         .ticket_page(TicketPageParams {
             organization_id: organization_id.clone(),
             ticket_id: closed_ticket_id.clone(),
-            comments_after: None,
         })
         .await?
     else {

@@ -2143,6 +2143,7 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-invariant",
  "riffdb-proto",
+ "riffdb-query-ir",
  "riffdb-query-module",
  "riffdb-runtime",
  "riffdb-server",
@@ -2151,6 +2152,7 @@ dependencies = [
  "riffdb-storage-memory",
  "riffdb-storage-redb",
  "riffdb-types",
+ "serde_json",
  "tokio",
  "tonic",
 ]

@@ -27,10 +27,12 @@ riffdb-commit = { path = "../riffdb-commit", version = "0.1.0", default-features
 riffdb-proto = { path = "../riffdb-proto", version = "0.1.0", default-features = false }
 riffdb-service = { path = "../riffdb-service", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
 riffdb-query-module = { path = "../riffdb-query-module", version = "0.1.0", default-features = false }
+riffdb-query-ir = { path = "../riffdb-query-ir", version = "0.1.0", default-features = false }
 riffdb-server = { path = "../riffdb-server", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
 riffdb-storage-memory = { path = "../riffdb-storage-memory", version = "0.1.0", default-features = false }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel"] }
+serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 
 [[test]]
 name = "full_recovery_matrix"
@@ -74,6 +76,10 @@ path = "../../tests/live_named_queries.rs"
 [[test]]
 name = "contextual_agent_subscriptions"
 path = "../../tests/contextual_agent_subscriptions.rs"
+
+[[test]]
+name = "reactive_ticketdesk_acceptance"
+path = "../../tests/reactive_ticketdesk_acceptance.rs"
 
 [lints]
 workspace = true

@@ -555,6 +555,9 @@ pub fn generate_python_application_client(
     for reactive in reactive_modules {
         emit_python_reactive_module(&mut output, module, contract, reactive);
     }
+    while output.ends_with("\n\n") {
+        output.pop();
+    }
     Ok(output)
 }
 

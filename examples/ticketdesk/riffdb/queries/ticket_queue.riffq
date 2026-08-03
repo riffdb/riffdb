@@ -1,0 +1,25 @@
+query TicketQueue(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+        order by status desc, ticket_id desc
+        take 50
+
+    return Found {
+        tickets: tickets {
+            organization_id
+            ticket_id
+            project_id
+            title
+            status
+            updated_at
+            reporter_id
+            assignee_id
+        }
+    }
+
+    outcomes Found
+}

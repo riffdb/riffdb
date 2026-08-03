@@ -1,0 +1,34 @@
+reactive TicketActivity version 1 {
+  stream TicketEvents($organization_id: Ticket.organization_id) {
+    partition (organization_id = $organization_id);
+    event TicketCreated select (
+      organization_id,
+      ticket_id,
+      project_id,
+      reporter_id,
+      assignee_id,
+      title,
+      status
+    );
+  }
+
+  watch TicketQueueWatch(
+    $organization_id: Ticket.organization_id,
+    $project_id: Ticket.project_id
+  ) query TicketQueue updates patch;
+
+  watch TicketPageWatch(
+    $organization_id: Ticket.organization_id,
+    $ticket_id: Ticket.ticket_id
+  ) query TicketPage updates reset;
+
+  subscription TriageTicket($organization_id: Ticket.organization_id) {
+    stream TicketEvents(organization_id = $organization_id);
+    hydrate ticket_page query TicketPage(
+      organization_id = $organization_id,
+      ticket_id = event.ticket_id
+    );
+    reaction comment command CreateComment;
+    limits { batch 1; in_flight 4; lease_seconds 60; }
+  }
+}

@@ -777,6 +777,9 @@ pub fn generate_rust_application_client(
     for reactive in reactive_modules {
         emit_rust_reactive_module(&mut output, module, contract, reactive);
     }
+    while output.ends_with("\n\n") {
+        output.pop();
+    }
     output
 }
 
@@ -2336,13 +2339,18 @@ fn emit_typescript_reactive_parameters(
 }
 
 fn ts_reactive_type(type_name: &str, contract: &ContractBundle) -> String {
-    if contract
+    if let Some(enumeration) = contract
         .schema()
         .enums()
         .iter()
-        .any(|value| value.name() == type_name)
+        .find(|value| value.name() == type_name)
     {
-        return pascal(type_name);
+        return enumeration
+            .variants()
+            .iter()
+            .map(|variant| format!("{:?}", variant.name()))
+            .collect::<Vec<_>>()
+            .join(" | ");
     }
     if type_name.starts_with("decimal<") {
         return "{ readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision?: number }".to_owned();
