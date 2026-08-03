@@ -96,6 +96,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/v1/discovery.proto",
     "riffdb/v1/error.proto",
     "riffdb/v1/event.proto",
+    "riffdb/v1/live_query.proto",
     "riffdb/v1/projection.proto",
     "riffdb/v1/query.proto",
     "riffdb/v1/services.proto",
@@ -486,6 +487,7 @@ const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("QueryService", "GetProjectionStatus", false),
     ("QueryService", "QueryProjection", false),
     ("QueryService", "ScanIndex", false),
+    ("QueryService", "WatchNamedQuery", true),
 ];
 const SERVICE_RESPONSE_CHARGE_FIXTURE: &str =
     include_str!("../../riffdb-service/fixtures/response-charge-v1.tsv");
@@ -499,7 +501,7 @@ const DISCOVERY_PAGE_BOUNDARIES: [(&str, usize, bool, &str); 4] = [
     ("limit-500-exact-end", 500, false, "exact_end"),
 ];
 
-const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 18] = [
+const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 19] = [
     (
         "riffdb.v1.CompiledContractCandidate.parent_version",
         "ContractService.ValidateContract:response:valid",
@@ -589,6 +591,11 @@ const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 18] = [
         "riffdb.v1.SubscribeCommitsRequest.observed_history_incarnation",
         "CommitService.SubscribeCommits:request:from-head",
         "CommitService.SubscribeCommits:request:from-head-with-observed-incarnation",
+    ),
+    (
+        "riffdb.v1.WatchNamedQueryRequest.cursor",
+        "QueryService.WatchNamedQuery:request:fresh",
+        "QueryService.WatchNamedQuery:request:resume",
     ),
 ];
 
@@ -1838,6 +1845,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
                 "Execute" => ".riffdb.v1.ExecuteCommandResponse".to_owned(),
                 "ExecuteBatch" => ".riffdb.v1.ExecuteCommandBatchResponse".to_owned(),
                 "SubscribeCommits" => ".riffdb.v1.CommitNotification".to_owned(),
+                "WatchNamedQuery" => ".riffdb.v1.LiveQueryUpdate".to_owned(),
                 "StreamEventConsumer" => ".riffdb.v1.ConsumeEventStreamResponse".to_owned(),
                 "AcknowledgeEventStream"
                 | "NegativeAcknowledgeEventStream"
@@ -1861,7 +1869,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
 
     if actual != expected {
         return Err(io::Error::other(format!(
-            "service inventory differs from the accepted seven-service, forty-seven-RPC baseline: expected {expected:?}, found {actual:?}"
+            "service inventory differs from the accepted seven-service, forty-eight-RPC baseline: expected {expected:?}, found {actual:?}"
         ))
         .into());
     }
@@ -2874,6 +2882,8 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
         );
     }
 
+    append_live_query_vectors(&mut output, &request_id);
+
     append_client_vector(
         &mut output,
         "CommitService.GetCommit",
@@ -3581,6 +3591,133 @@ fn append_client_vector(
         let _ = write!(output, "{byte:02x}");
     }
     output.push('\n');
+}
+
+fn append_live_query_vectors(output: &mut String, request_id: &[u8]) {
+    let fresh = v1::WatchNamedQueryRequest {
+        request_id: request_id.to_vec(),
+        reactive_module_hash: vec![0x41; 32],
+        operation_name: "WatchOpenItems".to_owned(),
+        parameters: Vec::new(),
+        cursor: None,
+    };
+    append_client_vector(
+        output,
+        "QueryService.WatchNamedQuery",
+        "request",
+        "fresh",
+        "riffdb.v1.WatchNamedQueryRequest",
+        &fresh,
+    );
+    append_client_vector(
+        output,
+        "QueryService.WatchNamedQuery",
+        "request",
+        "resume",
+        "riffdb.v1.WatchNamedQueryRequest",
+        &v1::WatchNamedQueryRequest {
+            cursor: Some(vec![0x52; 64]),
+            ..fresh
+        },
+    );
+
+    let frontier = v1::LiveQueryFrontier {
+        history_incarnation: 1,
+        application_head: 7,
+    };
+    let result = v1::LiveQueryResult {
+        identity: Some(v1::LiveQueryIdentity {
+            contract_lineage: "LiveFixtures".to_owned(),
+            contract_version: 1,
+            contract_bundle_hash: vec![0x42; 32],
+            query_name: "OpenItems".to_owned(),
+            query_module_hash: vec![0x43; 32],
+            query_plan_hash: vec![0x44; 32],
+        }),
+        outcome: "Ready".to_owned(),
+        fields: vec![v1::LiveQueryResultField {
+            name: "items".to_owned(),
+            cardinality: v1::LiveQueryResultCardinality::Many as i32,
+            records: vec![v1::LiveQueryResultRecord {
+                entity: "Item".to_owned(),
+                fields: Some(public_live_key()),
+            }],
+        }],
+    };
+    let cursor = vec![0x53; 64];
+    let updates = [
+        (
+            "snapshot",
+            v1::live_query_update::Update::Snapshot(v1::LiveQuerySnapshot {
+                result: Some(result.clone()),
+                frontier: Some(frontier),
+                cursor: cursor.clone(),
+            }),
+        ),
+        (
+            "patch",
+            v1::live_query_update::Update::Patch(v1::LiveQueryPatch {
+                result_field: "items".to_owned(),
+                operations: vec![v1::LiveQueryPatchOperation {
+                    operation: Some(v1::live_query_patch_operation::Operation::Remove(
+                        v1::LiveQueryRemove {
+                            index: 0,
+                            key: Some(public_live_key()),
+                        },
+                    )),
+                }],
+                frontier: Some(frontier),
+                cursor: cursor.clone(),
+            }),
+        ),
+        (
+            "reset",
+            v1::live_query_update::Update::Reset(v1::LiveQueryReset {
+                reason: v1::LiveQueryResetReason::DefinitionChanged as i32,
+                result: Some(result),
+                frontier: Some(frontier),
+                cursor: cursor.clone(),
+            }),
+        ),
+        (
+            "checkpoint",
+            v1::live_query_update::Update::Checkpoint(v1::LiveQueryCheckpoint {
+                frontier: Some(frontier),
+                cursor,
+            }),
+        ),
+        (
+            "terminal",
+            v1::live_query_update::Update::Terminal(v1::LiveQueryTerminal {
+                reason: v1::LiveQueryTerminalReason::AuthorizationChanged as i32,
+                last_frontier: Some(frontier),
+            }),
+        ),
+    ];
+    for (branch, update) in updates {
+        append_client_vector(
+            output,
+            "QueryService.WatchNamedQuery",
+            "stream",
+            branch,
+            "riffdb.v1.LiveQueryUpdate",
+            &v1::LiveQueryUpdate {
+                update: Some(update),
+            },
+        );
+    }
+}
+
+fn public_live_key() -> v1::ValueRecord {
+    v1::ValueRecord {
+        fields: vec![v1::ValueField {
+            field_id: None,
+            name: "id".to_owned(),
+            value: Some(v1::Value {
+                kind: Some(v1::value::Kind::UuidValue(vec![0x55; 16])),
+            }),
+        }],
+    }
 }
 
 fn message_hex(message: &impl Message) -> String {

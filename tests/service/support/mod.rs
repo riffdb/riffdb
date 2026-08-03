@@ -15,8 +15,8 @@ use riffdb_auth::{
 use riffdb_catalog::{
     ActiveCatalogSnapshot, CatalogError, CatalogErrorKind, CatalogHistoryOutcome,
     CatalogPreparationResult, ResolvedExecutablePlan, ValidatedContractBundle,
-    ValidatedQueryModule, prepare_catalog_activation, resolve_executable_plan,
-    validate_catalog_history,
+    ValidatedQueryModule, ValidatedReactiveModule, prepare_catalog_activation,
+    resolve_executable_plan, validate_catalog_history,
 };
 use riffdb_columnar::{
     ColumnarEngine, ColumnarOutcome, ColumnarProjectionDefinition,
@@ -58,14 +58,15 @@ use riffdb_service::{
     DeployContractRequest, DurableEventView, ExecuteCommandRequest, FieldSelection,
     GetContractVersionRequest, GetEntityRequest, GetProjectionStatusRequest, HealthComponentKind,
     HealthComponentStatus, HealthContext, JournaledCommandResult,
-    ListPendingOutboxDeliveriesRequest, NormalCreateCapabilityRequest, OperationalHealthSnapshot,
-    OperationalStatisticsSnapshot, OperationalStatusError, OperationalStatusPort, OutboxStatusPort,
-    OutboxStatusPortError, OutboxStatusRequest, OutboxStatusSnapshot, PageLimit, PageRequest,
-    PortAdmissionError, PortCapacityPermit, PortCompletionSender, PortFuture, PortReceipt,
-    PreBootstrapHealthContextIssuer, PreBootstrapLifecycle, ProjectionPageFence,
-    ProjectionPortError, ProjectionPortReady, ProjectionPortRequest, ProjectionPortResult,
-    ProjectionQueryPort, ProjectionStatusSnapshot, ProvenanceClaimsView, QueryModuleReadError,
-    QueryModuleReadPort, QueryProjectionRequest, RequestCancellationHandle, RequestContext,
+    ListPendingOutboxDeliveriesRequest, LiveQueryClock, NormalCreateCapabilityRequest,
+    OperationalHealthSnapshot, OperationalStatisticsSnapshot, OperationalStatusError,
+    OperationalStatusPort, OutboxStatusPort, OutboxStatusPortError, OutboxStatusRequest,
+    OutboxStatusSnapshot, PageLimit, PageRequest, PortAdmissionError, PortCapacityPermit,
+    PortCompletionSender, PortFuture, PortReceipt, PreBootstrapHealthContextIssuer,
+    PreBootstrapLifecycle, ProjectionPageFence, ProjectionPortError, ProjectionPortReady,
+    ProjectionPortRequest, ProjectionPortResult, ProjectionQueryPort, ProjectionStatusSnapshot,
+    ProvenanceClaimsView, QueryModuleReadError, QueryModuleReadPort, QueryProjectionRequest,
+    ReactiveModuleReadError, ReactiveModuleReadPort, RequestCancellationHandle, RequestContext,
     RequestControl, RequestDeadlineFuture, RequestDeadlineScheduler, ResolveCommandOutcomeRequest,
     RevokeCapabilityRequest, RiffDbService, ScanCommitsRequest, ScanIndexRequest,
     ServiceDiagnostics, ServiceExecutors, ServiceHealthHooks, ServiceIdentity, ServiceJob,
@@ -214,6 +215,8 @@ impl ServiceHarness {
             None,
             None,
             None,
+            None,
+            None,
             Vec::new(),
         )
     }
@@ -230,6 +233,8 @@ impl ServiceHarness {
             1,
             workload_capacity.max(1),
             true,
+            None,
+            None,
             None,
             None,
             None,
@@ -257,7 +262,36 @@ impl ServiceHarness {
             Some(telemetry),
             Some(query_executor),
             Some(query_modules),
+            None,
+            None,
             named_permissions,
+        )
+    }
+
+    /// Operations harness with the complete exact live named-query provider set.
+    pub(crate) fn live_named_queries(
+        query_executor: Arc<dyn riffdb_query_executor::QueryExecutionPort>,
+        query_modules: Arc<dyn QueryModuleReadPort>,
+        reactive_modules: Arc<dyn ReactiveModuleReadPort>,
+        live_query_clock: Arc<dyn LiveQueryClock>,
+        permissions: Vec<CapabilityPermissionV1>,
+    ) -> Self {
+        Self::compose_with_additional_commands_and_capacity(
+            ReadCommitMode::ImmediateNotFound,
+            true,
+            false,
+            false,
+            true,
+            false,
+            0,
+            8,
+            false,
+            None,
+            Some(query_executor),
+            Some(query_modules),
+            Some(reactive_modules),
+            Some(live_query_clock),
+            permissions,
         )
     }
 
@@ -359,6 +393,8 @@ impl ServiceHarness {
             None,
             None,
             None,
+            None,
+            None,
             Vec::new(),
         )
     }
@@ -377,6 +413,8 @@ impl ServiceHarness {
         telemetry_override: Option<Arc<dyn ServiceTelemetry>>,
         query_executor: Option<Arc<dyn riffdb_query_executor::QueryExecutionPort>>,
         query_modules: Option<Arc<dyn QueryModuleReadPort>>,
+        reactive_modules: Option<Arc<dyn ReactiveModuleReadPort>>,
+        live_query_clock: Option<Arc<dyn LiveQueryClock>>,
         extra_permissions: Vec<CapabilityPermissionV1>,
     ) -> Self {
         let database = if pre_bootstrap {
@@ -463,6 +501,12 @@ impl ServiceHarness {
             providers = providers
                 .with_query_executor(executor)
                 .with_query_modules(modules);
+        }
+        if let Some(modules) = reactive_modules {
+            providers = providers.with_reactive_modules(modules);
+        }
+        if let Some(clock) = live_query_clock {
+            providers = providers.with_live_query_clock(clock);
         }
         let identity = ServiceIdentity::new(
             database_id(),
@@ -4449,6 +4493,38 @@ impl QueryModuleReadPort for FixedQueryModulePort {
     ) -> PortFuture<'a, Option<ValidatedQueryModule>, QueryModuleReadError> {
         let module = (self.module.identity() == module_hash).then(|| self.module.clone());
         Box::pin(async move { Ok(module) })
+    }
+}
+
+/// Fixed content-addressed reactive module for live-query harness tests.
+pub(crate) struct FixedReactiveModulePort {
+    module: ValidatedReactiveModule,
+}
+
+impl FixedReactiveModulePort {
+    pub(crate) fn new(module: ValidatedReactiveModule) -> Self {
+        Self { module }
+    }
+}
+
+impl ReactiveModuleReadPort for FixedReactiveModulePort {
+    fn prepare_reactive_module<'a>(
+        &'a self,
+        _control: &'a RequestControl,
+        _contract: ValidatedContractBundle,
+        module_hash: riffdb_types::ReactiveModuleHash,
+    ) -> PortFuture<'a, Option<ValidatedReactiveModule>, ReactiveModuleReadError> {
+        let module = (self.module.identity() == module_hash).then(|| self.module.clone());
+        Box::pin(async move { Ok(module) })
+    }
+}
+
+/// Stable wall clock for cursor-expiry evidence.
+pub(crate) struct FixedLiveQueryClock;
+
+impl LiveQueryClock for FixedLiveQueryClock {
+    fn now(&self) -> Result<Timestamp, riffdb_service::LiveQueryClockError> {
+        Ok(timestamp(BASE_SECONDS + 20))
     }
 }
 

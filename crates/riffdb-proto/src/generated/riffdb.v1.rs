@@ -3568,6 +3568,311 @@ impl EventConsumerMutationResult {
         }
     }
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LiveQueryParameter {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub value: ::core::option::Option<Value>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WatchNamedQueryRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub reactive_module_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "3")]
+    pub operation_name: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "4")]
+    pub parameters: ::prost::alloc::vec::Vec<LiveQueryParameter>,
+    #[prost(bytes = "vec", optional, tag = "5")]
+    pub cursor: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LiveQueryFrontier {
+    #[prost(uint64, tag = "1")]
+    pub history_incarnation: u64,
+    #[prost(uint64, tag = "2")]
+    pub application_head: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LiveQueryIdentity {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub contract_version: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub contract_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "4")]
+    pub query_name: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "5")]
+    pub query_module_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "6")]
+    pub query_plan_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LiveQueryResultRecord {
+    #[prost(string, tag = "1")]
+    pub entity: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub fields: ::core::option::Option<ValueRecord>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LiveQueryResultField {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(enumeration = "LiveQueryResultCardinality", tag = "2")]
+    pub cardinality: i32,
+    #[prost(message, repeated, tag = "3")]
+    pub records: ::prost::alloc::vec::Vec<LiveQueryResultRecord>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LiveQueryResult {
+    #[prost(message, optional, tag = "1")]
+    pub identity: ::core::option::Option<LiveQueryIdentity>,
+    #[prost(string, tag = "2")]
+    pub outcome: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "3")]
+    pub fields: ::prost::alloc::vec::Vec<LiveQueryResultField>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LiveQuerySnapshot {
+    #[prost(message, optional, tag = "1")]
+    pub result: ::core::option::Option<LiveQueryResult>,
+    #[prost(message, optional, tag = "2")]
+    pub frontier: ::core::option::Option<LiveQueryFrontier>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub cursor: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LiveQueryInsert {
+    #[prost(uint32, tag = "1")]
+    pub index: u32,
+    #[prost(message, optional, tag = "2")]
+    pub record: ::core::option::Option<LiveQueryResultRecord>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LiveQueryRemove {
+    #[prost(uint32, tag = "1")]
+    pub index: u32,
+    #[prost(message, optional, tag = "2")]
+    pub key: ::core::option::Option<ValueRecord>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LiveQueryReplace {
+    #[prost(uint32, tag = "1")]
+    pub index: u32,
+    #[prost(message, optional, tag = "2")]
+    pub record: ::core::option::Option<LiveQueryResultRecord>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LiveQueryMove {
+    #[prost(uint32, tag = "1")]
+    pub from: u32,
+    #[prost(uint32, tag = "2")]
+    pub to: u32,
+    #[prost(message, optional, tag = "3")]
+    pub key: ::core::option::Option<ValueRecord>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LiveQueryPatchOperation {
+    #[prost(oneof = "live_query_patch_operation::Operation", tags = "1, 2, 3, 4")]
+    pub operation: ::core::option::Option<live_query_patch_operation::Operation>,
+}
+/// Nested message and enum types in `LiveQueryPatchOperation`.
+pub mod live_query_patch_operation {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Operation {
+        #[prost(message, tag = "1")]
+        Insert(super::LiveQueryInsert),
+        #[prost(message, tag = "2")]
+        Remove(super::LiveQueryRemove),
+        #[prost(message, tag = "3")]
+        Replace(super::LiveQueryReplace),
+        #[prost(message, tag = "4")]
+        Move(super::LiveQueryMove),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LiveQueryPatch {
+    #[prost(string, tag = "1")]
+    pub result_field: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "2")]
+    pub operations: ::prost::alloc::vec::Vec<LiveQueryPatchOperation>,
+    #[prost(message, optional, tag = "3")]
+    pub frontier: ::core::option::Option<LiveQueryFrontier>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub cursor: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LiveQueryReset {
+    #[prost(enumeration = "LiveQueryResetReason", tag = "1")]
+    pub reason: i32,
+    #[prost(message, optional, tag = "2")]
+    pub result: ::core::option::Option<LiveQueryResult>,
+    #[prost(message, optional, tag = "3")]
+    pub frontier: ::core::option::Option<LiveQueryFrontier>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub cursor: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LiveQueryCheckpoint {
+    #[prost(message, optional, tag = "1")]
+    pub frontier: ::core::option::Option<LiveQueryFrontier>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub cursor: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LiveQueryTerminal {
+    #[prost(enumeration = "LiveQueryTerminalReason", tag = "1")]
+    pub reason: i32,
+    #[prost(message, optional, tag = "2")]
+    pub last_frontier: ::core::option::Option<LiveQueryFrontier>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LiveQueryUpdate {
+    #[prost(oneof = "live_query_update::Update", tags = "1, 2, 3, 4, 5")]
+    pub update: ::core::option::Option<live_query_update::Update>,
+}
+/// Nested message and enum types in `LiveQueryUpdate`.
+pub mod live_query_update {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Update {
+        #[prost(message, tag = "1")]
+        Snapshot(super::LiveQuerySnapshot),
+        #[prost(message, tag = "2")]
+        Patch(super::LiveQueryPatch),
+        #[prost(message, tag = "3")]
+        Reset(super::LiveQueryReset),
+        #[prost(message, tag = "4")]
+        Checkpoint(super::LiveQueryCheckpoint),
+        #[prost(message, tag = "5")]
+        Terminal(super::LiveQueryTerminal),
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum LiveQueryResultCardinality {
+    Unspecified = 0,
+    One = 1,
+    Maybe = 2,
+    Many = 3,
+}
+impl LiveQueryResultCardinality {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "LIVE_QUERY_RESULT_CARDINALITY_UNSPECIFIED",
+            Self::One => "LIVE_QUERY_RESULT_CARDINALITY_ONE",
+            Self::Maybe => "LIVE_QUERY_RESULT_CARDINALITY_MAYBE",
+            Self::Many => "LIVE_QUERY_RESULT_CARDINALITY_MANY",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "LIVE_QUERY_RESULT_CARDINALITY_UNSPECIFIED" => Some(Self::Unspecified),
+            "LIVE_QUERY_RESULT_CARDINALITY_ONE" => Some(Self::One),
+            "LIVE_QUERY_RESULT_CARDINALITY_MAYBE" => Some(Self::Maybe),
+            "LIVE_QUERY_RESULT_CARDINALITY_MANY" => Some(Self::Many),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum LiveQueryResetReason {
+    Unspecified = 0,
+    OutcomeChanged = 1,
+    DiffLimitExceeded = 2,
+    DefinitionChanged = 3,
+    HistoryChanged = 4,
+    CursorExpired = 5,
+}
+impl LiveQueryResetReason {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "LIVE_QUERY_RESET_REASON_UNSPECIFIED",
+            Self::OutcomeChanged => "LIVE_QUERY_RESET_REASON_OUTCOME_CHANGED",
+            Self::DiffLimitExceeded => "LIVE_QUERY_RESET_REASON_DIFF_LIMIT_EXCEEDED",
+            Self::DefinitionChanged => "LIVE_QUERY_RESET_REASON_DEFINITION_CHANGED",
+            Self::HistoryChanged => "LIVE_QUERY_RESET_REASON_HISTORY_CHANGED",
+            Self::CursorExpired => "LIVE_QUERY_RESET_REASON_CURSOR_EXPIRED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "LIVE_QUERY_RESET_REASON_UNSPECIFIED" => Some(Self::Unspecified),
+            "LIVE_QUERY_RESET_REASON_OUTCOME_CHANGED" => Some(Self::OutcomeChanged),
+            "LIVE_QUERY_RESET_REASON_DIFF_LIMIT_EXCEEDED" => {
+                Some(Self::DiffLimitExceeded)
+            }
+            "LIVE_QUERY_RESET_REASON_DEFINITION_CHANGED" => Some(Self::DefinitionChanged),
+            "LIVE_QUERY_RESET_REASON_HISTORY_CHANGED" => Some(Self::HistoryChanged),
+            "LIVE_QUERY_RESET_REASON_CURSOR_EXPIRED" => Some(Self::CursorExpired),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum LiveQueryTerminalReason {
+    Unspecified = 0,
+    AuthorizationChanged = 1,
+    BufferPressure = 2,
+    LifetimeExpired = 3,
+    ServiceUnavailable = 4,
+    IntegrityFailure = 5,
+    DefinitionChanged = 6,
+}
+impl LiveQueryTerminalReason {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "LIVE_QUERY_TERMINAL_REASON_UNSPECIFIED",
+            Self::AuthorizationChanged => {
+                "LIVE_QUERY_TERMINAL_REASON_AUTHORIZATION_CHANGED"
+            }
+            Self::BufferPressure => "LIVE_QUERY_TERMINAL_REASON_BUFFER_PRESSURE",
+            Self::LifetimeExpired => "LIVE_QUERY_TERMINAL_REASON_LIFETIME_EXPIRED",
+            Self::ServiceUnavailable => "LIVE_QUERY_TERMINAL_REASON_SERVICE_UNAVAILABLE",
+            Self::IntegrityFailure => "LIVE_QUERY_TERMINAL_REASON_INTEGRITY_FAILURE",
+            Self::DefinitionChanged => "LIVE_QUERY_TERMINAL_REASON_DEFINITION_CHANGED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "LIVE_QUERY_TERMINAL_REASON_UNSPECIFIED" => Some(Self::Unspecified),
+            "LIVE_QUERY_TERMINAL_REASON_AUTHORIZATION_CHANGED" => {
+                Some(Self::AuthorizationChanged)
+            }
+            "LIVE_QUERY_TERMINAL_REASON_BUFFER_PRESSURE" => Some(Self::BufferPressure),
+            "LIVE_QUERY_TERMINAL_REASON_LIFETIME_EXPIRED" => Some(Self::LifetimeExpired),
+            "LIVE_QUERY_TERMINAL_REASON_SERVICE_UNAVAILABLE" => {
+                Some(Self::ServiceUnavailable)
+            }
+            "LIVE_QUERY_TERMINAL_REASON_INTEGRITY_FAILURE" => {
+                Some(Self::IntegrityFailure)
+            }
+            "LIVE_QUERY_TERMINAL_REASON_DEFINITION_CHANGED" => {
+                Some(Self::DefinitionChanged)
+            }
+            _ => None,
+        }
+    }
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProjectionIdentity {
     #[prost(string, tag = "1")]

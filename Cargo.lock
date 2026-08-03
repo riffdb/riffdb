@@ -2146,6 +2146,7 @@ dependencies = [
  "riffdb-query-module",
  "riffdb-runtime",
  "riffdb-server",
+ "riffdb-service",
  "riffdb-storage-api",
  "riffdb-storage-memory",
  "riffdb-storage-redb",

@@ -74,6 +74,8 @@ files
     import riffdb/v1/commit.proto
     import riffdb/v1/common.proto
     import riffdb/v1/value.proto
+  riffdb/v1/live_query.proto
+    import riffdb/v1/value.proto
   riffdb/v1/projection.proto
     import riffdb/v1/common.proto
     import riffdb/v1/value.proto
@@ -87,6 +89,7 @@ files
     import riffdb/v1/contract.proto
     import riffdb/v1/discovery.proto
     import riffdb/v1/event.proto
+    import riffdb/v1/live_query.proto
     import riffdb/v1/projection.proto
     import riffdb/v1/query.proto
   riffdb/v1/value.proto
@@ -1515,6 +1518,74 @@ messages
     2 page optional .riffdb.v1.PageRequest
   riffdb.v1.ListPendingOutboxDeliveriesResponse fields=1
     1 page optional .riffdb.v1.OutboxDeliveryPage
+  riffdb.v1.LiveQueryCheckpoint fields=2
+    1 frontier optional .riffdb.v1.LiveQueryFrontier
+    2 cursor optional bytes
+  riffdb.v1.LiveQueryFrontier fields=2
+    1 history_incarnation optional uint64
+    2 application_head optional uint64
+  riffdb.v1.LiveQueryIdentity fields=6
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+    3 contract_bundle_hash optional bytes
+    4 query_name optional string
+    5 query_module_hash optional bytes
+    6 query_plan_hash optional bytes
+  riffdb.v1.LiveQueryInsert fields=2
+    1 index optional uint32
+    2 record optional .riffdb.v1.LiveQueryResultRecord
+  riffdb.v1.LiveQueryMove fields=3
+    1 from optional uint32
+    2 to optional uint32
+    3 key optional .riffdb.v1.ValueRecord
+  riffdb.v1.LiveQueryParameter fields=2
+    1 name optional string
+    2 value optional .riffdb.v1.Value
+  riffdb.v1.LiveQueryPatch fields=4
+    1 result_field optional string
+    2 operations repeated .riffdb.v1.LiveQueryPatchOperation
+    3 frontier optional .riffdb.v1.LiveQueryFrontier
+    4 cursor optional bytes
+  riffdb.v1.LiveQueryPatchOperation fields=4
+    1 insert optional .riffdb.v1.LiveQueryInsert oneof=operation
+    2 remove optional .riffdb.v1.LiveQueryRemove oneof=operation
+    3 replace optional .riffdb.v1.LiveQueryReplace oneof=operation
+    4 move optional .riffdb.v1.LiveQueryMove oneof=operation
+  riffdb.v1.LiveQueryRemove fields=2
+    1 index optional uint32
+    2 key optional .riffdb.v1.ValueRecord
+  riffdb.v1.LiveQueryReplace fields=2
+    1 index optional uint32
+    2 record optional .riffdb.v1.LiveQueryResultRecord
+  riffdb.v1.LiveQueryReset fields=4
+    1 reason optional .riffdb.v1.LiveQueryResetReason
+    2 result optional .riffdb.v1.LiveQueryResult
+    3 frontier optional .riffdb.v1.LiveQueryFrontier
+    4 cursor optional bytes
+  riffdb.v1.LiveQueryResult fields=3
+    1 identity optional .riffdb.v1.LiveQueryIdentity
+    2 outcome optional string
+    3 fields repeated .riffdb.v1.LiveQueryResultField
+  riffdb.v1.LiveQueryResultField fields=3
+    1 name optional string
+    2 cardinality optional .riffdb.v1.LiveQueryResultCardinality
+    3 records repeated .riffdb.v1.LiveQueryResultRecord
+  riffdb.v1.LiveQueryResultRecord fields=2
+    1 entity optional string
+    2 fields optional .riffdb.v1.ValueRecord
+  riffdb.v1.LiveQuerySnapshot fields=3
+    1 result optional .riffdb.v1.LiveQueryResult
+    2 frontier optional .riffdb.v1.LiveQueryFrontier
+    3 cursor optional bytes
+  riffdb.v1.LiveQueryTerminal fields=2
+    1 reason optional .riffdb.v1.LiveQueryTerminalReason
+    2 last_frontier optional .riffdb.v1.LiveQueryFrontier
+  riffdb.v1.LiveQueryUpdate fields=5
+    1 snapshot optional .riffdb.v1.LiveQuerySnapshot oneof=update
+    2 patch optional .riffdb.v1.LiveQueryPatch oneof=update
+    3 reset optional .riffdb.v1.LiveQueryReset oneof=update
+    4 checkpoint optional .riffdb.v1.LiveQueryCheckpoint oneof=update
+    5 terminal optional .riffdb.v1.LiveQueryTerminal oneof=update
   riffdb.v1.Money fields=2
     1 currency optional string
     2 amount optional .riffdb.v1.Decimal
@@ -1869,6 +1940,12 @@ messages
     1 values repeated .riffdb.v1.Value
   riffdb.v1.ValueRecord fields=1
     1 fields repeated .riffdb.v1.ValueField
+  riffdb.v1.WatchNamedQueryRequest fields=5
+    1 request_id optional bytes
+    2 reactive_module_hash optional bytes
+    3 operation_name optional string
+    4 parameters repeated .riffdb.v1.LiveQueryParameter
+    5 cursor optional bytes proto3-optional oneof=_cursor
 
 enums
   riffdb.app.v1.ApplicationErrorCategory values=16
@@ -2278,6 +2355,26 @@ enums
     1 HEALTH_STATUS_READY
     2 HEALTH_STATUS_NOT_READY
     3 HEALTH_STATUS_DEGRADED
+  riffdb.v1.LiveQueryResetReason values=6
+    0 LIVE_QUERY_RESET_REASON_UNSPECIFIED
+    1 LIVE_QUERY_RESET_REASON_OUTCOME_CHANGED
+    2 LIVE_QUERY_RESET_REASON_DIFF_LIMIT_EXCEEDED
+    3 LIVE_QUERY_RESET_REASON_DEFINITION_CHANGED
+    4 LIVE_QUERY_RESET_REASON_HISTORY_CHANGED
+    5 LIVE_QUERY_RESET_REASON_CURSOR_EXPIRED
+  riffdb.v1.LiveQueryResultCardinality values=4
+    0 LIVE_QUERY_RESULT_CARDINALITY_UNSPECIFIED
+    1 LIVE_QUERY_RESULT_CARDINALITY_ONE
+    2 LIVE_QUERY_RESULT_CARDINALITY_MAYBE
+    3 LIVE_QUERY_RESULT_CARDINALITY_MANY
+  riffdb.v1.LiveQueryTerminalReason values=7
+    0 LIVE_QUERY_TERMINAL_REASON_UNSPECIFIED
+    1 LIVE_QUERY_TERMINAL_REASON_AUTHORIZATION_CHANGED
+    2 LIVE_QUERY_TERMINAL_REASON_BUFFER_PRESSURE
+    3 LIVE_QUERY_TERMINAL_REASON_LIFETIME_EXPIRED
+    4 LIVE_QUERY_TERMINAL_REASON_SERVICE_UNAVAILABLE
+    5 LIVE_QUERY_TERMINAL_REASON_INTEGRITY_FAILURE
+    6 LIVE_QUERY_TERMINAL_REASON_DEFINITION_CHANGED
   riffdb.v1.NullValue values=1
     0 NULL_VALUE
   riffdb.v1.OfflineMaintenanceFailureClass values=9
@@ -2440,3 +2537,4 @@ services
     ScanIndex .riffdb.v1.ScanIndexRequest -> .riffdb.v1.ScanIndexResponse (unary)
     QueryProjection .riffdb.v1.QueryProjectionRequest -> .riffdb.v1.QueryProjectionResponse (unary)
     GetProjectionStatus .riffdb.v1.GetProjectionStatusRequest -> .riffdb.v1.GetProjectionStatusResponse (unary)
+    WatchNamedQuery .riffdb.v1.WatchNamedQueryRequest -> .riffdb.v1.LiveQueryUpdate (server-streaming)

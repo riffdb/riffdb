@@ -698,6 +698,11 @@ mod tests {
                 )
                 .expect("canonical targets"),
             ),
+            (
+                ServiceOperationV1::WatchNamedQuery,
+                ServiceAuditTargetMap::symbolic_query(lineage.clone(), version)
+                    .expect("canonical targets"),
+            ),
         ];
 
         let public_operations = ServiceOperationV1::ALL
@@ -715,7 +720,7 @@ mod tests {
 
         let expected_nonempty_lengths = [
             0, 2, 1, 0, 1, 2, 1, 2, 2, 2, 2, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
         ];
         assert_eq!(
             mapped.each_ref().map(|(_, targets)| targets.len()),

@@ -1553,6 +1553,7 @@ const fn operation_name(operation: ServiceOperationV1) -> &'static str {
         ServiceOperationV1::SeekEventStreamConsumer => "seek_event_stream_consumer",
         ServiceOperationV1::RetireEventStreamConsumer => "retire_event_stream_consumer",
         ServiceOperationV1::GetEventStreamConsumerStatus => "get_event_stream_consumer_status",
+        ServiceOperationV1::WatchNamedQuery => "watch_named_query",
     }
 }
 

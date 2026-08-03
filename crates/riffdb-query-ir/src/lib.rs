@@ -4,6 +4,7 @@
 
 mod catalog;
 mod diagnostic;
+mod live;
 mod plan;
 mod reactive;
 mod resolver;
@@ -13,6 +14,7 @@ pub use catalog::{EntitySymbol, EnumSymbol, FieldSymbol, IndexSymbol, SymbolicCa
 pub use diagnostic::{
     QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics,
 };
+pub use live::*;
 pub use plan::{
     AccessDirection, AuthorizationEntityAccess, QueryAccessKind, QueryAccessProgramV1,
     QueryAccessStep, QueryLiteral, QueryPlanExplain, QueryPlanIdentity, QueryPredicate,

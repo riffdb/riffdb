@@ -28,7 +28,7 @@ use riffdb_service::{
     GetOfflineMaintenanceOperationResult, GetProjectionStatusRequest, GetProjectionStatusResult,
     GetQueryModuleRequest, HealthContext, HealthRequest, HealthResult,
     ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
-    NamedSymbolicQueryRequest, NegativeAcknowledgeEventStreamRequest,
+    LiveNamedQueryApplication, NamedSymbolicQueryRequest, NegativeAcknowledgeEventStreamRequest,
     OfflineMaintenanceApplication, OfflineMaintenanceStartResult, ProjectedQueryApplication,
     QueryApplication, QueryModuleInspection, QueryProjectionRequest, QueryProjectionResult,
     ReplayEventsRequest, ReplayEventsResult, RequestContext, ResolveCommandOutcomeRequest,
@@ -38,6 +38,7 @@ use riffdb_service::{
     StatisticsResult, SubscribeToCommitsRequest, SubscribeToCommitsResult,
     SymbolicContractSelector, SymbolicQueryApplication, TailEventsRequest, TailEventsResult,
     TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
+    WatchLiveNamedQueryRequest, WatchLiveNamedQueryResult,
 };
 use riffdb_types::ServiceOperationV1;
 
@@ -436,6 +437,15 @@ delegate_operation! {
             context: RequestContext,
             request: ExecuteProjectedQueryRequest
         ) -> ExecuteProjectedQueryResult => ExecuteProjectedQuery;
+    }
+}
+
+delegate_operation! {
+    LiveNamedQueryApplication {
+        watch_live_named_query(
+            context: RequestContext,
+            request: WatchLiveNamedQueryRequest
+        ) -> WatchLiveNamedQueryResult => WatchNamedQuery;
     }
 }
 

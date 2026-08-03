@@ -26,13 +26,14 @@ use crate::{
     AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort,
     ColumnarProjectionPort, ContractMigrationCoordinatorPort, CurrentPolicyPort,
     CursorMonotonicClock, CursorTokenGenerator, EventConsumerClock, EventConsumerPort,
-    EventLeaseTokenSource, HealthRequest, HealthResult, OfflineMaintenanceCoordinatorPort,
-    OperationalStatusPort, OutboxStatusPort, PortDriverStopped, PortReceipt,
-    PreBootstrapHealthContext, PreBootstrapHealthContextIssuer, PreBootstrapHealthReport,
-    ProjectionQueryPort, QueryModuleReadPort, ReactiveModuleReadPort, RequestDeadlineScheduler,
-    ServiceCursorRegistries, ServiceDiagnostics, ServiceFailure, ServiceFuture, ServiceHealthHooks,
-    ServiceJob, ServiceJobSpawner, ServiceResponseCharge, ServiceResult, ServiceTelemetry,
-    ServiceTelemetryEvent, ensure_response_budget, port_completion_channel,
+    EventLeaseTokenSource, HealthRequest, HealthResult, LiveQueryClock,
+    OfflineMaintenanceCoordinatorPort, OperationalStatusPort, OutboxStatusPort, PortDriverStopped,
+    PortReceipt, PreBootstrapHealthContext, PreBootstrapHealthContextIssuer,
+    PreBootstrapHealthReport, ProjectionQueryPort, QueryModuleReadPort, ReactiveModuleReadPort,
+    RequestDeadlineScheduler, ServiceCursorRegistries, ServiceDiagnostics, ServiceFailure,
+    ServiceFuture, ServiceHealthHooks, ServiceJob, ServiceJobSpawner, ServiceResponseCharge,
+    ServiceResult, ServiceTelemetry, ServiceTelemetryEvent, ensure_response_budget,
+    port_completion_channel,
 };
 
 /// Trusted immutable process facts displayed by authenticated health.
@@ -171,6 +172,7 @@ pub struct ServiceProviders {
     pub(crate) reactive_modules: Option<Arc<dyn ReactiveModuleReadPort>>,
     pub(crate) event_consumers: Option<Arc<dyn EventConsumerPort>>,
     pub(crate) consumer_clock: Option<Arc<dyn EventConsumerClock>>,
+    pub(crate) live_query_clock: Option<Arc<dyn LiveQueryClock>>,
     pub(crate) event_lease_tokens: Option<Arc<dyn EventLeaseTokenSource>>,
     pub(crate) columnar: Option<Arc<dyn ColumnarProjectionPort>>,
 }
@@ -219,6 +221,7 @@ impl ServiceProviders {
             reactive_modules: None,
             event_consumers: None,
             consumer_clock: None,
+            live_query_clock: None,
             event_lease_tokens: None,
             columnar: None,
         }
@@ -259,6 +262,13 @@ impl ServiceProviders {
         self.event_consumers = Some(port);
         self.consumer_clock = Some(clock);
         self.event_lease_tokens = Some(tokens);
+        self
+    }
+
+    /// Installs the wall clock used to bound live-query cursor validity.
+    #[must_use]
+    pub fn with_live_query_clock(mut self, clock: Arc<dyn LiveQueryClock>) -> Self {
+        self.live_query_clock = Some(clock);
         self
     }
 

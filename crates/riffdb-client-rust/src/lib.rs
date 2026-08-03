@@ -40,7 +40,7 @@ pub use capability::{
 };
 pub use client::{
     CommitNotificationStream, EventConsumerResponseStream, GeneratedExecution,
-    GeneratedExecutionError, RiffDbClient,
+    GeneratedExecutionError, LiveQueryUpdateStream, RiffDbClient,
 };
 pub use command::{AttemptBudget, CommandShapeError, IdempotentCommand};
 pub use credential_file::{BearerCredentialFileError, load_protected_bearer_credential};

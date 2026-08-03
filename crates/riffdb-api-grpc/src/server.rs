@@ -21,11 +21,12 @@ use riffdb_service::{
     ApplicationErrorContextBuilder, ApplicationService, BootstrapCapabilityResult,
     BootstrapRequestContext, CommitSubscription, CommitSubscriptionEvent,
     ContractMigrationApplication, CreateCapabilityInvocation, CreateCapabilityResult,
-    DeployContractResult, HealthContext, HealthRequest, HealthResult,
-    MAX_COMMIT_SUBSCRIPTION_LIFETIME, ReadPipelineStage, RecoveryOfflineMaintenanceApplication,
-    RecoveryRestoreOfflineBackupInvocation, RequestCancellationHandle, RequestContext,
-    RequestControl, RestoreOfflineBackupInvocation, RestoreRetryOfflineMaintenanceApplication,
-    ServiceFailure, ServiceFuture, ServiceResult, ServiceTelemetry, ServiceTelemetryEvent,
+    DeployContractResult, HealthContext, HealthRequest, HealthResult, LiveQuerySubscription,
+    LiveQueryUpdate, MAX_COMMIT_SUBSCRIPTION_LIFETIME, ReadPipelineStage,
+    RecoveryOfflineMaintenanceApplication, RecoveryRestoreOfflineBackupInvocation,
+    RequestCancellationHandle, RequestContext, RequestControl, RestoreOfflineBackupInvocation,
+    RestoreRetryOfflineMaintenanceApplication, ServiceFailure, ServiceFuture, ServiceResult,
+    ServiceTelemetry, ServiceTelemetryEvent,
 };
 use riffdb_types::{
     Audience, ContractLineage, ContractVersion, DatabaseAlias, MAX_DATABASES_PER_PROCESS,
@@ -1309,6 +1310,8 @@ impl CommandService for GrpcApplication {
 
 #[tonic::async_trait]
 impl QueryService for GrpcApplication {
+    type WatchNamedQueryStream = LiveQueryUpdateStream;
+
     async fn get_entity(
         &self,
         request: Request<v1::GetEntityRequest>,
@@ -1359,6 +1362,21 @@ impl QueryService for GrpcApplication {
         let result = map_service(service.get_projection_status(context, request).await)?;
         Ok(Response::new(get_projection_status_result_to_proto(
             &result,
+        )))
+    }
+
+    async fn watch_named_query(
+        &self,
+        request: Request<v1::WatchNamedQueryRequest>,
+    ) -> Result<Response<Self::WatchNamedQueryStream>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = watch_named_query_request_from_proto(message)?;
+        let (service, context, cancellation) =
+            self.normal_invocation(ServiceOperationV1::WatchNamedQuery, &metadata, request_id)?;
+        let result = map_service(service.watch_live_named_query(context, request).await)?;
+        Ok(Response::new(LiveQueryUpdateStream::new(
+            result.into_subscription(),
+            cancellation,
         )))
     }
 }
@@ -2341,6 +2359,82 @@ fn next_commit(mut subscription: Box<dyn CommitSubscription>) -> NextCommitFutur
     Box::pin(async move {
         let event = subscription.next().await;
         (subscription, event)
+    })
+}
+
+type NextLiveQueryFuture = Pin<
+    Box<
+        dyn Future<
+                Output = (
+                    Box<dyn LiveQuerySubscription>,
+                    ServiceResult<LiveQueryUpdate>,
+                ),
+            > + Send,
+    >,
+>;
+
+/// Transport stream that retains cancellation for the complete live watch.
+pub struct LiveQueryUpdateStream {
+    next: Option<NextLiveQueryFuture>,
+    _cancellation: CancellationGuard,
+    done: bool,
+}
+
+impl LiveQueryUpdateStream {
+    fn new(subscription: Box<dyn LiveQuerySubscription>, cancellation: CancellationGuard) -> Self {
+        Self {
+            next: Some(next_live_query(subscription)),
+            _cancellation: cancellation,
+            done: false,
+        }
+    }
+}
+
+impl fmt::Debug for LiveQueryUpdateStream {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("LiveQueryUpdateStream([CAPABILITY])")
+    }
+}
+
+impl Stream for LiveQueryUpdateStream {
+    type Item = Result<v1::LiveQueryUpdate, Status>;
+
+    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.done {
+            return Poll::Ready(None);
+        }
+        let Some(next) = self.next.as_mut() else {
+            self.done = true;
+            return Poll::Ready(None);
+        };
+        let (subscription, result) = match next.as_mut().poll(context) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(result) => result,
+        };
+        self.next = None;
+        match result {
+            Ok(update) => {
+                let terminal = matches!(update, LiveQueryUpdate::Terminal(_));
+                let update = live_query_update_to_proto(&update);
+                if terminal || update.is_err() {
+                    self.done = true;
+                } else {
+                    self.next = Some(next_live_query(subscription));
+                }
+                Poll::Ready(Some(update))
+            }
+            Err(failure) => {
+                self.done = true;
+                Poll::Ready(Some(Err(status_from_service_failure(&failure))))
+            }
+        }
+    }
+}
+
+fn next_live_query(mut subscription: Box<dyn LiveQuerySubscription>) -> NextLiveQueryFuture {
+    Box::pin(async move {
+        let update = subscription.next().await;
+        (subscription, update)
     })
 }
 

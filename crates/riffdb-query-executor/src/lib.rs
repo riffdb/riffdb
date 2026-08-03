@@ -9,12 +9,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use riffdb_query_ir::{
-    QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicateOperator,
+    QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicateOperator,
     QueryPredicateValue, QueryRowLimit,
 };
 use riffdb_riffql_syntax::Cardinality;
 use riffdb_types::{
-    CanonicalValue, QueryCostVectorV1, canonical_value_encoded_len, encode_canonical_value,
+    CanonicalValue, EntityKey, EntityTypeId, PartitionKeyHash, QueryCostVectorV1,
+    canonical_value_encoded_len, encode_canonical_value, hash_partition_key,
 };
 
 /// Maximum checked submitted parameters.
@@ -54,6 +55,100 @@ impl QueryParameters {
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (&str, &CanonicalValue)> {
         self.0.iter().map(|(name, value)| (name.as_str(), value))
     }
+}
+
+/// One parameter-bound invalidation target for an exact live query.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundLiveQueryDependency {
+    entity_type_id: EntityTypeId,
+    partition_hash: PartitionKeyHash,
+    entity_key: Option<EntityKey>,
+}
+
+impl BoundLiveQueryDependency {
+    /// Stable entity identity.
+    #[must_use]
+    pub const fn entity_type_id(&self) -> EntityTypeId {
+        self.entity_type_id
+    }
+
+    /// Exact aggregate-owned partition identity for this access step.
+    #[must_use]
+    pub const fn partition_hash(&self) -> PartitionKeyHash {
+        self.partition_hash
+    }
+
+    /// Complete point key when it can be bound before execution.
+    #[must_use]
+    pub const fn entity_key(&self) -> Option<&EntityKey> {
+        self.entity_key.as_ref()
+    }
+}
+
+/// Binds compiler-derived live invalidation facts to one checked parameter set.
+///
+/// Dependent point batches and index scans deliberately remain conservative at
+/// entity-type/partition precision. Independent complete point predicates are
+/// reduced to exact canonical entity keys.
+pub fn bind_live_query_dependencies(
+    program: &QueryAccessProgramV1,
+    parameters: &QueryParameters,
+) -> Result<Vec<BoundLiveQueryDependency>, QueryExecutionError> {
+    let partition_value = parameters
+        .get(program.partition_parameter())
+        .ok_or_else(|| QueryExecutionError::MissingParameter {
+            parameter: program.partition_parameter().to_owned(),
+        })?;
+    let empty_bindings = BTreeMap::new();
+    program
+        .steps()
+        .iter()
+        .map(|step| {
+            let partition = step
+                .internal_partition_key_schema()
+                .encode_partition(std::slice::from_ref(partition_value))
+                .map_err(|_| QueryExecutionError::InvalidProgram)?;
+            let entity_key = match step.access() {
+                QueryAccessKind::Point { key_fields }
+                    if step.predicates().iter().all(|predicate| {
+                        !matches!(
+                            predicate.value(),
+                            QueryPredicateValue::BindingField { .. }
+                                | QueryPredicateValue::BindingFieldSet { .. }
+                        )
+                    }) =>
+                {
+                    let predicates = bind_predicates(step, parameters, &empty_bindings)?;
+                    let values = key_fields
+                        .iter()
+                        .map(|field| {
+                            predicates
+                                .iter()
+                                .find(|predicate| {
+                                    predicate.field() == field
+                                        && predicate.operator() == QueryPredicateOperator::Equal
+                                })
+                                .map(|predicate| predicate.value().clone())
+                                .ok_or(QueryExecutionError::InvalidProgram)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Some(
+                        step.internal_entity_key_schema()
+                            .encode_entity(&values)
+                            .map_err(|_| QueryExecutionError::InvalidProgram)?,
+                    )
+                }
+                QueryAccessKind::Point { .. }
+                | QueryAccessKind::DependentPointBatch { .. }
+                | QueryAccessKind::Index { .. } => None,
+            };
+            Ok(BoundLiveQueryDependency {
+                entity_type_id: step.internal_entity_id(),
+                partition_hash: hash_partition_key(partition.as_bytes()),
+                entity_key,
+            })
+        })
+        .collect()
 }
 
 /// One owned, name-addressed authoritative entity row.

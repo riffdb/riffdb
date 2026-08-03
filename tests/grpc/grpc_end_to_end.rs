@@ -866,6 +866,18 @@ impl SymbolicQueryApplication for ProjectionService {
     }
 }
 
+impl riffdb_service::LiveNamedQueryApplication for ProjectionService {
+    fn watch_live_named_query(
+        &self,
+        _context: RequestContext,
+        _request: riffdb_service::WatchLiveNamedQueryRequest,
+    ) -> ServiceFuture<'_, riffdb_service::WatchLiveNamedQueryResult> {
+        Box::pin(async {
+            Ok(riffdb_service::WatchLiveNamedQueryResult::transport_terminal_fixture())
+        })
+    }
+}
+
 impl riffdb_service::ProjectedQueryApplication for ProjectionService {
     denied_operation!(
         execute_projected_query,
@@ -1075,6 +1087,7 @@ impl GrpcLifecycleRoute for ActiveRoute {
                 | ServiceOperationV1::DiscoverResources
                 | ServiceOperationV1::DescribeEvent
                 | ServiceOperationV1::ExecuteQuery
+                | ServiceOperationV1::WatchNamedQuery
         )
         .then(|| Arc::clone(&self.service))
     }
@@ -1506,6 +1519,32 @@ async fn projection_variants_and_public_error_cross_real_grpc() {
         .await
         .expect("invalid projection response");
     assert_invalid(invalid);
+
+    let mut live = client
+        .watch_named_query(
+            v1::WatchNamedQueryRequest {
+                request_id: request_id(6).into_bytes().to_vec(),
+                reactive_module_hash: vec![0x41; 32],
+                operation_name: "WatchProjection".to_owned(),
+                parameters: Vec::new(),
+                cursor: None,
+            },
+            &metadata,
+        )
+        .await
+        .expect("live watch stream");
+    let update = live
+        .message()
+        .await
+        .expect("checked live update")
+        .expect("terminal update");
+    let Some(v1::live_query_update::Update::Terminal(terminal)) = update.update else {
+        panic!("expected live terminal");
+    };
+    assert_eq!(
+        terminal.reason,
+        v1::LiveQueryTerminalReason::AuthorizationChanged as i32
+    );
 
     let mut raw_client = QueryServiceClient::new(channel);
     let mut request = Request::new(projection_request(request_ids[4], 5, false));

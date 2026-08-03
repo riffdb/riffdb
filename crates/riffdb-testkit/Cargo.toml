@@ -25,6 +25,7 @@ riffdb-cli = { path = "../riffdb-cli", version = "0.1.0", default-features = fal
 riffdb-client-rust = { path = "../riffdb-client-rust", version = "0.1.0", default-features = false }
 riffdb-commit = { path = "../riffdb-commit", version = "0.1.0", default-features = false }
 riffdb-proto = { path = "../riffdb-proto", version = "0.1.0", default-features = false }
+riffdb-service = { path = "../riffdb-service", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
 riffdb-query-module = { path = "../riffdb-query-module", version = "0.1.0", default-features = false }
 riffdb-server = { path = "../riffdb-server", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
 riffdb-storage-memory = { path = "../riffdb-storage-memory", version = "0.1.0", default-features = false }
@@ -65,6 +66,10 @@ path = "../../tests/migrations/contract_migration_acceptance.rs"
 [[test]]
 name = "durable_event_consumers"
 path = "../../tests/durable_event_consumers.rs"
+
+[[test]]
+name = "live_named_queries"
+path = "../../tests/live_named_queries.rs"
 
 [lints]
 workspace = true

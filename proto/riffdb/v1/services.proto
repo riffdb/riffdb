@@ -8,6 +8,7 @@ import "riffdb/v1/commit.proto";
 import "riffdb/v1/contract.proto";
 import "riffdb/v1/discovery.proto";
 import "riffdb/v1/event.proto";
+import "riffdb/v1/live_query.proto";
 import "riffdb/v1/projection.proto";
 import "riffdb/v1/query.proto";
 service ContractService {
@@ -31,6 +32,7 @@ service QueryService {
   rpc ScanIndex(ScanIndexRequest) returns (ScanIndexResponse);
   rpc QueryProjection(QueryProjectionRequest) returns (QueryProjectionResponse);
   rpc GetProjectionStatus(GetProjectionStatusRequest) returns (GetProjectionStatusResponse);
+  rpc WatchNamedQuery(WatchNamedQueryRequest) returns (stream LiveQueryUpdate);
 }
 
 service CommitService {

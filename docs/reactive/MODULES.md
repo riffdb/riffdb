@@ -128,10 +128,13 @@ databases remain isolated.
 WP-416 provides the grammar, compiler, exact application artifacts, and role
 permissions. WP-417 provides immutable publication, durable pull and gRPC
 stream consumption, leases, acknowledgement, retry, dead-letter, recovery,
-seek, retire, status, and retention fencing. Live query delivery remains in
-WP-418; generated reactive Rust, TypeScript, Python, and MCP conveniences remain
-in WP-419; contextual work-item execution remains in WP-420. MCP has no direct
-storage path and does not receive reactive consumer tools until WP-419.
+seek, retire, status, and retention fencing. WP-418 provides API-neutral live
+query execution, compiler-derived invalidation, cursor reconnect, and the
+checked gRPC stream described in [Live Named Queries](LIVE-QUERIES.md).
+Generated reactive Rust, TypeScript, Python, CLI, MCP, and browser-relay
+conveniences remain in WP-419; contextual work-item execution remains in
+WP-420. MCP has no direct storage path and does not receive reactive tools until
+WP-419.
 
 See [Domain Events](../contracts/DOMAIN-EVENTS.md), [Immutable Query
 Modules](../riffql/MODULES.md), and [Application Source and Exact

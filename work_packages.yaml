@@ -6752,8 +6752,9 @@ work_packages:
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/riffdb/v1/**, crates/riffdb-types/**,
     crates/riffdb-query-ir/**, crates/riffdb-query-executor/**, crates/riffdb-storage-api/**,
     crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**, crates/riffdb-policy/**,
-    crates/riffdb-service/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
-    crates/riffdb-server/**, fixtures/reactive/**, fixtures/proto/**, tests/**, scripts/**, docs/**]
+    crates/riffdb-service/**, crates/riffdb-observability/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
+    crates/riffdb-server/**, crates/riffdb-testkit/**, fixtures/reactive/**, fixtures/proto/**, tests/**,
+    scripts/**, docs/**]
   deliverables:
   - Watchability analysis, relevant entity/key dependencies, public-key patch proof, and exact live-plan identity
   - Snapshot/patch/reset/checkpoint/terminal service model, self-contained fenced cursor, and gRPC server stream

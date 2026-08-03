@@ -693,6 +693,27 @@ impl RiffDbClient {
         Ok(EventConsumerResponseStream { inner })
     }
 
+    /// Starts a checked exact named-query live stream.
+    ///
+    /// The cursor is consistency evidence only; every reconnect is freshly
+    /// authenticated and authorized by the server.
+    pub async fn watch_named_query(
+        &mut self,
+        message: v1::WatchNamedQueryRequest,
+        metadata: &CallMetadata,
+    ) -> Result<LiveQueryUpdateStream, ClientError> {
+        validate_outbound(&message)?;
+        let mut request = Request::new(message);
+        metadata.apply(&mut request);
+        let inner = self
+            .query
+            .watch_named_query(request)
+            .await
+            .map_err(checked_status)?
+            .into_inner();
+        Ok(LiveQueryUpdateStream { inner })
+    }
+
     /// Executes one immutable command with an explicit total submission bound.
     ///
     /// Retryable checked failures are resubmitted immediately with a fresh
@@ -1118,6 +1139,18 @@ pub struct CommitNotificationStream {
 /// A durable event-consumer stream decoded by the strict client codec.
 pub struct EventConsumerResponseStream {
     inner: Streaming<v1::ConsumeEventStreamResponse>,
+}
+
+/// A live named-query stream decoded by the strict client codec.
+pub struct LiveQueryUpdateStream {
+    inner: Streaming<v1::LiveQueryUpdate>,
+}
+
+impl LiveQueryUpdateStream {
+    /// Receives the next closed live update (structure enforced at decode).
+    pub async fn message(&mut self) -> Result<Option<v1::LiveQueryUpdate>, ClientError> {
+        self.inner.message().await.map_err(checked_status)
+    }
 }
 
 impl EventConsumerResponseStream {
