@@ -255,11 +255,11 @@ impl CompilerDiagnosticCode {
             }
             Self::InvalidBinding => Some("bind an entity owned by the command's one aggregate"),
             Self::MissingIdempotency => {
-                Some("declare a direct bounded string input as idempotency_key")
+                Some("declare a direct UUID or bounded string input as idempotency_key")
             }
-            Self::InvalidIdempotency => {
-                Some("use one required string<1..=128> input only in the idempotency clause")
-            }
+            Self::InvalidIdempotency => Some(
+                "use one required UUID or string<1..=128> input only in the idempotency clause",
+            ),
             Self::InvalidCreation => {
                 Some("assign every required non-key field exactly once before return")
             }

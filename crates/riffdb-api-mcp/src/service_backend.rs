@@ -13,29 +13,30 @@ use riffdb_service::{
     ApplicationErrorContextBuilder, ApplicationService, CheckSymbolicQueryResult,
     CommandToolDescriptor, CommandToolDiscoveryItem, CompactCommandToolDiscoveryItem,
     CompactResourceDescriptor, CompactResourceDescriptorRef, CompileSymbolicQueryRequest,
-    ConsumeEventStreamRequest, ContractSelection, ContractSource, CursorToken,
-    DeployContractRequest, DeployContractResult, DescribeSymbolicContractResult,
-    DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverCommandToolsResultRef,
-    DiscoverResourcesRequest, DiscoverResourcesResult, DiscoverResourcesResultRef,
-    DiscoveryCatalogFence, DiscoveryRepresentation, EventConsumerCheckpoint,
-    EventConsumerLeaseSelection, EventConsumerMutationResult, EventConsumerSelection,
-    EventConsumerStatus, ExecuteCommandRequest, ExecuteSymbolicQueryRequest,
-    ExecuteSymbolicQueryResult, ExplainCommandRequest, ExplainCommandResult,
-    ExplainSymbolicQueryResult, ExplainedCommand, FieldSelection, GetActiveContractRequest,
-    GetActiveContractResult, GetCommitRequest, GetContractVersionRequest, GetContractVersionResult,
-    GetEntityRequest, GetProjectionStatusRequest, GetProjectionStatusResult, HealthContext,
-    HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest, LiveNamedQuerySelection,
-    LiveQueryCursor, LiveQueryFrontier, LiveQueryPatchOperation, LiveQueryResetReason,
-    LiveQueryTerminalReason, LiveQueryUpdate, NamedQueryToolDescriptor, NamedSymbolicQueryRequest,
+    ConsumeContextualSubscriptionRequest, ConsumeEventStreamRequest, ContextualCausationToken,
+    ContractSelection, ContractSource, CursorToken, DeployContractRequest, DeployContractResult,
+    DescribeSymbolicContractResult, DiscoverCommandToolsRequest, DiscoverCommandToolsResult,
+    DiscoverCommandToolsResultRef, DiscoverResourcesRequest, DiscoverResourcesResult,
+    DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryRepresentation,
+    EventConsumerCheckpoint, EventConsumerLeaseSelection, EventConsumerMutationResult,
+    EventConsumerSelection, EventConsumerStatus, ExecuteCommandRequest,
+    ExecuteContextualReactionRequest, ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult,
+    ExplainCommandRequest, ExplainCommandResult, ExplainSymbolicQueryResult, ExplainedCommand,
+    FieldSelection, GetActiveContractRequest, GetActiveContractResult, GetCommitRequest,
+    GetContractVersionRequest, GetContractVersionResult, GetEntityRequest,
+    GetProjectionStatusRequest, GetProjectionStatusResult, HealthContext, HealthRequest,
+    HealthResult, ListPendingOutboxDeliveriesRequest, LiveNamedQuerySelection, LiveQueryCursor,
+    LiveQueryFrontier, LiveQueryPatchOperation, LiveQueryResetReason, LiveQueryTerminalReason,
+    LiveQueryUpdate, NamedQueryToolDescriptor, NamedSymbolicQueryRequest,
     NegativeAcknowledgeEventStreamRequest, OperationSchemaCatalog, PageLimit, PageRequest,
-    ProvenanceSelection, QueryParameters, QueryProjectionRequest, RequestCancellationHandle,
-    RequestContext, RequestControl, ResolveCommandOutcomeRequest, ResourceDescriptorRef,
-    ResourceDiscoveryKind, ScanCommitsRequest, ScanIndexRequest, SeekEventStreamConsumerRequest,
-    ServiceFailure, SourceName, SubmittedDecimal, SubmittedField, SubmittedFieldIdentity,
-    SubmittedList, SubmittedMoney, SubmittedRecord, SubmittedValue, SymbolicContractSelector,
-    SymbolicDiagnostic, SymbolicQueryIdentity, SymbolicQueryParameters, SymbolicQuerySchema,
-    SymbolicQuerySource, SymbolicResultField, SymbolicResultRecord, TraceProvenanceRequest,
-    ValidateContractRequest, WatchLiveNamedQueryRequest,
+    ProvenanceSelection, QueryParameters, QueryProjectionRequest, QueryResultValue,
+    RequestCancellationHandle, RequestContext, RequestControl, ResolveCommandOutcomeRequest,
+    ResourceDescriptorRef, ResourceDiscoveryKind, ScanCommitsRequest, ScanIndexRequest,
+    SeekEventStreamConsumerRequest, ServiceFailure, SourceName, SubmittedDecimal, SubmittedField,
+    SubmittedFieldIdentity, SubmittedList, SubmittedMoney, SubmittedRecord, SubmittedValue,
+    SymbolicContractSelector, SymbolicDiagnostic, SymbolicQueryIdentity, SymbolicQueryParameters,
+    SymbolicQuerySchema, SymbolicQuerySource, SymbolicResultField, SymbolicResultRecord,
+    TraceProvenanceRequest, ValidateContractRequest, WatchLiveNamedQueryRequest,
 };
 use riffdb_types::{
     ActorKind, Audience, CanonicalRecord, CanonicalValue, CommandId, CommitSequence,
@@ -1365,6 +1366,157 @@ impl HostedServiceMcpBackend {
                     .map_err(map_service_failure)?;
                 call.complete();
                 render_event_status(result)
+            }
+            McpFixedToolRequest::ContextualNext {
+                module_hash,
+                operation_name,
+                parameters,
+                consumer_name,
+                maximum_wait_nanos,
+            } => {
+                let request = ConsumeContextualSubscriptionRequest::new(
+                    service_event_selection(
+                        module_hash,
+                        operation_name,
+                        parameters,
+                        consumer_name,
+                    )?,
+                    Duration::from_nanos(maximum_wait_nanos),
+                )
+                .map_err(invalid_response)?;
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::ConsumeContextualSubscription),
+                )?;
+                let result = self
+                    .service
+                    .consume_contextual_subscription(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_contextual_next(result)
+            }
+            McpFixedToolRequest::ContextualLeaseMutation {
+                nack,
+                module_hash,
+                operation_name,
+                parameters,
+                consumer_name,
+                event_id,
+                lease_token,
+                history_incarnation,
+                retry_delay_nanos,
+            } => {
+                let lease = service_event_lease(
+                    module_hash,
+                    operation_name,
+                    parameters,
+                    consumer_name,
+                    event_id,
+                    lease_token,
+                    history_incarnation,
+                )?;
+                let operation = if nack {
+                    ServiceOperationV1::NegativeAcknowledgeContextualSubscription
+                } else {
+                    ServiceOperationV1::AcknowledgeContextualSubscription
+                };
+                let mut call = self.prepare_call(invocation, McpRateTarget::Service(operation))?;
+                let result = if nack {
+                    self.service
+                        .negative_acknowledge_contextual_subscription(
+                            call.take_context()?,
+                            lease,
+                            Duration::from_nanos(retry_delay_nanos),
+                        )
+                        .await
+                } else {
+                    self.service
+                        .acknowledge_contextual_subscription(call.take_context()?, lease)
+                        .await
+                }
+                .map_err(map_service_failure)?;
+                call.complete();
+                render_contextual_mutation(if nack { 28 } else { 27 }, result)
+            }
+            McpFixedToolRequest::ContextualStatus {
+                module_hash,
+                operation_name,
+                parameters,
+                consumer_name,
+            } => {
+                let selection = service_event_selection(
+                    module_hash,
+                    operation_name,
+                    parameters,
+                    consumer_name,
+                )?;
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::GetContextualSubscriptionStatus),
+                )?;
+                let result = self
+                    .service
+                    .get_contextual_subscription_status(call.take_context()?, selection)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_contextual_status(result)
+            }
+            McpFixedToolRequest::ContextualReaction {
+                module_hash,
+                operation_name,
+                parameters,
+                consumer_name,
+                reaction_name,
+                causation_token,
+                command_name,
+                input,
+                expected_contract_version,
+            } => {
+                let selection = service_event_selection(
+                    module_hash,
+                    operation_name,
+                    parameters,
+                    consumer_name,
+                )?;
+                let fields = input
+                    .into_iter()
+                    .map(|(name, value)| {
+                        Ok(SubmittedField::new(
+                            SubmittedFieldIdentity::Name(
+                                SourceName::new(name).map_err(invalid_response)?,
+                            ),
+                            natural_parameter(value)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, McpBackendError>>()?;
+                let command = ExecuteCommandRequest::new(
+                    SourceName::new(command_name).map_err(invalid_response)?,
+                    expected_contract_version
+                        .map(contract_version_from_u64)
+                        .transpose()?,
+                    SubmittedRecord::new(fields).map_err(invalid_response)?,
+                )
+                .map_err(invalid_response)?;
+                let request = ExecuteContextualReactionRequest::new(
+                    selection,
+                    ContextualCausationToken::checked(causation_token).map_err(invalid_response)?,
+                    reaction_name,
+                    command,
+                )
+                .map_err(invalid_response)?;
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::ExecuteContextualReaction),
+                )?;
+                let result = self
+                    .service
+                    .execute_contextual_reaction(call.take_context()?, request)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                render_contextual_reaction(result)
             }
             McpFixedToolRequest::QueryWatch {
                 module_hash,
@@ -3696,6 +3848,162 @@ fn render_event_status(
     )
 }
 
+fn render_contextual_next(
+    result: riffdb_service::ConsumeContextualSubscriptionResult,
+) -> Result<McpToolResult, McpBackendError> {
+    let items = result
+        .items()
+        .iter()
+        .map(|item| {
+            let delivery = item.delivery();
+            let event = delivery.event();
+            let event_id = event.event_id();
+            let event_fields = event
+                .fields()
+                .iter()
+                .map(|field| {
+                    Ok(serde_json::json!({
+                        "name": field.name(),
+                        "value": presented_value(field.value())?,
+                    }))
+                })
+                .collect::<Result<Vec<_>, McpBackendError>>()?;
+            let hydrations = item
+                .hydrations()
+                .iter()
+                .map(|hydration| {
+                    let fields = hydration
+                        .fields()
+                        .iter()
+                        .map(|(name, value)| {
+                            let (cardinality, rows) = match value {
+                                QueryResultValue::One(row) => ("one", vec![row]),
+                                QueryResultValue::Maybe(row) => {
+                                    ("maybe", row.iter().collect::<Vec<_>>())
+                                }
+                                QueryResultValue::Many(rows) => {
+                                    ("many", rows.iter().collect::<Vec<_>>())
+                                }
+                            };
+                            let rows = rows
+                                .into_iter()
+                                .map(|row| {
+                                    let fields = row
+                                        .fields()
+                                        .map(|(name, value)| {
+                                            Ok((
+                                                name.to_owned(),
+                                                serde_json::to_value(presented_value(value)?)
+                                                    .map_err(invalid_response)?,
+                                            ))
+                                        })
+                                        .collect::<Result<serde_json::Map<_, _>, McpBackendError>>()?;
+                                    Ok(serde_json::json!({"entity": row.entity(), "fields": fields}))
+                                })
+                                .collect::<Result<Vec<_>, McpBackendError>>()?;
+                            Ok(serde_json::json!({
+                                "name": name,
+                                "cardinality": cardinality,
+                                "rows": rows,
+                            }))
+                        })
+                        .collect::<Result<Vec<_>, McpBackendError>>()?;
+                    Ok(serde_json::json!({
+                        "name": hydration.name(),
+                        "outcome": hydration.outcome(),
+                        "fields": fields,
+                    }))
+                })
+                .collect::<Result<Vec<_>, McpBackendError>>()?;
+            let reactions = item
+                .available_reactions()
+                .iter()
+                .map(|reaction| {
+                    serde_json::json!({
+                        "name": reaction.name(),
+                        "command_name": reaction.command_name(),
+                        "command_id": reaction.command_id().get(),
+                        "causation_token": base64::engine::general_purpose::STANDARD.encode(reaction.causation_token().as_bytes()),
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(serde_json::json!({
+                "event": {
+                    "event_id": format!("{}:{}", event_id.commit_sequence().get(), event_id.event_ordinal()),
+                    "event_name": event.event_name(),
+                    "fields": event_fields,
+                },
+                "attempt": delivery.attempt().get(),
+                "lease_token": lower_hex(delivery.token().as_bytes()),
+                "expires_at": {"seconds": delivery.expires_at().seconds().to_string(), "nanos": delivery.expires_at().nanos()},
+                "history_incarnation": event.history_incarnation().to_string(),
+                "context_head": item.context_head().get().to_string(),
+                "hydrations": hydrations,
+                "available_reactions": reactions,
+            }))
+        })
+        .collect::<Result<Vec<_>, McpBackendError>>()?;
+    compose(
+        26,
+        McpFixedResultBranch::ContextualNextCompleted,
+        Some(payload_from(&serde_json::json!({
+            "items": items,
+            "status": event_consumer_status_payload(result.status()),
+            "wait_timed_out": result.wait_timed_out(),
+        }))?),
+    )
+}
+
+fn render_contextual_mutation(
+    tag: u8,
+    result: EventConsumerMutationResult,
+) -> Result<McpToolResult, McpBackendError> {
+    let value = match result {
+        EventConsumerMutationResult::Applied => "applied",
+        EventConsumerMutationResult::StateChanged => "state_changed",
+        EventConsumerMutationResult::NotFound => "not_found",
+        EventConsumerMutationResult::OutstandingLease => "outstanding_lease",
+        EventConsumerMutationResult::StaleLease => "stale_lease",
+        EventConsumerMutationResult::LeaseExpired => "lease_expired",
+    };
+    let branch = if tag == 27 {
+        McpFixedResultBranch::ContextualAckCompleted
+    } else if tag == 28 {
+        McpFixedResultBranch::ContextualNackCompleted
+    } else {
+        return Err(McpBackendError::InvalidResponse);
+    };
+    compose(
+        tag,
+        branch,
+        Some(payload_from(&serde_json::json!({"result": value}))?),
+    )
+}
+
+fn render_contextual_status(
+    result: Option<EventConsumerStatus>,
+) -> Result<McpToolResult, McpBackendError> {
+    let payload = result.map_or_else(
+        || serde_json::json!({"found": false}),
+        |status| serde_json::json!({"found": true, "status": event_consumer_status_payload(&status)}),
+    );
+    compose(
+        29,
+        McpFixedResultBranch::ContextualStatusCompleted,
+        Some(payload_from(&payload)?),
+    )
+}
+
+fn render_contextual_reaction(
+    result: riffdb_service::ExecuteCommandResult,
+) -> Result<McpToolResult, McpBackendError> {
+    render_symbolic_command_with(
+        30,
+        McpFixedResultBranch::ContextualReactionCompleted,
+        result,
+    )
+}
+
 fn event_consumer_status_payload(status: &EventConsumerStatus) -> serde_json::Value {
     let checkpoint = match status.checkpoint() {
         EventConsumerCheckpoint::BeforeFirst => "before-first".to_owned(),
@@ -3909,6 +4217,14 @@ fn named_query_value(
 fn render_symbolic_command(
     result: riffdb_service::ExecuteCommandResult,
 ) -> Result<McpToolResult, McpBackendError> {
+    render_symbolic_command_with(19, McpFixedResultBranch::CommandCompleted, result)
+}
+
+fn render_symbolic_command_with(
+    tag: u8,
+    branch: McpFixedResultBranch,
+    result: riffdb_service::ExecuteCommandResult,
+) -> Result<McpToolResult, McpBackendError> {
     let payload = match result {
         riffdb_service::ExecuteCommandResult::Journaled(result) => {
             let status = match result.completion() {
@@ -3943,11 +4259,7 @@ fn render_symbolic_command(
             }
         }),
     };
-    compose(
-        19,
-        McpFixedResultBranch::CommandCompleted,
-        Some(payload_from(&payload)?),
-    )
+    compose(tag, branch, Some(payload_from(&payload)?))
 }
 
 fn untyped_natural_record(

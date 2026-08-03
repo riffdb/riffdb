@@ -16,6 +16,9 @@ files
   riffdb/storage/v1/common.proto
   riffdb/storage/v1/consumer_v1.proto
     import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/contextual_causation_v2.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/common.proto
   riffdb/storage/v1/entity_references_v3.proto
     import riffdb/storage/v1/application.proto
     import riffdb/storage/v1/common.proto
@@ -72,6 +75,7 @@ files
   riffdb/v1/error.proto
   riffdb/v1/event.proto
     import riffdb/v1/commit.proto
+    import riffdb/v1/command.proto
     import riffdb/v1/common.proto
     import riffdb/v1/value.proto
   riffdb/v1/live_query.proto
@@ -619,6 +623,9 @@ messages
     5 previous_active optional .riffdb.storage.v1.ActiveCatalogPointerV1
     6 activated optional .riffdb.storage.v1.ActiveCatalogPointerV1
     7 approval_id optional string proto3-optional oneof=_approval_id
+  riffdb.storage.v1.StoredCommandCausationV1 fields=2
+    1 causing_event_id optional .riffdb.storage.v1.EventIdV1
+    2 root_request_id optional bytes
   riffdb.storage.v1.StoredCommitRecordV1 fields=15
     1 commit_sequence optional uint64
     2 admission_request_id optional bytes
@@ -749,6 +756,9 @@ messages
   riffdb.storage.v1.StoredExecutionFailedV1 fields=2
     1 pending optional .riffdb.storage.v1.StoredPendingAdmissionV1
     2 code optional .riffdb.storage.v1.ExecutionFailureCodeV1
+  riffdb.storage.v1.StoredExecutionFailedV2 fields=2
+    1 pending optional .riffdb.storage.v1.StoredPendingAdmissionV2
+    2 code optional .riffdb.storage.v1.ExecutionFailureCodeV1
   riffdb.storage.v1.StoredHistoryIncarnationV1 fields=1
     1 incarnation optional uint64
   riffdb.storage.v1.StoredHistoryTombstoneV1 fields=10
@@ -805,6 +815,9 @@ messages
     12 provenance_id optional bytes
     13 durability_mode optional .riffdb.storage.v1.DurabilityModeV1
     14 partition_key optional bytes
+  riffdb.storage.v1.StoredOutcomeV2 fields=2
+    1 base optional .riffdb.storage.v1.StoredOutcomeV1
+    2 causation optional .riffdb.storage.v1.StoredCommandCausationV1
   riffdb.storage.v1.StoredPendingAdmissionV1 fields=8
     1 identity optional .riffdb.storage.v1.IdempotencyIdentityV1
     2 canonical_input_hash optional bytes
@@ -814,6 +827,9 @@ messages
     6 actor optional .riffdb.storage.v1.AdmittedActorContextV1
     7 partition_key optional bytes
     8 provenance_claims optional .riffdb.storage.v1.StoredAdmittedProvenanceClaimsV1
+  riffdb.storage.v1.StoredPendingAdmissionV2 fields=2
+    1 base optional .riffdb.storage.v1.StoredPendingAdmissionV1
+    2 causation optional .riffdb.storage.v1.StoredCommandCausationV1
   riffdb.storage.v1.StoredProjectionApplyV1 fields=4
     1 identity optional .riffdb.storage.v1.ProjectionIdentityV1
     2 generation optional uint64
@@ -848,6 +864,9 @@ messages
     12 affected_entities repeated .riffdb.storage.v1.AffectedEntityV1
     13 event_ids repeated .riffdb.storage.v1.EventIdV1
     14 admitted_claims optional .riffdb.storage.v1.StoredAdmittedProvenanceClaimsV1
+  riffdb.storage.v1.StoredProvenanceRecordV2 fields=2
+    1 base optional .riffdb.storage.v1.StoredProvenanceRecordV1
+    2 causation optional .riffdb.storage.v1.StoredCommandCausationV1
   riffdb.storage.v1.StoredQueryModuleAdministrationV1 fields=7
     1 administration_sequence optional uint64
     2 request_id optional bytes
@@ -941,6 +960,12 @@ messages
     1 seconds optional sint64
     2 nanos optional uint32
   riffdb.storage.v1.UnitV1 fields=0
+  riffdb.v1.AcknowledgeContextualSubscriptionRequest fields=5
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventConsumerSelection
+    3 event_id optional .riffdb.v1.EventId
+    4 lease_token optional bytes
+    5 history_incarnation optional uint64
   riffdb.v1.AcknowledgeEventStreamRequest fields=5
     1 request_id optional bytes
     2 selection optional .riffdb.v1.EventConsumerSelection
@@ -978,6 +1003,11 @@ messages
     5 started_at optional .riffdb.v1.Timestamp
     6 build optional .riffdb.v1.BuildInfo
     7 history_incarnation optional uint64
+  riffdb.v1.AvailableContextualReaction fields=4
+    1 name optional string
+    2 command_name optional string
+    3 command_id optional uint32
+    4 causation_token optional bytes
   riffdb.v1.BindingFieldRef fields=2
     1 binding_id optional uint32
     2 field_id optional uint32
@@ -1171,6 +1201,14 @@ messages
     2 parent_bundle_hash optional bytes
     3 candidate optional .riffdb.v1.ContractDescriptor
     4 canonical_bundle optional bytes
+  riffdb.v1.ConsumeContextualSubscriptionRequest fields=3
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventConsumerSelection
+    3 maximum_wait_nanos optional uint64
+  riffdb.v1.ConsumeContextualSubscriptionResponse fields=3
+    1 items repeated .riffdb.v1.ContextualWorkItem
+    2 status optional .riffdb.v1.EventConsumerStatus
+    3 wait_timed_out optional bool
   riffdb.v1.ConsumeEventStreamRequest fields=6
     1 request_id optional bytes
     2 selection optional .riffdb.v1.EventConsumerSelection
@@ -1187,6 +1225,22 @@ messages
     2 attempt optional uint32
     3 lease_token optional bytes
     4 expires_at optional .riffdb.v1.Timestamp
+  riffdb.v1.ContextualHydration fields=3
+    1 name optional string
+    2 outcome optional string
+    3 fields repeated .riffdb.v1.ContextualQueryField
+  riffdb.v1.ContextualQueryField fields=3
+    1 name optional string
+    2 cardinality optional .riffdb.v1.ContextualQueryCardinality
+    3 rows repeated .riffdb.v1.ContextualQueryRow
+  riffdb.v1.ContextualQueryRow fields=2
+    1 entity optional string
+    2 fields repeated .riffdb.v1.EventConsumerParameter
+  riffdb.v1.ContextualWorkItem fields=4
+    1 delivery optional .riffdb.v1.ConsumedEvent
+    2 context_head optional uint64
+    3 hydrations repeated .riffdb.v1.ContextualHydration
+    4 available_reactions repeated .riffdb.v1.AvailableContextualReaction
   riffdb.v1.ContractCompatibilityCodeCount fields=2
     1 code optional string
     2 count optional uint32
@@ -1391,6 +1445,12 @@ messages
     8 durability_mode optional string
     9 outcome_uri optional string proto3-optional oneof=_outcome_uri
     10 history_incarnation optional uint64
+  riffdb.v1.ExecuteContextualReactionRequest fields=5
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventConsumerSelection
+    3 causation_token optional bytes
+    4 reaction_name optional string
+    5 command optional .riffdb.v1.ExecuteCommandRequest
   riffdb.v1.ExpectedActiveVersionMismatch fields=1
     1 actual_active_version optional uint64 proto3-optional oneof=_actual_active_version
   riffdb.v1.ExpectedApplicationIdentityMismatch fields=2
@@ -1440,6 +1500,9 @@ messages
     1 not_found optional .riffdb.v1.Unit oneof=result
     2 found optional .riffdb.v1.Commit oneof=result
     3 history_incarnation optional uint64
+  riffdb.v1.GetContextualSubscriptionStatusRequest fields=2
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventConsumerSelection
   riffdb.v1.GetContractMigrationOperationRequest fields=2
     1 request_id optional bytes
     2 operation_id optional bytes
@@ -1606,6 +1669,13 @@ messages
   riffdb.v1.NamedQueryToolSchemaArtifact fields=2
     1 schema_hash optional bytes
     2 canonical_json optional string
+  riffdb.v1.NegativeAcknowledgeContextualSubscriptionRequest fields=6
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventConsumerSelection
+    3 event_id optional .riffdb.v1.EventId
+    4 lease_token optional bytes
+    5 history_incarnation optional uint64
+    6 retry_delay_nanos optional uint64
   riffdb.v1.NegativeAcknowledgeEventStreamRequest fields=6
     1 request_id optional bytes
     2 selection optional .riffdb.v1.EventConsumerSelection
@@ -2245,6 +2315,11 @@ enums
     6 COMMIT_SUBSCRIPTION_END_REASON_DEADLINE_EXCEEDED
     7 COMMIT_SUBSCRIPTION_END_REASON_SERVICE_SHUTDOWN
     8 COMMIT_SUBSCRIPTION_END_REASON_UNAVAILABLE
+  riffdb.v1.ContextualQueryCardinality values=4
+    0 CONTEXTUAL_QUERY_CARDINALITY_UNSPECIFIED
+    1 CONTEXTUAL_QUERY_CARDINALITY_ONE
+    2 CONTEXTUAL_QUERY_CARDINALITY_MAYBE
+    3 CONTEXTUAL_QUERY_CARDINALITY_MANY
   riffdb.v1.ContractCompatibilityClass values=5
     0 CONTRACT_COMPATIBILITY_CLASS_UNSPECIFIED
     1 CONTRACT_COMPATIBILITY_CLASS_COMPATIBLE
@@ -2532,6 +2607,11 @@ services
     SeekEventStreamConsumer .riffdb.v1.SeekEventStreamConsumerRequest -> .riffdb.v1.EventConsumerMutationResponse (unary)
     RetireEventStreamConsumer .riffdb.v1.RetireEventStreamConsumerRequest -> .riffdb.v1.EventConsumerMutationResponse (unary)
     GetEventStreamConsumerStatus .riffdb.v1.GetEventStreamConsumerStatusRequest -> .riffdb.v1.GetEventStreamConsumerStatusResponse (unary)
+    ConsumeContextualSubscription .riffdb.v1.ConsumeContextualSubscriptionRequest -> .riffdb.v1.ConsumeContextualSubscriptionResponse (unary)
+    AcknowledgeContextualSubscription .riffdb.v1.AcknowledgeContextualSubscriptionRequest -> .riffdb.v1.EventConsumerMutationResponse (unary)
+    NegativeAcknowledgeContextualSubscription .riffdb.v1.NegativeAcknowledgeContextualSubscriptionRequest -> .riffdb.v1.EventConsumerMutationResponse (unary)
+    GetContextualSubscriptionStatus .riffdb.v1.GetContextualSubscriptionStatusRequest -> .riffdb.v1.GetEventStreamConsumerStatusResponse (unary)
+    ExecuteContextualReaction .riffdb.v1.ExecuteContextualReactionRequest -> .riffdb.v1.ExecuteCommandResponse (unary)
   riffdb.v1.QueryService
     GetEntity .riffdb.v1.GetEntityRequest -> .riffdb.v1.GetEntityResponse (unary)
     ScanIndex .riffdb.v1.ScanIndexRequest -> .riffdb.v1.ScanIndexResponse (unary)

@@ -11,6 +11,34 @@ use riffdb_types::{
     SourceRepository, encode_canonical_record, hash_partition_key,
 };
 
+/// Server-validated causal context retained across admission and recovery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StoredCommandCausationV1 {
+    causing_event_id: riffdb_types::EventId,
+    root_request_id: RequestId,
+}
+
+impl StoredCommandCausationV1 {
+    /// Joins the exact causing event and inherited root request.
+    #[must_use]
+    pub const fn new(causing_event_id: riffdb_types::EventId, root_request_id: RequestId) -> Self {
+        Self {
+            causing_event_id,
+            root_request_id,
+        }
+    }
+    /// Exact causing durable event.
+    #[must_use]
+    pub const fn causing_event_id(self) -> riffdb_types::EventId {
+        self.causing_event_id
+    }
+    /// Inherited root request correlation.
+    #[must_use]
+    pub const fn root_request_id(self) -> RequestId {
+        self.root_request_id
+    }
+}
+
 use crate::{
     EntityTarget, ExecutablePlanRef, IdempotencyIdentity, IdempotencyLookupCandidatesV1,
     IndexRangeTarget, MAX_AFFECTED_INDEX_EPOCH_TARGETS, MAX_COMMAND_READ_TARGETS,
@@ -167,6 +195,7 @@ pub struct StoredPendingAdmissionV1 {
     actor: AdmittedActorContext,
     partition_key: PartitionKey,
     provenance_claims: StoredAdmittedProvenanceClaimsV1,
+    causation: Option<StoredCommandCausationV1>,
 }
 
 impl StoredPendingAdmissionV1 {
@@ -181,6 +210,32 @@ impl StoredPendingAdmissionV1 {
         actor: AdmittedActorContext,
         partition_key: PartitionKey,
         provenance_claims: StoredAdmittedProvenanceClaimsV1,
+    ) -> Result<Self, StorageValueError> {
+        Self::new_with_causation(
+            identity,
+            canonical_input_hash,
+            admission_request_id,
+            plan,
+            logical_time,
+            actor,
+            partition_key,
+            provenance_claims,
+            None,
+        )
+    }
+
+    /// Freezes one checked admission with optional server-validated causation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_causation(
+        identity: IdempotencyIdentity,
+        canonical_input_hash: CanonicalInputHash,
+        admission_request_id: RequestId,
+        plan: ExecutablePlanRef,
+        logical_time: LogicalTime,
+        actor: AdmittedActorContext,
+        partition_key: PartitionKey,
+        provenance_claims: StoredAdmittedProvenanceClaimsV1,
+        causation: Option<StoredCommandCausationV1>,
     ) -> Result<Self, StorageValueError> {
         if identity.contract_lineage() != plan.contract_lineage()
             || identity.command_id() != plan.command_id()
@@ -198,6 +253,7 @@ impl StoredPendingAdmissionV1 {
             actor,
             partition_key,
             provenance_claims,
+            causation,
         };
         if value
             .semantic_bytes()?
@@ -258,6 +314,32 @@ impl StoredPendingAdmissionV1 {
         &self.provenance_claims
     }
 
+    /// Returns server-validated causation when this is a contextual reaction.
+    #[must_use]
+    pub const fn causation(&self) -> Option<StoredCommandCausationV1> {
+        self.causation
+    }
+
+    /// Upgrades one decoded V1 base into its V2 causal successor.
+    pub fn with_causation(
+        mut self,
+        causation: StoredCommandCausationV1,
+    ) -> Result<Self, StorageValueError> {
+        if self.causation.is_some() {
+            return Err(StorageValueError::InvalidShape);
+        }
+        self.causation = Some(causation);
+        if self
+            .semantic_bytes()?
+            .checked_add(COMMIT_INTENT_FIXED_NON_RUNTIME_SEMANTIC_BYTES)
+            .ok_or(StorageValueError::SizeOverflow)?
+            > riffdb_types::COMMIT_INTENT_NON_RUNTIME_RESERVE_BYTES
+        {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        Ok(self)
+    }
+
     pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
         let identity = self
             .identity
@@ -278,6 +360,8 @@ impl StoredPendingAdmissionV1 {
             .ok_or(StorageValueError::SizeOverflow)?;
         total = total
             .checked_add(self.provenance_claims.semantic_bytes()?)
+            .ok_or(StorageValueError::SizeOverflow)?
+            .checked_add(if self.causation.is_some() { 28 } else { 0 })
             .ok_or(StorageValueError::SizeOverflow)?;
         Ok(total)
     }

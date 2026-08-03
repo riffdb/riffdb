@@ -33,6 +33,8 @@ pub use riffdb_query_ir::{
 };
 /// Maximum opaque continuation bytes supplied by one engine adapter.
 pub const MAX_QUERY_CONTINUATION_BYTES: usize = 4_096;
+/// Maximum named queries in one contextual shared snapshot.
+pub const MAX_CONTEXTUAL_HYDRATION_QUERIES: usize = 16;
 
 /// Checked name-addressed canonical parameters.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -587,6 +589,14 @@ pub trait QueryExecutionPort: Send + Sync {
         prior: Option<&QueryContinuation>,
     ) -> Result<QueryOwnedSnapshot, QueryExecutionError>;
 
+    /// Executes one bounded group while the engine's same read view remains open.
+    ///
+    /// Implementations must not emulate this with independent transactions.
+    fn execute_query_group(
+        &self,
+        requests: &[QueryExecutionRequest<'_>],
+    ) -> Result<Vec<QueryOwnedSnapshot>, QueryExecutionError>;
+
     /// Executes one compiler-produced program against one checked parameter set.
     fn execute_query(
         &self,
@@ -594,6 +604,46 @@ pub trait QueryExecutionPort: Send + Sync {
         parameters: &QueryParameters,
     ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
         self.execute_query_page(program, parameters, None)
+    }
+}
+
+/// One borrowed exact program and parameter set in a contextual hydration group.
+#[derive(Clone, Copy)]
+pub struct QueryExecutionRequest<'a> {
+    program: &'a QueryAccessProgramV1,
+    parameters: &'a QueryParameters,
+}
+
+impl<'a> QueryExecutionRequest<'a> {
+    /// Binds one compiler-owned program to one checked parameter set.
+    #[must_use]
+    pub const fn new(program: &'a QueryAccessProgramV1, parameters: &'a QueryParameters) -> Self {
+        Self {
+            program,
+            parameters,
+        }
+    }
+
+    /// Exact program.
+    #[must_use]
+    pub const fn program(self) -> &'a QueryAccessProgramV1 {
+        self.program
+    }
+    /// Checked parameters.
+    #[must_use]
+    pub const fn parameters(self) -> &'a QueryParameters {
+        self.parameters
+    }
+}
+
+/// Validates the fixed contextual group bound before an engine opens a view.
+pub fn validate_query_execution_group(
+    requests: &[QueryExecutionRequest<'_>],
+) -> Result<(), QueryExecutionError> {
+    if requests.is_empty() || requests.len() > MAX_CONTEXTUAL_HYDRATION_QUERIES {
+        Err(QueryExecutionError::BoundExceeded)
+    } else {
+        Ok(())
     }
 }
 

@@ -138,13 +138,15 @@ impl GeneratedSchemaArtifact {
                 .ok_or(IrValidationError::InvalidReference {
                     kind: "idempotency input schema field",
                 })?;
-            if field.value_type().tag() != ValueTypeTag::String
-                || field.value_type().is_optional()
-                || field
+            let supported = match field.value_type().tag() {
+                ValueTypeTag::Uuid => true,
+                ValueTypeTag::String => field
                     .value_type()
                     .byte_bound()
-                    .is_none_or(|bound| bound == 0 || bound > 128)
-            {
+                    .is_some_and(|bound| bound != 0 && bound <= 128),
+                _ => false,
+            };
+            if !supported || field.value_type().is_optional() {
                 return Err(IrValidationError::TypeMismatch {
                     context: "idempotency input schema field",
                 });

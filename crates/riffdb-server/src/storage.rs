@@ -6,7 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use riffdb_query_executor::{
-    QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryOwnedSnapshot, QueryParameters,
+    QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryExecutionRequest,
+    QueryOwnedSnapshot, QueryParameters,
 };
 use riffdb_query_ir::QueryAccessProgramV1;
 use riffdb_service::{AuthoritativeReadinessFailure, ServiceHealthHooks};
@@ -168,6 +169,13 @@ impl QueryExecutionPort for SharedRedbOperationalPorts {
         prior: Option<&QueryContinuation>,
     ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
         QueryExecutionPort::execute_query_page(&self.shared, program, parameters, prior)
+    }
+
+    fn execute_query_group(
+        &self,
+        requests: &[QueryExecutionRequest<'_>],
+    ) -> Result<Vec<QueryOwnedSnapshot>, QueryExecutionError> {
+        QueryExecutionPort::execute_query_group(&self.shared, requests)
     }
 }
 

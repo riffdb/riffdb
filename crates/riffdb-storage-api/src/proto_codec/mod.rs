@@ -178,6 +178,23 @@ where
     Ok(EncodedPageItem::new(value, charge))
 }
 
+pub(super) fn decode_record_variant(
+    encoded: &[u8],
+    current_record_type: &'static str,
+    legacy_record_type: &'static str,
+) -> Result<bool, DurableCodecError> {
+    let decoded = readable_record_registry()
+        .decode(encoded)
+        .map_err(DurableCodecError::from_decode_envelope)?;
+    match decoded.record_type() {
+        record_type if record_type == current_record_type => Ok(true),
+        record_type if record_type == legacy_record_type => Ok(false),
+        _ => Err(DurableCodecError::new(
+            DurableCodecErrorKind::UnexpectedRecordType,
+        )),
+    }
+}
+
 pub(super) fn require<T>(value: Option<T>) -> Result<T, DurableCodecError> {
     value.ok_or_else(DurableCodecError::corrupt)
 }

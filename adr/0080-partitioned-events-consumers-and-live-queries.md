@@ -11,6 +11,7 @@
 - **WP-415 public-inspection clarification accepted:** 2026-08-02
 - **WP-416 reactive-module clarification accepted:** 2026-08-02
 - **WP-417 durable-consumer clarification accepted:** 2026-08-02
+- **WP-420 contextual-subscription clarification accepted:** 2026-08-03
 
 ## Context
 
@@ -295,6 +296,45 @@ clock/token source boundaries; it receives only a narrow consumer-owned port.
 and memory/redb implement them. Catalog owns exact module publication and
 resolution. Commit owns the control-plane publication transition. Server and
 transport code only compose or adapt those owners.
+
+### WP-420 contextual subscription and causal reaction boundary
+
+The maintainer accepted this exact clarification on 2026-08-03. Additive
+service-operation tags `0x29` through `0x2d` are respectively
+`ConsumeContextualSubscription`, `AcknowledgeContextualSubscription`,
+`NegativeAcknowledgeContextualSubscription`,
+`GetContextualSubscriptionStatus`, and `ExecuteContextualReaction`. The public
+gRPC application protocol exposes those five operations. Contextual pull is a
+bounded unary operation. Generated MCP tools use underscore-safe names and MCP
+resource notifications remain payload-free wakeups.
+
+One server-issued sealed causation token binds the selected database, history
+incarnation, reactive module and operation identities, canonical parameter and
+consumer identities, event ID, lease attempt and token, principal and
+capability revision, target command, and expiry. The existing server key
+boundary authenticates that token. Possession is never authority; every use is
+freshly authorized and checked against durable lease truth.
+
+Generated reaction idempotency is the domain-separated SHA-256 transcript of
+the reactive module hash, contextual operation hash, event ID, command ID, and
+declared reaction name. A direct UUID idempotency input receives deterministic
+RFC 9562 UUIDv8-form bytes. A bounded-string input receives the 32-byte digest
+as exactly 64 lowercase hexadecimal characters. No caller-selected or
+process-local value enters this identity.
+
+Command provenance gains an additive `StoredProvenanceRecordV2`; V1 remains
+readable with unchanged bytes and meaning. V2 adds the causing `EventId` and
+the triggering event's inherited root `RequestId`. The reaction commit stores
+that successor atomically with command state, outcome, events, and commit
+record. Normal event delivery continues to expose neither principal nor agent
+session identity.
+
+An expired or otherwise non-live causation token may resolve only the exact
+already-committed deterministic idempotent outcome. It cannot admit a new
+command. Contextual acknowledge, negative acknowledge, and status require only
+the exact `ConsumeContextualSubscription` permission. Reaction additionally
+requires the exact target command permission; contextual authority never
+implies standalone stream, query, or command authority.
 
 ## Rejected alternatives
 

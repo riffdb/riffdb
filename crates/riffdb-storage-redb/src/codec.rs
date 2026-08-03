@@ -604,8 +604,13 @@ mod tests {
             }
 
             let encoded = encode_idempotency_record_v1(decoded.value()).expect("record re-encodes");
-            assert_eq!(encoded.as_bytes(), bytes);
-            assert_eq!(encoded.encoded_content_charge().get(), bytes.len());
+            let current = decode_idempotency_record_v1(encoded.as_bytes())
+                .expect("current successor re-decodes");
+            assert_eq!(current.value(), decoded.value());
+            assert_eq!(
+                current.encoded_content_charge().get(),
+                encoded.as_bytes().len()
+            );
         }
 
         let wrong = fixture_envelope("riffdb.storage.v1.StoredEntityRecordV1");

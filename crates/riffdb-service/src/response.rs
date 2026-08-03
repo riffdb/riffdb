@@ -4,41 +4,43 @@ use std::error::Error;
 use std::fmt;
 
 use riffdb_contract_ir::{CommandExplain, GeneratedSchemaArtifact};
+use riffdb_query_executor::{QueryResultValue, QueryRow};
 use riffdb_types::{
     AdmittedActorContext, CanonicalRecord, CanonicalValue, ContractLineage, ProjectionIdentity,
     ServiceAuditTargetV1, TenantScope,
 };
 
 use crate::{
-    BuildInfo, CheckSymbolicQueryResult, CheckedSymbolicQuery, CommandToolDescriptor,
-    CommandToolDiscoveryItem, CommitScanFence, CommitSubscriptionEvent, CommitView,
-    CompactCommandToolDescriptor, CompactCommandToolDiscoveryItem, CompactNamedQueryToolDescriptor,
-    CompactResourceDescriptor, CompactResourceDescriptorRef, ConsumeEventStreamResult,
-    ConsumedEvent, ContractDescriptor, ContractMigrationOperationObservation,
-    ContractMigrationStartResult, ContractValidationResult, CreateCapabilityResult, CursorToken,
-    DeclaredOutcomeView, DeployContractResult, DeployQueryModuleResult, DeployReactiveModuleResult,
-    DescribeEventResult, DescribeSymbolicContractResult, DiscoverCommandToolsResult,
-    DiscoverCommandToolsResultRef, DiscoverResourcesResult, DiscoverResourcesResultRef,
-    DiscoveryCatalogFence, DiscoveryCatalogStateRef, DurableEventView, EntityView,
-    EventConsumerMutationResult, EventConsumerStatus, EventDescriptor, EventFieldDescriptor,
-    EventPage, ExecuteCommandResult, ExecuteProjectedQueryResult, ExecuteSymbolicQueryResult,
-    ExplainCommandResult, ExplainSymbolicQueryResult, GeneratedSchemaIdentity,
-    GetActiveContractResult, GetCommitResult, GetContractMigrationOperationResult,
-    GetContractVersionResult, GetEntityResult, GetOfflineMaintenanceOperationResult,
-    GetProjectionStatusResult, HealthReport, HealthResult, IndexRowView, IndexScanFence,
-    JournaledCommandResult, ListPendingOutboxDeliveriesResult, LiveQueryPatchOperation,
-    LiveQueryUpdate, NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact,
-    NormalCreateCapabilityResult, OfflineMaintenanceOperationObservation,
-    OfflineMaintenanceStartResult, OperationSchemaArtifact, OperationSchemaCatalog,
-    OperationSchemaCatalogIdentity, OperationSchemaIdentity, OutboxDeliverySummary, Page,
-    ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot, ProvenanceClaimsView,
-    ProvenanceView, QueryModuleInspection, QueryProjectionResult, ReadOnlyCommandResult,
-    ReplayEventsResult, ResolveCommandOutcomeResult, ResourceDescriptor, ResourceDescriptorRef,
-    RevokeCapabilityResult, ScanCommitsResult, ScanIndexResult, SchemaBoundOutcomeRecord,
-    SchemaBoundOutcomeValue, ServiceFailure, StatisticsResult, SubscribeToCommitsResult,
-    SymbolicDiagnostic, SymbolicEvent, SymbolicEventField, SymbolicQueryIdentity,
-    SymbolicQuerySchema, SymbolicResultField, SymbolicResultRecord, TailEventsResult,
-    TraceProvenanceResult, WatchLiveNamedQueryResult,
+    AvailableContextualReaction, BuildInfo, CheckSymbolicQueryResult, CheckedSymbolicQuery,
+    CommandToolDescriptor, CommandToolDiscoveryItem, CommitScanFence, CommitSubscriptionEvent,
+    CommitView, CompactCommandToolDescriptor, CompactCommandToolDiscoveryItem,
+    CompactNamedQueryToolDescriptor, CompactResourceDescriptor, CompactResourceDescriptorRef,
+    ConsumeContextualSubscriptionResult, ConsumeEventStreamResult, ConsumedEvent,
+    ContextualHydration, ContextualWorkItem, ContractDescriptor,
+    ContractMigrationOperationObservation, ContractMigrationStartResult, ContractValidationResult,
+    CreateCapabilityResult, CursorToken, DeclaredOutcomeView, DeployContractResult,
+    DeployQueryModuleResult, DeployReactiveModuleResult, DescribeEventResult,
+    DescribeSymbolicContractResult, DiscoverCommandToolsResult, DiscoverCommandToolsResultRef,
+    DiscoverResourcesResult, DiscoverResourcesResultRef, DiscoveryCatalogFence,
+    DiscoveryCatalogStateRef, DurableEventView, EntityView, EventConsumerMutationResult,
+    EventConsumerStatus, EventDescriptor, EventFieldDescriptor, EventPage, ExecuteCommandResult,
+    ExecuteProjectedQueryResult, ExecuteSymbolicQueryResult, ExplainCommandResult,
+    ExplainSymbolicQueryResult, GeneratedSchemaIdentity, GetActiveContractResult, GetCommitResult,
+    GetContractMigrationOperationResult, GetContractVersionResult, GetEntityResult,
+    GetOfflineMaintenanceOperationResult, GetProjectionStatusResult, HealthReport, HealthResult,
+    IndexRowView, IndexScanFence, JournaledCommandResult, ListPendingOutboxDeliveriesResult,
+    LiveQueryPatchOperation, LiveQueryUpdate, NamedQueryToolDescriptor,
+    NamedQueryToolSchemaArtifact, NormalCreateCapabilityResult,
+    OfflineMaintenanceOperationObservation, OfflineMaintenanceStartResult, OperationSchemaArtifact,
+    OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
+    OutboxDeliverySummary, Page, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
+    ProvenanceClaimsView, ProvenanceView, QueryModuleInspection, QueryProjectionResult,
+    ReadOnlyCommandResult, ReplayEventsResult, ResolveCommandOutcomeResult, ResourceDescriptor,
+    ResourceDescriptorRef, RevokeCapabilityResult, ScanCommitsResult, ScanIndexResult,
+    SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue, ServiceFailure, StatisticsResult,
+    SubscribeToCommitsResult, SymbolicDiagnostic, SymbolicEvent, SymbolicEventField,
+    SymbolicQueryIdentity, SymbolicQuerySchema, SymbolicResultField, SymbolicResultRecord,
+    TailEventsResult, TraceProvenanceResult, WatchLiveNamedQueryResult,
 };
 
 /// Exact POC ceiling for one API-neutral unary result or visible stream item.
@@ -1314,6 +1316,97 @@ impl ServiceResponseCharge for ConsumeEventStreamResult {
     ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
         let mut charge = ChargeAccumulator::message();
         charge.repeated(self.events())?;
+        charge.nested(self.status())?;
+        charge.fields(3)?;
+        Ok(charge.finish())
+    }
+}
+
+fn charge_contextual_query_row(
+    charge: &mut ChargeAccumulator,
+    row: &QueryRow,
+) -> Result<(), ServiceResponseChargeOverflow> {
+    charge.bytes(row.entity().len())?;
+    for (name, value) in row.fields() {
+        charge.bytes(name.len())?;
+        charge.nested(value)?;
+    }
+    Ok(())
+}
+
+fn charge_contextual_query_value(
+    charge: &mut ChargeAccumulator,
+    value: &QueryResultValue,
+) -> Result<(), ServiceResponseChargeOverflow> {
+    match value {
+        QueryResultValue::One(row) => charge_contextual_query_row(charge, row),
+        QueryResultValue::Maybe(row) => {
+            charge.fields(1)?;
+            if let Some(row) = row {
+                charge_contextual_query_row(charge, row)?;
+            }
+            Ok(())
+        }
+        QueryResultValue::Many(rows) => {
+            for row in rows {
+                charge_contextual_query_row(charge, row)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+impl sealed::Sealed for ContextualHydration {}
+impl ServiceResponseCharge for ContextualHydration {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.bytes(self.name().len())?;
+        charge.bytes(self.outcome().len())?;
+        for (name, value) in self.fields() {
+            charge.bytes(name.len())?;
+            charge_contextual_query_value(&mut charge, value)?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for AvailableContextualReaction {}
+impl ServiceResponseCharge for AvailableContextualReaction {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.bytes(self.name().len())?;
+        charge.bytes(self.command_name().len())?;
+        charge.bytes(self.causation_token().as_bytes().len())?;
+        charge.fields(4)?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for ContextualWorkItem {}
+impl ServiceResponseCharge for ContextualWorkItem {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.nested(self.delivery())?;
+        charge.repeated(self.hydrations())?;
+        charge.repeated(self.available_reactions())?;
+        charge.fields(4)?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for ConsumeContextualSubscriptionResult {}
+impl ServiceResponseCharge for ConsumeContextualSubscriptionResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.repeated(self.items())?;
         charge.nested(self.status())?;
         charge.fields(3)?;
         Ok(charge.finish())

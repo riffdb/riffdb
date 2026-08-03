@@ -133,10 +133,12 @@ invalidation, checked cursor reconnect, and the update protocol described in
 CLI, and application-owned browser relay helpers adapt those same operations as
 described in [Reactive Application Clients](CLIENTS.md).
 
-Contextual work items that combine an event, freshly authorized hydration, and
-causally fenced command reactions are a later surface. A normal event consumer
-does not imply hydrated context or command authority. MCP has no direct storage
-path, and its resource notifications contain no event or context payload.
+Contextual subscriptions combine one leased event with freshly authorized,
+same-snapshot hydration and currently authorized declared reactions. A normal
+event-consumer permission does not imply contextual, query, or command
+authority. MCP uses the same service boundary and its resource notifications
+contain no event or context payload. See [Contextual Agent
+Subscriptions](CONTEXTUAL-SUBSCRIPTIONS.md).
 
 See [Domain Events](../contracts/DOMAIN-EVENTS.md), [Immutable Query
 Modules](../riffql/MODULES.md), and [Application Source and Exact

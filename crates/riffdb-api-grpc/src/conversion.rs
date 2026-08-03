@@ -14,8 +14,10 @@ use riffdb_service::{
     CheckSymbolicQueryResult, CommandDurability, CommandToolDescriptor, CommandToolDiscoveryItem,
     CommitSubscriptionEndReason, CommitSubscriptionEvent, CommitView, CompactCommandToolDescriptor,
     CompactCommandToolDiscoveryItem, CompactNamedQueryToolDescriptor, CompactResourceDescriptor,
-    CompactResourceDescriptorRef, CompileSymbolicQueryRequest, ConsumeEventStreamRequest,
-    ConsumeEventStreamResult, ContractCompatibilityClass, ContractDescriptor,
+    CompactResourceDescriptorRef, CompileSymbolicQueryRequest,
+    ConsumeContextualSubscriptionRequest, ConsumeContextualSubscriptionResult,
+    ConsumeEventStreamRequest, ConsumeEventStreamResult, ContextualCausationToken,
+    ContextualHydration, ContextualWorkItem, ContractCompatibilityClass, ContractDescriptor,
     ContractMigrationArtifacts, ContractMigrationObservationFailure,
     ContractMigrationObservationPhase, ContractMigrationOperationObservation,
     ContractMigrationStartDisposition, ContractMigrationStartResult, ContractSelection,
@@ -29,15 +31,15 @@ use riffdb_service::{
     DiscoveryRepresentation, EventConsumerCheckpoint, EventConsumerLeaseSelection,
     EventConsumerMutationResult, EventConsumerSelection, EventConsumerStatus,
     EventPartitionComponent, EventSelection, ExecuteCommandRequest, ExecuteCommandResult,
-    ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult, ExplainCommandRequest,
-    ExplainCommandResult, ExplainSymbolicQueryResult, FieldSelection, FixedToolKind,
-    GeneratedSchemaIdentity, GetActiveContractRequest, GetActiveContractResult, GetCommitRequest,
-    GetCommitResult, GetContractMigrationOperationRequest, GetContractMigrationOperationResult,
-    GetContractVersionRequest, GetContractVersionResult, GetEntityRequest, GetEntityResult,
-    GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
-    GetProjectionStatusRequest, GetProjectionStatusResult, GetQueryModuleRequest,
-    HealthComponentKind, HealthComponentStatus, HealthRequest, HealthResult, HealthStatus,
-    JournaledCommandResult, JournaledCompletion, ListPendingOutboxDeliveriesRequest,
+    ExecuteContextualReactionRequest, ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult,
+    ExplainCommandRequest, ExplainCommandResult, ExplainSymbolicQueryResult, FieldSelection,
+    FixedToolKind, GeneratedSchemaIdentity, GetActiveContractRequest, GetActiveContractResult,
+    GetCommitRequest, GetCommitResult, GetContractMigrationOperationRequest,
+    GetContractMigrationOperationResult, GetContractVersionRequest, GetContractVersionResult,
+    GetEntityRequest, GetEntityResult, GetOfflineMaintenanceOperationRequest,
+    GetOfflineMaintenanceOperationResult, GetProjectionStatusRequest, GetProjectionStatusResult,
+    GetQueryModuleRequest, HealthComponentKind, HealthComponentStatus, HealthRequest, HealthResult,
+    HealthStatus, JournaledCommandResult, JournaledCompletion, ListPendingOutboxDeliveriesRequest,
     ListPendingOutboxDeliveriesResult, LiveNamedQuerySelection, LiveQueryCursor,
     LiveQueryPatchOperation, LiveQueryResetReason, LiveQueryTerminalReason, LiveQueryUpdate,
     NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact, NamedSymbolicQueryRequest,
@@ -49,8 +51,8 @@ use riffdb_service::{
     OutboxDeliveryState, OutcomeResourceLocator, PageLimit, PageRequest, PreBootstrapLifecycle,
     ProjectionFailureCode, ProjectionLifecycle, ProjectionUnavailableReason, ProvenanceSelection,
     PublishedApplyMode, QueryModuleActiveExpectation, QueryModuleDeploymentDisposition,
-    QueryModuleInspection, QueryProjectionRequest, QueryProjectionResult,
-    ReactiveModuleDeploymentDisposition, ReplayEventsRequest, ReplayEventsResult,
+    QueryModuleInspection, QueryProjectionRequest, QueryProjectionResult, QueryResultValue,
+    QueryRow, ReactiveModuleDeploymentDisposition, ReplayEventsRequest, ReplayEventsResult,
     ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, ResourceDescriptor,
     ResourceDescriptorRef, ResourceDiscoveryKind, RestoreOfflineBackupRequest,
     RevokeCapabilityRequest, RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult,
@@ -1951,18 +1953,186 @@ pub fn consume_event_stream_result_to_proto(
         events: result
             .events()
             .iter()
-            .map(|item| {
-                let expires_at = item.expires_at();
-                Ok(v1::ConsumedEvent {
-                    event: Some(symbolic_event_to_proto(item.event())?),
-                    attempt: u32::from(item.attempt().get()),
-                    lease_token: item.token().as_bytes().to_vec(),
-                    expires_at: Some(v1::Timestamp {
-                        seconds: expires_at.seconds(),
-                        nanos: expires_at.nanoseconds(),
-                    }),
+            .map(consumed_event_to_proto)
+            .collect::<Result<Vec<_>, Status>>()?,
+        status: Some(event_consumer_status_to_proto(result.status())),
+        wait_timed_out: result.wait_timed_out(),
+    })
+}
+
+fn consumed_event_to_proto(
+    item: &riffdb_service::ConsumedEvent,
+) -> Result<v1::ConsumedEvent, Status> {
+    let expires_at = item.expires_at();
+    Ok(v1::ConsumedEvent {
+        event: Some(symbolic_event_to_proto(item.event())?),
+        attempt: u32::from(item.attempt().get()),
+        lease_token: item.token().as_bytes().to_vec(),
+        expires_at: Some(v1::Timestamp {
+            seconds: expires_at.seconds(),
+            nanos: expires_at.nanoseconds(),
+        }),
+    })
+}
+
+/// Converts one contextual subscription pull request.
+pub fn consume_contextual_subscription_request_from_proto(
+    value: v1::ConsumeContextualSubscriptionRequest,
+) -> Result<(RequestId, ConsumeContextualSubscriptionRequest), Status> {
+    Ok((
+        request_id_from_bytes(&value.request_id)?,
+        ConsumeContextualSubscriptionRequest::new(
+            event_consumer_selection_from_proto(value.selection.ok_or_else(invalid_request)?)?,
+            Duration::from_nanos(value.maximum_wait_nanos),
+        )
+        .map_err(|_| invalid_request())?,
+    ))
+}
+
+fn contextual_lease_request_from_proto(
+    request_id: Vec<u8>,
+    selection: Option<v1::EventConsumerSelection>,
+    event_id: Option<v1::EventId>,
+    lease_token: Vec<u8>,
+    history_incarnation: u64,
+) -> Result<(RequestId, EventConsumerLeaseSelection), Status> {
+    Ok((
+        request_id_from_bytes(&request_id)?,
+        event_consumer_lease_from_parts(selection, event_id, lease_token, history_incarnation)?,
+    ))
+}
+
+/// Converts one contextual acknowledgement request.
+pub fn acknowledge_contextual_subscription_request_from_proto(
+    value: v1::AcknowledgeContextualSubscriptionRequest,
+) -> Result<(RequestId, EventConsumerLeaseSelection), Status> {
+    contextual_lease_request_from_proto(
+        value.request_id,
+        value.selection,
+        value.event_id,
+        value.lease_token,
+        value.history_incarnation,
+    )
+}
+
+/// Converts one contextual negative acknowledgement request.
+pub fn negative_acknowledge_contextual_subscription_request_from_proto(
+    value: v1::NegativeAcknowledgeContextualSubscriptionRequest,
+) -> Result<(RequestId, EventConsumerLeaseSelection, Duration), Status> {
+    let retry_delay = Duration::from_nanos(value.retry_delay_nanos);
+    let (request_id, lease) = contextual_lease_request_from_proto(
+        value.request_id,
+        value.selection,
+        value.event_id,
+        value.lease_token,
+        value.history_incarnation,
+    )?;
+    NegativeAcknowledgeEventStreamRequest::new(lease.clone(), retry_delay)
+        .map_err(|_| invalid_request())?;
+    Ok((request_id, lease, retry_delay))
+}
+
+/// Converts one contextual reaction through the ordinary command request shape.
+pub fn execute_contextual_reaction_request_from_proto(
+    value: v1::ExecuteContextualReactionRequest,
+) -> Result<(RequestId, ExecuteContextualReactionRequest), Status> {
+    let request_id = request_id_from_bytes(&value.request_id)?;
+    let (command_request_id, command) =
+        execute_command_request_from_proto(value.command.ok_or_else(invalid_request)?)?;
+    if command_request_id != request_id {
+        return Err(invalid_request());
+    }
+    let request = ExecuteContextualReactionRequest::new(
+        event_consumer_selection_from_proto(value.selection.ok_or_else(invalid_request)?)?,
+        ContextualCausationToken::checked(value.causation_token).map_err(|_| invalid_request())?,
+        value.reaction_name,
+        command,
+    )
+    .map_err(|_| invalid_request())?;
+    Ok((request_id, request))
+}
+
+fn contextual_query_row_to_proto(row: &QueryRow) -> Result<v1::ContextualQueryRow, Status> {
+    Ok(v1::ContextualQueryRow {
+        entity: row.entity().to_owned(),
+        fields: row
+            .fields()
+            .map(|(name, value)| {
+                Ok(v1::EventConsumerParameter {
+                    name: name.to_owned(),
+                    value: Some(canonical_value_to_public(value)?),
                 })
             })
+            .collect::<Result<Vec<_>, Status>>()?,
+    })
+}
+
+fn contextual_hydration_to_proto(
+    hydration: &ContextualHydration,
+) -> Result<v1::ContextualHydration, Status> {
+    let fields = hydration
+        .fields()
+        .iter()
+        .map(|(name, value)| {
+            let (cardinality, rows): (_, Vec<&QueryRow>) = match value {
+                QueryResultValue::One(row) => (v1::ContextualQueryCardinality::One, vec![row]),
+                QueryResultValue::Maybe(row) => {
+                    (v1::ContextualQueryCardinality::Maybe, row.iter().collect())
+                }
+                QueryResultValue::Many(rows) => {
+                    (v1::ContextualQueryCardinality::Many, rows.iter().collect())
+                }
+            };
+            Ok(v1::ContextualQueryField {
+                name: name.clone(),
+                cardinality: cardinality as i32,
+                rows: rows
+                    .into_iter()
+                    .map(contextual_query_row_to_proto)
+                    .collect::<Result<Vec<_>, Status>>()?,
+            })
+        })
+        .collect::<Result<Vec<_>, Status>>()?;
+    Ok(v1::ContextualHydration {
+        name: hydration.name().to_owned(),
+        outcome: hydration.outcome().to_owned(),
+        fields,
+    })
+}
+
+fn contextual_work_item_to_proto(
+    item: &ContextualWorkItem,
+) -> Result<v1::ContextualWorkItem, Status> {
+    Ok(v1::ContextualWorkItem {
+        delivery: Some(consumed_event_to_proto(item.delivery())?),
+        context_head: item.context_head().get(),
+        hydrations: item
+            .hydrations()
+            .iter()
+            .map(contextual_hydration_to_proto)
+            .collect::<Result<Vec<_>, Status>>()?,
+        available_reactions: item
+            .available_reactions()
+            .iter()
+            .map(|reaction| v1::AvailableContextualReaction {
+                name: reaction.name().to_owned(),
+                command_name: reaction.command_name().to_owned(),
+                command_id: reaction.command_id().get(),
+                causation_token: reaction.causation_token().as_bytes().to_vec(),
+            })
+            .collect(),
+    })
+}
+
+/// Converts one successful contextual pull.
+pub fn consume_contextual_subscription_result_to_proto(
+    result: &ConsumeContextualSubscriptionResult,
+) -> Result<v1::ConsumeContextualSubscriptionResponse, Status> {
+    Ok(v1::ConsumeContextualSubscriptionResponse {
+        items: result
+            .items()
+            .iter()
+            .map(contextual_work_item_to_proto)
             .collect::<Result<Vec<_>, Status>>()?,
         status: Some(event_consumer_status_to_proto(result.status())),
         wait_timed_out: result.wait_timed_out(),

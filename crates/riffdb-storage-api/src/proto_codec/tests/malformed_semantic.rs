@@ -63,10 +63,13 @@ fn required_fields_uuidv7_and_timestamp_fail_closed() {
         &invalid_uuid,
     )));
 
-    const PENDING: &str = "riffdb.storage.v1.StoredPendingAdmissionV1";
+    const PENDING: &str = "riffdb.storage.v1.StoredPendingAdmissionV2";
     let canonical = encode_pending_admission_v1(&sample::pending()).expect("pending encodes");
-    let mut pending = payload_message::<wire::StoredPendingAdmissionV1>(canonical.as_bytes());
+    let mut pending = payload_message::<wire::StoredPendingAdmissionV2>(canonical.as_bytes());
     pending
+        .base
+        .as_mut()
+        .expect("sample pending base")
         .logical_time
         .as_mut()
         .expect("sample logical time")
@@ -78,13 +81,13 @@ fn required_fields_uuidv7_and_timestamp_fail_closed() {
 
 #[test]
 fn unknown_enum_and_multiple_oneof_members_fail_closed() {
-    const FAILED: &str = "riffdb.storage.v1.StoredExecutionFailedV1";
+    const FAILED: &str = "riffdb.storage.v1.StoredExecutionFailedV2";
     let failed = crate::StoredExecutionFailedV1::new(
         sample::pending(),
         ExecutionFailureCode::ArithmeticFault,
     );
     let canonical = encode_execution_failed_v1(&failed).expect("execution failure encodes");
-    let mut message = payload_message::<wire::StoredExecutionFailedV1>(canonical.as_bytes());
+    let mut message = payload_message::<wire::StoredExecutionFailedV2>(canonical.as_bytes());
     message.code = 99;
     assert_corrupt(decode_execution_failed_v1(&checked_envelope(
         FAILED, &message,
@@ -300,12 +303,17 @@ fn audit_target_shape_order_and_cardinality_fail_closed() {
 fn outcome_provenance_and_commit_canonical_lists_fail_closed() {
     let records = sample::atomic_record_set();
 
-    const OUTCOME: &str = "riffdb.storage.v1.StoredOutcomeV1";
+    const OUTCOME: &str = "riffdb.storage.v1.StoredOutcomeV2";
     let outcome = encode_stored_outcome_v1(records.stored_outcome()).expect("outcome encodes");
-    let outcome = payload_message::<wire::StoredOutcomeV1>(outcome.as_bytes());
+    let outcome = payload_message::<wire::StoredOutcomeV2>(outcome.as_bytes());
 
     let mut missing_partition_key = outcome.clone();
-    missing_partition_key.partition_key.clear();
+    missing_partition_key
+        .base
+        .as_mut()
+        .expect("sample outcome base")
+        .partition_key
+        .clear();
     assert_corrupt(decode_stored_outcome_v1(&checked_envelope(
         OUTCOME,
         &missing_partition_key,
@@ -313,6 +321,9 @@ fn outcome_provenance_and_commit_canonical_lists_fail_closed() {
 
     let mut mismatched_partition_hash = outcome.clone();
     *mismatched_partition_hash
+        .base
+        .as_mut()
+        .expect("sample outcome base")
         .partition_key
         .last_mut()
         .expect("sample partition key") ^= 1;
@@ -322,18 +333,31 @@ fn outcome_provenance_and_commit_canonical_lists_fail_closed() {
     )));
 
     let mut noncanonical_conflicts = outcome;
-    noncanonical_conflicts.conflict_hashes = vec![[0x82; 32].to_vec(), [0x81; 32].to_vec()];
+    noncanonical_conflicts
+        .base
+        .as_mut()
+        .expect("sample outcome base")
+        .conflict_hashes = vec![[0x82; 32].to_vec(), [0x81; 32].to_vec()];
     assert_corrupt(decode_stored_outcome_v1(&checked_envelope(
         OUTCOME,
         &noncanonical_conflicts,
     )));
 
-    const PROVENANCE: &str = "riffdb.storage.v1.StoredProvenanceRecordV1";
+    const PROVENANCE: &str = "riffdb.storage.v1.StoredProvenanceRecordV2";
     let provenance = encode_provenance_record_v1(records.provenance()).expect("provenance encodes");
-    let mut provenance = payload_message::<wire::StoredProvenanceRecordV1>(provenance.as_bytes());
+    let mut provenance = payload_message::<wire::StoredProvenanceRecordV2>(provenance.as_bytes());
+    let duplicate_affected_entity = provenance
+        .base
+        .as_ref()
+        .expect("sample provenance base")
+        .affected_entities[0]
+        .clone();
     provenance
+        .base
+        .as_mut()
+        .expect("sample provenance base")
         .affected_entities
-        .push(provenance.affected_entities[0].clone());
+        .push(duplicate_affected_entity);
     assert_corrupt(decode_provenance_record_v1(&checked_envelope(
         PROVENANCE,
         &provenance,

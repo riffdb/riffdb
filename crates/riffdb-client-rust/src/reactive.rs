@@ -3,12 +3,15 @@
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
-use crate::application::{lower_value, raise_value};
-use crate::generated::{GeneratedEventConsumer, GeneratedLiveQuery};
+use crate::application::{
+    lower_value, raise_application_command_result, raise_value, typed_command_result,
+};
+use crate::generated::{GeneratedCommand, GeneratedEventConsumer, GeneratedLiveQuery};
 use crate::{
-    ApplicationCardinality, ApplicationClientError, ApplicationRecord, ApplicationResultField,
-    ApplicationValue, CallMetadata, EventConsumerResponseStream, LiveQueryUpdateStream,
-    NamedQueryResult, QueryResponseIdentity, StableApplicationClient, generate_request_id, v1,
+    ApplicationCardinality, ApplicationClientError, ApplicationCommand, ApplicationCommandResult,
+    ApplicationRecord, ApplicationResultField, ApplicationValue, CallMetadata,
+    EventConsumerResponseStream, GeneratedExecutionError, LiveQueryUpdateStream, NamedQueryResult,
+    QueryResponseIdentity, StableApplicationClient, TypedCommandResult, generate_request_id, v1,
 };
 
 /// Exact immutable reactive operation selected by generated code.
@@ -371,6 +374,115 @@ pub struct ApplicationEventBatch {
     pub wait_timed_out: bool,
 }
 
+/// One freshly executed hydration in a contextual work item.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationContextualHydration {
+    /// Subscription-local declared hydration name.
+    pub name: String,
+    /// Named-query result branch.
+    pub outcome: String,
+    /// Name-addressed typed result fields.
+    pub fields: BTreeMap<String, ApplicationResultField>,
+}
+
+/// One currently authorized declared reaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationContextualReaction {
+    /// Subscription-local reaction name.
+    pub name: String,
+    /// Target contract command name.
+    pub command_name: String,
+    /// Stable target command identity.
+    pub command_id: u32,
+    causation_token: Vec<u8>,
+}
+
+impl ApplicationContextualReaction {
+    /// Checks one transport-raised reaction without treating its token as authority.
+    pub fn checked(
+        name: impl Into<String>,
+        command_name: impl Into<String>,
+        command_id: u32,
+        causation_token: Vec<u8>,
+    ) -> Result<Self, ApplicationClientError> {
+        let name = name.into();
+        let command_name = command_name.into();
+        if name.is_empty()
+            || name.len() > 256
+            || command_name.is_empty()
+            || command_name.len() > 256
+            || command_id == 0
+            || causation_token.len() <= 32
+            || causation_token.len() > 1_024
+        {
+            return Err(ApplicationClientError::InvalidInput);
+        }
+        Ok(Self {
+            name,
+            command_name,
+            command_id,
+            causation_token,
+        })
+    }
+
+    /// Borrows the opaque proof for transport forwarding only.
+    #[must_use]
+    pub fn causation_token(&self) -> &[u8] {
+        &self.causation_token
+    }
+}
+
+/// One leased event with fresh same-snapshot context and authorized reactions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationContextualWorkItem {
+    /// Attempt-specific event delivery.
+    pub delivery: ApplicationEventDelivery,
+    /// Authoritative application head shared by every hydration.
+    pub context_head: u64,
+    /// Fresh hydration results in declaration order.
+    pub hydrations: Vec<ApplicationContextualHydration>,
+    /// Reactions authorized when this item was produced.
+    pub available_reactions: Vec<ApplicationContextualReaction>,
+}
+
+/// One bounded contextual pull.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationContextualBatch {
+    /// Zero or one leased contextual work item.
+    pub items: Vec<ApplicationContextualWorkItem>,
+    /// Durable consumer status after leasing.
+    pub status: ApplicationEventConsumerStatus,
+    /// Whether the bounded wait elapsed without work.
+    pub wait_timed_out: bool,
+}
+
+/// One generated event plus its contextual work and lease evidence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypedContextualWorkItem<E> {
+    /// Generated closed event union.
+    pub event: E,
+    evidence: ApplicationContextualWorkItem,
+}
+
+impl<E> TypedContextualWorkItem<E> {
+    /// Context, reactions, and exact lease evidence used by checked operations.
+    #[must_use]
+    pub const fn evidence(&self) -> &ApplicationContextualWorkItem {
+        &self.evidence
+    }
+}
+
+/// One generated contextual pull.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypedContextualBatch<E> {
+    /// Zero or one typed contextual work item.
+    pub items: Vec<TypedContextualWorkItem<E>>,
+    /// Durable consumer status after leasing.
+    pub status: ApplicationEventConsumerStatus,
+    /// Whether the bounded wait elapsed without work.
+    pub wait_timed_out: bool,
+}
+
 /// One generated typed event together with its exact lease evidence.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TypedEventDelivery<E> {
@@ -627,6 +739,78 @@ impl StableApplicationClient {
         })
     }
 
+    /// Pulls and decodes one generated contextual work item.
+    pub async fn consume_generated_contextual<G: GeneratedEventConsumer>(
+        &mut self,
+        generated: G,
+        maximum_wait_nanos: u64,
+        metadata: &CallMetadata,
+    ) -> Result<TypedContextualBatch<G::Event>, ApplicationClientError> {
+        let consumer = generated.event_consumer()?;
+        let batch = self
+            .consume_contextual_subscription(&consumer, maximum_wait_nanos, metadata)
+            .await?;
+        let items = batch
+            .items
+            .into_iter()
+            .map(|evidence| {
+                Ok(TypedContextualWorkItem {
+                    event: G::decode_event(evidence.delivery.event.clone())?,
+                    evidence,
+                })
+            })
+            .collect::<Result<Vec<_>, ApplicationClientError>>()?;
+        Ok(TypedContextualBatch {
+            items,
+            status: batch.status,
+            wait_timed_out: batch.wait_timed_out,
+        })
+    }
+
+    /// Executes one generated command through an available contextual reaction.
+    pub async fn execute_generated_contextual_reaction<C: GeneratedCommand>(
+        &mut self,
+        consumer: &ApplicationEventConsumer,
+        reaction: &ApplicationContextualReaction,
+        command: &C,
+        metadata: &CallMetadata,
+    ) -> Result<TypedCommandResult<C::Outcome>, GeneratedExecutionError> {
+        let request_id = generate_request_id().map_err(|error| {
+            GeneratedExecutionError::Client(crate::ClientError::IdentifierGeneration(error))
+        })?;
+        let command_request = command
+            .idempotent_command()
+            .map_err(GeneratedExecutionError::CommandShape)?;
+        if command_request.command_name() != reaction.command_name {
+            return Err(GeneratedExecutionError::CommandShape(
+                crate::generated::GeneratedCommandError::InvalidInputShape,
+            ));
+        }
+        let selection = consumer.selection().map_err(|_| {
+            GeneratedExecutionError::CommandShape(
+                crate::generated::GeneratedCommandError::InvalidInputShape,
+            )
+        })?;
+        let response = self
+            .inner
+            .execute_contextual_reaction(
+                v1::ExecuteContextualReactionRequest {
+                    request_id: request_id.as_bytes().to_vec(),
+                    selection: Some(selection),
+                    causation_token: reaction.causation_token.clone(),
+                    reaction_name: reaction.name.clone(),
+                    command: Some(command_request.request(request_id)),
+                },
+                metadata,
+            )
+            .await
+            .map_err(GeneratedExecutionError::Client)?;
+        let outcome = command
+            .decode_outcome(&response)
+            .map_err(GeneratedExecutionError::CommandShape)?;
+        typed_command_result(outcome, response)
+    }
+
     /// Opens and decodes one generated exact live query.
     pub async fn watch_generated_query<G: GeneratedLiveQuery>(
         &mut self,
@@ -654,6 +838,164 @@ impl StableApplicationClient {
             .consume_event_stream(consumer_request(consumer, options)?, metadata)
             .await?;
         raise_event_batch(response)
+    }
+
+    /// Pulls one contextual event with fresh same-snapshot hydrations.
+    pub async fn consume_contextual_subscription(
+        &mut self,
+        consumer: &ApplicationEventConsumer,
+        maximum_wait_nanos: u64,
+        metadata: &CallMetadata,
+    ) -> Result<ApplicationContextualBatch, ApplicationClientError> {
+        if maximum_wait_nanos > 30_000_000_000 {
+            return Err(ApplicationClientError::InvalidInput);
+        }
+        let response = self
+            .inner
+            .consume_contextual_subscription(
+                v1::ConsumeContextualSubscriptionRequest {
+                    request_id: request_id()?,
+                    selection: Some(consumer.selection()?),
+                    maximum_wait_nanos,
+                },
+                metadata,
+            )
+            .await?;
+        raise_contextual_batch(response)
+    }
+
+    /// Acknowledges one exact contextual lease after fresh authorization.
+    pub async fn acknowledge_contextual_item(
+        &mut self,
+        consumer: &ApplicationEventConsumer,
+        item: &ApplicationContextualWorkItem,
+        metadata: &CallMetadata,
+    ) -> Result<ApplicationEventMutationResult, ApplicationClientError> {
+        self.acknowledge_contextual_lease(consumer, &item.delivery.lease_evidence(), metadata)
+            .await
+    }
+
+    /// Acknowledges exact contextual lease evidence after fresh authorization.
+    pub async fn acknowledge_contextual_lease(
+        &mut self,
+        consumer: &ApplicationEventConsumer,
+        evidence: &ApplicationEventLeaseEvidence,
+        metadata: &CallMetadata,
+    ) -> Result<ApplicationEventMutationResult, ApplicationClientError> {
+        let response = self
+            .inner
+            .acknowledge_contextual_subscription(
+                v1::AcknowledgeContextualSubscriptionRequest {
+                    request_id: request_id()?,
+                    selection: Some(consumer.selection()?),
+                    event_id: Some(lower_event_id(evidence.event_id)),
+                    lease_token: evidence.lease_token.clone(),
+                    history_incarnation: evidence.history_incarnation,
+                },
+                metadata,
+            )
+            .await?;
+        raise_mutation_result(response.result)
+    }
+
+    /// Negatively acknowledges one exact contextual lease with bounded delay.
+    pub async fn negative_acknowledge_contextual_item(
+        &mut self,
+        consumer: &ApplicationEventConsumer,
+        item: &ApplicationContextualWorkItem,
+        retry_delay_nanos: u64,
+        metadata: &CallMetadata,
+    ) -> Result<ApplicationEventMutationResult, ApplicationClientError> {
+        self.negative_acknowledge_contextual_lease(
+            consumer,
+            &item.delivery.lease_evidence(),
+            retry_delay_nanos,
+            metadata,
+        )
+        .await
+    }
+
+    /// Releases exact contextual lease evidence with a bounded retry delay.
+    pub async fn negative_acknowledge_contextual_lease(
+        &mut self,
+        consumer: &ApplicationEventConsumer,
+        evidence: &ApplicationEventLeaseEvidence,
+        retry_delay_nanos: u64,
+        metadata: &CallMetadata,
+    ) -> Result<ApplicationEventMutationResult, ApplicationClientError> {
+        if retry_delay_nanos > 3_600_000_000_000 {
+            return Err(ApplicationClientError::InvalidInput);
+        }
+        let response = self
+            .inner
+            .negative_acknowledge_contextual_subscription(
+                v1::NegativeAcknowledgeContextualSubscriptionRequest {
+                    request_id: request_id()?,
+                    selection: Some(consumer.selection()?),
+                    event_id: Some(lower_event_id(evidence.event_id)),
+                    lease_token: evidence.lease_token.clone(),
+                    history_incarnation: evidence.history_incarnation,
+                    retry_delay_nanos,
+                },
+                metadata,
+            )
+            .await?;
+        raise_mutation_result(response.result)
+    }
+
+    /// Reads one contextual consumer status under contextual consume authority.
+    pub async fn contextual_subscription_status(
+        &mut self,
+        consumer: &ApplicationEventConsumer,
+        metadata: &CallMetadata,
+    ) -> Result<Option<ApplicationEventConsumerStatus>, ApplicationClientError> {
+        let response = self
+            .inner
+            .get_contextual_subscription_status(
+                v1::GetContextualSubscriptionStatusRequest {
+                    request_id: request_id()?,
+                    selection: Some(consumer.selection()?),
+                },
+                metadata,
+            )
+            .await?;
+        match response.result {
+            Some(v1::get_event_stream_consumer_status_response::Result::NotFound(_)) => Ok(None),
+            Some(v1::get_event_stream_consumer_status_response::Result::Found(status)) => {
+                raise_consumer_status(status).map(Some)
+            }
+            None => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+
+    /// Executes one declared reaction through the ordinary typed command envelope.
+    pub async fn execute_contextual_reaction(
+        &mut self,
+        consumer: &ApplicationEventConsumer,
+        reaction: &ApplicationContextualReaction,
+        command: ApplicationCommand,
+        metadata: &CallMetadata,
+    ) -> Result<ApplicationCommandResult, ApplicationClientError> {
+        let request_id =
+            generate_request_id().map_err(|_| ApplicationClientError::IdentifierUnavailable)?;
+        let command = command.into_idempotent_command()?;
+        if command.command_name() != reaction.command_name {
+            return Err(ApplicationClientError::InvalidInput);
+        }
+        let response = self
+            .inner
+            .execute_contextual_reaction(
+                v1::ExecuteContextualReactionRequest {
+                    request_id: request_id.into_bytes().to_vec(),
+                    selection: Some(consumer.selection()?),
+                    causation_token: reaction.causation_token.clone(),
+                    reaction_name: reaction.name.clone(),
+                    command: Some(command.request(request_id)),
+                },
+                metadata,
+            )
+            .await?;
+        raise_application_command_result(response)
     }
 
     /// Opens the checked server stream for the same consumer operation.
@@ -893,6 +1235,131 @@ fn raise_event_batch(
         events,
         status,
         wait_timed_out: response.wait_timed_out,
+    })
+}
+
+fn raise_contextual_batch(
+    response: v1::ConsumeContextualSubscriptionResponse,
+) -> Result<ApplicationContextualBatch, ApplicationClientError> {
+    let items = response
+        .items
+        .into_iter()
+        .map(raise_contextual_work_item)
+        .collect::<Result<Vec<_>, _>>()?;
+    let status = raise_consumer_status(
+        response
+            .status
+            .ok_or(ApplicationClientError::InvalidResponse)?,
+    )?;
+    Ok(ApplicationContextualBatch {
+        items,
+        status,
+        wait_timed_out: response.wait_timed_out,
+    })
+}
+
+fn raise_contextual_work_item(
+    item: v1::ContextualWorkItem,
+) -> Result<ApplicationContextualWorkItem, ApplicationClientError> {
+    let delivery = raise_event_delivery(
+        item.delivery
+            .ok_or(ApplicationClientError::InvalidResponse)?,
+    )?;
+    let hydrations = item
+        .hydrations
+        .into_iter()
+        .map(raise_contextual_hydration)
+        .collect::<Result<Vec<_>, _>>()?;
+    let available_reactions = item
+        .available_reactions
+        .into_iter()
+        .map(|reaction| {
+            if reaction.name.is_empty()
+                || reaction.command_name.is_empty()
+                || reaction.command_id == 0
+                || reaction.causation_token.len() <= 32
+                || reaction.causation_token.len() > 1_024
+            {
+                return Err(ApplicationClientError::InvalidResponse);
+            }
+            Ok(ApplicationContextualReaction {
+                name: reaction.name,
+                command_name: reaction.command_name,
+                command_id: reaction.command_id,
+                causation_token: reaction.causation_token,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if item.context_head == 0 {
+        return Err(ApplicationClientError::InvalidResponse);
+    }
+    Ok(ApplicationContextualWorkItem {
+        delivery,
+        context_head: item.context_head,
+        hydrations,
+        available_reactions,
+    })
+}
+
+fn raise_contextual_hydration(
+    hydration: v1::ContextualHydration,
+) -> Result<ApplicationContextualHydration, ApplicationClientError> {
+    let mut fields = BTreeMap::new();
+    for field in hydration.fields {
+        let cardinality = match v1::ContextualQueryCardinality::try_from(field.cardinality).ok() {
+            Some(v1::ContextualQueryCardinality::One) => ApplicationCardinality::One,
+            Some(v1::ContextualQueryCardinality::Maybe) => ApplicationCardinality::Maybe,
+            Some(v1::ContextualQueryCardinality::Many) => ApplicationCardinality::Many,
+            Some(v1::ContextualQueryCardinality::Unspecified) | None => {
+                return Err(ApplicationClientError::InvalidResponse);
+            }
+        };
+        let records = field
+            .rows
+            .into_iter()
+            .map(|row| {
+                let mut values = BTreeMap::new();
+                for value in row.fields {
+                    if value.name.is_empty()
+                        || values
+                            .insert(
+                                value.name,
+                                raise_value(
+                                    value.value.ok_or(ApplicationClientError::InvalidResponse)?,
+                                )?,
+                            )
+                            .is_some()
+                    {
+                        return Err(ApplicationClientError::InvalidResponse);
+                    }
+                }
+                Ok(ApplicationRecord {
+                    entity: row.entity,
+                    fields: values,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if field.name.is_empty()
+            || fields
+                .insert(
+                    field.name,
+                    ApplicationResultField {
+                        cardinality,
+                        records,
+                    },
+                )
+                .is_some()
+        {
+            return Err(ApplicationClientError::InvalidResponse);
+        }
+    }
+    if hydration.name.is_empty() || hydration.outcome.is_empty() {
+        return Err(ApplicationClientError::InvalidResponse);
+    }
+    Ok(ApplicationContextualHydration {
+        name: hydration.name,
+        outcome: hydration.outcome,
+        fields,
     })
 }
 

@@ -201,6 +201,9 @@ fn reactive_generation_is_exact_typed_and_transport_neutral() {
         "pub enum RowWatchUpdate",
         "pub async fn watch_row_watch",
         "pub async fn next_row_changes",
+        "pub struct RowAgentConsumer",
+        "pub async fn next_row_agent",
+        "pub async fn react_change",
     ] {
         assert!(rust.contains(required), "missing Rust surface: {required}");
     }
@@ -221,6 +224,8 @@ fn reactive_generation_is_exact_typed_and_transport_neutral() {
         "parameterSchema: RowChangesParameterSchema",
         "ReactiveEventMutationResult",
         "applyLivePatch",
+        "export type RowAgentItem",
+        "reactChange",
     ] {
         assert!(
             typescript.contains(required),
@@ -243,6 +248,9 @@ fn reactive_generation_is_exact_typed_and_transport_neutral() {
         "AsyncIterator[RowWatchUpdate]",
         "encode_reactive_record(parameters, RowChanges_PARAMETER_SCHEMA)",
         "RowChanges_PARAMETER_SCHEMA",
+        "class RowAgentItem",
+        "async def next_row_agent",
+        "async def react_change",
     ] {
         assert!(
             python.contains(required),
@@ -259,6 +267,11 @@ fn reactive_generation_is_exact_typed_and_transport_neutral() {
     assert_eq!(
         names,
         [
+            "row_activity_row_agent_ack",
+            "row_activity_row_agent_nack",
+            "row_activity_row_agent_next",
+            "row_activity_row_agent_react_change",
+            "row_activity_row_agent_status",
             "row_activity_row_changes_ack",
             "row_activity_row_changes_nack",
             "row_activity_row_changes_next",

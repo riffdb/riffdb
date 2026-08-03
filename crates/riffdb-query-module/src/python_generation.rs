@@ -639,7 +639,20 @@ fn emit_python_reactive_module(
                 )
                 .expect("String writes cannot fail");
             }
-            ReactiveOperationPlanV1::Subscription { .. } => {}
+            ReactiveOperationPlanV1::Subscription {
+                parameters,
+                stream_name,
+                ..
+            } => {
+                let name = pascal(operation.name().as_str());
+                let stream = pascal(stream_name.as_str());
+                emit_python_reactive_parameters(output, &name, parameters, contract);
+                writeln!(
+                    output,
+                    "@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}Reaction:\n    name: str\n    command_name: str\n    command_id: int\n    causation_token: str\n\n@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}Item:\n    event: {stream}Event\n    event_id: str\n    attempt: int\n    lease_token: str\n    expires_at: dict[str, Any]\n    history_incarnation: int\n    context_head: int\n    hydrations: tuple[dict[str, Any], ...]\n    available_reactions: tuple[{name}Reaction, ...]\n"
+                )
+                .expect("String writes cannot fail");
+            }
         }
     }
     let base = pascal(module.contract_lineage().as_str());
@@ -705,7 +718,75 @@ fn emit_python_reactive_module(
                 )
                 .expect("String writes cannot fail");
             }
-            ReactiveOperationPlanV1::Subscription { .. } => {}
+            ReactiveOperationPlanV1::Subscription {
+                stream_name,
+                reactions,
+                ..
+            } => {
+                emitted = true;
+                let name = pascal(operation.name().as_str());
+                let stream_operation = reactive
+                    .operations()
+                    .iter()
+                    .find(|candidate| candidate.name() == stream_name)
+                    .expect("reactive compiler retained exact stream dependency");
+                let ReactiveOperationPlanV1::Stream { events, .. } = stream_operation.plan() else {
+                    unreachable!("subscription stream dependency is a stream");
+                };
+                writeln!(
+                    output,
+                    "    async def next_{method}(self, parameters: {name}Params, consumer_name: str, maximum_wait_nanos: int = 30_000_000_000) -> {name}Item | None:\n        variants = {{",
+                    method = python_identifier(&snake(operation.name().as_str())),
+                )
+                .expect("String writes cannot fail");
+                for event in events {
+                    writeln!(
+                        output,
+                        "            {:?}: {}{},",
+                        event.name(),
+                        pascal(stream_name.as_str()),
+                        pascal(event.name()),
+                    )
+                    .expect("String writes cannot fail");
+                }
+                writeln!(
+                    output,
+                    "        }}\n        raw = await self._transport._consume_contextual_subscription(reactive_module_hash={module}_REACTIVE_MODULE_HASH, operation_name={operation:?}, parameters=encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA), consumer_name=consumer_name, maximum_wait_nanos=maximum_wait_nanos)\n        if raw is None: return None\n        event_class = variants.get(raw[\"type\"])\n        if event_class is None: raise ValueError(\"undeclared RiffDB event\")\n        return {name}Item(event=decode_record(event_class, raw[\"event\"]), event_id=raw[\"event_id\"], attempt=raw[\"attempt\"], lease_token=raw[\"lease_token\"], expires_at=raw[\"expires_at\"], history_incarnation=raw[\"history_incarnation\"], context_head=raw[\"context_head\"], hydrations=tuple(raw[\"hydrations\"]), available_reactions=tuple({name}Reaction(**reaction) for reaction in raw[\"available_reactions\"]))\n\n    async def ack_{method}(self, parameters: {name}Params, consumer_name: str, item: {name}Item) -> str:\n        return await self._transport._acknowledge_contextual_item(reactive_module_hash={module}_REACTIVE_MODULE_HASH, operation_name={operation:?}, parameters=encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA), consumer_name=consumer_name, item=item)\n\n    async def nack_{method}(self, parameters: {name}Params, consumer_name: str, item: {name}Item, retry_delay_nanos: int = 0) -> str:\n        return await self._transport._negative_acknowledge_contextual_item(reactive_module_hash={module}_REACTIVE_MODULE_HASH, operation_name={operation:?}, parameters=encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA), consumer_name=consumer_name, item=item, retry_delay_nanos=retry_delay_nanos)\n\n    async def {method}_status(self, parameters: {name}Params, consumer_name: str) -> dict[str, Any] | None:\n        return await self._transport._contextual_subscription_status(reactive_module_hash={module}_REACTIVE_MODULE_HASH, operation_name={operation:?}, parameters=encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA), consumer_name=consumer_name)\n",
+                    method = python_identifier(&snake(operation.name().as_str())),
+                    module = screaming_snake(reactive.name()),
+                    operation = operation.name().as_str(),
+                )
+                .expect("String writes cannot fail");
+                for reaction in reactions {
+                    let command = contract
+                        .commands()
+                        .iter()
+                        .find(|command| command.name() == reaction.command_name())
+                        .expect("reactive compiler retained exact command dependency");
+                    let command_name = pascal(command.name());
+                    writeln!(
+                        output,
+                        "    async def react_{reaction_method}(self, parameters: {name}Params, consumer_name: str, item: {name}Item, input: {command_name}Input) -> TypedCommandResult[{command_name}Outcome]:\n        reaction = next((value for value in item.available_reactions if value.name == {reaction_name:?} and value.command_name == {command:?}), None)\n        if reaction is None: raise ValueError(\"contextual reaction is unavailable\")\n        raw = await self._transport._execute_contextual_reaction(reactive_module_hash={module}_REACTIVE_MODULE_HASH, operation_name={operation:?}, parameters=encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA), consumer_name=consumer_name, reaction_name=reaction.name, command_id=reaction.command_id, causation_token=reaction.causation_token, contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION, command_name={command:?}, plan_hash={plan_constant}_PLAN_HASH, input=encode_record(input))\n        outcomes = {{",
+                        reaction_method = python_identifier(&snake(reaction.reaction_name())),
+                        reaction_name = reaction.reaction_name(),
+                        command = command.name(),
+                        module = screaming_snake(reactive.name()),
+                        operation = operation.name().as_str(),
+                        plan_constant = screaming_snake(command.name()),
+                    )
+                    .expect("String writes cannot fail");
+                    for outcome in command.outcomes() {
+                        writeln!(
+                            output,
+                            "            {:?}: {command_name}{},",
+                            outcome.name(),
+                            pascal(outcome.name()),
+                        )
+                        .expect("String writes cannot fail");
+                    }
+                    output.push_str("        }\n        return raw._map_outcome(lambda value: decode_variant(outcomes, value))\n\n");
+                }
+            }
         }
     }
     if !emitted {

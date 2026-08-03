@@ -6808,11 +6808,15 @@ work_packages:
   requirements: [CTX-001, CTX-002, CTX-003, CTX-004, CTX-005, CTX-006, CTX-007, CTX-008]
   required_adrs: [ADR-0013, ADR-0038, ADR-0054, ADR-0055, ADR-0056, ADR-0072, ADR-0080]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, adr/**, proto/**, crates/riffdb-types/**,
-    crates/riffdb-contract-ir/**, crates/riffdb-query-ir/**, crates/riffdb-query-module/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**, crates/riffdb-query-ir/**, crates/riffdb-query-module/**,
     crates/riffdb-query-executor/**, crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
     crates/riffdb-storage-redb/**, crates/riffdb-catalog/**, crates/riffdb-commit/**, crates/riffdb-policy/**,
-    crates/riffdb-service/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
-    crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**, clients/**, fixtures/reactive/**, tests/**, scripts/**, docs/**]
+    crates/riffdb-auth/**,
+    crates/riffdb-service/**, crates/riffdb-proto/**, crates/riffdb-observability/**, crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
+    crates/riffdb-client-python-native/**, crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**,
+    crates/riffdb-server/**, crates/riffdb-testkit/Cargo.toml, clients/**,
+    fixtures/compiler/diagnostics.txt, fixtures/proto/**, fixtures/reactive/**, tests/**, scripts/**,
+    docs/**]
   deliverables:
   - Exact contextual plan combining stream, shared-snapshot hydration, commands, bounds, and immutable definition hash
   - One-snapshot multi-query execution at/after event, bounded work items, authorized-command filtering, and fresh context

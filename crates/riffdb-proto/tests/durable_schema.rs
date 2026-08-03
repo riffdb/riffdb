@@ -183,6 +183,13 @@ fn storage_source_import_and_type_inventory_is_exact() {
                 vec!["riffdb/storage/v1/common.proto"],
             ),
             (
+                "riffdb/storage/v1/contextual_causation_v2.proto".to_owned(),
+                vec![
+                    "riffdb/storage/v1/application.proto",
+                    "riffdb/storage/v1/common.proto",
+                ],
+            ),
+            (
                 "riffdb/storage/v1/entity_references_v3.proto".to_owned(),
                 vec![
                     "riffdb/storage/v1/application.proto",
@@ -275,8 +282,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        115,
-        "114 semantic messages plus the unchanged StoredEnvelope"
+        120,
+        "119 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -306,7 +313,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 47);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 58);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 62);
     assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 47);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
@@ -354,6 +361,10 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
             .map(|(name, _)| format!("riffdb.storage.v1.{name}")),
     );
     readable_names.push("riffdb.storage.v1.ServiceAuditRecordV2".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredPendingAdmissionV2".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredExecutionFailedV2".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredOutcomeV2".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredProvenanceRecordV2".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -362,7 +373,11 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     let mut writable_names = legacy_names.clone();
     writable_names[8] = format!("riffdb.storage.v1.{}", INDEX_V2_RECORD.0);
     writable_names[9] = "riffdb.storage.v1.StoredIndexGenerationV2".to_owned();
+    writable_names[10] = "riffdb.storage.v1.StoredPendingAdmissionV2".to_owned();
+    writable_names[11] = "riffdb.storage.v1.StoredExecutionFailedV2".to_owned();
+    writable_names[12] = "riffdb.storage.v1.StoredOutcomeV2".to_owned();
     writable_names[14] = "riffdb.storage.v1.StoredOutboxIntentV2".to_owned();
+    writable_names[15] = "riffdb.storage.v1.StoredProvenanceRecordV2".to_owned();
     writable_names[16] = "riffdb.storage.v1.StoredCommitRecordV3".to_owned();
     writable_names[21] = "riffdb.storage.v1.ServiceAuditRecordV2".to_owned();
     writable_names.extend(
@@ -516,7 +531,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 58);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 62);
     let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 47);
 
     assert_eq!(legacy, readable[..legacy.len()]);

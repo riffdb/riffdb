@@ -261,7 +261,8 @@ pub(super) fn relationship_wire_fixture() -> String {
             expectation,
             "outcome",
             OUTCOME,
-            encode_stored_outcome_v1(&graph.outcome).expect("outcome encodes"),
+            encode_stored_outcome_legacy_v1_fixture(&graph.outcome)
+                .expect("legacy outcome encodes"),
         );
         append_relationship_record(
             &mut fixture,
@@ -278,7 +279,8 @@ pub(super) fn relationship_wire_fixture() -> String {
             expectation,
             "provenance",
             PROVENANCE,
-            encode_provenance_record_v1(&graph.provenance).expect("provenance encodes"),
+            encode_provenance_record_legacy_v1_fixture(&graph.provenance)
+                .expect("legacy provenance encodes"),
         );
     }
 

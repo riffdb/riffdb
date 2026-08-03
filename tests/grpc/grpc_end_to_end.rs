@@ -574,6 +574,43 @@ impl riffdb_service::EventConsumerServiceApplication for ProjectionService {
     );
 }
 
+impl riffdb_service::ContextualSubscriptionApplication for ProjectionService {
+    denied_operation!(
+        consume_contextual_subscription,
+        RequestContext,
+        riffdb_service::ConsumeContextualSubscriptionRequest,
+        riffdb_service::ConsumeContextualSubscriptionResult
+    );
+    denied_operation!(
+        acknowledge_contextual_subscription,
+        RequestContext,
+        riffdb_service::EventConsumerLeaseSelection,
+        riffdb_service::EventConsumerMutationResult
+    );
+
+    fn negative_acknowledge_contextual_subscription(
+        &self,
+        _context: RequestContext,
+        _lease: riffdb_service::EventConsumerLeaseSelection,
+        _retry_delay: Duration,
+    ) -> ServiceFuture<'_, riffdb_service::EventConsumerMutationResult> {
+        denied()
+    }
+
+    denied_operation!(
+        get_contextual_subscription_status,
+        RequestContext,
+        riffdb_service::EventConsumerSelection,
+        Option<riffdb_service::EventConsumerStatus>
+    );
+    denied_operation!(
+        execute_contextual_reaction,
+        RequestContext,
+        riffdb_service::ExecuteContextualReactionRequest,
+        riffdb_service::ExecuteCommandResult
+    );
+}
+
 impl AdministrationApplication for ProjectionService {
     denied_operation!(health, HealthContext, HealthRequest, HealthResult);
     denied_operation!(

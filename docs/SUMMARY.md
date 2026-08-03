@@ -32,6 +32,7 @@
 - [Reactive Modules](reactive/MODULES.md)
 - [Reactive Application Clients](reactive/CLIENTS.md)
 - [Live Named Queries](reactive/LIVE-QUERIES.md)
+- [Contextual Agent Subscriptions](reactive/CONTEXTUAL-SUBSCRIPTIONS.md)
 - [Safe Application Profiles](getting-started/SAFE-APPLICATION-PROFILES.md)
 - [Authoring Diagnostics](getting-started/AUTHORING-DIAGNOSTICS.md)
 - [Application Errors](getting-started/APPLICATION-ERRORS.md)

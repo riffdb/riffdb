@@ -194,6 +194,42 @@ impl CapabilityDigestKeyProvider {
         capability_digest(&self.keys[0], token)
     }
 
+    /// Computes the current-key contextual-causation MAC without exposing key material.
+    #[must_use]
+    pub fn current_contextual_causation_mac(&self, canonical_payload: &[u8]) -> KeyedDigest {
+        keyed_hash_secret(
+            KeyedHashDomain::ContextualCausation,
+            self.keys[0].id,
+            &self.keys[0].material,
+            canonical_payload,
+        )
+    }
+
+    /// Checks a contextual-causation MAC against every readable key in constant work.
+    #[must_use]
+    pub fn matches_contextual_causation_mac(
+        &self,
+        canonical_payload: &[u8],
+        supplied: &[u8; 32],
+    ) -> bool {
+        self.keys.iter().fold(false, |matched, key| {
+            let expected = keyed_hash_secret(
+                KeyedHashDomain::ContextualCausation,
+                key.id,
+                &key.material,
+                canonical_payload,
+            );
+            let difference = expected
+                .as_bytes()
+                .iter()
+                .zip(supplied)
+                .fold(0_u8, |difference, (left, right)| {
+                    difference | (left ^ right)
+                });
+            matched | (difference == 0)
+        })
+    }
+
     /// Consumes one validated bootstrap token and returns only its checked,
     /// bounded digest candidates.
     ///

@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/application.proto";
+import "riffdb/storage/v1/common.proto";
+
+message StoredCommandCausationV1 {
+  EventIdV1 causing_event_id = 1;
+  bytes root_request_id = 2;
+}
+
+message StoredPendingAdmissionV2 {
+  StoredPendingAdmissionV1 base = 1;
+  StoredCommandCausationV1 causation = 2;
+}
+
+message StoredExecutionFailedV2 {
+  StoredPendingAdmissionV2 pending = 1;
+  ExecutionFailureCodeV1 code = 2;
+}
+
+message StoredOutcomeV2 {
+  StoredOutcomeV1 base = 1;
+  StoredCommandCausationV1 causation = 2;
+}
+
+message StoredProvenanceRecordV2 {
+  StoredProvenanceRecordV1 base = 1;
+  StoredCommandCausationV1 causation = 2;
+}

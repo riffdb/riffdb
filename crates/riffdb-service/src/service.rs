@@ -18,6 +18,7 @@ use riffdb_policy::AgentSessionAdmissionPolicy;
 use riffdb_query_executor::QueryExecutionPort;
 use riffdb_types::{DatabaseId, Environment, ServiceOperationV1, Timestamp};
 
+use crate::ContextualCausationTokenCodec;
 use crate::context::PreBootstrapHealthAdmission;
 use crate::orchestration::{
     ContainedAuditFailure, OperationAuditLifecycle, with_operation_audit_lifecycle,
@@ -174,6 +175,7 @@ pub struct ServiceProviders {
     pub(crate) consumer_clock: Option<Arc<dyn EventConsumerClock>>,
     pub(crate) live_query_clock: Option<Arc<dyn LiveQueryClock>>,
     pub(crate) event_lease_tokens: Option<Arc<dyn EventLeaseTokenSource>>,
+    pub(crate) contextual_causation: Option<ContextualCausationTokenCodec>,
     pub(crate) columnar: Option<Arc<dyn ColumnarProjectionPort>>,
 }
 
@@ -223,6 +225,7 @@ impl ServiceProviders {
             consumer_clock: None,
             live_query_clock: None,
             event_lease_tokens: None,
+            contextual_causation: None,
             columnar: None,
         }
     }
@@ -262,6 +265,13 @@ impl ServiceProviders {
         self.event_consumers = Some(port);
         self.consumer_clock = Some(clock);
         self.event_lease_tokens = Some(tokens);
+        self
+    }
+
+    /// Installs server-owned sealing and verification for contextual causation.
+    #[must_use]
+    pub fn with_contextual_causation(mut self, codec: ContextualCausationTokenCodec) -> Self {
+        self.contextual_causation = Some(codec);
         self
     }
 

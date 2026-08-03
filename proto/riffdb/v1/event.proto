@@ -3,6 +3,7 @@ syntax = "proto3";
 package riffdb.v1;
 
 import "riffdb/v1/commit.proto";
+import "riffdb/v1/command.proto";
 import "riffdb/v1/common.proto";
 import "riffdb/v1/value.proto";
 
@@ -200,4 +201,84 @@ message GetEventStreamConsumerStatusResponse {
     Unit not_found = 1;
     EventConsumerStatus found = 2;
   }
+}
+
+message ConsumeContextualSubscriptionRequest {
+  bytes request_id = 1;
+  EventConsumerSelection selection = 2;
+  uint64 maximum_wait_nanos = 3;
+}
+
+enum ContextualQueryCardinality {
+  CONTEXTUAL_QUERY_CARDINALITY_UNSPECIFIED = 0;
+  CONTEXTUAL_QUERY_CARDINALITY_ONE = 1;
+  CONTEXTUAL_QUERY_CARDINALITY_MAYBE = 2;
+  CONTEXTUAL_QUERY_CARDINALITY_MANY = 3;
+}
+
+message ContextualQueryRow {
+  string entity = 1;
+  repeated EventConsumerParameter fields = 2;
+}
+
+message ContextualQueryField {
+  string name = 1;
+  ContextualQueryCardinality cardinality = 2;
+  repeated ContextualQueryRow rows = 3;
+}
+
+message ContextualHydration {
+  string name = 1;
+  string outcome = 2;
+  repeated ContextualQueryField fields = 3;
+}
+
+message AvailableContextualReaction {
+  string name = 1;
+  string command_name = 2;
+  uint32 command_id = 3;
+  bytes causation_token = 4;
+}
+
+message ContextualWorkItem {
+  ConsumedEvent delivery = 1;
+  uint64 context_head = 2;
+  repeated ContextualHydration hydrations = 3;
+  repeated AvailableContextualReaction available_reactions = 4;
+}
+
+message ConsumeContextualSubscriptionResponse {
+  repeated ContextualWorkItem items = 1;
+  EventConsumerStatus status = 2;
+  bool wait_timed_out = 3;
+}
+
+message AcknowledgeContextualSubscriptionRequest {
+  bytes request_id = 1;
+  EventConsumerSelection selection = 2;
+  EventId event_id = 3;
+  bytes lease_token = 4;
+  uint64 history_incarnation = 5;
+}
+
+message NegativeAcknowledgeContextualSubscriptionRequest {
+  bytes request_id = 1;
+  EventConsumerSelection selection = 2;
+  EventId event_id = 3;
+  bytes lease_token = 4;
+  uint64 history_incarnation = 5;
+  uint64 retry_delay_nanos = 6;
+}
+
+message GetContextualSubscriptionStatusRequest {
+  bytes request_id = 1;
+  EventConsumerSelection selection = 2;
+}
+
+message ExecuteContextualReactionRequest {
+  bytes request_id = 1;
+  EventConsumerSelection selection = 2;
+  bytes causation_token = 3;
+  string reaction_name = 4;
+  ExecuteCommandRequest command = 5;
 }

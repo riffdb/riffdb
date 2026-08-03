@@ -59,13 +59,15 @@ pub use metadata::{
     TraceParent,
 };
 pub use reactive::{
-    ApplicationEvent, ApplicationEventBatch, ApplicationEventCheckpoint, ApplicationEventConsumer,
-    ApplicationEventConsumerStatus, ApplicationEventDelivery, ApplicationEventId,
-    ApplicationEventLeaseEvidence, ApplicationEventMutationResult, ApplicationEventResponseStream,
-    ApplicationLiveQueryStream, ApplicationLiveQueryUpdate, ApplicationReactiveOperation,
-    EventConsumerOptions, LiveQueryCheckpoint, LiveQueryCursor, LiveQueryPatch,
-    LiveQueryPatchOperation, LiveQueryTerminal, TypedEventBatch, TypedEventDelivery,
-    TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream,
+    ApplicationContextualBatch, ApplicationContextualHydration, ApplicationContextualReaction,
+    ApplicationContextualWorkItem, ApplicationEvent, ApplicationEventBatch,
+    ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerStatus,
+    ApplicationEventDelivery, ApplicationEventId, ApplicationEventLeaseEvidence,
+    ApplicationEventMutationResult, ApplicationEventResponseStream, ApplicationLiveQueryStream,
+    ApplicationLiveQueryUpdate, ApplicationReactiveOperation, EventConsumerOptions,
+    LiveQueryCheckpoint, LiveQueryCursor, LiveQueryPatch, LiveQueryPatchOperation,
+    LiveQueryTerminal, TypedContextualBatch, TypedContextualWorkItem, TypedEventBatch,
+    TypedEventDelivery, TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream,
 };
 pub use status::{
     ClientError, DetailsFreeStatus, OutcomeUnknown, ProtocolFailure, ProtocolFailureKind,

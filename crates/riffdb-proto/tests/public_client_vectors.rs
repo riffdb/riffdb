@@ -343,6 +343,26 @@ fn expected_enum_values() -> BTreeSet<String> {
             "CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION",
         ),
         (
+            "riffdb.v1.ContextualQueryCardinality",
+            0,
+            "CONTEXTUAL_QUERY_CARDINALITY_UNSPECIFIED",
+        ),
+        (
+            "riffdb.v1.ContextualQueryCardinality",
+            1,
+            "CONTEXTUAL_QUERY_CARDINALITY_ONE",
+        ),
+        (
+            "riffdb.v1.ContextualQueryCardinality",
+            2,
+            "CONTEXTUAL_QUERY_CARDINALITY_MAYBE",
+        ),
+        (
+            "riffdb.v1.ContextualQueryCardinality",
+            3,
+            "CONTEXTUAL_QUERY_CARDINALITY_MANY",
+        ),
+        (
             "riffdb.v1.ContractMigrationApplyConfirmation",
             0,
             "CONTRACT_MIGRATION_APPLY_CONFIRMATION_UNSPECIFIED",

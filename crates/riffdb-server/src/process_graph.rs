@@ -522,6 +522,12 @@ impl ProductionGraphBuilder {
             cursor_clock,
         )
         .with_query_executor(Arc::new(storage))
+        .with_contextual_causation(
+            riffdb_service::ContextualCausationTokenCodec::from_provider(Arc::clone(
+                &capability_keys,
+            )
+                as Arc<dyn riffdb_service::ContextualCausationMacProvider>),
+        )
         .with_query_modules(query_modules)
         .with_reactive_modules(reactive_modules)
         .with_event_consumers(event_consumers, consumer_clock, event_lease_tokens)

@@ -3525,6 +3525,119 @@ pub mod get_event_stream_consumer_status_response {
         Found(super::EventConsumerStatus),
     }
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ConsumeContextualSubscriptionRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub selection: ::core::option::Option<EventConsumerSelection>,
+    #[prost(uint64, tag = "3")]
+    pub maximum_wait_nanos: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ContextualQueryRow {
+    #[prost(string, tag = "1")]
+    pub entity: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "2")]
+    pub fields: ::prost::alloc::vec::Vec<EventConsumerParameter>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ContextualQueryField {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(enumeration = "ContextualQueryCardinality", tag = "2")]
+    pub cardinality: i32,
+    #[prost(message, repeated, tag = "3")]
+    pub rows: ::prost::alloc::vec::Vec<ContextualQueryRow>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ContextualHydration {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub outcome: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "3")]
+    pub fields: ::prost::alloc::vec::Vec<ContextualQueryField>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AvailableContextualReaction {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub command_name: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "3")]
+    pub command_id: u32,
+    #[prost(bytes = "vec", tag = "4")]
+    pub causation_token: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ContextualWorkItem {
+    #[prost(message, optional, tag = "1")]
+    pub delivery: ::core::option::Option<ConsumedEvent>,
+    #[prost(uint64, tag = "2")]
+    pub context_head: u64,
+    #[prost(message, repeated, tag = "3")]
+    pub hydrations: ::prost::alloc::vec::Vec<ContextualHydration>,
+    #[prost(message, repeated, tag = "4")]
+    pub available_reactions: ::prost::alloc::vec::Vec<AvailableContextualReaction>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ConsumeContextualSubscriptionResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<ContextualWorkItem>,
+    #[prost(message, optional, tag = "2")]
+    pub status: ::core::option::Option<EventConsumerStatus>,
+    #[prost(bool, tag = "3")]
+    pub wait_timed_out: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AcknowledgeContextualSubscriptionRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub selection: ::core::option::Option<EventConsumerSelection>,
+    #[prost(message, optional, tag = "3")]
+    pub event_id: ::core::option::Option<EventId>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub lease_token: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "5")]
+    pub history_incarnation: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NegativeAcknowledgeContextualSubscriptionRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub selection: ::core::option::Option<EventConsumerSelection>,
+    #[prost(message, optional, tag = "3")]
+    pub event_id: ::core::option::Option<EventId>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub lease_token: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "5")]
+    pub history_incarnation: u64,
+    #[prost(uint64, tag = "6")]
+    pub retry_delay_nanos: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetContextualSubscriptionStatusRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub selection: ::core::option::Option<EventConsumerSelection>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecuteContextualReactionRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub selection: ::core::option::Option<EventConsumerSelection>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub causation_token: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "4")]
+    pub reaction_name: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "5")]
+    pub command: ::core::option::Option<ExecuteCommandRequest>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum EventConsumerMutationResult {
@@ -3564,6 +3677,38 @@ impl EventConsumerMutationResult {
             }
             "EVENT_CONSUMER_MUTATION_RESULT_STALE_LEASE" => Some(Self::StaleLease),
             "EVENT_CONSUMER_MUTATION_RESULT_LEASE_EXPIRED" => Some(Self::LeaseExpired),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ContextualQueryCardinality {
+    Unspecified = 0,
+    One = 1,
+    Maybe = 2,
+    Many = 3,
+}
+impl ContextualQueryCardinality {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CONTEXTUAL_QUERY_CARDINALITY_UNSPECIFIED",
+            Self::One => "CONTEXTUAL_QUERY_CARDINALITY_ONE",
+            Self::Maybe => "CONTEXTUAL_QUERY_CARDINALITY_MAYBE",
+            Self::Many => "CONTEXTUAL_QUERY_CARDINALITY_MANY",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CONTEXTUAL_QUERY_CARDINALITY_UNSPECIFIED" => Some(Self::Unspecified),
+            "CONTEXTUAL_QUERY_CARDINALITY_ONE" => Some(Self::One),
+            "CONTEXTUAL_QUERY_CARDINALITY_MAYBE" => Some(Self::Maybe),
+            "CONTEXTUAL_QUERY_CARDINALITY_MANY" => Some(Self::Many),
             _ => None,
         }
     }

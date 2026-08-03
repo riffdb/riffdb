@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use riffdb_api_grpc::{
     GrpcDeploymentCompletion, GrpcLifecycleRoute, GrpcOfflineMaintenanceOperation,
@@ -10,35 +11,37 @@ use riffdb_api_grpc::{
 use riffdb_errors::PublicError;
 use riffdb_service::{
     AdministrationApplication, CheckSymbolicQueryResult, CommandApplication, CommitApplication,
-    CompileSymbolicQueryRequest, ConsumeEventStreamRequest, ConsumeEventStreamResult,
-    ContractApplication, ContractValidationResult, CreateCapabilityInvocation,
-    CreateCapabilityResult, CreateOfflineBackupRequest, DeployContractRequest,
-    DeployContractResult, DeployQueryModuleRequest, DeployQueryModuleResult,
+    CompileSymbolicQueryRequest, ConsumeContextualSubscriptionRequest,
+    ConsumeContextualSubscriptionResult, ConsumeEventStreamRequest, ConsumeEventStreamResult,
+    ContextualSubscriptionApplication, ContractApplication, ContractValidationResult,
+    CreateCapabilityInvocation, CreateCapabilityResult, CreateOfflineBackupRequest,
+    DeployContractRequest, DeployContractResult, DeployQueryModuleRequest, DeployQueryModuleResult,
     DeployReactiveModuleRequest, DeployReactiveModuleResult, DescribeEventRequest,
     DescribeEventResult, DescribeSymbolicContractResult, DiscoverCommandToolsRequest,
     DiscoverCommandToolsResult, DiscoverResourcesRequest, DiscoverResourcesResult,
     DiscoveryApplication, EventConsumerLeaseSelection, EventConsumerMutationResult,
     EventConsumerSelection, EventConsumerServiceApplication, EventConsumerStatus,
     EventServiceApplication, ExecuteCommandRequest, ExecuteCommandResult,
-    ExecuteProjectedQueryRequest, ExecuteProjectedQueryResult, ExecuteSymbolicQueryRequest,
-    ExecuteSymbolicQueryResult, ExplainCommandRequest, ExplainCommandResult,
-    ExplainSymbolicQueryResult, GetActiveContractRequest, GetActiveContractResult,
-    GetCommitRequest, GetCommitResult, GetContractVersionRequest, GetContractVersionResult,
-    GetEntityRequest, GetEntityResult, GetOfflineMaintenanceOperationRequest,
-    GetOfflineMaintenanceOperationResult, GetProjectionStatusRequest, GetProjectionStatusResult,
-    GetQueryModuleRequest, HealthContext, HealthRequest, HealthResult,
-    ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
-    LiveNamedQueryApplication, NamedSymbolicQueryRequest, NegativeAcknowledgeEventStreamRequest,
-    OfflineMaintenanceApplication, OfflineMaintenanceStartResult, ProjectedQueryApplication,
-    QueryApplication, QueryModuleInspection, QueryProjectionRequest, QueryProjectionResult,
-    ReplayEventsRequest, ReplayEventsResult, RequestContext, ResolveCommandOutcomeRequest,
-    ResolveCommandOutcomeResult, RestoreOfflineBackupInvocation, RevokeCapabilityRequest,
-    RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest,
-    ScanIndexResult, SeekEventStreamConsumerRequest, ServiceFuture, StatisticsRequest,
-    StatisticsResult, SubscribeToCommitsRequest, SubscribeToCommitsResult,
-    SymbolicContractSelector, SymbolicQueryApplication, TailEventsRequest, TailEventsResult,
-    TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
-    WatchLiveNamedQueryRequest, WatchLiveNamedQueryResult,
+    ExecuteContextualReactionRequest, ExecuteProjectedQueryRequest, ExecuteProjectedQueryResult,
+    ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult, ExplainCommandRequest,
+    ExplainCommandResult, ExplainSymbolicQueryResult, GetActiveContractRequest,
+    GetActiveContractResult, GetCommitRequest, GetCommitResult, GetContractVersionRequest,
+    GetContractVersionResult, GetEntityRequest, GetEntityResult,
+    GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
+    GetProjectionStatusRequest, GetProjectionStatusResult, GetQueryModuleRequest, HealthContext,
+    HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest,
+    ListPendingOutboxDeliveriesResult, LiveNamedQueryApplication, NamedSymbolicQueryRequest,
+    NegativeAcknowledgeEventStreamRequest, OfflineMaintenanceApplication,
+    OfflineMaintenanceStartResult, ProjectedQueryApplication, QueryApplication,
+    QueryModuleInspection, QueryProjectionRequest, QueryProjectionResult, ReplayEventsRequest,
+    ReplayEventsResult, RequestContext, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
+    RestoreOfflineBackupInvocation, RevokeCapabilityRequest, RevokeCapabilityResult,
+    ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult,
+    SeekEventStreamConsumerRequest, ServiceFuture, StatisticsRequest, StatisticsResult,
+    SubscribeToCommitsRequest, SubscribeToCommitsResult, SymbolicContractSelector,
+    SymbolicQueryApplication, TailEventsRequest, TailEventsResult, TraceProvenanceRequest,
+    TraceProvenanceResult, ValidateContractRequest, WatchLiveNamedQueryRequest,
+    WatchLiveNamedQueryResult,
 };
 use riffdb_types::ServiceOperationV1;
 
@@ -259,6 +262,83 @@ delegate_operation! {
             context: RequestContext,
             request: EventConsumerSelection
         ) -> Option<EventConsumerStatus> => GetEventStreamConsumerStatus;
+    }
+}
+
+impl ContextualSubscriptionApplication for LifecycleApplicationService {
+    fn consume_contextual_subscription(
+        &self,
+        context: RequestContext,
+        request: ConsumeContextualSubscriptionRequest,
+    ) -> ServiceFuture<'_, ConsumeContextualSubscriptionResult> {
+        let Some(service) = self.admit(ServiceOperationV1::ConsumeContextualSubscription) else {
+            return unavailable();
+        };
+        Box::pin(async move {
+            service
+                .consume_contextual_subscription(context, request)
+                .await
+        })
+    }
+
+    fn acknowledge_contextual_subscription(
+        &self,
+        context: RequestContext,
+        lease: EventConsumerLeaseSelection,
+    ) -> ServiceFuture<'_, EventConsumerMutationResult> {
+        let Some(service) = self.admit(ServiceOperationV1::AcknowledgeContextualSubscription)
+        else {
+            return unavailable();
+        };
+        Box::pin(async move {
+            service
+                .acknowledge_contextual_subscription(context, lease)
+                .await
+        })
+    }
+
+    fn negative_acknowledge_contextual_subscription(
+        &self,
+        context: RequestContext,
+        lease: EventConsumerLeaseSelection,
+        retry_delay: Duration,
+    ) -> ServiceFuture<'_, EventConsumerMutationResult> {
+        let Some(service) =
+            self.admit(ServiceOperationV1::NegativeAcknowledgeContextualSubscription)
+        else {
+            return unavailable();
+        };
+        Box::pin(async move {
+            service
+                .negative_acknowledge_contextual_subscription(context, lease, retry_delay)
+                .await
+        })
+    }
+
+    fn get_contextual_subscription_status(
+        &self,
+        context: RequestContext,
+        selection: EventConsumerSelection,
+    ) -> ServiceFuture<'_, Option<EventConsumerStatus>> {
+        let Some(service) = self.admit(ServiceOperationV1::GetContextualSubscriptionStatus) else {
+            return unavailable();
+        };
+        Box::pin(async move {
+            service
+                .get_contextual_subscription_status(context, selection)
+                .await
+        })
+    }
+
+    fn execute_contextual_reaction(
+        &self,
+        context: RequestContext,
+        request: ExecuteContextualReactionRequest,
+    ) -> ServiceFuture<'_, ExecuteCommandResult> {
+        let Some(service) = self.admit(ServiceOperationV1::ExecuteContextualReaction) else {
+            return unavailable();
+        };
+        Box::pin(async move { service.execute_contextual_reaction(context, request).await })
     }
 }
 

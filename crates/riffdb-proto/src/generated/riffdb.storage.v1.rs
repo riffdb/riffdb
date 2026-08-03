@@ -1529,6 +1529,41 @@ pub mod stored_event_consumer_delivery_v1 {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredCommandCausationV1 {
+    #[prost(message, optional, tag = "1")]
+    pub causing_event_id: ::core::option::Option<EventIdV1>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub root_request_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredPendingAdmissionV2 {
+    #[prost(message, optional, tag = "1")]
+    pub base: ::core::option::Option<StoredPendingAdmissionV1>,
+    #[prost(message, optional, tag = "2")]
+    pub causation: ::core::option::Option<StoredCommandCausationV1>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredExecutionFailedV2 {
+    #[prost(message, optional, tag = "1")]
+    pub pending: ::core::option::Option<StoredPendingAdmissionV2>,
+    #[prost(enumeration = "ExecutionFailureCodeV1", tag = "2")]
+    pub code: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredOutcomeV2 {
+    #[prost(message, optional, tag = "1")]
+    pub base: ::core::option::Option<StoredOutcomeV1>,
+    #[prost(message, optional, tag = "2")]
+    pub causation: ::core::option::Option<StoredCommandCausationV1>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredProvenanceRecordV2 {
+    #[prost(message, optional, tag = "1")]
+    pub base: ::core::option::Option<StoredProvenanceRecordV1>,
+    #[prost(message, optional, tag = "2")]
+    pub causation: ::core::option::Option<StoredCommandCausationV1>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CommittedEntityReferenceV2 {
     #[prost(message, optional, tag = "1")]
     pub target: ::core::option::Option<EntityTargetV1>,

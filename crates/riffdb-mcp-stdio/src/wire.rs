@@ -37,6 +37,11 @@ pub(crate) enum FixedGrpcRequest {
     EventSeek(v1::SeekEventStreamConsumerRequest),
     EventStatus(v1::GetEventStreamConsumerStatusRequest),
     QueryWatch(v1::WatchNamedQueryRequest),
+    ContextualNext(v1::ConsumeContextualSubscriptionRequest),
+    ContextualAck(v1::AcknowledgeContextualSubscriptionRequest),
+    ContextualNack(v1::NegativeAcknowledgeContextualSubscriptionRequest),
+    ContextualStatus(v1::GetContextualSubscriptionStatusRequest),
+    ContextualReaction(v1::ExecuteContextualReactionRequest),
 }
 
 pub(crate) fn fixed_request_to_proto(
@@ -388,6 +393,120 @@ pub(crate) fn fixed_request_to_proto(
                 .collect(),
             cursor,
         }),
+        McpFixedToolRequest::ContextualNext {
+            module_hash,
+            operation_name,
+            parameters,
+            consumer_name,
+            maximum_wait_nanos,
+        } => FixedGrpcRequest::ContextualNext(v1::ConsumeContextualSubscriptionRequest {
+            request_id,
+            selection: Some(event_selection(
+                module_hash,
+                operation_name,
+                parameters,
+                consumer_name,
+            )?),
+            maximum_wait_nanos,
+        }),
+        McpFixedToolRequest::ContextualLeaseMutation {
+            nack,
+            module_hash,
+            operation_name,
+            parameters,
+            consumer_name,
+            event_id,
+            lease_token,
+            history_incarnation,
+            retry_delay_nanos,
+        } => {
+            let selection = Some(event_selection(
+                module_hash,
+                operation_name,
+                parameters,
+                consumer_name,
+            )?);
+            let event_id = Some(v1::EventId {
+                commit_sequence: event_id.0,
+                event_ordinal: event_id.1,
+            });
+            if nack {
+                FixedGrpcRequest::ContextualNack(
+                    v1::NegativeAcknowledgeContextualSubscriptionRequest {
+                        request_id,
+                        selection,
+                        event_id,
+                        lease_token,
+                        history_incarnation,
+                        retry_delay_nanos,
+                    },
+                )
+            } else {
+                FixedGrpcRequest::ContextualAck(v1::AcknowledgeContextualSubscriptionRequest {
+                    request_id,
+                    selection,
+                    event_id,
+                    lease_token,
+                    history_incarnation,
+                })
+            }
+        }
+        McpFixedToolRequest::ContextualStatus {
+            module_hash,
+            operation_name,
+            parameters,
+            consumer_name,
+        } => FixedGrpcRequest::ContextualStatus(v1::GetContextualSubscriptionStatusRequest {
+            request_id,
+            selection: Some(event_selection(
+                module_hash,
+                operation_name,
+                parameters,
+                consumer_name,
+            )?),
+        }),
+        McpFixedToolRequest::ContextualReaction {
+            module_hash,
+            operation_name,
+            parameters,
+            consumer_name,
+            reaction_name,
+            causation_token,
+            command_name,
+            input,
+            expected_contract_version,
+        } => {
+            let mut fields = input
+                .into_iter()
+                .map(|(name, value)| {
+                    Ok(v1::ValueField {
+                        field_id: None,
+                        name,
+                        value: Some(natural_value_to_proto(value)?),
+                    })
+                })
+                .collect::<Result<Vec<_>, WireConversionError>>()?;
+            fields.sort_by(|left, right| left.name.cmp(&right.name));
+            FixedGrpcRequest::ContextualReaction(v1::ExecuteContextualReactionRequest {
+                request_id: request_id.clone(),
+                selection: Some(event_selection(
+                    module_hash,
+                    operation_name,
+                    parameters,
+                    consumer_name,
+                )?),
+                causation_token,
+                reaction_name,
+                command: Some(v1::ExecuteCommandRequest {
+                    request_id,
+                    command_name,
+                    expected_contract_version,
+                    input: Some(v1::Value {
+                        kind: Some(v1::value::Kind::RecordValue(v1::ValueRecord { fields })),
+                    }),
+                }),
+            })
+        }
     })
 }
 

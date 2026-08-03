@@ -12,12 +12,12 @@ use crate::{
 
 use super::{
     COMMIT, CanonicalStoredEnvelopeV1, DurableCodecError, DurableCodecErrorKind, ENTITY, EVENT,
-    EVENT_ROUTE, INDEX_ENTRY, INDEX_EPOCH, OUTCOME, PROVENANCE, binding_to_proto, claims_to_proto,
-    dependencies_to_proto, durability_to_proto, encode_application_sequence_allocator_v1,
-    encode_commit_record_v1, encode_durable_event_v1, encode_entity_record_v1,
-    encode_event_route_v1, encode_index_entry_v2, encode_index_epoch_v1, encode_outbox_intent_v1,
-    encode_provenance_record_v1, encode_stored_outcome_v1, entity_target_to_proto,
-    identity_to_proto, plan_to_proto, storage_result, timestamp_to_proto,
+    EVENT_ROUTE, INDEX_ENTRY, INDEX_EPOCH, OUTCOME_V2, PROVENANCE_V2, binding_to_proto,
+    causation_to_proto, claims_to_proto, dependencies_to_proto, durability_to_proto,
+    encode_application_sequence_allocator_v1, encode_commit_record_v1, encode_durable_event_v1,
+    encode_entity_record_v1, encode_event_route_v1, encode_index_entry_v2, encode_index_epoch_v1,
+    encode_outbox_intent_v1, encode_provenance_record_v1, encode_stored_outcome_v1,
+    entity_target_to_proto, identity_to_proto, plan_to_proto, storage_result, timestamp_to_proto,
 };
 
 const OUTBOX_INTENT: &str = "riffdb.storage.v1.StoredOutboxIntentV2";
@@ -288,6 +288,10 @@ pub fn command_write_set_upper_bound_v1(
         pending.partition_key().as_bytes().len(),
         &conflict_hash_lens,
     )?;
+    let causation_len = pending
+        .causation()
+        .map(|value| causation_to_proto(value).encoded_len());
+    let outcome_len = sizing_successor_len(outcome_len, causation_len)?;
     let affected_entity_lens = evaluated
         .mutations()
         .iter()
@@ -307,6 +311,7 @@ pub fn command_write_set_upper_bound_v1(
         &affected_entity_lens,
         &event_id_lens,
     )?;
+    let provenance_len = sizing_successor_len(provenance_len, causation_len)?;
     let event_reference_lens = event_id_lens
         .iter()
         .map(|event_id_len| {
@@ -360,7 +365,7 @@ pub fn command_write_set_upper_bound_v1(
             sizing_index_epoch_len(value.post_image())
                 .and_then(|len| sizing_charge_len(INDEX_EPOCH, len))
         }))?,
-        outcome: sizing_charge_len(OUTCOME, outcome_len)?,
+        outcome: sizing_charge_len(OUTCOME_V2, outcome_len)?,
         events: sum_sizes(
             event_payload_lens
                 .iter()
@@ -375,7 +380,7 @@ pub fn command_write_set_upper_bound_v1(
             message_field_len(1, *event_reference_len)
                 .and_then(|len| sizing_charge_len(OUTBOX_INTENT, len))
         }))?,
-        provenance: sizing_charge_len(PROVENANCE, provenance_len)?,
+        provenance: sizing_charge_len(PROVENANCE_V2, provenance_len)?,
         commit: sizing_charge_len(COMMIT, commit_len)?,
     };
     finish_upper_bound(raw)
@@ -519,6 +524,19 @@ fn sizing_entity_len(
         message_field_len(4, schema_binding_len),
         bytes_field_len(5, post_image.fields_encoded_len()),
     ])
+}
+
+fn sizing_successor_len(
+    base_len: usize,
+    causation_len: Option<usize>,
+) -> Result<usize, DurableCodecError> {
+    let base = message_field_len(1, base_len)?;
+    match causation_len {
+        Some(causation_len) => base
+            .checked_add(message_field_len(2, causation_len)?)
+            .ok_or_else(DurableCodecError::invariant),
+        None => Ok(base),
+    }
 }
 
 /// Conservative protobuf payload length for one entity post-image reference.

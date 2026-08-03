@@ -1,6 +1,6 @@
 //! Exact reactive-module compilation over immutable contract and query inputs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_contract_ir::ContractBundle;
 use riffdb_query_compiler::{
@@ -8,6 +8,7 @@ use riffdb_query_compiler::{
 };
 use riffdb_query_ir::{MAX_REACTIVE_MODULE_BYTES, NamedTypeSchema, ReactiveModulePlanV1};
 use riffdb_query_syntax::{Diagnostic, format_module, parse_module};
+use riffdb_types::{CanonicalValue, decode_canonical_value, encode_canonical_value};
 
 use crate::QueryModule;
 
@@ -24,6 +25,65 @@ pub enum ReactiveModuleCompilationError {
     ArtifactLimit,
     /// Recompilation did not reproduce the supplied artifact bytes.
     IdentityMismatch,
+}
+
+/// A compiler-owned reactive argument source could not be bound exactly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReactiveArgumentBindingError;
+
+/// Binds canonical compiler argument sources for a stream or hydration.
+pub fn bind_reactive_arguments(
+    arguments: &[(String, String)],
+    parameters: &BTreeMap<String, CanonicalValue>,
+    event_fields: &BTreeMap<String, CanonicalValue>,
+) -> Result<BTreeMap<String, CanonicalValue>, ReactiveArgumentBindingError> {
+    let mut bound = BTreeMap::new();
+    for (target, source) in arguments {
+        let value = if let Some(name) = source.strip_prefix('$') {
+            parameters.get(name).cloned()
+        } else if let Some(name) = source.strip_prefix("event.") {
+            event_fields.get(name).cloned()
+        } else if let Some((_, encoded)) = source
+            .strip_prefix("literal:")
+            .and_then(|value| value.rsplit_once(':'))
+        {
+            let bytes = decode_hex(encoded)?;
+            let value = decode_canonical_value(&bytes).map_err(|_| ReactiveArgumentBindingError)?;
+            let canonical =
+                encode_canonical_value(&value).map_err(|_| ReactiveArgumentBindingError)?;
+            (canonical.as_slice() == bytes).then_some(value)
+        } else {
+            None
+        }
+        .ok_or(ReactiveArgumentBindingError)?;
+        if bound.insert(target.clone(), value).is_some() {
+            return Err(ReactiveArgumentBindingError);
+        }
+    }
+    Ok(bound)
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, ReactiveArgumentBindingError> {
+    if !value.len().is_multiple_of(2) || value.len() > 8 * 1_024 * 1_024 {
+        return Err(ReactiveArgumentBindingError);
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = hex_nibble(pair[0]).ok_or(ReactiveArgumentBindingError)?;
+            let low = hex_nibble(pair[1]).ok_or(ReactiveArgumentBindingError)?;
+            Ok((high << 4) | low)
+        })
+        .collect()
+}
+
+const fn hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        _ => None,
+    }
 }
 
 /// Builds the exact query facts available to reactive compilation.

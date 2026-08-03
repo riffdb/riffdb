@@ -1957,6 +1957,115 @@ impl EventService for GrpcApplication {
             result.as_ref(),
         )))
     }
+
+    async fn consume_contextual_subscription(
+        &self,
+        request: Request<v1::ConsumeContextualSubscriptionRequest>,
+    ) -> Result<Response<v1::ConsumeContextualSubscriptionResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = consume_contextual_subscription_request_from_proto(message)?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::ConsumeContextualSubscription,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(
+            service
+                .consume_contextual_subscription(context, request)
+                .await,
+        )?;
+        Ok(Response::new(
+            consume_contextual_subscription_result_to_proto(&result)?,
+        ))
+    }
+
+    async fn acknowledge_contextual_subscription(
+        &self,
+        request: Request<v1::AcknowledgeContextualSubscriptionRequest>,
+    ) -> Result<Response<v1::EventConsumerMutationResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, lease) = acknowledge_contextual_subscription_request_from_proto(message)?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::AcknowledgeContextualSubscription,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(
+            service
+                .acknowledge_contextual_subscription(context, lease)
+                .await,
+        )?;
+        Ok(Response::new(event_consumer_mutation_result_to_proto(
+            result,
+        )))
+    }
+
+    async fn negative_acknowledge_contextual_subscription(
+        &self,
+        request: Request<v1::NegativeAcknowledgeContextualSubscriptionRequest>,
+    ) -> Result<Response<v1::EventConsumerMutationResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, lease, retry_delay) =
+            negative_acknowledge_contextual_subscription_request_from_proto(message)?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::NegativeAcknowledgeContextualSubscription,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(
+            service
+                .negative_acknowledge_contextual_subscription(context, lease, retry_delay)
+                .await,
+        )?;
+        Ok(Response::new(event_consumer_mutation_result_to_proto(
+            result,
+        )))
+    }
+
+    async fn get_contextual_subscription_status(
+        &self,
+        request: Request<v1::GetContextualSubscriptionStatusRequest>,
+    ) -> Result<Response<v1::GetEventStreamConsumerStatusResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, selection) =
+            event_consumer_selection_request_from_proto(message.request_id, message.selection)?;
+        let (service, context, _cancellation) = self.normal_invocation(
+            ServiceOperationV1::GetContextualSubscriptionStatus,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(
+            service
+                .get_contextual_subscription_status(context, selection)
+                .await,
+        )?;
+        Ok(Response::new(event_consumer_status_result_to_proto(
+            result.as_ref(),
+        )))
+    }
+
+    async fn execute_contextual_reaction(
+        &self,
+        request: Request<v1::ExecuteContextualReactionRequest>,
+    ) -> Result<Response<v1::ExecuteCommandResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let (request_id, request) = execute_contextual_reaction_request_from_proto(message)?;
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let history_incarnation = lifecycle
+            .history_incarnation()
+            .ok_or_else(service_not_ready)?;
+        let (service, context, _cancellation) = self.normal_invocation_with(
+            lifecycle.as_ref(),
+            ServiceOperationV1::ExecuteContextualReaction,
+            &metadata,
+            request_id,
+        )?;
+        let result = map_service(service.execute_contextual_reaction(context, request).await)?;
+        Ok(Response::new(execute_command_result_to_proto(
+            &result,
+            history_incarnation,
+        )?))
+    }
 }
 
 /// Transport stream for event-consumer pull responses.

@@ -71,5 +71,9 @@ path = "../../tests/durable_event_consumers.rs"
 name = "live_named_queries"
 path = "../../tests/live_named_queries.rs"
 
+[[test]]
+name = "contextual_agent_subscriptions"
+path = "../../tests/contextual_agent_subscriptions.rs"
+
 [lints]
 workspace = true

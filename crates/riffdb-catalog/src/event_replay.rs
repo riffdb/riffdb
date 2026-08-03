@@ -11,6 +11,7 @@ use riffdb_query_module::{
 use riffdb_storage_api::{
     AuthoritativePointReader, EventRouteContinuationV1, EventRoutePageLimit,
     EventRouteScanRequestV1, EventRouteUpperFenceV1, PartitionEventRouteReader, StorageErrorKind,
+    StoredCommitRecordV1,
 };
 use riffdb_types::{
     ActorKind, CanonicalValue, ContractVersion, EventId, PartitionKey, PartitionKeyHash, PlanHash,
@@ -173,6 +174,7 @@ impl ResolvedReactiveEventStream {
                     kind: EventReplayErrorKind::Storage(error.kind()),
                 })?
                 .ok_or_else(EventReplayError::integrity)?;
+            let (root_request_id, causing_event_id) = read_event_correlation(reader, &commit)?;
             if route.event_id() != event.event_id()
                 || route.event_type_id() != event.event_type_id()
                 || route.event_hash() != event.event_hash()
@@ -195,6 +197,8 @@ impl ResolvedReactiveEventStream {
                 view,
                 occurred_at: commit.logical_time().timestamp(),
                 request_id: commit.admission_request_id(),
+                root_request_id,
+                causing_event_id,
                 actor_kind: commit.actor().actor_kind(),
                 provenance_id: commit.provenance_id(),
                 history_incarnation,
@@ -266,6 +270,7 @@ impl ResolvedEventReplay {
                     kind: EventReplayErrorKind::Storage(error.kind()),
                 })?
                 .ok_or_else(EventReplayError::integrity)?;
+            let (root_request_id, causing_event_id) = read_event_correlation(reader, &commit)?;
             if route.event_id() != event.event_id()
                 || route.event_type_id() != event.event_type_id()
                 || route.event_hash() != event.event_hash()
@@ -286,6 +291,8 @@ impl ResolvedEventReplay {
                     view,
                     occurred_at: commit.logical_time().timestamp(),
                     request_id: commit.admission_request_id(),
+                    root_request_id,
+                    causing_event_id,
                     actor_kind: commit.actor().actor_kind(),
                     provenance_id: commit.provenance_id(),
                     history_incarnation,
@@ -304,6 +311,46 @@ impl fmt::Debug for ResolvedEventReplay {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ResolvedEventReplay([CHECKED])")
     }
+}
+
+fn read_event_correlation<R>(
+    reader: &R,
+    commit: &StoredCommitRecordV1,
+) -> Result<(RequestId, Option<EventId>), EventReplayError>
+where
+    R: AuthoritativePointReader,
+{
+    let provenance = reader
+        .read_provenance(commit.provenance_id())
+        .map_err(|error| EventReplayError {
+            kind: EventReplayErrorKind::Storage(error.kind()),
+        })?
+        .ok_or_else(EventReplayError::integrity)?;
+    let matches_commit = provenance.provenance_id() == commit.provenance_id()
+        && provenance.commit_sequence() == commit.commit_sequence()
+        && provenance.admission_request_id() == commit.admission_request_id()
+        && provenance.plan() == commit.plan()
+        && provenance.canonical_input_hash() == commit.canonical_input_hash()
+        && provenance.actor() == commit.actor()
+        && provenance.logical_time() == commit.logical_time()
+        && provenance.partition_hash() == commit.partition_hash()
+        && provenance.conflict_hashes() == commit.conflict_hashes()
+        && provenance.outcome_id() == commit.declared_outcome().outcome_id()
+        && provenance
+            .event_ids()
+            .iter()
+            .copied()
+            .eq(commit.events().iter().map(|event| event.event_id()));
+    if !matches_commit {
+        return Err(EventReplayError::integrity());
+    }
+    Ok(match provenance.causation() {
+        Some(causation) => (
+            causation.root_request_id(),
+            Some(causation.causing_event_id()),
+        ),
+        None => (commit.admission_request_id(), None),
+    })
 }
 
 /// One bounded page of symbolic matching events from a frozen route scan.
@@ -356,6 +403,8 @@ pub struct SymbolicEventEnvelope {
     view: SymbolicEventView,
     occurred_at: Timestamp,
     request_id: RequestId,
+    root_request_id: RequestId,
+    causing_event_id: Option<EventId>,
     actor_kind: ActorKind,
     provenance_id: ProvenanceId,
     history_incarnation: u64,
@@ -392,27 +441,22 @@ impl SymbolicEventEnvelope {
         self.view.command_name()
     }
 
-    /// Returns the original command request and root correlation identity.
-    ///
-    /// Direct commands use their own request as the root. A future contextual
-    /// reaction successor may persist and expose an inherited root separately.
+    /// Returns the exact command request identity.
     #[must_use]
     pub const fn request_id(&self) -> RequestId {
         self.request_id
     }
 
-    /// Returns the root request correlation retained by current direct commands.
+    /// Returns the inherited root request, or the direct command request.
     #[must_use]
     pub const fn root_request_id(&self) -> RequestId {
-        self.request_id
+        self.root_request_id
     }
 
-    /// Returns the causing event when persisted by a contextual-reaction format.
-    ///
-    /// Existing direct-command provenance has no causing event.
+    /// Returns the causing event for a contextual reaction.
     #[must_use]
     pub const fn causing_event_id(&self) -> Option<EventId> {
-        None
+        self.causing_event_id
     }
 
     /// Returns the deterministic occurrence time of the enclosing commit.
