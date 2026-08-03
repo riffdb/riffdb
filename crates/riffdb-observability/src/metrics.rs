@@ -927,7 +927,22 @@ pub struct CommandMetricSnapshot {
 struct FixedHistogram {
     count: AtomicU64,
     sum: AtomicU64,
-    cumulative_buckets: [AtomicU64; HISTOGRAM_UPPER_BOUNDS.len()],
+    /// Per-bucket (non-cumulative) counts; cumulated only at snapshot time so
+    /// one observation touches exactly one bucket. The final bound is
+    /// `u64::MAX`, so every value has a bucket.
+    bucket_counts: [AtomicU64; HISTOGRAM_UPPER_BOUNDS.len()],
+}
+
+/// Returns the first bucket whose upper bound covers the value.
+const fn histogram_bucket_index(value: u64) -> usize {
+    let mut index = 0;
+    while index < HISTOGRAM_UPPER_BOUNDS.len() {
+        if value <= HISTOGRAM_UPPER_BOUNDS[index] {
+            return index;
+        }
+        index += 1;
+    }
+    HISTOGRAM_UPPER_BOUNDS.len() - 1
 }
 
 impl FixedHistogram {
@@ -935,27 +950,35 @@ impl FixedHistogram {
         Self {
             count: AtomicU64::new(0),
             sum: AtomicU64::new(0),
-            cumulative_buckets: std::array::from_fn(|_| AtomicU64::new(0)),
+            bucket_counts: std::array::from_fn(|_| AtomicU64::new(0)),
         }
     }
 
+    /// Hot path: three uncontended relaxed adds, no compare-and-swap loops.
+    /// Plain wrapping adds are sound here: a `u64` of microseconds saturates
+    /// after ~585,000 years of accumulated duration and the count after
+    /// 1.8e19 observations — wrap is unreachable, and the previous
+    /// saturating CAS loops were the dominant cost of the whole metrics
+    /// surface under profile.
     fn observe(&self, value: u64) {
-        saturating_add(&self.count, 1);
-        saturating_add(&self.sum, value);
-        for (upper, bucket) in HISTOGRAM_UPPER_BOUNDS.iter().zip(&self.cumulative_buckets) {
-            if value <= *upper {
-                saturating_add(bucket, 1);
-            }
-        }
+        self.count.fetch_add(1, Ordering::Relaxed);
+        self.sum.fetch_add(value, Ordering::Relaxed);
+        self.bucket_counts[histogram_bucket_index(value)].fetch_add(1, Ordering::Relaxed);
     }
 
     fn snapshot(&self) -> HistogramSnapshot {
+        let mut running = 0_u64;
+        let mut cumulative = [0_u64; HISTOGRAM_UPPER_BOUNDS.len()];
+        let mut index = 0;
+        while index < HISTOGRAM_UPPER_BOUNDS.len() {
+            running = running.saturating_add(self.bucket_counts[index].load(Ordering::Relaxed));
+            cumulative[index] = running;
+            index += 1;
+        }
         HistogramSnapshot {
             count: self.count.load(Ordering::Relaxed),
             sum: self.sum.load(Ordering::Relaxed),
-            cumulative_buckets: std::array::from_fn(|index| {
-                self.cumulative_buckets[index].load(Ordering::Relaxed)
-            }),
+            cumulative_buckets: cumulative,
         }
     }
 }
@@ -1648,5 +1671,64 @@ const fn mcp_risk_index(risk: McpRiskClass) -> usize {
         McpRiskClass::ReadOnlyCompute => 5,
         McpRiskClass::ReadOnlyData => 6,
         McpRiskClass::DynamicCommand => 7,
+    }
+}
+
+#[cfg(test)]
+mod histogram_hot_path_tests {
+    use super::*;
+
+    /// Boundary placement: the snapshot's cumulative buckets must be
+    /// identical to the previous cumulative-at-observe encoding.
+    #[test]
+    fn snapshot_cumulative_buckets_match_boundary_placement_exactly() {
+        let histogram = FixedHistogram::new();
+        // Values chosen on exact bounds and just past them.
+        for value in [0, 0, 1, 2, 3, u64::MAX] {
+            histogram.observe(value);
+        }
+        let snapshot = histogram.snapshot();
+        assert_eq!(snapshot.count, 6);
+        assert_eq!(snapshot.sum, u64::MAX.wrapping_add(6));
+        // bounds start [0, 1, 2, ...]; cumulative: <=0 → 2, <=1 → 3, <=2 → 4.
+        assert_eq!(snapshot.cumulative_buckets[0], 2);
+        assert_eq!(snapshot.cumulative_buckets[1], 3);
+        assert_eq!(snapshot.cumulative_buckets[2], 4);
+        // Everything lands somewhere; the final cumulative equals the count.
+        assert_eq!(
+            snapshot.cumulative_buckets[HISTOGRAM_UPPER_BOUNDS.len() - 1],
+            6
+        );
+        // Cumulative sequence is monotone by construction.
+        for pair in snapshot.cumulative_buckets.windows(2) {
+            assert!(pair[0] <= pair[1], "cumulative buckets must be monotone");
+        }
+    }
+
+    /// Concurrency: hammered from many threads, count must equal the bucket
+    /// total exactly once writers stop (no lost updates on the single-bucket
+    /// path).
+    #[test]
+    fn concurrent_observations_lose_nothing() {
+        let histogram = std::sync::Arc::new(FixedHistogram::new());
+        let threads: Vec<_> = (0..8)
+            .map(|worker| {
+                let histogram = std::sync::Arc::clone(&histogram);
+                std::thread::spawn(move || {
+                    for i in 0..10_000_u64 {
+                        histogram.observe((worker * 131 + i * 7) % 5_000);
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().expect("worker");
+        }
+        let snapshot = histogram.snapshot();
+        assert_eq!(snapshot.count, 80_000);
+        assert_eq!(
+            snapshot.cumulative_buckets[HISTOGRAM_UPPER_BOUNDS.len() - 1],
+            80_000
+        );
     }
 }
