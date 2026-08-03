@@ -40,6 +40,8 @@ pub enum ApplicationOperation {
     ExecuteQuery,
     /// Compile and deploy a named-query module.
     DeployQueryModule,
+    /// Compile and publish an immutable reactive module.
+    DeployReactiveModule,
     /// Inspect a named-query module.
     GetQueryModule,
     /// Execute a symbolic command.
@@ -60,6 +62,7 @@ impl ApplicationOperation {
             Self::ExplainQuery => "ExplainQuery",
             Self::ExecuteQuery => "ExecuteQuery",
             Self::DeployQueryModule => "DeployQueryModule",
+            Self::DeployReactiveModule => "DeployReactiveModule",
             Self::GetQueryModule => "GetQueryModule",
             Self::ExecuteCommand => "ExecuteCommand",
             Self::BatchCommand => "BatchCommand",

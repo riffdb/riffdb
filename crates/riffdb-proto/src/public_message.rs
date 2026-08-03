@@ -8,12 +8,12 @@ use prost::Message;
 use riffdb_errors::ApplicationOperation;
 use riffdb_types::{
     AgentSessionId, Audience, BackupNameV1, CapabilityId, ContractMigrationOperationId, EntityKey,
-    IndexEntryKey, MAX_ACTOR_ID_BYTES, MAX_CAPABILITY_AUDIENCES, MAX_CAPABILITY_FIELD_VISIBILITY,
-    MAX_CAPABILITY_LIFETIME_SECONDS, MAX_CAPABILITY_PARTITIONS, MAX_CAPABILITY_PAYLOAD_BYTES,
-    MAX_CAPABILITY_PERMISSIONS, MAX_COMMAND_CONFLICT_KEYS_V1, MAX_CONTRACT_LINEAGE_BYTES,
-    MAX_IDEMPOTENCY_KEY_BYTES, MAX_KEY_BYTES, MAX_PROJECTION_GROUP_COMPONENTS, MAX_TENANT_ID_BYTES,
-    OfflineMaintenanceOperationId, PartitionKey, ProvenanceId, RequestId, Timestamp, hash_schema,
-    offline_maintenance_input_hash,
+    EventConsumerName, IndexEntryKey, MAX_ACTOR_ID_BYTES, MAX_CAPABILITY_AUDIENCES,
+    MAX_CAPABILITY_FIELD_VISIBILITY, MAX_CAPABILITY_LIFETIME_SECONDS, MAX_CAPABILITY_PARTITIONS,
+    MAX_CAPABILITY_PAYLOAD_BYTES, MAX_CAPABILITY_PERMISSIONS, MAX_COMMAND_CONFLICT_KEYS_V1,
+    MAX_CONTRACT_LINEAGE_BYTES, MAX_IDEMPOTENCY_KEY_BYTES, MAX_KEY_BYTES,
+    MAX_PROJECTION_GROUP_COMPONENTS, MAX_TENANT_ID_BYTES, OfflineMaintenanceOperationId,
+    PartitionKey, ProvenanceId, RequestId, Timestamp, hash_schema, offline_maintenance_input_hash,
 };
 
 use crate::command::validate_provenance_uri;
@@ -7173,6 +7173,202 @@ fn validate_tail_events_response(message: &v1::TailEventsResponse) -> Result<(),
     Ok(())
 }
 
+fn validate_event_consumer_selection(
+    selection: Option<&v1::EventConsumerSelection>,
+) -> Result<(), PublicWireError> {
+    let selection = selection.ok_or(PublicWireError::MissingRequiredField)?;
+    hash(&selection.reactive_module_hash)?;
+    validate_event_symbol(&selection.operation_name)?;
+    EventConsumerName::new(selection.consumer_name.clone())
+        .map_err(|_| PublicWireError::InvalidValue)?;
+    if selection.parameters.len() > 1_024 {
+        return Err(PublicWireError::TooManyItems);
+    }
+    let mut prior = None;
+    for parameter in &selection.parameters {
+        validate_event_symbol(&parameter.name)?;
+        if prior.is_some_and(|value: &str| value >= parameter.name.as_str()) {
+            return Err(PublicWireError::NonCanonical);
+        }
+        validate_value(
+            parameter
+                .value
+                .as_ref()
+                .ok_or(PublicWireError::MissingRequiredField)?,
+        )
+        .map_err(|_| PublicWireError::InvalidValue)?;
+        prior = Some(parameter.name.as_str());
+    }
+    Ok(())
+}
+
+fn validate_event_consumer_checkpoint(
+    checkpoint: Option<&v1::EventConsumerCheckpoint>,
+) -> Result<(), PublicWireError> {
+    use v1::event_consumer_checkpoint::Position;
+    match checkpoint
+        .and_then(|value| value.position.as_ref())
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        Position::BeforeFirst(_) => Ok(()),
+        Position::AfterEventId(event_id) => validate_event_id_value(Some(event_id)).map(|_| ()),
+    }
+}
+
+fn validate_event_consumer_status(
+    status: Option<&v1::EventConsumerStatus>,
+) -> Result<(), PublicWireError> {
+    let status = status.ok_or(PublicWireError::MissingRequiredField)?;
+    if status.revision == 0
+        || status.history_incarnation == 0
+        || status.live_leases > 64
+        || status.retries > 4_096
+        || status.dead_letters > 4_096
+    {
+        return Err(PublicWireError::InvalidValue);
+    }
+    validate_event_consumer_checkpoint(status.checkpoint.as_ref())
+}
+
+fn validate_consume_event_stream_request(
+    message: &v1::ConsumeEventStreamRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    validate_event_consumer_selection(message.selection.as_ref())?;
+    if !(1..=64).contains(&message.batch_limit)
+        || !(1..=64).contains(&message.in_flight_limit)
+        || !(5..=900).contains(&message.lease_seconds)
+        || message.maximum_wait_nanos > MAX_PROJECTION_WAIT_NANOS
+    {
+        return Err(PublicWireError::InvalidValue);
+    }
+    Ok(())
+}
+
+fn validate_consume_event_stream_response(
+    message: &v1::ConsumeEventStreamResponse,
+) -> Result<(), PublicWireError> {
+    if message.events.len() > 64 || (message.wait_timed_out && !message.events.is_empty()) {
+        return Err(PublicWireError::TooManyItems);
+    }
+    validate_event_consumer_status(message.status.as_ref())?;
+    let history_incarnation = message
+        .status
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+        .history_incarnation;
+    let mut prior = None;
+    for item in &message.events {
+        let event = item
+            .event
+            .as_ref()
+            .ok_or(PublicWireError::MissingRequiredField)?;
+        validate_symbolic_event(event)?;
+        let event_id = validate_event_id_value(event.event_id.as_ref())?;
+        if prior.is_some_and(|value| value >= event_id)
+            || event.history_incarnation != history_incarnation
+            || !(1..=10).contains(&item.attempt)
+            || item.lease_token.len() != 32
+        {
+            return Err(PublicWireError::NonCanonical);
+        }
+        validate_timestamp(item.expires_at.as_ref())?;
+        prior = Some(event_id);
+    }
+    Ok(())
+}
+
+fn validate_consumer_lease_request_parts(
+    request_id_bytes: &[u8],
+    selection: Option<&v1::EventConsumerSelection>,
+    event_id: Option<&v1::EventId>,
+    lease_token: &[u8],
+    history_incarnation: u64,
+) -> Result<(), PublicWireError> {
+    request_id(request_id_bytes)?;
+    validate_event_consumer_selection(selection)?;
+    validate_event_id_value(event_id)?;
+    if lease_token.len() != 32 || history_incarnation == 0 {
+        return Err(PublicWireError::InvalidValue);
+    }
+    Ok(())
+}
+
+fn validate_acknowledge_event_stream_request(
+    message: &v1::AcknowledgeEventStreamRequest,
+) -> Result<(), PublicWireError> {
+    validate_consumer_lease_request_parts(
+        &message.request_id,
+        message.selection.as_ref(),
+        message.event_id.as_ref(),
+        &message.lease_token,
+        message.history_incarnation,
+    )
+}
+
+fn validate_negative_acknowledge_event_stream_request(
+    message: &v1::NegativeAcknowledgeEventStreamRequest,
+) -> Result<(), PublicWireError> {
+    validate_consumer_lease_request_parts(
+        &message.request_id,
+        message.selection.as_ref(),
+        message.event_id.as_ref(),
+        &message.lease_token,
+        message.history_incarnation,
+    )?;
+    if message.retry_delay_nanos > 3_600_000_000_000 {
+        return Err(PublicWireError::InvalidValue);
+    }
+    Ok(())
+}
+
+fn validate_seek_event_stream_consumer_request(
+    message: &v1::SeekEventStreamConsumerRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    validate_event_consumer_selection(message.selection.as_ref())?;
+    validate_event_consumer_checkpoint(message.checkpoint.as_ref())
+}
+
+fn validate_retire_event_stream_consumer_request(
+    message: &v1::RetireEventStreamConsumerRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    validate_event_consumer_selection(message.selection.as_ref())
+}
+
+fn validate_get_event_stream_consumer_status_request(
+    message: &v1::GetEventStreamConsumerStatusRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    validate_event_consumer_selection(message.selection.as_ref())
+}
+
+fn validate_event_consumer_mutation_response(
+    message: &v1::EventConsumerMutationResponse,
+) -> Result<(), PublicWireError> {
+    if message.result == v1::EventConsumerMutationResult::Unspecified as i32
+        || v1::EventConsumerMutationResult::try_from(message.result).is_err()
+    {
+        return Err(PublicWireError::InvalidValue);
+    }
+    Ok(())
+}
+
+fn validate_get_event_stream_consumer_status_response(
+    message: &v1::GetEventStreamConsumerStatusResponse,
+) -> Result<(), PublicWireError> {
+    use v1::get_event_stream_consumer_status_response::Result;
+    match message
+        .result
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        Result::NotFound(_) => Ok(()),
+        Result::Found(status) => validate_event_consumer_status(Some(status)),
+    }
+}
+
 macro_rules! impl_public_message {
     ($type:ty, $maximum:expr, $maximum_field:expr, $repeated:expr, $oneofs:expr, $preflight:path, $validate:path) => {
         impl PublicMessage for $type {
@@ -7252,6 +7448,87 @@ impl_public_message!(
     &[],
     preflight_noop,
     validate_tail_events_response
+);
+impl_public_message!(
+    v1::ConsumeEventStreamRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    6,
+    &[],
+    &[],
+    preflight_noop,
+    validate_consume_event_stream_request
+);
+impl_public_message!(
+    v1::ConsumeEventStreamResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    3,
+    &[1],
+    &[],
+    preflight_noop,
+    validate_consume_event_stream_response
+);
+impl_public_message!(
+    v1::AcknowledgeEventStreamRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    5,
+    &[],
+    &[],
+    preflight_noop,
+    validate_acknowledge_event_stream_request
+);
+impl_public_message!(
+    v1::NegativeAcknowledgeEventStreamRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    6,
+    &[],
+    &[],
+    preflight_noop,
+    validate_negative_acknowledge_event_stream_request
+);
+impl_public_message!(
+    v1::SeekEventStreamConsumerRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    3,
+    &[],
+    &[],
+    preflight_noop,
+    validate_seek_event_stream_consumer_request
+);
+impl_public_message!(
+    v1::RetireEventStreamConsumerRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_noop,
+    validate_retire_event_stream_consumer_request
+);
+impl_public_message!(
+    v1::GetEventStreamConsumerStatusRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    2,
+    &[],
+    &[],
+    preflight_noop,
+    validate_get_event_stream_consumer_status_request
+);
+impl_public_message!(
+    v1::EventConsumerMutationResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    1,
+    &[],
+    &[],
+    preflight_noop,
+    validate_event_consumer_mutation_response
+);
+impl_public_message!(
+    v1::GetEventStreamConsumerStatusResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    2,
+    &[],
+    &[&[1, 2]],
+    preflight_noop,
+    validate_get_event_stream_consumer_status_response
 );
 impl_public_message!(
     v1::ValidateContractResponse,

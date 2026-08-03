@@ -26,6 +26,7 @@ use riffdb_types::{
 };
 
 use crate::codec;
+use crate::consumer::retention_low_water_from_table;
 use crate::error::{
     database_error, precommit_storage_error, storage_error, table_error, transaction_error,
 };
@@ -34,8 +35,8 @@ use crate::keys::{
     decode_application_sequence_key, decode_event_key, encode_application_sequence_key,
 };
 use crate::layout::{
-    COMMITS, CONTRACT_MIGRATION_JOURNAL, EVENTS, HISTORY_TOMBSTONES, META,
-    META_APPLICATION_SEQUENCE, META_HISTORY_INCARNATION, META_RETENTION_HOLDS,
+    COMMITS, CONTRACT_MIGRATION_JOURNAL, EVENT_CONSUMERS, EVENTS, HISTORY_TOMBSTONES, META,
+    META_APPLICATION_SEQUENCE, META_DATABASE_ID, META_HISTORY_INCARNATION, META_RETENTION_HOLDS,
     META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS,
     PROJECTION_FRONTIER,
 };
@@ -561,12 +562,24 @@ pub(crate) fn collect_fencing_inputs(
     let undelivered = undelivered_outbox_low_water(transaction)?;
     let staged = staged_migration_frozen_frontier(transaction)?;
     let head = durable_application_head(transaction)?;
+    let meta = transaction.open_table(META).map_err(table_error)?;
+    let database_id = meta
+        .get(META_DATABASE_ID)
+        .map_err(precommit_storage_error)?
+        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+    let database_id = *codec::decode_database_identity_v1(database_id.value())?.value();
+    drop(meta);
+    let consumers = transaction
+        .open_table(EVENT_CONSUMERS)
+        .map_err(table_error)?;
+    let consumer_low_water = retention_low_water_from_table(&consumers, database_id)?;
     Ok(RetentionFencingInputs {
         durable_application_head: Some(head),
         min_projection_durable_frontier: min_projection,
         min_operator_hold_sequence: min_hold,
         undelivered_outbox_low_water: undelivered,
         staged_migration_frozen_frontier: staged,
+        consumer_low_water,
     })
 }
 

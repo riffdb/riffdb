@@ -7,9 +7,10 @@ use riffdb_commit::AdministrationAuditInputView;
 use riffdb_policy::ProvenanceSelector;
 use riffdb_types::{
     ActorId, ActorKind, ApprovalId, CapabilityId, CommandId, CommitSequence, ContractLineage,
-    ContractVersion, EntityTypeId, IndexId, ProjectionId, RequestId, ServiceAuditLinkV1,
-    ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceAuditTargetsError, ServiceAuditTargetsV1,
-    ServiceIngressKindV1, ServiceOperationV1,
+    ContractVersion, EntityTypeId, EventConsumerIdentityHash, IndexId, ProjectionId,
+    ReactiveModuleHash, ReactiveOperationName, RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1,
+    ServiceAuditTargetV1, ServiceAuditTargetsError, ServiceAuditTargetsV1, ServiceIngressKindV1,
+    ServiceOperationV1,
 };
 
 use crate::RequestContext;
@@ -78,6 +79,7 @@ fn validate_phase_link(
             operation,
             ServiceOperationV1::DeployContract
                 | ServiceOperationV1::DeployQueryModule
+                | ServiceOperationV1::DeployReactiveModule
                 | ServiceOperationV1::CreateCapability
                 | ServiceOperationV1::RevokeCapability
         ),
@@ -213,6 +215,21 @@ impl ServiceAuditTargetMap {
         version: ContractVersion,
     ) -> Result<ServiceAuditTargetsV1, ServiceAuditTargetsError> {
         one(ServiceAuditTargetV1::ContractVersion { lineage, version })
+    }
+
+    /// Target for one exact durable event consumer.
+    pub(crate) fn event_consumer(
+        lineage: ContractLineage,
+        module_hash: ReactiveModuleHash,
+        operation_name: ReactiveOperationName,
+        consumer_identity_hash: EventConsumerIdentityHash,
+    ) -> Result<ServiceAuditTargetsV1, ServiceAuditTargetsError> {
+        one(ServiceAuditTargetV1::EventConsumer {
+            lineage,
+            module_hash,
+            operation_name,
+            consumer_identity_hash,
+        })
     }
 
     /// Targets for one exact classified command execution.
@@ -461,6 +478,10 @@ mod tests {
         let sequence = CommitSequence::first();
         let provenance_id = ProvenanceId::from_bytes(uuid_bytes(0x31)).expect("UUIDv7");
         let capability_id = CapabilityId::from_bytes(uuid_bytes(0x41)).expect("UUIDv7");
+        let reactive_module_hash = ReactiveModuleHash::from_bytes([0x51; 32]);
+        let reactive_operation_name =
+            ReactiveOperationName::new("WorkspaceEvents").expect("operation");
+        let consumer_identity_hash = EventConsumerIdentityHash::from_bytes([0x61; 32]);
 
         let mapped = [
             (
@@ -612,6 +633,71 @@ mod tests {
                 ServiceAuditTargetMap::symbolic_query(lineage.clone(), version)
                     .expect("canonical targets"),
             ),
+            (
+                ServiceOperationV1::DeployReactiveModule,
+                ServiceAuditTargetMap::symbolic_query(lineage.clone(), version)
+                    .expect("canonical targets"),
+            ),
+            (
+                ServiceOperationV1::ConsumeEventStream,
+                ServiceAuditTargetMap::event_consumer(
+                    lineage.clone(),
+                    reactive_module_hash,
+                    reactive_operation_name.clone(),
+                    consumer_identity_hash,
+                )
+                .expect("canonical targets"),
+            ),
+            (
+                ServiceOperationV1::AcknowledgeEventStream,
+                ServiceAuditTargetMap::event_consumer(
+                    lineage.clone(),
+                    reactive_module_hash,
+                    reactive_operation_name.clone(),
+                    consumer_identity_hash,
+                )
+                .expect("canonical targets"),
+            ),
+            (
+                ServiceOperationV1::NegativeAcknowledgeEventStream,
+                ServiceAuditTargetMap::event_consumer(
+                    lineage.clone(),
+                    reactive_module_hash,
+                    reactive_operation_name.clone(),
+                    consumer_identity_hash,
+                )
+                .expect("canonical targets"),
+            ),
+            (
+                ServiceOperationV1::SeekEventStreamConsumer,
+                ServiceAuditTargetMap::event_consumer(
+                    lineage.clone(),
+                    reactive_module_hash,
+                    reactive_operation_name.clone(),
+                    consumer_identity_hash,
+                )
+                .expect("canonical targets"),
+            ),
+            (
+                ServiceOperationV1::RetireEventStreamConsumer,
+                ServiceAuditTargetMap::event_consumer(
+                    lineage.clone(),
+                    reactive_module_hash,
+                    reactive_operation_name.clone(),
+                    consumer_identity_hash,
+                )
+                .expect("canonical targets"),
+            ),
+            (
+                ServiceOperationV1::GetEventStreamConsumerStatus,
+                ServiceAuditTargetMap::event_consumer(
+                    lineage.clone(),
+                    reactive_module_hash,
+                    reactive_operation_name,
+                    consumer_identity_hash,
+                )
+                .expect("canonical targets"),
+            ),
         ];
 
         let public_operations = ServiceOperationV1::ALL
@@ -629,7 +715,7 @@ mod tests {
 
         let expected_nonempty_lengths = [
             0, 2, 1, 0, 1, 2, 1, 2, 2, 2, 2, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1,
-            1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1, 1,
         ];
         assert_eq!(
             mapped.each_ref().map(|(_, targets)| targets.len()),

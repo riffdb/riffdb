@@ -10,9 +10,15 @@
   rule
 - **Decision deadline:** Before amended WP-010 closes
 
-The human maintainer accepted the exact nine-variant registry and request-target
-construction rule on 2026-07-13. This record does not assign Protobuf field
-numbers or permit a new storage or transport path.
+The human maintainer accepted the original exact nine-variant registry and
+request-target construction rule on 2026-07-13. This record does not permit a
+new storage or transport path.
+
+The maintainer accepted the additive WP-417 amendment on 2026-08-02. It adds
+one exact reactive event-consumer target without changing the bytes or meaning
+of tags `0x01` through `0x09`. The maintainer separately approved the additive
+durable-generation decision below on 2026-08-02 after the frozen V1 schema
+guard rejected an in-place oneof change.
 
 ## Context
 
@@ -48,6 +54,7 @@ are invalid:
 | `0x07` | `Commit` | nonzero `CommitSequence` |
 | `0x08` | `Provenance` | checked UUIDv7 `ProvenanceId` |
 | `0x09` | `Capability` | checked UUIDv7 `CapabilityId` |
+| `0x0a` | `EventConsumer` | `ContractLineage`, `ReactiveModuleHash`, `ReactiveOperationName`, `EventConsumerIdentityHash` |
 
 Every contract semantic target repeats its `ContractLineage`. Numeric identity
 is never interpreted outside that scope. `ContractVersion` likewise includes
@@ -84,6 +91,7 @@ Index           = lineage || index_id:u32_be
 Commit          = commit_sequence:u64_be
 Provenance      = provenance_uuidv7:16_network_order_bytes
 Capability      = capability_uuidv7:16_network_order_bytes
+EventConsumer   = lineage || reactive_module_hash:32 || operation_name_byte_length:u32_be || exact_operation_name_utf8 || consumer_identity_hash:32
 ```
 
 The length is the exact UTF-8 byte length after `ContractLineage` validation;
@@ -129,7 +137,9 @@ The service applies these rules exhaustively:
 - get one commit uses `Commit`; provenance trace uses whichever one exact
   `Commit` or `Provenance` selector the request carries; and
 - bootstrap/create/revoke capability uses the capability being created or
-  revoked as `Capability`.
+  revoked as `Capability`; and
+- consume, acknowledge, negative-acknowledge, seek, retire, and consumer status
+  use the exact `EventConsumer` selected by the request.
 
 If a future accepted POC request shape independently selects a contract lineage
 without a version, it uses `ContractLineage`; the current singleton get-active
@@ -197,6 +207,16 @@ the executor preserves lists without derivation. WP-120 exhaustively maps all 22
 operations, proves start/terminal target equality, and proves result and
 authorizing IDs are not copied. WP-190 covers crash/reopen audit integrity;
 WP-200 proves transport parity and safe exposure.
+
+`ServiceAuditRecordV1` and `ServiceAuditTargetV1` remain byte-for-byte and
+descriptor-for-descriptor frozen with the original nine target fields. WP-417
+adds `ServiceAuditRecordV2` in its own source file; its target oneof repeats the
+nine frozen field numbers and assigns field 10 to `EventConsumer`. Current
+writes use V2. Durable reads accept both generations and reconstruct the same
+checked semantic `StoredServiceAuditRecordV1`; V1 is never rewritten in place or
+silently interpreted as carrying the new target. Schema hashes, record bounds,
+mixed-generation reads, and V2 current-write selection are frozen by generated
+fixtures and codec tests.
 
 ## Requirements and Work Packages
 

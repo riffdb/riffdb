@@ -3369,6 +3369,205 @@ pub struct TailEventsResponse {
     #[prost(bool, tag = "2")]
     pub wait_timed_out: bool,
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EventConsumerParameter {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub value: ::core::option::Option<Value>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EventConsumerSelection {
+    #[prost(bytes = "vec", tag = "1")]
+    pub reactive_module_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "2")]
+    pub operation_name: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "3")]
+    pub parameters: ::prost::alloc::vec::Vec<EventConsumerParameter>,
+    #[prost(string, tag = "4")]
+    pub consumer_name: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EventConsumerCheckpoint {
+    #[prost(oneof = "event_consumer_checkpoint::Position", tags = "1, 2")]
+    pub position: ::core::option::Option<event_consumer_checkpoint::Position>,
+}
+/// Nested message and enum types in `EventConsumerCheckpoint`.
+pub mod event_consumer_checkpoint {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Position {
+        #[prost(message, tag = "1")]
+        BeforeFirst(super::Unit),
+        #[prost(message, tag = "2")]
+        AfterEventId(super::EventId),
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EventConsumerStatus {
+    #[prost(uint64, tag = "1")]
+    pub revision: u64,
+    #[prost(message, optional, tag = "2")]
+    pub checkpoint: ::core::option::Option<EventConsumerCheckpoint>,
+    #[prost(uint64, tag = "3")]
+    pub history_incarnation: u64,
+    #[prost(uint32, tag = "4")]
+    pub live_leases: u32,
+    #[prost(uint32, tag = "5")]
+    pub retries: u32,
+    #[prost(uint32, tag = "6")]
+    pub dead_letters: u32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ConsumedEvent {
+    #[prost(message, optional, tag = "1")]
+    pub event: ::core::option::Option<SymbolicEvent>,
+    #[prost(uint32, tag = "2")]
+    pub attempt: u32,
+    #[prost(bytes = "vec", tag = "3")]
+    pub lease_token: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "4")]
+    pub expires_at: ::core::option::Option<Timestamp>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ConsumeEventStreamRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub selection: ::core::option::Option<EventConsumerSelection>,
+    #[prost(uint32, tag = "3")]
+    pub batch_limit: u32,
+    #[prost(uint32, tag = "4")]
+    pub in_flight_limit: u32,
+    #[prost(uint64, tag = "5")]
+    pub lease_seconds: u64,
+    #[prost(uint64, tag = "6")]
+    pub maximum_wait_nanos: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ConsumeEventStreamResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub events: ::prost::alloc::vec::Vec<ConsumedEvent>,
+    #[prost(message, optional, tag = "2")]
+    pub status: ::core::option::Option<EventConsumerStatus>,
+    #[prost(bool, tag = "3")]
+    pub wait_timed_out: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AcknowledgeEventStreamRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub selection: ::core::option::Option<EventConsumerSelection>,
+    #[prost(message, optional, tag = "3")]
+    pub event_id: ::core::option::Option<EventId>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub lease_token: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "5")]
+    pub history_incarnation: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NegativeAcknowledgeEventStreamRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub selection: ::core::option::Option<EventConsumerSelection>,
+    #[prost(message, optional, tag = "3")]
+    pub event_id: ::core::option::Option<EventId>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub lease_token: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "5")]
+    pub history_incarnation: u64,
+    #[prost(uint64, tag = "6")]
+    pub retry_delay_nanos: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SeekEventStreamConsumerRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub selection: ::core::option::Option<EventConsumerSelection>,
+    #[prost(message, optional, tag = "3")]
+    pub checkpoint: ::core::option::Option<EventConsumerCheckpoint>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RetireEventStreamConsumerRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub selection: ::core::option::Option<EventConsumerSelection>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetEventStreamConsumerStatusRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub selection: ::core::option::Option<EventConsumerSelection>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EventConsumerMutationResponse {
+    #[prost(enumeration = "EventConsumerMutationResult", tag = "1")]
+    pub result: i32,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetEventStreamConsumerStatusResponse {
+    #[prost(oneof = "get_event_stream_consumer_status_response::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<
+        get_event_stream_consumer_status_response::Result,
+    >,
+}
+/// Nested message and enum types in `GetEventStreamConsumerStatusResponse`.
+pub mod get_event_stream_consumer_status_response {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        NotFound(super::Unit),
+        #[prost(message, tag = "2")]
+        Found(super::EventConsumerStatus),
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum EventConsumerMutationResult {
+    Unspecified = 0,
+    Applied = 1,
+    StateChanged = 2,
+    NotFound = 3,
+    OutstandingLease = 4,
+    StaleLease = 5,
+    LeaseExpired = 6,
+}
+impl EventConsumerMutationResult {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "EVENT_CONSUMER_MUTATION_RESULT_UNSPECIFIED",
+            Self::Applied => "EVENT_CONSUMER_MUTATION_RESULT_APPLIED",
+            Self::StateChanged => "EVENT_CONSUMER_MUTATION_RESULT_STATE_CHANGED",
+            Self::NotFound => "EVENT_CONSUMER_MUTATION_RESULT_NOT_FOUND",
+            Self::OutstandingLease => "EVENT_CONSUMER_MUTATION_RESULT_OUTSTANDING_LEASE",
+            Self::StaleLease => "EVENT_CONSUMER_MUTATION_RESULT_STALE_LEASE",
+            Self::LeaseExpired => "EVENT_CONSUMER_MUTATION_RESULT_LEASE_EXPIRED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "EVENT_CONSUMER_MUTATION_RESULT_UNSPECIFIED" => Some(Self::Unspecified),
+            "EVENT_CONSUMER_MUTATION_RESULT_APPLIED" => Some(Self::Applied),
+            "EVENT_CONSUMER_MUTATION_RESULT_STATE_CHANGED" => Some(Self::StateChanged),
+            "EVENT_CONSUMER_MUTATION_RESULT_NOT_FOUND" => Some(Self::NotFound),
+            "EVENT_CONSUMER_MUTATION_RESULT_OUTSTANDING_LEASE" => {
+                Some(Self::OutstandingLease)
+            }
+            "EVENT_CONSUMER_MUTATION_RESULT_STALE_LEASE" => Some(Self::StaleLease),
+            "EVENT_CONSUMER_MUTATION_RESULT_LEASE_EXPIRED" => Some(Self::LeaseExpired),
+            _ => None,
+        }
+    }
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProjectionIdentity {
     #[prost(string, tag = "1")]

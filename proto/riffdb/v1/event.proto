@@ -97,3 +97,107 @@ message TailEventsResponse {
   EventPage page = 1;
   bool wait_timed_out = 2;
 }
+
+message EventConsumerParameter {
+  string name = 1;
+  Value value = 2;
+}
+
+message EventConsumerSelection {
+  bytes reactive_module_hash = 1;
+  string operation_name = 2;
+  repeated EventConsumerParameter parameters = 3;
+  string consumer_name = 4;
+}
+
+message EventConsumerCheckpoint {
+  oneof position {
+    Unit before_first = 1;
+    EventId after_event_id = 2;
+  }
+}
+
+message EventConsumerStatus {
+  uint64 revision = 1;
+  EventConsumerCheckpoint checkpoint = 2;
+  uint64 history_incarnation = 3;
+  uint32 live_leases = 4;
+  uint32 retries = 5;
+  uint32 dead_letters = 6;
+}
+
+message ConsumedEvent {
+  SymbolicEvent event = 1;
+  uint32 attempt = 2;
+  bytes lease_token = 3;
+  Timestamp expires_at = 4;
+}
+
+message ConsumeEventStreamRequest {
+  bytes request_id = 1;
+  EventConsumerSelection selection = 2;
+  uint32 batch_limit = 3;
+  uint32 in_flight_limit = 4;
+  uint64 lease_seconds = 5;
+  uint64 maximum_wait_nanos = 6;
+}
+
+message ConsumeEventStreamResponse {
+  repeated ConsumedEvent events = 1;
+  EventConsumerStatus status = 2;
+  bool wait_timed_out = 3;
+}
+
+message AcknowledgeEventStreamRequest {
+  bytes request_id = 1;
+  EventConsumerSelection selection = 2;
+  EventId event_id = 3;
+  bytes lease_token = 4;
+  uint64 history_incarnation = 5;
+}
+
+message NegativeAcknowledgeEventStreamRequest {
+  bytes request_id = 1;
+  EventConsumerSelection selection = 2;
+  EventId event_id = 3;
+  bytes lease_token = 4;
+  uint64 history_incarnation = 5;
+  uint64 retry_delay_nanos = 6;
+}
+
+message SeekEventStreamConsumerRequest {
+  bytes request_id = 1;
+  EventConsumerSelection selection = 2;
+  EventConsumerCheckpoint checkpoint = 3;
+}
+
+message RetireEventStreamConsumerRequest {
+  bytes request_id = 1;
+  EventConsumerSelection selection = 2;
+}
+
+message GetEventStreamConsumerStatusRequest {
+  bytes request_id = 1;
+  EventConsumerSelection selection = 2;
+}
+
+enum EventConsumerMutationResult {
+  EVENT_CONSUMER_MUTATION_RESULT_UNSPECIFIED = 0;
+  EVENT_CONSUMER_MUTATION_RESULT_APPLIED = 1;
+  EVENT_CONSUMER_MUTATION_RESULT_STATE_CHANGED = 2;
+  EVENT_CONSUMER_MUTATION_RESULT_NOT_FOUND = 3;
+  EVENT_CONSUMER_MUTATION_RESULT_OUTSTANDING_LEASE = 4;
+  EVENT_CONSUMER_MUTATION_RESULT_STALE_LEASE = 5;
+  EVENT_CONSUMER_MUTATION_RESULT_LEASE_EXPIRED = 6;
+}
+
+message EventConsumerMutationResponse {
+  EventConsumerMutationResult result = 1;
+}
+
+message GetEventStreamConsumerStatusResponse {
+  oneof result {
+    Unit not_found = 1;
+    EventConsumerStatus found = 2;
+  }
+}

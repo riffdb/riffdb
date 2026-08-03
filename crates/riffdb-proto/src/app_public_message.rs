@@ -12,6 +12,8 @@ use crate::value::{MAX_PROTOCOL_NAME_BYTES, validate_value};
 use crate::wire::{self, Cursor, PreflightError};
 
 const MAX_QUERY_SOURCE_BYTES: usize = 262_144;
+const MAX_REACTIVE_SOURCE_BYTES: usize = 1_048_576;
+const MAX_REACTIVE_QUERY_MODULES: usize = 32;
 const MAX_SYMBOLIC_CATALOG_BYTES: usize = 262_144;
 const MAX_QUERY_ITEMS: usize = 1_024;
 const MAX_QUERY_ROWS: usize = 500;
@@ -503,6 +505,100 @@ app_message!(
         Ok(())
     }
 );
+
+fn validate_reactive_module_descriptor(
+    value: &app_v1::ReactiveModuleDescriptor,
+) -> Result<(), PublicWireError> {
+    if !valid_name(&value.module_name)
+        || value.module_version == 0
+        || !valid_hash(&value.module_hash)
+        || value.contract_lineage.is_empty()
+        || value.contract_lineage.len() > MAX_CONTRACT_LINEAGE_BYTES
+        || value.contract_version == 0
+        || !valid_hash(&value.contract_bundle_hash)
+        || value.query_module_hashes.len() > MAX_REACTIVE_QUERY_MODULES
+        || value
+            .query_module_hashes
+            .iter()
+            .any(|hash| !valid_hash(hash))
+        || value
+            .query_module_hashes
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        || value.operation_names.is_empty()
+        || value.operation_names.len() > MAX_QUERY_ITEMS
+        || value.operation_names.iter().any(|name| !valid_name(name))
+        || value
+            .operation_names
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+    {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    Ok(())
+}
+
+app_message!(
+    app_v1::DeployReactiveModuleRequest,
+    Some(riffdb_errors::ApplicationOperation::DeployReactiveModule),
+    MAX_PUBLIC_REQUEST_BYTES,
+    100,
+    &[3],
+    &[],
+    |value: &app_v1::DeployReactiveModuleRequest| {
+        validate_request_id(&value.request_id)?;
+        validate_selector(
+            value
+                .contract
+                .as_ref()
+                .ok_or(PublicWireError::MissingRequiredField)?,
+        )?;
+        if value.source.is_empty() || value.source.len() > MAX_REACTIVE_SOURCE_BYTES {
+            return Err(PublicWireError::InvalidBytes);
+        }
+        if value.query_module_hashes.len() > MAX_REACTIVE_QUERY_MODULES
+            || value
+                .query_module_hashes
+                .iter()
+                .any(|hash| !valid_hash(hash))
+            || value
+                .query_module_hashes
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(PublicWireError::NonCanonical);
+        }
+        Ok(())
+    }
+);
+app_message!(
+    app_v1::DeployReactiveModuleResponse,
+    None,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    3,
+    &[],
+    &[],
+    |value: &app_v1::DeployReactiveModuleResponse| {
+        let outcome = app_v1::ReactiveModuleDeploymentOutcome::try_from(value.outcome)
+            .map_err(|_| PublicWireError::InvalidEnum)?;
+        if outcome == app_v1::ReactiveModuleDeploymentOutcome::Unspecified {
+            return Err(PublicWireError::InvalidEnum);
+        }
+        validate_reactive_module_descriptor(
+            value
+                .module
+                .as_ref()
+                .ok_or(PublicWireError::MissingRequiredField)?,
+        )?;
+        let unavailable =
+            outcome == app_v1::ReactiveModuleDeploymentOutcome::QueryModuleUnavailable;
+        match value.unavailable_query_module_hash.as_deref() {
+            Some(hash) if unavailable && valid_hash(hash) => Ok(()),
+            None if !unavailable => Ok(()),
+            _ => Err(PublicWireError::InconsistentFields),
+        }
+    }
+);
 app_message!(
     app_v1::GetQueryModuleRequest,
     Some(riffdb_errors::ApplicationOperation::GetQueryModule),
@@ -579,3 +675,79 @@ app_message!(
         Ok(())
     }
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn selector() -> app_v1::ContractSelector {
+        app_v1::ContractSelector {
+            lineage: "ReactiveBoundary".to_owned(),
+            version: 1,
+            bundle_hash: vec![0x11; 32],
+        }
+    }
+
+    fn descriptor() -> app_v1::ReactiveModuleDescriptor {
+        app_v1::ReactiveModuleDescriptor {
+            module_name: "Activity".to_owned(),
+            module_version: 1,
+            module_hash: vec![0x44; 32],
+            contract_lineage: "ReactiveBoundary".to_owned(),
+            contract_version: 1,
+            contract_bundle_hash: vec![0x11; 32],
+            query_module_hashes: vec![vec![0x22; 32], vec![0x33; 32]],
+            operation_names: vec!["ActivityStream".to_owned()],
+        }
+    }
+
+    #[test]
+    fn reactive_publication_requires_canonical_exact_dependencies() {
+        let request = app_v1::DeployReactiveModuleRequest {
+            contract: Some(selector()),
+            source: "reactive Activity version 1 {}".to_owned(),
+            query_module_hashes: vec![vec![0x22; 32], vec![0x33; 32]],
+            request_id: vec![0x77; 16],
+        };
+        assert_eq!(request.validate_structure(), Ok(()));
+
+        let mut reversed = request.clone();
+        reversed.query_module_hashes.reverse();
+        assert_eq!(
+            reversed.validate_structure(),
+            Err(PublicWireError::NonCanonical)
+        );
+        let mut duplicate = request;
+        duplicate.query_module_hashes[1] = duplicate.query_module_hashes[0].clone();
+        assert_eq!(
+            duplicate.validate_structure(),
+            Err(PublicWireError::NonCanonical)
+        );
+    }
+
+    #[test]
+    fn reactive_publication_outcome_binds_unavailable_dependency_evidence() {
+        let published = app_v1::DeployReactiveModuleResponse {
+            outcome: app_v1::ReactiveModuleDeploymentOutcome::Published as i32,
+            module: Some(descriptor()),
+            unavailable_query_module_hash: None,
+        };
+        assert_eq!(published.validate_structure(), Ok(()));
+
+        let mut missing = published.clone();
+        missing.outcome = app_v1::ReactiveModuleDeploymentOutcome::QueryModuleUnavailable as i32;
+        assert_eq!(
+            missing.validate_structure(),
+            Err(PublicWireError::InconsistentFields)
+        );
+        missing.unavailable_query_module_hash = Some(vec![0x22; 32]);
+        assert_eq!(missing.validate_structure(), Ok(()));
+
+        let mut impossible = published;
+        impossible.unavailable_query_module_hash = Some(vec![0x22; 32]);
+        assert_eq!(
+            impossible.validate_structure(),
+            Err(PublicWireError::InconsistentFields)
+        );
+    }
+}

@@ -133,8 +133,8 @@ fn unit_variants_are_encoded_as_present_oneofs() {
     ));
 
     let audit =
-        encode_service_audit_record_v1(&sample::service_audit_record()).expect("audit encodes");
-    let audit: wire::ServiceAuditRecordV1 = payload(&audit);
+        encode_service_audit_record_v2(&sample::service_audit_record()).expect("audit encodes");
+    let audit: wire::ServiceAuditRecordV2 = payload(&audit);
     assert!(matches!(
         audit.link.and_then(|link| link.link),
         Some(AuditLink::None(_))
@@ -504,8 +504,8 @@ fn every_service_operation_round_trips() {
                 ServiceAuditPhaseV1::Started,
                 ServiceIngressKindV1::Grpc,
             ),
-            encode_service_audit_record_v1,
-            decode_service_audit_record_v1,
+            encode_service_audit_record_v2,
+            decode_service_audit_record_v2,
         );
     }
 }
@@ -519,8 +519,8 @@ fn every_service_phase_and_ingress_round_trips() {
                 phase,
                 ServiceIngressKindV1::Grpc,
             ),
-            encode_service_audit_record_v1,
-            decode_service_audit_record_v1,
+            encode_service_audit_record_v2,
+            decode_service_audit_record_v2,
         );
     }
     for ingress in ServiceIngressKindV1::ALL {
@@ -530,8 +530,8 @@ fn every_service_phase_and_ingress_round_trips() {
                 ServiceAuditPhaseV1::Started,
                 ingress,
             ),
-            encode_service_audit_record_v1,
-            decode_service_audit_record_v1,
+            encode_service_audit_record_v2,
+            decode_service_audit_record_v2,
         );
     }
 }
@@ -573,8 +573,8 @@ fn command_and_control_plane_audit_links_round_trip() {
     for value in [command, control] {
         assert_round_trip(
             value,
-            encode_service_audit_record_v1,
-            decode_service_audit_record_v1,
+            encode_service_audit_record_v2,
+            decode_service_audit_record_v2,
         );
     }
 }

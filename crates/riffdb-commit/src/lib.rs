@@ -40,7 +40,8 @@ pub use audit_executor::{
     CommandIdempotencyInspector, ControlPlaneExecutionAdmissionError,
     ControlPlaneExecutionCapacityPermit, ControlPlaneExecutor, CoordinatorLifecycleState,
     CoordinatorShutdownError, CoordinatorStartError, CoordinatorWorkloadCapacity,
-    QueryModuleDeploymentReceipt, ReadOnlyExecutionReceipt, RunningCommandCoordinator,
+    QueryModuleDeploymentReceipt, ReactiveModulePublicationReceipt, ReadOnlyExecutionReceipt,
+    RunningCommandCoordinator,
 };
 pub use clock::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
@@ -62,8 +63,10 @@ pub use control_plane::{
     CapabilityRevokeExecutionResult, CapabilityRevokeOutcome, CapabilityRevokePreparation,
     CapabilityTransition, CatalogDeploymentOutcome, CatalogDeploymentPreparation,
     CatalogDeploymentResult, ControlPlaneExecutionError, ControlPlaneExecutionErrorKind,
-    ControlPlanePreparationError, ControlPlaneTerminalAudit, QueryModuleDeploymentOutcome,
-    QueryModuleDeploymentPreparation, QueryModuleDeploymentResult,
+    ControlPlanePreparationError, ControlPlaneTerminalAudit, PublishedReactiveModule,
+    QueryModuleDeploymentOutcome, QueryModuleDeploymentPreparation, QueryModuleDeploymentResult,
+    ReactiveModulePublicationExecutionResult, ReactiveModulePublicationOutcome,
+    ReactiveModulePublicationPreparation,
 };
 pub use idempotency_inspection::{
     CommandIdempotencyConfirmationError, CommandIdempotencyInspectionError,

@@ -186,3 +186,33 @@ deliberate maintenance points, never in the hot write path.
   fencing before any subsequent prune.
 
 Status: Accepted by the maintainer on 2026-08-02.
+
+## Amendment 3 — durable consumer retention fence (Accepted 2026-08-02)
+
+WP-417 adds durable event consumers after the V1 retention watermark shipped.
+An eligible event cannot be pruned merely because the earlier fencing inventory
+predated consumers. The watermark therefore gains one additive fencing input:
+the minimum unresolved durable-consumer frontier across all non-retired
+consumers.
+
+For a before-first consumer the maximum permissible watermark is zero. For a
+consumer checkpoint at `EventId(sequence, ordinal)`, its conservative maximum
+is `sequence - 1`; retaining the checkpoint's complete commit avoids losing a
+later selected event ordinal from that same commit. Sparse acknowledgements and
+dead letters beyond the contiguous checkpoint never raise this fence.
+
+The retention collector obtains this input from an exact-end, integrity-checked
+consumer scan. An unreadable, unvalidated, incarnation-mismatched, or truncated
+consumer inventory refuses prune. Consumer seek and retirement are the only
+WP-417 operations that may deliberately advance or remove an abandoned
+consumer fence, and both require exact seek authority and no live lease. A seek
+below an existing retention watermark returns the established typed
+`history_pruned` result; it never recreates deleted payload.
+
+The additive `ConsumerLowWater` fence tag changes no existing watermark or
+tombstone bytes. It changes the pure fencing input/result vocabulary and offline
+collector behavior only. Tests must prove that pruning cannot cross a consumer,
+that sparse acknowledgements cannot move the fence, that seek/retire can release
+it, and that any missing exact-end evidence fails toward retention.
+
+Status: Accepted by the maintainer on 2026-08-02.

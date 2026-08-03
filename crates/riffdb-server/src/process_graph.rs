@@ -36,14 +36,15 @@ use riffdb_projection::{ProjectionNotifier, ProjectionSchemaRegistry};
 use riffdb_service::{
     ApplicationService, AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort,
     ColumnarProjectionPort, ContractMigrationApplication, CurrentPolicyPort, CursorMonotonicClock,
-    CursorTokenGenerator, OperationalStatusPort, ProjectionQueryPort, QueryModuleReadPort,
+    CursorTokenGenerator, EventConsumerClock, EventConsumerPort, EventLeaseTokenSource,
+    OperationalStatusPort, ProjectionQueryPort, QueryModuleReadPort, ReactiveModuleReadPort,
     RequestDeadlineScheduler, RiffDbServiceActivator, ServiceDiagnostics, ServiceExecutors,
     ServiceHealthHooks, ServiceIdentity, ServiceJobSpawner, ServiceProcessMetadata,
     ServiceProviders, ServiceTelemetry,
 };
 use riffdb_storage_api::{
     OutboxDestinationIdV1, OutboxPageLimit, ReadableDigestKey, ReadableIdempotencyDigestInventory,
-    StorageValueError,
+    StorageValueError, recover_event_consumers,
 };
 use riffdb_types::{Audience, Environment, Timestamp};
 
@@ -59,6 +60,8 @@ use crate::columnar_worker::{
     ColumnarWorkerShutdownError, ColumnarWorkerStartError, RunningColumnarWorker,
 };
 use crate::config::{ConfiguredProjection, ServerConfig};
+use crate::consumer_adapter::ServerEventConsumerPort;
+use crate::consumer_token::ProductionEventLeaseTokenSource;
 use crate::cursor::{ProductionCursorMonotonicClock, ProductionCursorTokenGenerator};
 use crate::identifiers::{ProductionIdentifierSources, ServerRequestIdSource};
 use crate::lifecycle::{LifecycleInstallError, ProductionLifecycleRoute};
@@ -263,8 +266,17 @@ impl ProductionGraphBuilder {
             .map_err(ProductionGraphBuildError::Runtime)?;
 
         let health: Arc<dyn ServiceHealthHooks> = Arc::new(runtime.clone());
-        let storage = SharedRedbOperationalPorts::new(operational_ports, Some(health))
+        let mut storage = SharedRedbOperationalPorts::new(operational_ports, Some(health))
             .map_err(|_| ProductionGraphBuildError::CurrentView)?;
+        let consumer_recovery_time = clocks
+            .process_time()
+            .map_err(|_| ProductionGraphBuildError::CurrentView)?;
+        recover_event_consumers(
+            &mut storage,
+            consumer_recovery_time,
+            retained_metadata.history_incarnation(),
+        )
+        .map_err(|_| ProductionGraphBuildError::CurrentView)?;
         let outbox_recovery = recover_outbox(storage.clone(), clocks.outbox());
         let outbox_health = NoDestinationOutboxHealth::new(outbox_recovery);
         outbox_health.refresh(&storage);
@@ -288,6 +300,9 @@ impl ProductionGraphBuilder {
         let authorization_clock = clocks.authorization();
         let admission_clock = clocks.admission();
         let administration_clock = clocks.administration();
+        let consumer_clock: Arc<dyn EventConsumerClock> = Arc::new(administration_clock.clone());
+        let event_lease_tokens: Arc<dyn EventLeaseTokenSource> =
+            Arc::new(ProductionEventLeaseTokenSource);
         let hosted_request_ids = identifiers.request_ids();
         let incident_ids: Arc<dyn IncidentIdSource> = Arc::new(identifiers.incident_ids());
         let observability = Arc::new(
@@ -339,7 +354,8 @@ impl ProductionGraphBuilder {
         );
         let catalog_adapter = Arc::new(ServerCatalogReadPort::new(storage.clone(), &blocking));
         let catalog: Arc<dyn CatalogReadPort> = catalog_adapter.clone();
-        let query_modules: Arc<dyn QueryModuleReadPort> = catalog_adapter;
+        let query_modules: Arc<dyn QueryModuleReadPort> = catalog_adapter.clone();
+        let reactive_modules: Arc<dyn ReactiveModuleReadPort> = catalog_adapter;
         let authoritative: Arc<dyn AuthoritativeReadPort> =
             Arc::new(ServerAuthoritativeReadPort::new(
                 storage.clone(),
@@ -350,6 +366,11 @@ impl ProductionGraphBuilder {
                 notifications.clone(),
                 &blocking,
             ));
+        let event_consumers: Arc<dyn EventConsumerPort> = Arc::new(ServerEventConsumerPort::new(
+            storage.clone(),
+            database_id,
+            &blocking,
+        ));
 
         let conflicts: Arc<dyn ConflictManager> = match ShardedConflictManager::with_observer(
             ConflictManagerConfig::default(),
@@ -500,6 +521,8 @@ impl ProductionGraphBuilder {
         )
         .with_query_executor(Arc::new(storage))
         .with_query_modules(query_modules)
+        .with_reactive_modules(reactive_modules)
+        .with_event_consumers(event_consumers, consumer_clock, event_lease_tokens)
         .with_columnar(columnar)
         .with_offline_maintenance(offline_maintenance)
         .with_contract_migration(migration);

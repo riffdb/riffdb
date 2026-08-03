@@ -15,19 +15,22 @@ use riffdb_storage_api::{
     CapabilityRevokeCandidateV1, CapabilityRevokeIntentV1, CapabilityRevokeResult,
     CapabilityTokenLookupV1, CatalogActivationIntentV1, CatalogActivationResult,
     CatalogAdministrationRepository, CatalogRepository, EncodedPageItem, MAX_READABLE_DIGEST_KEYS,
-    MAX_RETAINED_QUERY_MODULES, MAX_SCAN_PAGE_BYTES, QueryModuleActivationIntentV1,
-    QueryModuleActivationResult, QueryModuleActiveExpectationV1,
-    QueryModuleAdministrationRepository, QueryModuleRepository, RetainedMetadataV1,
+    MAX_RETAINED_QUERY_MODULES, MAX_RETAINED_REACTIVE_MODULES, MAX_SCAN_PAGE_BYTES,
+    QueryModuleActivationIntentV1, QueryModuleActivationResult, QueryModuleActiveExpectationV1,
+    QueryModuleAdministrationRepository, QueryModuleRepository,
+    ReactiveModuleAdministrationRepository, ReactiveModulePublicationIntentV1,
+    ReactiveModulePublicationResult, ReactiveModuleRepository, RetainedMetadataV1,
     ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
     StorageError, StorageErrorKind, StorageScanLimit, StoredAdministrationAuditRecordV1,
     StoredCapabilityAdministrationV1, StoredCapabilityRecordV1, StoredCatalogAdministrationV1,
     StoredContractBundleV1, StoredQueryModuleAdministrationV1, StoredQueryModuleV1,
-    StoredServiceAuditRecordV1, TransactionCurrentCapabilityObservationV1,
+    StoredReactiveModuleAdministrationV1, StoredReactiveModuleV1, StoredServiceAuditRecordV1,
+    TransactionCurrentCapabilityObservationV1,
 };
 use riffdb_types::{
     AdministrationSequence, CapabilityId, CapabilityTokenDigest, ContractBundleHash,
-    ContractLineage, ContractVersion, QueryModuleHash, RequestId, ServiceAuditLinkV1,
-    ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceOperationV1,
+    ContractLineage, ContractVersion, QueryModuleHash, ReactiveModuleHash, RequestId,
+    ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceOperationV1,
 };
 
 use crate::state::{
@@ -50,6 +53,7 @@ struct AdministrationMutation<O> {
     catalog_bundle_activations: Vec<CatalogBundleActivationIndexRow>,
     query_modules: Vec<StoredQueryModuleV1>,
     active_query_modules: Vec<StoredQueryModuleAdministrationV1>,
+    reactive_modules: Vec<StoredReactiveModuleV1>,
     administration_audit: Vec<StoredAdministrationAuditRecordV1>,
     service_audit_invocations: Vec<ServiceAuditInvocationIndexRow>,
     capabilities: Vec<StoredCapabilityRecordV1>,
@@ -83,6 +87,7 @@ impl<O> AdministrationMutation<O> {
             catalog_bundle_activations: state.catalog_bundle_activations.clone(),
             query_modules: state.query_modules.clone(),
             active_query_modules: state.active_query_modules.clone(),
+            reactive_modules: state.reactive_modules.clone(),
             administration_audit: state.administration_audit.clone(),
             service_audit_invocations: state.service_audit_invocations.clone(),
             capabilities: state.capabilities.clone(),
@@ -99,6 +104,7 @@ impl<O> AdministrationMutation<O> {
         state.catalog_bundle_activations = self.catalog_bundle_activations;
         state.query_modules = self.query_modules;
         state.active_query_modules = self.active_query_modules;
+        state.reactive_modules = self.reactive_modules;
         state.administration_audit = self.administration_audit;
         state.service_audit_invocations = self.service_audit_invocations;
         state.capabilities = self.capabilities;
@@ -728,6 +734,146 @@ fn prepare_query_module_activation(
     Ok(AdministrationPreparation::Apply(Box::new(mutation)))
 }
 
+fn reactive_module_position(
+    state: &MemoryState,
+    module_hash: ReactiveModuleHash,
+) -> Result<Result<usize, usize>, StorageError> {
+    unique_binary_search_by(&state.reactive_modules, |module| {
+        module.module_hash().cmp(&module_hash)
+    })
+}
+
+fn reactive_publication_sequence(
+    state: &MemoryState,
+    module_hash: ReactiveModuleHash,
+) -> Result<Option<AdministrationSequence>, StorageError> {
+    let mut found = None;
+    for record in &state.administration_audit {
+        if let StoredAdministrationAuditRecordV1::ReactiveModule(record) = record
+            && record.module_hash() == module_hash
+            && found.replace(record.administration_sequence()).is_some()
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+    }
+    Ok(found)
+}
+
+impl ReactiveModuleRepository for MemoryOperationalPorts {
+    fn read_reactive_module(
+        &self,
+        module_hash: ReactiveModuleHash,
+    ) -> Result<Option<StoredReactiveModuleV1>, StorageError> {
+        self.read(|state| {
+            retained_metadata(state)?;
+            let Some(module) = reactive_module_position(state, module_hash)?
+                .ok()
+                .map(|index| state.reactive_modules[index].clone())
+            else {
+                return Ok(None);
+            };
+            if reactive_publication_sequence(state, module_hash)?.is_none() {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            Ok(Some(module))
+        })
+    }
+}
+
+impl ReactiveModuleAdministrationRepository for MemoryOperationalPorts {
+    fn publish_reactive_module(
+        &mut self,
+        intent: &ReactiveModulePublicationIntentV1,
+    ) -> Result<ReactiveModulePublicationResult, StorageError> {
+        self.apply_prepared(|state| prepare_reactive_module_publication(state, intent))
+    }
+}
+
+fn prepare_reactive_module_publication(
+    state: &MemoryState,
+    intent: &ReactiveModulePublicationIntentV1,
+) -> Result<AdministrationPreparation<ReactiveModulePublicationResult>, StorageError> {
+    validate_administration_stream(state)?;
+    let candidate = intent.module();
+    let contract = catalog_bundle_position(
+        state,
+        candidate.contract_lineage(),
+        candidate.contract_version(),
+    )?
+    .and_then(|index| state.catalog_bundles.get(index));
+    if !contract.is_some_and(|row| row.bundle.bundle_hash() == candidate.contract_bundle_hash()) {
+        return Ok(AdministrationPreparation::NoChange(
+            ReactiveModulePublicationResult::ContractUnavailable,
+        ));
+    }
+    for dependency in candidate.query_module_hashes() {
+        let Some(module) = query_module_position(state, *dependency)?
+            .ok()
+            .map(|index| &state.query_modules[index])
+        else {
+            return Ok(AdministrationPreparation::NoChange(
+                ReactiveModulePublicationResult::QueryModuleUnavailable {
+                    module_hash: *dependency,
+                },
+            ));
+        };
+        if module.contract_lineage() != candidate.contract_lineage()
+            || module.contract_version() != candidate.contract_version()
+            || module.contract_bundle_hash() != candidate.contract_bundle_hash()
+        {
+            return Ok(AdministrationPreparation::NoChange(
+                ReactiveModulePublicationResult::QueryModuleUnavailable {
+                    module_hash: *dependency,
+                },
+            ));
+        }
+    }
+    if state.reactive_modules.len() > MAX_RETAINED_REACTIVE_MODULES {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    let position = reactive_module_position(state, candidate.module_hash())?;
+    if let Ok(index) = position {
+        if state.reactive_modules[index] != *candidate {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        return Ok(AdministrationPreparation::NoChange(
+            ReactiveModulePublicationResult::AlreadyPublished {
+                module_hash: candidate.module_hash(),
+            },
+        ));
+    }
+    if state.reactive_modules.iter().any(|module| {
+        module.contract_lineage() == candidate.contract_lineage()
+            && module.contract_version() == candidate.contract_version()
+            && module.contract_bundle_hash() == candidate.contract_bundle_hash()
+            && module.module_name() == candidate.module_name()
+            && module.module_version() == candidate.module_version()
+    }) {
+        return Ok(AdministrationPreparation::NoChange(
+            ReactiveModulePublicationResult::ModuleVersionConflict,
+        ));
+    }
+    if state.reactive_modules.len() == MAX_RETAINED_REACTIVE_MODULES {
+        return Err(storage_error(StorageErrorKind::LimitExceeded));
+    }
+    let (sequence, allocated) = append_sequence(state)?;
+    let record = StoredReactiveModuleAdministrationV1::from_committed_intent(sequence, intent);
+    let mut mutation = AdministrationMutation::from_state(
+        state,
+        ReactiveModulePublicationResult::Published {
+            module_hash: candidate.module_hash(),
+            administration_sequence: sequence,
+        },
+    )?;
+    let Err(index) = position else {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    };
+    mutation.reactive_modules.insert(index, candidate.clone());
+    mutation.append_audit(StoredAdministrationAuditRecordV1::ReactiveModule(record));
+    mutation.metadata = allocated;
+    Ok(AdministrationPreparation::Apply(Box::new(mutation)))
+}
+
 impl ServiceAuditAppendRepository for MemoryOperationalPorts {
     fn append_service_audit(
         &mut self,
@@ -780,6 +926,7 @@ impl AdminAuditCheckpoint {
             catalog_bundle_activations: _,
             query_modules: _,
             active_query_modules: _,
+            reactive_modules: _,
             administration_audit,
             service_audit_invocations,
             admissions: _,
@@ -795,6 +942,8 @@ impl AdminAuditCheckpoint {
             provenance: _,
             events: _,
             event_routes: _,
+            event_consumers: _,
+            event_consumer_deliveries: _,
             outbox_intents: _,
             outbox_statuses: _,
             pending_outbox_events: _,

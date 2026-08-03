@@ -429,6 +429,23 @@ shape!(SERVICE_AUDIT_TARGET [
     fixed_bytes(8, 16),
     fixed_bytes(9, 16),
 ]);
+shape!(EVENT_CONSUMER_AUDIT_TARGET [
+    string(1, MAX_TEXT_ID_BYTES),
+    fixed_bytes(2, 32),
+    string(3, MAX_TEXT_ID_BYTES),
+    fixed_bytes(4, 32),
+]);
+shape!(SERVICE_AUDIT_TARGET_V2 [
+    string(1, MAX_TEXT_ID_BYTES),
+    message(2, &CONTRACT_VERSION_TARGET),
+    message(3, &ENTITY_TYPE_TARGET),
+    message(4, &COMMAND_TARGET),
+    message(5, &PROJECTION_TARGET),
+    message(6, &INDEX_TARGET),
+    fixed_bytes(8, 16),
+    fixed_bytes(9, 16),
+    message(10, &EVENT_CONSUMER_AUDIT_TARGET),
+]);
 shape!(COMMAND_AUDIT_LINK[fixed_bytes(2, 16)]);
 shape!(CONTROL_AUDIT_LINK []);
 shape!(SERVICE_AUDIT_LINK [
@@ -443,6 +460,59 @@ shape!(SERVICE_AUDIT [
     repeated_message(8, 16, &SERVICE_AUDIT_TARGET),
     string(9, MAX_TEXT_ID_BYTES),
     message(10, &SERVICE_AUDIT_LINK),
+]);
+shape!(SERVICE_AUDIT_V2 [
+    fixed_bytes(2, 16),
+    message(3, &TIMESTAMP),
+    message(6, &AUDIT_PRINCIPAL),
+    repeated_message(8, 16, &SERVICE_AUDIT_TARGET_V2),
+    string(9, MAX_TEXT_ID_BYTES),
+    message(10, &SERVICE_AUDIT_LINK),
+]);
+
+shape!(REACTIVE_MODULE [
+    string(1, MAX_TEXT_ID_BYTES),
+    fixed_bytes(3, 32),
+    string(4, MAX_TEXT_ID_BYTES),
+    fixed_bytes(6, 32),
+    fixed_bytes(7, 32),
+    repeated_fixed_bytes(8, 1_024, 32),
+    bytes(9, 1024 * 1024),
+    bytes(10, MAX_QUERY_MODULE_BYTES),
+]);
+shape!(REACTIVE_MODULE_ADMINISTRATION [
+    fixed_bytes(2, 16),
+    message(3, &TIMESTAMP),
+    message(4, &AUDIT_PRINCIPAL),
+    fixed_bytes(5, 32),
+    string(6, MAX_TEXT_ID_BYTES),
+]);
+shape!(EVENT_CONSUMER_IDENTITY [
+    fixed_bytes(1, 16),
+    fixed_bytes(2, 32),
+    string(3, MAX_TEXT_ID_BYTES),
+    fixed_bytes(4, 32),
+    string(5, MAX_TEXT_ID_BYTES),
+]);
+shape!(SPARSE_CONSUMER_RESOLUTION[message(1, &EVENT_ID)]);
+shape!(EVENT_CONSUMER [
+    message(1, &EVENT_CONSUMER_IDENTITY),
+    fixed_bytes(2, 32),
+    message(5, &EVENT_ID),
+    repeated_message(6, 64, &SPARSE_CONSUMER_RESOLUTION),
+]);
+shape!(LEASED_CONSUMER_DELIVERY [
+    fixed_bytes(2, 32),
+    message(3, &TIMESTAMP),
+]);
+shape!(RETRY_CONSUMER_DELIVERY[message(2, &TIMESTAMP)]);
+shape!(DEAD_LETTERED_CONSUMER_DELIVERY[message(2, &TIMESTAMP)]);
+shape!(EVENT_CONSUMER_DELIVERY [
+    fixed_bytes(1, 32),
+    message(2, &EVENT_ID),
+    message(4, &LEASED_CONSUMER_DELIVERY),
+    message(5, &RETRY_CONSUMER_DELIVERY),
+    message(6, &DEAD_LETTERED_CONSUMER_DELIVERY),
 ]);
 
 shape!(OUTBOX_INTENT[message(1, &DURABLE_EVENT)]);
@@ -542,7 +612,7 @@ shape!(PROJECTION_CONTROL [
     message(7, &PROJECTION_FAILURE),
 ]);
 
-const ROOTS: [&Shape; 48] = [
+const ROOTS: [&Shape; 53] = [
     &Shape { rules: &[] },
     &Shape {
         rules: &[fixed_bytes(1, 16)],
@@ -622,6 +692,11 @@ const ROOTS: [&Shape; 48] = [
     &Shape {
         rules: &[string(4, MAX_TEXT_ID_BYTES), message(5, &TIMESTAMP)],
     },
+    &REACTIVE_MODULE,
+    &REACTIVE_MODULE_ADMINISTRATION,
+    &EVENT_CONSUMER,
+    &EVENT_CONSUMER_DELIVERY,
+    &SERVICE_AUDIT_V2,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

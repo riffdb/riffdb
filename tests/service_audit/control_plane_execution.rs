@@ -1728,6 +1728,7 @@ fn service_audit_phases(
             | StoredAdministrationAuditRecordV1::Catalog(_)
             | StoredAdministrationAuditRecordV1::Capability(_)
             | StoredAdministrationAuditRecordV1::QueryModule(_)
+            | StoredAdministrationAuditRecordV1::ReactiveModule(_)
             | StoredAdministrationAuditRecordV1::Retention(_) => None,
         })
         .collect()

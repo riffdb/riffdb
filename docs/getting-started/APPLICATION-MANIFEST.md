@@ -225,6 +225,7 @@ application lock
   -> exact parent version + bundle hash
   -> contract bundle hash
   -> query module version + hash
+  -> reactive module version + hash + exact query dependencies
   -> compiled role identity
   -> capability ID + private credential
 ```
@@ -236,6 +237,16 @@ database and the lock, locked-module, expected-active, and actual-active hashes
 instead of degrading to `invalid input`. A process interruption before local
 publication is recovered by rerunning the same deploy; retained request and
 capability identities make replay deterministic.
+
+For a V4 application, deployment then publishes each `.riffr` module against
+that exact contract and the canonical set of locked query-module identities.
+The server recompiles source and the CLI accepts the result only when the
+returned module name, version, content hash, and contract identity equal the
+lock. Immutable replay is accepted; a same-name/same-version content change,
+missing contract, or missing query-module dependency fails closed. The private
+deployment journal records reactive module identities separately, so a process
+interruption after remote publication resumes by verifying and replaying the
+same immutable module rather than inventing a new identity.
 
 A changed lock is deliberately not resumed under an old role. If a role is
 already retained, deploy requires `--provision-role <name>` together with

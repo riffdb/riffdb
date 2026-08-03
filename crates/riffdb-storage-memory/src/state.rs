@@ -8,10 +8,11 @@ use riffdb_storage_api::{
     RetainedMetadataV1, SequenceAllocationError, StorageError, StorageErrorKind,
     StoredAdministrationAuditRecordV1, StoredAdmissionStateV1, StoredCapabilityRecordV1,
     StoredCommitRecordV1, StoredContractBundleV1, StoredDurableEventV1, StoredEntityRecordV1,
-    StoredEventRouteV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredIndexEpochV1,
-    StoredOutboxIntentV1, StoredOutboxStatusV1, StoredProjectionApplyV1, StoredProjectionControlV1,
-    StoredProjectionStateV1, StoredProvenanceRecordV1, StoredQueryModuleAdministrationV1,
-    StoredQueryModuleV1,
+    StoredEventConsumerDeliveryV1, StoredEventConsumerV1, StoredEventRouteV1, StoredIndexEntryV1,
+    StoredIndexEntryV2, StoredIndexEpochV1, StoredOutboxIntentV1, StoredOutboxStatusV1,
+    StoredProjectionApplyV1, StoredProjectionControlV1, StoredProjectionStateV1,
+    StoredProvenanceRecordV1, StoredQueryModuleAdministrationV1, StoredQueryModuleV1,
+    StoredReactiveModuleV1,
 };
 use riffdb_types::{
     AdministrationSequence, CapabilityTokenDigest, CommitSequence, ContractBundleHash,
@@ -542,6 +543,7 @@ pub(crate) struct MemoryState {
     pub(crate) catalog_bundle_activations: Vec<CatalogBundleActivationIndexRow>,
     pub(crate) query_modules: Vec<StoredQueryModuleV1>,
     pub(crate) active_query_modules: Vec<StoredQueryModuleAdministrationV1>,
+    pub(crate) reactive_modules: Vec<StoredReactiveModuleV1>,
     pub(crate) administration_audit: Vec<StoredAdministrationAuditRecordV1>,
     pub(crate) service_audit_invocations: Vec<ServiceAuditInvocationIndexRow>,
     pub(crate) admissions: Vec<StoredAdmissionStateV1>,
@@ -560,6 +562,8 @@ pub(crate) struct MemoryState {
     pub(crate) provenance: Vec<StoredProvenanceRecordV1>,
     pub(crate) events: Vec<StoredDurableEventV1>,
     pub(crate) event_routes: Vec<EventRouteRow>,
+    pub(crate) event_consumers: Vec<StoredEventConsumerV1>,
+    pub(crate) event_consumer_deliveries: Vec<StoredEventConsumerDeliveryV1>,
     pub(crate) outbox_intents: Vec<StoredOutboxIntentV1>,
     pub(crate) outbox_statuses: Vec<StoredOutboxStatusV1>,
     /// Memory-only ordered accelerator for effective pending outbox rows.

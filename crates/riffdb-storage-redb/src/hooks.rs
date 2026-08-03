@@ -20,6 +20,10 @@ pub enum RedbTestOperation {
     CatalogAdministration,
     /// Immutable query-module activation.
     QueryModuleAdministration,
+    /// Immutable reactive-module publication.
+    ReactiveModuleAdministration,
+    /// Durable event-consumer state transition.
+    EventConsumerTransition,
     CapabilityAdministration,
     CapabilityBootstrap,
     ServiceAudit,

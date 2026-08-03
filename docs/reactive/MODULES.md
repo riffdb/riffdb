@@ -64,13 +64,74 @@ compilation never grants it as a consequence of consuming a stream. Reactive
 permissions also do not imply raw commit-log, entity, index, or ad-hoc query
 access.
 
+## Publication and durable consumption
+
+`riffdb application deploy` publishes every locked reactive module after its
+exact contract and immutable query modules are available. Publication compiles
+the reviewed `.riffr` source on the server, verifies its name, version, module
+hash, contract identity, and query dependencies against the application lock,
+then retains the module atomically through the shared authorized control plane.
+Publishing the same immutable module again is idempotent. Reusing a name and
+version for different content is a closed version conflict.
+
+A durable consumer is identified by the complete tuple of reactive module hash,
+operation name, canonical typed parameters, and consumer name. It is therefore
+not silently rebound when a module changes. Within one consumer, eligible
+events are leased in partition order with at-least-once delivery. An event is
+advanced only by an exact acknowledgement carrying the event ID, lease token,
+and current history incarnation. Negative acknowledgement schedules a bounded
+retry; lease expiry does the same during recovery. The tenth failed attempt is
+retained as a dead letter so later eligible events can continue without
+pretending the failed event was acknowledged.
+
+Use the exact reactive module hash from the application lock or deployment
+state. Parameters use `NAME=JSON_VALUE`, so string values include JSON quotes:
+
+```bash
+riffdb event consume \
+  --module-hash <64-hex-module-hash> \
+  --operation TicketEvents \
+  --parameter 'organization_id="acme"' \
+  --consumer-name ticket-indexer \
+  --batch-limit 4 \
+  --lease-seconds 60
+
+riffdb event ack \
+  --module-hash <64-hex-module-hash> \
+  --operation TicketEvents \
+  --parameter 'organization_id="acme"' \
+  --consumer-name ticket-indexer \
+  --event-id <commit-sequence:event-ordinal> \
+  --lease-token <64-hex-lease-token> \
+  --history-incarnation <incarnation>
+
+riffdb event status \
+  --module-hash <64-hex-module-hash> \
+  --operation TicketEvents \
+  --parameter 'organization_id="acme"' \
+  --consumer-name ticket-indexer
+```
+
+`event nack` accepts the same lease identity plus an optional retry delay.
+`event seek` is an administrative checkpoint move and requires separately
+granted seek authority. `event retire` permanently retires that exact consumer
+and releases its retention fence. An active consumer's checkpoint prevents
+history pruning past the commit that still contains its first required event.
+
+Backup and restore preserve consumer state but publish a new history
+incarnation. Outstanding pre-restore lease tokens then fail closed, and the
+consumer resumes from its restored checkpoint. Consumers in sibling named
+databases remain isolated.
+
 ## Current delivery boundary
 
 WP-416 provides the grammar, compiler, exact application artifacts, and role
-permissions. Durable consumer execution is added by WP-417, live query delivery
-by WP-418, generated client and MCP surfaces by WP-419, and contextual work-item
-execution by WP-420. A V4 application can be checked and locked now; those later
-packages own the corresponding runtime operations.
+permissions. WP-417 provides immutable publication, durable pull and gRPC
+stream consumption, leases, acknowledgement, retry, dead-letter, recovery,
+seek, retire, status, and retention fencing. Live query delivery remains in
+WP-418; generated reactive Rust, TypeScript, Python, and MCP conveniences remain
+in WP-419; contextual work-item execution remains in WP-420. MCP has no direct
+storage path and does not receive reactive consumer tools until WP-419.
 
 See [Domain Events](../contracts/DOMAIN-EVENTS.md), [Immutable Query
 Modules](../riffql/MODULES.md), and [Application Source and Exact

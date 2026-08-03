@@ -20,6 +20,7 @@ mod migration;
 mod notification;
 mod projection_materialization;
 mod query_module;
+mod reactive_module;
 
 pub use bundle::*;
 pub use capability_partition::*;
@@ -33,3 +34,4 @@ pub use migration::*;
 pub use notification::*;
 pub use projection_materialization::*;
 pub use query_module::*;
+pub use reactive_module::*;

@@ -31,7 +31,7 @@ use riffdb_storage_api::{
 use riffdb_types::{
     CommitSequence, ContractBundleHash, ContractLineage, ContractMigrationOperationId,
     ContractVersion, DatabaseId, FrontierPosition, MigrationBundleHash, hash_contract_bundle,
-    hash_query_module,
+    hash_query_module, hash_reactive_module, hash_reactive_source,
 };
 
 use crate::codec::{self, IdempotencyRecordV1};
@@ -42,24 +42,29 @@ use crate::keys;
 use crate::layout::{
     AUDIT, AUDIT_BY_REQUEST, CAPABILITIES, CAPABILITY_TOKENS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY,
     COMMITS, CONTRACT_BUNDLES, CONTRACT_MIGRATION_JOURNAL, CONTRACT_MIGRATIONS,
-    CONTRACT_WRITE_RETIREMENTS, ENTITIES, EVENT_ROUTES, EVENTS, HISTORY_TOMBSTONES, IDEMPOTENCY,
-    IDEMPOTENCY_PENDING, INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE,
-    META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP, META_DATABASE_ID, META_FORMAT_VERSION,
-    META_HISTORY_INCARNATION, META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY,
-    META_RETENTION_HOLDS, META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX,
-    OUTBOX_STATUS, PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE,
-    QUERY_MODULE_ACTIVE, QUERY_MODULES, RETIRED_ENTITIES, SECONDARY_INDEXES, TABLE_NAMES,
+    CONTRACT_WRITE_RETIREMENTS, ENTITIES, EVENT_CONSUMER_DELIVERIES, EVENT_CONSUMERS, EVENT_ROUTES,
+    EVENTS, HISTORY_TOMBSTONES, IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS, META,
+    META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP,
+    META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
+    META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, META_RETENTION_HOLDS,
+    META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS,
+    PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE,
+    QUERY_MODULES, REACTIVE_MODULES, RETIRED_ENTITIES, SECONDARY_INDEXES, TABLE_NAMES,
 };
 use crate::store::{
     PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST, PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST,
     PRE_ENTITY_REFERENCE_REGISTRY_DIGEST, PRE_EVENT_ROUTE_REGISTRY_DIGEST,
     PRE_HISTORY_INCARNATION_REGISTRY_DIGEST, PRE_INDEX_GENERATION_REGISTRY_DIGEST,
     PRE_RETENTION_WATERMARK_REGISTRY_DIGEST, PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST,
-    RedbDormantPorts, RedbStore, SharedRedb,
+    PRE_WP417_REACTIVE_CONSUMER_REGISTRY_DIGEST, RedbDormantPorts, RedbStore, SharedRedb,
 };
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
+// The V1 validated-prefix checkpoint permanently covers the original table set.
+// Additive tables are validated separately and never inferred from that proof.
 const STRUCTURAL_TABLE_COUNT: usize = 28;
+const ADDITIVE_STRUCTURAL_TABLE_COUNT: usize = 3;
+const STARTUP_TABLE_COUNT: usize = STRUCTURAL_TABLE_COUNT + ADDITIVE_STRUCTURAL_TABLE_COUNT;
 
 fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
     digest == riffdb_storage_api::proto_codec::current_record_registry_digest()
@@ -72,6 +77,8 @@ fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_AUDIT_REQUEST_INDEX_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_HISTORY_INCARNATION_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_INDEX_GENERATION_REGISTRY_DIGEST)
+        || digest
+            == riffdb_types::SchemaHash::from_bytes(PRE_WP417_REACTIVE_CONSUMER_REGISTRY_DIGEST)
 }
 
 fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
@@ -203,6 +210,8 @@ pub struct RedbStructuralEvidenceSession {
     structural_counts: [u64; STRUCTURAL_TABLE_COUNT],
     /// Full table lens from the immutable snapshot (for below-S count verification).
     full_structural_counts: [u64; STRUCTURAL_TABLE_COUNT],
+    /// Additive table counts never covered by the V1 validated-prefix checkpoint.
+    additive_structural_counts: [u64; ADDITIVE_STRUCTURAL_TABLE_COUNT],
     structural_total: u64,
     next_structural: StructuralEvidenceCursor,
     next_historical: HistoricalEvidenceCursor,
@@ -566,6 +575,7 @@ impl StructuralEvidenceOpen for RedbStore {
         let database_id = snapshot.retained_metadata.database_id();
         let open_session_id = allocate_open_session()?;
         let full_structural_counts = snapshot.structural_counts;
+        let additive_structural_counts = snapshot.additive_structural_counts;
         let mut structural_counts = snapshot.structural_counts;
         let mut structural_total = snapshot.structural_total;
         // Re-validate retention watermark bindings (never advance). Verify the
@@ -642,8 +652,10 @@ impl StructuralEvidenceOpen for RedbStore {
                     sampled_window_rows_inspected = 0;
                     sample_finding_seen = true;
                 } else {
-                    structural_total =
-                        structural_counts.iter().try_fold(1u64, |total, count| {
+                    structural_total = structural_counts
+                        .iter()
+                        .chain(additive_structural_counts.iter())
+                        .try_fold(1u64, |total, count| {
                             total.checked_add(*count).ok_or_else(limit_exceeded)
                         })?;
                     checkpoint = Some(active);
@@ -668,6 +680,7 @@ impl StructuralEvidenceOpen for RedbStore {
             inputs,
             structural_counts,
             full_structural_counts,
+            additive_structural_counts,
             structural_total,
             next_structural: StructuralEvidenceCursor::start(database_id, open_session_id),
             next_historical: HistoricalEvidenceCursor::start(database_id, open_session_id),
@@ -1087,6 +1100,14 @@ impl RedbStructuralEvidenceSession {
         if self.checkpoint.is_none() && counts != self.structural_counts {
             return Err(corrupt());
         }
+        let additive_counts = [
+            table_len(transaction, REACTIVE_MODULES)?,
+            table_len(transaction, EVENT_CONSUMERS)?,
+            table_len(transaction, EVENT_CONSUMER_DELIVERIES)?,
+        ];
+        if additive_counts != self.additive_structural_counts {
+            return Err(corrupt());
+        }
         Ok(())
     }
 
@@ -1340,15 +1361,21 @@ impl RedbStructuralEvidenceSession {
         let (phase, index, key, value) = self.next_structural_row_raw()?;
         // Sanity: absolute position maps to this phase/index.
         let mut relative = position - 1;
-        let mut expected_phase = 0usize;
-        for (phase_idx, count) in self.structural_counts.iter().copied().enumerate() {
+        let mut expected_phase = None;
+        for (phase_idx, count) in self
+            .structural_counts
+            .iter()
+            .chain(self.additive_structural_counts.iter())
+            .copied()
+            .enumerate()
+        {
             if relative < count {
-                expected_phase = phase_idx;
+                expected_phase = Some(phase_idx);
                 break;
             }
             relative = relative.checked_sub(count).ok_or_else(invariant)?;
         }
-        if phase != expected_phase || index != relative {
+        if Some(phase) != expected_phase || index != relative {
             return Err(invariant());
         }
         if phase == 0 {
@@ -1540,7 +1567,7 @@ impl RedbStructuralEvidenceSession {
                 let cursors = self.structural_cursors.as_ref().ok_or_else(invariant)?;
                 cursors.phase
             };
-            if phase >= STRUCTURAL_TABLE_COUNT {
+            if phase >= STARTUP_TABLE_COUNT {
                 return Err(invariant());
             }
             if phase == 0 {
@@ -1658,6 +1685,15 @@ impl RedbStructuralEvidenceSession {
                     27 => transaction
                         .open_table(HISTORY_TOMBSTONES)
                         .map_err(table_error)?,
+                    28 => transaction
+                        .open_table(REACTIVE_MODULES)
+                        .map_err(table_error)?,
+                    29 => transaction
+                        .open_table(EVENT_CONSUMERS)
+                        .map_err(table_error)?,
+                    30 => transaction
+                        .open_table(EVENT_CONSUMER_DELIVERIES)
+                        .map_err(table_error)?,
                     _ => return Err(invariant()),
                 };
                 let range = self.open_structural_phase_range(phase, table)?;
@@ -1738,6 +1774,9 @@ fn inspect_table_row_from_bytes(
         25 => inspect_contract_write_retirement_row(key, value),
         26 => inspect_retired_entity_row(transaction, key, value),
         27 => inspect_history_tombstone_row(key, value),
+        28 => inspect_reactive_module_row(transaction, key, value),
+        29 => inspect_event_consumer_row(transaction, database_id, key, value),
+        30 => inspect_event_consumer_delivery_row(transaction, key, value),
         _ => Err(invariant()),
     }
 }
@@ -1752,6 +1791,163 @@ fn inspect_history_tombstone_row(
     let tombstone = decoded.value();
     if tombstone.first_sequence() != first.get() {
         return Err(corrupt());
+    }
+    Ok(None)
+}
+
+fn inspect_reactive_module_row(
+    transaction: &ReadTransaction,
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let module_hash = keys::decode_reactive_module_key(key).map_err(|_| corrupt())?;
+    let module = codec::decode_reactive_module_v1(value)?.into_parts().0;
+    if module.module_hash() != module_hash
+        || hash_reactive_source(module.canonical_source()) != module.source_hash()
+        || hash_reactive_module(module.canonical_module()) != module_hash
+    {
+        return Ok(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        )));
+    }
+    if !bundle_exists(
+        transaction,
+        module.contract_lineage(),
+        module.contract_version(),
+        module.contract_bundle_hash(),
+    )? {
+        return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+    }
+    let query_modules = transaction.open_table(QUERY_MODULES).map_err(table_error)?;
+    for dependency_hash in module.query_module_hashes() {
+        let dependency_key = keys::encode_query_module_key(*dependency_hash);
+        let Some(value) = query_modules
+            .get(dependency_key.as_slice())
+            .map_err(precommit_storage_error)?
+        else {
+            return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+        };
+        let dependency = codec::decode_query_module_v1(value.value())?.into_parts().0;
+        if dependency.module_hash() != *dependency_hash
+            || dependency.contract_lineage() != module.contract_lineage()
+            || dependency.contract_version() != module.contract_version()
+            || dependency.contract_bundle_hash() != module.contract_bundle_hash()
+        {
+            return Ok(Some(authoritative(
+                StructuralFindingCode::CrossLinkMismatch,
+            )));
+        }
+    }
+    drop(query_modules);
+    if !reactive_module_has_publication(transaction, module_hash)? {
+        return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+    }
+    Ok(None)
+}
+
+fn reactive_module_has_publication(
+    transaction: &ReadTransaction,
+    module_hash: riffdb_types::ReactiveModuleHash,
+) -> Result<bool, StorageError> {
+    let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+    for entry in audit.iter().map_err(precommit_storage_error)? {
+        let (key, value) = entry.map_err(precommit_storage_error)?;
+        let sequence = keys::decode_audit_key(key.value()).map_err(|_| corrupt())?;
+        let record = codec::decode_administration_audit_record_v1(value.value())?
+            .into_parts()
+            .0;
+        if record.administration_sequence() != sequence {
+            return Err(corrupt());
+        }
+        if matches!(
+            record,
+            riffdb_storage_api::StoredAdministrationAuditRecordV1::ReactiveModule(record)
+                if record.module_hash() == module_hash
+        ) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn inspect_event_consumer_row(
+    transaction: &ReadTransaction,
+    database_id: DatabaseId,
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let identity = keys::decode_event_consumer_key(key).map_err(|_| corrupt())?;
+    let consumer = codec::decode_event_consumer_v1(value)?.into_parts().0;
+    if consumer.identity().identity_hash() != identity
+        || consumer.identity().database_id() != database_id
+    {
+        return Ok(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        )));
+    }
+    let modules = transaction
+        .open_table(REACTIVE_MODULES)
+        .map_err(table_error)?;
+    let module_key = keys::encode_reactive_module_key(consumer.identity().reactive_module_hash());
+    if modules
+        .get(module_key.as_slice())
+        .map_err(precommit_storage_error)?
+        .is_none()
+    {
+        return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+    }
+    drop(modules);
+    let consumers = transaction
+        .open_table(EVENT_CONSUMERS)
+        .map_err(table_error)?;
+    let deliveries = transaction
+        .open_table(EVENT_CONSUMER_DELIVERIES)
+        .map_err(table_error)?;
+    match crate::consumer::read_snapshot_from_tables(
+        &consumers,
+        &deliveries,
+        database_id,
+        identity,
+    )? {
+        Some(snapshot) if snapshot.consumer() == &consumer => Ok(None),
+        _ => Ok(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        ))),
+    }
+}
+
+fn inspect_event_consumer_delivery_row(
+    transaction: &ReadTransaction,
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let (identity, event_id) =
+        keys::decode_event_consumer_delivery_key(key).map_err(|_| corrupt())?;
+    let delivery = codec::decode_event_consumer_delivery_v1(value)?
+        .into_parts()
+        .0;
+    if delivery.consumer_identity_hash() != identity || delivery.event_id() != event_id {
+        return Ok(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        )));
+    }
+    let consumers = transaction
+        .open_table(EVENT_CONSUMERS)
+        .map_err(table_error)?;
+    let consumer_key = keys::encode_event_consumer_key(identity);
+    let Some(consumer) = consumers
+        .get(consumer_key.as_slice())
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+    };
+    let consumer = codec::decode_event_consumer_v1(consumer.value())?
+        .into_parts()
+        .0;
+    if consumer.history_incarnation() != delivery.history_incarnation() {
+        return Ok(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        )));
     }
     Ok(None)
 }
@@ -1841,6 +2037,7 @@ fn allocate_open_session() -> Result<OpenSessionId, StorageError> {
 struct StartupSnapshot {
     retained_metadata: RetainedMetadataV1,
     structural_counts: [u64; STRUCTURAL_TABLE_COUNT],
+    additive_structural_counts: [u64; ADDITIVE_STRUCTURAL_TABLE_COUNT],
     structural_total: u64,
 }
 
@@ -1880,12 +2077,21 @@ fn collect_startup_snapshot(
         table_len(transaction, RETIRED_ENTITIES)?,
         table_len(transaction, HISTORY_TOMBSTONES)?,
     ];
-    let total = counts.iter().try_fold(1u64, |total, count| {
-        total.checked_add(*count).ok_or_else(limit_exceeded)
-    })?;
+    let additive_counts = [
+        table_len(transaction, REACTIVE_MODULES)?,
+        table_len(transaction, EVENT_CONSUMERS)?,
+        table_len(transaction, EVENT_CONSUMER_DELIVERIES)?,
+    ];
+    let total = counts
+        .iter()
+        .chain(additive_counts.iter())
+        .try_fold(1u64, |total, count| {
+            total.checked_add(*count).ok_or_else(limit_exceeded)
+        })?;
     Ok(StartupSnapshot {
         retained_metadata,
         structural_counts: counts,
+        additive_structural_counts: additive_counts,
         structural_total: total,
     })
 }
@@ -2849,6 +3055,22 @@ fn inspect_audit_row(
                 Some(authoritative(StructuralFindingCode::CrossLinkMismatch))
             } else {
                 None
+            }
+        }
+        riffdb_storage_api::StoredAdministrationAuditRecordV1::ReactiveModule(record) => {
+            let table = transaction
+                .open_table(REACTIVE_MODULES)
+                .map_err(table_error)?;
+            let key = keys::encode_reactive_module_key(record.module_hash());
+            match table.get(key.as_slice()).map_err(precommit_storage_error)? {
+                Some(value)
+                    if codec::decode_reactive_module_v1(value.value())
+                        .map(|item| item.value().module_hash() == record.module_hash())
+                        .unwrap_or(false) =>
+                {
+                    None
+                }
+                _ => Some(authoritative(StructuralFindingCode::MissingCrossLink)),
             }
         }
         riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(record) => {

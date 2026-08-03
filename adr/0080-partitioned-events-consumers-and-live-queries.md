@@ -10,6 +10,7 @@
   ADR-0063, ADR-0064, ADR-0072, and ADR-0075
 - **WP-415 public-inspection clarification accepted:** 2026-08-02
 - **WP-416 reactive-module clarification accepted:** 2026-08-02
+- **WP-417 durable-consumer clarification accepted:** 2026-08-02
 
 ## Context
 
@@ -240,6 +241,60 @@ selected fields, 16 hydration queries, 32 reactions, contextual batch and
 in-flight maxima of eight, lease duration from five through 900 seconds, the
 existing four-MiB public response ceiling, and the existing 500-row aggregate
 query-work ceiling.
+
+### WP-417 durable consumer and publication boundary
+
+The maintainer accepted this exact clarification on 2026-08-02. Exact reactive
+modules are published immutably through the shared control plane before a
+consumer may resolve them. The catalog validates the canonical artifact against
+its exact contract and query-module dependencies, storage keys it by
+`ReactiveModuleHash`, and no mutable active-reactive-module pointer exists.
+
+The additive service-operation tags `0x21` through `0x27` are respectively
+`DeployReactiveModule`, `ConsumeEventStream`, `AcknowledgeEventStream`,
+`NegativeAcknowledgeEventStream`, `SeekEventStreamConsumer`,
+`RetireEventStreamConsumer`, and `GetEventStreamConsumerStatus`. Pull and gRPC
+streaming share `ConsumeEventStream`. Consume authority covers pull, stream,
+acknowledge, negative-acknowledge, and status. Exact seek authority alone covers
+seek and retirement. Every operation independently reauthorizes the selected
+database, lineage, module, operation, canonical parameters, partition, and
+principal facts.
+
+Durable V1 storage contains one immutable reactive-module record, one consumer
+record, and one per-event delivery record. Consumer identity is the exact
+`DatabaseId`, reactive-module hash, operation name, canonical query-parameter
+hash, and a consumer name matching `[A-Za-z][A-Za-z0-9_-]{0,63}`. Its physical
+key is a domain-separated 32-byte identity hash, while the payload repeats and
+validates the complete identity. Consumer state carries a nonzero compare-and-
+transition revision, one contiguous checkpoint, and at most 64 canonically
+ordered sparse terminal resolutions. Per-event delivery state is exactly
+leased, retry-ready or retry-delayed, or dead-lettered; it never duplicates an
+event payload.
+
+One lease has a random 32-byte opaque attempt token generated at the existing
+server entropy boundary and stored durably. The token binds the consumer,
+event, attempt, and history incarnation but is never authority by possession.
+New first attempts are leased in increasing `EventId` order. A retry may revisit
+an older event. Ack and dead-letter are the only terminal resolutions; ten
+expired or negatively acknowledged attempts dead-letter the event, and that
+terminal disposition participates in contiguous checkpoint advancement.
+
+Seek requires no live lease and atomically sets a checkpoint at before-first or
+one selected event while removing later sparse, retry, and dead-letter state.
+Retirement has the same no-live-lease and seek-authority preconditions and
+atomically removes the consumer plus all delivery metadata. Ordinary restart
+retains unexpired leases and converts expired attempts to retry or dead-letter
+state. Restore-incarnation change invalidates every live lease and old external
+token while retaining checkpoint, retry, sparse-resolution, and dead-letter
+truth restored from the backup.
+
+Consumer transitions assign no application sequence and mutate no application
+entity. `riffdb-service` owns the one API-neutral consumer coordinator and its
+clock/token source boundaries; it receives only a narrow consumer-owned port.
+`riffdb-storage-api` owns the atomic semantic transitions and durable records,
+and memory/redb implement them. Catalog owns exact module publication and
+resolution. Commit owns the control-plane publication transition. Server and
+transport code only compose or adapt those owners.
 
 ## Rejected alternatives
 

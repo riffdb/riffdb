@@ -349,6 +349,10 @@ hash_id!(
     ReactiveModuleHash
 );
 hash_id!(
+    /// The identity of one exact durable event consumer.
+    EventConsumerIdentityHash
+);
+hash_id!(
     /// The identity of one canonical application manifest.
     ApplicationManifestHash
 );

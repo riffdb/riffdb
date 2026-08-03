@@ -10,11 +10,11 @@ use crate::{
     ApplicationRoleHash, ApplicationSourceHash, CanonicalInputHash, CanonicalValueHash,
     CapabilityTokenDigest, ConflictKeyHash, ContractBundleHash, ContractMigrationInputHash,
     ContractMigrationJournalHash, ContractMigrationValidationDigest, ContractPlanRootHash,
-    DigestKey, DigestKeyId, EntityKeyHash, EntityRecordHash, EventHash, GeneratedArtifactHash,
-    MigrationBundleHash, MigrationSourceHash, OfflineMaintenanceInputHash, PartitionKeyHash,
-    PlanHash, ProjectionApplyHash, ProjectionPlanHash, QueryModuleHash, QueryParameterHash,
-    QueryPlanHash, QuerySourceHash, ReactiveModuleHash, ReactiveOperationHash, ReactiveSourceHash,
-    SchemaHash, SourceHash,
+    DigestKey, DigestKeyId, EntityKeyHash, EntityRecordHash, EventConsumerIdentityHash, EventHash,
+    GeneratedArtifactHash, MigrationBundleHash, MigrationSourceHash, OfflineMaintenanceInputHash,
+    PartitionKeyHash, PlanHash, ProjectionApplyHash, ProjectionPlanHash, QueryModuleHash,
+    QueryParameterHash, QueryPlanHash, QuerySourceHash, ReactiveModuleHash, ReactiveOperationHash,
+    ReactiveSourceHash, SchemaHash, SourceHash,
 };
 
 /// Hash framing and algorithm scheme defined by ADR-0011.
@@ -50,6 +50,8 @@ pub enum HashDomain {
     ReactiveOperation,
     /// Canonical immutable reactive module.
     ReactiveModule,
+    /// Exact durable event consumer identity.
+    EventConsumerIdentity,
     /// Canonical application manifest.
     ApplicationManifest,
     /// Author-owned symbolic application source manifest.
@@ -98,7 +100,7 @@ pub enum HashDomain {
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 35] = [
         Self::CanonicalValue,
         Self::Source,
         Self::MigrationSource,
@@ -111,6 +113,7 @@ impl HashDomain {
         Self::ReactiveSource,
         Self::ReactiveOperation,
         Self::ReactiveModule,
+        Self::EventConsumerIdentity,
         Self::ApplicationManifest,
         Self::ApplicationSource,
         Self::ApplicationLock,
@@ -150,6 +153,7 @@ impl HashDomain {
             Self::ReactiveSource => "riffdb.reactive-source/v1",
             Self::ReactiveOperation => "riffdb.reactive-operation/v1",
             Self::ReactiveModule => "riffdb.reactive-module/v1",
+            Self::EventConsumerIdentity => "riffdb.event-consumer-identity/v1",
             Self::ApplicationManifest => "riffdb.application-manifest/v1",
             Self::ApplicationSource => "riffdb.application-source/v1",
             Self::ApplicationLock => "riffdb.application-lock/v1",
@@ -382,6 +386,12 @@ typed_hash_function!(
     hash_reactive_module,
     ReactiveModule,
     ReactiveModuleHash
+);
+typed_hash_function!(
+    /// Hashes one exact durable event consumer identity.
+    hash_event_consumer_identity,
+    EventConsumerIdentity,
+    EventConsumerIdentityHash
 );
 typed_hash_function!(
     /// Hashes one canonical application manifest in its immutable v1 domain.

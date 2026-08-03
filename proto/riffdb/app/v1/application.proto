@@ -35,6 +35,7 @@ enum ApplicationOperation {
   APPLICATION_OPERATION_EXECUTE_COMMAND = 7;
   APPLICATION_OPERATION_BATCH_COMMAND = 8;
   APPLICATION_OPERATION_EXECUTE_PROJECTED_QUERY = 9;
+  APPLICATION_OPERATION_DEPLOY_REACTIVE_MODULE = 10;
 }
 
 enum ApplicationErrorCode {
@@ -272,6 +273,39 @@ message DeployQueryModuleResponse {
   optional bytes actual_active_module_hash = 3;
 }
 
+message DeployReactiveModuleRequest {
+  ContractSelector contract = 1;
+  string source = 2;
+  repeated bytes query_module_hashes = 3;
+  bytes request_id = 100;
+}
+
+enum ReactiveModuleDeploymentOutcome {
+  REACTIVE_MODULE_DEPLOYMENT_OUTCOME_UNSPECIFIED = 0;
+  REACTIVE_MODULE_DEPLOYMENT_OUTCOME_PUBLISHED = 1;
+  REACTIVE_MODULE_DEPLOYMENT_OUTCOME_ALREADY_PUBLISHED = 2;
+  REACTIVE_MODULE_DEPLOYMENT_OUTCOME_VERSION_CONFLICT = 3;
+  REACTIVE_MODULE_DEPLOYMENT_OUTCOME_CONTRACT_UNAVAILABLE = 4;
+  REACTIVE_MODULE_DEPLOYMENT_OUTCOME_QUERY_MODULE_UNAVAILABLE = 5;
+}
+
+message ReactiveModuleDescriptor {
+  string module_name = 1;
+  uint64 module_version = 2;
+  bytes module_hash = 3;
+  string contract_lineage = 4;
+  uint64 contract_version = 5;
+  bytes contract_bundle_hash = 6;
+  repeated bytes query_module_hashes = 7;
+  repeated string operation_names = 8;
+}
+
+message DeployReactiveModuleResponse {
+  ReactiveModuleDeploymentOutcome outcome = 1;
+  ReactiveModuleDescriptor module = 2;
+  optional bytes unavailable_query_module_hash = 3;
+}
+
 message GetQueryModuleRequest {
   ContractSelector contract = 1;
   optional bytes module_hash = 2;
@@ -428,6 +462,7 @@ service ApplicationQueryService {
   rpc ExplainQuery(ExplainQueryRequest) returns (ExplainQueryResponse);
   rpc ExecuteQuery(ExecuteQueryRequest) returns (ExecuteQueryResponse);
   rpc DeployQueryModule(DeployQueryModuleRequest) returns (DeployQueryModuleResponse);
+  rpc DeployReactiveModule(DeployReactiveModuleRequest) returns (DeployReactiveModuleResponse);
   rpc GetQueryModule(GetQueryModuleRequest) returns (GetQueryModuleResponse);
   rpc ExecuteProjectedQuery(ExecuteProjectedQueryRequest) returns (ExecuteProjectedQueryResponse);
 }

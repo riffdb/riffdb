@@ -80,6 +80,10 @@ artifacts=(
     fixtures/proto/durable-retention-holds-v1-schema-hash.bin
     fixtures/proto/durable-history-tombstone-v1-record-bound.bin
     fixtures/proto/durable-history-tombstone-v1-schema-hash.bin
+    fixtures/proto/durable-reactive-consumer-v1-record-bounds.bin
+    fixtures/proto/durable-reactive-consumer-v1-schema-hashes.bin
+    fixtures/proto/durable-service-audit-v2-record-bound.bin
+    fixtures/proto/durable-service-audit-v2-schema-hash.bin
     fixtures/proto/durable-event-reference-v2-record-bounds.bin
     fixtures/proto/durable-event-reference-v2-schema-hashes.bin
     fixtures/proto/durable-event-reference-v2-wire-vectors.txt

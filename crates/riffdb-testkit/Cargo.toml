@@ -62,5 +62,9 @@ path = "../../tests/migrations/contract_migration_gate_c.rs"
 name = "contract_migration_acceptance"
 path = "../../tests/migrations/contract_migration_acceptance.rs"
 
+[[test]]
+name = "durable_event_consumers"
+path = "../../tests/durable_event_consumers.rs"
+
 [lints]
 workspace = true

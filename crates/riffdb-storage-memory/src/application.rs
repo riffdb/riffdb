@@ -3445,6 +3445,9 @@ mod tests {
                         riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(_)
                         | riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(_)
                         | riffdb_storage_api::StoredAdministrationAuditRecordV1::QueryModule(_)
+                        | riffdb_storage_api::StoredAdministrationAuditRecordV1::ReactiveModule(
+                            _,
+                        )
                         | riffdb_storage_api::StoredAdministrationAuditRecordV1::Retention(_) => {
                             None
                         }

@@ -127,10 +127,10 @@ fn allocator_label(envelope: &[u8]) -> String {
 fn validate_compound_bootstrap(lines: &[&str]) {
     use wire::capability_lifecycle_v1::State as CapabilityState;
     use wire::service_audit_link_v1::Link;
-    use wire::service_audit_target_v1::Target;
+    use wire::service_audit_target_v2::Target;
 
     let expected = [
-        ("service-start", "riffdb.storage.v1.ServiceAuditRecordV1"),
+        ("service-start", "riffdb.storage.v1.ServiceAuditRecordV2"),
         (
             "capability-administration",
             "riffdb.storage.v1.CapabilityAdministrationAuditV1",
@@ -162,7 +162,7 @@ fn validate_compound_bootstrap(lines: &[&str]) {
         match expected_role {
             "service-start" => {
                 service_start = Some(
-                    wire::ServiceAuditRecordV1::decode(decoded.payload())
+                    wire::ServiceAuditRecordV2::decode(decoded.payload())
                         .expect("bootstrap service-start payload"),
                 );
             }

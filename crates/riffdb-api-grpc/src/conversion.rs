@@ -14,28 +14,33 @@ use riffdb_service::{
     CheckSymbolicQueryResult, CommandDurability, CommandToolDescriptor, CommandToolDiscoveryItem,
     CommitSubscriptionEndReason, CommitSubscriptionEvent, CommitView, CompactCommandToolDescriptor,
     CompactCommandToolDiscoveryItem, CompactNamedQueryToolDescriptor, CompactResourceDescriptor,
-    CompactResourceDescriptorRef, CompileSymbolicQueryRequest, ContractCompatibilityClass,
-    ContractDescriptor, ContractMigrationArtifacts, ContractMigrationObservationFailure,
+    CompactResourceDescriptorRef, CompileSymbolicQueryRequest, ConsumeEventStreamRequest,
+    ConsumeEventStreamResult, ContractCompatibilityClass, ContractDescriptor,
+    ContractMigrationArtifacts, ContractMigrationObservationFailure,
     ContractMigrationObservationPhase, ContractMigrationOperationObservation,
     ContractMigrationStartDisposition, ContractMigrationStartResult, ContractSelection,
     ContractSource, ContractValidationResult, CreateCapabilityResult, CreateOfflineBackupRequest,
     CursorToken, DeclaredOutcomeView, DeployContractRequest, DeployContractResult,
-    DeployQueryModuleRequest, DeployQueryModuleResult, DescribeEventRequest, DescribeEventResult,
+    DeployQueryModuleRequest, DeployQueryModuleResult, DeployReactiveModuleRequest,
+    DeployReactiveModuleResult, DescribeEventRequest, DescribeEventResult,
     DescribeSymbolicContractResult, DiscoverCommandToolsRequest, DiscoverCommandToolsResult,
     DiscoverCommandToolsResultRef, DiscoverResourcesRequest, DiscoverResourcesResult,
     DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryCatalogStateRef,
-    DiscoveryRepresentation, EventPartitionComponent, EventSelection, ExecuteCommandRequest,
-    ExecuteCommandResult, ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult,
-    ExplainCommandRequest, ExplainCommandResult, ExplainSymbolicQueryResult, FieldSelection,
-    FixedToolKind, GeneratedSchemaIdentity, GetActiveContractRequest, GetActiveContractResult,
-    GetCommitRequest, GetCommitResult, GetContractMigrationOperationRequest,
-    GetContractMigrationOperationResult, GetContractVersionRequest, GetContractVersionResult,
-    GetEntityRequest, GetEntityResult, GetOfflineMaintenanceOperationRequest,
-    GetOfflineMaintenanceOperationResult, GetProjectionStatusRequest, GetProjectionStatusResult,
-    GetQueryModuleRequest, HealthComponentKind, HealthComponentStatus, HealthRequest, HealthResult,
-    HealthStatus, JournaledCommandResult, JournaledCompletion, ListPendingOutboxDeliveriesRequest,
+    DiscoveryRepresentation, EventConsumerCheckpoint, EventConsumerLeaseSelection,
+    EventConsumerMutationResult, EventConsumerSelection, EventConsumerStatus,
+    EventPartitionComponent, EventSelection, ExecuteCommandRequest, ExecuteCommandResult,
+    ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult, ExplainCommandRequest,
+    ExplainCommandResult, ExplainSymbolicQueryResult, FieldSelection, FixedToolKind,
+    GeneratedSchemaIdentity, GetActiveContractRequest, GetActiveContractResult, GetCommitRequest,
+    GetCommitResult, GetContractMigrationOperationRequest, GetContractMigrationOperationResult,
+    GetContractVersionRequest, GetContractVersionResult, GetEntityRequest, GetEntityResult,
+    GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
+    GetProjectionStatusRequest, GetProjectionStatusResult, GetQueryModuleRequest,
+    HealthComponentKind, HealthComponentStatus, HealthRequest, HealthResult, HealthStatus,
+    JournaledCommandResult, JournaledCompletion, ListPendingOutboxDeliveriesRequest,
     ListPendingOutboxDeliveriesResult, NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact,
-    NamedSymbolicQueryRequest, NormalCreateCapabilityRequest, NormalCreateCapabilityResult,
+    NamedSymbolicQueryRequest, NegativeAcknowledgeEventStreamRequest,
+    NormalCreateCapabilityRequest, NormalCreateCapabilityResult,
     OfflineMaintenanceObservationFailure, OfflineMaintenanceObservationPhase,
     OfflineMaintenanceOperationObservation, OfflineMaintenanceStartDisposition,
     OfflineMaintenanceStartResult, OperationSchemaArtifact, OperationSchemaCatalog,
@@ -43,13 +48,14 @@ use riffdb_service::{
     OutcomeResourceLocator, PageLimit, PageRequest, PreBootstrapLifecycle, ProjectionFailureCode,
     ProjectionLifecycle, ProjectionUnavailableReason, ProvenanceSelection, PublishedApplyMode,
     QueryModuleActiveExpectation, QueryModuleDeploymentDisposition, QueryModuleInspection,
-    QueryProjectionRequest, QueryProjectionResult, ReplayEventsRequest, ReplayEventsResult,
-    ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, ResourceDescriptor,
-    ResourceDescriptorRef, ResourceDiscoveryKind, RestoreOfflineBackupRequest,
-    RevokeCapabilityRequest, RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult,
-    ScanIndexRequest, ScanIndexResult, SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue,
-    SourceName, StatisticsRequest, StatisticsResult, SubmittedDecimal, SubmittedEnum,
-    SubmittedField, SubmittedFieldIdentity, SubmittedMoney, SubmittedRecord, SubmittedValue,
+    QueryProjectionRequest, QueryProjectionResult, ReactiveModuleDeploymentDisposition,
+    ReplayEventsRequest, ReplayEventsResult, ResolveCommandOutcomeRequest,
+    ResolveCommandOutcomeResult, ResourceDescriptor, ResourceDescriptorRef, ResourceDiscoveryKind,
+    RestoreOfflineBackupRequest, RevokeCapabilityRequest, RevokeCapabilityResult,
+    ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult,
+    SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue, SeekEventStreamConsumerRequest, SourceName,
+    StatisticsRequest, StatisticsResult, SubmittedDecimal, SubmittedEnum, SubmittedField,
+    SubmittedFieldIdentity, SubmittedMoney, SubmittedRecord, SubmittedValue,
     SubscribeToCommitsRequest, SymbolicContractSelector, SymbolicDiagnostic, SymbolicEvent,
     SymbolicQueryIdentity, SymbolicQueryParameters, SymbolicQuerySchema, SymbolicQuerySource,
     SymbolicResultField, SymbolicResultRecord, TailEventsRequest, TailEventsResult,
@@ -61,12 +67,13 @@ use riffdb_types::{
     CapabilityPermissionsV1, CommandId, CommitSequence, ContractBundleHash, ContractLineage,
     ContractMigrationApplyConfirmation, ContractMigrationOperationId,
     ContractMigrationOperationKind, ContractVersion, CurrencyCode, Date, EntityFieldVisibilityV1,
-    EntityKey, EntityTypeId, EnumTypeId, EnumVariantId, FieldId, FrontierPosition, IdempotencyKey,
-    IndexEpochPosition, IndexId, MigrationBundleHash, OfflineMaintenanceOperationId,
-    OfflineMaintenanceOperationKind, OfflineMaintenanceReplacementConfirmation, PartitionKey,
-    PartitionScopeV1, ProjectionId, ProvenanceId, QueryModuleHash, QueryOperationName,
-    ReactiveModuleHash, ReactiveOperationName, RequestId, RevocationReasonCodeV1, SchemaHash,
-    ScopedPartitionV1, TenantId, TenantScope, Timestamp,
+    EntityKey, EntityTypeId, EnumTypeId, EnumVariantId, EventConsumerName, EventLeaseToken,
+    FieldId, FrontierPosition, IdempotencyKey, IndexEpochPosition, IndexId, MigrationBundleHash,
+    OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
+    OfflineMaintenanceReplacementConfirmation, PartitionKey, PartitionScopeV1, ProjectionId,
+    ProvenanceId, QueryModuleHash, QueryOperationName, ReactiveModuleHash, ReactiveOperationName,
+    RequestId, RevocationReasonCodeV1, SchemaHash, ScopedPartitionV1, TenantId, TenantScope,
+    Timestamp,
 };
 use tonic::Status;
 
@@ -299,6 +306,25 @@ pub fn deploy_query_module_request_from_proto(
         request.module_version,
         queries,
         expectation,
+    )
+    .map_err(|_| invalid_request())?;
+    Ok((request_id, service_request))
+}
+
+/// Converts one immutable reactive-module publication.
+pub fn deploy_reactive_module_request_from_proto(
+    request: app_v1::DeployReactiveModuleRequest,
+) -> Result<(RequestId, DeployReactiveModuleRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let query_module_hashes = request
+        .query_module_hashes
+        .into_iter()
+        .map(|hash| optional_query_module_hash(Some(hash))?.ok_or_else(invalid_request))
+        .collect::<Result<Vec<_>, _>>()?;
+    let service_request = DeployReactiveModuleRequest::new(
+        symbolic_contract_selector_from_proto(request.contract)?,
+        request.source,
+        query_module_hashes,
     )
     .map_err(|_| invalid_request())?;
     Ok((request_id, service_request))
@@ -616,6 +642,57 @@ pub fn deploy_query_module_result_to_proto(
         outcome: outcome as i32,
         module: Some(query_module_descriptor_to_proto(result.module())),
         actual_active_module_hash: actual,
+    }
+}
+
+fn reactive_module_descriptor_to_proto(
+    module: &riffdb_service::ReactiveModuleDescriptor,
+) -> app_v1::ReactiveModuleDescriptor {
+    app_v1::ReactiveModuleDescriptor {
+        module_name: module.name().to_owned(),
+        module_version: module.version(),
+        module_hash: module.hash().as_bytes().to_vec(),
+        contract_lineage: module.contract_lineage().as_str().to_owned(),
+        contract_version: module.contract_version().get(),
+        contract_bundle_hash: module.contract_hash().as_bytes().to_vec(),
+        query_module_hashes: module
+            .query_module_hashes()
+            .iter()
+            .map(|hash| hash.as_bytes().to_vec())
+            .collect(),
+        operation_names: module.operation_names().to_vec(),
+    }
+}
+
+/// Converts one closed reactive-module publication result.
+pub fn deploy_reactive_module_result_to_proto(
+    result: &DeployReactiveModuleResult,
+) -> app_v1::DeployReactiveModuleResponse {
+    let (outcome, unavailable_query_module_hash) = match result.outcome() {
+        ReactiveModuleDeploymentDisposition::Published => {
+            (app_v1::ReactiveModuleDeploymentOutcome::Published, None)
+        }
+        ReactiveModuleDeploymentDisposition::AlreadyPublished => (
+            app_v1::ReactiveModuleDeploymentOutcome::AlreadyPublished,
+            None,
+        ),
+        ReactiveModuleDeploymentDisposition::ModuleVersionConflict => (
+            app_v1::ReactiveModuleDeploymentOutcome::VersionConflict,
+            None,
+        ),
+        ReactiveModuleDeploymentDisposition::ContractUnavailable => (
+            app_v1::ReactiveModuleDeploymentOutcome::ContractUnavailable,
+            None,
+        ),
+        ReactiveModuleDeploymentDisposition::QueryModuleUnavailable(hash) => (
+            app_v1::ReactiveModuleDeploymentOutcome::QueryModuleUnavailable,
+            Some(hash.as_bytes().to_vec()),
+        ),
+    };
+    app_v1::DeployReactiveModuleResponse {
+        outcome: outcome as i32,
+        module: Some(reactive_module_descriptor_to_proto(result.module())),
+        unavailable_query_module_hash,
     }
 }
 
@@ -1399,6 +1476,235 @@ pub fn tail_events_result_to_proto(
         page: Some(event_page_to_proto(result.page())?),
         wait_timed_out: result.wait_timed_out(),
     })
+}
+
+fn event_consumer_selection_from_proto(
+    value: v1::EventConsumerSelection,
+) -> Result<EventConsumerSelection, Status> {
+    let module_hash = ReactiveModuleHash::from_bytes(
+        value
+            .reactive_module_hash
+            .try_into()
+            .map_err(|_| invalid_request())?,
+    );
+    let operation_name =
+        ReactiveOperationName::new(value.operation_name).map_err(|_| invalid_request())?;
+    let consumer_name =
+        EventConsumerName::new(value.consumer_name).map_err(|_| invalid_request())?;
+    let mut parameters = std::collections::BTreeMap::new();
+    for parameter in value.parameters {
+        if parameter.name.is_empty()
+            || parameters
+                .insert(
+                    parameter.name,
+                    canonical_value_from_proto(parameter.value.ok_or_else(invalid_request)?)
+                        .map_err(|_| invalid_request())?,
+                )
+                .is_some()
+        {
+            return Err(invalid_request());
+        }
+    }
+    let parameters =
+        riffdb_service::QueryParameters::checked(parameters).ok_or_else(invalid_request)?;
+    Ok(EventConsumerSelection::new(
+        module_hash,
+        operation_name,
+        parameters,
+        consumer_name,
+    ))
+}
+
+fn lease_token_from_bytes(value: Vec<u8>) -> Result<EventLeaseToken, Status> {
+    Ok(EventLeaseToken::from_bytes(
+        value.try_into().map_err(|_| invalid_request())?,
+    ))
+}
+
+/// Converts one public event-consumer pull request.
+pub fn consume_event_stream_request_from_proto(
+    value: v1::ConsumeEventStreamRequest,
+) -> Result<(RequestId, ConsumeEventStreamRequest), Status> {
+    let request_id = request_id_from_bytes(&value.request_id)?;
+    let batch_limit = u8::try_from(value.batch_limit).map_err(|_| invalid_request())?;
+    let in_flight_limit = u8::try_from(value.in_flight_limit).map_err(|_| invalid_request())?;
+    let request = ConsumeEventStreamRequest::new(
+        event_consumer_selection_from_proto(value.selection.ok_or_else(invalid_request)?)?,
+        batch_limit,
+        in_flight_limit,
+        Duration::from_secs(value.lease_seconds),
+        Duration::from_nanos(value.maximum_wait_nanos),
+    )
+    .map_err(|_| invalid_request())?;
+    Ok((request_id, request))
+}
+
+fn event_consumer_lease_from_parts(
+    selection: Option<v1::EventConsumerSelection>,
+    event_id: Option<v1::EventId>,
+    token: Vec<u8>,
+    history_incarnation: u64,
+) -> Result<EventConsumerLeaseSelection, Status> {
+    EventConsumerLeaseSelection::new(
+        event_consumer_selection_from_proto(selection.ok_or_else(invalid_request)?)?,
+        event_id_from_proto(event_id.ok_or_else(invalid_request)?)?,
+        lease_token_from_bytes(token)?,
+        history_incarnation,
+    )
+    .map_err(|_| invalid_request())
+}
+
+/// Converts one acknowledgement request.
+pub fn acknowledge_event_stream_request_from_proto(
+    value: v1::AcknowledgeEventStreamRequest,
+) -> Result<(RequestId, EventConsumerLeaseSelection), Status> {
+    Ok((
+        request_id_from_bytes(&value.request_id)?,
+        event_consumer_lease_from_parts(
+            value.selection,
+            value.event_id,
+            value.lease_token,
+            value.history_incarnation,
+        )?,
+    ))
+}
+
+/// Converts one negative acknowledgement request.
+pub fn negative_acknowledge_event_stream_request_from_proto(
+    value: v1::NegativeAcknowledgeEventStreamRequest,
+) -> Result<(RequestId, NegativeAcknowledgeEventStreamRequest), Status> {
+    let request_id = request_id_from_bytes(&value.request_id)?;
+    let lease = event_consumer_lease_from_parts(
+        value.selection,
+        value.event_id,
+        value.lease_token,
+        value.history_incarnation,
+    )?;
+    let request = NegativeAcknowledgeEventStreamRequest::new(
+        lease,
+        Duration::from_nanos(value.retry_delay_nanos),
+    )
+    .map_err(|_| invalid_request())?;
+    Ok((request_id, request))
+}
+
+fn checkpoint_from_proto(
+    value: v1::EventConsumerCheckpoint,
+) -> Result<EventConsumerCheckpoint, Status> {
+    use v1::event_consumer_checkpoint::Position;
+    match value.position.ok_or_else(invalid_request)? {
+        Position::BeforeFirst(_) => Ok(EventConsumerCheckpoint::BeforeFirst),
+        Position::AfterEventId(event_id) => {
+            event_id_from_proto(event_id).map(EventConsumerCheckpoint::After)
+        }
+    }
+}
+
+/// Converts one seek request.
+pub fn seek_event_stream_consumer_request_from_proto(
+    value: v1::SeekEventStreamConsumerRequest,
+) -> Result<(RequestId, SeekEventStreamConsumerRequest), Status> {
+    Ok((
+        request_id_from_bytes(&value.request_id)?,
+        SeekEventStreamConsumerRequest::new(
+            event_consumer_selection_from_proto(value.selection.ok_or_else(invalid_request)?)?,
+            checkpoint_from_proto(value.checkpoint.ok_or_else(invalid_request)?)?,
+        ),
+    ))
+}
+
+/// Converts a selection-only consumer request.
+pub fn event_consumer_selection_request_from_proto(
+    request_id: Vec<u8>,
+    selection: Option<v1::EventConsumerSelection>,
+) -> Result<(RequestId, EventConsumerSelection), Status> {
+    Ok((
+        request_id_from_bytes(&request_id)?,
+        event_consumer_selection_from_proto(selection.ok_or_else(invalid_request)?)?,
+    ))
+}
+
+fn event_consumer_checkpoint_to_proto(
+    checkpoint: EventConsumerCheckpoint,
+) -> v1::EventConsumerCheckpoint {
+    use v1::event_consumer_checkpoint::Position;
+    v1::EventConsumerCheckpoint {
+        position: Some(match checkpoint {
+            EventConsumerCheckpoint::BeforeFirst => Position::BeforeFirst(v1::Unit {}),
+            EventConsumerCheckpoint::After(event_id) => {
+                Position::AfterEventId(event_id_to_proto(event_id))
+            }
+        }),
+    }
+}
+
+fn event_consumer_status_to_proto(status: &EventConsumerStatus) -> v1::EventConsumerStatus {
+    v1::EventConsumerStatus {
+        revision: status.revision().get(),
+        checkpoint: Some(event_consumer_checkpoint_to_proto(status.checkpoint())),
+        history_incarnation: status.history_incarnation(),
+        live_leases: u32::from(status.live_leases()),
+        retries: u32::from(status.retries()),
+        dead_letters: u32::from(status.dead_letters()),
+    }
+}
+
+/// Converts one successful consumer pull.
+pub fn consume_event_stream_result_to_proto(
+    result: &ConsumeEventStreamResult,
+) -> Result<v1::ConsumeEventStreamResponse, Status> {
+    Ok(v1::ConsumeEventStreamResponse {
+        events: result
+            .events()
+            .iter()
+            .map(|item| {
+                let expires_at = item.expires_at();
+                Ok(v1::ConsumedEvent {
+                    event: Some(symbolic_event_to_proto(item.event())?),
+                    attempt: u32::from(item.attempt().get()),
+                    lease_token: item.token().as_bytes().to_vec(),
+                    expires_at: Some(v1::Timestamp {
+                        seconds: expires_at.seconds(),
+                        nanos: expires_at.nanoseconds(),
+                    }),
+                })
+            })
+            .collect::<Result<Vec<_>, Status>>()?,
+        status: Some(event_consumer_status_to_proto(result.status())),
+        wait_timed_out: result.wait_timed_out(),
+    })
+}
+
+/// Converts one closed consumer mutation outcome.
+pub fn event_consumer_mutation_result_to_proto(
+    result: EventConsumerMutationResult,
+) -> v1::EventConsumerMutationResponse {
+    let result = match result {
+        EventConsumerMutationResult::Applied => v1::EventConsumerMutationResult::Applied,
+        EventConsumerMutationResult::StateChanged => v1::EventConsumerMutationResult::StateChanged,
+        EventConsumerMutationResult::NotFound => v1::EventConsumerMutationResult::NotFound,
+        EventConsumerMutationResult::OutstandingLease => {
+            v1::EventConsumerMutationResult::OutstandingLease
+        }
+        EventConsumerMutationResult::StaleLease => v1::EventConsumerMutationResult::StaleLease,
+        EventConsumerMutationResult::LeaseExpired => v1::EventConsumerMutationResult::LeaseExpired,
+    };
+    v1::EventConsumerMutationResponse {
+        result: result as i32,
+    }
+}
+
+/// Converts optional consumer status.
+pub fn event_consumer_status_result_to_proto(
+    status: Option<&EventConsumerStatus>,
+) -> v1::GetEventStreamConsumerStatusResponse {
+    use v1::get_event_stream_consumer_status_response::Result;
+    v1::GetEventStreamConsumerStatusResponse {
+        result: Some(match status {
+            Some(status) => Result::Found(event_consumer_status_to_proto(status)),
+            None => Result::NotFound(v1::Unit {}),
+        }),
+    }
 }
 
 /// Converts one post-establishment commit stream item or typed terminal item.

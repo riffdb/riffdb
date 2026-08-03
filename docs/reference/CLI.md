@@ -243,6 +243,12 @@ Commands:
   describe  Describes one event in the active contract
   replay    Replays one exact event partition
   tail      Waits for events after one exact partition position
+  consume   Leases one bounded batch from a named reactive event stream
+  ack       Acknowledges one exact live event lease
+  nack      Negatively acknowledges one exact live event lease
+  seek      Moves a consumer checkpoint after exact seek authorization
+  retire    Retires one consumer and releases its retention fence
+  status    Reads bounded status for one exact consumer
 
 Options:
       --config <PATH>
@@ -904,6 +910,144 @@ Options:
       --credential-file <PATH>
       --observed-history-incarnation <INCARNATION>
   -h, --help                                        Print help
+```
+
+#### `riffdb event consume`
+
+```text
+Leases one bounded batch from a named reactive event stream
+
+Usage: riffdb event consume [OPTIONS] --module-hash <64_HEX_CHARS> --operation <OPERATION> --consumer-name <CONSUMER>
+
+Options:
+      --config <PATH>
+      --module-hash <64_HEX_CHARS>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --operation <OPERATION>
+      --database <DATABASE>
+      --parameter <NAME=JSON_VALUE>
+      --consumer-name <CONSUMER>
+      --output <human|json>                [possible values: human, json]
+      --batch-limit <1..64>                [default: 1]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+      --in-flight-limit <1..64>            [default: 16]
+      --lease-seconds <5..900>             [default: 60]
+      --wait-nanos <NANOSECONDS>           [default: 0]
+  -h, --help                               Print help
+```
+
+#### `riffdb event ack`
+
+```text
+Acknowledges one exact live event lease
+
+Usage: riffdb event ack [OPTIONS] --module-hash <64_HEX_CHARS> --operation <OPERATION> --consumer-name <CONSUMER> --event-id <COMMIT:ORDINAL> --lease-token <64_HEX_CHARS> --history-incarnation <INCARNATION>
+
+Options:
+      --config <PATH>
+      --module-hash <64_HEX_CHARS>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --operation <OPERATION>
+      --database <DATABASE>
+      --parameter <NAME=JSON_VALUE>
+      --consumer-name <CONSUMER>
+      --output <human|json>                [possible values: human, json]
+      --event-id <COMMIT:ORDINAL>
+      --max-attempts <1..10>
+      --credential-file <PATH>
+      --lease-token <64_HEX_CHARS>
+      --history-incarnation <INCARNATION>
+  -h, --help                               Print help
+```
+
+#### `riffdb event nack`
+
+```text
+Negatively acknowledges one exact live event lease
+
+Usage: riffdb event nack [OPTIONS] --module-hash <64_HEX_CHARS> --operation <OPERATION> --consumer-name <CONSUMER> --event-id <COMMIT:ORDINAL> --lease-token <64_HEX_CHARS> --history-incarnation <INCARNATION>
+
+Options:
+      --config <PATH>
+      --module-hash <64_HEX_CHARS>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --operation <OPERATION>
+      --database <DATABASE>
+      --parameter <NAME=JSON_VALUE>
+      --consumer-name <CONSUMER>
+      --output <human|json>                [possible values: human, json]
+      --event-id <COMMIT:ORDINAL>
+      --max-attempts <1..10>
+      --credential-file <PATH>
+      --lease-token <64_HEX_CHARS>
+      --history-incarnation <INCARNATION>
+      --retry-delay-nanos <NANOSECONDS>    [default: 0]
+  -h, --help                               Print help
+```
+
+#### `riffdb event seek`
+
+```text
+Moves a consumer checkpoint after exact seek authorization
+
+Usage: riffdb event seek [OPTIONS] --module-hash <64_HEX_CHARS> --operation <OPERATION> --consumer-name <CONSUMER> --checkpoint <before-first|COMMIT:ORDINAL>
+
+Options:
+      --config <PATH>
+      --module-hash <64_HEX_CHARS>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --operation <OPERATION>
+      --database <DATABASE>
+      --parameter <NAME=JSON_VALUE>
+      --consumer-name <CONSUMER>
+      --output <human|json>                       [possible values: human, json]
+      --checkpoint <before-first|COMMIT:ORDINAL>
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                                      Print help
+```
+
+#### `riffdb event retire`
+
+```text
+Retires one consumer and releases its retention fence
+
+Usage: riffdb event retire [OPTIONS] --module-hash <64_HEX_CHARS> --operation <OPERATION> --consumer-name <CONSUMER>
+
+Options:
+      --config <PATH>
+      --module-hash <64_HEX_CHARS>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --operation <OPERATION>
+      --database <DATABASE>
+      --parameter <NAME=JSON_VALUE>
+      --consumer-name <CONSUMER>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb event status`
+
+```text
+Reads bounded status for one exact consumer
+
+Usage: riffdb event status [OPTIONS] --module-hash <64_HEX_CHARS> --operation <OPERATION> --consumer-name <CONSUMER>
+
+Options:
+      --config <PATH>
+      --module-hash <64_HEX_CHARS>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --operation <OPERATION>
+      --database <DATABASE>
+      --parameter <NAME=JSON_VALUE>
+      --consumer-name <CONSUMER>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
 ```
 
 #### `riffdb projection query`

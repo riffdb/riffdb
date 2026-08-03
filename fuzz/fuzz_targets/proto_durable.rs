@@ -14,7 +14,7 @@ use riffdb_storage_api::proto_codec::{
     decode_outbox_intent_v1, decode_outbox_status_v1,
     decode_pending_admission_v1, decode_projection_apply_v1, decode_projection_control_v1,
     decode_projection_state_structural_v1, decode_provenance_record_v1,
-    decode_service_audit_record_v1, decode_storage_format_version_v1, decode_stored_outcome_v1,
+    decode_service_audit_record, decode_storage_format_version_v1, decode_stored_outcome_v1,
 };
 
 fuzz_target!(|input: &[u8]| {
@@ -50,7 +50,7 @@ fuzz_target!(|input: &[u8]| {
     let _ = decode_capability_token_lookup_v1(input);
     let _ = decode_capability_bootstrap_marker_v1(input);
     let _ = decode_capability_administration_v1(input);
-    let _ = decode_service_audit_record_v1(input);
+    let _ = decode_service_audit_record(input);
     let _ = decode_outbox_status_v1(input);
     let _ = decode_projection_state_structural_v1(input);
     let _ = decode_projection_apply_v1(input);

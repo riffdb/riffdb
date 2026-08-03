@@ -225,6 +225,34 @@ borrowed_codec!(
     encode_query_module_administration_v1,
     decode_query_module_administration_v1
 );
+borrowed_codec!(
+    encode_reactive_module_v1,
+    decode_reactive_module_v1,
+    storage::StoredReactiveModuleV1,
+    encode_reactive_module_v1,
+    decode_reactive_module_v1
+);
+borrowed_codec!(
+    encode_reactive_module_administration_v1,
+    decode_reactive_module_administration_v1,
+    storage::StoredReactiveModuleAdministrationV1,
+    encode_reactive_module_administration_v1,
+    decode_reactive_module_administration_v1
+);
+borrowed_codec!(
+    encode_event_consumer_v1,
+    decode_event_consumer_v1,
+    storage::StoredEventConsumerV1,
+    encode_event_consumer_v1,
+    decode_event_consumer_v1
+);
+borrowed_codec!(
+    encode_event_consumer_delivery_v1,
+    decode_event_consumer_delivery_v1,
+    storage::StoredEventConsumerDeliveryV1,
+    encode_event_consumer_delivery_v1,
+    decode_event_consumer_delivery_v1
+);
 
 borrowed_codec!(
     encode_entity_record_v1,
@@ -339,11 +367,11 @@ borrowed_codec!(
     decode_capability_administration_v1
 );
 borrowed_codec!(
-    encode_service_audit_record_v1,
-    decode_service_audit_record_v1,
+    encode_service_audit_record_v2,
+    decode_service_audit_record,
     storage::StoredServiceAuditRecordV1,
-    encode_service_audit_record_v1,
-    decode_service_audit_record_v1
+    encode_service_audit_record_v2,
+    decode_service_audit_record
 );
 
 borrowed_codec!(
@@ -465,11 +493,14 @@ pub(crate) fn encode_administration_audit_record_v1(
         storage::StoredAdministrationAuditRecordV1::QueryModule(value) => {
             encode_query_module_administration_v1(value)
         }
+        storage::StoredAdministrationAuditRecordV1::ReactiveModule(value) => {
+            encode_reactive_module_administration_v1(value)
+        }
         storage::StoredAdministrationAuditRecordV1::Capability(value) => {
             encode_capability_administration_v1(value)
         }
         storage::StoredAdministrationAuditRecordV1::Service(value) => {
-            encode_service_audit_record_v1(value)
+            encode_service_audit_record_v2(value)
         }
         storage::StoredAdministrationAuditRecordV1::Retention(value) => {
             storage::encode_retention_administration_v1(value).map_err(codec_error)
@@ -517,13 +548,24 @@ pub(crate) fn decode_administration_audit_record_v1(
         Err(error) => return Err(codec_error(error)),
     }
 
+    match storage::decode_reactive_module_administration_v1(encoded) {
+        Ok(item) => {
+            return Ok(map_item(
+                item,
+                storage::StoredAdministrationAuditRecordV1::ReactiveModule,
+            ));
+        }
+        Err(error) if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType => {}
+        Err(error) => return Err(codec_error(error)),
+    }
+
     match storage::decode_retention_administration_v1(encoded) {
         Ok(item) => Ok(map_item(
             item,
             storage::StoredAdministrationAuditRecordV1::Retention,
         )),
         Err(error) if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType => {
-            storage::decode_service_audit_record_v1(encoded)
+            storage::decode_service_audit_record(encoded)
                 .map(|item| map_item(item, storage::StoredAdministrationAuditRecordV1::Service))
                 .map_err(codec_error)
         }
@@ -602,8 +644,15 @@ mod tests {
 
             let encoded =
                 encode_administration_audit_record_v1(decoded.value()).expect("record re-encodes");
-            assert_eq!(encoded.as_bytes(), bytes);
-            assert_eq!(encoded.encoded_content_charge().get(), bytes.len());
+            if record_type == "riffdb.storage.v1.ServiceAuditRecordV1" {
+                assert_ne!(encoded.as_bytes(), bytes);
+                let current = decode_administration_audit_record_v1(encoded.as_bytes())
+                    .expect("current audit generation decodes");
+                assert_eq!(current.value(), decoded.value());
+            } else {
+                assert_eq!(encoded.as_bytes(), bytes);
+                assert_eq!(encoded.encoded_content_charge().get(), bytes.len());
+            }
         }
 
         let wrong = fixture_envelope("riffdb.storage.v1.StoredCommitRecordV1");

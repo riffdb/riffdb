@@ -1446,6 +1446,89 @@ impl ActorKindV1 {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EventConsumerIdentityV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub reactive_module_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "3")]
+    pub operation_name: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "4")]
+    pub parameter_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "5")]
+    pub consumer_name: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SparseConsumerResolutionV1 {
+    #[prost(message, optional, tag = "1")]
+    pub event_id: ::core::option::Option<EventIdV1>,
+    #[prost(uint32, tag = "2")]
+    pub kind: u32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredEventConsumerV1 {
+    #[prost(message, optional, tag = "1")]
+    pub identity: ::core::option::Option<EventConsumerIdentityV1>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub partition_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "3")]
+    pub history_incarnation: u64,
+    #[prost(uint64, tag = "4")]
+    pub revision: u64,
+    #[prost(message, optional, tag = "5")]
+    pub checkpoint: ::core::option::Option<EventIdV1>,
+    #[prost(message, repeated, tag = "6")]
+    pub sparse_resolutions: ::prost::alloc::vec::Vec<SparseConsumerResolutionV1>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LeasedConsumerDeliveryV1 {
+    #[prost(uint32, tag = "1")]
+    pub attempt: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub token: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub expires_at: ::core::option::Option<TimestampV1>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RetryConsumerDeliveryV1 {
+    #[prost(uint32, tag = "1")]
+    pub failed_attempts: u32,
+    #[prost(message, optional, tag = "2")]
+    pub eligible_at: ::core::option::Option<TimestampV1>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeadLetteredConsumerDeliveryV1 {
+    #[prost(uint32, tag = "1")]
+    pub failed_attempts: u32,
+    #[prost(message, optional, tag = "2")]
+    pub dead_lettered_at: ::core::option::Option<TimestampV1>,
+    #[prost(uint32, tag = "3")]
+    pub reason: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredEventConsumerDeliveryV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub consumer_identity_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub event_id: ::core::option::Option<EventIdV1>,
+    #[prost(uint64, tag = "3")]
+    pub history_incarnation: u64,
+    #[prost(oneof = "stored_event_consumer_delivery_v1::State", tags = "4, 5, 6")]
+    pub state: ::core::option::Option<stored_event_consumer_delivery_v1::State>,
+}
+/// Nested message and enum types in `StoredEventConsumerDeliveryV1`.
+pub mod stored_event_consumer_delivery_v1 {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum State {
+        #[prost(message, tag = "4")]
+        Leased(super::LeasedConsumerDeliveryV1),
+        #[prost(message, tag = "5")]
+        Retry(super::RetryConsumerDeliveryV1),
+        #[prost(message, tag = "6")]
+        DeadLettered(super::DeadLetteredConsumerDeliveryV1),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CommittedEntityReferenceV2 {
     #[prost(message, optional, tag = "1")]
     pub target: ::core::option::Option<EntityTargetV1>,
@@ -2094,6 +2177,44 @@ impl ProjectionFailureCodeV1 {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredReactiveModuleV1 {
+    #[prost(string, tag = "1")]
+    pub module_name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub module_version: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub module_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "4")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "5")]
+    pub contract_version: u64,
+    #[prost(bytes = "vec", tag = "6")]
+    pub contract_bundle_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub source_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "8")]
+    pub query_module_hashes: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", tag = "9")]
+    pub canonical_source: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "10")]
+    pub canonical_module: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredReactiveModuleAdministrationV1 {
+    #[prost(uint64, tag = "1")]
+    pub administration_sequence: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub timestamp: ::core::option::Option<TimestampV1>,
+    #[prost(message, optional, tag = "4")]
+    pub principal: ::core::option::Option<AuditPrincipalV1>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub module_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, optional, tag = "6")]
+    pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredRecordRegistryV2 {
     #[prost(bytes = "vec", tag = "1")]
     pub registry_digest: ::prost::alloc::vec::Vec<u8>,
@@ -2233,6 +2354,74 @@ pub struct StoredServiceAuditRequestIndexV1 {
     pub request_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(uint64, tag = "2")]
     pub administration_sequence: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EventConsumerAuditTargetV2 {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub reactive_module_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "3")]
+    pub operation_name: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "4")]
+    pub consumer_identity_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ServiceAuditTargetV2 {
+    #[prost(
+        oneof = "service_audit_target_v2::Target",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10"
+    )]
+    pub target: ::core::option::Option<service_audit_target_v2::Target>,
+}
+/// Nested message and enum types in `ServiceAuditTargetV2`.
+pub mod service_audit_target_v2 {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Target {
+        #[prost(string, tag = "1")]
+        ContractLineage(::prost::alloc::string::String),
+        #[prost(message, tag = "2")]
+        ContractVersion(super::ContractVersionAuditTargetV1),
+        #[prost(message, tag = "3")]
+        EntityType(super::EntityTypeAuditTargetV1),
+        #[prost(message, tag = "4")]
+        Command(super::CommandAuditTargetV1),
+        #[prost(message, tag = "5")]
+        Projection(super::ProjectionAuditTargetV1),
+        #[prost(message, tag = "6")]
+        Index(super::IndexAuditTargetV1),
+        #[prost(uint64, tag = "7")]
+        CommitSequence(u64),
+        #[prost(bytes, tag = "8")]
+        ProvenanceId(::prost::alloc::vec::Vec<u8>),
+        #[prost(bytes, tag = "9")]
+        CapabilityId(::prost::alloc::vec::Vec<u8>),
+        #[prost(message, tag = "10")]
+        EventConsumer(super::EventConsumerAuditTargetV2),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ServiceAuditRecordV2 {
+    #[prost(uint64, tag = "1")]
+    pub administration_sequence: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub timestamp: ::core::option::Option<TimestampV1>,
+    #[prost(enumeration = "ServiceOperationV1", tag = "4")]
+    pub operation: i32,
+    #[prost(enumeration = "ServiceAuditPhaseV1", tag = "5")]
+    pub phase: i32,
+    #[prost(message, optional, tag = "6")]
+    pub principal: ::core::option::Option<AuditPrincipalV1>,
+    #[prost(enumeration = "ServiceIngressKindV1", tag = "7")]
+    pub ingress: i32,
+    #[prost(message, repeated, tag = "8")]
+    pub targets: ::prost::alloc::vec::Vec<ServiceAuditTargetV2>,
+    #[prost(string, optional, tag = "9")]
+    pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "10")]
+    pub link: ::core::option::Option<ServiceAuditLinkV1>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredValidatedPrefixCheckpointV1 {

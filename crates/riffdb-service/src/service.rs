@@ -25,10 +25,11 @@ use crate::orchestration::{
 use crate::{
     AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort,
     ColumnarProjectionPort, ContractMigrationCoordinatorPort, CurrentPolicyPort,
-    CursorMonotonicClock, CursorTokenGenerator, HealthRequest, HealthResult,
-    OfflineMaintenanceCoordinatorPort, OperationalStatusPort, OutboxStatusPort, PortDriverStopped,
-    PortReceipt, PreBootstrapHealthContext, PreBootstrapHealthContextIssuer,
-    PreBootstrapHealthReport, ProjectionQueryPort, QueryModuleReadPort, RequestDeadlineScheduler,
+    CursorMonotonicClock, CursorTokenGenerator, EventConsumerClock, EventConsumerPort,
+    EventLeaseTokenSource, HealthRequest, HealthResult, OfflineMaintenanceCoordinatorPort,
+    OperationalStatusPort, OutboxStatusPort, PortDriverStopped, PortReceipt,
+    PreBootstrapHealthContext, PreBootstrapHealthContextIssuer, PreBootstrapHealthReport,
+    ProjectionQueryPort, QueryModuleReadPort, ReactiveModuleReadPort, RequestDeadlineScheduler,
     ServiceCursorRegistries, ServiceDiagnostics, ServiceFailure, ServiceFuture, ServiceHealthHooks,
     ServiceJob, ServiceJobSpawner, ServiceResponseCharge, ServiceResult, ServiceTelemetry,
     ServiceTelemetryEvent, ensure_response_budget, port_completion_channel,
@@ -167,6 +168,10 @@ pub struct ServiceProviders {
     pub(crate) cursor_clock: Arc<dyn CursorMonotonicClock>,
     pub(crate) query_executor: Option<Arc<dyn QueryExecutionPort>>,
     pub(crate) query_modules: Option<Arc<dyn QueryModuleReadPort>>,
+    pub(crate) reactive_modules: Option<Arc<dyn ReactiveModuleReadPort>>,
+    pub(crate) event_consumers: Option<Arc<dyn EventConsumerPort>>,
+    pub(crate) consumer_clock: Option<Arc<dyn EventConsumerClock>>,
+    pub(crate) event_lease_tokens: Option<Arc<dyn EventLeaseTokenSource>>,
     pub(crate) columnar: Option<Arc<dyn ColumnarProjectionPort>>,
 }
 
@@ -211,6 +216,10 @@ impl ServiceProviders {
             cursor_clock,
             query_executor: None,
             query_modules: None,
+            reactive_modules: None,
+            event_consumers: None,
+            consumer_clock: None,
+            event_lease_tokens: None,
             columnar: None,
         }
     }
@@ -226,6 +235,30 @@ impl ServiceProviders {
     #[must_use]
     pub fn with_query_modules(mut self, query_modules: Arc<dyn QueryModuleReadPort>) -> Self {
         self.query_modules = Some(query_modules);
+        self
+    }
+
+    /// Installs immutable reactive-module reads for event consumers.
+    #[must_use]
+    pub fn with_reactive_modules(
+        mut self,
+        reactive_modules: Arc<dyn ReactiveModuleReadPort>,
+    ) -> Self {
+        self.reactive_modules = Some(reactive_modules);
+        self
+    }
+
+    /// Installs the complete least-authority durable-consumer boundary.
+    #[must_use]
+    pub fn with_event_consumers(
+        mut self,
+        port: Arc<dyn EventConsumerPort>,
+        clock: Arc<dyn EventConsumerClock>,
+        tokens: Arc<dyn EventLeaseTokenSource>,
+    ) -> Self {
+        self.event_consumers = Some(port);
+        self.consumer_clock = Some(clock);
+        self.event_lease_tokens = Some(tokens);
         self
     }
 

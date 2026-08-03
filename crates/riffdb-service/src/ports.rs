@@ -12,7 +12,7 @@ use riffdb_auth::{
 };
 use riffdb_catalog::{
     ActiveCatalogSnapshot, CatalogError, CatalogPreparationResult, ResolvedExecutablePlan,
-    ValidatedContractBundle, ValidatedQueryModule,
+    ValidatedContractBundle, ValidatedQueryModule, ValidatedReactiveModule,
 };
 use riffdb_contract_ir::ContractBundle;
 use riffdb_errors::InternalError;
@@ -24,7 +24,7 @@ use riffdb_policy::{
 };
 use riffdb_types::{
     CapabilityId, CommandId, ContractBundleHash, ContractLineage, ContractMigrationOperationId,
-    ContractVersion, FrontierPosition, PlanHash, QueryModuleHash, RequestId,
+    ContractVersion, FrontierPosition, PlanHash, QueryModuleHash, ReactiveModuleHash, RequestId,
 };
 
 use crate::{
@@ -32,9 +32,12 @@ use crate::{
     AuthoritativeCommitSnapshot, AuthoritativeCommitSubscriptionRequest,
     AuthoritativeEntityRequest, AuthoritativeEntitySnapshot, AuthoritativeEventReplayRequest,
     AuthoritativeIndexPage, AuthoritativeIndexRequest, AuthoritativeOutcomeRequest,
-    AuthoritativeOutcomeSnapshot, AuthoritativeProvenanceSnapshot, CapabilityRevokeTargetSnapshot,
-    CheckContractMigrationRequest, ContractMigrationOperationObservation,
-    ContractMigrationStartResult, CreateOfflineBackupRequest, GetContractMigrationOperationRequest,
+    AuthoritativeOutcomeSnapshot, AuthoritativeProvenanceSnapshot,
+    AuthoritativeReactiveEventWindow, AuthoritativeReactiveEventWindowRequest,
+    CapabilityRevokeTargetSnapshot, CheckContractMigrationRequest,
+    ContractMigrationOperationObservation, ContractMigrationStartResult,
+    CreateOfflineBackupRequest, EventConsumerPortError, EventConsumerPortRequest,
+    EventConsumerPortResponse, GetContractMigrationOperationRequest,
     GetOfflineMaintenanceOperationRequest, OfflineMaintenanceOperationObservation,
     OfflineMaintenanceStartResult, OperationalHealthSnapshot, OperationalStatisticsSnapshot,
     OutboxStatusRequest, OutboxStatusSnapshot, ProjectionPortRequest, ProjectionPortResult,
@@ -472,6 +475,43 @@ pub trait QueryModuleReadPort: Send + Sync {
     ) -> PortFuture<'a, Option<ValidatedQueryModule>, QueryModuleReadError>;
 }
 
+/// Closed failure while reading and recompiling an immutable reactive module.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReactiveModuleReadError {
+    /// Storage or bounded execution capacity was unavailable.
+    Unavailable,
+    /// Durable module bytes or an exact dependency binding failed validation.
+    Integrity,
+}
+
+/// Exact content-addressed reactive-module observations used by consumer operations.
+pub trait ReactiveModuleReadPort: Send + Sync {
+    /// Reads and recompiles one module and every exact query dependency.
+    fn prepare_reactive_module<'a>(
+        &'a self,
+        control: &'a RequestControl,
+        contract: ValidatedContractBundle,
+        module_hash: ReactiveModuleHash,
+    ) -> PortFuture<'a, Option<ValidatedReactiveModule>, ReactiveModuleReadError>;
+}
+
+/// Narrow durable consumer mutation/inspection port owned by service orchestration.
+pub trait EventConsumerPort: Send + Sync {
+    /// Reserves one bounded exact consumer operation before final authorization.
+    fn reserve_event_consumer<'a>(
+        &'a self,
+        control: &'a RequestControl,
+    ) -> PortFuture<
+        'a,
+        BoxPortCapacityPermit<
+            EventConsumerPortRequest,
+            EventConsumerPortResponse,
+            EventConsumerPortError,
+        >,
+        PortAdmissionError,
+    >;
+}
+
 /// Closed authoritative-read failure with no storage diagnostic or handle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthoritativeReadError {
@@ -538,6 +578,22 @@ pub trait CommitNotificationSource: Send {
 
 /// Authoritative entity, outcome, commit, provenance, and capability observations.
 pub trait AuthoritativeReadPort: Send + Sync {
+    /// Reserves capacity for one catalog-resolved reactive event window.
+    fn reserve_reactive_event_window<'a>(
+        &'a self,
+        _control: &'a RequestControl,
+    ) -> PortFuture<
+        'a,
+        BoxPortCapacityPermit<
+            AuthoritativeReactiveEventWindowRequest,
+            AuthoritativeReactiveEventWindow,
+            AuthoritativeReadError,
+        >,
+        PortAdmissionError,
+    > {
+        Box::pin(async { Err(PortAdmissionError::Stopped) })
+    }
+
     /// Reserves capacity for one catalog-resolved partition-local event page.
     fn reserve_replay_events<'a>(
         &'a self,

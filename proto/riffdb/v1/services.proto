@@ -44,6 +44,13 @@ service EventService {
   rpc DescribeEvent(DescribeEventRequest) returns (DescribeEventResponse);
   rpc ReplayEvents(ReplayEventsRequest) returns (ReplayEventsResponse);
   rpc TailEvents(TailEventsRequest) returns (TailEventsResponse);
+  rpc ConsumeEventStream(ConsumeEventStreamRequest) returns (ConsumeEventStreamResponse);
+  rpc StreamEventConsumer(ConsumeEventStreamRequest) returns (stream ConsumeEventStreamResponse);
+  rpc AcknowledgeEventStream(AcknowledgeEventStreamRequest) returns (EventConsumerMutationResponse);
+  rpc NegativeAcknowledgeEventStream(NegativeAcknowledgeEventStreamRequest) returns (EventConsumerMutationResponse);
+  rpc SeekEventStreamConsumer(SeekEventStreamConsumerRequest) returns (EventConsumerMutationResponse);
+  rpc RetireEventStreamConsumer(RetireEventStreamConsumerRequest) returns (EventConsumerMutationResponse);
+  rpc GetEventStreamConsumerStatus(GetEventStreamConsumerStatusRequest) returns (GetEventStreamConsumerStatusResponse);
 }
 
 service AdminService {

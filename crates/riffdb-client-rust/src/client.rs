@@ -315,6 +315,12 @@ impl RiffDbClient {
         app_v1::DeployQueryModuleResponse
     );
     unary_application!(
+        deploy_reactive_module,
+        deploy_reactive_module,
+        app_v1::DeployReactiveModuleRequest,
+        app_v1::DeployReactiveModuleResponse
+    );
+    unary_application!(
         get_query_module,
         get_query_module,
         app_v1::GetQueryModuleRequest,
@@ -489,6 +495,48 @@ impl RiffDbClient {
         v1::TailEventsRequest,
         v1::TailEventsResponse
     );
+    unary!(
+        consume_event_stream,
+        event,
+        consume_event_stream,
+        v1::ConsumeEventStreamRequest,
+        v1::ConsumeEventStreamResponse
+    );
+    unary!(
+        acknowledge_event_stream,
+        event,
+        acknowledge_event_stream,
+        v1::AcknowledgeEventStreamRequest,
+        v1::EventConsumerMutationResponse
+    );
+    unary!(
+        negative_acknowledge_event_stream,
+        event,
+        negative_acknowledge_event_stream,
+        v1::NegativeAcknowledgeEventStreamRequest,
+        v1::EventConsumerMutationResponse
+    );
+    unary!(
+        seek_event_stream_consumer,
+        event,
+        seek_event_stream_consumer,
+        v1::SeekEventStreamConsumerRequest,
+        v1::EventConsumerMutationResponse
+    );
+    unary!(
+        retire_event_stream_consumer,
+        event,
+        retire_event_stream_consumer,
+        v1::RetireEventStreamConsumerRequest,
+        v1::EventConsumerMutationResponse
+    );
+    unary!(
+        get_event_stream_consumer_status,
+        event,
+        get_event_stream_consumer_status,
+        v1::GetEventStreamConsumerStatusRequest,
+        v1::GetEventStreamConsumerStatusResponse
+    );
     unary!(health, admin, health, v1::HealthRequest, v1::HealthResponse);
     unary!(stats, admin, stats, v1::StatsRequest, v1::StatsResponse);
     unary!(
@@ -622,6 +670,27 @@ impl RiffDbClient {
             .map_err(checked_status)?
             .into_inner();
         Ok(CommitNotificationStream { inner })
+    }
+
+    /// Starts a checked durable event-consumer response stream.
+    ///
+    /// Items are decoded by the strict public codec. Consumer identity,
+    /// authorization, leasing, and checkpoint semantics remain server-owned.
+    pub async fn stream_event_consumer(
+        &mut self,
+        message: v1::ConsumeEventStreamRequest,
+        metadata: &CallMetadata,
+    ) -> Result<EventConsumerResponseStream, ClientError> {
+        validate_outbound(&message)?;
+        let mut request = Request::new(message);
+        metadata.apply(&mut request);
+        let inner = self
+            .event
+            .stream_event_consumer(request)
+            .await
+            .map_err(checked_status)?
+            .into_inner();
+        Ok(EventConsumerResponseStream { inner })
     }
 
     /// Executes one immutable command with an explicit total submission bound.
@@ -1044,6 +1113,18 @@ fn next_bootstrap_create_request<S: RetryRequestIdSource>(
 /// A commit-notification stream decoded by the strict client codec.
 pub struct CommitNotificationStream {
     inner: Streaming<v1::CommitNotification>,
+}
+
+/// A durable event-consumer stream decoded by the strict client codec.
+pub struct EventConsumerResponseStream {
+    inner: Streaming<v1::ConsumeEventStreamResponse>,
+}
+
+impl EventConsumerResponseStream {
+    /// Receives the next leased-event response (structure enforced at decode).
+    pub async fn message(&mut self) -> Result<Option<v1::ConsumeEventStreamResponse>, ClientError> {
+        self.inner.message().await.map_err(checked_status)
+    }
 }
 
 impl CommitNotificationStream {

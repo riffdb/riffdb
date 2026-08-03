@@ -817,6 +817,45 @@ mod tests {
         );
     }
 
+    impl riffdb_service::EventConsumerServiceApplication for ClosedApplicationService {
+        denied_operation!(
+            consume_event_stream,
+            RequestContext,
+            riffdb_service::ConsumeEventStreamRequest,
+            riffdb_service::ConsumeEventStreamResult
+        );
+        denied_operation!(
+            acknowledge_event_stream,
+            RequestContext,
+            riffdb_service::EventConsumerLeaseSelection,
+            riffdb_service::EventConsumerMutationResult
+        );
+        denied_operation!(
+            negative_acknowledge_event_stream,
+            RequestContext,
+            riffdb_service::NegativeAcknowledgeEventStreamRequest,
+            riffdb_service::EventConsumerMutationResult
+        );
+        denied_operation!(
+            seek_event_stream_consumer,
+            RequestContext,
+            riffdb_service::SeekEventStreamConsumerRequest,
+            riffdb_service::EventConsumerMutationResult
+        );
+        denied_operation!(
+            retire_event_stream_consumer,
+            RequestContext,
+            riffdb_service::EventConsumerSelection,
+            riffdb_service::EventConsumerMutationResult
+        );
+        denied_operation!(
+            get_event_stream_consumer_status,
+            RequestContext,
+            riffdb_service::EventConsumerSelection,
+            Option<riffdb_service::EventConsumerStatus>
+        );
+    }
+
     impl SymbolicQueryApplication for ClosedApplicationService {
         denied_operation!(
             describe_symbolic_contract,
@@ -847,6 +886,12 @@ mod tests {
             RequestContext,
             riffdb_service::DeployQueryModuleRequest,
             riffdb_service::DeployQueryModuleResult
+        );
+        denied_operation!(
+            deploy_reactive_module,
+            RequestContext,
+            riffdb_service::DeployReactiveModuleRequest,
+            riffdb_service::DeployReactiveModuleResult
         );
         denied_operation!(
             get_query_module,

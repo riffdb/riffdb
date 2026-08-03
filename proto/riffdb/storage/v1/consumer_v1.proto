@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/common.proto";
+
+message EventConsumerIdentityV1 {
+  bytes database_id = 1;
+  bytes reactive_module_hash = 2;
+  string operation_name = 3;
+  bytes parameter_hash = 4;
+  string consumer_name = 5;
+}
+
+message SparseConsumerResolutionV1 {
+  EventIdV1 event_id = 1;
+  uint32 kind = 2;
+}
+
+message StoredEventConsumerV1 {
+  EventConsumerIdentityV1 identity = 1;
+  bytes partition_hash = 2;
+  uint64 history_incarnation = 3;
+  uint64 revision = 4;
+  optional EventIdV1 checkpoint = 5;
+  repeated SparseConsumerResolutionV1 sparse_resolutions = 6;
+}
+
+message LeasedConsumerDeliveryV1 {
+  uint32 attempt = 1;
+  bytes token = 2;
+  TimestampV1 expires_at = 3;
+}
+
+message RetryConsumerDeliveryV1 {
+  uint32 failed_attempts = 1;
+  TimestampV1 eligible_at = 2;
+}
+
+message DeadLetteredConsumerDeliveryV1 {
+  uint32 failed_attempts = 1;
+  TimestampV1 dead_lettered_at = 2;
+  uint32 reason = 3;
+}
+
+message StoredEventConsumerDeliveryV1 {
+  bytes consumer_identity_hash = 1;
+  EventIdV1 event_id = 2;
+  uint64 history_incarnation = 3;
+  oneof state {
+    LeasedConsumerDeliveryV1 leased = 4;
+    RetryConsumerDeliveryV1 retry = 5;
+    DeadLetteredConsumerDeliveryV1 dead_lettered = 6;
+  }
+}

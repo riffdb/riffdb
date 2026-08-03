@@ -243,6 +243,14 @@ impl AdministrationClock for ServerAdministrationClock {
     }
 }
 
+impl riffdb_service::EventConsumerClock for ServerAdministrationClock {
+    fn now(&self) -> Result<Timestamp, riffdb_service::EventConsumerClockError> {
+        self.0
+            .now()
+            .map_err(|_| riffdb_service::EventConsumerClockError)
+    }
+}
+
 impl fmt::Debug for ServerAdministrationClock {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ServerAdministrationClock([REDACTED])")

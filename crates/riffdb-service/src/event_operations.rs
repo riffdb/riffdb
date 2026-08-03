@@ -409,7 +409,7 @@ pub struct SymbolicEvent {
 }
 
 impl SymbolicEvent {
-    fn from_catalog(value: &SymbolicEventEnvelope) -> Self {
+    pub(crate) fn from_catalog(value: &SymbolicEventEnvelope) -> Self {
         Self {
             event_id: value.event_id(),
             event_name: value.event_name().to_owned(),
@@ -1192,13 +1192,13 @@ fn min_page_limit(left: PageLimit, right: PageLimit) -> PageLimit {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TailWaitError {
+pub(crate) enum TailWaitError {
     Cancelled,
     RequestDeadline,
     MaximumWait,
 }
 
-async fn wait_for_tail_notification<F>(
+pub(crate) async fn wait_for_tail_notification<F>(
     control: &crate::RequestControl,
     deadline_scheduler: &dyn crate::RequestDeadlineScheduler,
     maximum_wait_deadline: Instant,
