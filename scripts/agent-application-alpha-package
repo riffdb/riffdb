@@ -3,6 +3,11 @@ set -euo pipefail
 umask 077
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Freeze every archive-owned timestamp and generated SBOM identity. Maturin's
+# wheel is otherwise structurally valid but cargo-cyclonedx gives its embedded
+# SBOM a fresh timestamp and UUID on every invocation, which makes the sealed
+# bundle hash impossible to reproduce for the canary verifier.
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1735689600}"
 destination="${1:-}"
 [[ -n "$destination" && "$destination" == /* ]] || {
     echo "usage: scripts/agent-application-alpha-package /absolute/new-directory" >&2
