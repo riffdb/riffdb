@@ -147,6 +147,102 @@ process.stdout.write(JSON.stringify({
         await rm(directory, { recursive: true, force: true });
     }
 });
+test("named queries preserve exact money results and reject currency drift", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "riffdb-typescript-query-money-"));
+    const executable = join(directory, "riffdb-fake.cjs");
+    await writeFile(executable, `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  schema: "riffdb.cli.output/v1",
+  ok: true,
+  result: {
+    identity: {
+      contract_lineage: "Commerce",
+      contract_version: "1",
+      contract_bundle_hash: "${"b".repeat(64)}",
+      module_hash: "${"c".repeat(64)}",
+      query_name: "ProductPage",
+      plan_hash: "${"d".repeat(64)}",
+    },
+    outcome: "Found",
+    application_head: "1",
+    fields: [{
+      name: "product",
+      cardinality: "one",
+      records: [{ fields: [
+        { name: "product_id", value: { type: "uuid", value: "01900000-0000-7000-8000-000000000001" } },
+        { name: "price", value: { type: "money", currency: "USD", amount: {
+          coefficient_twos_complement: "ew==", precision: 38, scale: 2,
+        } } },
+      ] }],
+    }],
+    next_cursor: null,
+  },
+}) + "\\n");
+`);
+    await chmod(executable, 0o700);
+    try {
+        const transport = new CliApplicationTransport({
+            riffdbPath: executable,
+            endpoint: "http://127.0.0.1:7443",
+            credentialFile: join(directory, "credential"),
+        });
+        const request = {
+            contractLineage: "Commerce",
+            contractVersion: 1,
+            contractBundleHash: "b".repeat(64),
+            moduleHash: "c".repeat(64),
+            queryName: "ProductPage",
+            planHash: "d".repeat(64),
+            parameters: {},
+            parameterSchema: { kind: "record", fields: [] },
+            resultSchemas: {
+                Found: {
+                    kind: "record",
+                    fields: [{
+                            name: "product",
+                            schema: {
+                                kind: "record",
+                                fields: [
+                                    { name: "product_id", schema: { kind: "uuid" } },
+                                    { name: "price", schema: { kind: "money", currency: "USD", precision: 38, scale: 2 } },
+                                ],
+                            },
+                        }],
+                },
+            },
+            decodeError: () => new Error("unexpected application error"),
+        };
+        const result = await transport.executeNamedQuery(request);
+        const product = result.value.product;
+        assert.equal(product.price.currency, "USD");
+        assert.deepEqual(product.price.amount, {
+            coefficientTwosComplement: Uint8Array.of(123),
+            precision: 38,
+            scale: 2,
+        });
+        await assert.rejects(transport.executeNamedQuery({
+            ...request,
+            resultSchemas: {
+                Found: {
+                    kind: "record",
+                    fields: [{
+                            name: "product",
+                            schema: {
+                                kind: "record",
+                                fields: [
+                                    { name: "product_id", schema: { kind: "uuid" } },
+                                    { name: "price", schema: { kind: "money", currency: "EUR", precision: 38, scale: 2 } },
+                                ],
+                            },
+                        }],
+                },
+            },
+        }), /invalid RiffDB application response/);
+    }
+    finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
 test("reactive consumers preserve typed parameters, delivery values, status, and lease outcomes", async () => {
     const directory = await mkdtemp(join(tmpdir(), "riffdb-typescript-reactive-"));
     const executable = join(directory, "riffdb-fake.cjs");

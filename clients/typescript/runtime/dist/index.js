@@ -538,13 +538,21 @@ function decodePlain(value, schema) {
             if (value instanceof Uint8Array)
                 return value;
             break;
-        case "decimal":
-            encodeDecimal(value);
+        case "decimal": {
+            const decimal = encodeDecimal(value);
+            if ((schema.precision !== undefined && decimal.precision !== schema.precision)
+                || (schema.scale !== undefined && decimal.scale !== schema.scale))
+                return fail();
             return value;
+        }
         case "money": {
             const input = exactObject(value);
-            expectCurrency(input.currency);
-            encodeDecimal(input.amount);
+            const currency = expectCurrency(input.currency);
+            const amount = encodeDecimal(input.amount);
+            if ((schema.currency !== undefined && currency !== schema.currency)
+                || (schema.precision !== undefined && amount.precision !== schema.precision)
+                || (schema.scale !== undefined && amount.scale !== schema.scale))
+                return fail();
             return value;
         }
         default: break;
