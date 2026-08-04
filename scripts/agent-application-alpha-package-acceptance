@@ -110,8 +110,16 @@ cp "$bundle/docs/contracts/examples/museum/riffdb.application.json" \
     "$work_root/existing-empty/riffdb.application.json"
 (
     cd "$work_root/existing-empty"
-    "$bundle/bin/riffdb" application check
+    if "$bundle/bin/riffdb" application check \
+        >"$work_root/pre-lock-check.stdout" \
+        2>"$work_root/pre-lock-check.stderr"; then
+        echo "changed application sources unexpectedly matched the scaffold lock" >&2
+        exit 1
+    fi
+    rg -q 'RDB-AL008.*application lock contains stale or substituted identities' \
+        "$work_root/pre-lock-check.stderr"
     "$bundle/bin/riffdb" application lock --write
+    "$bundle/bin/riffdb" application check
     "$bundle/bin/riffdb" application lock --check
 )
 

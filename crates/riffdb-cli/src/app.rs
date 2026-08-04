@@ -21,8 +21,9 @@ use riffdb_client_rust::{
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_diagnostics::{AuthoringDiagnostics, AuthoringSourcePath};
 use riffdb_query_module::{
-    ApplicationManifest, CompiledApplicationRole, NamedQuerySource, QueryModule,
-    QueryModuleCandidate, QueryModuleName, QueryModuleVersion, compile_application_role,
+    ApplicationManifest, CompiledApplicationRole, ManifestTenantScope, NamedQuerySource,
+    QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+    compile_application_role,
 };
 use riffdb_types::{
     CapabilityGrantV1, CapabilityPermissionV1, PartitionScopeV1, TenantId, TenantScope,
@@ -130,6 +131,16 @@ struct ApplicationModuleIdentityError<'a> {
     locked_module_hash: String,
     expected_active_module_hash: Option<String>,
     actual_active_module_hash: Option<String>,
+    recovery_action: &'static str,
+}
+
+#[derive(Serialize)]
+struct RoleTenantBindingError<'a> {
+    code: &'static str,
+    message: &'static str,
+    role: &'a str,
+    declared_scope: &'static str,
+    required_argument: &'static str,
     recovery_action: &'static str,
 }
 
@@ -4123,6 +4134,8 @@ async fn role_command(
 #[derive(Debug)]
 enum RoleWorkspaceError {
     Authoring(AuthoringDiagnostics),
+    TenantRequired { role_name: String },
+    TenantForbidden { role_name: String },
     Invalid,
 }
 
@@ -4130,8 +4143,77 @@ impl RoleWorkspaceError {
     fn terminal(self, command: CommandIdentity) -> Terminal {
         match self {
             Self::Authoring(diagnostics) => authoring_error(command, &diagnostics),
+            Self::TenantRequired { role_name } => {
+                const CODE: &str = "application_role_tenant_required";
+                const MESSAGE: &str = "the selected application role requires a tenant binding; rerun with --tenant <tenant-id>";
+                local_error_with(
+                    command,
+                    &RoleTenantBindingError {
+                        code: CODE,
+                        message: MESSAGE,
+                        role: &role_name,
+                        declared_scope: "tenant",
+                        required_argument: "--tenant <tenant-id>",
+                        recovery_action: "rerun_with_tenant",
+                    },
+                    CODE,
+                    MESSAGE,
+                    2,
+                )
+            }
+            Self::TenantForbidden { role_name } => {
+                const CODE: &str = "application_role_tenant_forbidden";
+                const MESSAGE: &str =
+                    "the selected application role has global scope; remove --tenant";
+                local_error_with(
+                    command,
+                    &RoleTenantBindingError {
+                        code: CODE,
+                        message: MESSAGE,
+                        role: &role_name,
+                        declared_scope: "global",
+                        required_argument: "omit --tenant",
+                        recovery_action: "remove_tenant",
+                    },
+                    CODE,
+                    MESSAGE,
+                    2,
+                )
+            }
             Self::Invalid => role_invalid(command),
         }
+    }
+}
+
+fn validate_role_tenant_argument(
+    manifest: &ApplicationManifest,
+    role_name: &str,
+    tenant_present: bool,
+) -> Result<(), RoleWorkspaceError> {
+    let Some(role) = manifest
+        .roles()
+        .iter()
+        .find(|role| role.name() == role_name)
+    else {
+        // Preserve the compiler-owned unknown-role diagnostic.
+        return Ok(());
+    };
+    validate_role_tenant_scope(role_name, role.tenant_scope(), tenant_present)
+}
+
+fn validate_role_tenant_scope(
+    role_name: &str,
+    scope: ManifestTenantScope,
+    tenant_present: bool,
+) -> Result<(), RoleWorkspaceError> {
+    match (scope, tenant_present) {
+        (ManifestTenantScope::Tenant, false) => Err(RoleWorkspaceError::TenantRequired {
+            role_name: role_name.to_owned(),
+        }),
+        (ManifestTenantScope::Global, true) => Err(RoleWorkspaceError::TenantForbidden {
+            role_name: role_name.to_owned(),
+        }),
+        (ManifestTenantScope::Global, false) | (ManifestTenantScope::Tenant, true) => Ok(()),
     }
 }
 
@@ -4164,6 +4246,7 @@ fn compile_role_from_workspace(
         std::str::from_utf8(&manifest_bytes).map_err(|_| RoleWorkspaceError::Invalid)?;
     let manifest = ApplicationManifest::parse(manifest_source)
         .map_err(|error| role_manifest_diagnostic(manifest_path, error.kind()))?;
+    validate_role_tenant_argument(&manifest, role_name, tenant.is_some())?;
     let workspace = find_application_workspace(manifest_path, manifest.contract().source())
         .map_err(|()| RoleWorkspaceError::Invalid)?;
     let discovered_source_path = workspace.join("riffdb.application.json");
@@ -5548,7 +5631,7 @@ fn render_batch_report(report: BatchReport) -> Terminal {
             CommandIdentity::CommandBatch,
             &report,
             "batch_items_rejected",
-            "one or more commands reached a terminal rejected result",
+            "one or more commands reached a terminal rejected result; use --output json to inspect bounded rejected_items with ordinal, outcome, code, and message",
             2,
         );
     }
@@ -5754,7 +5837,10 @@ fn natural_query_value(value: serde_json::Value) -> Result<v1::Value, ()> {
             } else if let Some(serde_json::Value::String(value)) = tagged.remove("$u64") {
                 Kind::U64Value(value.parse().map_err(|_| ())?)
             } else if let Some(value) = tagged.remove("$decimal") {
-                Kind::DecimalValue(natural_decimal(value)?)
+                Kind::DecimalValue(match value {
+                    serde_json::Value::String(value) => natural_decimal_text(&value)?,
+                    value => natural_decimal(value)?,
+                })
             } else if let Some(value) = tagged.remove("$money") {
                 let mut value = value.as_object().cloned().ok_or(())?;
                 if value.len() != 2 {
@@ -5765,7 +5851,10 @@ fn natural_query_value(value: serde_json::Value) -> Result<v1::Value, ()> {
                     .and_then(|value| value.as_str().map(str::to_owned))
                     .filter(|value| value.len() == 3 && value.bytes().all(|byte| byte.is_ascii()))
                     .ok_or(())?;
-                let amount = natural_decimal(value.remove("amount").ok_or(())?)?;
+                let amount = match value.remove("amount").ok_or(())? {
+                    serde_json::Value::String(value) => natural_decimal_text(&value)?,
+                    value => natural_decimal(value)?,
+                };
                 Kind::MoneyValue(v1::Money {
                     currency,
                     amount: Some(amount),
@@ -5841,6 +5930,57 @@ fn natural_decimal(value: serde_json::Value) -> Result<v1::Decimal, ()> {
         scale,
         precision,
     })
+}
+
+fn natural_decimal_text(value: &str) -> Result<v1::Decimal, ()> {
+    if value.is_empty() || value.len() > 40 || value.starts_with('+') {
+        return Err(());
+    }
+    let (negative, unsigned) = value
+        .strip_prefix('-')
+        .map_or((false, value), |value| (true, value));
+    let (whole, fraction) = unsigned
+        .split_once('.')
+        .map_or((unsigned, ""), |parts| parts);
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || (!fraction.is_empty() && !fraction.bytes().all(|byte| byte.is_ascii_digit()))
+        || unsigned.ends_with('.')
+        || (whole.len() > 1 && whole.starts_with('0'))
+    {
+        return Err(());
+    }
+    let digit_count = whole.len().saturating_add(fraction.len());
+    if digit_count == 0 || digit_count > 38 || fraction.len() > 38 {
+        return Err(());
+    }
+    let digits = format!("{whole}{fraction}");
+    let magnitude = digits.parse::<i128>().map_err(|_| ())?;
+    let coefficient = if negative {
+        magnitude.checked_neg().ok_or(())?
+    } else {
+        magnitude
+    };
+    let scale = u32::try_from(fraction.len()).map_err(|_| ())?;
+    Ok(v1::Decimal {
+        coefficient_twos_complement: minimal_i128_bytes(coefficient),
+        scale,
+        // The selected command schema owns precision. Omitting it prevents
+        // seed authors from having to repeat the contract's type parameter.
+        precision: None,
+    })
+}
+
+fn minimal_i128_bytes(value: i128) -> Vec<u8> {
+    let bytes = value.to_be_bytes();
+    let mut first = 0_usize;
+    while first + 1 < bytes.len()
+        && ((bytes[first] == 0 && bytes[first + 1] & 0x80 == 0)
+            || (bytes[first] == 0xff && bytes[first + 1] & 0x80 != 0))
+    {
+        first += 1;
+    }
+    bytes[first..].to_vec()
 }
 
 pub(crate) fn natural_command_record(
@@ -6812,6 +6952,7 @@ mod tests {
                 "scale": 2,
                 "precision": 3
             }},
+            "decimal_text": {"$decimal": "-12.34"},
             "money": {"$money": {
                 "currency": "USD",
                 "amount": {
@@ -6820,6 +6961,7 @@ mod tests {
                     "precision": 3
                 }
             }},
+            "money_text": {"$money": {"currency": "USD", "amount": "12.34"}},
             "bytes": {"$bytes": "c2FmZQ=="},
             "date": {"$date": 1},
             "timestamp": {"$timestamp": {"seconds": "-1", "nanos": 999999999}}
@@ -6854,7 +6996,23 @@ mod tests {
             fields["decimal"],
             v1::value::Kind::DecimalValue(_)
         ));
+        let v1::value::Kind::DecimalValue(decimal_text) = &fields["decimal_text"] else {
+            panic!("text decimal");
+        };
+        assert_eq!(
+            decimal_text.coefficient_twos_complement,
+            (-1_234_i128).to_be_bytes()[14..]
+        );
+        assert_eq!(decimal_text.scale, 2);
+        assert_eq!(decimal_text.precision, None);
         assert!(matches!(fields["money"], v1::value::Kind::MoneyValue(_)));
+        let v1::value::Kind::MoneyValue(money_text) = &fields["money_text"] else {
+            panic!("text money");
+        };
+        let amount = money_text.amount.as_ref().expect("text money amount");
+        assert_eq!(amount.coefficient_twos_complement, [0x04, 0xd2]);
+        assert_eq!(amount.scale, 2);
+        assert_eq!(amount.precision, None);
         assert!(matches!(fields["bytes"], v1::value::Kind::BytesValue(_)));
         assert!(matches!(fields["date"], v1::value::Kind::DateValue(_)));
         assert!(matches!(
@@ -6869,6 +7027,9 @@ mod tests {
                 "coefficient_twos_complement": "",
                 "scale": 2
             }}),
+            serde_json::json!({"$decimal": "01.25"}),
+            serde_json::json!({"$decimal": "1."}),
+            serde_json::json!({"$decimal": "1e2"}),
             serde_json::json!({"$money": {
                 "currency": "US",
                 "amount": {"coefficient_twos_complement": "AQ==", "scale": 0}
@@ -7352,6 +7513,48 @@ mod tests {
                     if hash.as_slice() == role.identity().as_bytes()
             )
         }));
+    }
+
+    #[test]
+    fn application_role_tenant_scope_reports_the_exact_cli_recovery() {
+        assert!(matches!(
+            validate_role_tenant_scope("TenantAgent", ManifestTenantScope::Tenant, false),
+            Err(RoleWorkspaceError::TenantRequired { role_name }) if role_name == "TenantAgent"
+        ));
+        assert!(matches!(
+            validate_role_tenant_scope("GlobalAgent", ManifestTenantScope::Global, true),
+            Err(RoleWorkspaceError::TenantForbidden { role_name }) if role_name == "GlobalAgent"
+        ));
+        assert!(
+            validate_role_tenant_scope("TenantAgent", ManifestTenantScope::Tenant, true).is_ok()
+        );
+        assert!(
+            validate_role_tenant_scope("GlobalAgent", ManifestTenantScope::Global, false).is_ok()
+        );
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let exit = RoleWorkspaceError::TenantRequired {
+            role_name: "TenantAgent".to_owned(),
+        }
+        .terminal(CommandIdentity::RoleBind)
+        .emit(OutputMode::Json, &mut stdout, &mut stderr);
+        assert_eq!(exit, ExitCode::from(2));
+        assert!(stderr.is_empty());
+        let output: serde_json::Value = serde_json::from_slice(&stdout).expect("tenant error JSON");
+        assert_eq!(
+            output["error"]["code"],
+            serde_json::json!("application_role_tenant_required")
+        );
+        assert_eq!(output["error"]["role"], serde_json::json!("TenantAgent"));
+        assert_eq!(
+            output["error"]["required_argument"],
+            serde_json::json!("--tenant <tenant-id>")
+        );
+        assert_eq!(
+            output["error"]["recovery_action"],
+            serde_json::json!("rerun_with_tenant")
+        );
     }
 
     #[test]

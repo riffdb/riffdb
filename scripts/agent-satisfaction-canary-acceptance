@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+campaign=
+while (($#)); do
+    case "$1" in
+        --campaign) campaign="${2:-}"; shift 2 ;;
+        *)
+            echo "usage: scripts/agent-satisfaction-canary-acceptance --campaign ID" >&2
+            exit 2
+            ;;
+    esac
+done
+
+[[ "$campaign" =~ ^[a-z0-9-]{1,64}$ ]] || {
+    echo "a sealed satisfaction campaign identifier is required" >&2
+    exit 2
+}
+
+"$repo_root/scripts/agent-application-alpha-canary-acceptance" \
+    --runs 2 \
+    --sealed \
+    --assert-gate \
+    --campaign "$campaign"
+
+manifest="$repo_root/evaluations/agent-application-alpha/campaigns/$campaign.json"
+while IFS= read -r report; do
+    [[ "$report" != /* && "$report" != *".."* && -f "$repo_root/$report" ]] || {
+        echo "satisfaction report path is unsafe or missing: $report" >&2
+        exit 1
+    }
+    jq -e '
+      (.rating | type) == "number"
+      and .rating > 9
+      and .rating <= 10
+    ' "$repo_root/$report" >/dev/null || {
+        echo "independent satisfaction rating is not strictly above 9: $report" >&2
+        exit 1
+    }
+done < <(jq -er '.runs[].report.path' "$manifest")
+
+echo "Agent satisfaction sealed canary gate passed: every independent rating is above 9"

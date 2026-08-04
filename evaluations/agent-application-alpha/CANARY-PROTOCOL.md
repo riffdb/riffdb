@@ -47,3 +47,9 @@ qualified success, report the public product defect, and leave the run failed.
 Before `complete`, run the bundled application-boundary checker against the
 application and the domain's complete workload. The rating is the agent's
 independent assessment; it must never be chosen to satisfy the gate.
+
+For a satisfaction campaign, evaluators follow this identical protocol; they
+are not told to manufacture a target score. After both immutable reports are
+published, `scripts/agent-satisfaction-canary-acceptance` independently checks
+that every rating is strictly greater than 9 in addition to all ordinary
+canary guarantees.

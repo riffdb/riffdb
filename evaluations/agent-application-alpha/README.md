@@ -86,3 +86,23 @@ qualified a generated command and one-snapshot named page read with exact
 returned contract/module/query/plan/commit identities, passed the application
 boundary and golden workload, and used no kernel API or handwritten RiffDB
 transport glue.
+
+## Satisfaction gate above 9
+
+The accepted Agent Application Alpha threshold remains 8.5 so prior immutable
+evidence keeps its original meaning. Product satisfaction is a stricter
+follow-on gate:
+
+```bash
+TMPDIR="$HOME/tmp" ./scripts/agent-satisfaction-canary-acceptance \
+  --campaign <new-sealed-campaign-id>
+```
+
+The selected campaign must be a new two-agent Blog/Rust and Orders/TypeScript
+canary over the current sealed bundle. The ordinary canary checker first
+re-proves the exact bundle and evidence hashes, fresh independent contexts,
+golden workloads, qualified runtime identities, zero intervention, zero
+kernel attempts, zero handwritten glue, and zero unsupported shapes. The
+satisfaction checker then requires **each** agent's independent rating to be
+strictly greater than 9; a high score cannot average away a weaker experience.
+Past reports and campaigns remain immutable and cannot satisfy this gate.
