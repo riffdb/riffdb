@@ -937,11 +937,75 @@ mod tests {
         // Named failure: Decode or Rpc from length mismatch / bad cell.
         let msg = err.to_string();
         assert!(
-            msg.contains("Decode")
-                || msg.contains("decode")
-                || msg.contains("Rpc")
-                || !msg.is_empty(),
-            "expected named decode failure, got {msg}"
+            msg.to_lowercase().contains("decode") || msg.contains("offset"),
+            "corrupt offsets must fail as a decode/offset error, got: {msg}"
         );
+    }
+
+    fn valid_packed_fixture(status_ids: TicketStatusEnumIds) -> app_v1::ProjectedReadyPacked {
+        let pack_one = |value: &CanonicalValue| {
+            let data = encode_canonical_value(value).expect("enc");
+            let end = data.len() as u32;
+            app_v1::PackedColumn {
+                data,
+                offsets: vec![0, end],
+            }
+        };
+        let status = CanonicalValue::Enum {
+            type_id: riffdb_types::EnumTypeId::new(status_ids.type_id).expect("t"),
+            variant_id: riffdb_types::EnumVariantId::new(status_ids.open).expect("v"),
+        };
+        app_v1::ProjectedReadyPacked {
+            fields: super::BOARD_SELECT
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+            primary_key_fields: vec!["organization_id".to_owned(), "ticket_id".to_owned()],
+            row_count: 1,
+            columns: vec![
+                pack_one(&CanonicalValue::Uuid([5; 16])),
+                pack_one(&CanonicalValue::Uuid([1; 16])),
+                pack_one(&CanonicalValue::Uuid([2; 16])),
+                pack_one(&CanonicalValue::string("t").expect("s")),
+                pack_one(&status),
+                pack_one(&CanonicalValue::Uuid([3; 16])),
+                pack_one(&CanonicalValue::Uuid([4; 16])),
+            ],
+            frontier: Vec::new(),
+            head: Vec::new(),
+            commit_token: Vec::new(),
+        }
+    }
+
+    /// Review probes promoted to permanent coverage: every malformed packed
+    /// shape must fail closed, and the pristine fixture must decode.
+    #[test]
+    fn packed_decoder_rejects_hostile_shapes_and_accepts_the_baseline() {
+        let ids = status_ids();
+        assert!(
+            decode_projected_board_rows_packed(valid_packed_fixture(ids), [5; 16], ids).is_ok()
+        );
+
+        // Truncated data: last offset beyond the buffer.
+        let mut truncated = valid_packed_fixture(ids);
+        truncated.columns[0].data.pop();
+        assert!(decode_projected_board_rows_packed(truncated, [5; 16], ids).is_err());
+
+        // Non-monotone offsets.
+        let mut nonmono = valid_packed_fixture(ids);
+        nonmono.columns[1].offsets = vec![1, 0];
+        assert!(decode_projected_board_rows_packed(nonmono, [5; 16], ids).is_err());
+
+        // Trailing garbage inside a cell (canonical decode rejects trailing bytes).
+        let mut garbage = valid_packed_fixture(ids);
+        garbage.columns[2].data.push(0xFF);
+        let end = garbage.columns[2].data.len() as u32;
+        garbage.columns[2].offsets = vec![0, end];
+        assert!(decode_projected_board_rows_packed(garbage, [5; 16], ids).is_err());
+
+        // Row-count mismatch: offsets say one row, header says two.
+        let mut mismatch = valid_packed_fixture(ids);
+        mismatch.row_count = 2;
+        assert!(decode_projected_board_rows_packed(mismatch, [5; 16], ids).is_err());
     }
 }
