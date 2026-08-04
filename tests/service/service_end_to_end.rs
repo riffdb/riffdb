@@ -4,8 +4,6 @@
 
 mod support;
 
-use std::time::{Duration, Instant};
-
 use riffdb_errors::{ApplicationErrorCode, PublicErrorKind};
 use riffdb_policy::PartitionConstraint;
 use riffdb_service::{
@@ -268,17 +266,22 @@ fn concrete_service_reads_through_policy_port_and_real_audit_coordinator() {
     });
 }
 
+/// Constructed saturation: hold the sole workload permit outside the service
+/// path, prove the channel is full, then probe with a generous request deadline.
+/// Rejection is state-driven (try_reserve fails → bounded admission wait caps as
+/// Overloaded), never a wall-clock race against catalog prep.
 #[test]
 fn saturated_command_capacity_rejects_before_reauthorization_with_typed_overload() {
     run_async(async move {
         let mut harness = ServiceHarness::command_capacity_one();
-        // Hold the sole workload slot outside the service path.
         let held = harness.hold_command_capacity();
         assert!(
             harness.try_command_capacity_is_full(),
             "capacity-one harness must report full after one hold"
         );
 
+        // Generous deadline: catalog prep must not race; overload comes from
+        // the held-full channel, not from Instant::now() + few-ms budgets.
         let (context, _cancellation) = harness.context(0xA1);
         let failure = harness
             .service
@@ -323,8 +326,8 @@ fn saturated_command_capacity_rejects_before_reauthorization_with_typed_overload
 }
 
 /// Primary ADR-0071 saturation evidence: capacity N with 4N concurrent in-flight
-/// commands. Every failure is typed Overloaded; successes (if any) are absent
-/// while the channel is held full.
+/// commands against a constructed full channel. Every failure is typed Overloaded;
+/// no probe uses a tight wall-clock deadline that can expire during catalog prep.
 #[test]
 fn capacity_n_concurrent_commands_yield_only_typed_overload_or_commit() {
     run_async(async move {
@@ -332,13 +335,16 @@ fn capacity_n_concurrent_commands_yield_only_typed_overload_or_commit() {
         const IN_FLIGHT: usize = 8; // 4N
         let mut harness = ServiceHarness::command_capacity_n(N);
         let held = harness.hold_command_capacity_n(usize::from(N));
-        assert!(harness.try_command_capacity_is_full());
+        assert!(
+            harness.try_command_capacity_is_full(),
+            "all N workload slots must be held before probes"
+        );
 
         let service = harness.service.clone();
         let mut joins = Vec::with_capacity(IN_FLIGHT);
         for i in 0..IN_FLIGHT {
-            let (context, _cancel) = harness
-                .context_with_deadline(0xB0 + i as u8, Instant::now() + Duration::from_millis(20));
+            // Shared generous deadline budget so prep never races admission.
+            let (context, _cancel) = harness.context(0xB0_u8.wrapping_add(i as u8));
             let request = harness.execute_command_request_with_key(&format!("sat-{i}"));
             let service = service.clone();
             joins.push(tokio::spawn(async move {
@@ -383,14 +389,16 @@ fn capacity_n_concurrent_commands_yield_only_typed_overload_or_commit() {
     });
 }
 
+/// Constructed retained-byte exhaustion: hold the entire independent byte budget,
+/// then probe with a generous deadline. Rejection is state-driven (bytes full),
+/// not a short Instant budget racing prep.
 #[test]
 fn retained_bytes_exhaustion_rejects_with_capacity_stage() {
     run_async(async move {
         let mut harness = ServiceHarness::command_capacity_n(4);
         let _bytes = harness.hold_all_retained_bytes();
 
-        let (context, _c) =
-            harness.context_with_deadline(0xD1, Instant::now() + Duration::from_millis(20));
+        let (context, _c) = harness.context(0xD1);
         let failure = harness
             .service
             .execute_command(
@@ -418,15 +426,19 @@ fn retained_bytes_exhaustion_rejects_with_capacity_stage() {
 }
 
 /// I4 / M6: read-only capacity rejection is typed overload and writes no audit
-/// (admission precedes begin_invocation).
+/// (admission precedes begin_invocation). Saturation is constructed by holding
+/// the sole workload permit before the probe.
 #[test]
 fn read_only_capacity_rejects_before_audit_start_with_typed_overload() {
     run_async(async move {
         const REQUEST_SEED: u8 = 0xE1;
         let mut harness = ServiceHarness::command_capacity_n_with_observe(1);
         let held = harness.hold_command_capacity();
-        let (context, _c) =
-            harness.context_with_deadline(REQUEST_SEED, Instant::now() + Duration::from_millis(20));
+        assert!(
+            harness.try_command_capacity_is_full(),
+            "observe harness must be full before the read-only probe"
+        );
+        let (context, _c) = harness.context(REQUEST_SEED);
         let failure = harness
             .service
             .execute_command(context, harness.observe_budget_request())
@@ -461,17 +473,28 @@ fn read_only_capacity_rejects_before_audit_start_with_typed_overload() {
     });
 }
 
+/// Queue-delay shed under constructed saturation: hold the sole slot so
+/// try_reserve fails, then force an EWMA estimate larger than any remaining
+/// client budget under a generous request deadline. Shed is state-driven
+/// (estimate > remaining − MIN_REMAINING), not a few-ms Instant race.
 #[test]
 fn queue_delay_shed_rejects_before_admission_with_zero_durable_audit_rows() {
     run_async(async move {
         const REQUEST_SEED: u8 = 0xE5;
+        // Larger than any remaining-after-floor for harness.context() (30s).
+        const FORCED_QUEUE_DELAY_MICROS: u64 = 60_000_000;
         let mut harness = ServiceHarness::command_capacity_one();
-        // Seed a large EWMA so pre-admission shed fires when try_reserve fails.
-        harness.force_queue_delay_estimate_micros(50_000);
-        assert_eq!(harness.queue_delay_estimate_micros(), 50_000);
+        harness.force_queue_delay_estimate_micros(FORCED_QUEUE_DELAY_MICROS);
+        assert_eq!(
+            harness.queue_delay_estimate_micros(),
+            FORCED_QUEUE_DELAY_MICROS
+        );
         let held = harness.hold_command_capacity();
-        let (context, _c) =
-            harness.context_with_deadline(REQUEST_SEED, Instant::now() + Duration::from_millis(30));
+        assert!(
+            harness.try_command_capacity_is_full(),
+            "queue-delay shed requires a full channel so try_reserve fails first"
+        );
+        let (context, _c) = harness.context(REQUEST_SEED);
         let failure = harness
             .service
             .execute_command(context, harness.execute_command_request())
@@ -480,6 +503,25 @@ fn queue_delay_shed_rejects_before_admission_with_zero_durable_audit_rows() {
         assert_eq!(
             failure.public_error().map(|e| e.kind()),
             Some(PublicErrorKind::Overloaded)
+        );
+        assert!(
+            harness.telemetry.events().iter().any(|event| matches!(
+                event,
+                ServiceTelemetryEvent::CapacityRejected {
+                    stage: CapacityRejectionStage::QueueDepth,
+                    ..
+                }
+            )),
+            "queue-delay shed must record CapacityRejected QueueDepth"
+        );
+        // Shed-distinguishing observable. Overloaded + QueueDepth + zero audit
+        // rows are identical whether the shed fires or the request falls through
+        // to the bounded admission wait and its cap expires. Only the shed
+        // returns before any admission wait is ever registered.
+        assert_eq!(
+            harness.admission_wait_registrations(),
+            0,
+            "the pre-admission shed must reject before registering an admission wait"
         );
         drop(held);
         harness.stop_coordinator();
@@ -493,16 +535,15 @@ fn queue_delay_shed_rejects_before_admission_with_zero_durable_audit_rows() {
 #[test]
 fn stale_zero_queue_delay_estimate_never_sheds() {
     run_async(async move {
-        // With a stale-zero estimate the shed branch is skipped even under a
-        // tight budget. Capacity is free, so the command commits.
+        // With a stale-zero estimate the shed branch is skipped. Capacity is
+        // free and the request deadline is generous, so the command commits.
         let mut harness = ServiceHarness::command();
         assert_eq!(
             harness.queue_delay_estimate_micros(),
             0,
             "writer must start with a stale-zero estimate"
         );
-        let (context, _c) =
-            harness.context_with_deadline(0xE6, Instant::now() + Duration::from_millis(30));
+        let (context, _c) = harness.context(0xE6);
         let ok = harness
             .service
             .execute_command(context, harness.execute_command_request())
@@ -516,14 +557,18 @@ fn stale_zero_queue_delay_estimate_never_sheds() {
 /// I1: capacity overload settles without audit; a later success still audits.
 /// Non-capacity admission failures must not use the capacity settle path
 /// (`is_capacity_overload` is Overloaded-only — covered in unit tests).
+/// Saturation is constructed by holding the sole workload permit.
 #[test]
 fn capacity_overload_mutation_leaves_no_terminal_audit_row() {
     run_async(async move {
         const REQUEST_SEED: u8 = 0xE2;
         let mut harness = ServiceHarness::command_capacity_one();
         let held = harness.hold_command_capacity();
-        let (context, _c) =
-            harness.context_with_deadline(REQUEST_SEED, Instant::now() + Duration::from_millis(20));
+        assert!(
+            harness.try_command_capacity_is_full(),
+            "mutation overload probe requires a full channel"
+        );
+        let (context, _c) = harness.context(REQUEST_SEED);
         let failure = harness
             .service
             .execute_command(context, harness.execute_command_request())
@@ -542,21 +587,34 @@ fn capacity_overload_mutation_leaves_no_terminal_audit_row() {
     });
 }
 
+/// While the channel is held full, the probe parks on admission until the
+/// absolute admission cap elapses. That unadmitted cap is typed Overloaded
+/// (RDB-CAPACITY-0101), never details-free DeadlineExceeded — even though the
+/// client request deadline remains far in the future.
+///
+/// The sibling sub-MIN_REMAINING immediate-reject path (a client budget too
+/// small to host the bounded wait at all) is covered at unit level in
+/// riffdb-service's `admission_budget_*` tests, because reaching it end to end
+/// requires a near-expired deadline racing catalog preparation.
 #[test]
 fn admission_deadline_while_queued_is_overloaded_not_deadline_exceeded() {
     run_async(async move {
         let mut harness = ServiceHarness::command_capacity_one();
         let held = harness.hold_command_capacity();
+        assert!(
+            harness.try_command_capacity_is_full(),
+            "admission-cap overload requires a constructed full channel"
+        );
 
-        // Remaining budget below COMMAND_ADMISSION_MIN_REMAINING (25ms) rejects
-        // immediately as overload without burning the client's deadline class.
-        let (context, _cancellation) =
-            harness.context_with_deadline(0xA2, Instant::now() + Duration::from_millis(10));
+        // Generous client deadline so catalog prep cannot surface DeadlineExceeded
+        // before admission. Overload is the admission wait cap against a held
+        // permit, not Instant::now() + 10ms racing the prep path.
+        let (context, _cancellation) = harness.context(0xA2);
         let failure = harness
             .service
             .execute_command(context, harness.execute_command_request())
             .await
-            .expect_err("queued-unadmitted deadline maps to overload");
+            .expect_err("queued-unadmitted admission cap maps to overload");
 
         assert_eq!(
             failure.public_error().map(|error| error.kind()),
@@ -566,6 +624,23 @@ fn admission_deadline_while_queued_is_overloaded_not_deadline_exceeded() {
         assert_ne!(
             failure.public_error().map(|error| error.kind()),
             Some(PublicErrorKind::InternalDefect)
+        );
+        assert!(
+            harness.telemetry.events().iter().any(|event| matches!(
+                event,
+                ServiceTelemetryEvent::CapacityRejected {
+                    stage: CapacityRejectionStage::QueueDepth,
+                    ..
+                }
+            )),
+            "admission-cap overload must record CapacityRejected QueueDepth"
+        );
+        // Positive control for the shed test's zero-registration assertion: this
+        // probe does park on the bounded admission wait, so the observable is
+        // not vacuously zero.
+        assert!(
+            harness.admission_wait_registrations() >= 1,
+            "parking on the admission cap must register a bounded admission wait"
         );
 
         drop(held);
@@ -578,9 +653,12 @@ fn cancellation_during_admission_remains_cancelled() {
     run_async(async move {
         let mut harness = ServiceHarness::command_capacity_one();
         let held = harness.hold_command_capacity();
+        assert!(
+            harness.try_command_capacity_is_full(),
+            "cancellation-during-admission requires a full channel so the probe parks"
+        );
 
-        let (context, cancellation) =
-            harness.context_with_deadline(0xA3, Instant::now() + Duration::from_secs(5));
+        let (context, cancellation) = harness.context(0xA3);
         // Cancel before the bounded admission wait parks so the first poll sees
         // cancellation while still unadmitted.
         cancellation.cancel();
