@@ -11,6 +11,7 @@ use riffdb_service::{
 
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const ADMINISTRATION_SOURCE: &str = include_str!("../src/administration_operations.rs");
+const COMMAND_SOURCE: &str = include_str!("../src/command_operations.rs");
 const COMMIT_SOURCE: &str = include_str!("../src/commit_operations.rs");
 const CONTEXT_SOURCE: &str = include_str!("../src/context.rs");
 const DTO_SOURCE: &str = include_str!("../src/dto.rs");
@@ -215,6 +216,71 @@ fn catalog_owns_capability_partition_decoding_and_service_validates_output_keys(
 
     assert!(COMMIT_SOURCE.contains("prepare_contract_version("));
     assert!(COMMIT_SOURCE.contains(".decode_entity(affected.key())"));
+}
+
+/// Returns one top-level function body, from its signature to its column-zero brace.
+fn function_body<'source>(source: &'source str, signature: &str) -> &'source str {
+    source
+        .split_once(signature)
+        .unwrap_or_else(|| panic!("{signature} is defined in this source"))
+        .1
+        .split_once("\n}\n")
+        .unwrap_or_else(|| panic!("{signature} has a closed body"))
+        .0
+}
+
+/// A sub-floor admission budget stays a typed overload at both admission stages.
+///
+/// Rejecting because the remaining client budget cannot host the bounded
+/// pre-admission wait is a capacity shed of an unadmitted request, so it must
+/// surface `Overloaded` (`RDB-CAPACITY-0101`) and record a capacity-rejection
+/// stage — never details-free `DeadlineExceeded`, which would tell the caller
+/// its own deadline elapsed. `AdmissionBudget::failure` owns that mapping and
+/// its semantics are asserted by the crate's `admission_budget_*` unit tests;
+/// this pin covers what those cannot reach, because both arms live inside
+/// `async fn`s that need a fully composed service to execute and an end-to-end
+/// probe would have to race a near-expired client deadline against catalog
+/// preparation (the original flake).
+#[test]
+fn a_sub_floor_admission_budget_is_shed_as_overload_at_both_admission_stages() {
+    assert_eq!(
+        COMMAND_SOURCE
+            .matches("fn failure(self) -> ServiceFailure {")
+            .count(),
+        1,
+        "one rule owns the admission-budget rejection mapping"
+    );
+
+    for (function, stage) in [
+        (
+            "async fn admit_command_capacity(",
+            "CapacityRejectionStage::QueueDepth",
+        ),
+        (
+            "async fn attach_retained_bytes(",
+            "CapacityRejectionStage::RetainedBytes",
+        ),
+    ] {
+        let body = function_body(COMMAND_SOURCE, function);
+        assert_eq!(
+            body.matches("Err(budget) => {").count(),
+            1,
+            "{function} rejects a sub-floor budget in exactly one arm"
+        );
+        assert_eq!(
+            body.matches("return Err(budget.failure());").count(),
+            1,
+            "{function} must reject a sub-floor budget through the shared mapping"
+        );
+        assert!(
+            body.contains(stage),
+            "{function} must record {stage} before shedding"
+        );
+        assert!(
+            !body.contains("DeadlineExceeded"),
+            "{function} must never surface a details-free deadline while unadmitted"
+        );
+    }
 }
 
 #[test]

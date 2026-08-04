@@ -49,7 +49,7 @@ use crate::{
     ExecuteCommandRequest, ExecuteCommandResult, InternalDefect, JournaledCommandResult,
     JournaledCompletion, OutcomeLocatorDigestEvidence, OutcomePlanBinding, OutcomeResourceLocator,
     PendingTerminalResponse, PortAdmissionError, PortDriverStopped, ReadOnlyCommandResult,
-    RecoveredJournaledCommandResult, RequestContext, ResolveCommandOutcomeRequest,
+    RecoveredJournaledCommandResult, RequestContext, RequestControl, ResolveCommandOutcomeRequest,
     ResolveCommandOutcomeResult, ResolveCommandOutcomeSelectorRef, RiffDbService,
     RiffDbServiceInner, ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult,
     ServiceTelemetryEvent, SubmittedFieldIdentity, SubmittedRecord, SubmittedValue,
@@ -2403,16 +2403,16 @@ async fn admit_command_capacity(
     }
 
     // First wait is queue depth — open the absolute closed admission window here.
-    let admission_deadline = match admission_deadline(context) {
+    let admission_deadline = match admission_deadline(context.control()) {
         Ok(deadline) => deadline,
-        Err(AdmissionBudget::RejectImmediately) => {
+        Err(budget) => {
             record_capacity_rejected(
                 service,
                 operation,
                 ingress,
                 CapacityRejectionStage::QueueDepth,
             );
-            return Err(PublicError::overloaded().into());
+            return Err(budget.failure());
         }
     };
 
@@ -2456,9 +2456,24 @@ enum AdmissionBudget {
     RejectImmediately,
 }
 
-fn admission_deadline(context: &RequestContext) -> Result<Instant, AdmissionBudget> {
+impl AdmissionBudget {
+    /// Maps a closed budget rejection to the one public failure it may become.
+    ///
+    /// The request is shed while still unadmitted and no client deadline has
+    /// elapsed, so this is a typed capacity overload (`RDB-CAPACITY-0101`) and
+    /// never details-free [`ServiceFailure::DeadlineExceeded`]. Both admission
+    /// stages reject a sub-[`COMMAND_ADMISSION_MIN_REMAINING`] budget through
+    /// this rule.
+    fn failure(self) -> ServiceFailure {
+        match self {
+            Self::RejectImmediately => PublicError::overloaded().into(),
+        }
+    }
+}
+
+fn admission_deadline(control: &RequestControl) -> Result<Instant, AdmissionBudget> {
     let now = Instant::now();
-    let request_deadline = context.control().deadline();
+    let request_deadline = control.deadline();
     let remaining = request_deadline.saturating_duration_since(now);
     if remaining < COMMAND_ADMISSION_MIN_REMAINING {
         return Err(AdmissionBudget::RejectImmediately);
@@ -2509,9 +2524,9 @@ async fn attach_retained_bytes(
             }
             deadline
         }
-        None => match admission_deadline(context) {
+        None => match admission_deadline(context.control()) {
             Ok(deadline) => deadline,
-            Err(AdmissionBudget::RejectImmediately) => {
+            Err(budget) => {
                 drop(permit);
                 record_capacity_rejected(
                     service,
@@ -2519,7 +2534,7 @@ async fn attach_retained_bytes(
                     ingress,
                     CapacityRejectionStage::RetainedBytes,
                 );
-                return Err(PublicError::overloaded().into());
+                return Err(budget.failure());
             }
         },
     };
@@ -3774,6 +3789,77 @@ contract LargeDecimalInput version 1 {
             CommandExecutionAdmissionError::Overloaded
                 | CommandExecutionAdmissionError::RetainedByteCapacityExceeded
         ));
+    }
+
+    #[test]
+    fn admission_budget_rejects_below_min_remaining_and_reserves_it_above() {
+        // Deterministic in both directions: elapsed time can only shrink an
+        // already sub-floor budget, and can never pull a 30 s budget under the
+        // floor. No wall-clock race, unlike a near-expired end-to-end probe.
+        let (exhausted, _exhausted_cancellation) = RequestControl::new(Instant::now());
+        assert!(
+            matches!(
+                admission_deadline(&exhausted),
+                Err(AdmissionBudget::RejectImmediately)
+            ),
+            "an exhausted budget must never open an admission wait"
+        );
+
+        let (under_floor, _under_floor_cancellation) = RequestControl::new(
+            Instant::now() + COMMAND_ADMISSION_MIN_REMAINING - Duration::from_millis(1),
+        );
+        assert!(
+            matches!(
+                admission_deadline(&under_floor),
+                Err(AdmissionBudget::RejectImmediately)
+            ),
+            "a budget under MIN_REMAINING must reject immediately, not park on a wait"
+        );
+
+        let request_deadline = Instant::now() + Duration::from_secs(30);
+        let (affordable, _affordable_cancellation) = RequestControl::new(request_deadline);
+        let opened = match admission_deadline(&affordable) {
+            Ok(deadline) => deadline,
+            Err(AdmissionBudget::RejectImmediately) => {
+                panic!("a 30 s budget must host the bounded admission wait")
+            }
+        };
+        assert!(
+            opened <= request_deadline - COMMAND_ADMISSION_MIN_REMAINING,
+            "the admission window must leave MIN_REMAINING of the client budget"
+        );
+        assert!(
+            opened <= Instant::now() + COMMAND_ADMISSION_MAX_WAIT,
+            "the admission window must never exceed the absolute wait cap"
+        );
+    }
+
+    #[test]
+    fn admission_budget_rejection_is_typed_capacity_overload_not_deadline_exceeded() {
+        // Sub-MIN_REMAINING rejection happens while still unadmitted, so the
+        // caller must learn it was shed (RDB-CAPACITY-0101) and never that its
+        // own deadline elapsed. Both admission stages map through this rule.
+        let failure = AdmissionBudget::RejectImmediately.failure();
+
+        assert_eq!(
+            failure.public_error().map(PublicError::kind),
+            Some(PublicErrorKind::Overloaded),
+            "got {failure:?}"
+        );
+        assert_eq!(
+            failure.public_error().map(|error| {
+                riffdb_errors::ApplicationErrorCode::from_public_kind(error.kind()).as_str()
+            }),
+            Some("RDB-CAPACITY-0101")
+        );
+        assert!(is_capacity_overload(&failure));
+        assert!(
+            !matches!(
+                failure,
+                ServiceFailure::DeadlineExceeded | ServiceFailure::Cancelled
+            ),
+            "an unadmitted capacity shed is neither a deadline nor a cancellation"
+        );
     }
 
     #[test]
