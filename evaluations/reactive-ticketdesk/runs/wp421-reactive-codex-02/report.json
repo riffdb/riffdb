@@ -1,0 +1,35 @@
+{
+  "schema": "riffdb-reactive-ticketdesk-run/v1",
+  "run_id": "wp421-reactive-codex-02",
+  "bundle_hash": "b1815a4e4f14f4d56936244336558a282a033f43e1d7140d4dc2eeb1ec5a1176",
+  "agent_identity": "codex-wp421-reactive-02",
+  "independent": true,
+  "fresh_context": true,
+  "human_interventions": 0,
+  "kernel_attempts": 0,
+  "kernel_successes": 0,
+  "handwritten_glue_lines": 0,
+  "compiler_failures": 6,
+  "runtime_failures": 1,
+  "time_to_complete_seconds": 700,
+  "source_access": {
+    "riffdb_implementation": false,
+    "ticketdesk_implementation": false
+  },
+  "checks": {
+    "application_boundary": true,
+    "browser_credentials_absent": true,
+    "browser_two_session_convergence": false,
+    "commit_before_ack_recovery": false,
+    "contextual_one_snapshot": false,
+    "generated_bindings_exact": true,
+    "mcp_wakeup_payload_free": false,
+    "reaction_retry_idempotent": false,
+    "reconnect_reset": false,
+    "revocation_clears_state": true
+  },
+  "completed": false,
+  "rating": 3.5,
+  "explanation": "The supplied symbolic application compiled, lock generation produced all requested language and MCP artifacts, exact checks passed, and the application boundary, credential-disclosure, authenticated relay, and protected-state clearing tests passed. The documented application generate --locked operation rejected its own generated manifest, and application dev failed on the same validation before server startup. Therefore no committed browser mutation, reconnect continuation, contextual hydration/reaction recovery, retry-idempotency, or MCP wakeup delivery could be exercised. Those checks remain false; generated-helper unit tests and a compiling worker are not reported as end-to-end runtime proof.",
+  "transcript_sha256": "c7e0158d8e0aa6dba665e2afbdb96581ac0c97016ad73a037ca94171167dd8bd"
+}
