@@ -130,7 +130,7 @@ prepare_application() {
 
     (
         cd "$workspace"
-        "$bundle/bin/riffdb" application check
+        "$bundle/bin/riffdb" application check --source-only
         "$bundle/bin/riffdb" application lock --write
         "$bundle/bin/riffdb" application lock --check
         "$bundle/bin/riffdb" application generate --locked
@@ -154,6 +154,16 @@ expect_failure() {
         cp "$output.stderr" "$output"
     fi
     rm -f "$output.stdout" "$output.stderr"
+    if jq -e '
+      .schema == "riffdb.cli.output/v1"
+      and .ok == false
+      and (.error | type) == "object"
+      and (.error.code | type) == "string"
+      and (.error.message | type) == "string"
+      and (.error.recovery_action | type) == "string"
+    ' "$output" >/dev/null 2>&1; then
+        return
+    fi
     jq '
       (if (.diagnostics | type) == "array" then .diagnostics[0] else . end)
       | .fix = (.fix // .fixes[0])
@@ -188,7 +198,7 @@ exercise_failure_recovery() {
 
     printf '\nINVALID_SOURCE_TOKEN\n' >>"$contract"
     expect_failure "$failure_root/invalid-source.json" \
-        "$bundle/bin/riffdb" --output json application check "$manifest"
+        "$bundle/bin/riffdb" --output json application check --source-only "$manifest"
     jq -e '.stage == "contract_syntax" and .cause == "invalid_syntax"' \
         "$failure_root/invalid-source.json" >/dev/null
     cp "$failure_root/contract.valid" "$contract"
@@ -219,7 +229,7 @@ exercise_failure_recovery() {
     ' "$manifest" >"$workspace/riffdb.application.json.next"
     mv "$workspace/riffdb.application.json.next" "$manifest"
     expect_failure "$failure_root/missing-index.json" \
-        "$bundle/bin/riffdb" --output json application check "$manifest"
+        "$bundle/bin/riffdb" --output json application check --source-only "$manifest"
     jq -e '.code == "RDB-QP003" and .cause == "missing_index" and .fix == "add_index"' \
         "$failure_root/missing-index.json" >/dev/null
     cp "$failure_root/manifest.valid" "$manifest"
@@ -228,7 +238,12 @@ exercise_failure_recovery() {
     expect_failure "$failure_root/unsafe-role.json" \
         "$bundle/bin/riffdb" --output json role check "$manifest" \
             --role BlogApplication --tenant forbidden
-    jq -e '.code == "RDB-AR002" and .cause == "unsafe_role" and .fix == "narrow_role"' \
+    jq -e '
+      .error.code == "application_role_tenant_forbidden"
+      and .error.declared_scope == "global"
+      and .error.required_argument == "omit --tenant"
+      and .error.recovery_action == "remove_tenant"
+    ' \
         "$failure_root/unsafe-role.json" >/dev/null
 
     printf '%s\n' '// interrupted generated artifact' >"$generated"
@@ -247,7 +262,7 @@ exercise_failure_recovery() {
         --arg invalid "$(jq -r '.code' "$failure_root/invalid-source.json")" \
         --arg stale "$(jq -r '.code' "$failure_root/stale-lock.json")" \
         --arg index "$(jq -r '.code' "$failure_root/missing-index.json")" \
-        --arg role "$(jq -r '.code' "$failure_root/unsafe-role.json")" \
+        --arg role "$(jq -r '.error.code // .code' "$failure_root/unsafe-role.json")" \
         --arg interrupted "$(jq -r '.code' "$failure_root/interrupted-generation.json")" \
         '{
           invalid_source: $invalid,
@@ -597,7 +612,7 @@ jq -e '
   and .recoveries.invalid_source != null
   and .recoveries.stale_lock != null
   and .recoveries.missing_index == "RDB-QP003"
-  and .recoveries.unsafe_role == "RDB-AR002"
+  and .recoveries.unsafe_role == "application_role_tenant_forbidden"
   and .recoveries.interrupted_generation != null
   and .growing_database_performance.result.perf_003_passed == true
   and .growing_database_performance.result.retained_basis_points >= 5000

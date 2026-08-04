@@ -48,6 +48,16 @@ Before `complete`, run the bundled application-boundary checker against the
 application and the domain's complete workload. The rating is the agent's
 independent assessment; it must never be chosen to satisfy the gate.
 
+`handwritten_glue_lines` counts only application-authored RiffDB adaptation:
+transport or RPC wrappers, parameter/result maps, wire-value encoders or
+decoders, capability/grant construction, or response-shape decoding written in
+place of the generated application client and product runtime. Do not count
+ordinary domain logic, HTTP handlers, generated-client method calls, typed
+outcome branching, view rendering, tests, or value-free identity evidence.
+When the boundary checker passes and none of the counted adaptation exists,
+record zero. Product-owned generated files and bundled runtimes never count as
+handwritten glue.
+
 For a satisfaction campaign, evaluators follow this identical protocol; they
 are not told to manufacture a target score. After both immutable reports are
 published, `scripts/agent-satisfaction-canary-acceptance` independently checks

@@ -56,6 +56,16 @@ rust_run_root="$work_root/rust-run"
     echo "fresh application omitted its repository-local authoring guide" >&2
     exit 1
 }
+rg -Fq 'Design transaction routes before writing entities' "$rust_run_root/AUTHORING.md"
+rg -Fq 'complete set of records it must change atomically' \
+    "$rust_run_root/AUTHORING.md"
+rg -Fq 'model_one_mutation_aggregate' "$rust_run_root/AUTHORING.md"
+rg -Fq 'transport or RPC wrappers, parameter/result maps' \
+    "$bundle/evaluation/CANARY-PROTOCOL.md"
+jq -e '
+  .properties.handwritten_glue_lines.description
+  | contains("Ordinary domain logic")
+' "$bundle/evaluation/report-schema.json" >/dev/null
 rust_source_check="$(
     cd "$rust_run_root"
     "$bundle/bin/riffdb" application check --source-only

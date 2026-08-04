@@ -4,6 +4,14 @@ The normal RiffDB application path is contract and RiffQL text compiled into
 generated application operations. The kernel gRPC protocol is not an
 application-development API.
 
+Before replacing the sample contract, read the repository-local `AUTHORING.md`
+and complete its transaction-route worksheet: list each command's complete
+atomic mutation set, assign that set one aggregate root and route parameter,
+then list the route for every page. Define entity keys and indexes only after
+those decisions. This prevents the most expensive authoring mistake—modeling
+records as independent roots and later discovering that one command must
+change them atomically.
+
 ```text
 $ riffdb new order-desk
 created application `order-desk` at order-desk
