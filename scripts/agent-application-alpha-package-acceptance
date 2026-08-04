@@ -73,6 +73,8 @@ rg -Fq 'Design transaction routes before writing entities' "$rust_run_root/AUTHO
 rg -Fq 'complete set of records it must change atomically' \
     "$rust_run_root/AUTHORING.md"
 rg -Fq 'model_one_mutation_aggregate' "$rust_run_root/AUTHORING.md"
+rg -Fq 'set post.author_id = author_id' "$rust_run_root/AUTHORING.md"
+rg -Fq 'prove_relationship_target' "$rust_run_root/AUTHORING.md"
 rg -Fq 'transport or RPC wrappers, parameter/result maps' \
     "$bundle/evaluation/CANARY-PROTOCOL.md"
 jq -e '

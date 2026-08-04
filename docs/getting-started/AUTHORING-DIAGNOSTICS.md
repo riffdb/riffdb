@@ -40,6 +40,9 @@ The main correction codes are deliberately executable concepts:
 - `model_one_mutation_aggregate`: place every entity changed atomically under
   one declared aggregate root, or split the workflow into independently
   idempotent commands.
+- `prove_relationship_target`: read the complete relationship target before
+  the mutable binding, declare its missing-target outcome, and reuse the same
+  target-key input expressions when storing the relationship fields.
 - `add_index`: add the bounded index identified by query explain.
 - `add_bound`: declare explicit positive cardinality/work bounds.
 - `reduce_input`: reduce a complete worst-case input or query-work bound. For
@@ -59,6 +62,17 @@ independent aggregate writes atomic. Start from the command's complete mutation
 set, choose one business root, make every written entity a root or child of
 that aggregate, and put the route first in every key. If that ownership would
 be false, keep the roots independent and use separate idempotent commands.
+
+`RDB-C024` rejects a relationship change whose exact target proof is missing or
+has expression drift. The complete target read must appear before the relevant
+`create` or `mutate`, must declare what happens when the target is absent, and
+must use the same key input expressions as the stored relationship fields. For
+example, after `read Author(site_id, author_id) as author`, store
+`post.author_id = author_id`. In grammar v1, storing
+`post.author_id = author.author_id` is value-equivalent after the read but is
+not the same structural expression and therefore does not satisfy the proof.
+The database does not infer that equivalence or weaken the declared
+relationship.
 
 `application check` always reports `no_files_changed`. A staged write failure
 reports whether staging was discarded, the previous generation remains
