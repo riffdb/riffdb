@@ -28,6 +28,7 @@ const CONTRACT_TEMPLATE: &str = include_str!("../../../templates/application/con
 const QUERY_TEMPLATE: &str = include_str!("../../../templates/application/item_page.riffq");
 const SEED_TEMPLATE: &str = include_str!("../../../templates/application/seed.jsonl");
 const README_TEMPLATE: &str = include_str!("../../../templates/application/README.md");
+const AUTHORING_TEMPLATE: &str = include_str!("../../../templates/application/AUTHORING.md");
 const RUST_MAIN_TEMPLATE: &str = include_str!("../../../templates/application/rust-main.rs");
 const TYPESCRIPT_MAIN_TEMPLATE: &str =
     include_str!("../../../templates/application/typescript-main.ts");
@@ -276,6 +277,17 @@ pub(crate) fn check_application(
         let _ = compile_symbolic_application(source_path)?;
         Ok(ApplicationCheckStatus::SourceOnly)
     }
+}
+
+/// Compiles only author-owned symbolic sources and application roles.
+///
+/// This is the explicit iterative-authoring path. It intentionally does not
+/// compare or mutate the compiler-owned lock and generated artifacts.
+pub(crate) fn check_application_sources(
+    source_path: &Path,
+) -> Result<ApplicationCheckStatus, ScaffoldError> {
+    let _ = compile_symbolic_application(source_path)?;
+    Ok(ApplicationCheckStatus::SourceOnly)
 }
 
 pub(crate) fn preview_application_lock(source_path: &Path) -> Result<Vec<u8>, ScaffoldError> {
@@ -1632,6 +1644,7 @@ fn write_repository(
         )
         .as_bytes(),
     )?;
+    write_file(root, "AUTHORING.md", AUTHORING_TEMPLATE.as_bytes())?;
     write_file(root, ".gitignore", GITIGNORE_TEMPLATE.as_bytes())?;
     match language {
         ScaffoldLanguage::Rust => {
@@ -2551,6 +2564,7 @@ mod tests {
         create_application("order-desk", ScaffoldLanguage::Rust, &first).expect("first");
         create_application("order-desk", ScaffoldLanguage::Rust, &second).expect("second");
         for relative in [
+            "AUTHORING.md",
             "Cargo.lock",
             "riffdb.application.json",
             "riffdb.application.lock.json",
@@ -2732,6 +2746,15 @@ mod tests {
         };
         assert_eq!(diagnostic.code().as_str(), "RDB-AL008");
         assert_eq!(diagnostic.path().as_str(), DEFAULT_LOCK_PATH);
+
+        assert_eq!(
+            check_application_sources(&source).expect("source-only check ignores exact artifacts"),
+            ApplicationCheckStatus::SourceOnly
+        );
+        assert_eq!(
+            fs::read(&generated).expect("source-only check is read-only"),
+            b"substituted\n"
+        );
         fs::remove_dir_all(base).expect("cleanup");
     }
 

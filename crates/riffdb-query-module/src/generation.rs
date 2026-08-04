@@ -681,8 +681,9 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
          use riffdb_client_rust::generated::{{GeneratedCommand, GeneratedCommandError, GeneratedQuery}};\n\
          use riffdb_client_rust::{{ApplicationCardinality, ApplicationClientError, ApplicationContract, ApplicationUuid, \
          ApplicationRecord, ApplicationValue, AttemptBudget, CallMetadata, GeneratedBatchError, GeneratedBatchOptions, \
-         GeneratedBatchProgress, GeneratedBatchResult, IdempotentCommand, NamedQuery, NamedQueryResult, QueryOptions, \
+         GeneratedBatchProgress, GeneratedBatchResult, IdempotentCommand, NamedQuery, NamedQueryResult, \
          StableApplicationClient, TypedCommandResult, TypedQueryResult, v1}};\n\
+         pub use riffdb_client_rust::QueryOptions;\n\
          use riffdb_client_rust::v1::value::Kind as WireKind;\n"
     )
     .expect("string");
@@ -1601,12 +1602,18 @@ fn emit_rust_client_facade(output: &mut String, module: &QueryModule, commands: 
         let name = query.name();
         writeln!(
             output,
-            "    pub async fn {function}(&mut self, parameters: {name}Params) \
+            "    /// Executes the generated `{name}` named query.\n\
+             \x20\x20\x20\x20pub async fn {function}(&mut self, parameters: {name}Params) \
              -> Result<{name}Result, ApplicationClientError> {{\n\
-             \x20       Ok(self.{function}_with_options(parameters, QueryOptions::new()).await?.value)\n    }}\n\
-             \x20   pub async fn {function}_with_options(&mut self, parameters: {name}Params, options: QueryOptions) \
+             \x20\x20\x20\x20\x20\x20\x20\x20Ok(self.{function}_with_options(parameters, QueryOptions::new()).await?.value)\n    }}\n\
+             \x20\x20\x20\x20/// Executes `{name}` against a snapshot at or after the supplied command commit.\n\
+             \x20\x20\x20\x20pub async fn {function}_after_commit(&mut self, parameters: {name}Params, commit_sequence: u64) \
              -> Result<TypedQueryResult<{name}Result>, ApplicationClientError> {{\n\
-             \x20       self.client.execute_generated_query({name}Query(parameters), options, &self.metadata).await\n    }}\n",
+             \x20\x20\x20\x20\x20\x20\x20\x20self.{function}_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await\n    }}\n\
+             \x20\x20\x20\x20/// Executes `{name}` with generated pagination or read-fence options.\n\
+             \x20\x20\x20\x20pub async fn {function}_with_options(&mut self, parameters: {name}Params, options: QueryOptions) \
+             -> Result<TypedQueryResult<{name}Result>, ApplicationClientError> {{\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20self.client.execute_generated_query({name}Query(parameters), options, &self.metadata).await\n    }}\n",
             function = snake(name)
         )
         .expect("string");
@@ -3026,7 +3033,9 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{NamedQuerySource, QueryModuleCandidate};
     use riffdb_contract_compiler::compile_contract_source;
+    use riffdb_types::{QueryModuleName, QueryModuleVersion};
 
     #[test]
     fn optional_wire_decode_evaluates_the_field_take_once() {
@@ -3044,5 +3053,35 @@ mod tests {
             expression,
             "decode_wire_optional(take_wire_field(&mut fields, 12)?, |value| Ok(decode_wire_i64(value)?))?"
         );
+    }
+
+    #[test]
+    fn generated_rust_facade_owns_query_options_and_read_after_commit() {
+        let contract = compile_contract_source(
+            "contract Example version 1 {\n\
+             entity Item { key (item_id: uuid) field title: string<128> }\n\
+             aggregate ItemRoot { root Item partition_by item_id conflict_key (item_id) }\n\
+             command CreateItem { input idempotency_key: string<128> input item_id: uuid input title: string<128> idempotency_key idempotency_key create Item(item_id) as item else ItemExists { item_id: item_id } set item.title = title return Created { item: item } }\n\
+             }",
+        )
+        .expect("contract");
+        let query = NamedQuerySource::new(
+            "ItemPage",
+            "query ItemPage($item_id: Item.item_id) { one item from Item where item_id == $item_id else NotFound return Found { item: item { item_id title } } outcomes Found | NotFound }",
+        )
+        .expect("query source");
+        let candidate = QueryModuleCandidate::new(
+            QueryModuleName::new("ExampleQueries").expect("module name"),
+            QueryModuleVersion::new(1).expect("module version"),
+            vec![query],
+        )
+        .expect("candidate");
+        let module = QueryModule::compile(candidate, &contract).expect("module");
+
+        let generated = generate_rust_client(&module, &contract);
+
+        assert!(generated.contains("pub use riffdb_client_rust::QueryOptions;"));
+        assert!(generated.contains("pub async fn item_page_after_commit("));
+        assert!(generated.contains("QueryOptions::new().read_after_commit(commit_sequence)"));
     }
 }

@@ -196,10 +196,10 @@ fn interrupt_application_deployment_after(environment: &dyn Environment, stage: 
 }
 use crate::scaffold::{
     ApplicationCheckStatus, PinnedLockRefresh, ScaffoldLanguage, application_contract_source,
-    application_contract_version, check_application, check_application_lock, create_application,
-    generate_application, load_locked_application, load_locked_migration_submission,
-    migrate_application_source_v2, plan_application_migrations, preview_application_lock,
-    refresh_application_lock_from_pinned_bundle, write_application_lock,
+    application_contract_version, check_application, check_application_lock,
+    check_application_sources, create_application, generate_application, load_locked_application,
+    load_locked_migration_submission, migrate_application_source_v2, plan_application_migrations,
+    preview_application_lock, refresh_application_lock_from_pinned_bundle, write_application_lock,
     write_application_lock_with_bundle,
 };
 use crate::value::{InputValue, RecordInput, ValueError, parse_uuid};
@@ -313,6 +313,10 @@ pub async fn run() -> ExitCode {
                     "created application `{application}` at {}",
                     destination.display()
                 );
+                println!(
+                    "next: read {}/AUTHORING.md, replace the sample domain, then run `riffdb application check --source-only`",
+                    destination.display()
+                );
                 ExitCode::SUCCESS
             }
             Err(error) => {
@@ -420,8 +424,17 @@ pub async fn run() -> ExitCode {
                 }
             };
         }
-        if let ApplicationCommand::Check { source } = command {
-            return match check_application(Path::new(source)) {
+        if let ApplicationCommand::Check {
+            source,
+            source_only,
+        } = command
+        {
+            let result = if *source_only {
+                check_application_sources(Path::new(source))
+            } else {
+                check_application(Path::new(source))
+            };
+            return match result {
                 Ok(ApplicationCheckStatus::ExactLock) => {
                     println!("application sources, exact lock, and generated bindings are exact");
                     ExitCode::SUCCESS

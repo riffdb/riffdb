@@ -7,13 +7,15 @@ roles and seed paths in `riffdb.application.json`, and the JSONL seed inputs.
 Then use the complete authoring loop:
 
 ```text
-riffdb application check
+riffdb application check --source-only
 riffdb application lock --write
-riffdb application lock --check
+riffdb application check
 riffdb dev --seed --run
 ```
 
-The first command is read-only. `lock --write` is the explicit review point for
+The first command is the read-only iterative compiler: it validates the
+complete author-owned application and roles without manufacturing an expected
+lock-drift failure after every edit. `lock --write` is the explicit review point for
 new compiler-derived plans, identities, authority, and generated artifacts.
 Genesis locking is local; successor locking performs an authorized read-only
 preview against the selected database's active parent and pins the exact
@@ -60,4 +62,7 @@ transport adapters are rejected by the application-boundary check.
 
 The installed authoring kit documents the complete contract grammar, command
 and invariant patterns, RiffQL, symbolic application source, diagnostics, and
-inspection workflow under `docs/`.
+inspection workflow under `docs/`. The repository-local `AUTHORING.md` keeps
+the aggregate, relationship, invariant, indexed-page, dependent-batch, and
+generated causal-read patterns needed for a first unfamiliar domain in one
+place.
