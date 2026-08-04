@@ -7027,3 +7027,30 @@ work_packages:
     incarnation token never serves; a capability revoked mid-wait is denied at the post-wake
     safe point without serving rows.
   human_review_triggers: *id001
+- id: WP-433
+  name: Board benchmark through the projected read path (CP3)
+  depends_on: [WP-432]
+  objective: Close the analytics arc measurement — add board_page_projected_{50,200,450} to the
+    app-baseline harness over ExecuteProjectedQuery (generated tonic wire path), with Causal
+    catch-up after seed, run-aborting compiled-vs-projected row-content equivalence, and
+    board_projected_marginal_ns_per_row in the report (same (p50_450−p50_50)/400 formula).
+  requirements: []
+  required_adrs: [ADR-0086]
+  allowed_paths: [work_packages.yaml, examples/app-baseline/**]
+  deliverables:
+  - riffdbd harness bootstrap with --projections-root and board projection registration
+    (two-phase start so ColumnarRuntime opens after contract deploy)
+  - board_page_projected_{50,200,450} scenarios on RiffDB via generated ApplicationQueryService
+    client; select/predicate/order/limit/org_scope/freshness AVAILABLE match CP2b board shape
+  - Pre-timing Causal catch-up to last seed commit token and run-aborting cross-path equivalence
+  - Report field board_projected_marginal_ns_per_row plus per-N projected p50s (additive only)
+  - Unit coverage for request construction and equivalence gate discriminating power
+  acceptance_commands:
+  - cd examples/app-baseline && cargo +1.97.0 fmt --all -- --check
+  - cd examples/app-baseline && cargo +1.97.0 clippy --workspace --all-targets -- -D warnings
+  - cd examples/app-baseline && cargo +1.97.0 test --workspace
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: Smoke run executes projected board scenarios with gates passing; report carries
+    board_projected_marginal_ns_per_row when 50/450 projected samples exist; PG path unchanged.
+  human_review_triggers: *id001
