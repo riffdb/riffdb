@@ -126,6 +126,27 @@ create OrderLine(organization_id, order_id, product_id) as line
 A separate query followed by a command is not a relationship proof and would
 reintroduce a check-then-write race.
 
+The relationship source fields must reuse the same key input expressions as
+that exact read. For example:
+
+```riff
+read Author(site_id, author_id) as author
+  else AuthorMissing { author_id: author_id }
+create Post(site_id, post_id) as post
+  else PostExists { post_id: post_id }
+set post.author_id = author_id
+```
+
+In grammar v1, `set post.author_id = author.author_id` does not preserve that
+structural proof even though the two values are equal after the read. Use the
+same `author_id` expression in both the target key and relationship source.
+`RDB-C024` and `prove_relationship_target` mean to check all three facts:
+
+1. the complete target-key read dominates the `create` or `mutate` binding;
+2. the read declares the missing-target outcome; and
+3. every stored relationship component reuses the corresponding target-key
+   input expression.
+
 ## Preserve numeric invariants transaction-current
 
 Read and mutate the entity in the same compiled command, state the precondition

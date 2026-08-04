@@ -181,6 +181,7 @@ fixtures:
 |---|---|---|---|
 | Blog title ordering without a matching index | index | `RDB-QP003` | Declare the suggested index or use the status feed |
 | Author lookup without `site_id` | locality | `RDB-QP002` | Supply the partition key |
+| Relationship field derived from a read binding instead of its exact key input | integrity | `RDB-C024` | Read the target first and reuse the same target-key input expressions |
 | Treating a line collection as one scalar product key | cardinality | `RDB-QP007` | Use the bounded dependent-key batch |
 | Inventory collection without `take` | bounds | `RDB-QS009` | Add a positive bound and optional cursor |
 

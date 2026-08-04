@@ -89,6 +89,8 @@ pub enum AuthoringCause {
     TypeMismatch,
     /// The operation cannot prove one local route.
     NonLocal,
+    /// A relationship change cannot be tied to one dominating exact target read.
+    MissingRelationshipProof,
     /// A required bounded access path is absent.
     MissingIndex,
     /// Cardinality or total work cannot be bounded.
@@ -118,6 +120,7 @@ impl AuthoringCause {
             Self::UnknownSymbol => "unknown_symbol",
             Self::TypeMismatch => "type_mismatch",
             Self::NonLocal => "non_local",
+            Self::MissingRelationshipProof => "missing_relationship_proof",
             Self::MissingIndex => "missing_index",
             Self::Unbounded => "unbounded",
             Self::IdentityDrift => "identity_drift",
@@ -144,6 +147,8 @@ pub enum AuthoringFix {
     SupplyPartitionRoute,
     /// Model every atomic create/mutate binding under one aggregate root.
     ModelOneMutationAggregate,
+    /// Read the exact relationship target and reuse its key input expressions.
+    ProveRelationshipTarget,
     /// Add the compiler-suggested bounded index.
     AddIndex,
     /// Add an explicit positive bound.
@@ -174,6 +179,7 @@ impl AuthoringFix {
             Self::CorrectType => "correct_type",
             Self::SupplyPartitionRoute => "supply_partition_route",
             Self::ModelOneMutationAggregate => "model_one_mutation_aggregate",
+            Self::ProveRelationshipTarget => "prove_relationship_target",
             Self::AddIndex => "add_index",
             Self::AddBound => "add_bound",
             Self::WriteLock => "write_lock",
@@ -834,6 +840,10 @@ fn contract_semantic_class(
                 AuthoringFix::ModelOneMutationAggregate,
             ],
         ),
+        Code::MissingRelationshipRead => (
+            AuthoringCause::MissingRelationshipProof,
+            vec![AuthoringFix::ProveRelationshipTarget],
+        ),
         Code::BoundExceeded => (
             AuthoringCause::LimitExceeded,
             vec![AuthoringFix::ReduceInput],
@@ -856,6 +866,9 @@ fn contract_semantic_summary(
     match code {
         Code::CrossPartitionMutation => {
             "atomic command writes span multiple aggregate roots or partition routes"
+        }
+        Code::MissingRelationshipRead => {
+            "relationship proof must read the exact target before mutation and reuse the same key expressions"
         }
         _ => code.summary(),
     }
@@ -1177,6 +1190,79 @@ contract Orders version 1 {
                 .expect("human")
                 .contains("fixes: supply_partition_route,model_one_mutation_aggregate")
         );
+    }
+
+    #[test]
+    fn relationship_diagnostic_names_the_exact_proof_and_its_safe_correction() {
+        let source = r#"
+contract Blog version 1 {
+  entity Site { key (site_id: uuid) }
+  entity Author { key (site_id: uuid, author_id: uuid) }
+  entity Post {
+    key (site_id: uuid, post_id: uuid)
+    field author_id: uuid
+    reference author_ref (site_id, author_id) -> Author(site_id, author_id)
+  }
+  aggregate SiteRoot {
+    root Site
+    child Author
+    child Post
+    partition_by site_id
+    conflict_key (site_id)
+  }
+  command CreatePost {
+    input request_key: string<128>
+    input site_id: uuid
+    input author_id: uuid
+    input post_id: uuid
+    idempotency_key request_key
+    read Author(site_id, author_id) as author
+      else AuthorMissing { author_id: author_id }
+    create Post(site_id, post_id) as post
+      else PostExists { post_id: post_id }
+    set post.author_id = author.author_id
+    return Created { post: post }
+  }
+}
+"#;
+        let error = compile_contract_source(source).expect_err("expression drift rejects");
+        let diagnostics = AuthoringDiagnostics::from_contract(
+            AuthoringSourcePath::new("riffdb/contract.riff").expect("path"),
+            &error,
+        )
+        .expect("diagnostics");
+        let diagnostic = diagnostics
+            .as_slice()
+            .iter()
+            .find(|diagnostic| diagnostic.code().as_str() == "RDB-C024")
+            .expect("relationship diagnostic");
+        let expected_start = source.find("author_ref").expect("relationship name");
+
+        assert_eq!(diagnostic.cause(), AuthoringCause::MissingRelationshipProof);
+        assert_eq!(
+            diagnostic.summary(),
+            "relationship proof must read the exact target before mutation and reuse the same key expressions"
+        );
+        assert_eq!(
+            diagnostic.span().map(|span| (span.start(), span.end())),
+            Some((
+                u32::try_from(expected_start).expect("start"),
+                u32::try_from(expected_start + "author_ref".len()).expect("end")
+            ))
+        );
+        assert_eq!(diagnostic.fixes(), &[AuthoringFix::ProveRelationshipTarget]);
+        assert!(
+            diagnostics
+                .render_human()
+                .expect("human")
+                .contains("fixes: prove_relationship_target")
+        );
+
+        let corrected = source.replace(
+            "set post.author_id = author.author_id",
+            "set post.author_id = author_id",
+        );
+        compile_contract_source(&corrected).expect("exact key expression reuse compiles");
     }
 
     #[test]
