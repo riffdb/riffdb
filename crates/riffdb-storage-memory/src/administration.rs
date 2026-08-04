@@ -760,22 +760,53 @@ fn reactive_publication_sequence(
 }
 
 impl ReactiveModuleRepository for MemoryOperationalPorts {
+    /// Returns the retained row without re-walking the administration stream for
+    /// its publication record. Converged with redb's `read_reactive_module`, and
+    /// a deliberate removal of a check, not an oversight.
+    ///
+    /// `integrity_administration::inspect_reactive_module` proves row-presence
+    /// implies publication-record for EVERY retained row during the structural
+    /// pass, which memory runs in full — it has no validated-prefix fast path and
+    /// no skip-walk, so `structural_item_count` always includes every
+    /// `reactive_modules` row. The sole writer
+    /// (`prepare_reactive_module_publication`) inserts the row and appends its
+    /// audit record in ONE `AdministrationMutation` applied under the exclusive
+    /// gate, and nothing anywhere removes either, so the property is preserved
+    /// inductively after a clean pass. A per-read check is therefore entailed by
+    /// its own precondition while costing an O(|administration audit|) vector
+    /// scan on every consumer RPC — the same argument that rules the check out of
+    /// redb's read path, now applied to the backend that was actually paying it.
+    ///
+    /// Two honest caveats on the base case, which is weaker than redb's:
+    ///
+    /// - Memory's pass is not the only route to operational ports.
+    ///   `MemoryDormantPorts::into_operational` is `pub(crate)`, so crate tests
+    ///   (including this file's corruption fixtures) can read state that no
+    ///   structural pass ever judged. redb closes this with `finish` refusing on
+    ///   an authoritative finding plus a `pub(crate)` migration gate; memory
+    ///   cannot, so on directly constructed state the read is trusting.
+    /// - That is acceptable only because this backend has no production
+    ///   consumer: `riffdb-server`, `riffdb-service`, and `riffdb-cli` never
+    ///   depend on it, and the single workspace dependent (`riffdb-testkit`)
+    ///   constructs no memory ports. Every reachable caller today is a test in
+    ///   this crate.
+    ///
+    /// No `debug_assert!` retains the scan in debug builds. The repository's
+    /// existing `debug_assert!`s guard local algorithmic invariants (gate lease
+    /// ownership, counter arithmetic), never record shape; corrupt state is a
+    /// typed, recoverable `CorruptData` condition here, and panicking on it would
+    /// abort in exactly the crate tests that deliberately construct it —
+    /// replacing a typed fail-closed answer with an abort while adding no
+    /// detection to any release build.
     fn read_reactive_module(
         &self,
         module_hash: ReactiveModuleHash,
     ) -> Result<Option<StoredReactiveModuleV1>, StorageError> {
         self.read(|state| {
             retained_metadata(state)?;
-            let Some(module) = reactive_module_position(state, module_hash)?
+            Ok(reactive_module_position(state, module_hash)?
                 .ok()
-                .map(|index| state.reactive_modules[index].clone())
-            else {
-                return Ok(None);
-            };
-            if reactive_publication_sequence(state, module_hash)?.is_none() {
-                return Err(storage_error(StorageErrorKind::CorruptData));
-            }
-            Ok(Some(module))
+                .map(|index| state.reactive_modules[index].clone()))
         })
     }
 }
@@ -1857,19 +1888,23 @@ mod tests {
         CapabilityCreateCandidateTransaction, CapabilityGrantV1, CapabilityPermissionKindV1,
         CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityRequestedRecordV1,
         CapabilityRevokeAwaitingDecision, CapabilityRevokeCandidateTransaction,
-        DatabaseInitializationPort, DatabaseInitializationResult, EvidencePageLimit,
-        HISTORY_INCARNATION_INITIAL, PartitionScopeV1, ReadableCapabilityDigestInventory,
-        ReadableDigestKey, ReadableIdempotencyDigestInventory, RevocationReasonCodeV1,
-        StartupValidationInputs, StorageFormatVersion, StorageScanLimit, StorageValueError,
+        ConsumerDeliveryStateV1, ConsumerLeaseCandidateV1, DatabaseInitializationPort,
+        DatabaseInitializationResult, EventConsumerIdentityV1, EventConsumerRepository,
+        EventConsumerTransitionResultV1, EventConsumerTransitionV1, EvidencePageLimit,
+        ExpectedConsumerDeliveryV1, HISTORY_INCARNATION_INITIAL, PartitionScopeV1,
+        ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+        RevocationReasonCodeV1, StartupValidationInputs, StorageFormatVersion, StorageScanLimit,
+        StorageValueError, StoredEventConsumerDeliveryV1, StoredEventConsumerV1,
         StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
         StructuralEvidenceSession, StructuralFinding, StructuralFindingCode,
         StructuralFindingScope,
     };
     use riffdb_types::{
         ActorId, ActorKind, Audience, CommitSequence, ContractBundleHash, DatabaseId, DigestKeyId,
-        Environment, ProvenanceId, QueryModuleName, QueryModuleVersion, ServiceAuditTargetsV1,
-        ServiceIngressKindV1, TenantScope, Timestamp, hash_query_module, hash_reactive_module,
-        hash_reactive_source,
+        Environment, EventConsumerName, EventDeliveryAttempt, EventId, EventLeaseToken,
+        PartitionKeyHash, ProvenanceId, QueryModuleName, QueryModuleVersion, QueryParameterHash,
+        ReactiveOperationName, ServiceAuditTargetsV1, ServiceIngressKindV1, TenantScope, Timestamp,
+        hash_query_module, hash_reactive_module, hash_reactive_source,
     };
 
     use super::*;
@@ -3212,6 +3247,213 @@ mod tests {
                 StructuralFindingCode::CrossLinkMismatch,
             )],
             "a reactive module whose identity disagrees with its artifact must be reported"
+        );
+    }
+
+    /// The state that used to trip the per-read publication scan: a retained
+    /// module row that no publication record names, reachable WITHOUT a
+    /// structural pass (`into_operational` on directly built state, which only
+    /// crate tests can do). The read now answers it, and the structural pass
+    /// still reports it — the detection moved, it did not vanish.
+    #[test]
+    fn memory_reactive_read_leaves_the_publication_proof_to_the_structural_pass() {
+        let (store, observer, module) = published_reactive_module_store();
+        let contract = bundle("reactive-structural", 1, 0x27);
+        let orphan = conformance_reactive_module(&contract, b"read orphan source", b"read orphan");
+        assert_ne!(orphan.module_hash(), module.module_hash());
+        store
+            .acquire()
+            .expect("write access")
+            .write(|state| {
+                let position = state
+                    .reactive_modules
+                    .partition_point(|row| row.module_hash() < orphan.module_hash());
+                state.reactive_modules.insert(position, orphan.clone());
+                Ok(())
+            })
+            .expect("retain an orphaned reactive module");
+
+        let ports = MemoryDormantPorts {
+            store: store.reopen(),
+        }
+        .into_operational();
+        assert_eq!(
+            ReactiveModuleRepository::read_reactive_module(&ports, orphan.module_hash())
+                .expect("the read must not walk the stream for a publication record"),
+            Some(orphan.clone()),
+            "the read path returns the retained row; the publication proof is the \
+             structural pass's job, exactly as on the redb backend"
+        );
+        drop(ports);
+        drop(store);
+
+        assert_eq!(
+            structural_findings(observer),
+            vec![StructuralFinding::new(
+                StructuralFindingScope::Authoritative,
+                StructuralFindingCode::MissingCrossLink,
+            )],
+            "removing the per-read scan must move the detection to the structural \
+             pass, never lose it"
+        );
+    }
+
+    fn consumer_identity(module: &StoredReactiveModuleV1, name: &str) -> EventConsumerIdentityV1 {
+        EventConsumerIdentityV1::new(
+            database_id(),
+            module.module_hash(),
+            ReactiveOperationName::new("StructuralEvents").expect("operation name"),
+            QueryParameterHash::from_bytes([5; 32]),
+            EventConsumerName::new(name).expect("consumer name"),
+        )
+    }
+
+    /// Creates one durable consumer and leases its first event through the REAL
+    /// consumer write path, so the clean fixture is written, never synthesized.
+    fn created_consumer(
+        ports: &mut MemoryOperationalPorts,
+        module: &StoredReactiveModuleV1,
+        name: &str,
+    ) -> StoredEventConsumerV1 {
+        let identity = consumer_identity(module, name);
+        let consumer = StoredEventConsumerV1::initial(
+            identity.clone(),
+            PartitionKeyHash::from_bytes([6; 32]),
+            HISTORY_INCARNATION_INITIAL,
+        )
+        .expect("initial consumer");
+        let delivery = StoredEventConsumerDeliveryV1::new(
+            identity.identity_hash(),
+            EventId::new(CommitSequence::new(1).expect("commit sequence"), 0),
+            HISTORY_INCARNATION_INITIAL,
+            ConsumerDeliveryStateV1::Leased {
+                attempt: EventDeliveryAttempt::first(),
+                token: EventLeaseToken::from_bytes([7; 32]),
+                expires_at: Timestamp::new(200, 0).expect("lease expiry"),
+            },
+        )
+        .expect("leased delivery");
+        let candidate = ConsumerLeaseCandidateV1::new(ExpectedConsumerDeliveryV1::Absent, delivery)
+            .expect("first-attempt lease candidate");
+        assert_eq!(
+            EventConsumerRepository::transition_event_consumer(
+                ports,
+                EventConsumerTransitionV1::CreateAndLease {
+                    consumer: consumer.clone(),
+                    candidates: vec![candidate],
+                },
+            )
+            .expect("create the consumer and lease its first event"),
+            EventConsumerTransitionResultV1::Applied
+        );
+        consumer
+    }
+
+    /// Builds a clean memory database holding one published reactive module and
+    /// one created consumer with one leased delivery.
+    fn created_consumer_store() -> (MemoryStore, MemoryStore, StoredReactiveModuleV1) {
+        let (store, observer, module) = published_reactive_module_store();
+        let mut ports = MemoryDormantPorts {
+            store: store.reopen(),
+        }
+        .into_operational();
+        created_consumer(&mut ports, &module, "structural_worker");
+        drop(ports);
+        (store, observer, module)
+    }
+
+    #[test]
+    fn memory_structural_pass_accepts_a_created_consumer_and_its_delivery() {
+        let (store, observer, _module) = created_consumer_store();
+        drop(store);
+        assert_eq!(
+            structural_findings(observer),
+            Vec::new(),
+            "a written consumer and its leased delivery row must validate clean"
+        );
+    }
+
+    #[test]
+    fn memory_structural_pass_reports_an_event_consumer_without_its_reactive_module() {
+        let (store, observer, module) = created_consumer_store();
+        let contract = bundle("reactive-structural", 1, 0x27);
+        let unpublished =
+            conformance_reactive_module(&contract, b"unpublished source", b"unpublished art");
+        assert_ne!(unpublished.module_hash(), module.module_hash());
+        let orphan = StoredEventConsumerV1::initial(
+            consumer_identity(&unpublished, "orphan_worker"),
+            PartitionKeyHash::from_bytes([8; 32]),
+            HISTORY_INCARNATION_INITIAL,
+        )
+        .expect("orphaned consumer");
+        store
+            .acquire()
+            .expect("write access")
+            .write(|state| {
+                // A consumer row naming a reactive module that was never
+                // published — exactly what redb reports through
+                // `inspect_event_consumer_row` and the memory pass could not see
+                // at all. Delivery rows and the audit stream stay untouched, so
+                // this is the one invariant under test.
+                let position = state.event_consumers.partition_point(|row| {
+                    row.identity().identity_hash() < orphan.identity().identity_hash()
+                });
+                state.event_consumers.insert(position, orphan.clone());
+                Ok(())
+            })
+            .expect("retain a consumer with no reactive module");
+        drop(store);
+
+        assert_eq!(
+            structural_findings(observer),
+            vec![StructuralFinding::new(
+                StructuralFindingScope::Authoritative,
+                StructuralFindingCode::MissingCrossLink,
+            )],
+            "a consumer whose reactive module is not retained must be reported"
+        );
+    }
+
+    #[test]
+    fn memory_structural_pass_reports_an_event_consumer_delivery_without_its_consumer() {
+        let (store, observer, module) = created_consumer_store();
+        let absent = consumer_identity(&module, "retired_worker");
+        let orphan = StoredEventConsumerDeliveryV1::new(
+            absent.identity_hash(),
+            EventId::new(CommitSequence::new(2).expect("commit sequence"), 0),
+            HISTORY_INCARNATION_INITIAL,
+            ConsumerDeliveryStateV1::Retry {
+                failed_attempts: EventDeliveryAttempt::first(),
+                eligible_at: Timestamp::new(300, 0).expect("retry instant"),
+            },
+        )
+        .expect("orphaned delivery");
+        store
+            .acquire()
+            .expect("write access")
+            .write(|state| {
+                // A delivery row whose consumer row is gone: redb reports it
+                // through `inspect_event_consumer_delivery_row`. Inserted in
+                // canonical order so the ordering invariant is not the finding.
+                let position = state.event_consumer_deliveries.partition_point(|row| {
+                    (row.consumer_identity_hash(), row.event_id())
+                        < (orphan.consumer_identity_hash(), orphan.event_id())
+                });
+                state
+                    .event_consumer_deliveries
+                    .insert(position, orphan.clone());
+                Ok(())
+            })
+            .expect("retain a delivery with no consumer");
+        drop(store);
+
+        assert_eq!(
+            structural_findings(observer),
+            vec![StructuralFinding::new(
+                StructuralFindingScope::Authoritative,
+                StructuralFindingCode::MissingCrossLink,
+            )],
+            "a delivery row whose consumer is not retained must be reported"
         );
     }
 }

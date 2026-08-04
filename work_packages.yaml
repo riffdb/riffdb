@@ -7311,3 +7311,73 @@ work_packages:
     clean, and removing the new inspection arm returns all of them to zero findings; the full
     workspace battery reports zero failures.
   human_review_triggers: *id001
+- id: WP-438
+  name: Storage-scan hygiene — single-pass startup verification of reactive publications,
+    memory's redundant per-read scan removed, and memory consumer/delivery structural
+    inspection (GA)
+  depends_on: [WP-437]
+  objective: Close the three storage-hygiene items the WP-437 review ledgered — redb's
+    startup proof that every retained reactive-module row still has its publication record
+    scanned the entire unbounded, never-pruned AUDIT table once PER ROW, so a long-lived
+    database paid up to MAX_RETAINED_REACTIVE_MODULES full protobuf decode passes at every
+    open; memory still walked its whole administration audit vector on every consumer RPC to
+    re-prove the same property its own structural pass now proves at open, the redundant scan
+    the WP-437 ruling identified; and memory's structural pass never inspected
+    state.event_consumers or state.event_consumer_deliveries at all, so a consumer row naming
+    an unretained reactive module, or a delivery row whose consumer is gone, produced no
+    finding while redb reported both.
+  requirements: []
+  required_adrs: [ADR-0021, ADR-0085]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/src/startup.rs, crates/riffdb-storage-memory/src/administration.rs,
+    crates/riffdb-storage-memory/src/consumer.rs, crates/riffdb-storage-memory/src/integrity_administration.rs,
+    crates/riffdb-storage-memory/src/startup.rs]
+  deliverables:
+  - The redb reactive-publication proof served from one transient witness set built in a
+    single forward AUDIT pass and answered per row by set lookup, replacing the per-row full
+    table scan; identical findings — same codes, scopes, and counts — on every fixture, a
+    pure cost change with no durable encoding, schema hash, registry pin, or index touched
+  - That witness pass kept UNCONDITIONAL and untruncated under the ADR-0085 validated-prefix
+    checkpoint fast path — it is driven by the REACTIVE_MODULES phase, whose rows are an
+    additive structural count the checkpoint guard never exempts, and it reads the whole AUDIT
+    table itself rather than the checkpoint-truncated suffix the AUDIT phase walks, because
+    the unconditional open-time proof is what licenses both backends' read paths to skip it
+  - The witness set bounded by the table under inspection through a REACTIVE_MODULES
+    membership filter, and released with its phase, plus a decode counter that pins the cost
+    (one pass, not one per row) rather than asserting it in prose
+  - Memory's per-read publication scan in read_reactive_module removed, converging its read
+    with redb's O(1) read, with the ruling recorded at the code site in the style of redb's own
+    note — the structural pass proves row-presence implies publication-record for every row,
+    the sole writer commits row and record in one gated mutation, nothing removes either — and
+    with the two honest caveats that memory's base case is weaker (crate tests reach
+    operational ports without a pass) and is acceptable only because the backend has no
+    production consumer, plus the recorded decision not to keep the check behind a
+    debug_assert
+  - Memory structural inspection of every retained event-consumer and delivery row, mirroring
+    redb's inspect_event_consumer_row and inspect_event_consumer_delivery_row check for check
+    — identity-hash derivation, retained database binding, and ordering standing in for redb's
+    key agreement plus snapshot round trip (CrossLinkMismatch), and the reactive module a
+    consumer names and the consumer a delivery names (MissingCrossLink)
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-redb --lib --all-features -- startup::tests
+  - cargo +1.97.0 test -p riffdb-storage-memory --lib --all-features -- administration::tests
+  - cargo +1.97.0 test -p riffdb-storage-redb --lib --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory --lib --all-features
+  - cargo +1.97.0 test --workspace --all-features
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  exit_gate: A cleanly published redb database with three retained reactive modules validates
+    with zero findings while decoding the audit stream exactly once for the whole
+    REACTIVE_MODULES phase, and rebuilding the witness per row turns that count red at three
+    times the stream length; a retained row that no publication record names still yields
+    exactly one authoritative MissingCrossLink, and leaving the witness set unpopulated
+    instead reds every retained module; the same orphan is still reported, and the same full
+    audit stream still read, on an open driven by a verified validated-prefix checkpoint; a
+    memory reactive-module row with no publication record is returned by read_reactive_module
+    and reported by the structural pass, so the detection moved rather than vanished; a
+    written memory consumer and its leased delivery validate clean while a consumer naming an
+    unretained reactive module and a delivery whose consumer is absent each yield exactly one
+    authoritative MissingCrossLink, and removing either new inspection arm returns its case to
+    zero findings; the full workspace battery reports zero failures.
+  human_review_triggers: *id001
