@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use riffdb_client_rust::{
     ApplicationErrorCode, AttemptBudget, CallMetadata, ClientError, IdempotentCommand,
-    PublicErrorKind, RiffDbClient, generate_agent_session_id, v1,
+    IdempotentTransportBatchError, PublicErrorKind, RiffDbClient, generate_agent_session_id, v1,
 };
 use riffdb_types::hash_command_batch_document;
 use serde::de::{MapAccess, Visitor};
@@ -24,7 +24,12 @@ pub(crate) const MAX_BATCH_CONCURRENCY: usize = 32;
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 1_024;
 const MAX_ERROR_MESSAGE_BYTES: usize = 1_024;
 const MAX_REPORTED_REJECTIONS: usize = 16;
+const MAX_UNCHECKPOINTED_TERMINALS: usize = 16;
+const MAX_TRANSPORT_BATCH_ITEMS: usize = 16;
 const CHECKPOINT_SCHEMA: &str = "riffdb.command-batch-checkpoint/v1";
+
+type BatchExecution = (BatchItem, Result<v1::ExecuteCommandResponse, ClientError>);
+type TransportBatchExecution = Result<Vec<BatchExecution>, IdempotentTransportBatchError>;
 
 #[derive(Debug)]
 pub(crate) enum BatchError {
@@ -259,6 +264,7 @@ pub(crate) async fn execute(
         &metadata,
     );
     let mut interrupted = false;
+    let mut uncheckpointed_terminals = 0_usize;
     while !tasks.is_empty() {
         let joined = tokio::select! {
             result = tasks.join_next() => result,
@@ -271,27 +277,33 @@ pub(crate) async fn execute(
                 tasks.join_next().await
             }
         };
-        let Some(Ok((item, result))) = joined else {
+        let Some(Ok(Ok(completed))) = joined else {
             interrupted = true;
             tasks.abort_all();
             break;
         };
-        if let Some(entry) = receipt_entry(&item, result, &options.error_outcomes) {
-            if options.progress {
-                eprintln!(
-                    "batch {}/{} {}",
-                    item.ordinal,
-                    source.items.len(),
-                    match entry.disposition {
-                        ReceiptDisposition::Succeeded => "succeeded",
-                        ReceiptDisposition::Rejected => "rejected",
-                    }
-                );
+        for (item, result) in completed {
+            if let Some(entry) = receipt_entry(&item, result, &options.error_outcomes) {
+                if options.progress {
+                    eprintln!(
+                        "batch {}/{} {}",
+                        item.ordinal,
+                        source.items.len(),
+                        match entry.disposition {
+                            ReceiptDisposition::Succeeded => "succeeded",
+                            ReceiptDisposition::Rejected => "rejected",
+                        }
+                    );
+                }
+                checkpoint.entries.insert(item.ordinal, entry);
+                uncheckpointed_terminals = uncheckpointed_terminals.saturating_add(1);
+                if checkpoint_wave_is_full(uncheckpointed_terminals) {
+                    persist_checkpoint(options.checkpoint_path.as_deref(), &mut checkpoint)?;
+                    uncheckpointed_terminals = 0;
+                }
+            } else if options.progress {
+                eprintln!("batch {}/{} pending", item.ordinal, source.items.len());
             }
-            checkpoint.entries.insert(item.ordinal, entry);
-            persist_checkpoint(options.checkpoint_path.as_deref(), &mut checkpoint)?;
-        } else if options.progress {
-            eprintln!("batch {}/{} pending", item.ordinal, source.items.len());
         }
         fill_tasks(
             &mut tasks,
@@ -304,6 +316,9 @@ pub(crate) async fn execute(
     }
     if interrupted {
         tasks.abort_all();
+    }
+    if uncheckpointed_terminals != 0 {
+        persist_checkpoint(options.checkpoint_path.as_deref(), &mut checkpoint)?;
     }
 
     let succeeded = checkpoint
@@ -345,6 +360,10 @@ pub(crate) async fn execute(
     })
 }
 
+const fn checkpoint_wave_is_full(uncheckpointed_terminals: usize) -> bool {
+    uncheckpointed_terminals >= MAX_UNCHECKPOINTED_TERMINALS
+}
+
 fn rejection_summary(checkpoint: &Checkpoint) -> (Vec<BatchRejectedItem>, usize) {
     let mut total = 0_usize;
     let mut items = Vec::new();
@@ -373,27 +392,41 @@ fn rejection_summary(checkpoint: &Checkpoint) -> (Vec<BatchRejectedItem>, usize)
 }
 
 fn fill_tasks(
-    tasks: &mut JoinSet<(BatchItem, Result<v1::ExecuteCommandResponse, ClientError>)>,
+    tasks: &mut JoinSet<TransportBatchExecution>,
     pending: &mut VecDeque<BatchItem>,
     concurrency: usize,
     client: &RiffDbClient,
     attempts: AttemptBudget,
     metadata: &CallMetadata,
 ) {
-    while tasks.len() < concurrency {
-        let Some(item) = pending.pop_front() else {
+    let (transport_batch_size, transport_concurrency) = transport_batch_policy(concurrency);
+    while tasks.len() < transport_concurrency {
+        let mut batch = Vec::with_capacity(transport_batch_size);
+        while batch.len() < transport_batch_size {
+            let Some(item) = pending.pop_front() else {
+                break;
+            };
+            batch.push(item);
+        }
+        if batch.is_empty() {
             break;
-        };
-        let mut item_client = client.clone();
+        }
+        let item_client = client.clone();
         let item_metadata = metadata.clone();
-        let submitted = item.clone();
+        let commands = batch.iter().map(|item| item.command.clone()).collect();
         tasks.spawn(async move {
-            let result = item_client
-                .execute_with_retry(&submitted.command, attempts, &item_metadata)
+            let results = item_client
+                .execute_idempotent_transport_batch_with_retry(commands, attempts, &item_metadata)
                 .await;
-            (item, result)
+            results.map(|results| batch.into_iter().zip(results).collect())
         });
     }
+}
+
+fn transport_batch_policy(item_concurrency: usize) -> (usize, usize) {
+    let transport_concurrency = item_concurrency.div_ceil(MAX_TRANSPORT_BATCH_ITEMS);
+    let transport_batch_size = item_concurrency / transport_concurrency;
+    (transport_batch_size, transport_concurrency)
 }
 
 fn receipt_entry(
@@ -720,6 +753,28 @@ mod tests {
             validate_checkpoint(&checkpoint, &source, &options),
             Err(BatchError::CheckpointInvalid)
         ));
+    }
+
+    #[test]
+    fn checkpoint_waves_are_bounded_and_flush_at_the_terminal_edge() {
+        for completed in 0..MAX_UNCHECKPOINTED_TERMINALS {
+            assert!(!checkpoint_wave_is_full(completed));
+        }
+        assert!(checkpoint_wave_is_full(MAX_UNCHECKPOINTED_TERMINALS));
+        assert!(checkpoint_wave_is_full(MAX_UNCHECKPOINTED_TERMINALS + 1));
+    }
+
+    #[test]
+    fn transport_batches_respect_both_item_and_wire_concurrency_bounds() {
+        for concurrency in 1..=MAX_BATCH_CONCURRENCY {
+            let (batch_size, transport_concurrency) = transport_batch_policy(concurrency);
+            assert!((1..=MAX_TRANSPORT_BATCH_ITEMS).contains(&batch_size));
+            assert!(transport_concurrency > 0);
+            assert!(batch_size * transport_concurrency <= concurrency);
+        }
+        assert_eq!(transport_batch_policy(8), (8, 1));
+        assert_eq!(transport_batch_policy(17), (8, 2));
+        assert_eq!(transport_batch_policy(32), (16, 2));
     }
 
     #[test]

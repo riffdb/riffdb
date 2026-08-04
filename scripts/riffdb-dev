@@ -118,6 +118,7 @@ if ((generic_application)); then
         }
     fi
 else
+    application_root="$repo_root"
     benchmark="$repo_root/target/$profile/benchmark"
     contract="$repo_root/examples/app-baseline/contracts/ticketdesk.riff"
     queries="$repo_root/queries/ticketdesk"
@@ -169,9 +170,7 @@ stage_application_queries() {
     queries="$staged"
 }
 
-if ((generic_application)); then
-    stage_application_queries
-fi
+stage_application_queries
 
 mkdir -p "$work_root/backups"
 mkfifo "$work_root/ready.fifo"

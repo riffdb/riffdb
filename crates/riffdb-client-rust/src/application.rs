@@ -21,6 +21,26 @@ use crate::{
 const MAX_GENERATED_TRANSPORT_BATCH_ITEMS: usize = 16;
 const MAX_GENERATED_BATCH_CONCURRENCY: usize = 128;
 
+/// A local shape failure for one bounded transport batch of ordinary commands.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IdempotentTransportBatchError {
+    /// The transport batch was empty.
+    Empty,
+    /// The transport batch exceeded the public protocol bound of 16 items.
+    TooManyItems,
+}
+
+impl fmt::Display for IdempotentTransportBatchError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Empty => "command transport batch is empty",
+            Self::TooManyItems => "command transport batch exceeds 16 items",
+        })
+    }
+}
+
+impl std::error::Error for IdempotentTransportBatchError {}
+
 /// Application-only client facade.
 ///
 /// This type deliberately has no accessor for its kernel client. Stable
@@ -317,6 +337,130 @@ impl StableApplicationClient {
         ));
         completed
     }
+}
+
+impl RiffDbClient {
+    /// Executes at most 16 ordinary idempotent commands through one transport
+    /// batch while preserving independent per-item recovery.
+    ///
+    /// This is transport coalescing only: every item remains a separately
+    /// authorized command with its own idempotency identity, commit decision,
+    /// provenance, and typed outcome. Whole-RPC uncertainty and retryable item
+    /// failures re-enter through [`RiffDbClient::execute_with_retry`] with the
+    /// identical command input and key.
+    pub async fn execute_idempotent_transport_batch_with_retry(
+        &self,
+        commands: Vec<IdempotentCommand>,
+        attempts: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<Vec<Result<v1::ExecuteCommandResponse, ClientError>>, IdempotentTransportBatchError>
+    {
+        validate_idempotent_transport_batch_len(commands.len())?;
+
+        let mut requests = Vec::with_capacity(commands.len());
+        for command in &commands {
+            let request_id = match generate_request_id() {
+                Ok(request_id) => request_id,
+                Err(_) => {
+                    // Nothing was submitted. Re-enter every immutable command
+                    // through the ordinary path so request-id uncertainty is
+                    // classified independently and no item is misattributed.
+                    return Ok(
+                        reenter_idempotent_commands(self, commands, attempts, metadata).await,
+                    );
+                }
+            };
+            requests.push(command.request(request_id));
+        }
+
+        let mut client = self.clone();
+        let response = client
+            .execute_batch(
+                v1::ExecuteCommandBatchRequest { commands: requests },
+                metadata,
+            )
+            .await;
+        let Ok(response) = response else {
+            return Ok(reenter_idempotent_commands(self, commands, attempts, metadata).await);
+        };
+
+        if response.items.is_empty() {
+            return Ok(response.responses.into_iter().map(Ok).collect());
+        }
+
+        let mut resolved = Vec::with_capacity(commands.len());
+        let mut reenter = Vec::new();
+        for (index, (command, item)) in commands.into_iter().zip(response.items).enumerate() {
+            match item.result {
+                Some(v1::execute_command_batch_item::Result::Response(response)) => {
+                    resolved.push((index, Ok(response)));
+                }
+                Some(v1::execute_command_batch_item::Result::Error(error_wire)) => {
+                    match application_error_from_proto(&error_wire) {
+                        Ok(error) if application_error_requires_reentry(&error) => {
+                            reenter.push((index, command));
+                        }
+                        Ok(error) => {
+                            resolved.push((index, Err(ClientError::Application(Box::new(error)))));
+                        }
+                        Err(_) => reenter.push((index, command)),
+                    }
+                }
+                None => reenter.push((index, command)),
+            }
+        }
+
+        if !reenter.is_empty() {
+            let recovered: Vec<_> = stream::iter(reenter.into_iter().map(|(index, command)| {
+                let mut client = self.clone();
+                let metadata = metadata.clone();
+                async move {
+                    let result = client
+                        .execute_with_retry(&command, attempts, &metadata)
+                        .await;
+                    (index, result)
+                }
+            }))
+            .buffer_unordered(MAX_GENERATED_TRANSPORT_BATCH_ITEMS)
+            .collect()
+            .await;
+            resolved.extend(recovered);
+        }
+        resolved.sort_by_key(|(index, _)| *index);
+        Ok(resolved.into_iter().map(|(_, result)| result).collect())
+    }
+}
+
+const fn validate_idempotent_transport_batch_len(
+    item_count: usize,
+) -> Result<(), IdempotentTransportBatchError> {
+    if item_count == 0 {
+        return Err(IdempotentTransportBatchError::Empty);
+    }
+    if item_count > MAX_GENERATED_TRANSPORT_BATCH_ITEMS {
+        return Err(IdempotentTransportBatchError::TooManyItems);
+    }
+    Ok(())
+}
+
+async fn reenter_idempotent_commands(
+    client: &RiffDbClient,
+    commands: Vec<IdempotentCommand>,
+    attempts: AttemptBudget,
+    metadata: &CallMetadata,
+) -> Vec<Result<v1::ExecuteCommandResponse, ClientError>> {
+    stream::iter(commands.into_iter().map(|command| {
+        let mut client = client.clone();
+        let metadata = metadata.clone();
+        async move {
+            client
+                .execute_with_retry(&command, attempts, &metadata)
+                .await
+        }
+    }))
+    .buffered(MAX_GENERATED_TRANSPORT_BATCH_ITEMS)
+    .collect()
+    .await
 }
 
 type ResolvedBatchItem<T> = (
@@ -1771,6 +1915,23 @@ mod tests {
         assert_eq!(generated_transport_batch_policy(64), (16, 4));
         assert_eq!(generated_transport_batch_policy(128), (16, 8));
         assert_eq!(generated_transport_batch_policy(17), (8, 2));
+    }
+
+    #[test]
+    fn ordinary_transport_batch_bound_is_closed_before_submission() {
+        assert_eq!(
+            validate_idempotent_transport_batch_len(0),
+            Err(IdempotentTransportBatchError::Empty)
+        );
+        assert_eq!(validate_idempotent_transport_batch_len(1), Ok(()));
+        assert_eq!(
+            validate_idempotent_transport_batch_len(MAX_GENERATED_TRANSPORT_BATCH_ITEMS),
+            Ok(())
+        );
+        assert_eq!(
+            validate_idempotent_transport_batch_len(MAX_GENERATED_TRANSPORT_BATCH_ITEMS + 1),
+            Err(IdempotentTransportBatchError::TooManyItems)
+        );
     }
 
     #[derive(Clone)]

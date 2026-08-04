@@ -77,9 +77,13 @@ The summary never copies command input, idempotency keys, credentials, or
 business values. Use the ordinal to correct the corresponding JSONL line, then
 start a reviewed new batch or resume only items still marked pending.
 
-The checkpoint is also the stable receipt. It is replaced atomically after each
-completed item. A killed client may lose only knowledge of a completion, never
-the server's idempotency identity; replay recovers the already durable result.
+The checkpoint is also the stable receipt. To avoid turning one small seed into
+hundreds of checkpoint `fsync` operations, the CLI replaces it atomically after
+each bounded wave of 16 observed terminal results and once more before a normal
+or interrupted return. A process kill may therefore lose receipt knowledge for
+at most one transport wave, never the server's idempotency identity or durable
+outcome. Resume replays those same command inputs and keys, so committed items
+recover their stored results without duplicating business state.
 An application deploy scopes its generated seed-checkpoint filename to the
 locked contract version. A successor therefore starts a distinct checkpoint
 without deleting the predecessor receipt. A manually selected checkpoint from
@@ -103,12 +107,13 @@ Persist that checkpoint and pass it back when resuming; skipped inputs are never
 resubmitted, while any uncertain later item still retains its original
 idempotency key.
 
-Generated batch methods do not introduce a second write semantic. The Rust SDK
-may coalesce independent items into the public bounded transport batch
+Batch methods do not introduce a second write semantic. The Rust SDK and CLI
+coalesce independent items into the public bounded transport batch
 (`ExecuteBatch`, at most 16 items) while preserving each item's idempotency
-key, typed outcome, and uncertainty classification. The server may also
-physically group compatible durable transitions; callers still receive
-independent per-item results.
+key, typed outcome, and uncertainty classification. A whole-RPC failure or a
+retryable per-item error re-enters only the affected ordinary commands through
+the same-key recovery path. The server may also physically group compatible
+durable transitions; callers still receive independent per-item results.
 
 ## Per-item results and recovery
 
