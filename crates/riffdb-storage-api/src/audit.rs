@@ -187,6 +187,13 @@ impl ServiceAuditAppendIntentV1 {
     /// checked bootstrap start. The caller supplies only the independently
     /// sampled terminal timestamp and the authoritative bootstrap transition
     /// proven by the compound transition result.
+    ///
+    /// NOTE: this is the second append constructor and it builds `Self`
+    /// directly, so it bypasses `validate_service_audit_phase_link` and the
+    /// whole append-side phase/link matrix that `new` enforces. It is safe only
+    /// because its shape is hard-coded (`CreateCapability`/`Succeeded`/
+    /// `ControlPlane`/no principal) and cannot express anything else. Any future
+    /// append-side tightening of that matrix must account for this path too.
     pub fn for_bootstrap_succeeded(
         start: &BootstrapServiceAuditStartV1,
         timestamp: Timestamp,

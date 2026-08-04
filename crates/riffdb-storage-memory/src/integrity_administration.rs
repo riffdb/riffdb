@@ -9,7 +9,8 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{
     AdministrationSequence, CapabilityId, RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1,
-    ServiceAuditTargetV1, ServiceOperationV1, hash_query_module,
+    ServiceAuditTargetV1, ServiceOperationV1, hash_query_module, hash_reactive_module,
+    hash_reactive_source,
 };
 
 use crate::state::{
@@ -154,6 +155,65 @@ pub(crate) fn inspect_query_module(state: &MemoryState, index: usize) -> Option<
             )
         })
     {
+        return missing();
+    }
+    None
+}
+
+/// Validates one retained reactive-module row against everything it names.
+///
+/// Mirrors redb's `inspect_reactive_module_row`, arm for arm and code for code:
+/// artifact and source hash agreement plus the ordering invariant that stands in
+/// for redb's key/value key agreement (`CrossLinkMismatch`), the exact contract
+/// artifact it compiled against, every exact query-module dependency against
+/// that same artifact, and finally its own publication record in the
+/// administration stream (`MissingCrossLink`).
+///
+/// The audit-record direction — a publication record naming a retained row — is
+/// already covered by `inspect_administration_graph`. This is the reverse
+/// direction, so an orphaned or self-inconsistent row can no longer pass the
+/// memory pass silently while redb reports it.
+pub(crate) fn inspect_reactive_module(
+    state: &MemoryState,
+    index: usize,
+) -> Option<StructuralFinding> {
+    let module = &state.reactive_modules[index];
+    if hash_reactive_module(module.canonical_module()) != module.module_hash()
+        || hash_reactive_source(module.canonical_source()) != module.source_hash()
+        || (index > 0 && state.reactive_modules[index - 1].module_hash() >= module.module_hash())
+    {
+        return mismatch();
+    }
+    let contract = ActiveCatalogPointerV1::new(
+        module.contract_lineage().clone(),
+        module.contract_version(),
+        module.contract_bundle_hash(),
+    );
+    if catalog_bundle(state, &contract).is_none() {
+        return missing();
+    }
+    for dependency_hash in module.query_module_hashes() {
+        let Ok(dependency_index) = state
+            .query_modules
+            .binary_search_by_key(dependency_hash, |dependency| dependency.module_hash())
+        else {
+            return missing();
+        };
+        let dependency = &state.query_modules[dependency_index];
+        if dependency.contract_lineage() != module.contract_lineage()
+            || dependency.contract_version() != module.contract_version()
+            || dependency.contract_bundle_hash() != module.contract_bundle_hash()
+        {
+            return mismatch();
+        }
+    }
+    if !state.administration_audit.iter().any(|record| {
+        matches!(
+            record,
+            StoredAdministrationAuditRecordV1::ReactiveModule(publication)
+                if publication.module_hash() == module.module_hash()
+        )
+    }) {
         return missing();
     }
     None
