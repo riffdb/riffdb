@@ -922,7 +922,8 @@ impl RedbStore {
     /// when this handle's startup validation session completed with zero
     /// structural findings of any scope. Returns `Ok(false)` (vetoed, nothing
     /// written) otherwise, so a finding can never be silenced by a shutdown
-    /// checkpoint. Server shutdown wiring is intentionally out of scope for RT-A.
+    /// checkpoint. A failed write after a clean gate is counted and returned as
+    /// `Err`; callers (including graceful shutdown) treat that as non-fatal.
     pub fn write_validated_prefix_checkpoint(&self) -> Result<bool, StorageError> {
         let _lease = self.acquire_mutation_lease()?;
         self.ensure_writable()?;
@@ -936,8 +937,14 @@ impl RedbStore {
             .map_err(transaction_error)?;
         let retained = crate::startup::read_retained_metadata_pub(&transaction)?;
         drop(transaction);
-        crate::validated_prefix::write_validated_prefix_checkpoint(&self.shared, &retained)?;
-        Ok(true)
+        match crate::validated_prefix::write_validated_prefix_checkpoint(&self.shared, &retained) {
+            Ok(()) => Ok(true),
+            Err(error) => {
+                // ADR-0019 A1: count the lost fast path; callers decide fatality.
+                self.shared.note_checkpoint_write_failure();
+                Err(error)
+            }
+        }
     }
 
     /// Failed checkpoint writes after clean validation (non-fatal; counted).
