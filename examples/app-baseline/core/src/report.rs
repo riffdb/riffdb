@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 use crate::{
     SEED_GENERATION, SampleSummary, Scale, ScenarioId, ScenarioResult, board_marginal_from_results,
+    board_projected_marginal_from_results,
 };
 
 /// RiffDB board queries use static-compiled `take N` (BoardPage50/200/450).
@@ -113,6 +114,13 @@ pub fn build_report(
             "board_limit_engine_incident": BOARD_LIMIT_ENGINE_INCIDENT,
             "board_limit_note": "RiffDB BoardPage50/200/450 use static take N ≤ 450 so take+continuation-probe stays within MAX_QUERY_SCANNED_ROWS=500. take 500 fails (RDB-INTERNAL-0001). PostgreSQL keeps LIMIT $4.",
             "board_marginal_formula": "(p50_450 − p50_50) / 400",
+            "board_projected_scenarios": [
+                "board_page_projected_50",
+                "board_page_projected_200",
+                "board_page_projected_450"
+            ],
+            "board_projected_marginal_formula": "(p50_projected_450 − p50_projected_50) / 400",
+            "board_projected_note": "RiffDB-only ExecuteProjectedQuery over config-registered board projection; PG has no projected path (compiled-vs-PG fields unchanged).",
         },
         "board_page_query": {
             "riffql_sources": [
@@ -155,11 +163,12 @@ pub fn build_report(
             "Board scenarios skip under --smoke (board_dense_open=0); full profile densifies org-0/project-0 open tickets.",
             "seed_generation 2 (board-density layout) supersedes pre-B1 full baselines; do not compare ticket counts or probe keys across generations.",
             "RiffDB board pages use static-compiled take 50/200/450 (BoardPage50/200/450). take 500 + continuation probe exceeds MAX_QUERY_SCANNED_ROWS=500 (RDB-INTERNAL-0001; incident 019fbf5b-1a64-7877-94c3-47d7a0763539). Larger boards need cursor pagination. PostgreSQL uses parameterized LIMIT $4.",
+            "RiffDB board_page_projected_* uses ExecuteProjectedQuery (generated tonic wire path) after Causal catch-up to the seed head and a run-aborting compiled-vs-projected row-content equivalence gate.",
         ],
     })
 }
 
-fn backend_json(backend: &BackendReport) -> Value {
+pub(crate) fn backend_json(backend: &BackendReport) -> Value {
     let scenarios: Vec<Value> = backend
         .scenarios
         .iter()
@@ -185,6 +194,30 @@ fn backend_json(backend: &BackendReport) -> Value {
         // Scalar placeholder; attach_rep_summaries overwrites with a rep-stability
         // summary when multiple reps are present.
         value["board_marginal_ns_per_row"] = json!(marginal);
+    }
+    if let Some(marginal) = board_projected_marginal_from_results(&backend.scenarios) {
+        value["board_projected_marginal_ns_per_row"] = json!(marginal);
+    }
+    // Per-N projected p50s (additive; absent when projected scenarios were skipped).
+    let mut projected_p50s = serde_json::Map::new();
+    for scenario in [
+        ScenarioId::BoardPageProjected50,
+        ScenarioId::BoardPageProjected200,
+        ScenarioId::BoardPageProjected450,
+    ] {
+        if let Some(row) = backend
+            .scenarios
+            .iter()
+            .find(|candidate| candidate.scenario == scenario)
+        {
+            projected_p50s.insert(
+                scenario.as_str().to_owned(),
+                json!(row.samples.summary().p50_ns),
+            );
+        }
+    }
+    if !projected_p50s.is_empty() {
+        value["board_projected_p50_ns"] = Value::Object(projected_p50s);
     }
     value
 }
@@ -366,12 +399,29 @@ fn build_comparisons(backends: &[BackendReport]) -> Value {
             "riffdb": rd_m,
         });
     }
+    // Projected marginal is RiffDB-only; PG compiled number remains the 777 ns/row baseline.
+    if let Some(rd_projected) = board_projected_marginal_from_results(&riffdb.scenarios) {
+        let mut projected = json!({
+            "riffdb": rd_projected,
+        });
+        if let Some(rd_compiled) = board_marginal_from_results(&riffdb.scenarios) {
+            projected["riffdb_compiled"] = json!(rd_compiled);
+        }
+        if let Some(pg_m) = board_marginal_from_results(&postgres.scenarios) {
+            projected["postgres_compiled"] = json!(pg_m);
+        }
+        comparisons["board_projected_marginal_ns_per_row"] = projected;
+    }
     comparisons
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BOARD_PAGE_SQL, assert_board_ticket_sequences_equal};
+    use super::{BOARD_PAGE_SQL, assert_board_ticket_sequences_equal, backend_json, build_report};
+    use crate::{
+        BackendReport, SampleSet, Scale, ScenarioId, ScenarioResult, board_marginal_ns_per_row,
+        board_projected_marginal_from_results,
+    };
 
     #[test]
     fn board_page_sql_omits_organization_id_column() {
@@ -392,5 +442,68 @@ mod tests {
         let err = assert_board_ticket_sequences_equal(&a, &b, 2).expect_err("mismatch");
         assert!(err.contains("measurement-integrity"));
         assert!(err.contains("index 1"));
+    }
+
+    /// Falsifiability (c): report shape requires (p50_450 − p50_50) / 400, not swapped.
+    #[test]
+    fn report_board_projected_marginal_uses_450_minus_50_over_400() {
+        let mut s50 = SampleSet::default();
+        let mut s450 = SampleSet::default();
+        for _ in 0..3 {
+            s50.record(std::time::Duration::from_nanos(5_000));
+            s450.record(std::time::Duration::from_nanos(45_000));
+        }
+        let results = vec![
+            ScenarioResult {
+                scenario: ScenarioId::BoardPageProjected50,
+                samples: s50.clone(),
+                last_row_count: 50,
+            },
+            ScenarioResult {
+                scenario: ScenarioId::BoardPageProjected450,
+                samples: s450.clone(),
+                last_row_count: 450,
+            },
+        ];
+        assert_eq!(board_projected_marginal_from_results(&results), Some(100));
+        // Swapped scenario wiring would compute None or the wrong formula.
+        let swapped = vec![
+            ScenarioResult {
+                scenario: ScenarioId::BoardPageProjected50,
+                samples: s450,
+                last_row_count: 50,
+            },
+            ScenarioResult {
+                scenario: ScenarioId::BoardPageProjected450,
+                samples: s50,
+                last_row_count: 450,
+            },
+        ];
+        assert_eq!(board_projected_marginal_from_results(&swapped), None);
+        assert_eq!(board_marginal_ns_per_row(45_000, 5_000), None);
+
+        let backend = BackendReport {
+            backend_id: "riffdb_public_grpc",
+            description: "test".to_owned(),
+            guarantee_notes: Vec::new(),
+            seed_ns: 1,
+            seed_rows: 1,
+            scenarios: results,
+            write_completion_groups: None,
+        };
+        let value = backend_json(&backend);
+        assert_eq!(value["board_projected_marginal_ns_per_row"], 100);
+        assert!(value["board_projected_p50_ns"]["board_page_projected_50"].is_number());
+        assert!(value["board_projected_p50_ns"]["board_page_projected_450"].is_number());
+
+        // Existing fields remain present when compiled board is also measured.
+        let report = build_report(Scale::smoke(), 0, 1, &[]);
+        assert_eq!(report["schema"], "riffdb.app-baseline/v1");
+        assert!(
+            report["configuration"]["board_marginal_formula"]
+                .as_str()
+                .unwrap()
+                .contains("400")
+        );
     }
 }
