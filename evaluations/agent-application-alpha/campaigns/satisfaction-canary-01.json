@@ -1,0 +1,53 @@
+{
+  "schema": "riffdb-agent-application-alpha-campaign/v1",
+  "campaign_id": "satisfaction-canary-01",
+  "bundle_hash": "63f3e4e51c0065e6a20bf402cd7311ec3d4925aad481d18fd3c4469b7b65a5ca",
+  "status": "passed",
+  "immutable": true,
+  "runs": [
+    {
+      "run_id": "satisfaction-blog-rust-11",
+      "domain": "blog",
+      "language": "rust",
+      "agent_identity": "codex-satisfaction-blog-rust-11",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/satisfaction-blog-rust-11/report.json",
+        "sha256": "fcbd539f1f39664b728cc671ba93ea57b4cf0de8323d8825db1bae0529d906b5"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/satisfaction-blog-rust-11/events.jsonl",
+        "sha256": "3e14866db14f7982d56defe6eb2da02271f142a0d2bf82543ef58928b9577477"
+      },
+      "qualified_events": {
+        "path": "evaluations/agent-application-alpha/runs/satisfaction-blog-rust-11/qualified-events.jsonl",
+        "sha256": "9043eb3191444fa78b6466af19d6cb53714503c1daee7ff93f75aa2d3aa81e7d"
+      },
+      "application_lock": {
+        "path": "evaluations/agent-application-alpha/runs/satisfaction-blog-rust-11/riffdb.application.lock.json",
+        "sha256": "34917681113ba112ba135d532a1d3c56dce5f19c697ea1af59a52704b93104a1"
+      }
+    },
+    {
+      "run_id": "orders-typescript-11",
+      "domain": "orders",
+      "language": "typescript",
+      "agent_identity": "codex-orders-typescript-11",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/orders-typescript-11/report.json",
+        "sha256": "a5a332073cb8bac7072353422140c94cc98009da8a91a1de36f9c18206d149e8"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/orders-typescript-11/events.jsonl",
+        "sha256": "70f5b46302af097c5fd01c0957e7fe50e5d0127f6437714b9467f10dff932fcb"
+      },
+      "qualified_events": {
+        "path": "evaluations/agent-application-alpha/runs/orders-typescript-11/qualified-events.jsonl",
+        "sha256": "003e15bc72397144c47dc3e905c42718da8532fb117ae8950ccf044ab0b88554"
+      },
+      "application_lock": {
+        "path": "evaluations/agent-application-alpha/runs/orders-typescript-11/riffdb.application.lock.json",
+        "sha256": "d1b63ca602c01d35cffd18caa229845f077b80145ef4a2c4aecab724e5c7be1e"
+      }
+    }
+  ]
+}
