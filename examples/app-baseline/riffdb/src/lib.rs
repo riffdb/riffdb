@@ -54,6 +54,7 @@ const MAX_SEED_CONCURRENCY: usize = 128;
 #[derive(Clone)]
 pub struct RiffDbPublicBackend {
     endpoint: Endpoint,
+    projected_channel: tokio::sync::OnceCell<tonic::transport::Channel>,
     transport: StableApplicationClient,
     metadata: CallMetadata,
     /// Raw bearer token for the generated ApplicationQueryService client path.
@@ -74,6 +75,22 @@ pub struct RiffDbPublicBackend {
 }
 
 impl RiffDbPublicBackend {
+    /// One lazily-connected shared channel for the projected wire path, so
+    /// timed projected samples ride warm HTTP/2 exactly like compiled ones
+    /// ride the client's persistent transport (review must-fix: symmetric
+    /// transport).
+    async fn projected_channel(&self) -> Result<tonic::transport::Channel, RiffDbError> {
+        self.projected_channel
+            .get_or_try_init(|| async {
+                self.endpoint
+                    .connect()
+                    .await
+                    .map_err(|_| RiffDbError::Connection)
+            })
+            .await
+            .cloned()
+    }
+
     /// Connects to an already bootstrapped TicketDesk-ready endpoint.
     pub async fn connect(
         endpoint: &str,
@@ -97,6 +114,7 @@ impl RiffDbPublicBackend {
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| RiffDbError::Runtime)?;
         Ok(Self {
             endpoint,
+            projected_channel: tokio::sync::OnceCell::new(),
             transport,
             metadata,
             bearer_token: bearer_token.to_owned(),
@@ -122,6 +140,7 @@ impl RiffDbPublicBackend {
             .block_on(StableApplicationClient::connect(endpoint.clone()))
             .map_err(|_| RiffDbError::Connection)?;
         Ok(Self {
+            projected_channel: tokio::sync::OnceCell::new(),
             endpoint,
             transport,
             metadata,
@@ -225,8 +244,9 @@ impl RiffDbPublicBackend {
         })?;
         let token = commit_token_bytes(self.history_incarnation, sequence)?;
         self.block_on(async {
+            let channel = self.projected_channel().await?;
             catchup_projected_board(
-                &self.endpoint,
+                &channel,
                 &self.bearer_token,
                 probes.board_organization_id,
                 probes.board_project_id,
@@ -247,7 +267,7 @@ impl RiffDbPublicBackend {
             // for timed samples). Never compare a path to itself.
             let projected = self.block_on(async {
                 execute_projected_board(
-                    &self.endpoint,
+                    &self.projected_channel().await?,
                     &self.bearer_token,
                     probes.board_organization_id,
                     probes.board_project_id,
@@ -577,7 +597,7 @@ impl AppBackend for RiffDbPublicBackend {
         }
         self.block_on(async {
             execute_projected_board(
-                &self.endpoint,
+                &self.projected_channel().await?,
                 &self.bearer_token,
                 organization_id,
                 project_id,

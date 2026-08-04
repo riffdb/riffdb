@@ -339,6 +339,12 @@ fn run() -> Result<(), String> {
             description: "Live riffdbd over public gRPC (symbolic commands + named RiffQL + projected board)"
                 .to_owned(),
             guarantee_notes: vec![
+                "cross-era comparability: since CP3, compiled named reads execute via \
+                 NamedQuery with the deployed module hash (client decode differs from \
+                 the pre-CP3 generated-client era) and all scenarios run on a \
+                 projection-enabled server with background apply — compare compiled \
+                 p50s across eras with this disclosure, not raw"
+                    .to_owned(),
                 "Symbolic TicketDesk commands for seed/writes".to_owned(),
                 "Reads via named RiffQL queries (one public RPC per page)".to_owned(),
                 "ticket_detail_page is one TicketPage query with dependent key batches".to_owned(),

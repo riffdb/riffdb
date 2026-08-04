@@ -12,7 +12,7 @@ use riffdb_proto::app::v1 as app_v1;
 use riffdb_proto::v1;
 use riffdb_types::{CommitSequence, CommitToken};
 use tonic::metadata::MetadataValue;
-use tonic::transport::Endpoint;
+use tonic::transport::Channel;
 
 use crate::RiffDbError;
 
@@ -167,7 +167,7 @@ pub fn commit_token_bytes(
 /// Executes one projected board query over the generated ApplicationQuery client.
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_projected_board(
-    endpoint: &Endpoint,
+    channel: &Channel,
     bearer_token: &str,
     organization_id: UuidBytes,
     project_id: UuidBytes,
@@ -176,11 +176,7 @@ pub async fn execute_projected_board(
     status_ids: TicketStatusEnumIds,
     freshness: app_v1::FreshnessPolicyProto,
 ) -> Result<Vec<TicketRow>, RiffDbError> {
-    let channel = endpoint
-        .connect()
-        .await
-        .map_err(|_| RiffDbError::Connection)?;
-    let mut client = ApplicationQueryServiceClient::new(channel);
+    let mut client = ApplicationQueryServiceClient::new(channel.clone());
     let message = build_board_projected_request(
         organization_id,
         project_id,
@@ -200,7 +196,7 @@ pub async fn execute_projected_board(
 
 /// Catch-up gate: Causal to the seed head must serve Ready.
 pub async fn catchup_projected_board(
-    endpoint: &Endpoint,
+    channel: &Channel,
     bearer_token: &str,
     organization_id: UuidBytes,
     project_id: UuidBytes,
@@ -208,11 +204,7 @@ pub async fn catchup_projected_board(
     status_ids: TicketStatusEnumIds,
     commit_token: Vec<u8>,
 ) -> Result<(), RiffDbError> {
-    let channel = endpoint
-        .connect()
-        .await
-        .map_err(|_| RiffDbError::Connection)?;
-    let mut client = ApplicationQueryServiceClient::new(channel);
+    let mut client = ApplicationQueryServiceClient::new(channel.clone());
     let message = build_board_projected_request(
         organization_id,
         project_id,
@@ -342,11 +334,25 @@ pub fn board_rows_digest(rows: &[TicketRow]) -> String {
 }
 
 /// Run-aborting cross-path equivalence: byte-identical row content.
+/// NOTE on discriminating power: predicate-skew that happens to select the
+/// same seeded set (e.g. dropping the status predicate when every board-cell
+/// ticket is Open) is enforced by the request-shape unit tests, NOT by this
+/// live gate; the live gate's proven live-abort case is content divergence
+/// (demonstrated via enum variant-id corruption: compiled=50 projected=0).
 pub fn assert_board_rows_equivalent(
     compiled: &[TicketRow],
     projected: &[TicketRow],
     limit: u32,
 ) -> Result<(), String> {
+    // Count anchor: empty-vs-empty must never pass. The board cell is seeded
+    // dense, so the compiled side must serve exactly the requested limit even
+    // when PostgreSQL's cross-check is skipped.
+    if compiled.len() != limit as usize {
+        return Err(format!(
+            "measurement-integrity: board_page_projected({limit}) compiled side served              {} rows, expected exactly {limit} — dataset or query drift",
+            compiled.len()
+        ));
+    }
     if compiled.len() != projected.len() {
         return Err(format!(
             "measurement-integrity: board_page_projected({limit}) row count \
@@ -573,12 +579,24 @@ mod tests {
     }
 
     #[test]
+    fn equivalence_gate_anchors_compiled_count_to_the_limit() {
+        // Empty-vs-empty (or short-vs-short) must never pass: the compiled
+        // side must serve exactly the requested limit.
+        let compiled = vec![sample_row(1)];
+        let projected = compiled.clone();
+        let err = assert_board_rows_equivalent(&compiled, &projected, 50).expect_err("anchor");
+        assert!(err.contains("expected exactly 50"));
+        let err = assert_board_rows_equivalent(&[], &[], 50).expect_err("empty");
+        assert!(err.contains("expected exactly 50"));
+    }
+
+    #[test]
     fn equivalence_gate_detects_status_predicate_skew() {
         // Falsifiability (a): dropping status filtering widens the projected set.
         let compiled = vec![sample_row(1), sample_row(2)];
         let mut projected = compiled.clone();
         projected.push(sample_row(3)); // extra closed/other row
-        let err = assert_board_rows_equivalent(&compiled, &projected, 50).expect_err("skew");
+        let err = assert_board_rows_equivalent(&compiled, &projected, 2).expect_err("skew");
         assert!(err.contains("CROSS-PATH DIVERGENCE") || err.contains("row count"));
         assert!(err.contains("digests"));
     }
@@ -588,7 +606,7 @@ mod tests {
         let compiled = vec![sample_row(1)];
         let mut projected = compiled.clone();
         projected[0].title = "mutated".to_owned();
-        let err = assert_board_rows_equivalent(&compiled, &projected, 50).expect_err("drift");
+        let err = assert_board_rows_equivalent(&compiled, &projected, 1).expect_err("drift");
         assert!(err.contains("CROSS-PATH DIVERGENCE"));
         assert_ne!(board_rows_digest(&compiled), board_rows_digest(&projected));
     }
