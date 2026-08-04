@@ -148,6 +148,21 @@ pub trait AppBackend {
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error>;
 
+    /// Packed column-major projected board page (RiffDB ExecuteProjectedQuery
+    /// with `response_encoding = PACKED`).
+    ///
+    /// Default delegates to [`Self::board_page_projected`] so backends without
+    /// a packed path keep compiling; the RiffDB adapter overrides this.
+    fn board_page_packed(
+        &mut self,
+        organization_id: UuidBytes,
+        project_id: UuidBytes,
+        status: TicketStatus,
+        limit: u32,
+    ) -> Result<Vec<TicketRow>, Self::Error> {
+        self.board_page_projected(organization_id, project_id, status, limit)
+    }
+
     /// Append one comment (post-seed write path).
     fn create_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error>;
 

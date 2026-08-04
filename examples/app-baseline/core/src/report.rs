@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use crate::{
     SEED_GENERATION, SampleSummary, Scale, ScenarioId, ScenarioResult, board_marginal_from_results,
-    board_projected_marginal_from_results,
+    board_packed_marginal_from_results, board_projected_marginal_from_results,
 };
 
 /// RiffDB board queries use static-compiled `take N` (BoardPage50/200/450).
@@ -121,6 +121,13 @@ pub fn build_report(
             ],
             "board_projected_marginal_formula": "(p50_projected_450 − p50_projected_50) / 400",
             "board_projected_note": "RiffDB-only ExecuteProjectedQuery over config-registered board projection; PG has no projected path (compiled-vs-PG fields unchanged).",
+            "board_packed_scenarios": [
+                "board_page_packed_50",
+                "board_page_packed_200",
+                "board_page_packed_450"
+            ],
+            "board_packed_marginal_formula": "(p50_packed_450 − p50_packed_50) / 400",
+            "board_packed_note": "RiffDB-only ExecuteProjectedQuery with response_encoding=PACKED (column-major canonical cells); additive to projected-row scenarios.",
         },
         "board_page_query": {
             "riffql_sources": [
@@ -163,7 +170,8 @@ pub fn build_report(
             "Board scenarios skip under --smoke (board_dense_open=0); full profile densifies org-0/project-0 open tickets.",
             "seed_generation 2 (board-density layout) supersedes pre-B1 full baselines; do not compare ticket counts or probe keys across generations.",
             "RiffDB board pages use static-compiled take 50/200/450 (BoardPage50/200/450). take 500 + continuation probe exceeds MAX_QUERY_SCANNED_ROWS=500 (RDB-INTERNAL-0001; incident 019fbf5b-1a64-7877-94c3-47d7a0763539). Larger boards need cursor pagination. PostgreSQL uses parameterized LIMIT $4.",
-            "RiffDB board_page_projected_* uses ExecuteProjectedQuery (generated tonic wire path) after Causal catch-up to the seed head and a run-aborting compiled-vs-projected row-content equivalence gate.",
+            "RiffDB board_page_projected_* uses ExecuteProjectedQuery (generated tonic wire path) after Causal catch-up to the seed head and a run-aborting three-way compiled-vs-projected-row-vs-projected-packed row-content equivalence gate.",
+            "RiffDB board_page_packed_* uses the same projection with response_encoding=PACKED (column-major canonical cell buffers); measured only when the dense cell fits the page size.",
         ],
     })
 }
@@ -198,6 +206,9 @@ pub(crate) fn backend_json(backend: &BackendReport) -> Value {
     if let Some(marginal) = board_projected_marginal_from_results(&backend.scenarios) {
         value["board_projected_marginal_ns_per_row"] = json!(marginal);
     }
+    if let Some(marginal) = board_packed_marginal_from_results(&backend.scenarios) {
+        value["board_packed_marginal_ns_per_row"] = json!(marginal);
+    }
     // Per-N projected p50s (additive; absent when projected scenarios were skipped).
     let mut projected_p50s = serde_json::Map::new();
     for scenario in [
@@ -218,6 +229,26 @@ pub(crate) fn backend_json(backend: &BackendReport) -> Value {
     }
     if !projected_p50s.is_empty() {
         value["board_projected_p50_ns"] = Value::Object(projected_p50s);
+    }
+    let mut packed_p50s = serde_json::Map::new();
+    for scenario in [
+        ScenarioId::BoardPagePacked50,
+        ScenarioId::BoardPagePacked200,
+        ScenarioId::BoardPagePacked450,
+    ] {
+        if let Some(row) = backend
+            .scenarios
+            .iter()
+            .find(|candidate| candidate.scenario == scenario)
+        {
+            packed_p50s.insert(
+                scenario.as_str().to_owned(),
+                json!(row.samples.summary().p50_ns),
+            );
+        }
+    }
+    if !packed_p50s.is_empty() {
+        value["board_packed_p50_ns"] = Value::Object(packed_p50s);
     }
     value
 }
@@ -411,6 +442,22 @@ fn build_comparisons(backends: &[BackendReport]) -> Value {
             projected["postgres_compiled"] = json!(pg_m);
         }
         comparisons["board_projected_marginal_ns_per_row"] = projected;
+    }
+    // Packed marginal is RiffDB-only (additive).
+    if let Some(rd_packed) = board_packed_marginal_from_results(&riffdb.scenarios) {
+        let mut packed = json!({
+            "riffdb": rd_packed,
+        });
+        if let Some(rd_projected) = board_projected_marginal_from_results(&riffdb.scenarios) {
+            packed["riffdb_projected_row"] = json!(rd_projected);
+        }
+        if let Some(rd_compiled) = board_marginal_from_results(&riffdb.scenarios) {
+            packed["riffdb_compiled"] = json!(rd_compiled);
+        }
+        if let Some(pg_m) = board_marginal_from_results(&postgres.scenarios) {
+            packed["postgres_compiled"] = json!(pg_m);
+        }
+        comparisons["board_packed_marginal_ns_per_row"] = packed;
     }
     comparisons
 }

@@ -665,9 +665,9 @@ app_message!(
     app_v1::ExecuteProjectedQueryResponse,
     None,
     MAX_PUBLIC_RESPONSE_BYTES,
-    6,
+    7,
     &[],
-    &[1, 2, 3, 4, 5, 6],
+    &[1, 2, 3, 4, 5, 6, 7],
     |value: &app_v1::ExecuteProjectedQueryResponse| {
         if value.outcome.is_none() {
             return Err(PublicWireError::MissingRequiredField);
@@ -748,6 +748,35 @@ mod tests {
         assert_eq!(
             impossible.validate_structure(),
             Err(PublicWireError::InconsistentFields)
+        );
+    }
+}
+
+#[cfg(test)]
+mod ready_packed_preflight_pins {
+    use super::*;
+    use crate::public_message::decode_public_message;
+
+    /// Review pin: the hand-registered oneof arm 7 (ready_packed) must keep
+    /// duplicate-arm rejection — two arm-7 occurrences are one arm too many.
+    #[test]
+    fn duplicate_ready_packed_arm_is_rejected() {
+        // field 7, wire type 2 (LEN), empty payload — twice.
+        let bytes = [0x3a, 0x00, 0x3a, 0x00];
+        assert!(
+            decode_public_message::<app_v1::ExecuteProjectedQueryResponse>(&bytes).is_err(),
+            "duplicate ready_packed arms must fail preflight"
+        );
+    }
+
+    /// Review pin: ready (field 1) plus ready_packed (field 7) is two oneof
+    /// arms in one message — exclusivity must hold across the hand-edit.
+    #[test]
+    fn ready_and_ready_packed_together_are_rejected() {
+        let bytes = [0x0a, 0x00, 0x3a, 0x00];
+        assert!(
+            decode_public_message::<app_v1::ExecuteProjectedQueryResponse>(&bytes).is_err(),
+            "two outcome arms must fail preflight"
         );
     }
 }

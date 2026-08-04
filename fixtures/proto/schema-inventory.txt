@@ -161,19 +161,21 @@ messages
     3 span optional .riffdb.app.v1.SourceSpan
     4 symbols repeated string
     5 suggestion optional string proto3-optional oneof=_suggestion
-  riffdb.app.v1.ExecuteProjectedQueryRequest fields=5
+  riffdb.app.v1.ExecuteProjectedQueryRequest fields=6
     1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
     2 projection_name optional string
     3 request optional .riffdb.app.v1.ProjectedQueryBody
     4 freshness optional .riffdb.app.v1.FreshnessPolicyProto
+    5 response_encoding optional .riffdb.app.v1.ProjectedResponseEncoding proto3-optional oneof=_response_encoding
     100 request_id optional bytes
-  riffdb.app.v1.ExecuteProjectedQueryResponse fields=6
+  riffdb.app.v1.ExecuteProjectedQueryResponse fields=7
     1 ready optional .riffdb.app.v1.ProjectedQueryReady oneof=outcome
     2 lagging optional .riffdb.app.v1.ProjectedQueryLagging oneof=outcome
     3 building optional .riffdb.app.v1.ProjectedQueryBuilding oneof=outcome
     4 rebuilding optional .riffdb.app.v1.ProjectedQueryRebuilding oneof=outcome
     5 degraded optional .riffdb.app.v1.ProjectedQueryDegraded oneof=outcome
     6 invalid optional .riffdb.app.v1.ProjectedQueryInvalid oneof=outcome
+    7 ready_packed optional .riffdb.app.v1.ProjectedReadyPacked oneof=outcome
   riffdb.app.v1.ExecuteQueryRequest fields=8
     1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
     2 source optional string oneof=query
@@ -220,6 +222,9 @@ messages
   riffdb.app.v1.NamedQuerySource fields=2
     1 name optional string
     2 source optional string
+  riffdb.app.v1.PackedColumn fields=2
+    1 data optional bytes
+    2 offsets repeated uint32
   riffdb.app.v1.Parameter fields=2
     1 name optional string
     2 value optional .riffdb.v1.Value
@@ -271,6 +276,14 @@ messages
     2 upper optional .riffdb.v1.Value proto3-optional oneof=_upper
     3 lower_inclusive optional bool
     4 upper_inclusive optional bool
+  riffdb.app.v1.ProjectedReadyPacked fields=7
+    1 fields repeated string
+    2 primary_key_fields repeated string
+    3 row_count optional uint32
+    4 columns repeated .riffdb.app.v1.PackedColumn
+    5 frontier optional bytes
+    6 head optional bytes
+    7 commit_token optional bytes
   riffdb.app.v1.QueryIdentity fields=6
     1 contract_lineage optional string
     2 contract_version optional uint64
@@ -2107,6 +2120,10 @@ enums
     1 PROJECTED_REBUILDING_REASON_REPLAY_BUDGET_EXCEEDED
     2 PROJECTED_REBUILDING_REASON_EXPLICIT_REBUILD
     3 PROJECTED_REBUILDING_REASON_STATE_INTEGRITY_FAILURE
+  riffdb.app.v1.ProjectedResponseEncoding values=3
+    0 PROJECTED_RESPONSE_ENCODING_UNSPECIFIED
+    1 PROJECTED_RESPONSE_ENCODING_ROW
+    2 PROJECTED_RESPONSE_ENCODING_PACKED
   riffdb.app.v1.QueryModuleDeploymentOutcome values=6
     0 QUERY_MODULE_DEPLOYMENT_OUTCOME_UNSPECIFIED
     1 QUERY_MODULE_DEPLOYMENT_OUTCOME_ACTIVATED

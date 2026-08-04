@@ -1652,6 +1652,7 @@ dependencies = [
  "prost-types",
  "riffdb-auth",
  "riffdb-client-rust",
+ "riffdb-columnar",
  "riffdb-errors",
  "riffdb-observability",
  "riffdb-proto",
