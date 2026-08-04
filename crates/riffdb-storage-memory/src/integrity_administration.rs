@@ -525,6 +525,12 @@ fn inspect_service_record(
 
 fn service_link_is_valid(state: &MemoryState, record: &StoredServiceAuditRecordV1) -> bool {
     match record.link() {
+        // Intentionally PERMISSIVE relative to the append side, matching the redb
+        // startup pass. `riffdb-storage-api` refuses a `DeployReactiveModule`
+        // linkless success when a NEW record is appended; this pass validates
+        // already durable records and keeps the released allowance so no retained
+        // state is refused over a stale audit shape. Backend parity is the rule
+        // here: whatever the redb structural pass tolerates, this tolerates.
         ServiceAuditLinkV1::None => {
             record.principal().is_some()
                 && (record.phase() != ServiceAuditPhaseV1::Succeeded

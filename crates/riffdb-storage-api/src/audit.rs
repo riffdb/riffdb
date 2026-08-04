@@ -94,7 +94,12 @@ impl ServiceAuditAppendIntentV1 {
         approval_id: Option<ApprovalId>,
         link: ServiceAuditLinkV1,
     ) -> Result<Self, StorageValueError> {
-        validate_service_audit_phase_link(operation, phase, link)?;
+        validate_service_audit_phase_link(
+            operation,
+            phase,
+            link,
+            ServiceAuditShapeEnforcement::Append,
+        )?;
         let semantic_bytes =
             service_audit_semantic_bytes(Some(&principal), &targets, approval_id.as_ref(), link)?;
         if semantic_bytes > MAX_SERVICE_AUDIT_BYTES {
@@ -708,10 +713,26 @@ const fn service_link_semantic_bytes(link: ServiceAuditLinkV1) -> usize {
     }
 }
 
+/// Which side of the durable boundary is asking.
+///
+/// The phase/link matrix is shared by the append entry point and by durable
+/// record reconstruction, but the two may not be equally strict: a new append
+/// can be refused outright, while refusing an already durable record refuses the
+/// database that holds it. Tightening therefore names its side explicitly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServiceAuditShapeEnforcement {
+    /// A new append. May reject any shape no live emitter produces.
+    Append,
+    /// Reconstruction of an already durable record. Rejects only shapes that
+    /// were never writable, so no historical database is refused at open.
+    Reconstruct,
+}
+
 fn validate_service_audit_phase_link(
     operation: ServiceOperationV1,
     phase: ServiceAuditPhaseV1,
     link: ServiceAuditLinkV1,
+    enforcement: ServiceAuditShapeEnforcement,
 ) -> Result<(), StorageValueError> {
     let valid = match phase {
         ServiceAuditPhaseV1::Started
@@ -720,16 +741,35 @@ fn validate_service_audit_phase_link(
         | ServiceAuditPhaseV1::Failed
         | ServiceAuditPhaseV1::OutcomeUncertain => matches!(link, ServiceAuditLinkV1::None),
         ServiceAuditPhaseV1::Succeeded => match link {
-            ServiceAuditLinkV1::None => !matches!(
-                operation,
-                ServiceOperationV1::ExecuteCommand
-                    | ServiceOperationV1::ResolveCommandOutcome
-                    | ServiceOperationV1::DeployContract
-                    | ServiceOperationV1::DeployQueryModule
-                    | ServiceOperationV1::ApplyContractMigration
-                    | ServiceOperationV1::CreateCapability
-                    | ServiceOperationV1::RevokeCapability
-            ),
+            // Write-vs-startup asymmetry, deliberately one-sided.
+            //
+            // The operations in the first arm never had a linkless success and
+            // are refused on both sides. `DeployReactiveModule` is refused only
+            // on an append: every one of its successes is linked (a publication
+            // names its own transition, an idempotent republish names the
+            // original publication's), so no new linkless success may be
+            // written. Reconstruction still accepts the shape, because the
+            // allowance predates this rule and a database written under it must
+            // still open. The redb and memory structural passes keep the same
+            // tolerance; only this append side tightened.
+            ServiceAuditLinkV1::None
+                if matches!(
+                    operation,
+                    ServiceOperationV1::ExecuteCommand
+                        | ServiceOperationV1::ResolveCommandOutcome
+                        | ServiceOperationV1::DeployContract
+                        | ServiceOperationV1::DeployQueryModule
+                        | ServiceOperationV1::ApplyContractMigration
+                        | ServiceOperationV1::CreateCapability
+                        | ServiceOperationV1::RevokeCapability
+                ) =>
+            {
+                false
+            }
+            ServiceAuditLinkV1::None => {
+                !(operation == ServiceOperationV1::DeployReactiveModule
+                    && enforcement == ServiceAuditShapeEnforcement::Append)
+            }
             ServiceAuditLinkV1::Command { .. } => matches!(
                 operation,
                 ServiceOperationV1::ExecuteCommand | ServiceOperationV1::ResolveCommandOutcome
@@ -764,7 +804,12 @@ fn validate_stored_service_audit_shape(
     link: ServiceAuditLinkV1,
 ) -> Result<(), StorageValueError> {
     if principal.is_some() {
-        return validate_service_audit_phase_link(operation, phase, link);
+        return validate_service_audit_phase_link(
+            operation,
+            phase,
+            link,
+            ServiceAuditShapeEnforcement::Reconstruct,
+        );
     }
 
     let ServiceAuditLinkV1::ControlPlane {
@@ -1300,13 +1345,36 @@ mod tests {
         ServiceOperationV1::RevokeCapability,
     ];
 
-    /// Operations that may never record a success without an authoritative link.
+    /// Operations that may never APPEND a success without an authoritative link.
     ///
-    /// This is deliberately narrower than the union of the two link tables:
-    /// `DeployReactiveModule` produces only linked successes today, but its
-    /// linkless-success allowance predates this table and tightening a durable
-    /// write validator is a maintainer decision, not a drift repair.
-    const LINKLESS_SUCCESS_EXCLUSIONS: &[ServiceOperationV1] = &[
+    /// Every entry produces a link on every success it can reach, so a linkless
+    /// success here is unreachable by any live emitter and must never become
+    /// durable. `DeployReactiveModule` is the write-time-only entry: its
+    /// publication names its own transition and its idempotent republish names
+    /// the original publication's, so this side is closed while reconstruction
+    /// below stays open.
+    const APPEND_LINKLESS_SUCCESS_EXCLUSIONS: &[ServiceOperationV1] = &[
+        ServiceOperationV1::ExecuteCommand,
+        ServiceOperationV1::ResolveCommandOutcome,
+        ServiceOperationV1::DeployContract,
+        ServiceOperationV1::DeployQueryModule,
+        ServiceOperationV1::DeployReactiveModule,
+        ServiceOperationV1::ApplyContractMigration,
+        ServiceOperationV1::CreateCapability,
+        ServiceOperationV1::RevokeCapability,
+    ];
+
+    /// Operations whose linkless success may not even RECONSTRUCT from durable
+    /// bytes, because it was never writable under any released allowance.
+    ///
+    /// Deliberately one entry narrower than the append table: the
+    /// `DeployReactiveModule` linkless-success allowance was released, so a
+    /// database holding such a record must still open. Refusing it here would
+    /// brick that database instead of preventing anything, and the redb and
+    /// memory structural passes keep the same tolerance. This asymmetry is
+    /// intentional and one-sided; it may only ever shrink toward the append
+    /// table, never grow past it (pinned below).
+    const RECONSTRUCT_LINKLESS_SUCCESS_EXCLUSIONS: &[ServiceOperationV1] = &[
         ServiceOperationV1::ExecuteCommand,
         ServiceOperationV1::ResolveCommandOutcome,
         ServiceOperationV1::DeployContract,
@@ -1353,38 +1421,51 @@ mod tests {
 
     #[test]
     fn service_audit_phase_and_link_matrix_is_exhaustive() {
-        for operation in ServiceOperationV1::ALL {
-            for phase in ServiceAuditPhaseV1::ALL {
-                for link in [
-                    ServiceAuditLinkV1::None,
-                    command_link(),
-                    control_plane_link(),
-                ] {
-                    let expected = match phase {
-                        ServiceAuditPhaseV1::Started
-                        | ServiceAuditPhaseV1::Denied
-                        | ServiceAuditPhaseV1::Cancelled
-                        | ServiceAuditPhaseV1::Failed
-                        | ServiceAuditPhaseV1::OutcomeUncertain => {
-                            matches!(link, ServiceAuditLinkV1::None)
-                        }
-                        ServiceAuditPhaseV1::Succeeded => match link {
-                            ServiceAuditLinkV1::None => {
-                                !LINKLESS_SUCCESS_EXCLUSIONS.contains(&operation)
+        for (enforcement, linkless_exclusions) in [
+            (
+                ServiceAuditShapeEnforcement::Append,
+                APPEND_LINKLESS_SUCCESS_EXCLUSIONS,
+            ),
+            (
+                ServiceAuditShapeEnforcement::Reconstruct,
+                RECONSTRUCT_LINKLESS_SUCCESS_EXCLUSIONS,
+            ),
+        ] {
+            for operation in ServiceOperationV1::ALL {
+                for phase in ServiceAuditPhaseV1::ALL {
+                    for link in [
+                        ServiceAuditLinkV1::None,
+                        command_link(),
+                        control_plane_link(),
+                    ] {
+                        let expected = match phase {
+                            ServiceAuditPhaseV1::Started
+                            | ServiceAuditPhaseV1::Denied
+                            | ServiceAuditPhaseV1::Cancelled
+                            | ServiceAuditPhaseV1::Failed
+                            | ServiceAuditPhaseV1::OutcomeUncertain => {
+                                matches!(link, ServiceAuditLinkV1::None)
                             }
-                            ServiceAuditLinkV1::Command { .. } => {
-                                COMMAND_LINKED_SUCCESS_OPERATIONS.contains(&operation)
-                            }
-                            ServiceAuditLinkV1::ControlPlane { .. } => {
-                                CONTROL_PLANE_LINKED_SUCCESS_OPERATIONS.contains(&operation)
-                            }
-                        },
-                    };
-                    assert_eq!(
-                        validate_service_audit_phase_link(operation, phase, link).is_ok(),
-                        expected,
-                        "unexpected matrix result for {operation:?}/{phase:?}/{link:?}"
-                    );
+                            ServiceAuditPhaseV1::Succeeded => match link {
+                                ServiceAuditLinkV1::None => {
+                                    !linkless_exclusions.contains(&operation)
+                                }
+                                ServiceAuditLinkV1::Command { .. } => {
+                                    COMMAND_LINKED_SUCCESS_OPERATIONS.contains(&operation)
+                                }
+                                ServiceAuditLinkV1::ControlPlane { .. } => {
+                                    CONTROL_PLANE_LINKED_SUCCESS_OPERATIONS.contains(&operation)
+                                }
+                            },
+                        };
+                        assert_eq!(
+                            validate_service_audit_phase_link(operation, phase, link, enforcement)
+                                .is_ok(),
+                            expected,
+                            "unexpected matrix result for \
+                             {operation:?}/{phase:?}/{link:?} under {enforcement:?}"
+                        );
+                    }
                 }
             }
         }
@@ -1392,11 +1473,78 @@ mod tests {
 
     #[test]
     fn linkless_success_exclusions_only_name_link_producing_operations() {
-        for operation in LINKLESS_SUCCESS_EXCLUSIONS {
+        for operation in APPEND_LINKLESS_SUCCESS_EXCLUSIONS {
             assert!(
                 COMMAND_LINKED_SUCCESS_OPERATIONS.contains(operation)
                     || CONTROL_PLANE_LINKED_SUCCESS_OPERATIONS.contains(operation),
-                "{operation:?} may not record a linkless success yet produces no link"
+                "{operation:?} may not append a linkless success yet produces no link"
+            );
+        }
+        // The tolerance is one-sided: reconstruction may accept more than an
+        // append, never less. A record this crate can write must always decode.
+        for operation in RECONSTRUCT_LINKLESS_SUCCESS_EXCLUSIONS {
+            assert!(
+                APPEND_LINKLESS_SUCCESS_EXCLUSIONS.contains(operation),
+                "{operation:?} would fail to reconstruct a record an append permits"
+            );
+        }
+    }
+
+    #[test]
+    fn deploy_reactive_module_linkless_success_is_unwritable_yet_still_reconstructs() {
+        // Maintainer ruling: tighten the WRITE side only. Every successful
+        // reactive publication is linked (its own transition, or the original
+        // publication's on an idempotent republish), so a linkless success can
+        // never be durably written from here on.
+        assert_eq!(
+            standalone_intent(
+                ServiceOperationV1::DeployReactiveModule,
+                ServiceAuditPhaseV1::Succeeded,
+                ServiceAuditLinkV1::None,
+            ),
+            Err(StorageValueError::InvalidShape),
+            "a reactive publication success must name its administration transition"
+        );
+        assert_eq!(
+            validate_service_audit_phase_link(
+                ServiceOperationV1::DeployReactiveModule,
+                ServiceAuditPhaseV1::Succeeded,
+                ServiceAuditLinkV1::None,
+                ServiceAuditShapeEnforcement::Append,
+            ),
+            Err(StorageValueError::InvalidShape)
+        );
+
+        // Zero brick risk: a database written under the old allowance must still
+        // open. The structural passes read records through this reconstruction.
+        assert!(
+            reconstruct_service_record(
+                AdministrationSequence::new(5).expect("sequence five"),
+                ServiceOperationV1::DeployReactiveModule,
+                ServiceAuditPhaseV1::Succeeded,
+                Some(audit_principal()),
+                ServiceIngressKindV1::Grpc,
+                ServiceAuditLinkV1::None,
+            )
+            .is_ok(),
+            "an already durable linkless success must never be refused at open"
+        );
+
+        // Failure phases are unaffected on both sides.
+        for phase in [
+            ServiceAuditPhaseV1::Failed,
+            ServiceAuditPhaseV1::OutcomeUncertain,
+            ServiceAuditPhaseV1::Denied,
+            ServiceAuditPhaseV1::Cancelled,
+        ] {
+            assert!(
+                standalone_intent(
+                    ServiceOperationV1::DeployReactiveModule,
+                    phase,
+                    ServiceAuditLinkV1::None,
+                )
+                .is_ok(),
+                "{phase:?} must remain linkless-writable"
             );
         }
     }
@@ -1418,14 +1566,21 @@ mod tests {
             .is_ok(),
             "a published reactive module must be able to record its own success"
         );
-        assert!(
-            validate_service_audit_phase_link(
-                ServiceOperationV1::DeployReactiveModule,
-                ServiceAuditPhaseV1::Succeeded,
-                control_plane_link(),
-            )
-            .is_ok()
-        );
+        for enforcement in [
+            ServiceAuditShapeEnforcement::Append,
+            ServiceAuditShapeEnforcement::Reconstruct,
+        ] {
+            assert!(
+                validate_service_audit_phase_link(
+                    ServiceOperationV1::DeployReactiveModule,
+                    ServiceAuditPhaseV1::Succeeded,
+                    control_plane_link(),
+                    enforcement,
+                )
+                .is_ok(),
+                "the linked success must hold on both sides under {enforcement:?}"
+            );
+        }
         assert!(
             reconstruct_service_record(
                 AdministrationSequence::new(4).expect("sequence four"),

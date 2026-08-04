@@ -5285,6 +5285,15 @@ fn service_link_is_valid(
     record: &riffdb_storage_api::StoredServiceAuditRecordV1,
 ) -> Result<bool, StorageError> {
     match record.link() {
+        // Intentionally PERMISSIVE relative to the append side, and deliberately
+        // one-sided. `riffdb-storage-api` also refuses a `DeployReactiveModule`
+        // linkless success when a NEW record is appended, because every reactive
+        // publication success is linked. This pass validates records that are
+        // already durable, so it keeps the released allowance: a database written
+        // under it must still open. Do not mirror the append tightening here --
+        // that converts a stale audit shape into a refused daemon start, which is
+        // strictly worse than tolerating it. Same shape as the
+        // `ApplyContractMigration` asymmetry pinned in `riffdb-service`.
         riffdb_types::ServiceAuditLinkV1::None => Ok(record.principal().is_some()
             && (record.phase() != riffdb_types::ServiceAuditPhaseV1::Succeeded
                 || !matches!(
@@ -8625,5 +8634,105 @@ contract RedbMigration version 1 {
             }),
             "expected MissingCrossLink for Service audit without AUDIT_BY_REQUEST peer; got {findings:?}"
         );
+    }
+
+    /// The write side now refuses a `DeployReactiveModule` linkless success. This
+    /// pass must NOT: a database written under the released allowance holds such
+    /// records, and refusing one here would refuse the daemon's whole startup.
+    /// Zero brick risk is the deliberate choice; the asymmetry is one-sided.
+    #[test]
+    fn a_durable_linkless_reactive_publication_success_still_opens_clean() {
+        let path = TestDatabasePath::new("linkless-reactive-success");
+        let store = initialized_store(&path, database_id(0x85));
+        let request = request_id(0x73);
+        let principal = audit_principal(0x74);
+        let started = StoredServiceAuditRecordV1::from_stored_parts(
+            AdministrationSequence::first(),
+            request,
+            Timestamp::new(1, 0).expect("timestamp"),
+            ServiceOperationV1::DeployReactiveModule,
+            ServiceAuditPhaseV1::Started,
+            Some(principal.clone()),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .expect("started record");
+        // The exact shape `ServiceAuditAppendIntentV1::new` now refuses. It must
+        // still reconstruct, and this structural pass must still accept it.
+        let terminal = StoredServiceAuditRecordV1::from_stored_parts(
+            AdministrationSequence::new(2).expect("terminal sequence"),
+            request,
+            Timestamp::new(2, 0).expect("timestamp"),
+            ServiceOperationV1::DeployReactiveModule,
+            ServiceAuditPhaseV1::Succeeded,
+            Some(principal),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .expect("a durable linkless success must reconstruct");
+        let allocator = codec::encode_administration_sequence_allocator_v1(
+            AdministrationSequenceAllocator::next(
+                AdministrationSequence::new(3).expect("allocator sequence"),
+            ),
+        )
+        .expect("encode allocator");
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write historical fixture");
+        {
+            let mut audit = write.open_table(AUDIT).expect("audit table");
+            let mut index = write
+                .open_table(AUDIT_BY_REQUEST)
+                .expect("audit-by-request table");
+            for record in [started, terminal] {
+                let sequence = record.administration_sequence();
+                let encoded = codec::encode_administration_audit_record_v1(
+                    &StoredAdministrationAuditRecordV1::Service(record),
+                )
+                .expect("encode service audit");
+                audit
+                    .insert(
+                        keys::encode_audit_key(sequence).as_slice(),
+                        encoded.as_bytes(),
+                    )
+                    .expect("insert service audit");
+                let index_value = codec::encode_service_audit_request_index_v1(
+                    riffdb_storage_api::StoredServiceAuditRequestIndexV1::new(request, sequence),
+                )
+                .expect("encode index");
+                index
+                    .insert(
+                        keys::encode_audit_by_request_key(request, sequence).as_slice(),
+                        index_value.as_bytes(),
+                    )
+                    .expect("insert index row");
+            }
+        }
+        {
+            let mut meta = write.open_table(META).expect("metadata table");
+            meta.insert(META_ADMINISTRATION_SEQUENCE, allocator.as_bytes())
+                .expect("advance allocator");
+        }
+        write.commit().expect("commit historical fixture");
+
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin evidence");
+        let (structural_end, findings) = collect_structural(&mut session);
+        assert!(
+            findings.is_empty(),
+            "a historical linkless reactive-publication success must never be \
+             refused at open; got {findings:?}"
+        );
+        let historical_end = finish_historical(&mut session);
+        session
+            .finish(structural_end, historical_end)
+            .expect("a clean structural pass must release the ports");
     }
 }
