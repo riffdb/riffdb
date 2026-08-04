@@ -64,6 +64,7 @@ use riffdb_types::{
 const CHILD_MODE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_MODE";
 const CHILD_PATH: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_PATH";
 const CHILD_COMMIT_PROFILE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_COMMIT_PROFILE";
+const CHILD_PRUNE_TARGET: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_PRUNE_TARGET";
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 const SECONDARY_INDEXES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("secondary_indexes");
 const EVENT_ROUTES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("event_routes");
@@ -140,6 +141,45 @@ fn run_crashing_child(mode: &str, path: &Path) {
     run_crashing_child_with_profile(mode, path, RedbCommitProfile::Standard);
 }
 
+/// Every armed child terminates through `std::process::abort()` (SIGABRT).
+/// Discriminating on the signal keeps 'before' arms honest: a child that
+/// panics without reaching its failpoint exits with a plain nonzero code and
+/// must fail here instead of passing the parent's negative assertions vacuously.
+fn assert_child_aborted(status: std::process::ExitStatus, label: &str) {
+    assert!(
+        !status.success(),
+        "the armed {label} child must terminate abruptly"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        const SIGABRT: i32 = 6;
+        assert_eq!(
+            status.signal(),
+            Some(SIGABRT),
+            "the armed {label} child must die on SIGABRT at its failpoint, \
+             not exit through an unrelated panic (status {status})"
+        );
+    }
+}
+
+fn run_crashing_child_prune(mode: &str, path: &Path, prune_target: u64) {
+    let status = Command::new(std::env::current_exe().expect("current test executable"))
+        .arg("--exact")
+        .arg("process_recovery_child")
+        .arg("--nocapture")
+        .env(CHILD_MODE, mode)
+        .env(CHILD_PATH, path)
+        .env(CHILD_COMMIT_PROFILE, "standard")
+        .env(CHILD_PRUNE_TARGET, prune_target.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("run recovery prune child");
+    assert_child_aborted(status, "prune");
+}
+
 fn run_crashing_child_with_profile(mode: &str, path: &Path, profile: RedbCommitProfile) {
     let profile = match profile {
         RedbCommitProfile::Standard => "standard",
@@ -157,7 +197,7 @@ fn run_crashing_child_with_profile(mode: &str, path: &Path, profile: RedbCommitP
         .stderr(Stdio::null())
         .status()
         .expect("run recovery child");
-    assert!(!status.success(), "the armed child must terminate abruptly");
+    assert_child_aborted(status, "recovery");
 }
 
 fn complete_startup_pass(
@@ -1181,8 +1221,41 @@ fn process_recovery_child() {
         "after-validated-prefix-checkpoint-commit" => {
             RedbTestController::abort_after_commit(RedbTestOperation::ValidatedPrefixCheckpoint)
         }
+        // Shutdown write point (ADR-0019 A1 write point 2): first ValidatedPrefixCheckpoint
+        // hit is the startup finish write (non-fatally rejected so clean=true and no
+        // durable checkpoint), second hit is the public write_validated_prefix_checkpoint.
+        "before-shutdown-validated-prefix-checkpoint-commit" => {
+            RedbTestController::return_before_then_abort_before(
+                RedbTestOperation::ValidatedPrefixCheckpoint,
+            )
+        }
+        "after-shutdown-validated-prefix-checkpoint-commit" => {
+            RedbTestController::return_before_then_abort_after(
+                RedbTestOperation::ValidatedPrefixCheckpoint,
+            )
+        }
+        "before-retention-prune-subrange-commit" => {
+            RedbTestController::abort_before_commit(RedbTestOperation::RetentionPruneSubrange)
+        }
+        "after-retention-prune-subrange-commit" => {
+            RedbTestController::abort_after_commit(RedbTestOperation::RetentionPruneSubrange)
+        }
         _ => panic!("unknown closed child mode"),
     };
+    // Offline prune uses RedbOfflineRetention's own controller, not RedbStore.
+    if matches!(
+        mode.as_str(),
+        "before-retention-prune-subrange-commit" | "after-retention-prune-subrange-commit"
+    ) {
+        let target = std::env::var(CHILD_PRUNE_TARGET)
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .unwrap_or(1);
+        let maintenance =
+            riffdb_storage_redb::RedbOfflineRetention::bind_with_test_controller(&path, controller);
+        let _ = maintenance.prune_to(target);
+        panic!("the armed prune failpoint did not terminate the child");
+    }
     let store =
         RedbStore::open_with_test_controller_and_commit_profile(path, profile, controller.clone())
             .expect("open child database");
@@ -1209,6 +1282,12 @@ fn process_recovery_child() {
         | "after-validated-prefix-checkpoint-commit" => {
             // Seeded DB reopens and complete_startup_pass writes the checkpoint on finish.
             let _ = complete_startup_pass(store);
+        }
+        "before-shutdown-validated-prefix-checkpoint-commit"
+        | "after-shutdown-validated-prefix-checkpoint-commit" => {
+            // Drive the real public entry (write point 2), not the startup finish write.
+            let ports = open_operational(store);
+            let _ = ports.write_validated_prefix_checkpoint();
         }
         _ => unreachable!("controller match rejects unknown modes"),
     }
@@ -2075,6 +2154,61 @@ fn crash_after_validated_prefix_checkpoint_commit_reopens_fast_path() {
     assert!(
         verified,
         "checkpoint committed before crash must be verified on reopen"
+    );
+}
+
+#[test]
+fn crash_before_shutdown_validated_prefix_checkpoint_leaves_no_fresh_checkpoint() {
+    // ADR-0019 A1 write point (2): abort before the public shutdown-path write.
+    // Child rejects the startup finish write non-fatally, then aborts before the
+    // public write_validated_prefix_checkpoint commit — no durable checkpoint.
+    let path = TestDatabasePath::new("before-shutdown-validated-prefix-checkpoint");
+    let _ = prepare_committed_command_database(&path.0);
+    strip_checkpoint_meta(&path.0);
+    run_crashing_child(
+        "before-shutdown-validated-prefix-checkpoint-commit",
+        &path.0,
+    );
+
+    assert!(
+        !checkpoint_meta_present(&path.0),
+        "abort before the public shutdown checkpoint write must leave no durable checkpoint"
+    );
+    let store = RedbStore::open(&path.0).expect("reopen after before-shutdown-checkpoint crash");
+    let (_, _, outcome, verified, _) = complete_startup_observing_checkpoint(store);
+    assert!(
+        matches!(outcome, StructuralOpenOutcome::Clean(_)),
+        "recovery after pre-shutdown-checkpoint crash must open clean"
+    );
+    assert!(
+        !verified,
+        "first reopen after pre-shutdown-checkpoint crash must full-validate (no checkpoint)"
+    );
+}
+
+#[test]
+fn crash_after_shutdown_validated_prefix_checkpoint_reopens_fast_path() {
+    // ADR-0019 A1 write point (2): public write commits, then process aborts.
+    // Falsifiability (b): skipping the public write leaves no durable checkpoint
+    // and this assertion fails.
+    let path = TestDatabasePath::new("after-shutdown-validated-prefix-checkpoint");
+    let _ = prepare_committed_command_database(&path.0);
+    strip_checkpoint_meta(&path.0);
+    run_crashing_child("after-shutdown-validated-prefix-checkpoint-commit", &path.0);
+
+    assert!(
+        checkpoint_meta_present(&path.0),
+        "public shutdown checkpoint must be durable after the post-commit abort"
+    );
+    let store = RedbStore::open(&path.0).expect("reopen after after-shutdown-checkpoint crash");
+    let (_, _, outcome, verified, _) = complete_startup_observing_checkpoint(store);
+    assert!(
+        matches!(outcome, StructuralOpenOutcome::Clean(_)),
+        "recovery after post-shutdown-checkpoint crash must open clean"
+    );
+    assert!(
+        verified,
+        "checkpoint committed by the public entry before crash must verify on reopen"
     );
 }
 
@@ -3318,10 +3452,10 @@ fn retention_absence_above_watermark_remains_corruption() {
 
 #[test]
 fn retention_multi_prune_resumes_tombstone_chain() {
-    // The chain-resume path: a second prune (and a crash between sub-range
-    // transactions) continues the tombstone chain — contiguous, hash-linked,
-    // abutting the advanced watermark — and the pruned database still
-    // validates clean.
+    // The chain-resume path: a second prune (and a child-process kill before
+    // the resumed sub-range commits) continues the tombstone chain —
+    // contiguous, hash-linked, abutting the advanced watermark — and the
+    // pruned database still validates clean.
     let path = TestDatabasePath::new("retention-chain-resume");
     let _ = prepare_two_command_database(&path.0);
     retention_deliver_outbox_status_raw(&path.0, 1);
@@ -3331,22 +3465,13 @@ fn retention_multi_prune_resumes_tombstone_chain() {
     maintenance.add_hold("cap", 5, "test cap").expect("hold");
     let status = maintenance.prune_to(1).expect("first prune");
     assert_eq!(status.watermark_sequence, 1);
+    drop(maintenance);
 
-    // Crash before the resumed sub-range commits: state stays valid at
-    // watermark 1 and the database reopens.
-    let controller = RedbTestController::return_before_commit(
-        riffdb_storage_redb::RedbTestOperation::RetentionPruneSubrange,
-    );
-    let crashed =
-        riffdb_storage_redb::RedbOfflineRetention::bind_with_test_controller(&path.0, controller);
-    let err = crashed
-        .prune_to(2)
-        .expect_err("failpoint before resume commit");
-    assert_eq!(
-        err.kind(),
-        riffdb_storage_api::StorageErrorKind::Unavailable
-    );
-    drop(crashed);
+    // Child-process kill before the resumed sub-range commits: state stays
+    // valid at watermark 1 and the database reopens.
+    run_crashing_child_prune("before-retention-prune-subrange-commit", &path.0, 2);
+
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
     let status = maintenance.status().expect("status after aborted resume");
     assert_eq!(status.watermark_sequence, 1);
     assert_eq!(status.tombstone_count, 1);
@@ -3730,32 +3855,26 @@ fn retention_staged_migration_frontier_fences_prune() {
 }
 
 #[test]
-fn retention_after_commit_uncertainty_leaves_durable_subrange() {
-    // CommitStatusUnknown AFTER the sub-range transaction committed: the
-    // sub-range is durable {deleted rows, tombstone, watermark} and the
-    // database reopens valid.
+fn retention_after_commit_kill_leaves_durable_subrange() {
+    // Child kill AFTER the sub-range transaction committed: the sub-range is
+    // durable {deleted rows, tombstone, watermark} and the database reopens
+    // valid (chain resumes / state consistent).
     let path = TestDatabasePath::new("retention-after-commit");
     let _ = prepare_committed_command_database(&path.0);
     retention_deliver_outbox_status_raw(&path.0, 1);
-    let controller = RedbTestController::return_unknown_after_commit(
-        riffdb_storage_redb::RedbTestOperation::RetentionPruneSubrange,
-    );
-    let maintenance =
-        riffdb_storage_redb::RedbOfflineRetention::bind_with_test_controller(&path.0, controller);
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
     maintenance.add_hold("cap", 5, "test cap").expect("hold");
-    let err = maintenance.prune_to(1).expect_err("failpoint after commit");
-    assert_eq!(
-        err.kind(),
-        riffdb_storage_api::StorageErrorKind::CommitStatusUnknown
-    );
     drop(maintenance);
+    run_crashing_child_prune("after-retention-prune-subrange-commit", &path.0, 1);
+
     let status = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0)
         .status()
-        .expect("status after uncertainty");
+        .expect("status after post-commit kill");
     assert_eq!(status.watermark_sequence, 1);
     assert_eq!(status.tombstone_count, 1);
-    let findings =
-        collect_structural_findings(RedbStore::open(&path.0).expect("reopen after uncertainty"));
+    let findings = collect_structural_findings(
+        RedbStore::open(&path.0).expect("reopen after post-commit kill"),
+    );
     assert!(findings.is_empty(), "durable sub-range must validate clean");
 }
 

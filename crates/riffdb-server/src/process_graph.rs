@@ -504,6 +504,8 @@ impl ProductionGraphBuilder {
             Arc::new(ProductionCursorMonotonicClock::new());
         let migration = maintenance.migration_coordinator(&blocking, storage.clone());
         let offline_maintenance = maintenance.coordinator(&blocking);
+        // Retained for the graceful-shutdown validated-prefix write (ADR-0019 A1).
+        let shutdown_storage = storage.clone();
         let providers = ServiceProviders::new(
             catalog,
             policy,
@@ -589,6 +591,7 @@ impl ProductionGraphBuilder {
             hosted_request_ids,
             mcp_telemetry,
             observability,
+            storage: shutdown_storage,
             columnar_worker: Some(columnar_worker),
             projection_worker: Some(projection_worker),
             coordinator: Some(coordinator),
@@ -653,6 +656,8 @@ pub(crate) struct RunningProductionGraph {
     hosted_request_ids: ServerRequestIdSource,
     mcp_telemetry: Arc<dyn McpTelemetry>,
     observability: Arc<Observability>,
+    /// Activated storage retained for the graceful-shutdown checkpoint write.
+    storage: SharedRedbOperationalPorts,
     columnar_worker: Option<RunningColumnarWorker>,
     projection_worker: Option<RunningProjectionWorker>,
     coordinator: Option<RunningCommandCoordinator>,
@@ -729,6 +734,8 @@ impl RunningProductionGraph {
     /// The hosted transport must first stop accepting requests and drain every
     /// handler that already obtained a service clone. This method then proves
     /// that all independently supervised service work and lower workers drain.
+    /// After the writer lane and blocking ports drain, the final engine commit
+    /// is a non-fatal validated-prefix checkpoint write (ADR-0019 Amendment 1).
     pub(crate) async fn shutdown(mut self) -> Result<(), ProductionGraphShutdownError> {
         self.lifecycle.stop();
         self.spawner.wait_for_idle().await;
@@ -758,6 +765,9 @@ impl RunningProductionGraph {
             .expect("a running graph retains one blocking driver")
             .shutdown_and_drain()
             .err();
+        // ADR-0019 A1 write point (2): after the writer lane drains, as the
+        // final engine commit. A write failure is non-fatal (lost fast path).
+        write_shutdown_validated_prefix_checkpoint(&self.storage);
         shutdown_result(
             columnar,
             projection,
@@ -804,6 +814,8 @@ impl RunningProductionGraph {
             .expect("a running graph retains one blocking driver")
             .shutdown_and_drain()
             .err();
+        // Same non-fatal final checkpoint write as graceful production shutdown.
+        write_shutdown_validated_prefix_checkpoint(&self.storage);
         shutdown_result(
             columnar,
             projection,
@@ -812,6 +824,15 @@ impl RunningProductionGraph {
             blocking,
         )
     }
+}
+
+/// Graceful-shutdown validated-prefix checkpoint write (ADR-0019 Amendment 1).
+///
+/// Non-fatal: a failure costs only the next open's fast path and is counted on
+/// the storage handle. Must never contribute to [`ProductionGraphShutdownError`].
+fn write_shutdown_validated_prefix_checkpoint(storage: &SharedRedbOperationalPorts) {
+    // Deliberately ignore Err — ADR-0019 A1 write-failure semantics.
+    let _ = storage.write_validated_prefix_checkpoint();
 }
 
 /// Cloned least-authority inputs for the optional loopback MCP transport.
@@ -1146,12 +1167,16 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_order_is_route_jobs_workers_notifications_coordinator_then_ports() {
+    fn shutdown_order_is_route_jobs_workers_notifications_coordinator_ports_then_checkpoint() {
         let source = production_source();
         let body = source
             .split_once("pub(crate) async fn shutdown")
             .expect("shutdown method")
-            .1;
+            .1
+            // Bound the body to this method only (not shutdown_for_maintenance).
+            .split_once("pub(crate) async fn shutdown_for_maintenance")
+            .expect("maintenance shutdown follows production shutdown")
+            .0;
         let route = body.find("self.lifecycle.stop()").expect("route close");
         let jobs = body.find("wait_for_idle().await").expect("job drain");
         let columnar = body
@@ -1165,11 +1190,77 @@ mod tests {
             .find("let coordinator = self")
             .expect("coordinator drain");
         let ports = body.find("let blocking = self").expect("port drain");
+        let checkpoint = body
+            .find("write_shutdown_validated_prefix_checkpoint")
+            .expect("shutdown checkpoint write");
         assert!(route < jobs);
         assert!(jobs < columnar);
         assert!(columnar < projection);
         assert!(projection < notifications);
         assert!(notifications < coordinator);
         assert!(coordinator < ports);
+        // ADR-0019 A1: after the writer lane drains, as the final engine commit.
+        assert!(ports < checkpoint);
+    }
+
+    #[test]
+    fn maintenance_shutdown_writes_the_checkpoint_after_the_final_port_drain() {
+        // ADR-0019 A1 applies to BOTH graceful teardown paths: the maintenance
+        // shutdown must also place the checkpoint write after the blocking
+        // ports drain (the last commit-capable stage) and before the pure
+        // error aggregation.
+        let source = production_source();
+        let body = source
+            .split_once("pub(crate) async fn shutdown_for_maintenance")
+            .expect("maintenance shutdown method")
+            .1
+            // Bound the body to this method only (the helper definition follows).
+            .split_once("\nfn write_shutdown_validated_prefix_checkpoint")
+            .expect("checkpoint helper follows the maintenance shutdown")
+            .0;
+        let drain_boundary = body
+            .find("MaintenanceRecoveryBoundary::DrainComplete")
+            .expect("maintenance drain boundary");
+        let ports = body.find("let blocking = self").expect("port drain");
+        let checkpoint = body
+            .find("write_shutdown_validated_prefix_checkpoint")
+            .expect("maintenance checkpoint write");
+        let aggregation = body.find("shutdown_result(").expect("error aggregation");
+        assert!(drain_boundary < ports);
+        assert!(ports < checkpoint);
+        assert!(checkpoint < aggregation);
+    }
+
+    #[test]
+    fn shutdown_checkpoint_write_failure_is_non_fatal() {
+        // Falsifiability (a): making the write fatal (propagating Err into
+        // shutdown_result) must fail this pin — the write is deliberately
+        // discarded so a lost fast path never fails graceful shutdown.
+        let source = production_source();
+        let helper = source
+            .split_once("fn write_shutdown_validated_prefix_checkpoint")
+            .expect("shutdown checkpoint helper")
+            .1;
+        let helper_body = helper.split_once('}').expect("helper body").0;
+        assert!(
+            helper_body.contains("let _ = storage.write_validated_prefix_checkpoint()"),
+            "shutdown checkpoint write must ignore Err (non-fatal)"
+        );
+        assert!(
+            !helper_body.contains('?'),
+            "shutdown checkpoint write must not propagate failure with ?"
+        );
+        let shutdown_body = source
+            .split_once("pub(crate) async fn shutdown")
+            .expect("shutdown method")
+            .1
+            .split_once("pub(crate) async fn shutdown_for_maintenance")
+            .expect("maintenance shutdown")
+            .0;
+        assert!(
+            !shutdown_body.contains("write_shutdown_validated_prefix_checkpoint(&self.storage)?")
+                && !shutdown_body.contains("write_validated_prefix_checkpoint()?"),
+            "checkpoint write failure must not fail the shutdown result"
+        );
     }
 }

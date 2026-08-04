@@ -1113,6 +1113,14 @@ async fn read_window(
         Ok(Err(crate::AuthoritativeReadError::Unavailable)) | Err(PortDriverStopped) => {
             Err(PublicError::storage_unavailable().into())
         }
+        // Retired history is a correct-request client outcome (RDB-HISTORY-0102),
+        // never an internal defect. Registered consumers fence prune through
+        // consumer_low_water, but the window position is client-chosen: a
+        // consumer registered after a prune (or seeking an explicit stale
+        // checkpoint) can always resolve below the retention watermark.
+        Ok(Err(crate::AuthoritativeReadError::HistoryPruned)) => {
+            Err(PublicError::history_pruned().into())
+        }
         Ok(Err(_)) => Err(service.internal_failure(
             begun.initial_authorization().operation(),
             InternalDefect::ProofMismatch,

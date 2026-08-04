@@ -674,12 +674,7 @@ impl ServerAuthoritativeReadPort {
                 .map_err(|_| AuthoritativeReadError::Integrity)?;
             replay
                 .replay_page(&event_storage, position, limit, history_incarnation)
-                .map_err(|error| match error.kind() {
-                    riffdb_catalog::EventReplayErrorKind::Storage(
-                        StorageErrorKind::Unavailable,
-                    ) => AuthoritativeReadError::Unavailable,
-                    _ => AuthoritativeReadError::Integrity,
-                })
+                .map_err(|error| map_event_replay_error(error.kind()))
         });
 
         let reactive_event_storage = storage.clone();
@@ -901,12 +896,7 @@ fn read_reactive_event_window(
     for _ in 0..MAX_REACTIVE_EVENT_WINDOW_ROUTE_PAGES {
         let page = stream
             .replay_page(storage, position, route_limit, history_incarnation)
-            .map_err(|error| match error.kind() {
-                riffdb_catalog::EventReplayErrorKind::Storage(StorageErrorKind::Unavailable) => {
-                    AuthoritativeReadError::Unavailable
-                }
-                _ => AuthoritativeReadError::Integrity,
-            })?;
+            .map_err(|error| map_event_replay_error(error.kind()))?;
         let observed_upper = page.observed_upper();
         let continuation = page.continuation();
         for event in page.into_items() {
@@ -1111,6 +1101,25 @@ fn map_storage_kind(kind: StorageErrorKind) -> AuthoritativeReadError {
         // Retired-history reads surface the typed pruned outcome
         // (RDB-HISTORY-0102), never a corruption classification.
         StorageErrorKind::HistoryPruned => AuthoritativeReadError::HistoryPruned,
+    }
+}
+
+/// Maps catalog event-replay failures into the closed authoritative-read class.
+///
+/// Below-watermark resolution must surface [`AuthoritativeReadError::HistoryPruned`]
+/// (RDB-HISTORY-0102) — never integrity/corruption — so service and MCP can
+/// present the typed public error.
+fn map_event_replay_error(kind: riffdb_catalog::EventReplayErrorKind) -> AuthoritativeReadError {
+    match kind {
+        riffdb_catalog::EventReplayErrorKind::Storage(StorageErrorKind::Unavailable) => {
+            AuthoritativeReadError::Unavailable
+        }
+        riffdb_catalog::EventReplayErrorKind::Storage(StorageErrorKind::HistoryPruned) => {
+            AuthoritativeReadError::HistoryPruned
+        }
+        riffdb_catalog::EventReplayErrorKind::Storage(_)
+        | riffdb_catalog::EventReplayErrorKind::Materialization(_)
+        | riffdb_catalog::EventReplayErrorKind::Integrity => AuthoritativeReadError::Integrity,
     }
 }
 
@@ -1954,6 +1963,36 @@ mod tests {
         );
         assert_eq!(
             map_storage_error(StorageError::new(StorageErrorKind::CorruptData, None)),
+            AuthoritativeReadError::Integrity
+        );
+    }
+
+    #[test]
+    fn event_replay_history_pruned_is_never_integrity() {
+        // Falsifiability (c): neutering HistoryPruned → Integrity fails this test.
+        // Production path: ResolvedEventReplay::replay_page → map_event_replay_error
+        // → AuthoritativeReadError::HistoryPruned → PublicError::history_pruned
+        // (event_operations::map_authoritative) → MCP presentation HistoryPruned.
+        assert_eq!(
+            map_event_replay_error(riffdb_catalog::EventReplayErrorKind::Storage(
+                StorageErrorKind::HistoryPruned
+            )),
+            AuthoritativeReadError::HistoryPruned
+        );
+        assert_eq!(
+            map_event_replay_error(riffdb_catalog::EventReplayErrorKind::Storage(
+                StorageErrorKind::Unavailable
+            )),
+            AuthoritativeReadError::Unavailable
+        );
+        assert_eq!(
+            map_event_replay_error(riffdb_catalog::EventReplayErrorKind::Storage(
+                StorageErrorKind::CorruptData
+            )),
+            AuthoritativeReadError::Integrity
+        );
+        assert_eq!(
+            map_event_replay_error(riffdb_catalog::EventReplayErrorKind::Integrity),
             AuthoritativeReadError::Integrity
         );
     }

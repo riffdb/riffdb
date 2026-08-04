@@ -8,6 +8,7 @@ use std::fs::{self, File, OpenOptions};
 use std::future::Future;
 use std::io::{self, BufReader, Read, Write};
 use std::net::SocketAddr;
+use std::num::NonZeroU16;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
@@ -21,6 +22,10 @@ use riffdb_auth::bootstrap_secret::{
     BootstrapCredential as RetainedBootstrapCredential, SystemEntropy,
     generate_bootstrap_credential, load_bootstrap_credential_file,
 };
+use riffdb_catalog::{
+    CatalogHistoryOutcome, ValidatedContractBundle, ValidatedReactiveModule,
+    validate_catalog_history,
+};
 use riffdb_client_rust::generated::GeneratedCommand;
 use riffdb_client_rust::generated::legal_spend::{
     AllocateBudget, AllocateBudgetOutcome, Amount, CONTRACT_LINEAGE, CONTRACT_VERSION,
@@ -31,12 +36,26 @@ use riffdb_client_rust::{
     BootstrapCredential as TransportBootstrapCredential, CallMetadata, ClientError,
     DetailsFreeStatus, RiffDbClient, generate_capability_id, generate_request_id,
 };
+use riffdb_contract_compiler::compile_contract_source;
+use riffdb_errors::PublicErrorKind;
 use riffdb_proto::decimal_from_proto;
 use riffdb_proto::v1;
-use riffdb_storage_redb::downgrade_all_index_rows_to_v1_fixture;
+use riffdb_storage_api::{
+    EvidencePageLimit, OutboxClaimV1, OutboxDestinationIdV1, OutboxPageLimit, OutboxRepository,
+    OutboxSucceedV1, OutboxTransitionResultV1, PendingOutboxScanV1,
+    ReactiveModuleAdministrationRepository, ReadableCapabilityDigestInventory, ReadableDigestKey,
+    ReadableIdempotencyDigestInventory, StartupValidationInputs, StructuralEvidenceCursor,
+    StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession,
+    StructuralOpenOutcome,
+};
+use riffdb_storage_redb::{
+    RedbDormantPorts, RedbOfflineRetention, RedbOperationalPorts, RedbStore,
+    downgrade_all_index_rows_to_v1_fixture,
+    read_validated_prefix_checkpoint_commit_sequence_fixture,
+};
 use riffdb_types::{
-    AggregateTypeId, DecimalSpec, EntityKey, EntityKeyBuilder, EntityTypeId, IndexEntryKeyBuilder,
-    IndexId, PartitionKeyBuilder,
+    AggregateTypeId, DecimalSpec, DigestKeyId, EntityKey, EntityKeyBuilder, EntityTypeId,
+    IndexEntryKeyBuilder, IndexId, PartitionKeyBuilder, Timestamp,
 };
 use tokio::time::timeout;
 use tonic::transport::Endpoint;
@@ -63,6 +82,13 @@ const CAPABILITY_KEY_DOCUMENT: &[u8] = b"riffdb-capability-digest-keys-v1\n7:000
 const IDEMPOTENCY_KEY_DOCUMENT: &[u8] = b"riffdb-idempotency-digest-keys-v1\n9:202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f\n";
 const BUDGET_CONTRACT: &str = include_str!("../../contracts/examples/budget.riff");
 const INDEXED_BUDGET_CONTRACT: &str = include_str!("fixtures/budget_indexed.riff");
+const STREAMABLE_BUDGET_CONTRACT: &str = include_str!("fixtures/budget_streamable.riff");
+const BUDGET_STREAM_MODULE: &str = include_str!("fixtures/budget_allocations.riffr");
+const BUDGET_STREAM_OPERATION: &str = "BudgetAllocations";
+const PRUNED_CONSUMER_NAME: &str = "pruned-history-consumer";
+/// Daemon key IDs from the fixed key documents above (`7:` and `9:`).
+const CAPABILITY_DIGEST_KEY_ID: u32 = 7;
+const IDEMPOTENCY_DIGEST_KEY_ID: u32 = 9;
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -251,6 +277,15 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
 
     drop(first_client);
     first_process.shutdown_cleanly()?;
+
+    // ADR-0019 A1 write point (2): a real graceful daemon shutdown must leave a
+    // durable validated-prefix checkpoint bound at the drained commit frontier
+    // (S=2 after the two committed commands), and the next open must verify it
+    // (fast path). The startup-finish checkpoint of this run was bound at S=0,
+    // so the bound sequence discriminates the shutdown write: skipping or
+    // vetoing it fails this assertion, never silently costing every future
+    // open its fast path.
+    assert_graceful_shutdown_checkpoint(&database_path, 2)?;
 
     let mut second_process = ServerProcess::spawn(
         &database_path,
@@ -469,6 +504,637 @@ async fn real_riffdbd_migrates_v1_index_before_public_readiness() -> TestResult<
     migrated_process.shutdown_cleanly()?;
     drop(migrated_client);
     Ok(())
+}
+
+#[test]
+fn streamable_budget_fixture_compiles_and_proves_application_routing() {
+    // Pins the fixture pair this file's pruned-history test deploys through
+    // the real daemon: the contract compiles with a compiler-proved event
+    // partition, and the reactive stream module compiles against it.
+    let contract = compile_contract_source(STREAMABLE_BUDGET_CONTRACT)
+        .expect("streamable budget contract compiles");
+    let checked = ValidatedContractBundle::from_compiler_bundle(contract)
+        .expect("streamable budget contract validates");
+    let module = ValidatedReactiveModule::compile(BUDGET_STREAM_MODULE, &checked, &[])
+        .expect("budget allocations stream module compiles");
+    let _ = module.identity();
+}
+
+// Covers RT-A/RT-B owed tail: end-to-end typed pruned reads over a REAL pruned
+// database through the composed daemon (service + server read adapters + gRPC).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_riffdbd_serves_typed_history_pruned_replay_and_consumer_after_offline_prune()
+-> TestResult<()> {
+    let temporary = TemporaryDirectory::new()?;
+    let database_path = temporary.path().join("riffdb.redb");
+    let capability_keys_path = temporary.path().join("capability.keys");
+    let idempotency_keys_path = temporary.path().join("idempotency.keys");
+    let bootstrap_path = temporary.path().join("bootstrap.credential");
+
+    write_protected_file(&capability_keys_path, CAPABILITY_KEY_DOCUMENT)?;
+    write_protected_file(&idempotency_keys_path, IDEMPOTENCY_KEY_DOCUMENT)?;
+    let generated_bootstrap =
+        generate_bootstrap_credential(BOOTSTRAP_UNIX_MILLISECONDS, &SystemEntropy)?;
+    write_protected_file(
+        &bootstrap_path,
+        generated_bootstrap.render_document().expose_secret(),
+    )?;
+    drop(generated_bootstrap);
+    let retained_bootstrap = load_bootstrap_credential_file(&bootstrap_path)?;
+    let root_metadata = CallMetadata::authenticated(bearer_credential(&retained_bootstrap)?);
+
+    // ---- Process A: build REAL event history through the daemon. ----
+    let mut first_process = ServerProcess::spawn(
+        &database_path,
+        &capability_keys_path,
+        &idempotency_keys_path,
+    )?;
+    let first_address = first_process.wait_for_ready_address()?;
+    let mut first_client = connect(first_address).await?;
+
+    let bootstrap_created = bounded_rpc(
+        "pruned-history bootstrap",
+        first_client.create_bootstrap_capability(
+            pruned_history_bootstrap_request(&retained_bootstrap)?,
+            &bootstrap_metadata(&retained_bootstrap)?,
+        ),
+    )
+    .await?;
+    let _ = created_bootstrap_transition(bootstrap_created)?;
+
+    let deployment = bounded_rpc(
+        "streamable budget contract deployment",
+        first_client.deploy_contract(
+            v1::DeployContractRequest {
+                request_id: fresh_request_id_bytes()?,
+                source: STREAMABLE_BUDGET_CONTRACT.to_owned(),
+                expected_active_version: None,
+                expected_active_bundle_hash: Vec::new(),
+                expected_candidate_bundle_hash: Vec::new(),
+            },
+            &root_metadata,
+        ),
+    )
+    .await?;
+    assert_activated_budget_contract(deployment)?;
+
+    // Commit sequence 1 (no event), then 2/3/4 (one BudgetAllocated each).
+    // The streamable contract's plans differ from the generated bindings'
+    // pinned plan hashes (the event carries a compiler-proved partition), so
+    // commands run through the generic transport envelope without generated
+    // outcome decoding — the same pattern as the indexed-contract test above.
+    let create = CreateBudget {
+        idempotency_key: "p1-pruned-create-budget".to_owned(),
+        organization_id: ORGANIZATION_ID,
+        fiscal_year: FISCAL_YEAR,
+        approved_amount: amount(APPROVED_MINOR_UNITS)?,
+    };
+    let created = bounded_rpc(
+        "pruned-history CreateBudget",
+        first_client.execute_with_retry(
+            &create.idempotent_command()?,
+            one_attempt(),
+            &root_metadata,
+        ),
+    )
+    .await?;
+    assert_eq!(
+        created.status,
+        v1::execute_command_response::CompletionStatus::Committed as i32
+    );
+    assert_eq!(created.commit_sequence, 1);
+    for (ordinal, expected_sequence) in [(1_u8, 2_u64), (2, 3), (3, 4)] {
+        let mut matter_id = MATTER_ID;
+        matter_id[0] = ordinal;
+        let allocate = AllocateBudget {
+            idempotency_key: format!("p1-pruned-allocate-{ordinal}"),
+            organization_id: ORGANIZATION_ID,
+            fiscal_year: FISCAL_YEAR,
+            matter_id,
+            amount: amount(ALLOCATED_MINOR_UNITS)?,
+        };
+        let allocated = bounded_rpc(
+            "pruned-history AllocateBudget",
+            first_client.execute_with_retry(
+                &allocate.idempotent_command()?,
+                one_attempt(),
+                &root_metadata,
+            ),
+        )
+        .await?;
+        assert_eq!(
+            allocated.status,
+            v1::execute_command_response::CompletionStatus::Committed as i32
+        );
+        assert_eq!(allocated.commit_sequence, expected_sequence);
+    }
+
+    // Baseline replay over live history: exactly the three allocation events.
+    let baseline = replayed_event_page(
+        bounded_rpc(
+            "baseline event replay before prune",
+            first_client.replay_events(budget_replay_request(None)?, &root_metadata),
+        )
+        .await?,
+    )?;
+    assert_eq!(
+        replayed_commit_sequences(&baseline)?,
+        vec![2, 3, 4],
+        "live history must replay one BudgetAllocated per allocation commit"
+    );
+    let boundary_event_id = baseline.items[0]
+        .event_id
+        .ok_or_else(|| test_failure("baseline replay item omitted its event ID"))?;
+
+    drop(first_client);
+    first_process.shutdown_cleanly()?;
+
+    // ---- Offline: publish the stream module, deliver the outbox, obtain ----
+    // ---- fencing, prune sequences 1-2.                                  ----
+    // The reactive stream module is published through the real storage
+    // publication machinery over the stopped database. (Publishing through the
+    // daemon's DeployReactiveModule RPC is blocked by a pre-existing defect:
+    // riffdb-storage-api's validate_service_audit_phase_link omits
+    // DeployReactiveModule from its ControlPlane-link arm, so the SUCCEEDED
+    // audit record of a daemon publication is rejected as InvalidShape and the
+    // RPC reports outcome_unknown. Out of this package's fence; reported.)
+    // Undelivered outbox intents fence retention (fail toward NOT deleting),
+    // so the operator flow drains them through the real claim/succeed
+    // transitions before the watermark may cover their commits.
+    let (module_hash, delivered) = publish_stream_module_and_drain_outbox(&database_path);
+    assert_eq!(
+        delivered, 3,
+        "each allocation event must carry exactly one pending outbox intent"
+    );
+    let retention = RedbOfflineRetention::bind(&database_path);
+    let status = retention
+        .status()
+        .map_err(|error| test_failure(format!("retention status failed: {error:?}")))?;
+    assert_eq!(
+        status.max_permissible_watermark,
+        Some(4),
+        "with the outbox drained and no projections, fencing must permit the durable head"
+    );
+    let status = retention
+        .prune_to(2)
+        .map_err(|error| test_failure(format!("offline prune failed: {error:?}")))?;
+    assert_eq!(status.watermark_sequence, 2);
+    assert!(status.tombstone_count >= 1);
+
+    // ---- Process B: the SAME pruned database serves through the daemon. ----
+    let mut second_process = ServerProcess::spawn(
+        &database_path,
+        &capability_keys_path,
+        &idempotency_keys_path,
+    )?;
+    let second_address = second_process.wait_for_ready_address()?;
+    let mut second_client = connect(second_address).await?;
+
+    // The consumer capability binds the published module hash; created through
+    // the restarted daemon so consumption exercises the full live wire path.
+    let consumer_capability = match timeout(
+        RPC_TIMEOUT,
+        second_client.create_capability(consumer_capability_request(&module_hash)?, &root_metadata),
+    )
+    .await
+    {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            return Err(test_failure(format!(
+                "stream consumer capability creation failed: {error:?}"
+            )));
+        }
+        Err(_) => return Err(test_failure("capability creation exceeded its deadline")),
+    };
+    let consumer_token = normal_capability_token(consumer_capability)?;
+    let consumer_metadata = CallMetadata::authenticated(BearerCredential::new(&consumer_token)?);
+
+    // A replay window resolving below the watermark yields the TYPED
+    // history_pruned public error (RDB-HISTORY-0102) — never integrity or an
+    // internal defect. Falsifiability: re-neutering the server read-adapter
+    // mapping (Storage(HistoryPruned) -> Integrity) fails THIS assertion.
+    let pruned_replay = bounded_rpc_error(
+        "below-watermark event replay",
+        second_client.replay_events(budget_replay_request(None)?, &root_metadata),
+    )
+    .await?;
+    assert_history_pruned(pruned_replay, "below-watermark replay")?;
+
+    // A window entirely above the watermark serves normally on the SAME
+    // database: exactly the baseline tail, byte-for-byte.
+    let retained = replayed_event_page(
+        bounded_rpc(
+            "above-watermark event replay",
+            second_client.replay_events(
+                budget_replay_request(Some(boundary_event_id))?,
+                &root_metadata,
+            ),
+        )
+        .await?,
+    )?;
+    assert_eq!(
+        retained.items,
+        baseline.items[1..],
+        "retained events above the watermark must serve unchanged after the prune"
+    );
+
+    // F4: a consumer registered AFTER the prune resolves its first window from
+    // the stream start — below the watermark. That is a correct-request client
+    // outcome (typed history_pruned), never an internal defect.
+    let pruned_consume = bounded_rpc_error(
+        "below-watermark consumer window",
+        second_client
+            .consume_event_stream(consume_stream_request(&module_hash)?, &consumer_metadata),
+    )
+    .await?;
+    assert_history_pruned(pruned_consume, "below-watermark consumer window")?;
+
+    // The typed outcomes are client errors: the daemon stays healthy and keeps
+    // serving retained history afterwards.
+    let after_errors = replayed_event_page(
+        bounded_rpc(
+            "post-error event replay",
+            second_client.replay_events(
+                budget_replay_request(Some(boundary_event_id))?,
+                &root_metadata,
+            ),
+        )
+        .await?,
+    )?;
+    assert_eq!(after_errors.items, baseline.items[1..]);
+
+    second_process.shutdown_cleanly()?;
+    drop(second_client);
+    Ok(())
+}
+
+/// Awaits an RPC that MUST fail, returning its typed client error.
+async fn bounded_rpc_error<T>(
+    label: &'static str,
+    future: impl Future<Output = Result<T, ClientError>>,
+) -> TestResult<ClientError> {
+    match timeout(RPC_TIMEOUT, future).await {
+        Ok(Err(error)) => Ok(error),
+        Ok(Ok(_)) => Err(test_failure(format!("{label} unexpectedly succeeded"))),
+        Err(_) => Err(test_failure(format!("{label} exceeded its deadline"))),
+    }
+}
+
+fn assert_history_pruned(error: ClientError, label: &str) -> TestResult<()> {
+    match error {
+        ClientError::Public(public) if public.kind() == PublicErrorKind::HistoryPruned => Ok(()),
+        other => Err(test_failure(format!(
+            "{label} must surface the typed history_pruned public error \
+             (RDB-HISTORY-0102), got {other:?}"
+        ))),
+    }
+}
+
+fn pruned_history_bootstrap_request(
+    credential: &RetainedBootstrapCredential,
+) -> TestResult<v1::CreateCapabilityRequest> {
+    use v1::capability_permission::Permission;
+
+    let scoped = |stable_id| v1::LineageScopedStableId {
+        contract_lineage: CONTRACT_LINEAGE.to_owned(),
+        stable_id,
+    };
+    Ok(v1::CreateCapabilityRequest {
+        request_id: fresh_request_id_bytes()?,
+        mode: v1::CapabilityCreateMode::Bootstrap as i32,
+        capability_id: credential.capability_id().into_bytes().to_vec(),
+        principal_id: "p1-pruned-maintainer".to_owned(),
+        actor_kind: v1::ActorKind::Human as i32,
+        requested_lifetime_seconds: CAPABILITY_LIFETIME_SECONDS,
+        audiences: vec![AUDIENCE.to_owned()],
+        grant: Some(v1::CapabilityGrant {
+            tenant_scope: Some(v1::TenantScope {
+                scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
+            }),
+            partition_scope: Some(v1::PartitionScope {
+                scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
+            }),
+            permissions: vec![
+                v1::CapabilityPermission {
+                    permission: Some(Permission::DeployContract(v1::Unit {})),
+                },
+                v1::CapabilityPermission {
+                    permission: Some(Permission::InvokeCommand(scoped(1))),
+                },
+                v1::CapabilityPermission {
+                    permission: Some(Permission::InvokeCommand(scoped(2))),
+                },
+                // ReplayEvents/TailEvents are operator reads gated on ReadCommit.
+                v1::CapabilityPermission {
+                    permission: Some(Permission::ReadCommit(v1::Unit {})),
+                },
+                v1::CapabilityPermission {
+                    permission: Some(Permission::ReadHealth(v1::Unit {})),
+                },
+                v1::CapabilityPermission {
+                    permission: Some(Permission::AdministerCapabilities(v1::Unit {})),
+                },
+            ],
+            field_visibility: vec![v1::EntityFieldVisibility {
+                contract_lineage: CONTRACT_LINEAGE.to_owned(),
+                entity_type_id: 1,
+                field_ids: vec![1, 2, 3, 4, 5],
+            }],
+            max_scan_rows: 100,
+            approval_required: Vec::new(),
+        }),
+    })
+}
+
+fn consumer_capability_request(module_hash: &[u8]) -> TestResult<v1::CreateCapabilityRequest> {
+    use v1::capability_permission::Permission;
+
+    Ok(v1::CreateCapabilityRequest {
+        request_id: fresh_request_id_bytes()?,
+        mode: v1::CapabilityCreateMode::Normal as i32,
+        capability_id: generate_capability_id()?.into_bytes().to_vec(),
+        principal_id: "p1-pruned-consumer".to_owned(),
+        actor_kind: v1::ActorKind::Human as i32,
+        requested_lifetime_seconds: CAPABILITY_LIFETIME_SECONDS,
+        audiences: vec![AUDIENCE.to_owned()],
+        grant: Some(v1::CapabilityGrant {
+            tenant_scope: Some(v1::TenantScope {
+                scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
+            }),
+            partition_scope: Some(v1::PartitionScope {
+                scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
+            }),
+            // Canonical permission order: ReadHealth (15) precedes
+            // ConsumeEventStream (27).
+            permissions: vec![
+                v1::CapabilityPermission {
+                    permission: Some(Permission::ReadHealth(v1::Unit {})),
+                },
+                v1::CapabilityPermission {
+                    permission: Some(Permission::ConsumeEventStream(
+                        v1::ReactiveOperationPermission {
+                            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+                            reactive_module_hash: module_hash.to_vec(),
+                            operation_name: BUDGET_STREAM_OPERATION.to_owned(),
+                        },
+                    )),
+                },
+            ],
+            field_visibility: vec![v1::EntityFieldVisibility {
+                contract_lineage: CONTRACT_LINEAGE.to_owned(),
+                entity_type_id: 1,
+                field_ids: vec![1, 2, 3, 4, 5],
+            }],
+            max_scan_rows: 100,
+            approval_required: Vec::new(),
+        }),
+    })
+}
+
+fn organization_uuid_value() -> v1::Value {
+    v1::Value {
+        kind: Some(v1::value::Kind::UuidValue(ORGANIZATION_ID.to_vec())),
+    }
+}
+
+fn budget_replay_request(after: Option<v1::EventId>) -> TestResult<v1::ReplayEventsRequest> {
+    Ok(v1::ReplayEventsRequest {
+        request_id: fresh_request_id_bytes()?,
+        selection: Some(v1::EventSelection {
+            event_name: "BudgetAllocated".to_owned(),
+            partition: vec![v1::EventPartitionComponent {
+                name: "organization_id".to_owned(),
+                value: Some(organization_uuid_value()),
+            }],
+            selected_fields: vec!["matter_id".to_owned(), "amount".to_owned()],
+        }),
+        after_event_id: after,
+        page: Some(v1::PageRequest {
+            limit: Some(10),
+            cursor: None,
+        }),
+        observed_history_incarnation: 0,
+    })
+}
+
+fn consume_stream_request(module_hash: &[u8]) -> TestResult<v1::ConsumeEventStreamRequest> {
+    Ok(v1::ConsumeEventStreamRequest {
+        request_id: fresh_request_id_bytes()?,
+        selection: Some(v1::EventConsumerSelection {
+            reactive_module_hash: module_hash.to_vec(),
+            operation_name: BUDGET_STREAM_OPERATION.to_owned(),
+            parameters: vec![v1::EventConsumerParameter {
+                name: "organization_id".to_owned(),
+                value: Some(organization_uuid_value()),
+            }],
+            consumer_name: PRUNED_CONSUMER_NAME.to_owned(),
+        }),
+        batch_limit: 4,
+        in_flight_limit: 4,
+        lease_seconds: 30,
+        maximum_wait_nanos: 0,
+    })
+}
+
+fn replayed_event_page(response: v1::ReplayEventsResponse) -> TestResult<v1::EventPage> {
+    response
+        .page
+        .ok_or_else(|| test_failure("event replay omitted its page"))
+}
+
+fn replayed_commit_sequences(page: &v1::EventPage) -> TestResult<Vec<u64>> {
+    page.items
+        .iter()
+        .map(|item| {
+            item.event_id
+                .map(|event_id| event_id.commit_sequence)
+                .ok_or_else(|| test_failure("replayed event omitted its event ID"))
+        })
+        .collect()
+}
+
+fn assert_graceful_shutdown_checkpoint(
+    database_path: &Path,
+    expected_sequence: u64,
+) -> TestResult<()> {
+    // (1) A durable checkpoint exists and binds S at the drained frontier.
+    let bound = read_validated_prefix_checkpoint_commit_sequence_fixture(database_path)
+        .map_err(|error| test_failure(format!("checkpoint probe failed: {error:?}")))?;
+    if bound != Some(expected_sequence) {
+        return Err(test_failure(format!(
+            "graceful shutdown must leave a durable validated-prefix checkpoint bound to \
+             S={expected_sequence}; found {bound:?}"
+        )));
+    }
+    // (2) The next open verifies it, taking the fast path.
+    let store = RedbStore::open(database_path)
+        .map_err(|error| test_failure(format!("checkpoint reopen failed: {error:?}")))?;
+    let session = store
+        .begin_structural_evidence(daemon_startup_inputs())
+        .map_err(|error| test_failure(format!("evidence session failed: {error:?}")))?;
+    if !session.checkpoint_verified() {
+        return Err(test_failure(
+            "the shutdown checkpoint must verify on the next open (fast path)",
+        ));
+    }
+    drop(session);
+    Ok(())
+}
+
+fn daemon_startup_inputs() -> StartupValidationInputs {
+    let capability_key =
+        DigestKeyId::new(CAPABILITY_DIGEST_KEY_ID).expect("daemon capability digest key ID");
+    let idempotency_key =
+        DigestKeyId::new(IDEMPOTENCY_DIGEST_KEY_ID).expect("daemon idempotency digest key ID");
+    StartupValidationInputs::new(
+        Timestamp::new(1_700_000_100, 0).expect("offline probe timestamp"),
+        ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(capability_key)])
+            .expect("capability digest inventory"),
+        ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(idempotency_key)])
+            .expect("idempotency digest inventory"),
+    )
+}
+
+/// Full startup pass over a stopped daemon database, activating the real
+/// operational ports (the same open the daemon performs).
+fn open_operational_offline(database_path: &Path) -> RedbOperationalPorts {
+    let store = RedbStore::open(database_path).expect("open stopped daemon database");
+    let mut session = store
+        .begin_structural_evidence(daemon_startup_inputs())
+        .expect("begin structural evidence over the stopped daemon database");
+    let database_id = session.database_id();
+    let open_session_id = session.open_session_id();
+    let limit = EvidencePageLimit::new(64).expect("bounded evidence page limit");
+    let mut cursor = StructuralEvidenceCursor::start(database_id, open_session_id);
+    let structural_end = loop {
+        match session
+            .read_structural_evidence(cursor, limit)
+            .expect("read structural evidence")
+        {
+            StructuralEvidencePage::Page { findings, next, .. } => {
+                assert!(
+                    findings.is_empty(),
+                    "stopped daemon database must validate clean: {findings:?}"
+                );
+                cursor = next;
+            }
+            StructuralEvidencePage::ExactEnd(end) => break end,
+        }
+    };
+    let (history, historical_end) = validate_catalog_history(&mut session)
+        .expect("validate catalog history")
+        .into_parts();
+    let opened = session
+        .finish(structural_end, historical_end)
+        .expect("finish structural evidence");
+    let CatalogHistoryOutcome::Ready(_) = history else {
+        panic!("stopped daemon database must not require catalog migration");
+    };
+    let StructuralOpenOutcome::Clean(opened) = opened else {
+        panic!("stopped daemon database must not require index migration");
+    };
+    let (_, _, _, dormant): (_, _, _, RedbDormantPorts) = opened.into_parts();
+    dormant
+        .into_operational_after_catalog_validation()
+        .expect("activate operational ports over the stopped daemon database")
+}
+
+/// Offline preparation over the stopped daemon database: publishes the stream
+/// module through the real storage publication machinery and drains every
+/// pending outbox intent. Returns the module hash bytes and the delivered count.
+fn publish_stream_module_and_drain_outbox(database_path: &Path) -> (Vec<u8>, usize) {
+    use riffdb_storage_api::ReactiveModulePublicationResult;
+
+    let mut ports = open_operational_offline(database_path);
+    let catalog = riffdb_catalog::ActiveCatalogSnapshot::read(&ports)
+        .expect("read the active catalog")
+        .expect("the streamable budget contract is active");
+    let module = ValidatedReactiveModule::compile(BUDGET_STREAM_MODULE, catalog.bundle(), &[])
+        .expect("stream module compiles against the active contract");
+    let module_hash = module.identity();
+    let principal = riffdb_storage_api::AuditPrincipalV1::new(
+        riffdb_types::ActorId::new("p1-offline-operator").expect("bounded actor id"),
+        riffdb_types::ActorKind::Human,
+        riffdb_types::CapabilityId::from_bytes(offline_uuid_bytes(0x31)).expect("capability id"),
+        std::num::NonZeroU64::new(1).expect("nonzero revision"),
+    );
+    let outcome = ports
+        .publish_reactive_module(&riffdb_storage_api::ReactiveModulePublicationIntentV1::new(
+            module.to_stored().expect("stream module encodes"),
+            riffdb_types::RequestId::from_bytes(offline_uuid_bytes(0x32)).expect("request id"),
+            principal,
+            Timestamp::new(1_700_000_150, 0).expect("publication timestamp"),
+            None,
+        ))
+        .expect("publish the stream module offline");
+    assert!(
+        matches!(outcome, ReactiveModulePublicationResult::Published { .. }),
+        "offline stream module publication must publish: {outcome:?}"
+    );
+    let delivered = deliver_all_pending_outbox(&mut ports);
+    drop(ports);
+    (module_hash.as_bytes().to_vec(), delivered)
+}
+
+fn offline_uuid_bytes(fill: u8) -> [u8; 16] {
+    let mut bytes = [fill; 16];
+    bytes[6] = 0x70 | (fill & 0x0f);
+    bytes[8] = 0x80 | (fill & 0x3f);
+    bytes
+}
+
+/// Drains every pending outbox intent through the REAL claim/succeed
+/// transitions (the operator precondition for pruning: only `Delivered`
+/// lifts the retention fence). Returns how many intents were delivered.
+fn deliver_all_pending_outbox(ports: &mut RedbOperationalPorts) -> usize {
+    let destination =
+        OutboxDestinationIdV1::new("p1-test-outbox-drain").expect("bounded destination ID");
+    let limit = OutboxPageLimit::new(NonZeroU16::new(16).expect("nonzero page limit"))
+        .expect("bounded outbox page limit");
+    let started_at = Timestamp::new(1_700_000_200, 0).expect("claim timestamp");
+    let lease_deadline = Timestamp::new(1_700_000_260, 0).expect("lease deadline");
+    let delivered_at = Timestamp::new(1_700_000_230, 0).expect("delivery timestamp");
+    let mut delivered = 0_usize;
+    loop {
+        let items = match ports
+            .scan_pending_outbox(None, limit)
+            .expect("scan pending outbox intents")
+        {
+            PendingOutboxScanV1::Page { items, .. } | PendingOutboxScanV1::ExactEnd { items } => {
+                items
+            }
+        };
+        if items.is_empty() {
+            break;
+        }
+        for item in items {
+            let item = item.into_parts().0;
+            let claim = OutboxClaimV1::new(
+                item.event_id(),
+                item.status().clone(),
+                destination.clone(),
+                started_at,
+                lease_deadline,
+            )
+            .expect("well-formed outbox claim");
+            let OutboxTransitionResultV1::Applied(delivering) = ports
+                .claim_outbox(&claim)
+                .expect("claim one pending outbox intent")
+            else {
+                panic!("pending outbox intent must claim exactly");
+            };
+            let succeed =
+                OutboxSucceedV1::new(delivering, delivered_at).expect("well-formed outbox success");
+            let OutboxTransitionResultV1::Applied(_) = ports
+                .succeed_outbox(&succeed)
+                .expect("mark one outbox intent delivered")
+            else {
+                panic!("claimed outbox intent must deliver exactly");
+            };
+            delivered += 1;
+        }
+    }
+    delivered
 }
 
 async fn bounded_rpc<T, E>(
