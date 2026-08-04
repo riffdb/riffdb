@@ -10,7 +10,10 @@ Then use the complete authoring loop:
 riffdb application check --source-only
 riffdb application lock --write
 riffdb application check
+# With one or more ordered `seed_inputs`:
 riffdb dev --seed --run
+# With no configured seed inputs:
+riffdb dev --run
 ```
 
 The first command is the read-only iterative compiler: it validates the
@@ -21,8 +24,11 @@ Genesis locking is local; successor locking performs an authorized read-only
 preview against the selected database's active parent and pins the exact
 canonical bundle at `generated/riffdb.contract.bundle`. It never deploys.
 `riffdb dev --seed --run` deploys that exact generation, binds
-`{{ROLE_NAME}}`, seeds through `CreateItem`, and runs this repository's Rust,
-TypeScript, or Python application with the scoped development credential. Rust
+`{{ROLE_NAME}}`, executes every configured seed input in manifest order, and
+runs this repository's Rust, TypeScript, or Python application with the scoped
+development credential. It fails with the exact unreferenced seed filenames
+and both corrective commands when `seed_inputs` is empty; use `riffdb dev
+--run` for an intentionally seedless application. Rust
 and Python runners may complete as one-shot checks; TypeScript web runners
 remain attached until you stop them. Use `riffdb dev --seed --watch` when you want contract/query
 regeneration without starting the application process.

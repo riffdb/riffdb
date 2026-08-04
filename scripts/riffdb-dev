@@ -406,6 +406,24 @@ generate_builtin_seed() {
     done
 }
 
+report_missing_manifest_seed_inputs() {
+    local seed_file discovered=0 shown=0
+    echo "application manifest contains no seed inputs" >&2
+    echo "fix: add ordered JSONL paths to \`seed_inputs\` in riffdb.application.json, or rerun without \`--seed\` as \`riffdb dev --run\`" >&2
+    if [[ -d "$application_root/riffdb/seed" ]]; then
+        while IFS= read -r -d '' seed_file; do
+            ((discovered += 1))
+            if ((shown < 8)); then
+                printf 'unreferenced seed file: %s\n' "${seed_file#"$application_root/"}" >&2
+                ((shown += 1))
+            fi
+        done < <(find "$application_root/riffdb/seed" -maxdepth 1 -type f -name '*.jsonl' -print0 | sort -z)
+    fi
+    if ((discovered > shown)); then
+        printf 'unreferenced seed files omitted: %s\n' "$((discovered - shown))" >&2
+    fi
+}
+
 if [[ "$role" == "ticketdesk-kernel" && ( -n "$seed_dir" || "$seed_builtin" == 1 || "$acceptance" == 1 ) ]]; then
     echo "the kernel profile cannot seed or run application acceptance; select ticketdesk-application or ticketdesk-agent" >&2
     exit 2
@@ -421,7 +439,7 @@ if ((acceptance || seed_builtin)); then
             run_seed_file "$application_root/$seed_relative" "manifest-$seed_index"
         done < <(jq -er '.seed_inputs[]' "$application_manifest")
         ((seed_index > 0)) || {
-            echo "application manifest contains no seed inputs" >&2
+            report_missing_manifest_seed_inputs
             exit 1
         }
         printf 'riffdb-dev-seed-v1\t%s\tapplication-manifest\n' "$seed_index" >&2

@@ -7,6 +7,7 @@ application-development API.
 ```text
 $ riffdb new order-desk
 created application `order-desk` at order-desk
+next: read order-desk/AUTHORING.md, replace the sample domain, then run `riffdb application check --source-only`
 
 $ cd order-desk
 $ riffdb dev --seed --run
@@ -83,6 +84,12 @@ new derived identities. It stages generated files and publishes the lock last.
 compile to the exact reviewed lock. A stale, substituted, interrupted, or
 partially generated application therefore fails before role binding,
 authorization, deployment, or application execution.
+
+Every successful check also prints the configured seed-input count and the
+exact development command. Use `riffdb dev --seed --run` only with one or more
+ordered `seed_inputs`; use `riffdb dev --run` for an intentionally seedless
+application. The seeded form fails before startup when the list is empty and
+names up to eight unreferenced JSONL files as an actionable correction.
 
 Generated query calls pin the compiler-owned plan hash as well as the contract
 and module. Successful Rust and TypeScript results expose the exact

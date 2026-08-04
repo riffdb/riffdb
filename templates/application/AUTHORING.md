@@ -132,6 +132,26 @@ is not a key set. Model one line per product, copy the small immutable display
 field onto the line, or declare a projection; RiffDB will not silently
 deduplicate it.
 
+## Replace the sample seed plan
+
+Use one JSONL file per symbolic command and list the files in dependency order
+under `seed_inputs` in `riffdb.application.json`:
+
+```json
+"seed_inputs": [
+  "riffdb/seed/01-CreateStore.jsonl",
+  "riffdb/seed/02-CreateCustomer.jsonl",
+  "riffdb/seed/03-CreateProduct.jsonl"
+]
+```
+
+The command name is the filename after its numeric prefix. Replace or remove
+the sample `CreateItem` file when replacing the sample domain. Successful
+application checks print the configured seed count and the exact next command:
+use `riffdb dev --seed --run` when the list is nonempty, or `riffdb dev --run`
+for an intentionally seedless application. Requesting `--seed` with an empty
+list fails before application startup and names any unreferenced JSONL files.
+
 ## Use generated read-after-write helpers
 
 Rust generated clients expose query options from the generated module and a

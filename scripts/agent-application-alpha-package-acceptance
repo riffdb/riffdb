@@ -52,6 +52,16 @@ cmp "$repo_root/crates/riffdb-contract-syntax/LANGUAGE.md" \
 
 rust_run_root="$work_root/rust-run"
 "$bundle/bin/riffdb" new run-rust --language rust --directory "$rust_run_root" >/dev/null
+[[ -s "$rust_run_root/AUTHORING.md" ]] || {
+    echo "fresh application omitted its repository-local authoring guide" >&2
+    exit 1
+}
+rust_source_check="$(
+    cd "$rust_run_root"
+    "$bundle/bin/riffdb" application check --source-only
+)"
+rg -Fq 'application seed plan: 1 manifest input(s); run `riffdb dev --seed --run`' \
+    <<<"$rust_source_check"
 rust_run_output="$(
     cd "$rust_run_root"
     "$bundle/bin/riffdb" dev --seed --run
@@ -96,6 +106,35 @@ jq -e '
 kill -TERM "$typescript_run_pid"
 wait "$typescript_run_pid" 2>/dev/null || true
 typescript_run_pid=
+
+seedless_root="$work_root/seedless-run"
+cp -R "$typescript_run_root" "$seedless_root"
+jq -c '.seed_inputs = []' "$seedless_root/riffdb.application.json" \
+    >"$seedless_root/riffdb.application.json.next"
+printf '\n' >>"$seedless_root/riffdb.application.json.next"
+mv "$seedless_root/riffdb.application.json.next" \
+    "$seedless_root/riffdb.application.json"
+(
+    cd "$seedless_root"
+    "$bundle/bin/riffdb" application lock --write >/dev/null
+)
+seedless_check="$(
+    cd "$seedless_root"
+    "$bundle/bin/riffdb" application check --source-only
+)"
+rg -Fq 'application seed plan: none; run `riffdb dev --run`' \
+    <<<"$seedless_check"
+if (
+    cd "$seedless_root"
+    "$bundle/bin/riffdb" dev --seed --run
+) >"$work_root/seedless.stdout" 2>"$work_root/seedless.stderr"; then
+    echo "seedless application unexpectedly accepted --seed" >&2
+    exit 1
+fi
+rg -Fq 'fix: add ordered JSONL paths to `seed_inputs` in riffdb.application.json, or rerun without `--seed` as `riffdb dev --run`' \
+    "$work_root/seedless.stderr"
+rg -Fq 'unreferenced seed file: riffdb/seed/01-CreateItem.jsonl' \
+    "$work_root/seedless.stderr"
 
 mkdir "$work_root/existing-empty"
 (

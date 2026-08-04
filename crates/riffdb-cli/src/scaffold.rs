@@ -262,8 +262,17 @@ fn source_parent(path: &Path) -> &Path {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ApplicationCheckStatus {
-    SourceOnly,
-    ExactLock,
+    SourceOnly { seed_input_count: usize },
+    ExactLock { seed_input_count: usize },
+}
+
+fn application_seed_input_count(source_path: &Path) -> Result<usize, ScaffoldError> {
+    let source_bytes = read_bounded(source_path, 1_048_576)?;
+    let source_text =
+        std::str::from_utf8(&source_bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
+    let source = ApplicationSourceManifest::parse(source_text)
+        .map_err(|error| application_source_diagnostic(source_path, error.kind()))?;
+    Ok(source.seed_inputs().len())
 }
 
 pub(crate) fn check_application(
@@ -272,10 +281,14 @@ pub(crate) fn check_application(
     let root = source_parent(source_path);
     if root.join(DEFAULT_LOCK_PATH).exists() {
         check_application_lock(source_path, None)?;
-        Ok(ApplicationCheckStatus::ExactLock)
+        Ok(ApplicationCheckStatus::ExactLock {
+            seed_input_count: application_seed_input_count(source_path)?,
+        })
     } else {
         let _ = compile_symbolic_application(source_path)?;
-        Ok(ApplicationCheckStatus::SourceOnly)
+        Ok(ApplicationCheckStatus::SourceOnly {
+            seed_input_count: application_seed_input_count(source_path)?,
+        })
     }
 }
 
@@ -287,7 +300,9 @@ pub(crate) fn check_application_sources(
     source_path: &Path,
 ) -> Result<ApplicationCheckStatus, ScaffoldError> {
     let _ = compile_symbolic_application(source_path)?;
-    Ok(ApplicationCheckStatus::SourceOnly)
+    Ok(ApplicationCheckStatus::SourceOnly {
+        seed_input_count: application_seed_input_count(source_path)?,
+    })
 }
 
 pub(crate) fn preview_application_lock(source_path: &Path) -> Result<Vec<u8>, ScaffoldError> {
@@ -2718,7 +2733,9 @@ mod tests {
 
         assert_eq!(
             check_application(&source).expect("read-only compile"),
-            ApplicationCheckStatus::SourceOnly
+            ApplicationCheckStatus::SourceOnly {
+                seed_input_count: 1
+            }
         );
         let preview = preview_application_lock(&source).expect("read-only lock preview");
         assert!(!generated.exists());
@@ -2749,11 +2766,25 @@ mod tests {
 
         assert_eq!(
             check_application_sources(&source).expect("source-only check ignores exact artifacts"),
-            ApplicationCheckStatus::SourceOnly
+            ApplicationCheckStatus::SourceOnly {
+                seed_input_count: 1
+            }
         );
         assert_eq!(
             fs::read(&generated).expect("source-only check is read-only"),
             b"substituted\n"
+        );
+
+        let source_without_seed = fs::read_to_string(&source).expect("source").replace(
+            r#""seed_inputs":["riffdb/seed/01-CreateItem.jsonl"]"#,
+            r#""seed_inputs":[]"#,
+        );
+        fs::write(&source, source_without_seed).expect("remove seed plan");
+        assert_eq!(
+            check_application_sources(&source).expect("seedless source-only check"),
+            ApplicationCheckStatus::SourceOnly {
+                seed_input_count: 0
+            }
         );
         fs::remove_dir_all(base).expect("cleanup");
     }

@@ -194,6 +194,18 @@ fn interrupt_application_deployment_after(environment: &dyn Environment, stage: 
         std::process::exit(APPLICATION_DEPLOYMENT_TEST_INTERRUPT_EXIT);
     }
 }
+
+fn application_seed_guidance(seed_input_count: usize) -> String {
+    if seed_input_count == 0 {
+        "application seed plan: none; run `riffdb dev --run`, or add ordered `seed_inputs` before requesting `--seed`"
+            .to_owned()
+    } else {
+        format!(
+            "application seed plan: {seed_input_count} manifest input(s); run `riffdb dev --seed --run`"
+        )
+    }
+}
+
 use crate::scaffold::{
     ApplicationCheckStatus, PinnedLockRefresh, ScaffoldLanguage, application_contract_source,
     application_contract_version, check_application, check_application_lock,
@@ -435,14 +447,16 @@ pub async fn run() -> ExitCode {
                 check_application(Path::new(source))
             };
             return match result {
-                Ok(ApplicationCheckStatus::ExactLock) => {
+                Ok(ApplicationCheckStatus::ExactLock { seed_input_count }) => {
                     println!("application sources, exact lock, and generated bindings are exact");
+                    println!("{}", application_seed_guidance(seed_input_count));
                     ExitCode::SUCCESS
                 }
-                Ok(ApplicationCheckStatus::SourceOnly) => {
+                Ok(ApplicationCheckStatus::SourceOnly { seed_input_count }) => {
                     println!(
                         "application sources compile; no lock or generated artifacts were checked"
                     );
+                    println!("{}", application_seed_guidance(seed_input_count));
                     ExitCode::SUCCESS
                 }
                 Err(error) => {
@@ -6634,6 +6648,18 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn application_check_names_the_exact_seeded_or_seedless_next_command() {
+        assert_eq!(
+            application_seed_guidance(0),
+            "application seed plan: none; run `riffdb dev --run`, or add ordered `seed_inputs` before requesting `--seed`"
+        );
+        assert_eq!(
+            application_seed_guidance(3),
+            "application seed plan: 3 manifest input(s); run `riffdb dev --seed --run`"
+        );
+    }
 
     #[test]
     fn seed_checkpoints_are_contract_version_scoped() {
