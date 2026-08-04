@@ -5,6 +5,18 @@ use crate::{
     TicketRow, TicketStatus, UserRow, uuid_from_ordinal,
 };
 
+fn sized_text(prefix: String, target_bytes: u32) -> String {
+    if target_bytes == 0 || prefix.len() >= target_bytes as usize {
+        return prefix;
+    }
+    let mut value = prefix;
+    value.extend(std::iter::repeat_n(
+        'x',
+        target_bytes as usize - value.len(),
+    ));
+    value
+}
+
 const NS_ORG: u8 = 0x10;
 const NS_USER: u8 = 0x11;
 const NS_PROJECT: u8 = 0x12;
@@ -199,7 +211,10 @@ impl SeedDataset {
                         reporter_id: reporter.user_id,
                         assignee_id: assignee.user_id,
                         status,
-                        title: format!("ticket-{org_i}-{project_i}-{ticket_i}"),
+                        title: sized_text(
+                            format!("ticket-{org_i}-{project_i}-{ticket_i}"),
+                            scale.payload_bytes.min(128),
+                        ),
                     });
 
                     for comment_i in 0..scale.comments_per_ticket {
@@ -210,8 +225,9 @@ impl SeedDataset {
                             comment_id: uuid_from_ordinal(NS_COMMENT, comment_ordinal),
                             ticket_id,
                             author_id: author.user_id,
-                            body: format!(
-                                "comment body {org_i}/{project_i}/{ticket_i}/{comment_i}"
+                            body: sized_text(
+                                format!("comment body {org_i}/{project_i}/{ticket_i}/{comment_i}"),
+                                scale.payload_bytes,
                             ),
                         });
                     }
@@ -427,6 +443,71 @@ impl SeedDataset {
             write_label_b: label_b,
         }
     }
+
+    /// Builds ordinary application probes for the first `count` organization
+    /// partitions. This is comparison-only setup; every returned probe remains
+    /// symbolic and uses the same public application operations.
+    #[must_use]
+    pub fn tenant_probes(&self, count: usize) -> Vec<ScenarioProbes> {
+        self.organizations
+            .iter()
+            .take(count.max(1))
+            .map(|organization| {
+                let organization_id = organization.organization_id;
+                let tenant = Self {
+                    scale: Scale {
+                        organizations: 1,
+                        board_dense_open: 0,
+                        ..self.scale
+                    },
+                    organizations: vec![organization.clone()],
+                    users: self
+                        .users
+                        .iter()
+                        .filter(|row| row.organization_id == organization_id)
+                        .cloned()
+                        .collect(),
+                    projects: self
+                        .projects
+                        .iter()
+                        .filter(|row| row.organization_id == organization_id)
+                        .cloned()
+                        .collect(),
+                    members: self
+                        .members
+                        .iter()
+                        .filter(|row| row.organization_id == organization_id)
+                        .cloned()
+                        .collect(),
+                    tickets: self
+                        .tickets
+                        .iter()
+                        .filter(|row| row.organization_id == organization_id)
+                        .cloned()
+                        .collect(),
+                    comments: self
+                        .comments
+                        .iter()
+                        .filter(|row| row.organization_id == organization_id)
+                        .cloned()
+                        .collect(),
+                    labels: self
+                        .labels
+                        .iter()
+                        .filter(|row| row.organization_id == organization_id)
+                        .cloned()
+                        .collect(),
+                    ticket_labels: self
+                        .ticket_labels
+                        .iter()
+                        .filter(|row| row.organization_id == organization_id)
+                        .cloned()
+                        .collect(),
+                };
+                tenant.probes()
+            })
+            .collect()
+    }
 }
 
 /// Fixed keys exercised by timed scenarios.
@@ -577,6 +658,16 @@ mod tests {
     }
 
     #[test]
+    fn wide_payload_shape_respects_each_contract_bound() {
+        let mut scale = Scale::smoke();
+        scale.payload_bytes = 200;
+        let dataset = SeedDataset::generate(scale);
+
+        assert!(dataset.tickets.iter().all(|ticket| ticket.title.len() == 128));
+        assert!(dataset.comments.iter().all(|comment| comment.body.len() == 200));
+    }
+
+    #[test]
     fn dense_cell_assertion_fails_when_board_density_is_broken() {
         // Falsifiability transcript: zero board density under a "full-shaped"
         // scale fails the >=500 gate used by harness unit tests.
@@ -720,5 +811,19 @@ mod tests {
         let odd = probes.swap_member_roles(1);
         assert_eq!(even.role_a, odd.role_b);
         assert_eq!(even.role_b, odd.role_a);
+    }
+
+    #[test]
+    fn tenant_probes_are_partition_distinct() {
+        let mut scale = Scale::smoke();
+        scale.organizations = 4;
+        let dataset = SeedDataset::generate(scale);
+        let probes = dataset.tenant_probes(4);
+        assert_eq!(probes.len(), 4);
+        let organizations = probes
+            .iter()
+            .map(|probe| probe.organization_id)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(organizations.len(), 4);
     }
 }

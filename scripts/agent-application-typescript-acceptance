@@ -18,7 +18,10 @@ npm --prefix "$runtime" test
 
 cargo build --quiet -p riffdb-cli --bin riffdb
 riffdb="$repo_root/target/debug/riffdb"
-work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-typescript-acceptance.XXXXXX")"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export TMPDIR="$task_tmp_root"
+work_root="$(mktemp -d "$task_tmp_root/riffdb-typescript-acceptance.XXXXXX")"
 dev_pid=
 web_pid=
 cleanup() {

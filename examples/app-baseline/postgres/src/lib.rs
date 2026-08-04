@@ -7,18 +7,41 @@ use std::error::Error;
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use postgres::{Client, Config, NoTls, Row, Statement};
+use postgres::{Client, Config, NoTls, Row, Statement, Transaction};
 use riffdb_app_baseline_core::{
     AppBackend, BOARD_PAGE_SQL, CloseTicketWithCommentSeed, CommentRow, CommentSeed, LabelRow,
     OpenTicketWithLabelsSeed, OrganizationRow, ProjectMemberRow, ProjectRow, SeedDataset,
     SwapMemberRolesSeed, TicketDetailPage, TicketRow, TicketStatus, UserRow, UuidBytes,
     format_uuid,
 };
+use sha2::{Digest, Sha256};
 
 /// Digest-pinned image used by the baseline runner.
 pub const POSTGRES_IMAGE: &str = "postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818";
 
+/// Low-cardinality server resource counters sampled outside timed operations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PostgresResourceSnapshot {
+    /// Committed transactions observed for the benchmark database.
+    pub committed_transactions: u64,
+    /// Physical blocks read for the benchmark database.
+    pub blocks_read: u64,
+    /// Buffer hits for the benchmark database.
+    pub blocks_hit: u64,
+    /// Temporary bytes written for the benchmark database.
+    pub temporary_bytes: u64,
+    /// Current logical database size.
+    pub database_bytes: u64,
+    /// Cluster WAL bytes since statistics reset.
+    pub wal_bytes: u64,
+}
+
 const SCHEMA_SQL: &str = r#"
+DROP TABLE IF EXISTS app_outbox_intent CASCADE;
+DROP TABLE IF EXISTS app_domain_event CASCADE;
+DROP TABLE IF EXISTS app_audit CASCADE;
+DROP TABLE IF EXISTS app_idempotency CASCADE;
+DROP TABLE IF EXISTS app_permission CASCADE;
 DROP TABLE IF EXISTS ticket_label CASCADE;
 DROP TABLE IF EXISTS comment CASCADE;
 DROP TABLE IF EXISTS ticket CASCADE;
@@ -104,6 +127,54 @@ CREATE TABLE ticket_label (
     FOREIGN KEY (organization_id, ticket_id) REFERENCES ticket(organization_id, ticket_id),
     FOREIGN KEY (organization_id, label_id) REFERENCES label(organization_id, label_id)
 );
+
+CREATE TABLE app_permission (
+    principal TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    PRIMARY KEY (principal, operation)
+);
+
+CREATE TABLE app_idempotency (
+    idempotency_key TEXT PRIMARY KEY,
+    operation TEXT NOT NULL,
+    organization_id UUID NOT NULL,
+    input_fingerprint TEXT NOT NULL,
+    outcome TEXT NOT NULL
+);
+
+CREATE TABLE app_audit (
+    audit_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    idempotency_key TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    organization_id UUID NOT NULL,
+    result TEXT NOT NULL
+);
+
+CREATE TABLE app_domain_event (
+    event_id TEXT PRIMARY KEY,
+    idempotency_key TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    organization_id UUID NOT NULL
+);
+
+CREATE TABLE app_outbox_intent (
+    event_id TEXT PRIMARY KEY REFERENCES app_domain_event(event_id),
+    delivery_state TEXT NOT NULL CHECK (delivery_state = 'pending')
+);
+
+INSERT INTO app_permission(principal, operation) VALUES
+    ('app-baseline', 'point_get_ticket'),
+    ('app-baseline', 'point_get_user'),
+    ('app-baseline', 'list_tickets_by_project_status'),
+    ('app-baseline', 'list_open_tickets_for_assignee'),
+    ('app-baseline', 'list_comments_for_ticket'),
+    ('app-baseline', 'list_project_members'),
+    ('app-baseline', 'ticket_detail_page'),
+    ('app-baseline', 'board_page'),
+    ('app-baseline', 'create_comment'),
+    ('app-baseline', 'close_ticket_with_comment'),
+    ('app-baseline', 'swap_member_roles'),
+    ('app-baseline', 'open_ticket_with_labels');
 "#;
 
 // Every statement executed against the live server is a named constant so it
@@ -232,16 +303,161 @@ const OPEN_TICKET_SQL: &str = "INSERT INTO ticket(
          'open', $6
      )";
 
+fn safe_input_fingerprint(fields: &[&[u8]]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"riffdb-app-baseline-safe-input-v1\0");
+    for field in fields {
+        digest.update(u64::try_from(field.len()).unwrap_or(u64::MAX).to_be_bytes());
+        digest.update(field);
+    }
+    let bytes = digest.finalize();
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
+}
+
+fn safe_admit(
+    tx: &mut Transaction<'_>,
+    idempotency_key: &str,
+    operation: &'static str,
+    organization_id: UuidBytes,
+    input_fingerprint: &str,
+) -> Result<bool, PostgresError> {
+    let authorized = tx
+        .query_opt(
+            "SELECT 1 FROM app_permission WHERE principal = 'app-baseline' AND operation = $1",
+            &[&operation],
+        )
+        .map_err(db_err)?;
+    if authorized.is_none() {
+        return Err(PostgresError::Decode);
+    }
+    if let Some(row) = tx
+        .query_opt(
+            "SELECT operation, organization_id::text, input_fingerprint
+             FROM app_idempotency WHERE idempotency_key = $1 FOR UPDATE",
+            &[&idempotency_key],
+        )
+        .map_err(db_err)?
+    {
+        let stored_operation: &str = row.get(0);
+        let stored_organization: &str = row.get(1);
+        let stored_fingerprint: &str = row.get(2);
+        if stored_operation != operation
+            || stored_organization != format_uuid(organization_id)
+            || stored_fingerprint != input_fingerprint
+        {
+            return Err(PostgresError::Decode);
+        }
+        tx.execute(
+            "INSERT INTO app_audit(idempotency_key, operation, organization_id, result)
+             VALUES ($1, $2, $3::text::uuid, 'replayed')",
+            &[&idempotency_key, &operation, &format_uuid(organization_id)],
+        )
+        .map_err(db_err)?;
+        return Ok(true);
+    }
+    tx.execute(
+        "INSERT INTO app_idempotency(
+             idempotency_key, operation, organization_id, input_fingerprint, outcome
+         ) VALUES ($1, $2, $3::text::uuid, $4, 'committed')",
+        &[
+            &idempotency_key,
+            &operation,
+            &format_uuid(organization_id),
+            &input_fingerprint,
+        ],
+    )
+    .map_err(db_err)?;
+    Ok(false)
+}
+
+fn safe_complete(
+    tx: &mut Transaction<'_>,
+    idempotency_key: &str,
+    operation: &'static str,
+    organization_id: UuidBytes,
+    event_type: &'static str,
+) -> Result<(), PostgresError> {
+    let event_id = format!("{operation}/{idempotency_key}");
+    tx.execute(
+        "INSERT INTO app_audit(idempotency_key, operation, organization_id, result)
+         VALUES ($1, $2, $3::text::uuid, 'committed')",
+        &[&idempotency_key, &operation, &format_uuid(organization_id)],
+    )
+    .map_err(db_err)?;
+    tx.execute(
+        "INSERT INTO app_domain_event(event_id, idempotency_key, event_type, organization_id)
+         VALUES ($1, $2, $3, $4::text::uuid)",
+        &[
+            &event_id,
+            &idempotency_key,
+            &event_type,
+            &format_uuid(organization_id),
+        ],
+    )
+    .map_err(db_err)?;
+    tx.execute(
+        "INSERT INTO app_outbox_intent(event_id, delivery_state) VALUES ($1, 'pending')",
+        &[&event_id],
+    )
+    .map_err(db_err)?;
+    Ok(())
+}
+
 /// PostgreSQL comparison adapter.
 pub struct PostgresAppBackend {
     config: Config,
     client: Option<Client>,
     statements: HashMap<&'static str, Statement>,
+    profile: PostgresComparisonProfile,
+}
+
+/// Explicit PostgreSQL comparison semantics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PostgresComparisonProfile {
+    /// Optimized conventional schema and application transaction floor.
+    Minimal,
+    /// Adds application authorization, idempotency, audit/provenance,
+    /// domain-event, and outbox-intent obligations atomically.
+    SafeApp,
+}
+
+impl PostgresComparisonProfile {
+    /// Stable report identity.
+    #[must_use]
+    pub const fn backend_id(self) -> &'static str {
+        match self {
+            Self::Minimal => "postgres_minimal",
+            Self::SafeApp => "postgres_safe_app",
+        }
+    }
+
+    /// Parses a CLI profile name.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "minimal" => Some(Self::Minimal),
+            "safe-app" => Some(Self::SafeApp),
+            _ => None,
+        }
+    }
 }
 
 impl PostgresAppBackend {
     /// Creates an adapter from a database URL.
     pub fn new(database_url: impl Into<String>) -> Result<Self, PostgresError> {
+        Self::new_with_profile(database_url, PostgresComparisonProfile::Minimal)
+    }
+
+    /// Creates an adapter under an explicit comparison profile.
+    pub fn new_with_profile(
+        database_url: impl Into<String>,
+        profile: PostgresComparisonProfile,
+    ) -> Result<Self, PostgresError> {
         let database_url = database_url.into();
         if database_url.is_empty() || database_url.len() > 4_096 {
             return Err(PostgresError::InvalidConfiguration);
@@ -254,7 +470,31 @@ impl PostgresAppBackend {
             config,
             client: None,
             statements: HashMap::new(),
+            profile,
         })
+    }
+
+    /// Selected comparison profile.
+    #[must_use]
+    pub const fn comparison_profile(&self) -> PostgresComparisonProfile {
+        self.profile
+    }
+
+    fn authorize_read(&mut self, operation: &'static str) -> Result<(), PostgresError> {
+        if self.profile == PostgresComparisonProfile::Minimal {
+            return Ok(());
+        }
+        let row = self
+            .client()?
+            .query_opt(
+                "SELECT 1 FROM app_permission WHERE principal = 'app-baseline' AND operation = $1",
+                &[&operation],
+            )
+            .map_err(db_err)?;
+        if row.is_none() {
+            return Err(PostgresError::Decode);
+        }
+        Ok(())
     }
 
     /// Returns the persistent connection, opening it on first use.
@@ -357,6 +597,33 @@ impl PostgresAppBackend {
             full_page_writes: row.get(3),
             wal_sync_method: row.get(4),
             data_directory: row.get(5),
+        })
+    }
+
+    /// Captures PostgreSQL resource counters for before/after load attribution.
+    pub fn resource_snapshot(&mut self) -> Result<PostgresResourceSnapshot, PostgresError> {
+        let row = self
+            .client()?
+            .query_one(
+                "SELECT xact_commit::bigint, blks_read::bigint, blks_hit::bigint, \
+                        temp_bytes::bigint, pg_database_size(current_database())::bigint, \
+                        (SELECT wal_bytes::text FROM pg_stat_wal)
+                 FROM pg_stat_database
+                 WHERE datname = current_database()",
+                &[],
+            )
+            .map_err(db_err)?;
+        let nonnegative = |value: i64| u64::try_from(value).map_err(|_| PostgresError::Decode);
+        Ok(PostgresResourceSnapshot {
+            committed_transactions: nonnegative(row.get(0))?,
+            blocks_read: nonnegative(row.get(1))?,
+            blocks_hit: nonnegative(row.get(2))?,
+            temporary_bytes: nonnegative(row.get(3))?,
+            database_bytes: nonnegative(row.get(4))?,
+            wal_bytes: row
+                .get::<_, String>(5)
+                .parse::<u64>()
+                .map_err(|_| PostgresError::Decode)?,
         })
     }
 
@@ -661,6 +928,7 @@ impl AppBackend for PostgresAppBackend {
         organization_id: UuidBytes,
         ticket_id: UuidBytes,
     ) -> Result<Option<TicketRow>, Self::Error> {
+        self.authorize_read("point_get_ticket")?;
         let statement = self.statement(SELECT_TICKET_SQL)?;
         let client = self.client()?;
         let row = client
@@ -677,6 +945,7 @@ impl AppBackend for PostgresAppBackend {
         organization_id: UuidBytes,
         user_id: UuidBytes,
     ) -> Result<Option<UserRow>, Self::Error> {
+        self.authorize_read("point_get_user")?;
         let statement = self.statement(SELECT_USER_SQL)?;
         let client = self.client()?;
         let row = client
@@ -695,6 +964,7 @@ impl AppBackend for PostgresAppBackend {
         status: TicketStatus,
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error> {
+        self.authorize_read("list_tickets_by_project_status")?;
         let statement = self.statement(LIST_TICKETS_BY_PROJECT_STATUS_SQL)?;
         let client = self.client()?;
         let rows = client
@@ -718,6 +988,7 @@ impl AppBackend for PostgresAppBackend {
         status: TicketStatus,
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error> {
+        self.authorize_read("board_page")?;
         // BOARD_PAGE_SQL is the single shared constant also cited in the report.
         let statement = self.statement(BOARD_PAGE_SQL)?;
         let client = self.client()?;
@@ -756,6 +1027,7 @@ impl AppBackend for PostgresAppBackend {
         assignee_id: UuidBytes,
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error> {
+        self.authorize_read("list_open_tickets_for_assignee")?;
         let statement = self.statement(LIST_OPEN_TICKETS_FOR_ASSIGNEE_SQL)?;
         let client = self.client()?;
         let rows = client
@@ -777,6 +1049,7 @@ impl AppBackend for PostgresAppBackend {
         ticket_id: UuidBytes,
         limit: u32,
     ) -> Result<Vec<CommentRow>, Self::Error> {
+        self.authorize_read("list_comments_for_ticket")?;
         let statement = self.statement(LIST_COMMENTS_SQL)?;
         let client = self.client()?;
         let rows = client
@@ -798,6 +1071,7 @@ impl AppBackend for PostgresAppBackend {
         project_id: UuidBytes,
         limit: u32,
     ) -> Result<Vec<ProjectMemberRow>, Self::Error> {
+        self.authorize_read("list_project_members")?;
         let statement = self.statement(LIST_PROJECT_MEMBERS_SQL)?;
         let client = self.client()?;
         let rows = client
@@ -819,6 +1093,7 @@ impl AppBackend for PostgresAppBackend {
         ticket_id: UuidBytes,
         comment_limit: u32,
     ) -> Result<Option<TicketDetailPage>, Self::Error> {
+        self.authorize_read("ticket_detail_page")?;
         let detail_statement = self.statement(TICKET_DETAIL_SQL)?;
         let comments_statement = self.statement(LIST_COMMENTS_SQL)?;
         let labels_statement = self.statement(TICKET_DETAIL_LABELS_SQL)?;
@@ -909,6 +1184,46 @@ impl AppBackend for PostgresAppBackend {
 
     fn create_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error> {
         let statement = self.statement(INSERT_COMMENT_SQL)?;
+        if self.profile == PostgresComparisonProfile::SafeApp {
+            let fingerprint = safe_input_fingerprint(&[
+                &comment.row.comment_id,
+                &comment.row.ticket_id,
+                &comment.row.author_id,
+                comment.row.body.as_bytes(),
+            ]);
+            let client = self.client()?;
+            let mut tx = client.transaction().map_err(db_err)?;
+            if safe_admit(
+                &mut tx,
+                &comment.idempotency_key,
+                "create_comment",
+                comment.row.organization_id,
+                &fingerprint,
+            )? {
+                tx.commit().map_err(db_err)?;
+                return Ok(());
+            }
+            tx.execute(
+                &statement,
+                &[
+                    &format_uuid(comment.row.organization_id),
+                    &format_uuid(comment.row.comment_id),
+                    &format_uuid(comment.row.ticket_id),
+                    &format_uuid(comment.row.author_id),
+                    &comment.row.body,
+                ],
+            )
+            .map_err(db_err)?;
+            safe_complete(
+                &mut tx,
+                &comment.idempotency_key,
+                "create_comment",
+                comment.row.organization_id,
+                "CommentCreated",
+            )?;
+            tx.commit().map_err(db_err)?;
+            return Ok(());
+        }
         let client = self.client()?;
         client
             .execute(
@@ -926,6 +1241,9 @@ impl AppBackend for PostgresAppBackend {
     }
 
     fn replay_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error> {
+        if self.profile == PostgresComparisonProfile::SafeApp {
+            return self.create_comment(comment);
+        }
         // This explicit application policy mirrors RiffDB's same-key,
         // equal-input replay: the existing row makes the repeated write a
         // successful no-op. Ordinary creates continue to use strict INSERT.
@@ -954,8 +1272,27 @@ impl AppBackend for PostgresAppBackend {
         let count_user = self.statement(COUNT_USER_SQL)?;
         let close_ticket = self.statement(CLOSE_TICKET_SQL)?;
         let insert_comment = self.statement(INSERT_COMMENT_SQL)?;
+        let safe_profile = self.profile == PostgresComparisonProfile::SafeApp;
         let client = self.client()?;
         let mut tx = client.transaction().map_err(db_err)?;
+        if safe_profile {
+            let fingerprint = safe_input_fingerprint(&[
+                &input.ticket_id,
+                &input.comment_id,
+                &input.author_id,
+                input.body.as_bytes(),
+            ]);
+            if safe_admit(
+                &mut tx,
+                &input.idempotency_key,
+                "close_ticket_with_comment",
+                input.organization_id,
+                &fingerprint,
+            )? {
+                tx.commit().map_err(db_err)?;
+                return Ok(());
+            }
+        }
         // Existence checks mirror RiffDB relationship validation before mutate/create.
         let ticket_ok: i64 = tx
             .query_one(
@@ -1002,14 +1339,43 @@ impl AppBackend for PostgresAppBackend {
             ],
         )
         .map_err(db_err)?;
+        if safe_profile {
+            safe_complete(
+                &mut tx,
+                &input.idempotency_key,
+                "close_ticket_with_comment",
+                input.organization_id,
+                "TicketClosedWithComment",
+            )?;
+        }
         tx.commit().map_err(db_err)?;
         Ok(())
     }
 
     fn swap_member_roles(&mut self, input: &SwapMemberRolesSeed) -> Result<(), Self::Error> {
         let update_member_role = self.statement(UPDATE_MEMBER_ROLE_SQL)?;
+        let safe_profile = self.profile == PostgresComparisonProfile::SafeApp;
         let client = self.client()?;
         let mut tx = client.transaction().map_err(db_err)?;
+        if safe_profile {
+            let fingerprint = safe_input_fingerprint(&[
+                &input.project_id,
+                &input.user_a,
+                &input.user_b,
+                input.role_a.as_bytes(),
+                input.role_b.as_bytes(),
+            ]);
+            if safe_admit(
+                &mut tx,
+                &input.idempotency_key,
+                "swap_member_roles",
+                input.organization_id,
+                &fingerprint,
+            )? {
+                tx.commit().map_err(db_err)?;
+                return Ok(());
+            }
+        }
         let updated_a = tx
             .execute(
                 &update_member_role,
@@ -1035,6 +1401,15 @@ impl AppBackend for PostgresAppBackend {
         if updated_a == 0 || updated_b == 0 {
             return Err(PostgresError::Decode);
         }
+        if safe_profile {
+            safe_complete(
+                &mut tx,
+                &input.idempotency_key,
+                "swap_member_roles",
+                input.organization_id,
+                "MemberRolesSwapped",
+            )?;
+        }
         tx.commit().map_err(db_err)?;
         Ok(())
     }
@@ -1045,8 +1420,30 @@ impl AppBackend for PostgresAppBackend {
     ) -> Result<(), Self::Error> {
         let open_ticket = self.statement(OPEN_TICKET_SQL)?;
         let insert_ticket_label = self.statement(INSERT_TICKET_LABEL_SQL)?;
+        let safe_profile = self.profile == PostgresComparisonProfile::SafeApp;
         let client = self.client()?;
         let mut tx = client.transaction().map_err(db_err)?;
+        if safe_profile {
+            let fingerprint = safe_input_fingerprint(&[
+                &input.ticket_id,
+                &input.project_id,
+                &input.reporter_id,
+                &input.assignee_id,
+                input.title.as_bytes(),
+                &input.label_a,
+                &input.label_b,
+            ]);
+            if safe_admit(
+                &mut tx,
+                &input.idempotency_key,
+                "open_ticket_with_labels",
+                input.organization_id,
+                &fingerprint,
+            )? {
+                tx.commit().map_err(db_err)?;
+                return Ok(());
+            }
+        }
         tx.execute(
             &open_ticket,
             &[
@@ -1077,6 +1474,15 @@ impl AppBackend for PostgresAppBackend {
             ],
         )
         .map_err(db_err)?;
+        if safe_profile {
+            safe_complete(
+                &mut tx,
+                &input.idempotency_key,
+                "open_ticket_with_labels",
+                input.organization_id,
+                "TicketOpenedWithLabels",
+            )?;
+        }
         tx.commit().map_err(db_err)?;
         Ok(())
     }
@@ -1219,7 +1625,10 @@ fn db_err(error: postgres::Error) -> PostgresError {
 mod tests {
     use riffdb_app_baseline_core::{AppBackend, LoadErrorClass};
 
-    use super::{PostgresAppBackend, PostgresError};
+    use super::{
+        PostgresAppBackend, PostgresComparisonProfile, PostgresError, SCHEMA_SQL,
+        safe_input_fingerprint,
+    };
 
     fn database_error(sqlstate: &str) -> PostgresError {
         PostgresError::Database {
@@ -1263,5 +1672,43 @@ mod tests {
         let mut bad = ok.clone();
         bad.synchronous_commit = "off".to_owned();
         assert!(bad.assert_durable_for_parity().is_err());
+    }
+
+    #[test]
+    fn comparator_profiles_have_unambiguous_report_identities() {
+        assert_eq!(
+            PostgresComparisonProfile::parse("minimal").map(|profile| profile.backend_id()),
+            Some("postgres_minimal")
+        );
+        assert_eq!(
+            PostgresComparisonProfile::parse("safe-app").map(|profile| profile.backend_id()),
+            Some("postgres_safe_app")
+        );
+        assert!(PostgresComparisonProfile::parse("sql-is-unsafe").is_none());
+    }
+
+    #[test]
+    fn safety_comparator_schema_contains_every_claimed_obligation() {
+        for table in [
+            "app_permission",
+            "app_idempotency",
+            "app_audit",
+            "app_domain_event",
+            "app_outbox_intent",
+        ] {
+            assert!(SCHEMA_SQL.contains(&format!("CREATE TABLE {table}")));
+        }
+    }
+
+    #[test]
+    fn safe_input_fingerprint_is_canonical_and_does_not_retain_values() {
+        let first = safe_input_fingerprint(&[b"a/b", b"c"]);
+        let second = safe_input_fingerprint(&[b"a", b"b/c"]);
+        let repeated = safe_input_fingerprint(&[b"a/b", b"c"]);
+
+        assert_eq!(first.len(), 64);
+        assert_eq!(first, repeated);
+        assert_ne!(first, second);
+        assert!(!first.contains("a/b"));
     }
 }

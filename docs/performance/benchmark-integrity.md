@@ -95,8 +95,10 @@ without it member crates (and most T2 unit tests) are skipped.
 | full  | 90 s load        | 15 s | 3 |
 
 - Load duration **&lt; 60 s** is marked `non_evidentiary_window` in the report.
-- Reps execute **interleaved by backend** (`PG1, R1, PG2, R2, …`) to decorrelate
-  SSD SLC-cache state from backend identity.
+- Dual-backend load reps execute as isolated, counterbalanced phases
+  (`PG1, R1, R2, PG2, …`). PostgreSQL and its proxy are stopped before a
+  RiffDB phase; odd repetitions reverse the order to decorrelate device/cache
+  drift from backend identity.
 - Gated scalars report `{median, min, max, reps, spread_ratio}`;
   `spread_ratio > 2.0` ⇒ `stability: "unstable"`.
 - `--require-stable` exits nonzero on unstable gated metrics, and **refuses**
@@ -119,12 +121,35 @@ Results are embedded as `device_baseline` next to an `environment` block
 
 | Mode | Flag | Semantics |
 |------|------|-----------|
-| shared daemon (default) | (none) | One `riffdbd` for the whole concurrency sweep; write-group histogram is process-lifetime and attaches to the last point as `histogram_scope: cumulative_final`. |
-| per-level daemon | `--load-sweep-per-level-daemon` | Fresh daemon per client point; histogram is that level’s cumulative shutdown report (`histogram_scope: per_level`). |
+| per-level daemon (default) | (none) / `--load-sweep-per-level-daemon` | Fresh daemon and identical seed per client point; histogram is that level’s cumulative shutdown report (`histogram_scope: per_level`). |
+| accumulated history | `--load-accumulate-history` | One daemon for the whole sweep; later points include earlier writes and the final histogram has `histogram_scope: cumulative_final`. |
 
-Both modes remain available. Shared-daemon accumulation is deliberate history;
-per-level starts from empty retained history. Reports record
+Both modes remain available. Accumulation is a deliberate history-growth
+experiment, never an implicit concurrency comparison. Reports record
 `sweep_isolation`.
+
+## Evidence eligibility and report families
+
+An evidentiary load report must contain environment/device identity,
+PostgreSQL durability (when present), same-device comparison, at least two
+repetitions, stable gated metrics, clean semantic outcomes, and resource deltas
+for every point. A duration under 60 seconds is always marked
+`non_evidentiary_window`.
+
+The alpha gate uses three report families rather than one score:
+
+1. parity — warm operation and seed comparisons;
+2. load — closed/open arrivals, contention, tenants, shapes, fairness;
+3. resilience — process death, replay, durable consumers, authorization and
+   retained-history recovery.
+
+`benchmarks/run-app-baseline --alpha-matrix` hashes every required report into
+an eligibility manifest. `--alpha-matrix-smoke` validates plumbing but is
+explicitly never release evidence.
+
+Resource deltas are attribution aids, not application metrics: process CPU
+ticks/RSS/I/O and durable bytes for RiffDB; database blocks/temp/WAL/database
+size for PostgreSQL. Identifiers and application values are never labels.
 
 ## Stderr capture
 

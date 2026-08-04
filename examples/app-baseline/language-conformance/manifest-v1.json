@@ -1,0 +1,33 @@
+{
+  "schema": "riffdb.app-baseline-language-conformance/v1",
+  "database_measurement_driver": "rust",
+  "language_runtime_time_in_parity_ratios": false,
+  "canonical_semantics": "examples/app-baseline/language-conformance/semantic-observation-v1.json",
+  "languages": [
+    {
+      "language": "rust",
+      "acceptance": "scripts/check-application-bindings",
+      "live_evidence_cell": "parity.riffdb_public_grpc",
+      "surface": "generated_application_client"
+    },
+    {
+      "language": "typescript",
+      "acceptance": "scripts/agent-application-typescript-acceptance",
+      "observation": "fixtures/application-parity/agent-alpha-observation-v1.json",
+      "surface": "generated_application_client"
+    },
+    {
+      "language": "python_sync_async",
+      "acceptance": "scripts/agent-application-python-acceptance",
+      "observation": "fixtures/application-parity/python-observation-v1.json",
+      "surface": "generated_application_client"
+    }
+  ],
+  "forbidden_application_glue": [
+    "numeric entity/field/index identifiers",
+    "kernel protocol imports",
+    "handwritten protobuf encoders or decoders",
+    "handwritten application RPC wrappers",
+    "field visibility masks"
+  ]
+}

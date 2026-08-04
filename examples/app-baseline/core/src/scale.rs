@@ -29,6 +29,10 @@ pub struct Scale {
     ///
     /// `0` disables board density (smoke). Full uses [`FULL_BOARD_DENSE_OPEN`].
     pub board_dense_open: u32,
+    /// Target UTF-8 bytes for generated comment bodies. Ticket titles use the
+    /// same target capped at the contract's 128-byte maximum. Zero retains the
+    /// compact human-readable seed strings.
+    pub payload_bytes: u32,
 }
 
 impl Scale {
@@ -50,6 +54,7 @@ impl Scale {
             labels_per_org: 4,
             labels_per_ticket: 2,
             board_dense_open: 0,
+            payload_bytes: 0,
         }
     }
 
@@ -66,6 +71,7 @@ impl Scale {
             labels_per_org: 5,
             labels_per_ticket: 2,
             board_dense_open: FULL_BOARD_DENSE_OPEN,
+            payload_bytes: 0,
         }
     }
 
@@ -100,12 +106,18 @@ impl Scale {
             && self.tickets_per_project == Self::smoke().tickets_per_project
             && self.board_dense_open == Self::smoke().board_dense_open
             && self.projects_per_org == Self::smoke().projects_per_org
+            && self.comments_per_ticket == Self::smoke().comments_per_ticket
+            && self.labels_per_ticket == Self::smoke().labels_per_ticket
+            && self.payload_bytes == Self::smoke().payload_bytes
         {
             "smoke"
         } else if self.organizations == Self::full().organizations
             && self.tickets_per_project == Self::full().tickets_per_project
             && self.board_dense_open == Self::full().board_dense_open
             && self.projects_per_org == Self::full().projects_per_org
+            && self.comments_per_ticket == Self::full().comments_per_ticket
+            && self.labels_per_ticket == Self::full().labels_per_ticket
+            && self.payload_bytes == Self::full().payload_bytes
         {
             "full"
         } else {

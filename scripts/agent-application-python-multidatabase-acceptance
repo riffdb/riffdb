@@ -3,7 +3,10 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
-temporary="$(mktemp -d)"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export TMPDIR="$task_tmp_root"
+temporary="$(mktemp -d "$task_tmp_root/riffdb-python-multidatabase.XXXXXX")"
 trap 'rm -rf "$temporary"' EXIT
 wheel="${1:-}"
 if [[ -n "$wheel" ]]; then

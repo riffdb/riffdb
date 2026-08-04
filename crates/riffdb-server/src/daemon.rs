@@ -2996,6 +2996,7 @@ async fn supervise_ready_process(
     let write_completion_groups = graph.write_completion_group_snapshot();
     let dispatch_reasons = graph.command_group_dispatch_snapshot();
     let read_stages = graph.read_stage_snapshot();
+    let command_stages = graph.command_stage_snapshot();
     let notification_stop_failed = graph.begin_transport_shutdown().is_err();
     let transport_result = match &trigger {
         ReadyProcessTrigger::Transport(completion) => classify_transport_completion(completion),
@@ -3044,6 +3045,9 @@ async fn supervise_ready_process(
         let _ = writeln!(stdout, "riffdb-dispatch-reasons-v1\t{reasons}");
         let read_stages_line = riffdb_observability::format_read_stages_v1_line(&read_stages);
         let _ = writeln!(stdout, "{read_stages_line}");
+        let command_stages_line =
+            riffdb_observability::format_command_stages_v1_line(&command_stages);
+        let _ = writeln!(stdout, "{command_stages_line}");
         let _ = stdout.flush();
     }
     if maintenance_shutdown {
@@ -3508,6 +3512,10 @@ mod tests {
         assert!(
             source.contains("riffdb_observability::format_read_stages_v1_line(&read_stages)"),
             "read stages line is emitted beside the frozen write/dispatch lines"
+        );
+        assert!(
+            source.contains("riffdb_observability::format_command_stages_v1_line(&command_stages)"),
+            "command stages line is emitted beside the frozen write/dispatch lines"
         );
     }
 

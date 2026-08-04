@@ -3,7 +3,10 @@ set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
-temporary="$(mktemp -d)"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export TMPDIR="$task_tmp_root"
+temporary="$(mktemp -d "$task_tmp_root/riffdb-python-acceptance.XXXXXX")"
 dev_pid=
 cleanup() {
     if [[ -n "$dev_pid" ]] && kill -0 "$dev_pid" 2>/dev/null; then

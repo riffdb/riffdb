@@ -7,13 +7,22 @@ export TZ=UTC
 usage() {
     printf '%s\n' \
         'usage: benchmarks/run-app-baseline [--self-test]' \
+        '         | [--alpha-matrix|--alpha-matrix-smoke]' \
         '         | [--smoke|--full] [--samples N] [--warmup N] [--board-density N]' \
+        '         [--organizations N] [--tickets-per-project N] [--comments-per-ticket N]' \
+        '         [--labels-per-ticket N] [--payload-bytes N]' \
         '         [--concurrent-clients N] [--concurrent-operations N]' \
         '         [--load interactive|agent|membership_contention] [--load-clients N] [--load-duration-secs N]' \
         '         [--load-warmup-secs N] [--load-zipf-s F] [--load-contended]' \
+        '         [--load-open-loop-rate OPS] [--load-open-loop-queue-depth N]' \
+        '         [--load-tenants N] [--load-hot-tenant-percent PERCENT]' \
+        '         [--load-journeys]' \
         '         [--load-saturate] [--load-saturate-p99-ms N] [--load-concurrency-sweep]' \
+        '         [--load-accumulate-history]' \
         '         [--load-riffdb-transport per-session|shared]' \
         '         [--database-root PATH]' \
+        '         [--postgres-comparator minimal|safe-app]' \
+        '         [--reps N] [--require-stable]' \
         '         [--output PATH] [--assert-write-parity|--assert-all-parity]' \
         '         [--skip-postgres] [--skip-riffdb]' >&2
     exit 2
@@ -21,6 +30,9 @@ usage() {
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export TMPDIR="$task_tmp_root"
 
 # --self-test: build riffdbd and run the full app-baseline --workspace suite,
 # including the kill -9 dead-peer e2e (RUN_RIFFDB_DEAD_PEER=1).
@@ -44,10 +56,248 @@ if [[ "${1:-}" == "--self-test" ]]; then
     exit 0
 fi
 
+if [[ "${1:-}" == "--alpha-matrix" || "${1:-}" == "--alpha-matrix-smoke" ]]; then
+    (($# == 1)) || usage
+    matrix_mode="${1#--alpha-matrix}"
+    matrix_root="$repo_root/target/app-baseline/alpha-matrix"
+    mkdir -p "$matrix_root" "$task_tmp_root"
+    matrix_results="$(mktemp "$task_tmp_root/riffdb-alpha-matrix.XXXXXX")"
+    trap 'rm -f "$matrix_results"' EXIT INT TERM HUP
+    if [[ "$matrix_mode" == "-smoke" ]]; then
+        scale_args=(--smoke --reps 2)
+        load_args=(--load-duration-secs 5 --load-warmup-secs 1)
+        wide_labels=4
+    else
+        scale_args=(--full --reps 3 --require-stable)
+        load_args=(--load-duration-secs 90 --load-warmup-secs 15)
+        wide_labels=5
+    fi
+
+    run_matrix_cell() {
+        local name="$1" output_path="$matrix_root/$1.json"
+        shift
+        local began ended status
+        began="$(date +%s%N)"
+        if "$@" --output "$output_path"; then
+            status=passed
+        else
+            status=failed
+        fi
+        ended="$(date +%s%N)"
+        local digest=missing
+        [[ -f "$output_path" ]] && digest="$(sha256sum "$output_path" | awk '{print $1}')"
+        printf '%s\t%s\t%s\t%s\t%s\n' \
+            "$name" "$status" "$((ended - began))" "$output_path" "$digest" >>"$matrix_results"
+    }
+
+    run_matrix_cell parity_minimal "$0" "${scale_args[@]}" --postgres-comparator minimal
+    run_matrix_cell parity_safe_app "$0" "${scale_args[@]}" --postgres-comparator safe-app
+    run_matrix_cell closed_interactive "$0" "${scale_args[@]}" \
+        --load interactive --load-clients 32 "${load_args[@]}" --load-journeys
+    run_matrix_cell open_agent_500 "$0" "${scale_args[@]}" \
+        --load agent --load-clients 32 "${load_args[@]}" \
+        --load-open-loop-rate 500 --load-open-loop-queue-depth 4096
+    run_matrix_cell open_agent_2000 "$0" "${scale_args[@]}" \
+        --load agent --load-clients 32 "${load_args[@]}" \
+        --load-open-loop-rate 2000 --load-open-loop-queue-depth 4096
+    run_matrix_cell open_agent_8000 "$0" "${scale_args[@]}" \
+        --load agent --load-clients 32 "${load_args[@]}" \
+        --load-open-loop-rate 8000 --load-open-loop-queue-depth 4096
+    run_matrix_cell same_ticket_contention "$0" "${scale_args[@]}" \
+        --load interactive --load-clients 32 "${load_args[@]}" --load-contended
+    run_matrix_cell membership_contention "$0" "${scale_args[@]}" \
+        --load membership_contention --load-clients 32 "${load_args[@]}"
+    run_matrix_cell tenants_8_uniform "$0" "${scale_args[@]}" \
+        --organizations 8 --load interactive --load-clients 32 "${load_args[@]}" --load-tenants 8
+    run_matrix_cell tenants_64_hot "$0" "${scale_args[@]}" \
+        --organizations 64 --load interactive --load-clients 32 "${load_args[@]}" \
+        --load-tenants 64 --load-hot-tenant-percent 70
+    run_matrix_cell data_shape_wide "$0" "${scale_args[@]}" \
+        --tickets-per-project 200 --comments-per-ticket 20 --labels-per-ticket "$wide_labels" \
+        --payload-bytes 200 --board-density 1000
+    run_matrix_cell retained_history_curve "$0" "${scale_args[@]}" \
+        --load interactive --load-concurrency-sweep "${load_args[@]}" --load-accumulate-history
+
+    run_matrix_cell language_conformance ./scripts/app-baseline-language-conformance
+    run_matrix_cell resilience examples/app-baseline/resilience/run
+
+    matrix_manifest="$matrix_root/manifest-v1.json"
+    python3 - "$matrix_results" "$matrix_manifest" "$matrix_mode" <<'PY'
+import json
+import sys
+
+results_path, output_path, matrix_mode = sys.argv[1:4]
+cells = []
+with open(results_path, encoding="utf-8") as source:
+    for line in source:
+        name, status, elapsed_ns, path, digest = line.rstrip("\n").split("\t")
+        cells.append({
+            "cell": name,
+            "status": status,
+            "elapsed_ns": int(elapsed_ns),
+            "evidence": path,
+            "sha256": digest,
+        })
+for cell in cells:
+    if cell["status"] != "passed" or cell["sha256"] == "missing":
+        continue
+    try:
+        with open(cell["evidence"], encoding="utf-8") as evidence_source:
+            evidence = json.load(evidence_source)
+    except (OSError, json.JSONDecodeError):
+        cell["status"] = "invalid_evidence"
+        continue
+    validation_errors = []
+    name = cell["cell"]
+    schema = evidence.get("schema")
+    backend_ids = {
+        backend.get("backend_id")
+        for backend in evidence.get("backends", [])
+        if isinstance(backend, dict)
+    }
+    if name.startswith("parity_") or name == "data_shape_wide":
+        if schema != "riffdb.app-baseline/v1":
+            validation_errors.append("wrong parity schema")
+        expected_pg = "postgres_safe_app" if name == "parity_safe_app" else "postgres_minimal"
+        if not {expected_pg, "riffdb_public_grpc"}.issubset(backend_ids):
+            validation_errors.append(f"missing comparator backends: expected {expected_pg} and riffdb_public_grpc")
+    if name == "data_shape_wide":
+        shape = evidence.get("scale_shape") or {}
+        expected_shape = {
+            "tickets_per_project": 200,
+            "comments_per_ticket": 20,
+            "labels_per_ticket": 4 if matrix_mode == "-smoke" else 5,
+            "board_dense_open": 1000,
+            "comment_payload_bytes": 200,
+            "ticket_title_payload_bytes": 128,
+        }
+        for key, expected in expected_shape.items():
+            if shape.get(key) != expected:
+                validation_errors.append(f"scale_shape.{key} != {expected}")
+    load_cells = {
+        "closed_interactive", "open_agent_500", "open_agent_2000", "open_agent_8000",
+        "same_ticket_contention", "membership_contention", "tenants_8_uniform",
+        "tenants_64_hot", "retained_history_curve",
+    }
+    if name in load_cells:
+        if schema != "riffdb.app-baseline-load-suite/v1":
+            validation_errors.append("wrong load-suite schema")
+        if not evidence.get("correctness", {}).get("clean", False):
+            validation_errors.append("load correctness is not clean")
+        if not {"postgres_minimal", "riffdb_public_grpc"}.issubset(backend_ids):
+            validation_errors.append("load cell is missing one or both backends")
+        if not all(isinstance(backend.get("resource_delta"), dict) for backend in evidence.get("backends", [])):
+            validation_errors.append("load cell lacks resource attribution")
+    if name == "closed_interactive":
+        if not evidence.get("stateful_journeys"):
+            validation_errors.append("stateful journeys are absent")
+        if any(backend.get("profile") != "interactive" for backend in evidence.get("backends", [])):
+            validation_errors.append("closed profile is not interactive")
+    if name.startswith("open_agent_"):
+        expected_rate = int(name.rsplit("_", 1)[1])
+        for backend in evidence.get("backends", []):
+            open_loop = backend.get("open_loop") or {}
+            if backend.get("mode") != "open_loop_poisson" or open_loop.get("offered_rate_per_sec") != expected_rate:
+                validation_errors.append(f"{backend.get('backend_id')} does not carry open-loop rate {expected_rate}")
+    if name == "same_ticket_contention" and evidence.get("comparison", {}).get("contended") is not True:
+        validation_errors.append("same-ticket contention flag is absent")
+    if name == "membership_contention" and any(
+        backend.get("profile") != "membership_contention" for backend in evidence.get("backends", [])
+    ):
+        validation_errors.append("membership contention profile is absent")
+    if name == "tenants_8_uniform":
+        comparison = evidence.get("comparison") or {}
+        if comparison.get("tenant_count") != 8 or comparison.get("hot_tenant_percent") != 0:
+            validation_errors.append("8-tenant uniform routing is absent")
+    if name == "tenants_64_hot":
+        comparison = evidence.get("comparison") or {}
+        if comparison.get("tenant_count") != 64 or comparison.get("hot_tenant_percent") != 70:
+            validation_errors.append("64-tenant hot routing is absent")
+    if name == "retained_history_curve":
+        comparison = evidence.get("comparison") or {}
+        if comparison.get("concurrency_sweep") is not True or comparison.get("history_mode") != "shared_daemon_accumulated_history":
+            validation_errors.append("retained-history sweep identity is absent")
+    if name == "language_conformance":
+        languages = [item.get("language") for item in evidence.get("manifest", {}).get("languages", [])]
+        if schema != "riffdb.app-baseline-language-conformance-result/v1" or languages != ["rust", "typescript", "python_sync_async"]:
+            validation_errors.append("Rust/TypeScript/Python conformance identity is incomplete")
+        if evidence.get("semantic_observations", {}).get("status") != "canonical_match" or evidence.get("boundary_lint") != "passed":
+            validation_errors.append("language semantics or boundary lint did not pass")
+    if name == "resilience":
+        required_resilience = {
+            "build_riffdbd", "kill_under_load", "lost_response_replay",
+            "durable_consumer_crash_matrix", "authorization_revoked_mid_wait",
+            "successor_role_reconciliation", "retained_history_growth",
+        }
+        resilience_cells = {item.get("cell") for item in evidence.get("cells", [])}
+        if schema != "riffdb.app-baseline-resilience/v1" or not required_resilience.issubset(resilience_cells):
+            validation_errors.append("resilience evidence is incomplete")
+    if validation_errors:
+        cell["status"] = "invalid_dimension"
+        cell["validation_errors"] = validation_errors
+    if matrix_mode != "-smoke" and "evidence_eligibility" in evidence and not evidence["evidence_eligibility"].get("eligible", False):
+        cell["status"] = "not_evidentiary"
+    if matrix_mode != "-smoke" and evidence.get("schema") == "riffdb.app-baseline/v1":
+        summaries = (evidence.get("comparisons") or {}).get("rep_summaries") or {}
+        parity_ok = (
+            evidence.get("same_device") is True
+            and int(evidence.get("reps") or 0) >= 2
+            and bool(evidence.get("environment"))
+            and bool(evidence.get("device_baseline"))
+            and bool(evidence.get("postgres_durability"))
+            and summaries
+            and all(summary.get("stability") == "stable" for summary in summaries.values())
+        )
+        if not parity_ok:
+            cell["status"] = "not_evidentiary"
+    if "status" in evidence and evidence["status"] != "passed":
+        cell["status"] = "failed_evidence"
+required = {
+    "parity_minimal", "parity_safe_app", "closed_interactive", "open_agent_500",
+    "open_agent_2000", "open_agent_8000",
+    "same_ticket_contention", "membership_contention", "tenants_8_uniform",
+    "tenants_64_hot", "data_shape_wide", "retained_history_curve",
+    "language_conformance", "resilience",
+}
+present = {cell["cell"] for cell in cells}
+missing = sorted(required - present)
+failed = sorted(cell["cell"] for cell in cells if cell["status"] != "passed")
+report = {
+    "schema": "riffdb.app-baseline-alpha-matrix/v1",
+    "eligible": matrix_mode != "-smoke" and not missing and not failed,
+    "validation_passed": not missing and not failed,
+    "mode": "smoke" if matrix_mode == "-smoke" else "evidentiary",
+    "required_cells": sorted(required),
+    "missing_cells": missing,
+    "failed_cells": failed,
+    "cells": cells,
+    "claim_boundary": (
+        "Parity, load, and resilience remain separate evidence suites. Eligibility means "
+        "no required cell was omitted; it is not a composite performance score."
+    ),
+}
+with open(output_path, "w", encoding="utf-8") as destination:
+    json.dump(report, destination, indent=2)
+    destination.write("\n")
+PY
+    printf 'alpha matrix manifest: %s\n' "$matrix_manifest"
+    if [[ "$matrix_mode" == "-smoke" ]]; then
+        jq -e '.validation_passed == true and .eligible == false' "$matrix_manifest" >/dev/null
+    else
+        jq -e '.eligible == true' "$matrix_manifest" >/dev/null
+    fi
+    exit
+fi
+
 mode=smoke
 samples=
 warmup=
 board_density=
+organizations=
+tickets_per_project=
+comments_per_ticket=
+labels_per_ticket=
+payload_bytes=
 skip_postgres=0
 skip_riffdb=0
 assert_write_parity=0
@@ -59,13 +309,22 @@ load_clients=
 load_duration_secs=
 load_warmup_secs=
 load_zipf_s=
+load_open_loop_rate=
+load_open_loop_queue_depth=
+load_tenants=
+load_hot_tenant_percent=
+load_journeys=0
 load_contended=0
 load_saturate=0
 load_saturate_p99_ms=
 load_concurrency_sweep=0
+load_accumulate_history=0
 load_riffdb_transport=
 database_root=
+postgres_comparator=minimal
 output=
+reps=
+require_stable=0
 while (($#)); do
     case "$1" in
         --self-test)
@@ -87,6 +346,31 @@ while (($#)); do
         --board-density)
             (($# >= 2)) || usage
             board_density="$2"
+            shift 2
+            ;;
+        --organizations)
+            (($# >= 2)) || usage
+            organizations="$2"
+            shift 2
+            ;;
+        --tickets-per-project)
+            (($# >= 2)) || usage
+            tickets_per_project="$2"
+            shift 2
+            ;;
+        --comments-per-ticket)
+            (($# >= 2)) || usage
+            comments_per_ticket="$2"
+            shift 2
+            ;;
+        --labels-per-ticket)
+            (($# >= 2)) || usage
+            labels_per_ticket="$2"
+            shift 2
+            ;;
+        --payload-bytes)
+            (($# >= 2)) || usage
+            payload_bytes="$2"
             shift 2
             ;;
         --concurrent-clients)
@@ -124,6 +408,30 @@ while (($#)); do
             load_zipf_s="$2"
             shift 2
             ;;
+        --load-open-loop-rate)
+            (($# >= 2)) || usage
+            load_open_loop_rate="$2"
+            shift 2
+            ;;
+        --load-open-loop-queue-depth)
+            (($# >= 2)) || usage
+            load_open_loop_queue_depth="$2"
+            shift 2
+            ;;
+        --load-tenants)
+            (($# >= 2)) || usage
+            load_tenants="$2"
+            shift 2
+            ;;
+        --load-hot-tenant-percent)
+            (($# >= 2)) || usage
+            load_hot_tenant_percent="$2"
+            shift 2
+            ;;
+        --load-journeys)
+            load_journeys=1
+            shift
+            ;;
         --load-contended)
             load_contended=1
             shift
@@ -141,6 +449,10 @@ while (($#)); do
             load_concurrency_sweep=1
             shift
             ;;
+        --load-accumulate-history)
+            load_accumulate_history=1
+            shift
+            ;;
         --load-riffdb-transport)
             (($# >= 2)) || usage
             load_riffdb_transport="$2"
@@ -151,10 +463,24 @@ while (($#)); do
             database_root="$2"
             shift 2
             ;;
+        --postgres-comparator)
+            (($# >= 2)) || usage
+            postgres_comparator="$2"
+            shift 2
+            ;;
         --output)
             (($# >= 2)) || usage
             output="$2"
             shift 2
+            ;;
+        --reps)
+            (($# >= 2)) || usage
+            reps="$2"
+            shift 2
+            ;;
+        --require-stable)
+            require_stable=1
+            shift
             ;;
         --skip-postgres) skip_postgres=1; shift ;;
         --skip-riffdb) skip_riffdb=1; shift ;;
@@ -298,6 +624,11 @@ fi
 [[ -n "$samples" ]] && extra_args+=(--samples "$samples")
 [[ -n "$warmup" ]] && extra_args+=(--warmup "$warmup")
 [[ -n "$board_density" ]] && extra_args+=(--board-density "$board_density")
+[[ -n "$organizations" ]] && extra_args+=(--organizations "$organizations")
+[[ -n "$tickets_per_project" ]] && extra_args+=(--tickets-per-project "$tickets_per_project")
+[[ -n "$comments_per_ticket" ]] && extra_args+=(--comments-per-ticket "$comments_per_ticket")
+[[ -n "$labels_per_ticket" ]] && extra_args+=(--labels-per-ticket "$labels_per_ticket")
+[[ -n "$payload_bytes" ]] && extra_args+=(--payload-bytes "$payload_bytes")
 [[ -n "$concurrent_clients" ]] && extra_args+=(--concurrent-clients "$concurrent_clients")
 [[ -n "$concurrent_operations" ]] && extra_args+=(--concurrent-operations "$concurrent_operations")
 [[ -n "$load_profile" ]] && extra_args+=(--load "$load_profile")
@@ -305,13 +636,22 @@ fi
 [[ -n "$load_duration_secs" ]] && extra_args+=(--load-duration-secs "$load_duration_secs")
 [[ -n "$load_warmup_secs" ]] && extra_args+=(--load-warmup-secs "$load_warmup_secs")
 [[ -n "$load_zipf_s" ]] && extra_args+=(--load-zipf-s "$load_zipf_s")
+[[ -n "$load_open_loop_rate" ]] && extra_args+=(--load-open-loop-rate "$load_open_loop_rate")
+[[ -n "$load_open_loop_queue_depth" ]] && extra_args+=(--load-open-loop-queue-depth "$load_open_loop_queue_depth")
+[[ -n "$load_tenants" ]] && extra_args+=(--load-tenants "$load_tenants")
+[[ -n "$load_hot_tenant_percent" ]] && extra_args+=(--load-hot-tenant-percent "$load_hot_tenant_percent")
+((load_journeys)) && extra_args+=(--load-journeys)
 ((load_contended)) && extra_args+=(--load-contended)
 ((load_saturate)) && extra_args+=(--load-saturate)
 [[ -n "$load_saturate_p99_ms" ]] && extra_args+=(--load-saturate-p99-ms "$load_saturate_p99_ms")
 ((load_concurrency_sweep)) && extra_args+=(--load-concurrency-sweep)
+((load_accumulate_history)) && extra_args+=(--load-accumulate-history)
 [[ -n "$load_riffdb_transport" ]] && extra_args+=(--load-riffdb-transport "$load_riffdb_transport")
 extra_args+=(--database-root "$database_root")
 extra_args+=(--postgres-data-host-path "$postgres_database_root")
+extra_args+=(--postgres-comparator "$postgres_comparator")
+[[ -n "$reps" ]] && extra_args+=(--reps "$reps")
+((require_stable)) && extra_args+=(--require-stable)
 export RIFFDB_APP_BASELINE_POSTGRES_DATA_HOST="$postgres_database_root"
 ((assert_write_parity)) && extra_args+=(--assert-write-parity)
 ((assert_all_parity)) && extra_args+=(--assert-all-parity)
@@ -376,6 +716,7 @@ out = {
     "comparison": comparison,
     "curve": list(pg.get("curve") or []) + list(rd.get("curve") or []),
     "backends": list(pg.get("backends") or []) + list(rd.get("backends") or []),
+    "stateful_journeys": list(pg.get("stateful_journeys") or []) + list(rd.get("stateful_journeys") or []),
     "correctness": {
         "clean": pg_clean and rd_clean,
         "failures": pg_fail + rd_fail,
@@ -383,13 +724,227 @@ out = {
         or (pg.get("correctness") or {}).get("server_shutdown_error"),
     },
 }
-with open(out_path, "w", encoding="utf-8") as fh:
-    json.dump(out, fh, indent=2)
-    fh.write("\n")
+for key in (
+    "environment", "device_baseline", "riffdb_database_root", "riffdb_storage_medium",
+    "postgres_data_host_path", "postgres_storage_medium", "postgres_durability", "query_shape_tiers",
+):
+    value = rd.get(key) if key.startswith("riffdb_") else pg.get(key)
+    if value is None:
+        value = pg.get(key) if key.startswith("riffdb_") else rd.get(key)
+    if value is not None:
+        out[key] = value
+out["reps"] = max(int(pg.get("reps") or 0), int(rd.get("reps") or 0))
+pg_backend_id = next((report.get("backend_id") for report in out["backends"] if str(report.get("backend_id", "")).startswith("postgres_")), "postgres_minimal")
+out["backend_execution_order"] = [pg_backend_id, "riffdb_public_grpc"]
+summaries = dict(pg.get("load_rep_summaries") or {})
+summaries.update(rd.get("load_rep_summaries") or {})
+out["load_rep_summaries"] = summaries
+pg_medium, rd_medium = out.get("postgres_storage_medium") or {}, out.get("riffdb_storage_medium") or {}
+pg_model, rd_model = pg_medium.get("device_model"), rd_medium.get("device_model")
+same_device = (pg_model == rd_model) if pg_model and rd_model else bool(pg_medium.get("mount")) and pg_medium.get("mount") == rd_medium.get("mount")
+out["same_device"] = same_device
+missing = [key for key in ("environment", "device_baseline", "postgres_durability", "postgres_storage_medium", "riffdb_storage_medium") if not out.get(key)]
+unstable = any(isinstance(metric, dict) and metric.get("stability") == "unstable" for summary in summaries.values() if isinstance(summary, dict) for metric in summary.values())
+phase_non_evidentiary = any(bool(report.get("non_evidentiary_window")) for report in out["backends"])
+resources_complete = bool(out["backends"]) and all(isinstance(report.get("resource_delta"), dict) for report in out["backends"])
+if not resources_complete:
+    missing.append("resource_delta")
+correctness_clean = bool(out["correctness"]["clean"])
+out["evidence_eligibility"] = {
+    "eligible": not missing and not unstable and not phase_non_evidentiary and out["reps"] >= 2 and same_device and correctness_clean and resources_complete,
+    "non_evidentiary_window": phase_non_evidentiary,
+    "stable": not unstable,
+    "correctness_clean": correctness_clean,
+    "resource_attribution_complete": resources_complete,
+    "same_device_comparable": same_device,
+    "missing_required_fields": missing,
+    "comparison_complete": True,
+}
+with open(out_path, "w", encoding="utf-8") as destination:
+    json.dump(out, destination, indent=2)
+    destination.write("\n")
 PY
 }
 
-if ((dual_load_phases)); then
+merge_balanced_load_suite_json() {
+    local out_json="$1"
+    shift
+    python3 - "$out_json" "$@" <<'PY'
+import json
+import os
+import re
+import statistics
+import sys
+
+out_path, *paths = sys.argv[1:]
+documents = []
+execution_order = []
+for path in paths:
+    document = json.load(open(path, encoding="utf-8"))
+    match = re.search(r"\.phase-(postgres|riffdb)-rep-([0-9]+)\.json$", path)
+    if not match:
+        raise SystemExit(f"unrecognized balanced phase path: {path}")
+    family, rep_text = match.groups()
+    rep = int(rep_text)
+    backend = next(iter(document.get("backends") or []), {}).get("backend_id")
+    execution_order.append(backend or family)
+    for point in document.get("curve") or []:
+        point["rep"] = rep
+    for report in document.get("backends") or []:
+        report["rep"] = rep
+    for journey in document.get("stateful_journeys") or []:
+        journey["rep"] = rep
+    documents.append(document)
+
+pg = next((doc for doc in documents if any(str(row.get("backend_id", "")).startswith("postgres_") for row in doc.get("backends") or [])), {})
+rd = next((doc for doc in documents if any(row.get("backend_id") == "riffdb_public_grpc" for row in doc.get("backends") or [])), {})
+curve = [point for doc in documents for point in doc.get("curve") or []]
+backends = [point for doc in documents for point in doc.get("backends") or []]
+journeys = [point for doc in documents for point in doc.get("stateful_journeys") or []]
+
+def scalar(values):
+    values = sorted(float(value) for value in values if value is not None)
+    if not values:
+        return None
+    median = statistics.median(values)
+    spread = None if values[0] <= 0 else values[-1] / values[0]
+    return {
+        "samples": len(values), "median": median, "min": values[0], "max": values[-1],
+        "spread_ratio": spread,
+        "stability": "stable" if spread is not None and spread <= 2.0 else "unstable",
+    }
+
+metrics = (
+    "throughput_ops_s", "aggregate_p50_ns", "aggregate_p95_ns", "aggregate_p99_ns",
+    "create_comment_p50_ns", "close_ticket_with_comment_p50_ns", "open_ticket_with_labels_p50_ns",
+)
+grouped = {}
+for point in curve:
+    grouped.setdefault((point.get("backend_id"), point.get("clients")), []).append(point)
+summaries = {}
+for (backend, clients), points in grouped.items():
+    summary = {"backend_id": backend, "clients": clients}
+    for metric in metrics:
+        summary[metric] = scalar([point.get(metric) for point in points])
+    summaries[f"{backend}@clients={clients}"] = summary
+unstable = any(
+    value and value.get("stability") == "unstable"
+    for summary in summaries.values()
+    for key, value in summary.items()
+    if key not in ("backend_id", "clients")
+)
+failures = [failure for doc in documents for failure in (doc.get("correctness") or {}).get("failures") or []]
+shutdown_error = next(((doc.get("correctness") or {}).get("server_shutdown_error") for doc in documents if (doc.get("correctness") or {}).get("server_shutdown_error")), None)
+notes = []
+for doc in documents:
+    for note in (doc.get("comparison") or {}).get("notes") or []:
+        if note not in notes:
+            notes.append(note)
+notes.append("Backend order is counterbalanced by repetition; only one database process family is active during a phase.")
+comparison = dict((documents[0].get("comparison") or {}) if documents else {})
+comparison["backend_isolation"] = "counterbalanced_sequential_exclusive_phases"
+comparison["notes"] = notes
+out = {
+    "schema": "riffdb.app-baseline-load-suite/v1",
+    "scale": (documents[0].get("scale") if documents else None),
+    "comparison": comparison,
+    "curve": curve,
+    "backends": backends,
+    "stateful_journeys": journeys,
+    "correctness": {"clean": not failures and shutdown_error is None, "failures": failures, "server_shutdown_error": shutdown_error},
+    "reps": len({point.get("rep") for point in curve}),
+    "backend_execution_order": execution_order,
+    "load_rep_summaries": summaries,
+}
+for key in (
+    "environment", "device_baseline", "riffdb_database_root", "riffdb_storage_medium",
+    "postgres_data_host_path", "postgres_storage_medium", "postgres_durability", "query_shape_tiers",
+):
+    value = rd.get(key) if key.startswith("riffdb_") else pg.get(key)
+    if value is None:
+        value = pg.get(key) if key.startswith("riffdb_") else rd.get(key)
+    if value is not None:
+        out[key] = value
+pg_medium = out.get("postgres_storage_medium") or {}
+rd_medium = out.get("riffdb_storage_medium") or {}
+pg_model, rd_model = pg_medium.get("device_model"), rd_medium.get("device_model")
+same_device = (pg_model == rd_model) if pg_model and rd_model else bool(pg_medium.get("mount")) and pg_medium.get("mount") == rd_medium.get("mount")
+out["same_device"] = same_device
+missing = [key for key in ("environment", "device_baseline", "postgres_durability", "postgres_storage_medium", "riffdb_storage_medium") if not out.get(key)]
+resources_complete = bool(backends) and all(isinstance(report.get("resource_delta"), dict) for report in backends)
+if not resources_complete:
+    missing.append("resource_delta")
+non_evidentiary = any(bool(report.get("non_evidentiary_window")) for report in backends)
+out["evidence_eligibility"] = {
+    "eligible": not missing and not unstable and not non_evidentiary and out["reps"] >= 2 and same_device and out["correctness"]["clean"],
+    "non_evidentiary_window": non_evidentiary,
+    "stable": not unstable,
+    "correctness_clean": out["correctness"]["clean"],
+    "resource_attribution_complete": resources_complete,
+    "same_device_comparable": same_device,
+    "missing_required_fields": missing,
+    "comparison_complete": True,
+}
+with open(out_path, "w", encoding="utf-8") as destination:
+    json.dump(out, destination, indent=2)
+    destination.write("\n")
+PY
+}
+balanced_rep_count="${reps:-}"
+if [[ -z "$balanced_rep_count" ]]; then
+    [[ "$mode" == full ]] && balanced_rep_count=3 || balanced_rep_count=1
+fi
+
+if ((dual_load_phases)) && ((balanced_rep_count >= 2)); then
+    [[ -z "${RIFFDB_APP_BASELINE_POSTGRES_URL:-}" ]] || {
+        printf 'balanced dual-backend evidence requires harness-owned PostgreSQL so it can be fully stopped between phases\n' >&2
+        exit 2
+    }
+    phase_args=()
+    skip_value=0
+    for arg in "${extra_args[@]}"; do
+        if ((skip_value)); then
+            skip_value=0
+            continue
+        fi
+        if [[ "$arg" == "--reps" ]]; then
+            skip_value=1
+            continue
+        fi
+        [[ "$arg" == "--require-stable" ]] && continue
+        phase_args+=("$arg")
+    done
+    phase_reports=()
+    for ((rep_index=0; rep_index<balanced_rep_count; rep_index++)); do
+        pg_report="$out_dir/.phase-postgres-rep-${rep_index}.json"
+        rd_report="$out_dir/.phase-riffdb-rep-${rep_index}.json"
+        run_pg_phase() {
+            start_postgres
+            "$runner" "${phase_args[@]}" --reps 1 --skip-riffdb \
+                --postgres-url "$RIFFDB_APP_BASELINE_POSTGRES_URL" --output "$pg_report"
+            stop_postgres
+            phase_reports+=("$pg_report")
+        }
+        run_riffdb_phase() {
+            "$runner" "${phase_args[@]}" --reps 1 --skip-postgres \
+                --riffdbd-bin "$RIFFDB_APP_BASELINE_RIFFDBD_BIN" --output "$rd_report"
+            phase_reports+=("$rd_report")
+        }
+        if ((rep_index % 2 == 0)); then
+            run_pg_phase
+            run_riffdb_phase
+        else
+            run_riffdb_phase
+            run_pg_phase
+        fi
+    done
+    merge_balanced_load_suite_json "$report" "${phase_reports[@]}"
+    rm -f "${phase_reports[@]}"
+    if ((require_stable)); then
+        jq -e '.evidence_eligibility.stable == true and .reps >= 2' "$report" >/dev/null
+    fi
+    printf 'merged counterbalanced sequential-phase report: %s\n' "$report"
+elif ((dual_load_phases)); then
     printf 'running app baseline (%s) with sequential exclusive backend phases\n' "$mode"
     printf 'phase 1/2: PostgreSQL only (RiffDB not started)\n'
     start_postgres

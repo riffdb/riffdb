@@ -1,0 +1,23 @@
+{
+  "schema": "riffdb.app-baseline-alpha-matrix-template/v1",
+  "eligible": false,
+  "status": "not_run",
+  "generator": "benchmarks/run-app-baseline --alpha-matrix",
+  "required_cells": [
+    "parity_minimal",
+    "parity_safe_app",
+    "closed_interactive",
+    "open_agent_500",
+    "open_agent_2000",
+    "open_agent_8000",
+    "same_ticket_contention",
+    "membership_contention",
+    "tenants_8_uniform",
+    "tenants_64_hot",
+    "data_shape_wide",
+    "retained_history_curve",
+    "language_conformance",
+    "resilience"
+  ],
+  "claim_boundary": "This template is not evidence. A generated target manifest must contain passing cells and SHA-256 evidence identities."
+}

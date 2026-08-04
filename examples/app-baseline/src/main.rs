@@ -2,9 +2,10 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Barrier};
 use std::thread;
@@ -16,14 +17,20 @@ use riffdb_app_baseline_core::{
     SEED_GENERATION, Scale, SeedDataset, WorkloadProfile, assert_board_last_row_counts_equal,
     assert_board_ticket_sequences_equal, board_marginal_from_results, build_report,
     concurrency_curve_point, print_concurrency_sweep_summary, print_load_summary,
-    run_closed_loop_load, run_closed_loop_load_with_abort, run_scenarios,
-    run_scenarios_with_options,
+    run_closed_loop_load, run_closed_loop_load_with_abort, run_open_loop_load, run_scenarios,
+    run_scenarios_with_options, run_stateful_journeys,
 };
-use riffdb_app_baseline_postgres::{PostgresAppBackend, PostgresDurabilitySettings};
+use riffdb_app_baseline_postgres::{
+    PostgresAppBackend, PostgresComparisonProfile, PostgresDurabilitySettings,
+    PostgresResourceSnapshot,
+};
 use riffdb_app_baseline_riffdb::{
-    RiffDbServerSession, ServerStartOptions, min_free_bytes_for_full,
+    RiffDbServerSession, RiffDbShutdownEvidence, ServerStartOptions, min_free_bytes_for_full,
 };
-use riffdb_bench_root::{DeviceBaseline, StorageMedium, classify_medium, run_device_baseline_for};
+use riffdb_bench_root::{
+    BenchRoot, BenchRootOptions, DeviceBaseline, StorageMedium, classify_medium,
+    run_device_baseline_for,
+};
 use serde_json::json;
 
 fn main() -> ExitCode {
@@ -122,7 +129,8 @@ fn run() -> Result<(), String> {
                     "PostgreSQL required: pass --postgres-url or set RIFFDB_APP_BASELINE_POSTGRES_URL"
                         .to_owned()
                 })?;
-            let mut postgres = PostgresAppBackend::new(&url).map_err(|error| error.to_string())?;
+            let mut postgres = PostgresAppBackend::new_with_profile(&url, args.postgres_comparator)
+                .map_err(|error| error.to_string())?;
             if postgres_durability.is_none() {
                 let settings = postgres
                     .durability_settings()
@@ -163,12 +171,13 @@ fn run() -> Result<(), String> {
             {
                 let url = Arc::new(url);
                 concurrent_reads.push(run_concurrent_point_reads(
-                    "postgres_sql",
+                    args.postgres_comparator.backend_id(),
                     clients,
                     args.concurrent_operations,
                     &dataset,
                     move || {
-                        PostgresAppBackend::new(url.as_str()).map_err(|error| error.to_string())
+                        PostgresAppBackend::new_with_profile(url.as_str(), args.postgres_comparator)
+                            .map_err(|error| error.to_string())
                     },
                 )?);
             }
@@ -308,8 +317,17 @@ fn run() -> Result<(), String> {
         let mut notes_pg = vec![
             "READ COMMITTED SQL transactions".to_owned(),
             "Relational joins for ticket_detail_page".to_owned(),
-            "Not RiffDB command/idempotency semantics".to_owned(),
         ];
+        match args.postgres_comparator {
+            PostgresComparisonProfile::Minimal => notes_pg.push(
+                "optimized conventional floor; does not reproduce RiffDB audit/provenance/event obligations"
+                    .to_owned(),
+            ),
+            PostgresComparisonProfile::SafeApp => notes_pg.push(
+                "application authorization, idempotency, audit/provenance, domain event, and outbox intent are atomic with each mutation"
+                    .to_owned(),
+            ),
+        }
         if let Some(settings) = &postgres_durability {
             notes_pg.push(format!(
                 "durability: synchronous_commit={} fsync={} full_page_writes={} wal_sync_method={} data_directory={}",
@@ -321,8 +339,11 @@ fn run() -> Result<(), String> {
             ));
         }
         backends.push(BackendReport {
-            backend_id: "postgres_sql",
-            description: "Live PostgreSQL 18 via SQL (joins, filters, indexes)".to_owned(),
+            backend_id: args.postgres_comparator.backend_id(),
+            description: format!(
+                "Live PostgreSQL 18 via SQL (profile={})",
+                args.postgres_comparator.backend_id()
+            ),
             guarantee_notes: notes_pg,
             seed_ns,
             seed_rows: args.scale.approximate_row_count(),
@@ -366,6 +387,17 @@ fn run() -> Result<(), String> {
     assert_board_last_row_counts_equal(&backends)?;
 
     let mut report = build_report(args.scale, args.warmups, args.samples, &backends);
+    report["scale_shape"] = json!({
+        "organizations": args.scale.organizations,
+        "projects_per_org": args.scale.projects_per_org,
+        "tickets_per_project": args.scale.tickets_per_project,
+        "comments_per_ticket": args.scale.comments_per_ticket,
+        "labels_per_ticket": args.scale.labels_per_ticket,
+        "board_dense_open": args.scale.board_dense_open,
+        "payload_bytes": args.scale.payload_bytes,
+        "comment_payload_bytes": args.scale.payload_bytes,
+        "ticket_title_payload_bytes": args.scale.payload_bytes.min(128),
+    });
     if !concurrent_reads.is_empty() {
         report["concurrent_point_reads"] = serde_json::Value::Array(concurrent_reads);
     }
@@ -476,7 +508,412 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug)]
+struct LoadEvidenceContext {
+    database_root: PathBuf,
+    environment: serde_json::Value,
+    riffdb_medium: serde_json::Value,
+    device_baseline: Option<serde_json::Value>,
+    postgres_host_path: Option<PathBuf>,
+    postgres_medium: Option<serde_json::Value>,
+    postgres_durability: Option<PostgresDurabilitySettings>,
+    backend_execution_order: Vec<&'static str>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ProcessResourceSnapshot {
+    cpu_ticks: u64,
+    rss_bytes: u64,
+    read_bytes: u64,
+    write_bytes: u64,
+    durable_bytes: u64,
+}
+
+impl ProcessResourceSnapshot {
+    fn delta_json(self, before: Self) -> serde_json::Value {
+        json!({
+            "cpu_ticks": self.cpu_ticks.saturating_sub(before.cpu_ticks),
+            "rss_bytes_before": before.rss_bytes,
+            "rss_bytes_after": self.rss_bytes,
+            "rss_bytes_peak_sampled": before.rss_bytes.max(self.rss_bytes),
+            "process_read_bytes": self.read_bytes.saturating_sub(before.read_bytes),
+            "process_write_bytes": self.write_bytes.saturating_sub(before.write_bytes),
+            "durable_bytes_before": before.durable_bytes,
+            "durable_bytes_after": self.durable_bytes,
+            "durable_bytes_growth": self.durable_bytes.saturating_sub(before.durable_bytes),
+            "scope": "before_after_point",
+        })
+    }
+}
+
+fn process_resource_snapshot(
+    pid: u32,
+    durable_root: &Path,
+) -> Result<ProcessResourceSnapshot, String> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat"))
+        .map_err(|error| format!("read process stat for {pid}: {error}"))?;
+    let close = stat
+        .rfind(')')
+        .ok_or_else(|| format!("process stat for {pid} has no command terminator"))?;
+    let fields = stat[close + 1..].split_whitespace().collect::<Vec<_>>();
+    let parse_field = |index: usize, name: &str| -> Result<u64, String> {
+        fields
+            .get(index)
+            .ok_or_else(|| format!("process stat for {pid} lacks {name}"))?
+            .parse::<u64>()
+            .map_err(|_| format!("process stat for {pid} has invalid {name}"))
+    };
+    // `fields` starts at proc field 3 (state); utime/stime are fields 14/15.
+    let cpu_ticks = parse_field(11, "utime")?.saturating_add(parse_field(12, "stime")?);
+    let status = fs::read_to_string(format!("/proc/{pid}/status"))
+        .map_err(|error| format!("read process status for {pid}: {error}"))?;
+    let rss_kib = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .and_then(|value| value.split_whitespace().next())
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let io = fs::read_to_string(format!("/proc/{pid}/io"))
+        .map_err(|error| format!("read process io for {pid}: {error}"))?;
+    let io_counter = |name: &str| -> u64 {
+        io.lines()
+            .find_map(|line| line.strip_prefix(name))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    Ok(ProcessResourceSnapshot {
+        cpu_ticks,
+        rss_bytes: rss_kib.saturating_mul(1024),
+        read_bytes: io_counter("read_bytes:"),
+        write_bytes: io_counter("write_bytes:"),
+        durable_bytes: directory_bytes_bounded(durable_root, 100_000)?,
+    })
+}
+
+fn directory_bytes_bounded(root: &Path, max_entries: usize) -> Result<u64, String> {
+    let mut stack = vec![root.to_path_buf()];
+    let mut entries = 0_usize;
+    let mut bytes = 0_u64;
+    while let Some(path) = stack.pop() {
+        let read = fs::read_dir(&path)
+            .map_err(|error| format!("read durable directory {}: {error}", path.display()))?;
+        for entry in read {
+            let entry = entry.map_err(|error| format!("read durable entry: {error}"))?;
+            entries = entries.saturating_add(1);
+            if entries > max_entries {
+                return Err(format!(
+                    "durable directory accounting exceeded bounded entry limit {max_entries}"
+                ));
+            }
+            let metadata = entry
+                .metadata()
+                .map_err(|error| format!("stat durable entry: {error}"))?;
+            if metadata.is_dir() {
+                stack.push(entry.path());
+            } else if metadata.is_file() {
+                bytes = bytes.saturating_add(metadata.len());
+            }
+        }
+    }
+    Ok(bytes)
+}
+
+fn postgres_resource_delta_json(
+    before: &PostgresResourceSnapshot,
+    after: &PostgresResourceSnapshot,
+) -> serde_json::Value {
+    json!({
+        "committed_transactions": after.committed_transactions.saturating_sub(before.committed_transactions),
+        "blocks_read": after.blocks_read.saturating_sub(before.blocks_read),
+        "blocks_hit": after.blocks_hit.saturating_sub(before.blocks_hit),
+        "temporary_bytes": after.temporary_bytes.saturating_sub(before.temporary_bytes),
+        "database_bytes_before": before.database_bytes,
+        "database_bytes_after": after.database_bytes,
+        "database_bytes_growth": after.database_bytes.saturating_sub(before.database_bytes),
+        "wal_bytes": after.wal_bytes.saturating_sub(before.wal_bytes),
+        "scope": "before_after_point",
+    })
+}
+
+fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_json::Value {
+    json!({
+        "write_completion_groups_by_size": evidence.write_completion_groups.to_vec(),
+        "dispatch_reasons": {
+            "full": evidence.dispatch_reasons[0],
+            "barrier": evidence.dispatch_reasons[1],
+            "queue_drained": evidence.dispatch_reasons[2],
+            "receiver_closed": evidence.dispatch_reasons[3],
+        },
+        "read_pipeline_stages": evidence.read_stages.iter().map(|stage| json!({
+            "stage": stage.name,
+            "count": stage.count,
+            "sum_us": stage.sum_us,
+            "cumulative_buckets": stage.buckets,
+        })).collect::<Vec<_>>(),
+        "command_pipeline_stages": evidence.command_stages.iter().map(|stage| json!({
+            "stage": stage.name,
+            "count": stage.count,
+            "sum_us": stage.sum_us,
+            "cumulative_buckets": stage.buckets,
+        })).collect::<Vec<_>>(),
+        "labels": "closed_fixed_cardinality",
+    })
+}
+
+impl LoadEvidenceContext {
+    fn collect(args: &Args) -> Result<Self, String> {
+        let full_mode = args.scale.name() == "full";
+        let root = BenchRoot::resolve(BenchRootOptions {
+            harness: "app-baseline-load",
+            cli_override: args.database_root.clone(),
+            default_root: PathBuf::from(riffdb_app_baseline_riffdb::DEFAULT_DATABASE_ROOT),
+            allow_tmpfs: args.allow_tmpfs,
+            min_free_bytes: min_free_bytes_for_full(full_mode),
+        })
+        .map_err(|error| error.to_string())?;
+        let environment = serde_json::from_str(&root.environment_report_json())
+            .map_err(|error| format!("decode benchmark environment report: {error}"))?;
+        let riffdb_medium = serde_json::from_str(&root.medium().to_report_json())
+            .map_err(|error| format!("decode RiffDB storage-medium report: {error}"))?;
+        let probe_for = if full_mode {
+            Duration::from_secs(10)
+        } else {
+            Duration::from_millis(200)
+        };
+        let device_baseline = run_device_baseline_for(root.path(), probe_for)
+            .ok()
+            .map(|baseline| device_baseline_value(&baseline));
+
+        let postgres_host_path = args.postgres_data_host_path.clone().or_else(|| {
+            env::var_os("RIFFDB_APP_BASELINE_POSTGRES_DATA_HOST")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        });
+        let postgres_medium = if let Some(path) = &postgres_host_path {
+            fs::create_dir_all(path).map_err(|error| {
+                format!(
+                    "create PostgreSQL benchmark data root {}: {error}",
+                    path.display()
+                )
+            })?;
+            let medium = classify_medium(path).map_err(|error| error.to_string())?;
+            if medium.is_ram_backed() && !args.allow_tmpfs {
+                return Err(format!(
+                    "PostgreSQL host data path is RAM-backed ({}); refuse load comparison on tmpfs",
+                    path.display()
+                ));
+            }
+            Some(
+                serde_json::from_str(&medium.to_report_json())
+                    .map_err(|error| format!("decode PostgreSQL storage-medium report: {error}"))?,
+            )
+        } else {
+            None
+        };
+
+        Ok(Self {
+            database_root: root.path().to_path_buf(),
+            environment,
+            riffdb_medium,
+            device_baseline,
+            postgres_host_path,
+            postgres_medium,
+            postgres_durability: None,
+            backend_execution_order: Vec::new(),
+        })
+    }
+}
+
+fn attach_load_evidence(
+    suite: &mut serde_json::Value,
+    evidence: &LoadEvidenceContext,
+    curve: &[serde_json::Value],
+    reps: usize,
+    non_evidentiary_window: bool,
+) -> Result<(), String> {
+    suite["reps"] = json!(reps);
+    suite["environment"] = evidence.environment.clone();
+    suite["device_baseline"] = evidence
+        .device_baseline
+        .clone()
+        .unwrap_or(serde_json::Value::Null);
+    suite["riffdb_database_root"] = json!(evidence.database_root.display().to_string());
+    suite["riffdb_storage_medium"] = evidence.riffdb_medium.clone();
+    suite["backend_execution_order"] = json!(evidence.backend_execution_order);
+    if let Some(path) = &evidence.postgres_host_path {
+        suite["postgres_data_host_path"] = json!(path.display().to_string());
+    }
+    if let Some(medium) = &evidence.postgres_medium {
+        suite["postgres_storage_medium"] = medium.clone();
+    }
+    if let Some(settings) = &evidence.postgres_durability {
+        suite["postgres_durability"] = json!({
+            "server_version_num": settings.server_version_num,
+            "synchronous_commit": settings.synchronous_commit,
+            "fsync": settings.fsync,
+            "full_page_writes": settings.full_page_writes,
+            "wal_sync_method": settings.wal_sync_method,
+            "data_directory": settings.data_directory,
+        });
+    }
+
+    let same_device = evidence
+        .postgres_medium
+        .as_ref()
+        .map(|postgres| storage_media_match(postgres, &evidence.riffdb_medium));
+    suite["same_device"] = same_device.map_or(serde_json::Value::Null, serde_json::Value::Bool);
+
+    let summaries = load_rep_summaries(curve);
+    let unstable = summaries.values().any(summary_has_unstable_metric);
+    suite["load_rep_summaries"] = serde_json::to_value(&summaries)
+        .map_err(|error| format!("encode load repetition summaries: {error}"))?;
+
+    let contains_postgres = suite["backends"].as_array().is_some_and(|reports| {
+        reports.iter().any(|report| {
+            report["backend_id"]
+                .as_str()
+                .is_some_and(|backend| backend.starts_with("postgres_"))
+        })
+    });
+    let contains_riffdb = suite["backends"].as_array().is_some_and(|reports| {
+        reports
+            .iter()
+            .any(|report| report["backend_id"] == "riffdb_public_grpc")
+    });
+    let mut missing = Vec::new();
+    if evidence.device_baseline.is_none() {
+        missing.push("device_baseline");
+    }
+    if contains_postgres && evidence.postgres_durability.is_none() {
+        missing.push("postgres_durability");
+    }
+    if contains_postgres && evidence.postgres_medium.is_none() {
+        missing.push("postgres_storage_medium");
+    }
+    if contains_postgres && contains_riffdb && same_device.is_none() {
+        missing.push("same_device");
+    }
+    let correctness_clean = suite["correctness"]["clean"].as_bool().unwrap_or(false);
+    let resources_complete = suite["backends"].as_array().is_some_and(|reports| {
+        !reports.is_empty()
+            && reports
+                .iter()
+                .all(|report| report["resource_delta"].is_object())
+    });
+    if !resources_complete {
+        missing.push("resource_delta");
+    }
+    let comparable_device = !contains_postgres || !contains_riffdb || same_device == Some(true);
+    suite["evidence_eligibility"] = json!({
+        "eligible": !non_evidentiary_window && reps >= 2 && !unstable && missing.is_empty()
+            && correctness_clean && comparable_device,
+        "non_evidentiary_window": non_evidentiary_window,
+        "stable": !unstable,
+        "correctness_clean": correctness_clean,
+        "resource_attribution_complete": resources_complete,
+        "same_device_comparable": comparable_device,
+        "missing_required_fields": missing,
+        "comparison_complete": contains_postgres && contains_riffdb,
+    });
+    Ok(())
+}
+
+fn storage_media_match(left: &serde_json::Value, right: &serde_json::Value) -> bool {
+    match (
+        left["device_model"].as_str(),
+        right["device_model"].as_str(),
+    ) {
+        (Some(a), Some(b)) if !a.is_empty() && !b.is_empty() => a == b,
+        _ => {
+            let left_mount = left["mount"].as_str().unwrap_or("");
+            let right_mount = right["mount"].as_str().unwrap_or("");
+            !left_mount.is_empty() && left_mount == right_mount
+        }
+    }
+}
+
+fn load_rep_summaries(curve: &[serde_json::Value]) -> BTreeMap<String, serde_json::Value> {
+    let mut grouped: BTreeMap<(String, u64), Vec<&serde_json::Value>> = BTreeMap::new();
+    for point in curve {
+        let Some(backend) = point["backend_id"].as_str() else {
+            continue;
+        };
+        let Some(clients) = point["clients"].as_u64() else {
+            continue;
+        };
+        grouped
+            .entry((backend.to_owned(), clients))
+            .or_default()
+            .push(point);
+    }
+    grouped
+        .into_iter()
+        .map(|((backend, clients), points)| {
+            let metric = |name: &str| {
+                scalar_summary(
+                    &points
+                        .iter()
+                        .filter_map(|point| point[name].as_f64())
+                        .collect::<Vec<_>>(),
+                )
+            };
+            (
+                format!("{backend}@clients={clients}"),
+                json!({
+                    "backend_id": backend,
+                    "clients": clients,
+                    "throughput_ops_s": metric("throughput_ops_s"),
+                    "aggregate_p50_ns": metric("aggregate_p50_ns"),
+                    "aggregate_p95_ns": metric("aggregate_p95_ns"),
+                    "aggregate_p99_ns": metric("aggregate_p99_ns"),
+                    "create_comment_p50_ns": metric("create_comment_p50_ns"),
+                    "close_ticket_with_comment_p50_ns": metric("close_ticket_with_comment_p50_ns"),
+                    "open_ticket_with_labels_p50_ns": metric("open_ticket_with_labels_p50_ns"),
+                }),
+            )
+        })
+        .collect()
+}
+
+fn summary_has_unstable_metric(summary: &serde_json::Value) -> bool {
+    summary.as_object().is_some_and(|fields| {
+        fields.values().any(|value| {
+            value["stability"]
+                .as_str()
+                .is_some_and(|stability| stability == "unstable")
+        })
+    })
+}
+
+fn require_load_stable(report: &serde_json::Value) -> Result<(), String> {
+    if report["reps"].as_u64().unwrap_or(1) < 2 {
+        return Err(
+            "--require-stable requires --reps >= 2 (single-rep load stability is trivial)"
+                .to_owned(),
+        );
+    }
+    let unstable = report["load_rep_summaries"]
+        .as_object()
+        .map(|summaries| {
+            summaries
+                .iter()
+                .filter(|(_, summary)| summary_has_unstable_metric(summary))
+                .map(|(name, _)| name.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if unstable.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "--require-stable failed; unstable load points: {}",
+            unstable.join(", ")
+        ))
+    }
+}
+
 fn run_load(args: Args) -> Result<(), String> {
+    let mut evidence = LoadEvidenceContext::collect(&args)?;
     let profile = args
         .load_profile
         .ok_or_else(|| "internal: load profile required".to_owned())?;
@@ -497,6 +934,10 @@ fn run_load(args: Args) -> Result<(), String> {
     if let Some(zipf_s) = args.load_zipf_s {
         base_config.zipf_s = zipf_s;
     }
+    base_config.open_loop_rate_per_sec = args.load_open_loop_rate;
+    base_config.open_loop_queue_depth = args.load_open_loop_queue_depth;
+    base_config.tenant_count = args.load_tenants;
+    base_config.hot_tenant_percent = args.load_hot_tenant_percent;
     base_config.contended = args.load_contended;
     base_config.saturate = args.load_saturate;
     // Default 250 ms = 150 ms admission budget + accepted group-turn + bucket
@@ -519,6 +960,7 @@ fn run_load(args: Args) -> Result<(), String> {
     let mut reports = Vec::new();
     let mut curve = Vec::new();
     let mut deferred_failure: Option<String> = None;
+    let mut journey_reports = Vec::new();
     let mut non_evidentiary = false;
     if base_config.duration < Duration::from_secs(60) {
         non_evidentiary = true;
@@ -538,6 +980,9 @@ fn run_load(args: Args) -> Result<(), String> {
     // outer `run-app-baseline` dual-phase path, which also tears down Postgres
     // before starting RiffDB.
     if !skip_postgres {
+        evidence
+            .backend_execution_order
+            .push(args.postgres_comparator.backend_id());
         eprintln!("load phase: PostgreSQL only (all reps/points before RiffDB)");
         let url = args
             .postgres_url
@@ -548,12 +993,14 @@ fn run_load(args: Args) -> Result<(), String> {
                     .to_owned()
             })?;
         for rep in 0..args.reps {
-            let mut postgres = PostgresAppBackend::new(&url).map_err(|error| error.to_string())?;
+            let mut postgres = PostgresAppBackend::new_with_profile(&url, args.postgres_comparator)
+                .map_err(|error| error.to_string())?;
             if rep == 0 {
                 let settings = postgres
                     .durability_settings()
                     .map_err(|error| error.to_string())?;
                 settings.assert_durable_for_parity()?;
+                evidence.postgres_durability = Some(settings.clone());
             }
             let capacity = postgres
                 .load_session_capacity()
@@ -566,53 +1013,152 @@ fn run_load(args: Args) -> Result<(), String> {
                      or lower the client set"
                 ));
             }
-            postgres.reset().map_err(|error| error.to_string())?;
-            let seed_started = Instant::now();
-            postgres.seed(&dataset).map_err(|error| error.to_string())?;
-            let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            let shared_seed_ns = if args.load_sweep_per_level_daemon {
+                None
+            } else {
+                postgres.reset().map_err(|error| error.to_string())?;
+                let seed_started = Instant::now();
+                postgres.seed(&dataset).map_err(|error| error.to_string())?;
+                let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                if args.load_journeys {
+                    let mut journey = run_stateful_journeys(
+                        &mut postgres,
+                        &dataset,
+                        (rep as u64).saturating_mul(1_000_000),
+                    )?;
+                    journey["backend_id"] = json!(args.postgres_comparator.backend_id());
+                    journey["rep"] = json!(rep);
+                    journey["sweep_scope"] = json!("shared_history");
+                    journey_reports.push(journey);
+                }
+                Some(seed_ns)
+            };
             drop(postgres);
             let worker_url = Arc::new(url.clone());
             const SAMPLE_GAP: u64 = 1_000_000_000;
             for (point_index, &clients) in client_points.iter().enumerate() {
+                let seed_ns = if let Some(seed_ns) = shared_seed_ns {
+                    seed_ns
+                } else {
+                    let mut control =
+                        PostgresAppBackend::new_with_profile(&url, args.postgres_comparator)
+                            .map_err(|error| error.to_string())?;
+                    control.reset().map_err(|error| error.to_string())?;
+                    let seed_started = Instant::now();
+                    control.seed(&dataset).map_err(|error| error.to_string())?;
+                    let seed_ns =
+                        u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                    if args.load_journeys {
+                        let mut journey = run_stateful_journeys(
+                            &mut control,
+                            &dataset,
+                            (rep as u64)
+                                .saturating_mul(1_000_000)
+                                .saturating_add((point_index as u64).saturating_mul(1_000)),
+                        )?;
+                        journey["backend_id"] = json!(args.postgres_comparator.backend_id());
+                        journey["rep"] = json!(rep);
+                        journey["clients"] = json!(clients);
+                        journey_reports.push(journey);
+                    }
+                    seed_ns
+                };
                 let mut config = base_config.clone();
                 config.clients = clients;
                 config.sample_id_base = (point_index as u64)
                     .saturating_mul(SAMPLE_GAP)
                     .saturating_add((rep as u64).saturating_mul(SAMPLE_GAP / 16));
-                let factory_url = Arc::clone(&worker_url);
-                let report = run_closed_loop_load(
-                    "postgres_sql",
-                    config,
-                    LoadExecutionShape {
-                        transport_topology: "per_session_tcp",
-                        command_attempt_budget: 1,
-                    },
-                    &dataset,
-                    seed_ns,
-                    move || {
-                        let mut backend = PostgresAppBackend::new(factory_url.as_str())
+                let mut resource_control =
+                    PostgresAppBackend::new_with_profile(&url, args.postgres_comparator)
+                        .map_err(|error| error.to_string())?;
+                let resources_before = resource_control
+                    .resource_snapshot()
+                    .map_err(|error| error.to_string())?;
+                let reconciliation_sample = config.sample_id_base.saturating_add(SAMPLE_GAP / 32);
+                let report = if config.open_loop_rate_per_sec.is_some() {
+                    let factory_url = Arc::clone(&worker_url);
+                    run_open_loop_load(
+                        args.postgres_comparator.backend_id(),
+                        config,
+                        LoadExecutionShape {
+                            transport_topology: "per_session_tcp",
+                            command_attempt_budget: 1,
+                        },
+                        &dataset,
+                        seed_ns,
+                        move || {
+                            let mut backend = PostgresAppBackend::new_with_profile(
+                                factory_url.as_str(),
+                                args.postgres_comparator,
+                            )
                             .map_err(|error| error.to_string())?;
-                        backend.prewarm().map_err(|error| error.to_string())?;
-                        Ok(backend)
-                    },
-                )?;
+                            backend.prewarm().map_err(|error| error.to_string())?;
+                            Ok(backend)
+                        },
+                    )?
+                } else {
+                    let factory_url = Arc::clone(&worker_url);
+                    run_closed_loop_load(
+                        args.postgres_comparator.backend_id(),
+                        config,
+                        LoadExecutionShape {
+                            transport_topology: "per_session_tcp",
+                            command_attempt_budget: 1,
+                        },
+                        &dataset,
+                        seed_ns,
+                        move || {
+                            let mut backend = PostgresAppBackend::new_with_profile(
+                                factory_url.as_str(),
+                                args.postgres_comparator,
+                            )
+                            .map_err(|error| error.to_string())?;
+                            backend.prewarm().map_err(|error| error.to_string())?;
+                            Ok(backend)
+                        },
+                    )?
+                };
                 // Join alone is not enough: prove the server sees zero load
                 // sessions before we record the point as complete.
-                assert_postgres_load_quiesced(&url, clients, rep)?;
+                assert_postgres_load_quiesced(&mut resource_control, clients, rep)?;
+                if args.load_journeys {
+                    let mut journey = run_stateful_journeys(
+                        &mut resource_control,
+                        &dataset,
+                        reconciliation_sample,
+                    )?;
+                    journey["backend_id"] = json!(args.postgres_comparator.backend_id());
+                    journey["rep"] = json!(rep);
+                    journey["clients"] = json!(clients);
+                    journey["phase"] = json!("post_load_reconciliation_canary");
+                    journey_reports.push(journey);
+                }
+                let resources_after = resource_control
+                    .resource_snapshot()
+                    .map_err(|error| error.to_string())?;
                 print_load_summary(&report);
                 let mut point = concurrency_curve_point(&report);
                 point["rep"] = json!(rep);
                 point["postgres_quiesced"] = json!(true);
+                point["sweep_isolation"] = json!(sweep_isolation);
+                point["resource_delta"] =
+                    postgres_resource_delta_json(&resources_before, &resources_after);
                 curve.push(point);
                 let mut json_report = report.to_json();
                 json_report["rep"] = json!(rep);
                 json_report["postgres_quiesced"] = json!(true);
+                json_report["sweep_isolation"] = json!(sweep_isolation);
+                json_report["resource_delta"] =
+                    postgres_resource_delta_json(&resources_before, &resources_after);
                 reports.push(json_report);
             }
         }
         // Final phase gate: no foreign clients before we hand off (or before the
         // outer harness tears down Docker PG).
-        assert_postgres_load_quiesced(&url, 0, usize::MAX)?;
+        let mut phase_control =
+            PostgresAppBackend::new_with_profile(&url, args.postgres_comparator)
+                .map_err(|error| error.to_string())?;
+        assert_postgres_load_quiesced(&mut phase_control, 0, usize::MAX)?;
         eprintln!(
             "PostgreSQL load phase complete and server-verified quiesced \
              (pg_stat_activity: no foreign client backends). \
@@ -621,6 +1167,7 @@ fn run_load(args: Args) -> Result<(), String> {
     }
 
     if !args.skip_riffdb {
+        evidence.backend_execution_order.push("riffdb_public_grpc");
         eprintln!("load phase: RiffDB only (PostgreSQL phase already finished)");
         for rep in 0..args.reps {
             let riffdbd = args
@@ -665,9 +1212,11 @@ fn run_load(args: Args) -> Result<(), String> {
                         ))
                         .map_err(|error| error.to_string())?;
                     let session = Arc::new(std::sync::Mutex::new(session));
+                    let seed_ns;
                     {
                         let mut guard = session.lock().map_err(|_| "session lock".to_owned())?;
                         guard.backend.reset().map_err(|error| error.to_string())?;
+                        let seed_started = Instant::now();
                         if let Err(error) = guard.backend.seed(&dataset) {
                             drop(guard);
                             if let Ok(owned) = Arc::try_unwrap(session) {
@@ -675,8 +1224,22 @@ fn run_load(args: Args) -> Result<(), String> {
                             }
                             return Err(error.to_string());
                         }
+                        seed_ns =
+                            u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                        if args.load_journeys {
+                            let mut journey = run_stateful_journeys(
+                                &mut guard.backend,
+                                &dataset,
+                                (rep as u64)
+                                    .saturating_mul(1_000_000)
+                                    .saturating_add((point_index as u64).saturating_mul(1_000)),
+                            )?;
+                            journey["backend_id"] = json!("riffdb_public_grpc");
+                            journey["rep"] = json!(rep);
+                            journey["clients"] = json!(clients);
+                            journey_reports.push(journey);
+                        }
                     }
-                    let seed_ns = 0_u64;
                     let mut config = base_config.clone().with_client_cap(if args.load_saturate {
                         RIFFDB_SATURATE_LOAD_CLIENTS
                     } else {
@@ -697,57 +1260,115 @@ fn run_load(args: Args) -> Result<(), String> {
                         let guard = session.lock().map_err(|_| "session lock".to_owned())?;
                         guard.backend.clone().with_command_attempt_budget(1)
                     };
-                    let abort = {
-                        let session = Arc::clone(&session);
-                        Arc::new(move || {
-                            let mut guard = session.lock().ok()?;
-                            guard.server_alive().err()
-                        }) as Arc<dyn Fn() -> Option<String> + Send + Sync>
+                    let resources_before = {
+                        let guard = session.lock().map_err(|_| "session lock".to_owned())?;
+                        process_resource_snapshot(guard.child_pid(), guard.session_directory())?
                     };
-                    let load_result = run_closed_loop_load_with_abort(
-                        "riffdb_public_grpc",
-                        config,
-                        LoadExecutionShape {
-                            transport_topology: transport_topology.as_report_str(),
-                            command_attempt_budget: 1,
-                        },
-                        &dataset,
-                        seed_ns,
-                        {
-                            let prototype = prototype.clone();
-                            move || {
-                                let mut backend = match transport_topology {
-                                    RiffDbTransport::PerSession => prototype.fresh_session(),
-                                    RiffDbTransport::Shared => Ok(prototype.clone()),
+                    let reconciliation_sample =
+                        config.sample_id_base.saturating_add(SAMPLE_GAP / 32);
+                    let load_result = if config.open_loop_rate_per_sec.is_some() {
+                        run_open_loop_load(
+                            "riffdb_public_grpc",
+                            config,
+                            LoadExecutionShape {
+                                transport_topology: transport_topology.as_report_str(),
+                                command_attempt_budget: 1,
+                            },
+                            &dataset,
+                            seed_ns,
+                            {
+                                let prototype = prototype.clone();
+                                move || {
+                                    let mut backend = match transport_topology {
+                                        RiffDbTransport::PerSession => prototype.fresh_session(),
+                                        RiffDbTransport::Shared => Ok(prototype.clone()),
+                                    }
+                                    .map_err(|error| error.to_string())?;
+                                    backend.prewarm().map_err(|error| error.to_string())?;
+                                    Ok(backend)
                                 }
-                                .map_err(|error| error.to_string())?;
-                                backend.prewarm().map_err(|error| error.to_string())?;
-                                Ok(backend)
-                            }
-                        },
-                        Some(abort),
-                    );
+                            },
+                        )
+                    } else {
+                        let abort = {
+                            let session = Arc::clone(&session);
+                            Arc::new(move || {
+                                let mut guard = session.lock().ok()?;
+                                guard.server_alive().err()
+                            })
+                                as Arc<dyn Fn() -> Option<String> + Send + Sync>
+                        };
+                        run_closed_loop_load_with_abort(
+                            "riffdb_public_grpc",
+                            config,
+                            LoadExecutionShape {
+                                transport_topology: transport_topology.as_report_str(),
+                                command_attempt_budget: 1,
+                            },
+                            &dataset,
+                            seed_ns,
+                            {
+                                let prototype = prototype.clone();
+                                move || {
+                                    let mut backend = match transport_topology {
+                                        RiffDbTransport::PerSession => prototype.fresh_session(),
+                                        RiffDbTransport::Shared => Ok(prototype.clone()),
+                                    }
+                                    .map_err(|error| error.to_string())?;
+                                    backend.prewarm().map_err(|error| error.to_string())?;
+                                    Ok(backend)
+                                }
+                            },
+                            Some(abort),
+                        )
+                    };
+                    if load_result.is_ok() && args.load_journeys {
+                        let mut guard = session.lock().map_err(|_| "session lock".to_owned())?;
+                        let mut journey = run_stateful_journeys(
+                            &mut guard.backend,
+                            &dataset,
+                            reconciliation_sample,
+                        )?;
+                        journey["backend_id"] = json!("riffdb_public_grpc");
+                        journey["rep"] = json!(rep);
+                        journey["clients"] = json!(clients);
+                        journey["phase"] = json!("post_load_reconciliation_canary");
+                        journey_reports.push(journey);
+                    }
+                    let resources_after = {
+                        let guard = session.lock().map_err(|_| "session lock".to_owned())?;
+                        process_resource_snapshot(guard.child_pid(), guard.session_directory())
+                    };
                     let owned = Arc::try_unwrap(session)
                         .map_err(|_| "session still shared after load".to_owned())?
                         .into_inner()
                         .map_err(|_| "session mutex poisoned".to_owned())?;
                     match load_result {
                         Ok(report) => {
+                            let resources_after = resources_after?;
                             print_load_summary(&report);
                             let mut point = concurrency_curve_point(&report);
                             point["rep"] = json!(rep);
                             point["sweep_isolation"] = json!(sweep_isolation);
+                            point["resource_delta"] = resources_after.delta_json(resources_before);
                             let mut json_report = report.to_json();
                             json_report["rep"] = json!(rep);
                             json_report["sweep_isolation"] = json!(sweep_isolation);
-                            match owned.shutdown() {
-                                Ok(groups) => {
+                            json_report["resource_delta"] =
+                                resources_after.delta_json(resources_before);
+                            match owned.shutdown_with_evidence() {
+                                Ok(evidence) => {
+                                    let groups = evidence.write_completion_groups;
                                     point["write_completion_groups_by_size"] =
                                         json!(groups.to_vec());
                                     point["histogram_scope"] = json!("per_level");
+                                    point["server_stage_evidence"] =
+                                        riffdb_shutdown_evidence_json(&evidence);
                                     json_report["write_completion_groups_by_size"] =
                                         json!(groups.to_vec());
                                     json_report["histogram_scope"] = json!("per_level");
+                                    json_report["server_stage_evidence"] =
+                                        riffdb_shutdown_evidence_json(&evidence);
                                 }
                                 Err(error) => {
                                     eprintln!("riffdbd shutdown diagnostic: {error}");
@@ -772,9 +1393,11 @@ fn run_load(args: Args) -> Result<(), String> {
                     ))
                     .map_err(|error| error.to_string())?;
                 let session = Arc::new(std::sync::Mutex::new(session));
+                let seed_ns;
                 {
                     let mut guard = session.lock().map_err(|_| "session lock".to_owned())?;
                     guard.backend.reset().map_err(|error| error.to_string())?;
+                    let seed_started = Instant::now();
                     if let Err(error) = guard.backend.seed(&dataset) {
                         drop(guard);
                         if let Ok(owned) = Arc::try_unwrap(session) {
@@ -782,8 +1405,19 @@ fn run_load(args: Args) -> Result<(), String> {
                         }
                         return Err(error.to_string());
                     }
+                    seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                    if args.load_journeys {
+                        let mut journey = run_stateful_journeys(
+                            &mut guard.backend,
+                            &dataset,
+                            (rep as u64).saturating_mul(1_000_000),
+                        )?;
+                        journey["backend_id"] = json!("riffdb_public_grpc");
+                        journey["rep"] = json!(rep);
+                        journey["sweep_scope"] = json!("shared_history");
+                        journey_reports.push(journey);
+                    }
                 }
-                let seed_ns = 0_u64;
                 let prototype = {
                     let guard = session.lock().map_err(|_| "session lock".to_owned())?;
                     guard.backend.clone().with_command_attempt_budget(1)
@@ -806,43 +1440,93 @@ fn run_load(args: Args) -> Result<(), String> {
                         .saturating_mul(SAMPLE_GAP)
                         .saturating_add((rep as u64).saturating_mul(SAMPLE_GAP / 16));
                     let prototype = prototype.clone();
-                    let abort = {
-                        let session = Arc::clone(&session);
-                        Arc::new(move || {
-                            let mut guard = session.lock().ok()?;
-                            guard.server_alive().err()
-                        }) as Arc<dyn Fn() -> Option<String> + Send + Sync>
+                    let resources_before = {
+                        let guard = session.lock().map_err(|_| "session lock".to_owned())?;
+                        process_resource_snapshot(guard.child_pid(), guard.session_directory())?
                     };
-                    let report = run_closed_loop_load_with_abort(
-                        "riffdb_public_grpc",
-                        config,
-                        LoadExecutionShape {
-                            transport_topology: transport_topology.as_report_str(),
-                            command_attempt_budget: 1,
-                        },
-                        &dataset,
-                        seed_ns,
-                        move || {
-                            let mut backend = match transport_topology {
-                                RiffDbTransport::PerSession => prototype.fresh_session(),
-                                RiffDbTransport::Shared => Ok(prototype.clone()),
-                            }
-                            .map_err(|error| error.to_string())?;
-                            backend.prewarm().map_err(|error| error.to_string())?;
-                            Ok(backend)
-                        },
-                        Some(abort),
-                    );
+                    let reconciliation_sample =
+                        config.sample_id_base.saturating_add(SAMPLE_GAP / 32);
+                    let report = if config.open_loop_rate_per_sec.is_some() {
+                        run_open_loop_load(
+                            "riffdb_public_grpc",
+                            config,
+                            LoadExecutionShape {
+                                transport_topology: transport_topology.as_report_str(),
+                                command_attempt_budget: 1,
+                            },
+                            &dataset,
+                            seed_ns,
+                            move || {
+                                let mut backend = match transport_topology {
+                                    RiffDbTransport::PerSession => prototype.fresh_session(),
+                                    RiffDbTransport::Shared => Ok(prototype.clone()),
+                                }
+                                .map_err(|error| error.to_string())?;
+                                backend.prewarm().map_err(|error| error.to_string())?;
+                                Ok(backend)
+                            },
+                        )
+                    } else {
+                        let abort = {
+                            let session = Arc::clone(&session);
+                            Arc::new(move || {
+                                let mut guard = session.lock().ok()?;
+                                guard.server_alive().err()
+                            })
+                                as Arc<dyn Fn() -> Option<String> + Send + Sync>
+                        };
+                        run_closed_loop_load_with_abort(
+                            "riffdb_public_grpc",
+                            config,
+                            LoadExecutionShape {
+                                transport_topology: transport_topology.as_report_str(),
+                                command_attempt_budget: 1,
+                            },
+                            &dataset,
+                            seed_ns,
+                            move || {
+                                let mut backend = match transport_topology {
+                                    RiffDbTransport::PerSession => prototype.fresh_session(),
+                                    RiffDbTransport::Shared => Ok(prototype.clone()),
+                                }
+                                .map_err(|error| error.to_string())?;
+                                backend.prewarm().map_err(|error| error.to_string())?;
+                                Ok(backend)
+                            },
+                            Some(abort),
+                        )
+                    };
+                    if report.is_ok() && args.load_journeys {
+                        let mut guard = session.lock().map_err(|_| "session lock".to_owned())?;
+                        let mut journey = run_stateful_journeys(
+                            &mut guard.backend,
+                            &dataset,
+                            reconciliation_sample,
+                        )?;
+                        journey["backend_id"] = json!("riffdb_public_grpc");
+                        journey["rep"] = json!(rep);
+                        journey["clients"] = json!(clients);
+                        journey["phase"] = json!("post_load_reconciliation_canary");
+                        journey_reports.push(journey);
+                    }
+                    let resources_after = {
+                        let guard = session.lock().map_err(|_| "session lock".to_owned())?;
+                        process_resource_snapshot(guard.child_pid(), guard.session_directory())
+                    };
                     match report {
                         Ok(report) => {
+                            let resources_after = resources_after?;
                             print_load_summary(&report);
                             let mut point = concurrency_curve_point(&report);
                             point["rep"] = json!(rep);
                             point["sweep_isolation"] = json!(sweep_isolation);
+                            point["resource_delta"] = resources_after.delta_json(resources_before);
                             curve.push(point);
                             let mut json_report = report.to_json();
                             json_report["rep"] = json!(rep);
                             json_report["sweep_isolation"] = json!(sweep_isolation);
+                            json_report["resource_delta"] =
+                                resources_after.delta_json(resources_before);
                             reports.push(json_report);
                         }
                         Err(error) => {
@@ -857,19 +1541,24 @@ fn run_load(args: Args) -> Result<(), String> {
                     .map_err(|_| "session still shared after load".to_owned())?
                     .into_inner()
                     .map_err(|_| "session mutex poisoned".to_owned())?;
-                match owned.shutdown() {
-                    Ok(groups) => {
+                match owned.shutdown_with_evidence() {
+                    Ok(evidence) => {
+                        let groups = evidence.write_completion_groups;
                         if let Some(last) = reports.iter_mut().rev().find(|report| {
                             report["backend_id"].as_str() == Some("riffdb_public_grpc")
                         }) {
                             last["write_completion_groups_by_size"] = json!(groups.to_vec());
                             last["histogram_scope"] = json!("cumulative_final");
+                            last["server_stage_evidence"] =
+                                riffdb_shutdown_evidence_json(&evidence);
                         }
                         if let Some(last) = curve.iter_mut().rev().find(|report| {
                             report["backend_id"].as_str() == Some("riffdb_public_grpc")
                         }) {
                             last["write_completion_groups_by_size"] = json!(groups.to_vec());
                             last["histogram_scope"] = json!("cumulative_final");
+                            last["server_stage_evidence"] =
+                                riffdb_shutdown_evidence_json(&evidence);
                         }
                     }
                     Err(error) => {
@@ -973,7 +1662,7 @@ fn run_load(args: Args) -> Result<(), String> {
             if args.load_contended {
                 // Contended profile requires every weighted op to land at least
                 // one success against the shared hot ticket.
-                if let Some(by_op) = report["by_op"].as_object() {
+                if let Some(by_op) = report["operations"].as_object() {
                     for (op, stats) in by_op {
                         let success = stats["outcomes"]["success"].as_u64().unwrap_or(0);
                         if success == 0 {
@@ -985,11 +1674,20 @@ fn run_load(args: Args) -> Result<(), String> {
             (!parts.is_empty()).then(|| format!("{label}: {}", parts.join("; ")))
         })
         .collect::<Vec<_>>();
-    let encoded = serde_json::to_string_pretty(&json!({
+    let mut suite = json!({
         "schema": "riffdb.app-baseline-load-suite/v1",
         "scale": {
             "profile": if args.scale.approximate_row_count() < 1_000 { "smoke" } else { "full" },
             "approximate_row_count": args.scale.approximate_row_count(),
+            "organizations": args.scale.organizations,
+            "projects_per_org": args.scale.projects_per_org,
+            "tickets_per_project": args.scale.tickets_per_project,
+            "comments_per_ticket": args.scale.comments_per_ticket,
+            "labels_per_ticket": args.scale.labels_per_ticket,
+            "board_dense_open": args.scale.board_dense_open,
+            "payload_bytes": args.scale.payload_bytes,
+            "comment_payload_bytes": args.scale.payload_bytes,
+            "ticket_title_payload_bytes": args.scale.payload_bytes.min(128),
         },
         "comparison": {
             "requested_clients": if args.load_concurrency_sweep {
@@ -1000,19 +1698,37 @@ fn run_load(args: Args) -> Result<(), String> {
             "concurrency_sweep": args.load_concurrency_sweep,
             "client_points": client_points,
             "riffdb_transport": args.riffdb_transport.as_report_str(),
+            "postgres_comparator": args.postgres_comparator.backend_id(),
             "automatic_command_retries": false,
             "contended": args.load_contended,
             "saturate": args.load_saturate,
             "saturate_p99_ceiling_ms": args.load_saturate_p99_ms,
+            "tenant_count": base_config.tenant_count,
+            "hot_tenant_percent": base_config.hot_tenant_percent,
+            "history_mode": sweep_isolation,
             "notes": if args.load_concurrency_sweep {
-                json!([
-                    "Concurrency sweep: same workload mix, warmup, and measure window at each client_points entry.",
-                    "Seed once per backend; points run low→high so later points see accumulated write history.",
-                    "Curve is the defensible scaling evidence (throughput and latency vs clients), not a two-point inference."
-                ])
+                if args.load_sweep_per_level_daemon {
+                    json!([
+                        "Concurrency sweep: same workload mix, warmup, and measure window at each client_points entry.",
+                        "Every point starts from an identically generated fresh seed and process/storage state.",
+                        "Curve is the defensible scaling evidence (throughput and latency vs clients), not a two-point inference."
+                    ])
+                } else {
+                    json!([
+                        "Concurrency sweep: same workload mix, warmup, and measure window at each client_points entry.",
+                        "Explicit history-growth mode: points run low→high against one daemon and later points include earlier writes.",
+                        "Do not interpret this curve as concurrency-only scaling evidence."
+                    ])
+                }
             } else {
                 json!([])
             },
+        },
+        "query_shape_tiers": {
+            "board_page_sizes": [50, 200, 450],
+            "comment_page_limit": 50,
+            "cursor_depth": "first_page_in_load; cursor resume is covered by generated-client conformance",
+            "bounded_shape_note": "RiffQL v1 application pages use deployed static bounds; unsupported arbitrary depths are not silently simulated by the harness."
         },
         "curve": curve,
         "correctness": {
@@ -1020,9 +1736,14 @@ fn run_load(args: Args) -> Result<(), String> {
             "failures": &correctness_failures,
             "server_shutdown_error": deferred_failure.as_ref(),
         },
+        "stateful_journeys": journey_reports,
         "backends": reports,
-    }))
-    .map_err(|error| error.to_string())?;
+    });
+    attach_load_evidence(&mut suite, &evidence, &curve, args.reps, non_evidentiary)?;
+    if args.require_stable {
+        require_load_stable(&suite)?;
+    }
+    let encoded = serde_json::to_string_pretty(&suite).map_err(|error| error.to_string())?;
     if let Some(path) = &args.output {
         fs::write(path, format!("{encoded}\n")).map_err(|error| error.to_string())?;
         println!("wrote {}", path.display());
@@ -1047,11 +1768,10 @@ fn run_load(args: Args) -> Result<(), String> {
 /// connected or executing SQL, measurement boundaries and sequential isolation
 /// are lies. Fail closed with a `pg_stat_activity` sample.
 fn assert_postgres_load_quiesced(
-    database_url: &str,
+    control: &mut PostgresAppBackend,
     clients: usize,
     rep: usize,
 ) -> Result<(), String> {
-    let mut control = PostgresAppBackend::new(database_url).map_err(|error| error.to_string())?;
     // Long tail: a single stuck multi-entity write under c=128 can take seconds;
     // 30s is well above expected TCP close after join.
     const QUIESCE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1506,7 +2226,7 @@ fn attach_rep_summaries(
             if let Some(backends) = report["backends"].as_array_mut() {
                 for backend in backends {
                     match backend["backend_id"].as_str() {
-                        Some("postgres_sql") => {
+                        Some(id) if id.starts_with("postgres_") => {
                             backend["board_marginal_ns_per_row"] = pg_summary.clone();
                         }
                         Some("riffdb_public_grpc") => {
@@ -1627,6 +2347,7 @@ struct Args {
     samples: usize,
     warmups: usize,
     postgres_url: Option<String>,
+    postgres_comparator: PostgresComparisonProfile,
     riffdbd_bin: Option<PathBuf>,
     output: Option<PathBuf>,
     skip_postgres: bool,
@@ -1640,12 +2361,17 @@ struct Args {
     load_duration_secs: Option<u64>,
     load_warmup_secs: Option<u64>,
     load_zipf_s: Option<f64>,
+    load_open_loop_rate: Option<u64>,
+    load_open_loop_queue_depth: usize,
+    load_tenants: usize,
+    load_hot_tenant_percent: u8,
+    load_journeys: bool,
     load_contended: bool,
     load_saturate: bool,
     load_saturate_p99_ms: u64,
     /// Same mix at client points 1/8/32/128 (curve evidence).
     load_concurrency_sweep: bool,
-    /// Fresh daemon per sweep client point (empty retained history each level).
+    /// Fresh daemon per sweep client point (identical retained history each level).
     load_sweep_per_level_daemon: bool,
     riffdb_transport: RiffDbTransport,
     /// On-disk root for riffdbd session DBs (default `target/perf-db/app-baseline`).
@@ -1666,6 +2392,7 @@ impl Args {
         let mut samples = 3;
         let mut warmups = 1;
         let mut postgres_url = None;
+        let mut postgres_comparator = PostgresComparisonProfile::Minimal;
         let mut riffdbd_bin = None;
         let mut output = None;
         let mut skip_postgres = false;
@@ -1679,11 +2406,18 @@ impl Args {
         let mut load_duration_secs = None;
         let mut load_warmup_secs = None;
         let mut load_zipf_s = None;
+        let mut load_open_loop_rate = None;
+        let mut load_open_loop_queue_depth = 4_096;
+        let mut load_tenants = 1;
+        let mut load_hot_tenant_percent = 0;
+        let mut load_journeys = false;
         let mut load_contended = false;
         let mut load_saturate = false;
         let mut load_saturate_p99_ms = 250;
         let mut load_concurrency_sweep = false;
-        let mut load_sweep_per_level_daemon = false;
+        // Concurrency comparisons must start from identical history. Accumulated
+        // history remains an explicit growth experiment, never the default.
+        let mut load_sweep_per_level_daemon = true;
         let mut riffdb_transport = RiffDbTransport::PerSession;
         let mut database_root = None;
         let mut postgres_data_host_path = None;
@@ -1692,6 +2426,11 @@ impl Args {
         let mut require_stable = false;
         let mut full = false;
         let mut board_density: Option<u32> = None;
+        let mut organizations: Option<u32> = None;
+        let mut tickets_per_project: Option<u32> = None;
+        let mut comments_per_ticket: Option<u32> = None;
+        let mut labels_per_ticket: Option<u32> = None;
+        let mut payload_bytes: Option<u32> = None;
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -1718,6 +2457,13 @@ impl Args {
                 }
                 "--postgres-url" => {
                     postgres_url = Some(args.next().ok_or("--postgres-url needs a value")?);
+                }
+                "--postgres-comparator" => {
+                    let value = args.next().ok_or("--postgres-comparator needs a value")?;
+                    postgres_comparator =
+                        PostgresComparisonProfile::parse(&value).ok_or_else(|| {
+                            "--postgres-comparator must be minimal or safe-app".to_owned()
+                        })?;
                 }
                 "--riffdbd-bin" => {
                     riffdbd_bin = Some(PathBuf::from(
@@ -1786,10 +2532,41 @@ impl Args {
                             .map_err(|_| "--load-zipf-s must be f64")?,
                     );
                 }
+                "--load-open-loop-rate" => {
+                    load_open_loop_rate = Some(
+                        args.next()
+                            .ok_or("--load-open-loop-rate needs a value")?
+                            .parse()
+                            .map_err(|_| "--load-open-loop-rate must be u64")?,
+                    );
+                }
+                "--load-open-loop-queue-depth" => {
+                    load_open_loop_queue_depth = args
+                        .next()
+                        .ok_or("--load-open-loop-queue-depth needs a value")?
+                        .parse()
+                        .map_err(|_| "--load-open-loop-queue-depth must be usize")?;
+                }
+                "--load-tenants" => {
+                    load_tenants = args
+                        .next()
+                        .ok_or("--load-tenants needs a value")?
+                        .parse()
+                        .map_err(|_| "--load-tenants must be usize")?;
+                }
+                "--load-hot-tenant-percent" => {
+                    load_hot_tenant_percent = args
+                        .next()
+                        .ok_or("--load-hot-tenant-percent needs a value")?
+                        .parse()
+                        .map_err(|_| "--load-hot-tenant-percent must be u8")?;
+                }
+                "--load-journeys" => load_journeys = true,
                 "--load-contended" => load_contended = true,
                 "--load-saturate" => load_saturate = true,
                 "--load-concurrency-sweep" => load_concurrency_sweep = true,
                 "--load-sweep-per-level-daemon" => load_sweep_per_level_daemon = true,
+                "--load-accumulate-history" => load_sweep_per_level_daemon = false,
                 "--load-saturate-p99-ms" => {
                     load_saturate_p99_ms = args
                         .next()
@@ -1835,16 +2612,62 @@ impl Args {
                     }
                     board_density = Some(value);
                 }
+                "--organizations" => {
+                    organizations = Some(
+                        args.next()
+                            .ok_or("--organizations needs a value")?
+                            .parse()
+                            .map_err(|_| "--organizations must be u32")?,
+                    );
+                }
+                "--tickets-per-project" => {
+                    tickets_per_project = Some(
+                        args.next()
+                            .ok_or("--tickets-per-project needs a value")?
+                            .parse()
+                            .map_err(|_| "--tickets-per-project must be u32")?,
+                    );
+                }
+                "--comments-per-ticket" => {
+                    comments_per_ticket = Some(
+                        args.next()
+                            .ok_or("--comments-per-ticket needs a value")?
+                            .parse()
+                            .map_err(|_| "--comments-per-ticket must be u32")?,
+                    );
+                }
+                "--labels-per-ticket" => {
+                    labels_per_ticket = Some(
+                        args.next()
+                            .ok_or("--labels-per-ticket needs a value")?
+                            .parse()
+                            .map_err(|_| "--labels-per-ticket must be u32")?,
+                    );
+                }
+                "--payload-bytes" => {
+                    payload_bytes = Some(
+                        args.next()
+                            .ok_or("--payload-bytes needs a value")?
+                            .parse()
+                            .map_err(|_| "--payload-bytes must be u32")?,
+                    );
+                }
                 "--help" | "-h" => {
                     return Err(
                         "usage: riffdb-app-baseline [--smoke|--full] [--samples N] [--warmup N] \
-                         [--board-density N] [--postgres-url URL] [--riffdbd-bin PATH] \
+                         [--board-density N] [--organizations N] [--tickets-per-project N] \
+                         [--comments-per-ticket N] [--labels-per-ticket N] [--payload-bytes N] \
+                         [--postgres-url URL] [--riffdbd-bin PATH] \
+                         [--postgres-comparator minimal|safe-app] \
                          [--output PATH] [--assert-write-parity|--assert-all-parity] \
                          [--concurrent-clients N] [--concurrent-operations N] \
                          [--load interactive|agent|membership_contention] [--load-clients N] \
                          [--load-duration-secs N] [--load-warmup-secs N] [--load-zipf-s F] \
+                         [--load-open-loop-rate OPS] [--load-open-loop-queue-depth N] \
+                         [--load-tenants N] [--load-hot-tenant-percent PERCENT] \
+                         [--load-journeys] \
                          [--load-contended] [--load-saturate] [--load-saturate-p99-ms N] \
-                         [--load-concurrency-sweep] [--load-sweep-per-level-daemon] \
+                         [--load-concurrency-sweep] [--load-sweep-per-level-daemon|--load-accumulate-history] \
                          [--load-riffdb-transport per-session|shared] \
                          [--database-root PATH] [--postgres-data-host-path PATH] \
                          [--allow-tmpfs] [--reps N] [--require-stable] \
@@ -1857,6 +2680,39 @@ impl Args {
         }
         if let Some(density) = board_density {
             scale.board_dense_open = density;
+        }
+        if let Some(value) = organizations {
+            if !(1..=64).contains(&value) {
+                return Err("--organizations must be 1..=64".to_owned());
+            }
+            scale.organizations = value;
+        }
+        if let Some(value) = tickets_per_project {
+            if !(1..=1_000).contains(&value) {
+                return Err("--tickets-per-project must be 1..=1000".to_owned());
+            }
+            scale.tickets_per_project = value;
+        }
+        if let Some(value) = comments_per_ticket {
+            if value > 50 {
+                return Err("--comments-per-ticket must be <= 50".to_owned());
+            }
+            scale.comments_per_ticket = value;
+        }
+        if let Some(value) = labels_per_ticket {
+            if value == 0 || value > scale.labels_per_org {
+                return Err(format!(
+                    "--labels-per-ticket must be 1..={} for this scale",
+                    scale.labels_per_org
+                ));
+            }
+            scale.labels_per_ticket = value;
+        }
+        if let Some(value) = payload_bytes {
+            if value > 200 {
+                return Err("--payload-bytes must be <= 200".to_owned());
+            }
+            scale.payload_bytes = value;
         }
         let reps = reps.unwrap_or(if full { 3 } else { 1 });
         if !(1..=32).contains(&reps) {
@@ -1890,6 +2746,10 @@ impl Args {
                 || load_duration_secs.is_some()
                 || load_warmup_secs.is_some()
                 || load_zipf_s.is_some()
+                || load_open_loop_rate.is_some()
+                || load_tenants != 1
+                || load_hot_tenant_percent != 0
+                || load_journeys
                 || load_contended
                 || load_saturate
                 || load_concurrency_sweep
@@ -1909,6 +2769,26 @@ impl Args {
                     .to_owned(),
             );
         }
+        if load_open_loop_rate.is_some_and(|rate| rate == 0 || rate > 1_000_000) {
+            return Err("--load-open-loop-rate must be 1..=1000000".to_owned());
+        }
+        if !(1..=65_536).contains(&load_open_loop_queue_depth) {
+            return Err("--load-open-loop-queue-depth must be 1..=65536".to_owned());
+        }
+        if !(1..=64).contains(&load_tenants) {
+            return Err("--load-tenants must be 1..=64".to_owned());
+        }
+        if load_tenants > scale.organizations as usize {
+            return Err(format!(
+                "--load-tenants {load_tenants} requires --organizations of at least {load_tenants}"
+            ));
+        }
+        if load_hot_tenant_percent > 100 {
+            return Err("--load-hot-tenant-percent must be <= 100".to_owned());
+        }
+        if load_open_loop_rate.is_some() && load_saturate {
+            return Err("--load-open-loop-rate is incompatible with --load-saturate".to_owned());
+        }
         if assert_write_parity && load_profile.is_some() {
             return Err(
                 "--assert-write-parity is only for the parity suite, not --load".to_owned(),
@@ -1922,6 +2802,7 @@ impl Args {
             samples,
             warmups,
             postgres_url,
+            postgres_comparator,
             riffdbd_bin,
             output,
             skip_postgres,
@@ -1935,6 +2816,11 @@ impl Args {
             load_duration_secs,
             load_warmup_secs,
             load_zipf_s,
+            load_open_loop_rate,
+            load_open_loop_queue_depth,
+            load_tenants,
+            load_hot_tenant_percent,
+            load_journeys,
             load_contended,
             load_saturate,
             load_saturate_p99_ms,
@@ -1956,7 +2842,8 @@ mod tests {
 
     use super::{
         Args, RiffDbTransport, Scale, SeedDataset, WorkloadProfile, assert_all_parity,
-        assert_write_parity, gated_ratio, median_scenarios, require_stable, scalar_summary,
+        assert_write_parity, gated_ratio, load_rep_summaries, median_scenarios,
+        require_load_stable, require_stable, scalar_summary,
     };
 
     fn parity_report(seed_ratio: f64, write_ratio: f64) -> Value {
@@ -2047,6 +2934,69 @@ mod tests {
     }
 
     #[test]
+    fn tenant_and_open_loop_flags_require_seeded_partitions() {
+        let args = Args::parse(
+            [
+                "--organizations",
+                "8",
+                "--load",
+                "agent",
+                "--load-tenants",
+                "8",
+                "--load-hot-tenant-percent",
+                "70",
+                "--load-open-loop-rate",
+                "2000",
+                "--load-open-loop-queue-depth",
+                "4096",
+                "--load-journeys",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .expect("tenant open-loop flags");
+        assert_eq!(args.load_tenants, 8);
+        assert_eq!(args.load_hot_tenant_percent, 70);
+        assert_eq!(args.load_open_loop_rate, Some(2_000));
+        assert_eq!(args.load_open_loop_queue_depth, 4_096);
+        assert!(args.load_journeys);
+
+        let error = Args::parse(
+            ["--load", "interactive", "--load-tenants", "8"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .err()
+        .expect("missing organizations must fail");
+        assert!(error.contains("requires --organizations"));
+    }
+
+    #[test]
+    fn process_resource_delta_is_saturating_and_redaction_safe() {
+        let before = super::ProcessResourceSnapshot {
+            cpu_ticks: 10,
+            rss_bytes: 100,
+            read_bytes: 30,
+            write_bytes: 40,
+            durable_bytes: 1_000,
+        };
+        let after = super::ProcessResourceSnapshot {
+            cpu_ticks: 25,
+            rss_bytes: 80,
+            read_bytes: 50,
+            write_bytes: 90,
+            durable_bytes: 900,
+        };
+        let delta = after.delta_json(before);
+        assert_eq!(delta["cpu_ticks"], 15);
+        assert_eq!(delta["rss_bytes_peak_sampled"], 100);
+        assert_eq!(delta["process_write_bytes"], 50);
+        assert_eq!(delta["durable_bytes_growth"], 0);
+        assert!(delta.get("path").is_none());
+        assert!(delta.get("pid").is_none());
+    }
+
+    #[test]
     fn parity_gate_accepts_its_exact_boundary() {
         assert_write_parity(&parity_report(2.0, 2.0)).expect("exact boundary");
     }
@@ -2127,7 +3077,7 @@ mod tests {
         let smoke = Args::parse(["--smoke".to_owned()].into_iter()).expect("smoke");
         assert_eq!(smoke.reps, 1);
         assert!(!smoke.allow_tmpfs);
-        assert!(!smoke.load_sweep_per_level_daemon);
+        assert!(smoke.load_sweep_per_level_daemon);
         assert!(!smoke.require_stable);
 
         let full = Args::parse(["--full".to_owned()].into_iter()).expect("full");
@@ -2151,6 +3101,46 @@ mod tests {
         assert!(custom.allow_tmpfs);
         assert!(custom.require_stable);
         assert!(custom.load_sweep_per_level_daemon);
+
+        let accumulated = Args::parse(
+            ["--load", "interactive", "--load-accumulate-history"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .expect("explicit accumulated history");
+        assert!(!accumulated.load_sweep_per_level_daemon);
+    }
+
+    #[test]
+    fn load_rep_summaries_group_backend_and_client_and_detect_instability() {
+        let curve = vec![
+            json!({
+                "backend_id": "riffdb_public_grpc",
+                "clients": 32,
+                "throughput_ops_s": 1000,
+                "aggregate_p50_ns": 100,
+                "aggregate_p95_ns": 200,
+                "aggregate_p99_ns": 300,
+            }),
+            json!({
+                "backend_id": "riffdb_public_grpc",
+                "clients": 32,
+                "throughput_ops_s": 4000,
+                "aggregate_p50_ns": 110,
+                "aggregate_p95_ns": 210,
+                "aggregate_p99_ns": 310,
+            }),
+        ];
+        let summaries = load_rep_summaries(&curve);
+        let point = &summaries["riffdb_public_grpc@clients=32"];
+        assert_eq!(point["throughput_ops_s"]["median"], 4000.0);
+        assert_eq!(point["throughput_ops_s"]["stability"], "unstable");
+
+        let report = json!({
+            "reps": 2,
+            "load_rep_summaries": summaries,
+        });
+        assert!(require_load_stable(&report).is_err());
     }
 
     #[test]

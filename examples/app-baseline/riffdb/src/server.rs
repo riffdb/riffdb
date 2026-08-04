@@ -48,6 +48,9 @@ const AUDIENCE: &str = "riffdb-grpc-loopback";
 const ENVIRONMENT: &str = "app-baseline";
 const READY_PREFIX: &str = "riffdbd-ready-v1\t";
 const WRITE_GROUP_PREFIX: &str = "riffdb-write-completion-groups-v1\t";
+const DISPATCH_REASON_PREFIX: &str = "riffdb-dispatch-reasons-v1\t";
+const READ_STAGE_PREFIX: &str = "riffdb-read-stages-v1\t";
+const COMMAND_STAGE_PREFIX: &str = "riffdb-command-stages-v1\t";
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(30);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(15);
 /// Keep the last N stderr lines for crash diagnosis (panic / OOM messages).
@@ -171,6 +174,32 @@ pub struct RiffDbServerSession {
     pub bench_root: riffdb_bench_root::BenchRoot,
     /// Public application backend.
     pub backend: RiffDbPublicBackend,
+}
+
+/// Redaction-safe fixed-cardinality server telemetry emitted at clean shutdown.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RiffDbShutdownEvidence {
+    /// Successful completion groups indexed by group size minus one.
+    pub write_completion_groups: [u64; 64],
+    /// Dispatch counts in full, barrier, queue-drained, receiver-closed order.
+    pub dispatch_reasons: [u64; 4],
+    /// Per-stage public read pipeline summaries.
+    pub read_stages: Vec<RiffDbReadStageEvidence>,
+    /// Per-stage coordinator command pipeline summaries.
+    pub command_stages: Vec<RiffDbReadStageEvidence>,
+}
+
+/// One fixed read-pipeline stage summary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RiffDbReadStageEvidence {
+    /// Closed stage label.
+    pub name: String,
+    /// Number of observations.
+    pub count: u64,
+    /// Saturating elapsed microsecond sum.
+    pub sum_us: u64,
+    /// Cumulative fixed histogram buckets.
+    pub buckets: Vec<u64>,
 }
 
 impl RiffDbServerSession {
@@ -300,6 +329,16 @@ impl RiffDbServerSession {
     pub fn shutdown(mut self) -> Result<[u64; 64], RiffDbError> {
         self.process
             .shutdown_cleanly()
+            .map(|evidence| evidence.write_completion_groups)
+            .map_err(|error| RiffDbError::Server {
+                detail: error.to_string(),
+            })
+    }
+
+    /// Stops cleanly and returns bounded stage/scheduler evidence.
+    pub fn shutdown_with_evidence(mut self) -> Result<RiffDbShutdownEvidence, RiffDbError> {
+        self.process
+            .shutdown_cleanly()
             .map_err(|error| RiffDbError::Server {
                 detail: error.to_string(),
             })
@@ -348,6 +387,14 @@ impl RiffDbServerSession {
     #[must_use]
     pub fn child_pid(&self) -> u32 {
         self.process.child_id
+    }
+
+    /// Private per-run directory containing the database, projection, and
+    /// auxiliary durable files. Benchmark attribution may inspect aggregate
+    /// byte counts, but must never publish paths or file contents as labels.
+    #[must_use]
+    pub fn session_directory(&self) -> &Path {
+        self._temporary.path()
     }
 }
 
@@ -843,7 +890,7 @@ struct ServerProcess {
     child_id: u32,
     stdin: Option<std::process::ChildStdin>,
     ready: Receiver<io::Result<String>>,
-    write_groups: Receiver<io::Result<[u64; 64]>>,
+    shutdown_evidence: Receiver<io::Result<RiffDbShutdownEvidence>>,
     reaper_commands: SyncSender<ReaperCommand>,
     exited: Receiver<io::Result<ExitStatus>>,
     reaper: Option<JoinHandle<()>>,
@@ -915,9 +962,9 @@ impl ServerProcess {
             .take()
             .ok_or_else(|| io::Error::other("stderr"))?;
         let (ready_sender, ready) = mpsc::sync_channel(1);
-        let (write_group_sender, write_groups) = mpsc::sync_channel(1);
+        let (shutdown_sender, shutdown_evidence) = mpsc::sync_channel(1);
         let stdout =
-            thread::spawn(move || read_server_stdout(stdout, ready_sender, write_group_sender));
+            thread::spawn(move || read_server_stdout(stdout, ready_sender, shutdown_sender));
         let stderr_ring = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_RING_LINES)));
         let stderr_ring_worker = Arc::clone(&stderr_ring);
         let stderr = thread::spawn(move || drain_server_stderr(stderr, stderr_ring_worker));
@@ -928,7 +975,7 @@ impl ServerProcess {
             child_id,
             stdin: Some(stdin),
             ready,
-            write_groups,
+            shutdown_evidence,
             reaper_commands,
             exited,
             reaper: Some(reaper),
@@ -1013,7 +1060,7 @@ impl ServerProcess {
         detail
     }
 
-    fn shutdown_cleanly(&mut self) -> io::Result<[u64; 64]> {
+    fn shutdown_cleanly(&mut self) -> io::Result<RiffDbShutdownEvidence> {
         if let Some(mut stdin) = self.stdin.take() {
             let _ = stdin.write_all(b"shutdown\n");
             let _ = stdin.flush();
@@ -1024,7 +1071,7 @@ impl ServerProcess {
                 let status = status?;
                 self.cached_exit = Some(Ok(status));
                 if status.success() {
-                    self.write_groups
+                    self.shutdown_evidence
                         .recv_timeout(PROCESS_STOP_TIMEOUT)
                         .map_err(|_| {
                             io::Error::other(
@@ -1088,7 +1135,7 @@ impl Drop for ServerProcess {
 fn read_server_stdout(
     stream: impl Read,
     ready_sender: SyncSender<io::Result<String>>,
-    write_group_sender: SyncSender<io::Result<[u64; 64]>>,
+    shutdown_sender: SyncSender<io::Result<RiffDbShutdownEvidence>>,
 ) -> usize {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -1097,6 +1144,10 @@ fn read_server_stdout(
         .map(|_| line.trim_end().to_owned());
     let _ = ready_sender.send(ready);
     let mut total = line.len();
+    let mut write_completion_groups = None;
+    let mut dispatch_reasons = None;
+    let mut read_stages = None;
+    let mut command_stages = None;
     loop {
         line.clear();
         let Ok(read) = reader.read_line(&mut line) else {
@@ -1108,24 +1159,104 @@ fn read_server_stdout(
         eprint!("{line}");
         total = total.saturating_add(read);
         if let Some(encoded) = line.trim_end().strip_prefix(WRITE_GROUP_PREFIX) {
-            let _ = write_group_sender.send(parse_write_groups(encoded));
+            write_completion_groups = Some(parse_fixed_counts(encoded, "write-group", 64));
+        } else if let Some(encoded) = line.trim_end().strip_prefix(DISPATCH_REASON_PREFIX) {
+            dispatch_reasons = Some(parse_fixed_counts(encoded, "dispatch-reason", 4));
+        } else if let Some(encoded) = line.trim_end().strip_prefix(READ_STAGE_PREFIX) {
+            read_stages = Some(parse_read_stages(encoded));
+        } else if let Some(encoded) = line.trim_end().strip_prefix(COMMAND_STAGE_PREFIX) {
+            command_stages = Some(parse_read_stages(encoded));
         }
     }
+    let evidence = match (
+        write_completion_groups,
+        dispatch_reasons,
+        read_stages,
+        command_stages,
+    ) {
+        (
+            Some(Ok(write_completion_groups)),
+            Some(Ok(dispatch_reasons)),
+            Some(Ok(read_stages)),
+            Some(Ok(command_stages)),
+        ) => {
+            Ok(RiffDbShutdownEvidence {
+                write_completion_groups,
+                dispatch_reasons,
+                read_stages,
+                command_stages,
+            })
+        }
+        (Some(Err(error)), _, _, _)
+        | (_, Some(Err(error)), _, _)
+        | (_, _, Some(Err(error)), _)
+        | (_, _, _, Some(Err(error))) => Err(error),
+        _ => Err(io::Error::other("incomplete riffdb shutdown telemetry")),
+    };
+    let _ = shutdown_sender.send(evidence);
     total
 }
 
-fn parse_write_groups(encoded: &str) -> io::Result<[u64; 64]> {
+fn parse_fixed_counts<const N: usize>(
+    encoded: &str,
+    label: &'static str,
+    expected: usize,
+) -> io::Result<[u64; N]> {
     let values = encoded
         .split(',')
         .map(|value| {
             value
                 .parse::<u64>()
-                .map_err(|_| io::Error::other("invalid write-group count"))
+                .map_err(|_| io::Error::other(format!("invalid {label} count")))
         })
         .collect::<io::Result<Vec<_>>>()?;
-    values
-        .try_into()
-        .map_err(|_| io::Error::other("invalid write-group count length"))
+    if values.len() != expected || expected != N {
+        return Err(io::Error::other(format!("invalid {label} count length")));
+    }
+    values.try_into().map_err(|_| io::Error::other(label))
+}
+
+fn parse_read_stages(encoded: &str) -> io::Result<Vec<RiffDbReadStageEvidence>> {
+    let mut stages = Vec::new();
+    for part in encoded.split(';') {
+        let mut fields = part.splitn(4, ':');
+        let name = fields
+            .next()
+            .filter(|name| !name.is_empty() && name.len() <= 64)
+            .ok_or_else(|| io::Error::other("invalid read-stage name"))?
+            .to_owned();
+        let parse = |value: Option<&str>| {
+            value
+                .ok_or_else(|| io::Error::other("missing read-stage counter"))?
+                .parse::<u64>()
+                .map_err(|_| io::Error::other("invalid read-stage counter"))
+        };
+        let count = parse(fields.next())?;
+        let sum_us = parse(fields.next())?;
+        let buckets = fields
+            .next()
+            .ok_or_else(|| io::Error::other("missing read-stage buckets"))?
+            .split(',')
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .map_err(|_| io::Error::other("invalid read-stage bucket"))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        if buckets.len() != 16 || stages.len() >= 32 {
+            return Err(io::Error::other("invalid read-stage cardinality"));
+        }
+        stages.push(RiffDbReadStageEvidence {
+            name,
+            count,
+            sum_us,
+            buckets,
+        });
+    }
+    if stages.is_empty() {
+        return Err(io::Error::other("empty read-stage evidence"));
+    }
+    Ok(stages)
 }
 
 fn drain_server_stderr(stream: impl Read, ring: Arc<Mutex<VecDeque<String>>>) -> usize {
@@ -1271,5 +1402,27 @@ mod tests {
         }
         assert!(ring.len() < STDERR_RING_LINES);
         assert!(ring_bytes <= STDERR_RING_BYTES + huge.len());
+    }
+
+    #[test]
+    fn shutdown_evidence_parsers_reject_shape_drift() {
+        let groups = (0_u64..64)
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let parsed = parse_fixed_counts::<64>(&groups, "write-group", 64).expect("groups");
+        assert_eq!(parsed[63], 63);
+        assert!(parse_fixed_counts::<4>("1,2,3", "dispatch", 4).is_err());
+
+        let buckets = (0_u64..16)
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let stages = parse_read_stages(&format!("authorize:2:9:{buckets}"))
+            .expect("read stage evidence");
+        assert_eq!(stages[0].name, "authorize");
+        assert_eq!(stages[0].count, 2);
+        assert_eq!(stages[0].buckets.len(), 16);
+        assert!(parse_read_stages("authorize:2:9:1,2").is_err());
     }
 }
