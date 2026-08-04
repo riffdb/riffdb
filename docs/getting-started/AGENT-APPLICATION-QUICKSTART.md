@@ -52,6 +52,11 @@ generated/
 src/
 ```
 
+The Rust scaffold additionally includes `Cargo.toml` and an exact
+`Cargo.lock`; its first `cargo check --locked` is reproducible without a
+separate resolver step. TypeScript and Python scaffolds likewise include their
+native exact locks.
+
 `riffdb.application.json` is author-owned symbolic source. It contains names
 and paths, never compiler hashes, numeric IDs, masks, plans, or encoded keys.
 `riffdb.application.lock.json` is compiler-owned and pins the exact contract,

@@ -25,7 +25,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-for tool in cargo find jq python3 rg sha256sum sort uv; do
+for tool in cargo cmp find jq python3 rg sha256sum sort uv; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "required sealed-bundle tool is missing: $tool" >&2
         exit 1
@@ -126,13 +126,14 @@ cp "$repo_root/evaluations/installed-first-application/report-schema.json" \
 mkdir "$temporary/.application-smoke"
 "$temporary/bin/riffdb" new agent-alpha-smoke \
     --directory "$temporary/.application-smoke" >/dev/null
+[[ -s "$temporary/.application-smoke/Cargo.lock" ]] || {
+    echo "Rust scaffold omitted its exact Cargo.lock" >&2
+    exit 1
+}
 CARGO_TARGET_DIR="$temporary/.sdk-check-target" cargo check --quiet \
     --manifest-path "$temporary/public/rust-sdk/Cargo.toml" \
     -p riffdb-client-rust
 app_patch="patch.crates-io.riffdb-client-rust.path=\"$temporary/public/rust-sdk/crates/riffdb-client-rust\""
-cargo generate-lockfile --quiet \
-    --manifest-path "$temporary/.application-smoke/Cargo.toml" \
-    --config "$app_patch"
 cargo vendor --quiet --locked --versioned-dirs \
     --manifest-path "$temporary/public/rust-sdk/Cargo.toml" \
     --sync "$temporary/.application-smoke/Cargo.toml" \
@@ -143,6 +144,24 @@ CARGO_HOME="$temporary/.cargo" CARGO_NET_OFFLINE=true \
     cargo check --quiet --locked \
     --manifest-path "$temporary/public/rust-sdk/Cargo.toml" \
     -p riffdb-client-rust
+cp "$temporary/.application-smoke/Cargo.lock" \
+    "$temporary/.application-smoke.Cargo.lock.expected"
+rm "$temporary/.application-smoke/Cargo.lock"
+CARGO_HOME="$temporary/.cargo" CARGO_NET_OFFLINE=true \
+    cargo generate-lockfile --quiet \
+    --manifest-path "$temporary/.application-smoke/Cargo.toml" \
+    --config "$app_patch"
+cmp "$temporary/.application-smoke.Cargo.lock.expected" \
+    "$temporary/.application-smoke/Cargo.lock" || {
+    echo "Rust scaffold Cargo.lock is stale against the sealed dependency set" >&2
+    exit 1
+}
+rm "$temporary/.application-smoke.Cargo.lock.expected"
+CARGO_HOME="$temporary/.cargo" CARGO_NET_OFFLINE=true \
+    CARGO_TARGET_DIR="$temporary/.sdk-check-target" \
+    cargo check --quiet --locked \
+    --manifest-path "$temporary/.application-smoke/Cargo.toml" \
+    --config "$app_patch"
 "$temporary/public/typescript/node_modules/.bin/tsc" --version >/dev/null
 
 mkdir "$temporary/.python-smoke"

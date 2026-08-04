@@ -34,16 +34,17 @@ floating-point numbers. If a batch rejects an item, rerun with `--output json`;
 the bounded `rejected_items` list names its JSONL ordinal, symbolic outcome,
 public code, and corrective message without echoing the input.
 
-For a generated Rust application, create the repository-local dependency lock
-before the first locked check:
+For a generated Rust application, the repository already contains the exact
+dependency lock. The first build is therefore the same locked build used by
+automation:
 
 ```text
-cargo generate-lockfile
 cargo check --locked
 ```
 
-The sealed evaluator and installed release provide the SDK and vendored
-dependencies offline; generating the lock does not fetch from the network.
+The sealed evaluator and installed release provide the SDK and checksummed
+vendored dependencies offline; no registry lookup or dependency-resolution
+step is required.
 
 Handwritten code belongs in `src/`. Files below `generated/`, plus a Python
 module at the exact locked `generation.python` path, are compiler-owned.
