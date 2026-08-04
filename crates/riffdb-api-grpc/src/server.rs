@@ -57,7 +57,7 @@ use crate::generated_app::application_query_service_server::{
     ApplicationQueryService, ApplicationQueryServiceServer,
 };
 use crate::projected_query_conversion::{
-    execute_projected_query_request_from_proto, execute_projected_query_result_to_proto,
+    execute_projected_query_request_from_proto, execute_projected_query_result_to_proto_for_request,
 };
 
 const GRPC_TIMEOUT_METADATA_KEY: &str = "grpc-timeout";
@@ -1653,7 +1653,9 @@ impl ApplicationQueryService for GrpcApplication {
             service.execute_projected_query(context, request).await,
             &application,
         )?;
-        let response = execute_projected_query_result_to_proto(result)
+        // Encoding selection is adapter-only (D3): PACKED → ready_packed for Ready;
+        // ROW/absent → ready; non-Ready arms identical either way (D4).
+        let response = execute_projected_query_result_to_proto_for_request(result, &original)
             .map_err(|status| status_from_application_boundary(status, &application))?;
         Ok(Response::new(response))
     }

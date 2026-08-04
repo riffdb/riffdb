@@ -1,6 +1,10 @@
-//! Wire conversion for the projected columnar query surface (CP2b).
+//! Wire conversion for the projected columnar query surface (CP2b / CP4).
 //!
 //! Kept out of `conversion.rs` to avoid merge contention on that file.
+//!
+//! CP4 packed column-major Ready encoding lives entirely here: the service
+//! result is unchanged; only the public wire shape diverges when the request
+//! opts into [`app_v1::ProjectedResponseEncoding::Packed`].
 
 use std::time::Duration;
 
@@ -10,7 +14,9 @@ use riffdb_service::{
     ProjectedDegradedReason, ProjectedOrderSpec, ProjectedQueryBody, ProjectedRebuildingReason,
     ProjectedSortDirection, SymbolicContractSelector,
 };
-use riffdb_types::{CanonicalValue, CommitToken, FreshnessPolicy, ProjectionFrontier, RequestId};
+use riffdb_types::{
+    CanonicalValue, CommitToken, FreshnessPolicy, RequestId, encode_canonical_value,
+};
 use tonic::Status;
 
 use crate::conversion::{
@@ -18,6 +24,9 @@ use crate::conversion::{
 };
 
 /// Parses one projected-query request from the public wire shape.
+///
+/// `response_encoding` is intentionally not lifted into the domain request:
+/// packing is an adapter-only wire choice (service layer is frozen for CP4).
 pub fn execute_projected_query_request_from_proto(
     request: app_v1::ExecuteProjectedQueryRequest,
 ) -> Result<(RequestId, ExecuteProjectedQueryRequest), Status> {
@@ -34,12 +43,85 @@ pub fn execute_projected_query_request_from_proto(
     Ok((request_id, domain))
 }
 
-/// Encodes one projected-query outcome for the public wire.
+/// True when the request opted into packed column-major Ready encoding.
+#[must_use]
+pub fn wants_packed_response(request: &app_v1::ExecuteProjectedQueryRequest) -> bool {
+    matches!(
+        request
+            .response_encoding
+            .and_then(|value| app_v1::ProjectedResponseEncoding::try_from(value).ok()),
+        Some(app_v1::ProjectedResponseEncoding::Packed)
+    )
+}
+
+/// Encodes one projected-query outcome for the public wire (row-oriented Ready).
+///
+/// Never emits `ready_packed`. Prefer
+/// [`execute_projected_query_result_to_proto_for_request`] when the original
+/// request encoding is available.
 pub fn execute_projected_query_result_to_proto(
     result: ExecuteProjectedQueryResult,
 ) -> Result<app_v1::ExecuteProjectedQueryResponse, Status> {
+    execute_projected_query_result_to_proto_with_encoding(result, false)
+}
+
+/// Encodes one projected-query outcome using the request's response encoding.
+///
+/// - PACKED + Ready → `ready_packed`
+/// - ROW / absent / UNSPECIFIED + Ready → `ready`
+/// - Non-Ready outcomes are identical regardless of requested encoding
+pub fn execute_projected_query_result_to_proto_for_request(
+    result: ExecuteProjectedQueryResult,
+    request: &app_v1::ExecuteProjectedQueryRequest,
+) -> Result<app_v1::ExecuteProjectedQueryResponse, Status> {
+    execute_projected_query_result_to_proto_with_encoding(result, wants_packed_response(request))
+}
+
+/// Encodes Ready as packed column-major when `packed` is true; otherwise row.
+pub fn execute_projected_query_result_to_proto_with_encoding(
+    result: ExecuteProjectedQueryResult,
+    packed: bool,
+) -> Result<app_v1::ExecuteProjectedQueryResponse, Status> {
     use app_v1::execute_projected_query_response::Outcome;
     let outcome = match result {
+        ExecuteProjectedQueryResult::Ready {
+            fields,
+            field_ids: _,
+            primary_key_fields,
+            rows,
+            result: _,
+            frontier,
+            head,
+            commit_token,
+        } if packed => {
+            // Column-major: PK columns first, then selected fields. One
+            // encode_canonical_value per cell into a contiguous column buffer.
+            let row_count = u32::try_from(rows.len()).map_err(|_| internal_defect())?;
+            let mut columns =
+                Vec::with_capacity(primary_key_fields.len().saturating_add(fields.len()));
+            for pk_index in 0..primary_key_fields.len() {
+                columns.push(pack_column(rows.iter().map(|row| {
+                    row.primary_key.get(pk_index).ok_or_else(internal_defect)
+                }))?);
+            }
+            for cell_index in 0..fields.len() {
+                columns
+                    .push(pack_column(rows.iter().map(|row| {
+                        row.cells.get(cell_index).ok_or_else(internal_defect)
+                    }))?);
+            }
+            Outcome::ReadyPacked(app_v1::ProjectedReadyPacked {
+                fields,
+                primary_key_fields,
+                row_count,
+                columns,
+                frontier: frontier.as_bytes().to_vec(),
+                head: head.as_bytes().to_vec(),
+                commit_token: commit_token
+                    .map(|token| token.into_bytes())
+                    .unwrap_or_default(),
+            })
+        }
         ExecuteProjectedQueryResult::Ready {
             fields,
             field_ids: _,
@@ -146,6 +228,30 @@ pub fn execute_projected_query_result_to_proto(
     Ok(app_v1::ExecuteProjectedQueryResponse {
         outcome: Some(outcome),
     })
+}
+
+/// Builds one packed column from an iterator of cell values (row-major order).
+///
+/// One contiguous `data` buffer per column: encode each cell once and append.
+/// Offsets are `row_count + 1` u32 start/end markers.
+fn pack_column<'a, I>(cells: I) -> Result<app_v1::PackedColumn, Status>
+where
+    I: Iterator<Item = Result<&'a CanonicalValue, Status>>,
+{
+    let mut data = Vec::new();
+    let mut offsets = vec![0_u32];
+    for cell in cells {
+        let value = cell?;
+        let encoded = encode_canonical_value(value).map_err(|_| internal_defect())?;
+        data.extend_from_slice(&encoded);
+        let end = u32::try_from(data.len()).map_err(|_| {
+            // Column data exceeds u32 offset space; response budgets should
+            // prevent this, but fail closed rather than wrap.
+            Status::resource_exhausted("projected packed column exceeds u32 offset space")
+        })?;
+        offsets.push(end);
+    }
+    Ok(app_v1::PackedColumn { data, offsets })
 }
 
 fn projected_query_body_from_proto(
@@ -292,9 +398,7 @@ fn internal_defect() -> Status {
     Status::internal("an internal error occurred")
 }
 
-// Silence unused-import lint if CanonicalValue is only used in types.
-const _: fn(&CanonicalValue) = |_| {};
-const _: fn(&ProjectionFrontier) = |_| {};
+// Silence unused-import lint for type-only uses outside pack tests.
 const _: fn(&SymbolicContractSelector) = |_| {};
 
 #[cfg(test)]
@@ -331,5 +435,316 @@ mod aggregate_carriage_tests {
         assert!(projected_query_body_from_proto(with_group_by).is_err());
 
         assert!(projected_query_body_from_proto(minimal_body()).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod packed_encoding_tests {
+    use super::*;
+    use riffdb_columnar::QueryRow;
+    use riffdb_types::{
+        CommitSequence, CurrencyCode, Date, Decimal, DecimalSpec, EnumTypeId, EnumVariantId,
+        FieldId, FrontierPosition, Money, ProjectionFrontier, Timestamp, decode_canonical_value,
+        encode_canonical_value,
+    };
+
+    fn frontier() -> ProjectionFrontier {
+        ProjectionFrontier::new(
+            1,
+            FrontierPosition::AppliedThrough(CommitSequence::new(7).expect("nonzero")),
+        )
+    }
+
+    fn ready(
+        fields: Vec<&str>,
+        primary_key_fields: Vec<&str>,
+        rows: Vec<QueryRow>,
+    ) -> ExecuteProjectedQueryResult {
+        ExecuteProjectedQueryResult::Ready {
+            fields: fields.into_iter().map(str::to_owned).collect(),
+            field_ids: Vec::new(),
+            primary_key_fields: primary_key_fields.into_iter().map(str::to_owned).collect(),
+            rows,
+            result: None,
+            frontier: frontier(),
+            head: frontier(),
+            commit_token: Some(CommitToken::new(
+                1,
+                CommitSequence::new(7).expect("nonzero"),
+            )),
+        }
+    }
+
+    fn lagging() -> ExecuteProjectedQueryResult {
+        ExecuteProjectedQueryResult::Lagging {
+            required: frontier(),
+            current: ProjectionFrontier::new(1, FrontierPosition::BeforeFirst),
+            head: frontier(),
+            lag_sequences: Some(3),
+            retry_after: Some(Duration::from_millis(10)),
+        }
+    }
+
+    fn packed_request() -> app_v1::ExecuteProjectedQueryRequest {
+        app_v1::ExecuteProjectedQueryRequest {
+            response_encoding: Some(app_v1::ProjectedResponseEncoding::Packed as i32),
+            ..Default::default()
+        }
+    }
+
+    fn row_request() -> app_v1::ExecuteProjectedQueryRequest {
+        app_v1::ExecuteProjectedQueryRequest {
+            response_encoding: Some(app_v1::ProjectedResponseEncoding::Row as i32),
+            ..Default::default()
+        }
+    }
+
+    fn all_scalar_values() -> Vec<CanonicalValue> {
+        let decimal = Decimal::new(DecimalSpec::new(5, 2).expect("spec"), -1234).expect("decimal");
+        vec![
+            CanonicalValue::Null,
+            CanonicalValue::Bool(true),
+            CanonicalValue::I64(-42),
+            CanonicalValue::U64(99),
+            CanonicalValue::Decimal(decimal),
+            CanonicalValue::Money(Money::new(
+                CurrencyCode::new("USD").expect("currency"),
+                decimal,
+            )),
+            CanonicalValue::string("").expect("empty string"),
+            CanonicalValue::string("hello").expect("string"),
+            CanonicalValue::bytes(vec![]).expect("empty bytes"),
+            CanonicalValue::bytes(vec![0, 255]).expect("bytes"),
+            CanonicalValue::Timestamp(Timestamp::new(1, 2).expect("ts")),
+            CanonicalValue::Date(Date::from_days_since_unix_epoch(100)),
+            CanonicalValue::Uuid([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
+            CanonicalValue::Enum {
+                type_id: EnumTypeId::new(3).expect("type"),
+                variant_id: EnumVariantId::new(1).expect("variant"),
+            },
+            CanonicalValue::list(vec![CanonicalValue::Bool(false), CanonicalValue::Null])
+                .expect("list"),
+            CanonicalValue::record(vec![
+                (FieldId::new(1).expect("id"), CanonicalValue::U64(1)),
+                (FieldId::new(2).expect("id"), CanonicalValue::Null),
+            ])
+            .expect("record"),
+        ]
+    }
+
+    /// Roundtrip every supported scalar (and nested) type through pack offsets.
+    #[test]
+    fn pack_column_roundtrips_every_supported_canonical_type() {
+        let values = all_scalar_values();
+        let column = pack_column(values.iter().map(Ok)).expect("pack");
+        assert_eq!(column.offsets.len(), values.len() + 1);
+        assert_eq!(column.offsets[0], 0);
+        assert_eq!(column.offsets[values.len()] as usize, column.data.len());
+        for (index, expected) in values.iter().enumerate() {
+            let start = column.offsets[index] as usize;
+            let end = column.offsets[index + 1] as usize;
+            let decoded = decode_canonical_value(&column.data[start..end]).expect("decode");
+            assert_eq!(&decoded, expected, "cell {index}");
+            // Self-encode matches the packed slice (no framing beyond canonical).
+            assert_eq!(
+                encode_canonical_value(expected).expect("encode"),
+                column.data[start..end]
+            );
+        }
+    }
+
+    #[test]
+    fn pack_offsets_empty_result_and_single_row_and_empty_strings() {
+        // Empty result: one offset marker (0), empty data.
+        let empty = pack_column(std::iter::empty()).expect("empty");
+        assert_eq!(empty.offsets, vec![0]);
+        assert!(empty.data.is_empty());
+
+        // Single row with empty string.
+        let empty_string = CanonicalValue::string("").expect("bounded");
+        let single = pack_column(std::iter::once(Ok(&empty_string))).expect("single");
+        assert_eq!(single.offsets.len(), 2);
+        assert_eq!(single.offsets[0], 0);
+        assert_eq!(
+            decode_canonical_value(&single.data).expect("decode"),
+            empty_string
+        );
+
+        // Two rows: empty string then non-empty.
+        let hello = CanonicalValue::string("hi").expect("bounded");
+        let two = pack_column([&empty_string, &hello].into_iter().map(Ok)).expect("two");
+        assert_eq!(two.offsets.len(), 3);
+        let mid = two.offsets[1] as usize;
+        assert_eq!(
+            decode_canonical_value(&two.data[..mid]).expect("c0"),
+            empty_string
+        );
+        assert_eq!(decode_canonical_value(&two.data[mid..]).expect("c1"), hello);
+    }
+
+    #[test]
+    fn packed_request_ready_returns_ready_packed_arm() {
+        let result = ready(
+            vec!["title"],
+            vec!["ticket_id"],
+            vec![QueryRow {
+                cells: vec![CanonicalValue::string("t").expect("s")],
+                primary_key: vec![CanonicalValue::Uuid([9; 16])],
+            }],
+        );
+        let response =
+            execute_projected_query_result_to_proto_for_request(result, &packed_request())
+                .expect("encode");
+        match response.outcome {
+            Some(app_v1::execute_projected_query_response::Outcome::ReadyPacked(packed)) => {
+                assert_eq!(packed.row_count, 1);
+                assert_eq!(packed.fields, vec!["title".to_owned()]);
+                assert_eq!(packed.primary_key_fields, vec!["ticket_id".to_owned()]);
+                // PK column first, then select.
+                assert_eq!(packed.columns.len(), 2);
+                assert_eq!(packed.columns[0].offsets.len(), 2);
+                assert_eq!(packed.columns[1].offsets.len(), 2);
+            }
+            other => panic!("expected ReadyPacked, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn row_or_absent_request_never_returns_ready_packed() {
+        let result = ready(
+            vec!["title"],
+            vec!["ticket_id"],
+            vec![QueryRow {
+                cells: vec![CanonicalValue::string("t").expect("s")],
+                primary_key: vec![CanonicalValue::Uuid([9; 16])],
+            }],
+        );
+        for request in [
+            row_request(),
+            app_v1::ExecuteProjectedQueryRequest::default(),
+            app_v1::ExecuteProjectedQueryRequest {
+                response_encoding: Some(app_v1::ProjectedResponseEncoding::Unspecified as i32),
+                ..Default::default()
+            },
+        ] {
+            let response =
+                execute_projected_query_result_to_proto_for_request(result.clone(), &request)
+                    .expect("encode");
+            assert!(
+                matches!(
+                    response.outcome,
+                    Some(app_v1::execute_projected_query_response::Outcome::Ready(_))
+                ),
+                "must not emit ready_packed for non-PACKED request: {response:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_ready_outcomes_identical_regardless_of_encoding() {
+        let lag = lagging();
+        let packed =
+            execute_projected_query_result_to_proto_for_request(lag.clone(), &packed_request())
+                .expect("packed");
+        let row =
+            execute_projected_query_result_to_proto_for_request(lag, &row_request()).expect("row");
+        assert_eq!(packed, row);
+        assert!(matches!(
+            packed.outcome,
+            Some(app_v1::execute_projected_query_response::Outcome::Lagging(
+                _
+            ))
+        ));
+    }
+
+    /// Falsifiability (b): returning Ready (row arm) for a PACKED request must fail.
+    #[test]
+    fn arm_selection_packed_request_must_not_emit_ready_row() {
+        let result = ready(vec!["title"], vec!["id"], Vec::new());
+        let response =
+            execute_projected_query_result_to_proto_for_request(result, &packed_request())
+                .expect("encode");
+        assert!(
+            !matches!(
+                response.outcome,
+                Some(app_v1::execute_projected_query_response::Outcome::Ready(_))
+            ),
+            "PACKED Ready must not use the row arm"
+        );
+        assert!(matches!(
+            response.outcome,
+            Some(app_v1::execute_projected_query_response::Outcome::ReadyPacked(_))
+        ));
+    }
+
+    #[test]
+    fn wants_packed_response_only_for_packed_enum() {
+        assert!(wants_packed_response(&packed_request()));
+        assert!(!wants_packed_response(&row_request()));
+        assert!(!wants_packed_response(
+            &app_v1::ExecuteProjectedQueryRequest::default()
+        ));
+    }
+
+    /// Multi-row multi-column pack: column order is PK then select; cell order is rows.
+    #[test]
+    fn multi_row_column_major_order() {
+        let rows = vec![
+            QueryRow {
+                cells: vec![
+                    CanonicalValue::string("a").expect("s"),
+                    CanonicalValue::U64(1),
+                ],
+                primary_key: vec![CanonicalValue::Uuid([1; 16])],
+            },
+            QueryRow {
+                cells: vec![
+                    CanonicalValue::string("b").expect("s"),
+                    CanonicalValue::U64(2),
+                ],
+                primary_key: vec![CanonicalValue::Uuid([2; 16])],
+            },
+        ];
+        let response = execute_projected_query_result_to_proto_with_encoding(
+            ready(vec!["title", "n"], vec!["id"], rows),
+            true,
+        )
+        .expect("encode");
+        let Some(app_v1::execute_projected_query_response::Outcome::ReadyPacked(packed)) =
+            response.outcome
+        else {
+            panic!("expected packed");
+        };
+        assert_eq!(packed.row_count, 2);
+        assert_eq!(packed.columns.len(), 3); // id, title, n
+        // PK column: uuid 1 then uuid 2
+        let pk = &packed.columns[0];
+        let s0 = pk.offsets[0] as usize;
+        let s1 = pk.offsets[1] as usize;
+        let s2 = pk.offsets[2] as usize;
+        assert_eq!(
+            decode_canonical_value(&pk.data[s0..s1]).expect("pk0"),
+            CanonicalValue::Uuid([1; 16])
+        );
+        assert_eq!(
+            decode_canonical_value(&pk.data[s1..s2]).expect("pk1"),
+            CanonicalValue::Uuid([2; 16])
+        );
+        // Title column
+        let titles = &packed.columns[1];
+        assert_eq!(
+            decode_canonical_value(
+                &titles.data[titles.offsets[0] as usize..titles.offsets[1] as usize]
+            )
+            .expect("t0"),
+            CanonicalValue::string("a").expect("s")
+        );
+        assert_eq!(
+            decode_canonical_value(
+                &titles.data[titles.offsets[1] as usize..titles.offsets[2] as usize]
+            )
+            .expect("t1"),
+            CanonicalValue::string("b").expect("s")
+        );
     }
 }

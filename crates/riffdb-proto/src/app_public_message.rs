@@ -665,9 +665,9 @@ app_message!(
     app_v1::ExecuteProjectedQueryResponse,
     None,
     MAX_PUBLIC_RESPONSE_BYTES,
-    6,
+    7,
     &[],
-    &[1, 2, 3, 4, 5, 6],
+    &[1, 2, 3, 4, 5, 6, 7],
     |value: &app_v1::ExecuteProjectedQueryResponse| {
         if value.outcome.is_none() {
             return Err(PublicWireError::MissingRequiredField);
