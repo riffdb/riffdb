@@ -35,6 +35,7 @@ EXPECTED_PACKAGES = %w[
   riffdb-query-compiler
   riffdb-query-executor
   riffdb-query-ir
+  riffdb-query-syntax
   riffdb-query-module
   riffdb-riffql-syntax
   riffdb-runtime
