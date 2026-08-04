@@ -580,6 +580,10 @@ impl ServiceHarness {
     }
 
     /// Holds one command coordinator workload slot for capacity-saturation tests.
+    ///
+    /// Dropping the returned permit releases the slot. Tests that need a
+    /// constructed full channel MUST keep the permit alive across the probe and
+    /// assert [`Self::try_command_capacity_is_full`] before submitting work.
     pub(crate) fn hold_command_capacity(&self) -> CommandExecutionCapacityPermit {
         self.coordinator
             .as_ref()
@@ -590,6 +594,9 @@ impl ServiceHarness {
     }
 
     /// Holds `count` command workload slots (for capacity-N saturation tests).
+    ///
+    /// Same constructed-saturation contract as [`Self::hold_command_capacity`]:
+    /// keep the permits until probes complete.
     pub(crate) fn hold_command_capacity_n(
         &self,
         count: usize,
@@ -611,6 +618,9 @@ impl ServiceHarness {
     }
 
     /// Returns whether the next non-blocking command reservation is overload.
+    ///
+    /// Used to prove constructed saturation before a probe. Must not be used as
+    /// a wait loop against wall-clock progress.
     pub(crate) fn try_command_capacity_is_full(&self) -> bool {
         matches!(
             self.coordinator
@@ -638,6 +648,15 @@ impl ServiceHarness {
             .expect("coordinator is running")
             .command_executor()
             .force_queue_delay_estimate_micros_for_tests(micros);
+    }
+
+    /// Counts deadline-scheduler registrations inside the bounded admission
+    /// window — the wait a pre-admission shed must never reach.
+    ///
+    /// A shed that rejects before admission leaves this at zero; disabling the
+    /// shed falls through to the bounded wait and registers one.
+    pub(crate) fn admission_wait_registrations(&self) -> usize {
+        self.deadline_scheduler.admission_wait_registrations()
     }
 
     /// Read the current queue-delay estimate.
@@ -4288,8 +4307,20 @@ impl ServiceJobSpawner for TokioSpawner {
     }
 }
 
+/// Longest distance from now at which a registered wait can still be a bounded
+/// pre-admission wait rather than a request deadline.
+///
+/// Production caps the absolute admission window at 150 ms
+/// (`COMMAND_ADMISSION_MAX_WAIT`), while every harness request deadline is at
+/// least a second away. A registration inside this horizon is therefore an
+/// admission wait, which is the observable that separates the pre-admission
+/// queue-delay shed (returns before any admission wait exists) from a
+/// fallthrough that parks on the cap.
+const ADMISSION_WAIT_HORIZON: Duration = Duration::from_secs(1);
+
 #[derive(Default)]
 struct HarnessDeadlineScheduler {
+    admission_wait_registrations: AtomicUsize,
     control_request_deadline: AtomicBool,
     request_waiters: AtomicUsize,
     request_deadline: Notify,
@@ -4304,6 +4335,11 @@ struct HarnessDeadlineScheduler {
 }
 
 impl HarnessDeadlineScheduler {
+    /// Waits registered inside [`ADMISSION_WAIT_HORIZON`] since start.
+    fn admission_wait_registrations(&self) -> usize {
+        self.admission_wait_registrations.load(Ordering::Acquire)
+    }
+
     fn control_request_deadline(&self) {
         self.control_request_deadline.store(true, Ordering::Release);
     }
@@ -4361,6 +4397,10 @@ impl HarnessDeadlineScheduler {
 
 impl RequestDeadlineScheduler for HarnessDeadlineScheduler {
     fn wait_until(&self, deadline: Instant) -> RequestDeadlineFuture<'_> {
+        if deadline.saturating_duration_since(Instant::now()) <= ADMISSION_WAIT_HORIZON {
+            self.admission_wait_registrations
+                .fetch_add(1, Ordering::AcqRel);
+        }
         if self.control_request_deadline.swap(false, Ordering::AcqRel) {
             self.request_waiters.fetch_add(1, Ordering::AcqRel);
             self.request_registered.notify_waiters();

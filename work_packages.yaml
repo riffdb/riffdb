@@ -7054,3 +7054,60 @@ work_packages:
   exit_gate: Smoke run WITH --board-density >= 50 executes projected board scenarios with gates passing (plain --smoke skips board cells by design); report carries
     board_projected_marginal_ns_per_row when 50/450 projected samples exist; PG path unchanged.
   human_review_triggers: *id001
+- id: F-A
+  name: Deterministic saturation for flaky capacity and gate-a families
+  depends_on: [WP-120, WP-410]
+  objective: Eliminate load-sensitive false alarms in the service capacity/admission family
+    and contract_migration_gate_a by making assertions state-driven (constructed full channel
+    or terminal migration phase) rather than wall-clock races under full-workspace parallel load.
+  requirements: []
+  required_adrs: [ADR-0071, ADR-0079]
+  allowed_paths: [work_packages.yaml, tests/service/**, tests/migrations/contract_migration_gate_a.rs,
+    crates/riffdb-testkit/**, crates/riffdb-service/src/command_operations.rs, crates/riffdb-service/tests/architecture.rs]
+  deliverables:
+  - Seven capacity/admission service_end_to_end tests rewritten to constructed saturation
+    (held workload permits or retained-byte budget) with generous request deadlines
+  - contract_migration_gate_a terminal wait ends on migration phase state with a hang ceiling only
+  - Sub-MIN_REMAINING immediate-reject coverage moved to unit level (riffdb-service
+    admission_budget_* tests) now that no end-to-end probe carries a near-expired deadline, with
+    a source-level pin that both admission stages shed a sub-floor budget through one shared
+    mapping. Falsifiability - deleting the early return in admission_deadline reddens
+    admission_budget_rejects_below_min_remaining_and_reserves_it_above; mapping the rejection to
+    DeadlineExceeded reddens admission_budget_rejection_is_typed_capacity_overload_not_deadline_exceeded
+    (the mapping rule) or a_sub_floor_admission_budget_is_shed_as_overload_at_both_admission_stages
+    (either consuming arm).
+  - Queue-delay shed asserts zero bounded admission-wait registrations, the only
+    shed-distinguishing observable. Typed Overloaded, CapacityRejected QueueDepth, and zero durable
+    audit rows are NOT shed-distinguishing - the 150 ms admission-cap fallthrough produces all
+    three identically, so the earlier claim that disabling the shed reddens those asserts was
+    wrong. Falsifiability - disabling the shed condition reddens
+    queue_delay_shed_rejects_before_admission_with_zero_durable_audit_rows on the registration
+    assert alone; admission_deadline_while_queued_is_overloaded_not_deadline_exceeded carries the
+    nonzero positive control so the zero assert cannot pass vacuously.
+  - Full-workspace battery green three times under parallel load (acceptance proof)
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-service --test service_end_to_end --all-features --
+      --exact
+      saturated_command_capacity_rejects_before_reauthorization_with_typed_overload
+      capacity_n_concurrent_commands_yield_only_typed_overload_or_commit
+      retained_bytes_exhaustion_rejects_with_capacity_stage
+      read_only_capacity_rejects_before_audit_start_with_typed_overload
+      queue_delay_shed_rejects_before_admission_with_zero_durable_audit_rows
+      capacity_overload_mutation_leaves_no_terminal_audit_row
+      admission_deadline_while_queued_is_overloaded_not_deadline_exceeded
+  - cargo +1.97.0 test -p riffdb-service --lib --all-features -- admission_budget
+  - cargo +1.97.0 test -p riffdb-service --test architecture --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test contract_migration_gate_a --all-features
+  - cargo +1.97.0 test --workspace --all-features
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo +1.97.0 doc --workspace --no-deps
+  - ./scripts/generate-proto --check
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  exit_gate: Capacity-family probes reject with typed Overloaded from constructed full state without
+    short Instant deadlines; the sub-MIN_REMAINING immediate-reject path stays covered at unit level
+    and its typed-overload mapping is pinned at both admission stages; the queue-delay shed carries
+    a shed-distinguishing observable with a nonzero positive control; gate_a completes on terminal
+    migration phase; three consecutive full workspace batteries report zero failures.
+  human_review_triggers: *id001
