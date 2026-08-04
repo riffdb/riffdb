@@ -8,6 +8,43 @@ const MAX_OUTPUT_BYTES = 4_194_304;
 const HASH = /^[0-9a-f]{64}$/;
 const SYMBOL = /^[A-Za-z][A-Za-z0-9_.-]{0,255}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/**
+ * Constructs an exact fixed-point value from decimal text without using a
+ * JavaScript floating-point number.
+ */
+export function exactDecimal(value, precision, scale) {
+    if (!Number.isInteger(precision) || precision < 1 || precision > 38
+        || !Number.isInteger(scale) || scale < 0 || scale > precision) {
+        throw new Error("invalid exact decimal type");
+    }
+    if (typeof value !== "string" || value.length < 1 || value.length > 128) {
+        throw new Error("invalid exact decimal text");
+    }
+    const match = /^(-?)([0-9]+)(?:\.([0-9]+))?$/.exec(value);
+    if (match === null)
+        throw new Error("invalid exact decimal text");
+    const fractional = match[3] ?? "";
+    if (fractional.length > scale)
+        throw new Error("exact decimal exceeds scale");
+    const magnitudeText = `${match[2]}${fractional.padEnd(scale, "0")}`;
+    let coefficient = BigInt(magnitudeText);
+    if (match[1] === "-" && coefficient !== 0n)
+        coefficient = -coefficient;
+    const limit = 10n ** BigInt(precision);
+    if (coefficient <= -limit || coefficient >= limit)
+        throw new Error("exact decimal exceeds precision");
+    return {
+        coefficientTwosComplement: signedTwosComplement(coefficient),
+        scale,
+        precision,
+    };
+}
+/** Constructs the exact precision-38, scale-2 value used by `money<CURRENCY>`. */
+export function exactMoney(currency, value) {
+    if (!/^[A-Z]{3}$/.test(currency))
+        throw new Error("invalid exact money currency");
+    return { currency, amount: exactDecimal(value, 38, 2) };
+}
 export class CliApplicationTransport {
     options;
     constructor(options) {
@@ -347,14 +384,28 @@ function encodeValue(value, schema) {
                 throw new Error("invalid u64 input");
             }
             return { $u64: value.toString() };
-        case "decimal":
-            return { $decimal: encodeDecimal(value) };
+        case "decimal": {
+            const decimal = encodeDecimal(value);
+            if (schema.precision === undefined || schema.scale === undefined
+                || decimal.scale !== schema.scale
+                || (decimal.precision !== undefined && decimal.precision !== schema.precision)) {
+                throw new Error("decimal input does not match the generated type");
+            }
+            return { $decimal: { ...decimal, precision: schema.precision } };
+        }
         case "money": {
             const input = exactObject(value);
+            const currency = expectCurrency(input.currency);
+            const amount = encodeDecimal(input.amount);
+            if (schema.currency === undefined || schema.precision === undefined || schema.scale === undefined
+                || currency !== schema.currency || amount.scale !== schema.scale
+                || (amount.precision !== undefined && amount.precision !== schema.precision)) {
+                throw new Error("money input does not match the generated type");
+            }
             return {
                 $money: {
-                    currency: expectCurrency(input.currency),
-                    amount: encodeDecimal(input.amount),
+                    currency,
+                    amount: { ...amount, precision: schema.precision },
                 },
             };
         }
@@ -539,25 +590,35 @@ function decodePlain(value, schema) {
                 return value;
             break;
         case "decimal": {
-            const decimal = encodeDecimal(value);
-            if ((schema.precision !== undefined && decimal.precision !== schema.precision)
-                || (schema.scale !== undefined && decimal.scale !== schema.scale))
-                return fail();
-            return value;
+            return normalizeDecodedDecimal(value, schema.precision, schema.scale);
         }
         case "money": {
             const input = exactObject(value);
             const currency = expectCurrency(input.currency);
-            const amount = encodeDecimal(input.amount);
-            if ((schema.currency !== undefined && currency !== schema.currency)
-                || (schema.precision !== undefined && amount.precision !== schema.precision)
-                || (schema.scale !== undefined && amount.scale !== schema.scale))
+            if (schema.currency !== undefined && currency !== schema.currency)
                 return fail();
-            return value;
+            return {
+                currency,
+                amount: normalizeDecodedDecimal(input.amount, schema.precision, schema.scale),
+            };
         }
         default: break;
     }
     return fail();
+}
+function normalizeDecodedDecimal(value, expectedPrecision, expectedScale) {
+    const input = exactObject(value);
+    const encoded = encodeDecimal(value);
+    if ((expectedPrecision !== undefined && encoded.precision !== undefined
+        && encoded.precision !== expectedPrecision)
+        || (expectedScale !== undefined && encoded.scale !== expectedScale))
+        return fail();
+    const precision = expectedPrecision ?? encoded.precision;
+    return {
+        coefficientTwosComplement: input.coefficientTwosComplement,
+        scale: encoded.scale,
+        ...(precision === undefined ? {} : { precision }),
+    };
 }
 function decodeWire(value, schema) {
     if (schema.kind !== "record")
@@ -855,6 +916,23 @@ function expectCurrency(value) {
     if (typeof value !== "string" || !/^[A-Z]{3}$/.test(value))
         return fail();
     return value;
+}
+function signedTwosComplement(value) {
+    for (let width = 1; width <= 16; width += 1) {
+        const bits = BigInt(width * 8);
+        const minimum = -(1n << (bits - 1n));
+        const maximum = (1n << (bits - 1n)) - 1n;
+        if (value < minimum || value > maximum)
+            continue;
+        let encoded = value < 0n ? (1n << bits) + value : value;
+        const bytes = new Uint8Array(width);
+        for (let index = width - 1; index >= 0; index -= 1) {
+            bytes[index] = Number(encoded & 0xffn);
+            encoded >>= 8n;
+        }
+        return bytes;
+    }
+    return fail();
 }
 function positiveNumber(value) {
     const number = typeof value === "string" ? Number(expectDecimal(value)) : value;

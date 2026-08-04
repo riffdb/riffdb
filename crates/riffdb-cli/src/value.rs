@@ -232,6 +232,9 @@ impl Serialize for OutputValue<'_> {
                     &PaddedBytes(&value.coefficient_twos_complement),
                 )?;
                 map.serialize_entry("scale", &value.scale)?;
+                if let Some(precision) = value.precision {
+                    map.serialize_entry("precision", &precision)?;
+                }
             }
             Kind::MoneyValue(value) => {
                 let amount = value
@@ -292,12 +295,16 @@ struct OutputDecimal<'a>(&'a v1::Decimal);
 
 impl Serialize for OutputDecimal<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(2))?;
+        let mut map =
+            serializer.serialize_map(Some(if self.0.precision.is_some() { 3 } else { 2 }))?;
         map.serialize_entry(
             "coefficient_twos_complement",
             &PaddedBytes(&self.0.coefficient_twos_complement),
         )?;
         map.serialize_entry("scale", &self.0.scale)?;
+        if let Some(precision) = self.0.precision {
+            map.serialize_entry("precision", &precision)?;
+        }
         map.end()
     }
 }
@@ -616,6 +623,45 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&OutputRecord(&record)).expect("record"),
             r#"{"fields":[{"field_id":1,"value":{"type":"null"}}]}"#
+        );
+    }
+
+    #[test]
+    fn output_decimal_and_money_preserve_present_type_precision() {
+        let decimal = v1::Decimal {
+            coefficient_twos_complement: vec![0x09, 0xc4],
+            scale: 2,
+            precision: Some(38),
+        };
+        let decimal_value = v1::Value {
+            kind: Some(v1::value::Kind::DecimalValue(decimal.clone())),
+        };
+        let money_value = v1::Value {
+            kind: Some(v1::value::Kind::MoneyValue(v1::Money {
+                currency: "USD".to_owned(),
+                amount: Some(decimal),
+            })),
+        };
+        assert_eq!(
+            serde_json::to_value(OutputValue(&decimal_value)).expect("decimal"),
+            serde_json::json!({
+                "type": "decimal",
+                "coefficient_twos_complement": "CcQ=",
+                "scale": 2,
+                "precision": 38,
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(OutputValue(&money_value)).expect("money"),
+            serde_json::json!({
+                "type": "money",
+                "currency": "USD",
+                "amount": {
+                    "coefficient_twos_complement": "CcQ=",
+                    "scale": 2,
+                    "precision": 38,
+                },
+            })
         );
     }
 

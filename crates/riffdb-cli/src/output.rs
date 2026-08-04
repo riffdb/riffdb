@@ -3359,7 +3359,10 @@ mod tests {
         v1::Decimal {
             coefficient_twos_complement: padded_bytes(value, "coefficient_twos_complement"),
             scale: u32_number(value, "scale"),
-            precision: None,
+            precision: value
+                .get("precision")
+                .filter(|precision| !precision.is_null())
+                .map(|_| u32_number(value, "precision")),
         }
     }
 
