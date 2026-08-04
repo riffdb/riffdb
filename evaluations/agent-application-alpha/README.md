@@ -73,6 +73,19 @@ checker enforces release thresholds. See
 `release/evidence/agent-application-alpha-gate-v1.json` for the aggregate
 `not_eligible` decision.
 
+The official successor command selects a campaign manifest rather than
+scanning all historical runs:
+
+```bash
+TMPDIR="$HOME/tmp" ./scripts/agent-application-alpha-acceptance \
+  --campaign campaign-02 --runs 4 --sealed --assert-gate
+```
+
+Do not publish `campaign-02` until WP-379 has an eligible successor decision.
+The passing WP-365 and satisfaction canaries have different profile matrices
+and cannot substitute for the four official Blog/Orders by Rust/TypeScript
+runs.
+
 The first WP-365 canary attempt is also retained under
 `runs/wp365-blog-rust-terra-02` and
 `runs/wp365-orders-typescript-terra-02`. Both are honest failures from sealed

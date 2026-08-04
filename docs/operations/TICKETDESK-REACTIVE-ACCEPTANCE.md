@@ -51,6 +51,19 @@ compatible event evolution and definition identity change. Lower-level suites
 supply deterministic snapshot/catch-up, saturation, restore-incarnation,
 multi-database, durable consumer, and commit-before-ack evidence.
 
+The independent implementation gate is distinct from those repository-owned
+tests. `scripts/reactive-ticketdesk-evaluation-package` creates a sealed public
+bundle containing symbolic TicketDesk author sources but no generated bindings,
+relay, worker, test implementation, RiffDB source, or repository TicketDesk
+implementation. One fresh evaluator must generate and complete the browser,
+contextual reaction, recovery, authorization, MCP disclosure, and boundary
+checks. Published evidence is verified with:
+
+```bash
+TMPDIR="$HOME/tmp" ./scripts/reactive-ticketdesk-evaluation-acceptance \
+  --campaign wp421-reactive-01 --assert-gate
+```
+
 ## Recovery and evolution
 
 A reconnect supplies the last applied opaque cursor under the same exact watch

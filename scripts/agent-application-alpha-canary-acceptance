@@ -14,13 +14,13 @@ while (($#)); do
         --assert-gate) assert_gate=true; shift ;;
         --campaign) campaign="${2:-}"; shift 2 ;;
         *)
-            echo "usage: scripts/agent-application-alpha-canary-acceptance --runs 2|3 --sealed --assert-gate [--campaign ID]" >&2
+            echo "usage: scripts/agent-application-alpha-canary-acceptance --runs 2|3|4 --sealed --assert-gate [--campaign ID]" >&2
             exit 2
             ;;
     esac
 done
-[[ "$expected_runs" =~ ^(2|3)$ && "$sealed" == true && "$assert_gate" == true ]] || {
-    echo "the canary gate requires exactly two or three sealed asserted runs" >&2
+[[ "$expected_runs" =~ ^(2|3|4)$ && "$sealed" == true && "$assert_gate" == true ]] || {
+    echo "the canary gate requires exactly two, three, or four sealed asserted runs" >&2
     exit 2
 }
 [[ "$campaign" =~ ^[a-z0-9-]{1,64}$ ]] || {
@@ -94,6 +94,8 @@ jq -e --arg campaign "$campaign" --argjson expected_runs "$expected_runs" '
         and $profiles == ["blog-rust", "orders-typescript"])
       or ($expected_runs == 3
         and $profiles == ["blog-rust", "orders-python", "orders-typescript"])
+      or ($expected_runs == 4
+        and $profiles == ["blog-rust", "blog-typescript", "orders-rust", "orders-typescript"])
   )
   and ([.runs[].run_id] | unique | length) == $expected_runs
   and ([.runs[].agent_identity] | unique | length) == $expected_runs

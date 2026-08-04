@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+campaign=wp421-reactive-01
+assert_gate=false
+while (($#)); do
+    case "$1" in
+        --campaign) campaign="${2:-}"; shift 2 ;;
+        --assert-gate) assert_gate=true; shift ;;
+        *)
+            echo "usage: scripts/reactive-ticketdesk-evaluation-acceptance [--campaign ID] --assert-gate" >&2
+            exit 2
+            ;;
+    esac
+done
+[[ "$assert_gate" == true && "$campaign" =~ ^[a-z0-9-]{1,64}$ ]] || {
+    echo "the reactive TicketDesk gate requires one named asserted campaign" >&2
+    exit 2
+}
+for tool in jq mktemp sha256sum; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "required reactive-evaluation tool is missing: $tool" >&2
+        exit 1
+    }
+done
+
+manifest_rel="evaluations/reactive-ticketdesk/campaigns/$campaign.json"
+manifest="$repo_root/$manifest_rel"
+[[ -f "$manifest" ]] || {
+    echo "sealed reactive campaign has not been published: $campaign" >&2
+    exit 1
+}
+jq -e --arg campaign "$campaign" '
+  (keys | sort) == ([
+    "bundle_hash", "campaign_id", "immutable", "run", "schema", "status"
+  ] | sort)
+  and .schema == "riffdb-reactive-ticketdesk-campaign/v1"
+  and .campaign_id == $campaign
+  and .immutable == true
+  and .status == "passed"
+  and (.bundle_hash | test("^[0-9a-f]{64}$"))
+  and (.run | keys | sort) == ([
+    "agent_identity", "application_lock", "events", "report", "run_id"
+  ] | sort)
+  and all(.run.report, .run.events, .run.application_lock;
+      (keys | sort) == ["path", "sha256"]
+      and (.path | type) == "string"
+      and (.sha256 | test("^[0-9a-f]{64}$")))
+' "$manifest" >/dev/null || {
+    echo "reactive campaign manifest is malformed" >&2
+    exit 1
+}
+
+validate_evidence() {
+    local path="$1"
+    local expected="$2"
+    [[ "$path" != /* && "$path" != *".."* && -f "$repo_root/$path" ]] || {
+        echo "reactive evidence path is unsafe or missing: $path" >&2
+        exit 1
+    }
+    local actual
+    actual="$(sha256sum "$repo_root/$path" | cut -d' ' -f1)"
+    [[ "$actual" == "$expected" ]] || {
+        echo "immutable reactive evidence hash mismatch: $path" >&2
+        exit 1
+    }
+}
+
+run_id="$(jq -er '.run.run_id' "$manifest")"
+agent="$(jq -er '.run.agent_identity' "$manifest")"
+report_rel="$(jq -er '.run.report.path' "$manifest")"
+events_rel="$(jq -er '.run.events.path' "$manifest")"
+lock_rel="$(jq -er '.run.application_lock.path' "$manifest")"
+validate_evidence "$report_rel" "$(jq -er '.run.report.sha256' "$manifest")"
+validate_evidence "$events_rel" "$(jq -er '.run.events.sha256' "$manifest")"
+validate_evidence "$lock_rel" "$(jq -er '.run.application_lock.sha256' "$manifest")"
+
+bundle_hash="$(jq -er '.bundle_hash' "$manifest")"
+events_hash="$(sha256sum "$repo_root/$events_rel" | cut -d' ' -f1)"
+jq -e \
+    --arg run_id "$run_id" \
+    --arg agent "$agent" \
+    --arg bundle "$bundle_hash" \
+    --arg events "$events_hash" '
+  .schema == "riffdb-reactive-ticketdesk-run/v1"
+  and .run_id == $run_id
+  and .agent_identity == $agent
+  and .bundle_hash == $bundle
+  and .transcript_sha256 == $events
+  and .independent == true
+  and .fresh_context == true
+  and .human_interventions == 0
+  and .kernel_attempts == 0
+  and .kernel_successes == 0
+  and .handwritten_glue_lines == 0
+  and .compiler_failures >= 0
+  and .runtime_failures >= 0
+  and .source_access == {
+    riffdb_implementation: false,
+    ticketdesk_implementation: false
+  }
+  and .completed == true
+  and ([.checks[]] | all(. == true))
+  and .rating >= 0
+  and .rating <= 10
+  and (.explanation | length) >= 1
+' "$repo_root/$report_rel" >/dev/null || {
+    echo "reactive fresh-agent run missed a WP-421 threshold" >&2
+    exit 1
+}
+
+jq -e -s --slurpfile report "$repo_root/$report_rel" '
+  length >= 3
+  and .[0].kind == "start"
+  and .[0].elapsed_ms == 0
+  and .[-1].kind == "complete"
+  and (map(select(.kind == "start")) | length) == 1
+  and (map(select(.kind == "complete")) | length) == 1
+  and (reduce .[] as $event (
+      {last: -1, monotonic: true};
+      {last: $event.elapsed_ms, monotonic: (.monotonic and $event.elapsed_ms >= .last)}
+    ) | .monotonic)
+  and (map(select(.kind == "compiler_failure")) | length)
+    == $report[0].compiler_failures
+  and (map(select(.kind == "runtime_failure")) | length)
+    == $report[0].runtime_failures
+  and (map(select(.kind == "intervention")) | length)
+    == $report[0].human_interventions
+  and (map(select(.kind == "kernel_attempt")) | length)
+    == $report[0].kernel_attempts
+  and all(.[];
+      (keys - ["schema", "elapsed_ms", "kind", "code", "operation"] | length) == 0
+      and .schema == "riffdb-reactive-ticketdesk-event/v1")
+' "$repo_root/$events_rel" >/dev/null || {
+    echo "reactive event transcript is incomplete or malformed" >&2
+    exit 1
+}
+
+work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-reactive-gate.XXXXXX")"
+cleanup() {
+    rm -rf "$work_root"
+}
+trap cleanup EXIT INT TERM
+actual_bundle="$("$repo_root/scripts/reactive-ticketdesk-evaluation-package" "$work_root/bundle")"
+[[ "$actual_bundle" == "$bundle_hash" ]] || {
+    echo "reactive campaign was not produced from the current sealed bundle" >&2
+    exit 1
+}
+cp "$repo_root/$lock_rel" "$work_root/bundle/application/riffdb.application.lock.json"
+"$work_root/bundle/bin/riffdb" application lock --check \
+    "$work_root/bundle/application/riffdb.application.json" \
+    --lock riffdb.application.lock.json --output json >/dev/null
+
+manifest_hash="$(sha256sum "$manifest" | cut -d' ' -f1)"
+decision="$repo_root/release/evidence/wp421-reactive-fresh-agent-v1.json"
+jq -e \
+    --arg campaign "$campaign" \
+    --arg manifest "$manifest_rel" \
+    --arg manifest_hash "$manifest_hash" \
+    --arg bundle "$bundle_hash" '
+  (keys | sort) == ([
+    "bundle_hash", "campaign_id", "campaign_manifest", "decision", "reason",
+    "requirement_ids", "schema", "work_package"
+  ] | sort)
+  and .schema == "riffdb-reactive-ticketdesk-gate/v1"
+  and .work_package == "WP-421"
+  and .campaign_id == $campaign
+  and .campaign_manifest == {path: $manifest, sha256: $manifest_hash}
+  and .bundle_hash == $bundle
+  and .decision == "passed"
+  and .requirement_ids == [
+    "EVT-001", "EVT-002", "EVT-003", "EVT-004", "EVT-005", "EVT-006", "EVT-007", "EVT-008",
+    "CON-001", "CON-002", "CON-003", "CON-004", "CON-005", "CON-006", "CON-007", "CON-008",
+    "LIVE-001", "LIVE-002", "LIVE-003", "LIVE-004", "LIVE-005", "LIVE-006", "LIVE-007", "LIVE-008",
+    "CTX-001", "CTX-002", "CTX-003", "CTX-004", "CTX-005", "CTX-006", "CTX-007", "CTX-008"
+  ]
+  and (.reason | type) == "string"
+  and (.reason | length) >= 1
+' "$decision" >/dev/null || {
+    echo "published reactive gate decision is missing or stale" >&2
+    exit 1
+}
+
+echo "WP-421 reactive fresh-agent gate passed"

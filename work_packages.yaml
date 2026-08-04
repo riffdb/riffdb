@@ -6854,6 +6854,7 @@ work_packages:
   - cargo test --workspace --all-features
   - cargo test -p riffdb-testkit --test reactive_ticketdesk_acceptance --all-features
   - cargo test -p riffdb-testkit --test contextual_agent_subscriptions --all-features
+  - ./scripts/reactive-ticketdesk-evaluation-acceptance --campaign wp421-reactive-01 --assert-gate
   - ./scripts/release-source-bootstrap-smoke
   - ./scripts/handbook check
   - ./scripts/check-application-bindings
