@@ -30,10 +30,39 @@ const TAG_LIST: u8 = 0x0c;
 const TAG_RECORD: u8 = 0x0d;
 
 /// Encodes one value using canonical value encoding v1.
+///
+/// Thin wrapper around [`encode_canonical_value_into`]. Prefer the into form
+/// when appending many cells into a pre-reserved buffer.
 pub fn encode_canonical_value(value: &CanonicalValue) -> Result<Vec<u8>, CanonicalCodecError> {
-    let mut encoder = Encoder::default();
-    encoder.encode_value(value, 0)?;
-    Ok(encoder.output)
+    let mut output = Vec::new();
+    encode_canonical_value_into(&mut output, value)?;
+    Ok(output)
+}
+
+/// Appends one complete canonical value encoding v1 document onto `output`.
+///
+/// Byte-identical to [`encode_canonical_value`]; document-size accounting is
+/// relative to the start of this append so callers may pack many cells into
+/// one contiguous buffer without false `DocumentTooLarge` faults.
+///
+/// All-or-nothing: on `Err` the buffer is restored to exactly its contents
+/// before the call, so a caller that keeps packing after a rejected cell never
+/// emits partial-document bytes under a valid offset.
+pub fn encode_canonical_value_into(
+    output: &mut Vec<u8>,
+    value: &CanonicalValue,
+) -> Result<(), CanonicalCodecError> {
+    let document_start = output.len();
+    let mut encoder = Encoder {
+        output: std::mem::take(output),
+        document_start,
+    };
+    let result = encoder.encode_value(value, 0);
+    *output = encoder.output;
+    if result.is_err() {
+        output.truncate(document_start);
+    }
+    result
 }
 
 /// Exact encoded byte length of one value under canonical value encoding v1.
@@ -79,6 +108,8 @@ pub fn decode_canonical_value(input: &[u8]) -> Result<CanonicalValue, CanonicalC
 #[derive(Default)]
 struct Encoder {
     output: Vec<u8>,
+    /// Start index of the document currently being written (for size bounds).
+    document_start: usize,
 }
 
 #[derive(Default)]
@@ -240,12 +271,14 @@ impl Encoder {
     }
 
     fn write(&mut self, bytes: &[u8]) -> Result<(), CanonicalCodecError> {
-        let new_length = self.output.len().checked_add(bytes.len()).ok_or(
-            CanonicalCodecError::DocumentTooLarge {
-                actual: usize::MAX,
-                maximum: MAX_CANONICAL_DOCUMENT_BYTES,
-            },
-        )?;
+        let document_len = self.output.len().saturating_sub(self.document_start);
+        let new_length =
+            document_len
+                .checked_add(bytes.len())
+                .ok_or(CanonicalCodecError::DocumentTooLarge {
+                    actual: usize::MAX,
+                    maximum: MAX_CANONICAL_DOCUMENT_BYTES,
+                })?;
         if new_length > MAX_CANONICAL_DOCUMENT_BYTES {
             return Err(CanonicalCodecError::DocumentTooLarge {
                 actual: new_length,
@@ -857,6 +890,76 @@ mod tests {
                 "encoded_len diverged for {value:?}: len={len} encode={}",
                 encoded.len()
             );
+            // Byte-identity: into form matches the allocating wrapper.
+            let mut into = Vec::new();
+            encode_canonical_value_into(&mut into, &value).expect("encode_into");
+            assert_eq!(
+                into, encoded,
+                "encode_into diverged from encode_canonical_value for {value:?}"
+            );
+            // Append onto a non-empty buffer remains document-byte-identical.
+            let mut packed = vec![0xAA, 0xBB];
+            encode_canonical_value_into(&mut packed, &value).expect("append encode_into");
+            assert_eq!(&packed[2..], encoded.as_slice());
         }
+    }
+
+    /// Falsifiability (b): if encode_into diverged (e.g. appended garbage), the
+    /// identity check against the wrapper must fail.
+    #[test]
+    fn encode_into_byte_identity_detects_divergence() {
+        let value = CanonicalValue::I64(42);
+        let expected = encode_canonical_value(&value).expect("encode");
+        let mut into = Vec::new();
+        encode_canonical_value_into(&mut into, &value).expect("encode_into");
+        assert_eq!(into, expected);
+        // Simulated divergence probe: a corrupt encoder would fail this.
+        let mut corrupt = into.clone();
+        corrupt.push(0xFF);
+        assert_ne!(
+            corrupt, expected,
+            "appended garbage must break byte-identity"
+        );
+    }
+
+    /// A rejected cell must not leave partial-document bytes in a packer's
+    /// buffer: a caller that continues packing would otherwise publish garbage
+    /// under offsets that look valid.
+    #[test]
+    fn failed_encode_into_leaves_the_buffer_untouched() {
+        const RECORD_OVERHEAD: usize = 16;
+        let over = CanonicalValue::Record(one_bytes_field(
+            MAX_CANONICAL_DOCUMENT_BYTES - RECORD_OVERHEAD + 1,
+        ));
+        let prefix = vec![0xAA, 0xBB, 0xCC];
+        let mut buffer = prefix.clone();
+        let error = encode_canonical_value_into(&mut buffer, &over)
+            .expect_err("oversized document must be rejected");
+        assert_eq!(
+            error,
+            CanonicalCodecError::DocumentTooLarge {
+                actual: MAX_CANONICAL_DOCUMENT_BYTES + 1,
+                maximum: MAX_CANONICAL_DOCUMENT_BYTES,
+            }
+        );
+        assert_eq!(
+            buffer, prefix,
+            "failed encode must restore the caller's buffer exactly"
+        );
+
+        // A following successful cell then starts at the untouched prefix.
+        encode_canonical_value_into(&mut buffer, &CanonicalValue::I64(7))
+            .expect("encode after err");
+        assert_eq!(
+            &buffer[..3],
+            prefix.as_slice(),
+            "prefix must survive the recovery append"
+        );
+        assert_eq!(
+            &buffer[3..],
+            encode_canonical_value(&CanonicalValue::I64(7))
+                .expect("encode")
+                .as_slice()
+        );
     }
 }

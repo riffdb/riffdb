@@ -15,7 +15,8 @@ use riffdb_service::{
     ProjectedSortDirection, SymbolicContractSelector,
 };
 use riffdb_types::{
-    CanonicalValue, CommitToken, FreshnessPolicy, RequestId, encode_canonical_value,
+    CanonicalValue, CommitToken, FreshnessPolicy, RequestId, canonical_value_encoded_len,
+    encode_canonical_value_into,
 };
 use tonic::Status;
 
@@ -232,8 +233,9 @@ pub fn execute_projected_query_result_to_proto_with_encoding(
 
 /// Builds one packed column from an iterator of cell values (row-major order).
 ///
-/// One contiguous `data` buffer per column: encode each cell once and append.
-/// Offsets are `row_count + 1` u32 start/end markers.
+/// One contiguous `data` buffer per column: encode each cell once via
+/// [`encode_canonical_value_into`] after a [`canonical_value_encoded_len`]
+/// reserve. Offsets are `row_count + 1` u32 start/end markers.
 fn pack_column<'a, I>(cells: I) -> Result<app_v1::PackedColumn, Status>
 where
     I: Iterator<Item = Result<&'a CanonicalValue, Status>>,
@@ -242,8 +244,9 @@ where
     let mut offsets = vec![0_u32];
     for cell in cells {
         let value = cell?;
-        let encoded = encode_canonical_value(value).map_err(|_| internal_defect())?;
-        data.extend_from_slice(&encoded);
+        let needed = canonical_value_encoded_len(value).map_err(|_| internal_defect())?;
+        data.reserve(needed);
+        encode_canonical_value_into(&mut data, value).map_err(|_| internal_defect())?;
         let end = u32::try_from(data.len()).map_err(|_| {
             // Column data exceeds u32 offset space; response budgets should
             // prevent this, but fail closed rather than wrap.
