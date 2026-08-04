@@ -302,6 +302,37 @@ where
     Ok(record)
 }
 
+/// Returns the shared administration sequence of the one publication that
+/// installed this exact immutable reactive module, if the stream retains it.
+///
+/// Reactive-module rows carry no administration sequence and the frozen durable
+/// layout has no module-hash reverse index, so the authoritative stream is the
+/// only source of the original publication's identity. Scanning it is bounded by
+/// the stream itself, which is append-only, contiguous, and never pruned
+/// (`validate_administration_tail`), and this runs only on the rare idempotent
+/// republish transition, never on a publication that writes. Two records naming
+/// one module hash is corruption: publication is immutable and single-writer.
+fn published_reactive_module_sequence<T>(
+    audit: &T,
+    module_hash: ReactiveModuleHash,
+) -> Result<Option<AdministrationSequence>, StorageError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let mut found = None;
+    for entry in audit.iter().map_err(precommit_storage_error)? {
+        let (_, value) = entry.map_err(precommit_storage_error)?;
+        let record = decoded_value(decode_administration_audit_record_v1(value.value())?);
+        if let StoredAdministrationAuditRecordV1::ReactiveModule(published) = record
+            && published.module_hash() == module_hash
+            && found.replace(published.administration_sequence()).is_some()
+        {
+            return Err(corrupt());
+        }
+    }
+    Ok(found)
+}
+
 fn find_audit_record<T>(
     table: &T,
     sequence: AdministrationSequence,
@@ -1073,12 +1104,22 @@ impl ReactiveModuleAdministrationRepository for RedbOperationalPorts {
         }
         if let Some(existing) = reactive_module_from_table(&modules, candidate.module_hash())? {
             drop(modules);
-            access.abort()?;
             if existing != *candidate {
+                access.abort()?;
                 return Err(corrupt());
             }
+            // Read the original publication's own sequence before releasing the
+            // transaction: an idempotent republish must record a success linked
+            // to that publication, not a linkless failure.
+            let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+            let administration_sequence =
+                published_reactive_module_sequence(&audit, candidate.module_hash())?
+                    .ok_or_else(corrupt)?;
+            drop(audit);
+            access.abort()?;
             return Ok(ReactiveModulePublicationResult::AlreadyPublished {
                 module_hash: candidate.module_hash(),
+                administration_sequence,
             });
         }
         let mut conflict = false;
