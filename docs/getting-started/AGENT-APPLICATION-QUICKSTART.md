@@ -67,15 +67,18 @@ compiler-owned.
 The explicit authoring operations are:
 
 ```text
-riffdb application check
+riffdb application check --source-only
 riffdb application lock --write
-riffdb application lock --check
+riffdb application check
 riffdb application generate --locked
 ```
 
-`check` performs no writes. `lock --write` is the only operation that accepts
+`check --source-only` performs no writes and compiles the complete author-owned
+application and roles without comparing an intentionally stale lock during an
+edit cycle. Exact `check` performs no writes and verifies source, lock, and
+every generated artifact; it cannot report a false green over drift.
+`lock --write` is the only operation that accepts
 new derived identities. It stages generated files and publishes the lock last.
-`lock --check` verifies source, lock, and every generated artifact.
 `generate --locked` reproduces bindings only when the current symbolic sources
 compile to the exact reviewed lock. A stale, substituted, interrupted, or
 partially generated application therefore fails before role binding,
@@ -95,6 +98,12 @@ Complete public references:
 - [symbolic inspection](INSPECTION.md)
 - [RiffQL v1](../riffql/LANGUAGE.md)
 - [authoring diagnostics](AUTHORING-DIAGNOSTICS.md)
+
+Every new scaffold also includes `AUTHORING.md`, a local compact guide to the
+safe aggregate, relationship, invariant, indexed-page, dependent-key batch,
+and generated read-after-write patterns. Start there while replacing the
+sample; use the complete references when a diagnostic points to a narrower
+rule.
 
 The sealed kit also provides `riffdb-builder-mcp --workspace <path>`. It is a
 credential-less local MCP server with reference resources and only six

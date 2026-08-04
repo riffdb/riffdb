@@ -461,12 +461,21 @@ Arguments:
 
 Options:
       --config <PATH>
+
+      --source-only
+          Compiles author-owned sources and roles without comparing the exact lock or generated files
       --endpoint <LOOPBACK_HTTP_ENDPOINT>
+
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+
+      --output <human|json>
+          [possible values: human, json]
       --max-attempts <1..10>
+
       --credential-file <PATH>
-  -h, --help                               Print help
+
+  -h, --help
+          Print help
 ```
 
 #### `riffdb application preview`

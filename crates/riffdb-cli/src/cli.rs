@@ -205,6 +205,9 @@ pub(crate) enum ApplicationCommand {
             value_name = "APPLICATION_SOURCE"
         )]
         source: OsString,
+        /// Compiles author-owned sources and roles without comparing the exact lock or generated files.
+        #[arg(long)]
+        source_only: bool,
     },
     /// Compiles and prints the exact proposed lock without writing.
     Preview {
@@ -1039,7 +1042,21 @@ mod tests {
                 .expect("check")
                 .command,
             TopLevel::Application {
-                command: ApplicationCommand::Check { .. }
+                command: ApplicationCommand::Check {
+                    source_only: false,
+                    ..
+                }
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["riffdb", "application", "check", "--source-only"])
+                .expect("source-only check")
+                .command,
+            TopLevel::Application {
+                command: ApplicationCommand::Check {
+                    source_only: true,
+                    ..
+                }
             }
         ));
         assert!(matches!(

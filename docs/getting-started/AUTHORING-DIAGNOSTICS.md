@@ -53,7 +53,12 @@ reports whether staging was discarded, the previous generation remains
 accepted, or generated files may be partial while the exact lock was not
 published. No diagnostic turns partial output into an accepted application.
 
-When the default lock exists, `application check` verifies the source, pinned
+During iterative source editing, `application check --source-only` compiles the
+complete author-owned contract, queries, and roles without comparing the old
+compiler-owned generation. Success explicitly says no lock or generated
+artifact was checked. This mode never writes, deploys, or grants authority.
+
+When the default lock exists, exact `application check` verifies the source, pinned
 contract bundle, exact lock, and every generated artifact. It cannot report a
 source-only success over a stale lock. With no lock present, success explicitly
 says that only symbolic sources compiled and that no lock or generated artifact
