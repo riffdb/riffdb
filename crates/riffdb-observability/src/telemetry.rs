@@ -13,8 +13,8 @@ use riffdb_catalog::{
     CatalogTelemetryEvent,
 };
 use riffdb_commit::{
-    CommitGroupDispatchReason, CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
-    CommitUncertaintyResolution, CommitUncertaintyStage,
+    CommandPipelineStage, CommitGroupDispatchReason, CommitIdempotencyObservation, CommitTelemetry,
+    CommitTelemetryEvent, CommitUncertaintyResolution, CommitUncertaintyStage,
 };
 use riffdb_conflict::{ConflictEvent, ConflictObserver};
 use riffdb_errors::{IncidentIdSource, InternalError};
@@ -39,6 +39,19 @@ pub const MAX_HOT_CONFLICT_KEYS: usize = 1_024;
 pub const MAX_WRITE_GROUP_SIZE: usize = 64;
 /// Closed scheduler dispatch-reason cardinality.
 pub const COMMAND_GROUP_DISPATCH_REASON_COUNT: usize = 4;
+/// Closed coordinator command-stage cardinality.
+pub const COMMAND_PIPELINE_STAGE_COUNT: usize = 5;
+
+const COMMAND_PIPELINE_STAGES: [(CommandPipelineStage, &str); COMMAND_PIPELINE_STAGE_COUNT] = [
+    (CommandPipelineStage::Admission, "admission"),
+    (CommandPipelineStage::Compatibility, "compatibility"),
+    (CommandPipelineStage::Evaluation, "evaluation"),
+    (
+        CommandPipelineStage::ValidationEncodingStaging,
+        "validation_encoding_staging",
+    ),
+    (CommandPipelineStage::Publication, "publication"),
+];
 
 /// Closed internal incident classifications.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -202,6 +215,18 @@ impl Observability {
             let stage = ReadPipelineStage::ALL[index];
             debug_assert_eq!(read_pipeline_stage_index(stage), index);
             let snapshot = self.metrics.read_stage_duration(stage);
+            (snapshot.count, snapshot.sum, snapshot.cumulative_buckets)
+        })
+    }
+
+    /// Returns per-stage command-pipeline histogram snapshots in closed order.
+    #[must_use]
+    pub fn command_stage_snapshot(
+        &self,
+    ) -> [(u64, u64, [u64; HISTOGRAM_UPPER_BOUNDS.len()]); COMMAND_PIPELINE_STAGE_COUNT] {
+        std::array::from_fn(|index| {
+            let stage = COMMAND_PIPELINE_STAGES[index].0;
+            let snapshot = self.metrics.command_stage_duration(stage);
             (snapshot.count, snapshot.sum, snapshot.cumulative_buckets)
         })
     }
@@ -389,6 +414,26 @@ pub fn format_read_stages_v1_line(
         ));
     }
     format!("riffdb-read-stages-v1\t{}", parts.join(";"))
+}
+
+/// Renders the process-shutdown evidence line for coordinator command stages.
+#[must_use]
+pub fn format_command_stages_v1_line(
+    snapshot: &[(u64, u64, [u64; HISTOGRAM_UPPER_BOUNDS.len()]); COMMAND_PIPELINE_STAGE_COUNT],
+) -> String {
+    let mut parts = Vec::with_capacity(COMMAND_PIPELINE_STAGE_COUNT);
+    for (index, (count, sum_us, buckets)) in snapshot.iter().enumerate() {
+        let buckets = buckets
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        parts.push(format!(
+            "{}:{count}:{sum_us}:{buckets}",
+            COMMAND_PIPELINE_STAGES[index].1
+        ));
+    }
+    format!("riffdb-command-stages-v1\t{}", parts.join(";"))
 }
 
 /// One parsed stage entry from a `riffdb-read-stages-v1` payload.

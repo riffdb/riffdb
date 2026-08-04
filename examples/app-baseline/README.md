@@ -108,8 +108,12 @@ the shared measure window.
 
 Open tickets for comment/close writes are selected with Zipf skew via a CDF
 `partition_point` (`--load-zipf-s`, default 1.0). Read probes use a separate
-stable ticket excluded from that pool. All load traffic targets a **single
-organization** partition (`tenant_scope=single_organization` in the report).
+stable ticket excluded from that pool. The default targets one organization;
+`--load-tenants 8|64` routes across independently seeded partitions and
+`--load-hot-tenant-percent 70` sends 70% of operations to tenant index zero.
+Reports contain bounded per-tenant counts and tail latency without publishing
+tenant identifiers as metric labels. `--organizations` must be at least the
+selected tenant count.
 
 Measurement uses a **shared `AtomicBool` stop**: coordinator opens `measuring`
 after warmup and sets `stop` after `duration`. Throughput denominator is
@@ -193,8 +197,82 @@ docker ps -aq --filter label=riffdb.app-baseline.postgres=1 | xargs -r docker rm
 docker ps -aq --filter name=riffdb-app-baseline- | xargs -r docker rm -f
 ```
 
-Follow-ups not in this increment: open-loop Poisson arrivals, history-growth
-curves, crash-under-load, deploy-under-load.
+### Open-loop, journeys, and data shapes
+
+Closed-loop throughput is complemented by a bounded Poisson arrival mode:
+
+```bash
+./benchmarks/run-app-baseline --full --load agent --load-clients 32 \
+  --load-open-loop-rate 2000 --load-open-loop-queue-depth 4096
+```
+
+The producer never blocks on a full client queue: reports separate offered,
+admitted, completed, and client-queue-rejected work, plus queue delay and
+end-to-end p50/p95/p99. This makes the saturation knee visible instead of
+allowing the client to self-throttle it away.
+
+`--load-journeys` runs browser and agent command/read-after-commit workflows
+before and after measured load. Each journey verifies replay, exact visible
+effects, declared outcomes, and causal rereads; a semantic mismatch fails the
+run. Durable event-consumer crash/ack semantics are exercised by the resilience
+suite because they require process/failpoint control rather than a timed hot
+loop.
+
+Shape controls are recorded in every report:
+
+- `--tickets-per-project`, `--comments-per-ticket`, `--labels-per-ticket`
+- `--payload-bytes`, `--board-density`, and `--organizations`
+- deployed static RiffQL board page sizes 50/200/450 and comment limit 50
+- `--load-accumulate-history` for an explicit retained-history experiment
+
+The harness does not pretend arbitrary cursor depths are supported. Cursor
+resume is covered by generated-client conformance and the report identifies
+the load path as first-page/static-bound RiffQL.
+
+### Comparator profiles
+
+`--postgres-comparator minimal` is the optimized conventional SQL floor.
+`--postgres-comparator safe-app` performs symbolic operation authorization,
+idempotency admission/replay, application mutation, audit/provenance, a domain
+event, and outbox intent in the same PostgreSQL transaction. The second profile
+does not imply PostgreSQL cannot be safe; it measures the cost of implementing
+the obligations RiffDB enforces by construction. Backend IDs are
+`postgres_minimal` and `postgres_safe_app` so reports cannot blur the claim.
+
+### Resource and fairness attribution
+
+Each load point samples PostgreSQL database/WAL counters or `riffdbd` process
+CPU ticks, RSS, kernel I/O counters, and bounded durable-directory bytes before
+and after the window. Reports also retain write-group sizes, per-worker
+completed operations/longest pauses, per-tenant tails, scheduler dispatch
+reasons, and fixed-histogram command/read pipeline stages. These counters are
+low-cardinality and contain no application values.
+
+### Resilience, languages, and the alpha matrix
+
+```bash
+# process death, uncertainty replay, durable-consumer crash matrix,
+# authorization revocation, successor role reconciliation, history growth
+examples/app-baseline/resilience/run
+
+# generated Rust/TypeScript/Python application boundaries and canonical result
+./scripts/app-baseline-language-conformance
+
+# quick structural matrix (never marked evidentiary)
+./benchmarks/run-app-baseline --alpha-matrix-smoke
+
+# full release evidence; every required cell must be present and eligible
+./benchmarks/run-app-baseline --alpha-matrix
+```
+
+The full matrix keeps parity, load, and resilience as separate reports and
+creates `target/app-baseline/alpha-matrix/manifest-v1.json` with SHA-256 hashes.
+It includes minimal/safe PostgreSQL, closed load, a 500/2,000/8,000 ops/s
+open-loop knee, same-ticket and
+membership contention, 8/64-tenant fairness, wide data, stateful journeys,
+an accumulated-history curve, language conformance, and resilience. There is deliberately no composite
+score: one missing, unstable, incorrect, mixed-device, or non-evidentiary cell
+makes the release manifest ineligible.
 
 Or directly after provisioning:
 
@@ -241,8 +319,8 @@ human summary with p50 latencies and RiffDB/Postgres ratios.
 
 | Profile | Approx rows |
 |---------|-------------|
-| `--smoke` | ~276 |
-| `--full` | ~15k (10 orgs × projects × tickets + comments/labels) |
+| `--smoke` | ~404 |
+| `--full` | ~19k (10 orgs × projects × tickets + comments/labels, including dense board cell) |
 
 ## Seed performance investigation
 

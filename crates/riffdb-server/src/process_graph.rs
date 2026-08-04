@@ -694,6 +694,17 @@ impl RunningProductionGraph {
         self.observability.read_stage_snapshot()
     }
 
+    /// Per-stage coordinator command histograms for shutdown evidence.
+    pub(crate) fn command_stage_snapshot(
+        &self,
+    ) -> [(
+        u64,
+        u64,
+        [u64; riffdb_observability::HISTOGRAM_UPPER_BOUNDS.len()],
+    ); riffdb_observability::COMMAND_PIPELINE_STAGE_COUNT] {
+        self.observability.command_stage_snapshot()
+    }
+
     /// History incarnation retained from the successful open that built this graph.
     ///
     /// Available after activation even once ordinary admission is closed for

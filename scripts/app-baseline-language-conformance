@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+if [[ "${1:-}" == "--output" ]]; then
+    [[ $# == 2 ]] || { echo "usage: $0 [--output PATH]" >&2; exit 2; }
+    output="$2"
+elif [[ $# == 0 ]]; then
+    output="target/app-baseline/language-conformance-v1.json"
+else
+    echo "usage: $0 [--output PATH]" >&2
+    exit 2
+fi
+mkdir -p "$(dirname "$output")"
+
+manifest="examples/app-baseline/language-conformance/manifest-v1.json"
+jq -e '
+  .schema == "riffdb.app-baseline-language-conformance/v1"
+  and .database_measurement_driver == "rust"
+  and .language_runtime_time_in_parity_ratios == false
+  and ([.languages[].language] == ["rust", "typescript", "python_sync_async"])
+' "$manifest" >/dev/null
+
+expected="examples/app-baseline/language-conformance/semantic-observation-v1.json"
+normalize_observation() {
+    jq -S '{schema, operation, outcome, read_after_commit, application_head_at_least_read_after_commit}' "$1"
+}
+expected_normalized="$(normalize_observation "$expected")"
+typescript_normalized="$(normalize_observation fixtures/application-parity/agent-alpha-observation-v1.json)"
+python_normalized="$(normalize_observation fixtures/application-parity/python-observation-v1.json)"
+[[ "$typescript_normalized" == "$expected_normalized" ]] || {
+    echo "TypeScript semantic observation diverges from the language-neutral contract" >&2
+    exit 1
+}
+[[ "$python_normalized" == "$expected_normalized" ]] || {
+    echo "Python semantic observation diverges from the language-neutral contract" >&2
+    exit 1
+}
+
+run_timed() {
+    local label="$1"
+    shift
+    local began ended
+    began="$(date +%s%N)"
+    "$@"
+    ended="$(date +%s%N)"
+    printf '%s\t%s\n' "$label" "$((ended - began))"
+}
+
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export TMPDIR="$task_tmp_root"
+timings="$(mktemp "$task_tmp_root/riffdb-language-conformance.XXXXXX")"
+trap 'rm -f "$timings"' EXIT INT TERM HUP
+
+run_timed rust ./scripts/check-application-bindings >>"$timings"
+run_timed typescript ./scripts/agent-application-typescript-acceptance >>"$timings"
+run_timed python_sync_async ./scripts/agent-application-python-acceptance >>"$timings"
+
+rust_ns="$(awk -F '\t' '$1 == "rust" {print $2}' "$timings")"
+typescript_ns="$(awk -F '\t' '$1 == "typescript" {print $2}' "$timings")"
+python_ns="$(awk -F '\t' '$1 == "python_sync_async" {print $2}' "$timings")"
+jq -n \
+    --slurpfile manifest "$manifest" \
+    --argjson rust_ns "$rust_ns" \
+    --argjson typescript_ns "$typescript_ns" \
+    --argjson python_ns "$python_ns" '
+  {
+    schema: "riffdb.app-baseline-language-conformance-result/v1",
+    manifest: $manifest[0],
+    status: "passed",
+    semantic_observations: {
+      status: "canonical_match",
+      canonical: $manifest[0].canonical_semantics,
+      rust_live_evidence: "release matrix parity.riffdb_public_grpc",
+      typescript: "fixtures/application-parity/agent-alpha-observation-v1.json",
+      python: "fixtures/application-parity/python-observation-v1.json"
+    },
+    boundary_lint: "passed",
+    runtime_setup_ns: {
+      rust: $rust_ns,
+      typescript: $typescript_ns,
+      python_sync_async: $python_ns
+    },
+    database_parity_ratio_includes_runtime_setup: false
+  }
+' >"$output"
+printf 'language conformance report: %s\n' "$output"

@@ -7251,3 +7251,198 @@ work_packages:
     durable one still opens clean on both structural passes; the full workspace battery
     reports zero failures.
   human_review_triggers: *id001
+- id: WP-437
+  name: App-baseline evidence integrity and repeatability
+  depends_on: [WP-379, WP-433]
+  objective: Make every load comparison self-describing, order-balanced, repetition-aware, snapshot-isolated by
+    default, and fail-closed when final application state does not match recorded outcomes.
+  requirements: [PERF-001, PERF-008]
+  required_adrs: [ADR-0001, ADR-0056, ADR-0060]
+  allowed_paths: [work_packages.yaml, examples/app-baseline/**, benchmarks/run-app-baseline,
+    crates/riffdb-bench-root/**, docs/performance/**]
+  deliverables:
+  - Load-suite environment, storage, device, PostgreSQL durability, backend order, and same-device evidence matching
+    the parity report, with an evidentiary refusal when required fields are absent
+  - Deterministic balanced isolated backend order across repetitions without concurrent engine interference
+  - Median/min/max/spread summaries for every backend/client load point and --require-stable enforcement
+  - Fresh identically seeded process/storage state per concurrency point by default; accumulated history retained as
+    an explicitly selected history-growth mode
+  - Post-load semantic reconciliation of successful, replayed, and rejected effects
+  acceptance_commands:
+  - cd examples/app-baseline && cargo +1.97.0 test --workspace
+  - cd examples/app-baseline && cargo +1.97.0 clippy --workspace --all-targets -- -D warnings
+  - ./benchmarks/run-app-baseline --self-test
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: An evidentiary load report cannot omit environment/durability identity, cannot pass unstable repetitions,
+    cannot compare different history states implicitly, and cannot report clean when durable application state
+    disagrees with recorded operation outcomes.
+  human_review_triggers: *id001
+- id: WP-438
+  name: Open-loop arrival, tenant fairness, contention, and data-shape matrix
+  depends_on: [WP-437]
+  objective: Measure offered demand rather than only self-throttled closed-loop completions and cover the partition,
+    contention, payload, fan-out, page-size, and history shapes expected from alpha applications.
+  requirements: [PERF-003, PERF-008]
+  required_adrs: [ADR-0001, ADR-0056, ADR-0060]
+  allowed_paths: [work_packages.yaml, examples/app-baseline/**, benchmarks/run-app-baseline,
+    docs/performance/**]
+  deliverables:
+  - Bounded deterministic Poisson open-loop driver with offered/admitted/completed/rejected rates, queue delay,
+    per-operation p50/p95/p99, overload, and saturation-knee evidence
+  - One/eight/sixty-four tenant routing plus hot-tenant/cold-tenant fairness and per-tenant tail summaries
+  - Required isolated, same-ticket, and membership-contention matrix modes
+  - Bounded payload, comment-history, label-fanout, board-density, page-size, cursor-depth, and retained-history tiers
+  acceptance_commands:
+  - cd examples/app-baseline && cargo +1.97.0 test --workspace
+  - cd examples/app-baseline && cargo +1.97.0 clippy --workspace --all-targets -- -D warnings
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: The suite locates the offered-load saturation knee, reports fairness without high-cardinality labels,
+    and records every selected tenant/contention/data-shape dimension in machine-readable output.
+  human_review_triggers: *id001
+- id: WP-439
+  name: Stateful application journeys and semantic reconciliation
+  depends_on: [WP-438]
+  objective: Add causal browser, agent, and durable-worker journeys whose end-to-end results are reconciled against
+    final state rather than treating independent successful RPCs as a complete application proof.
+  requirements: [PERF-008, AAA-018]
+  required_adrs: [ADR-0056, ADR-0060]
+  allowed_paths: [work_packages.yaml, examples/app-baseline/**, benchmarks/run-app-baseline,
+    docs/performance/**]
+  deliverables:
+  - Browser list/detail/command/read-after-commit journey
+  - Agent page/query/declared-outcome/causal-reread journey
+  - Durable event next/command/event-derived-idempotency/ack journey
+  - End-to-end journey histograms and exact post-run missing/duplicate/state-divergence checks
+  acceptance_commands:
+  - cd examples/app-baseline && cargo +1.97.0 test --workspace
+  - cd examples/app-baseline && cargo +1.97.0 clippy --workspace --all-targets -- -D warnings
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: Every supported journey measures one causal application action and proves its final durable effect exactly
+    once; a dropped, duplicated, stale, or incorrectly shaped result turns the run red.
+  human_review_triggers: *id001
+- id: WP-440
+  name: Crash, history, deployment, authorization, and recovery under load
+  depends_on: [WP-439, WP-422, WP-423]
+  objective: Exercise the application surface through real process death, history growth, contract/query evolution,
+    role change, overload, restart, and recovery while load remains active.
+  requirements: [PERF-003, PERF-013, PERF-014]
+  required_adrs: [ADR-0001, ADR-0056, ADR-0060]
+  allowed_paths: [work_packages.yaml, examples/app-baseline/**, benchmarks/run-app-baseline,
+    crates/riffdb-bench-root/**, docs/performance/**]
+  deliverables:
+  - Real kill-under-load cases at bounded command lifecycle points with no-lost/no-duplicate outcome reconciliation
+  - Identical-profile retained-history checkpoints and restart/recovery latency curves
+  - Query-module deployment and application-role rebind/revoke under active reads and writes
+  - Post-overload and post-restart time-to-ready and time-to-baseline-latency measurements
+  acceptance_commands:
+  - cd examples/app-baseline && cargo +1.97.0 test --workspace
+  - ./benchmarks/run-app-baseline --self-test
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: Every injected failure or evolution transition yields a typed expected public result, recovery preserves
+    exact command semantics, and the report distinguishes correctness, downtime, and latency recovery.
+  human_review_triggers: *id001
+- id: WP-441
+  name: Benchmark attribution and resource accounting
+  depends_on: [WP-437]
+  objective: Attach bounded redaction-safe stage, scheduler, process, and storage evidence so throughput or latency
+    gaps identify a product subsystem rather than merely producing a ratio.
+  requirements: [PERF-001, PERF-008]
+  required_adrs: [ADR-0056, ADR-0060]
+  allowed_paths: [work_packages.yaml, examples/app-baseline/**, benchmarks/run-app-baseline,
+    crates/riffdb-observability/**, crates/riffdb-server/**, docs/performance/**]
+  deliverables:
+  - Command queue/preparation/evaluation/admission/stage/flush/publication and read auth/plan/storage/encode summaries
+  - Group count/bytes, queue depth, durable flush count, CPU, RSS, disk bytes, database size, and write-amplification
+    evidence with closed low-cardinality labels
+  - Per-client completed-operation and longest-pause fairness summaries
+  acceptance_commands:
+  - cd examples/app-baseline && cargo +1.97.0 test --workspace
+  - cargo +1.97.0 test -p riffdb-observability --all-features
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: Every evidentiary run carries enough bounded stage and resource evidence to distinguish transport,
+    queueing, CPU, durable I/O, storage growth, and unfair scheduling without exposing application values.
+  human_review_triggers: *id001
+- id: WP-442
+  name: Minimal and safety-equivalent PostgreSQL comparisons
+  depends_on: [WP-437]
+  objective: Preserve PostgreSQL as both the optimized conventional floor and an honest comparison implementing the
+    idempotency, provenance/audit, durable-event/outbox, and authorization obligations performed by RiffDB.
+  requirements: [PERF-008]
+  required_adrs: [ADR-0001, ADR-0045, ADR-0056]
+  allowed_paths: [work_packages.yaml, examples/app-baseline/**, benchmarks/run-app-baseline,
+    docs/performance/**]
+  deliverables:
+  - Explicit postgres_minimal and postgres_safe_app backend identities sharing one application workload
+  - Safety-equivalent transactional idempotency, audit/provenance, event/outbox-intent, and authorization checks
+  - Reports and prose that retain the minimal performance floor and never claim PostgreSQL cannot implement safety
+  acceptance_commands:
+  - cd examples/app-baseline && cargo +1.97.0 test --workspace
+  - cd examples/app-baseline && cargo +1.97.0 clippy --workspace --all-targets -- -D warnings
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: Both PostgreSQL profiles execute the same domain operation shapes, the safety profile proves its extra
+    obligations atomically, and every report identifies which comparator produced each number.
+  human_review_triggers: *id001
+- id: WP-443
+  name: Rust TypeScript Python application conformance
+  depends_on: [WP-439]
+  objective: Keep precise database load generation in Rust while proving Rust, TypeScript, and Python public generated
+    clients observe identical application semantics without handwritten transport or kernel imports.
+  requirements: [AAA-003, AAA-009, AAA-018]
+  required_adrs: [ADR-0001, ADR-0056]
+  allowed_paths: [work_packages.yaml, examples/app-baseline/**, clients/typescript/**, clients/python/**,
+    benchmarks/run-app-baseline, scripts/**, docs/performance/**]
+  deliverables:
+  - One golden language-neutral command/query/error/cursor/read-after-commit workload
+  - Executable Rust, TypeScript, and Python conformance runners over their public generated application clients
+  - Canonical semantic observation comparison and boundary lint for raw IDs, kernel imports, maps, encoders,
+    decoders, and handwritten RPC wrappers
+  - Language runtime/setup time reported separately and excluded from database parity ratios
+  acceptance_commands:
+  - cd examples/app-baseline && cargo +1.97.0 test --workspace
+  - ./scripts/check-generated
+  - ./scripts/check-workspace-policy
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: All three languages emit byte-equivalent canonical semantic observations for the golden workload and no
+    runner imports kernel APIs or owns application transport/encoding logic.
+  human_review_triggers: *id001
+- id: WP-444
+  name: Benchmark release matrix and evidence gate
+  depends_on: [WP-438, WP-439, WP-440, WP-441, WP-442, WP-443]
+  objective: Compose parity, load, and resilience into one bounded release matrix whose eligible result cannot hide
+    an omitted dimension, unstable repetition, correctness failure, or comparison mismatch.
+  requirements: [PERF-008, PERF-013, PERF-014, AAA-012]
+  required_adrs: [ADR-0001, ADR-0056, ADR-0060]
+  allowed_paths: [work_packages.yaml, examples/app-baseline/**, benchmarks/run-app-baseline,
+    benchmarks/reports/**, release/evidence/**, docs/performance/**]
+  deliverables:
+  - Separate parity, load, and resilience reports plus one manifest of required cells and evidence hashes
+  - Required contention, tenant, data-shape, stateful-journey, crash, evolution, comparator, and language cells
+  - Eligible/not-eligible decision retaining every miss without waiver
+  acceptance_commands:
+  - ./benchmarks/run-app-baseline --self-test
+  - cargo +1.97.0 fmt --all -- --check
+  - ./scripts/check-requirement-coverage
+  exit_gate: The alpha benchmark gate is eligible only when every required cell is present, stable, semantically
+    reconciled, and measured under recorded comparable storage and durability conditions.
+  human_review_triggers: *id001
+- id: WP-445
+  name: App-baseline realistic-suite documentation and evidence refresh
+  depends_on: [WP-444]
+  objective: Publish the exact runbook, claim boundaries, report schemas, interpretation rules, and refreshed evidence
+    for the realistic alpha benchmark without collapsing its three suites into one misleading score.
+  requirements: [PERF-001, PERF-008, PERF-013, PERF-014]
+  required_adrs: [ADR-0001, ADR-0045, ADR-0056, ADR-0060]
+  allowed_paths: [work_packages.yaml, examples/app-baseline/**, benchmarks/reports/**,
+    release/evidence/**, docs/performance/**]
+  deliverables:
+  - Operator runbook for parity, closed/open-loop load, matrix, resilience, comparators, and language conformance
+  - Versioned report-schema reference and compatibility policy
+  - Refreshed full evidence plus bounded conclusions that distinguish product guarantees from benchmark assumptions
+  acceptance_commands:
+  - cd examples/app-baseline && cargo +1.97.0 test --workspace
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: A new operator can reproduce and correctly interpret every alpha benchmark cell from public documentation,
+    and checked evidence contains no unsupported safety or performance claim.
+  human_review_triggers: *id001

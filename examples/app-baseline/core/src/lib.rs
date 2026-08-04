@@ -6,6 +6,7 @@
 
 mod histogram;
 mod ids;
+mod journeys;
 mod load;
 mod report;
 mod scale;
@@ -15,6 +16,7 @@ mod timing;
 
 pub use histogram::*;
 pub use ids::*;
+pub use journeys::*;
 pub use load::*;
 pub use report::*;
 pub use scale::*;

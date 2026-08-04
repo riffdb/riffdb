@@ -4,8 +4,11 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-before="$(mktemp -d)"
-after="$(mktemp -d)"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export TMPDIR="$task_tmp_root"
+before="$(mktemp -d "$task_tmp_root/riffdb-check-generated-before.XXXXXX")"
+after="$(mktemp -d "$task_tmp_root/riffdb-check-generated-after.XXXXXX")"
 trap 'rm -rf "$before" "$after"' EXIT
 
 snapshot() {
