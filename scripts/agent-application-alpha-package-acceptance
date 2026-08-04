@@ -22,7 +22,20 @@ if rg -q 'riffdb-(auth|catalog|client|commit|policy|proto|runtime|server|service
 fi
 
 bundle="$work_root/bundle"
-"$repo_root/scripts/agent-application-alpha-package" "$bundle" >/dev/null
+bundle_hash="$("$repo_root/scripts/agent-application-alpha-package" "$bundle")"
+reproduced_bundle="$work_root/bundle-reproduced"
+reproduced_hash="$(
+    "$repo_root/scripts/agent-application-alpha-package" "$reproduced_bundle"
+)"
+[[ "$reproduced_hash" == "$bundle_hash" ]] || {
+    echo "sealed bundle is not reproducible from identical source" >&2
+    exit 1
+}
+cmp "$bundle/checksums.sha256" "$reproduced_bundle/checksums.sha256" || {
+    echo "sealed bundle file inventory is not reproducible from identical source" >&2
+    exit 1
+}
+rm -rf "$reproduced_bundle"
 [[ -x "$bundle/bin/riffdb-builder-mcp" ]] || {
     echo "sealed bundle is missing the credential-less builder MCP" >&2
     exit 1
