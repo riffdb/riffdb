@@ -383,11 +383,23 @@ message ProjectedQueryBody {
   optional ProjectedAggregate aggregate = 7;
 }
 
+// Opt-in response encoding for ExecuteProjectedQuery (CP4).
+// UNSPECIFIED and ROW keep today's row-oriented Ready arm.
+// PACKED requests a column-major ready_packed arm when the outcome is Ready.
+enum ProjectedResponseEncoding {
+  PROJECTED_RESPONSE_ENCODING_UNSPECIFIED = 0;
+  PROJECTED_RESPONSE_ENCODING_ROW = 1;
+  PROJECTED_RESPONSE_ENCODING_PACKED = 2;
+}
+
 message ExecuteProjectedQueryRequest {
   optional ContractSelector contract = 1;
   string projection_name = 2;
   ProjectedQueryBody request = 3;
   FreshnessPolicyProto freshness = 4;
+  // Opt-in packed column-major Ready encoding. Absent / UNSPECIFIED / ROW
+  // retain the historical row-oriented ready arm (full compatibility).
+  optional ProjectedResponseEncoding response_encoding = 5;
   bytes request_id = 100;
 }
 
@@ -400,6 +412,30 @@ message ProjectedQueryReady {
   bytes head = 4;
   // Opaque CommitToken for the served frontier (causal chaining).
   bytes commit_token = 5;
+}
+
+// Column-major Ready payload: PK columns first, then selected fields.
+// Cells use the existing canonical value encoding (encode_canonical_value).
+message ProjectedReadyPacked {
+  // Selected field names; column order after primary_key_fields.
+  repeated string fields = 1;
+  // Primary-key column names; column order first among columns.
+  repeated string primary_key_fields = 2;
+  uint32 row_count = 3;
+  // PK columns first, then selected fields (length = pk + select).
+  repeated PackedColumn columns = 4;
+  bytes frontier = 5;
+  bytes head = 6;
+  bytes commit_token = 7;
+}
+
+// One packed column: concatenated canonical cell encodings + row offsets.
+message PackedColumn {
+  // Concatenated per-cell canonical encodings for this column.
+  bytes data = 1;
+  // row_count+1 offsets into data (start/end per cell). u32: column data is
+  // bounded far below 4 GiB by public response budgets.
+  repeated uint32 offsets = 2;
 }
 
 message ProjectedQueryLagging {
@@ -453,6 +489,8 @@ message ExecuteProjectedQueryResponse {
     ProjectedQueryRebuilding rebuilding = 4;
     ProjectedQueryDegraded degraded = 5;
     ProjectedQueryInvalid invalid = 6;
+    // Present only when the request opted into PACKED and the outcome is Ready.
+    ProjectedReadyPacked ready_packed = 7;
   }
 }
 

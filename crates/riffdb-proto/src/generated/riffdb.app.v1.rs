@@ -431,6 +431,8 @@ pub struct ExecuteProjectedQueryRequest {
     pub request: ::core::option::Option<ProjectedQueryBody>,
     #[prost(message, optional, tag = "4")]
     pub freshness: ::core::option::Option<FreshnessPolicyProto>,
+    #[prost(enumeration = "ProjectedResponseEncoding", optional, tag = "5")]
+    pub response_encoding: ::core::option::Option<i32>,
     #[prost(bytes = "vec", tag = "100")]
     pub request_id: ::prost::alloc::vec::Vec<u8>,
 }
@@ -446,6 +448,30 @@ pub struct ProjectedQueryReady {
     pub head: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "5")]
     pub commit_token: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProjectedReadyPacked {
+    #[prost(string, repeated, tag = "1")]
+    pub fields: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "2")]
+    pub primary_key_fields: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(uint32, tag = "3")]
+    pub row_count: u32,
+    #[prost(message, repeated, tag = "4")]
+    pub columns: ::prost::alloc::vec::Vec<PackedColumn>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub frontier: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "6")]
+    pub head: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub commit_token: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PackedColumn {
+    #[prost(bytes = "vec", tag = "1")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, repeated, tag = "2")]
+    pub offsets: ::prost::alloc::vec::Vec<u32>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProjectedQueryLagging {
@@ -494,7 +520,7 @@ pub struct ProjectedQueryInvalid {
 pub struct ExecuteProjectedQueryResponse {
     #[prost(
         oneof = "execute_projected_query_response::Outcome",
-        tags = "1, 2, 3, 4, 5, 6"
+        tags = "1, 2, 3, 4, 5, 6, 7"
     )]
     pub outcome: ::core::option::Option<execute_projected_query_response::Outcome>,
 }
@@ -514,6 +540,8 @@ pub mod execute_projected_query_response {
         Degraded(super::ProjectedQueryDegraded),
         #[prost(message, tag = "6")]
         Invalid(super::ProjectedQueryInvalid),
+        #[prost(message, tag = "7")]
+        ReadyPacked(super::ProjectedReadyPacked),
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -1027,6 +1055,35 @@ impl ProjectedAggregateOp {
             "PROJECTED_AGGREGATE_OP_SUM" => Some(Self::Sum),
             "PROJECTED_AGGREGATE_OP_MIN" => Some(Self::Min),
             "PROJECTED_AGGREGATE_OP_MAX" => Some(Self::Max),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ProjectedResponseEncoding {
+    Unspecified = 0,
+    Row = 1,
+    Packed = 2,
+}
+impl ProjectedResponseEncoding {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PROJECTED_RESPONSE_ENCODING_UNSPECIFIED",
+            Self::Row => "PROJECTED_RESPONSE_ENCODING_ROW",
+            Self::Packed => "PROJECTED_RESPONSE_ENCODING_PACKED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PROJECTED_RESPONSE_ENCODING_UNSPECIFIED" => Some(Self::Unspecified),
+            "PROJECTED_RESPONSE_ENCODING_ROW" => Some(Self::Row),
+            "PROJECTED_RESPONSE_ENCODING_PACKED" => Some(Self::Packed),
             _ => None,
         }
     }

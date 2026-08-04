@@ -2,6 +2,9 @@
 //!
 //! Measures the honest full wire path (not a Rust SDK facade). Request shapes
 //! mirror `tests/service/projected_read_acceptance.rs` / CP2b.
+//!
+//! CP4 adds opt-in packed column-major Ready decoding: offsets → cell slices →
+//! `decode_canonical_value` → the same [`TicketRow`] construction as the row arm.
 
 use std::time::Duration;
 
@@ -10,7 +13,7 @@ use riffdb_app_baseline_core::{TicketRow, TicketStatus, UuidBytes};
 use riffdb_client_rust::generate_request_id;
 use riffdb_proto::app::v1 as app_v1;
 use riffdb_proto::v1;
-use riffdb_types::{CommitSequence, CommitToken};
+use riffdb_types::{CanonicalValue, CommitSequence, CommitToken, decode_canonical_value};
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 
@@ -83,6 +86,8 @@ impl TicketStatusEnumIds {
 }
 
 /// Builds the projected board request (select, eq predicates, order, limit, org).
+///
+/// Defaults to row encoding (absent / historical semantics).
 #[must_use]
 pub fn build_board_projected_request(
     organization_id: UuidBytes,
@@ -91,6 +96,28 @@ pub fn build_board_projected_request(
     limit: u32,
     status_ids: TicketStatusEnumIds,
     freshness: app_v1::FreshnessPolicyProto,
+) -> app_v1::ExecuteProjectedQueryRequest {
+    build_board_projected_request_with_encoding(
+        organization_id,
+        project_id,
+        status,
+        limit,
+        status_ids,
+        freshness,
+        None,
+    )
+}
+
+/// Like [`build_board_projected_request`] with an explicit response encoding.
+#[must_use]
+pub fn build_board_projected_request_with_encoding(
+    organization_id: UuidBytes,
+    project_id: UuidBytes,
+    status: TicketStatus,
+    limit: u32,
+    status_ids: TicketStatusEnumIds,
+    freshness: app_v1::FreshnessPolicyProto,
+    response_encoding: Option<app_v1::ProjectedResponseEncoding>,
 ) -> app_v1::ExecuteProjectedQueryRequest {
     app_v1::ExecuteProjectedQueryRequest {
         contract: Some(app_v1::ContractSelector {
@@ -126,6 +153,7 @@ pub fn build_board_projected_request(
             aggregate: None,
         }),
         freshness: Some(freshness),
+        response_encoding: response_encoding.map(|encoding| encoding as i32),
         request_id: generate_request_id()
             .map(|id| id.into_bytes().to_vec())
             .unwrap_or_else(|_| vec![0; 16]),
@@ -176,14 +204,42 @@ pub async fn execute_projected_board(
     status_ids: TicketStatusEnumIds,
     freshness: app_v1::FreshnessPolicyProto,
 ) -> Result<Vec<TicketRow>, RiffDbError> {
-    let mut client = ApplicationQueryServiceClient::new(channel.clone());
-    let message = build_board_projected_request(
+    execute_projected_board_with_encoding(
+        channel,
+        bearer_token,
         organization_id,
         project_id,
         status,
         limit,
         status_ids,
         freshness,
+        None,
+    )
+    .await
+}
+
+/// Executes one projected board query, optionally requesting packed encoding.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_projected_board_with_encoding(
+    channel: &Channel,
+    bearer_token: &str,
+    organization_id: UuidBytes,
+    project_id: UuidBytes,
+    status: TicketStatus,
+    limit: u32,
+    status_ids: TicketStatusEnumIds,
+    freshness: app_v1::FreshnessPolicyProto,
+    response_encoding: Option<app_v1::ProjectedResponseEncoding>,
+) -> Result<Vec<TicketRow>, RiffDbError> {
+    let mut client = ApplicationQueryServiceClient::new(channel.clone());
+    let message = build_board_projected_request_with_encoding(
+        organization_id,
+        project_id,
+        status,
+        limit,
+        status_ids,
+        freshness,
+        response_encoding,
     );
     let request = authenticated_request(message, bearer_token)?;
     let response = client
@@ -192,6 +248,32 @@ pub async fn execute_projected_board(
         .map_err(|status| RiffDbError::Rpc(format!("ExecuteProjectedQuery: {status}")))?
         .into_inner();
     decode_projected_board_rows(response, organization_id, status_ids)
+}
+
+/// Executes one packed projected board query (response_encoding = PACKED).
+#[allow(clippy::too_many_arguments)]
+pub async fn execute_projected_board_packed(
+    channel: &Channel,
+    bearer_token: &str,
+    organization_id: UuidBytes,
+    project_id: UuidBytes,
+    status: TicketStatus,
+    limit: u32,
+    status_ids: TicketStatusEnumIds,
+    freshness: app_v1::FreshnessPolicyProto,
+) -> Result<Vec<TicketRow>, RiffDbError> {
+    execute_projected_board_with_encoding(
+        channel,
+        bearer_token,
+        organization_id,
+        project_id,
+        status,
+        limit,
+        status_ids,
+        freshness,
+        Some(app_v1::ProjectedResponseEncoding::Packed),
+    )
+    .await
 }
 
 /// Catch-up gate: Causal to the seed head must serve Ready.
@@ -241,33 +323,162 @@ fn authenticated_request<T>(
     Ok(request)
 }
 
-/// Decodes Ready rows into [`TicketRow`] values (named wire fields).
+/// Decodes Ready or ReadyPacked rows into [`TicketRow`] values.
 pub(crate) fn decode_projected_board_rows(
     response: app_v1::ExecuteProjectedQueryResponse,
     organization_id: UuidBytes,
     status_ids: TicketStatusEnumIds,
 ) -> Result<Vec<TicketRow>, RiffDbError> {
-    let Some(app_v1::execute_projected_query_response::Outcome::Ready(ready)) = response.outcome
-    else {
-        return Err(RiffDbError::Rpc(format!(
-            "projected board expected Ready, got {:?}",
-            response.outcome
-        )));
-    };
-    // Served select must begin with the requested select (PK names may follow).
+    match response.outcome {
+        Some(app_v1::execute_projected_query_response::Outcome::Ready(ready)) => {
+            // Served select must begin with the requested select (PK names may follow).
+            for (index, name) in BOARD_SELECT.iter().enumerate() {
+                if ready.fields.get(index).map(String::as_str) != Some(*name) {
+                    return Err(RiffDbError::Rpc(format!(
+                        "projected board select drift at {index}: expected {name}, fields={:?}",
+                        ready.fields
+                    )));
+                }
+            }
+            ready
+                .rows
+                .into_iter()
+                .map(|row| decode_one_board_row(row, organization_id, status_ids))
+                .collect()
+        }
+        Some(app_v1::execute_projected_query_response::Outcome::ReadyPacked(packed)) => {
+            decode_projected_board_rows_packed(packed, organization_id, status_ids)
+        }
+        other => Err(RiffDbError::Rpc(format!(
+            "projected board expected Ready or ReadyPacked, got {other:?}"
+        ))),
+    }
+}
+
+/// Block decoder: offsets → cell byte slices → decode_canonical_value → TicketRow.
+pub(crate) fn decode_projected_board_rows_packed(
+    packed: app_v1::ProjectedReadyPacked,
+    organization_id: UuidBytes,
+    status_ids: TicketStatusEnumIds,
+) -> Result<Vec<TicketRow>, RiffDbError> {
     for (index, name) in BOARD_SELECT.iter().enumerate() {
-        if ready.fields.get(index).map(String::as_str) != Some(*name) {
+        if packed.fields.get(index).map(String::as_str) != Some(*name) {
             return Err(RiffDbError::Rpc(format!(
-                "projected board select drift at {index}: expected {name}, fields={:?}",
-                ready.fields
+                "projected packed select drift at {index}: expected {name}, fields={:?}",
+                packed.fields
             )));
         }
     }
-    ready
-        .rows
-        .into_iter()
-        .map(|row| decode_one_board_row(row, organization_id, status_ids))
-        .collect()
+    let expected_columns = packed
+        .primary_key_fields
+        .len()
+        .saturating_add(packed.fields.len());
+    if packed.columns.len() != expected_columns {
+        return Err(RiffDbError::Rpc(format!(
+            "projected packed column count {} != pk {} + select {}",
+            packed.columns.len(),
+            packed.primary_key_fields.len(),
+            packed.fields.len()
+        )));
+    }
+    let row_count = packed.row_count as usize;
+    for (col_index, column) in packed.columns.iter().enumerate() {
+        if column.offsets.len() != row_count.saturating_add(1) {
+            return Err(RiffDbError::Decode);
+        }
+        if column.offsets.first().copied() != Some(0) {
+            return Err(RiffDbError::Decode);
+        }
+        let last = *column.offsets.last().unwrap_or(&0) as usize;
+        if last != column.data.len() {
+            return Err(RiffDbError::Decode);
+        }
+        // Monotonic non-decreasing offsets (empty cells allowed).
+        for window in column.offsets.windows(2) {
+            if window[0] > window[1] || window[1] as usize > column.data.len() {
+                return Err(RiffDbError::Decode);
+            }
+        }
+        let _ = col_index;
+    }
+
+    // Column names in pack order: PK first, then select.
+    let mut column_names = Vec::with_capacity(expected_columns);
+    column_names.extend(packed.primary_key_fields.iter().cloned());
+    column_names.extend(packed.fields.iter().cloned());
+
+    let mut rows = Vec::with_capacity(row_count);
+    for row_index in 0..row_count {
+        let mut ticket_id = None;
+        let mut project_id = None;
+        let mut title = None;
+        let mut status = None;
+        let mut reporter_id = None;
+        let mut assignee_id = None;
+        for (col_index, name) in column_names.iter().enumerate() {
+            let column = &packed.columns[col_index];
+            let start = column.offsets[row_index] as usize;
+            let end = column.offsets[row_index + 1] as usize;
+            let value = decode_canonical_value(&column.data[start..end])
+                .map_err(|_| RiffDbError::Decode)?;
+            match name.as_str() {
+                "ticket_id" => ticket_id = Some(canonical_uuid(&value)?),
+                "project_id" => project_id = Some(canonical_uuid(&value)?),
+                "title" => title = Some(canonical_string(&value)?),
+                "status" => status = Some(canonical_status(&value, status_ids)?),
+                "reporter_id" => reporter_id = Some(canonical_uuid(&value)?),
+                "assignee_id" => assignee_id = Some(canonical_uuid(&value)?),
+                "organization_id" => {
+                    let _ = canonical_uuid(&value)?;
+                }
+                _ => {}
+            }
+        }
+        rows.push(TicketRow {
+            organization_id,
+            ticket_id: ticket_id.ok_or(RiffDbError::Decode)?,
+            project_id: project_id.ok_or(RiffDbError::Decode)?,
+            reporter_id: reporter_id.ok_or(RiffDbError::Decode)?,
+            assignee_id: assignee_id.ok_or(RiffDbError::Decode)?,
+            status: status.ok_or(RiffDbError::Decode)?,
+            title: title.ok_or(RiffDbError::Decode)?,
+        });
+    }
+    Ok(rows)
+}
+
+fn canonical_uuid(value: &CanonicalValue) -> Result<UuidBytes, RiffDbError> {
+    match value {
+        CanonicalValue::Uuid(bytes) => Ok(*bytes),
+        CanonicalValue::String(text) => parse_uuid_text(text.as_str()),
+        _ => Err(RiffDbError::Decode),
+    }
+}
+
+fn canonical_string(value: &CanonicalValue) -> Result<String, RiffDbError> {
+    match value {
+        CanonicalValue::String(text) => Ok(text.as_str().to_owned()),
+        _ => Err(RiffDbError::Decode),
+    }
+}
+
+fn canonical_status(
+    value: &CanonicalValue,
+    status_ids: TicketStatusEnumIds,
+) -> Result<TicketStatus, RiffDbError> {
+    match value {
+        CanonicalValue::Enum {
+            type_id,
+            variant_id,
+        } => status_ids.parse(type_id.get(), variant_id.get()),
+        CanonicalValue::String(name) => match name.as_str() {
+            "Open" => Ok(TicketStatus::Open),
+            "Closed" => Ok(TicketStatus::Closed),
+            "InProgress" => Ok(TicketStatus::InProgress),
+            _ => Err(RiffDbError::Decode),
+        },
+        _ => Err(RiffDbError::Decode),
+    }
 }
 
 fn decode_one_board_row(
@@ -344,32 +555,53 @@ pub fn assert_board_rows_equivalent(
     projected: &[TicketRow],
     limit: u32,
 ) -> Result<(), String> {
+    assert_board_rows_three_way_equivalent(compiled, projected, projected, limit)
+}
+
+/// Three-way equivalence: compiled vs projected-row vs projected-packed.
+///
+/// All three paths must produce byte-identical rows, count-anchored at exactly
+/// `limit`. Divergence aborts with digests for every path.
+pub fn assert_board_rows_three_way_equivalent(
+    compiled: &[TicketRow],
+    projected_row: &[TicketRow],
+    projected_packed: &[TicketRow],
+    limit: u32,
+) -> Result<(), String> {
     // Count anchor: empty-vs-empty must never pass. The board cell is seeded
     // dense, so the compiled side must serve exactly the requested limit even
     // when PostgreSQL's cross-check is skipped.
     if compiled.len() != limit as usize {
         return Err(format!(
-            "measurement-integrity: board_page_projected({limit}) compiled side served              {} rows, expected exactly {limit} — dataset or query drift",
+            "measurement-integrity: board_page_projected({limit}) compiled side served \
+             {} rows, expected exactly {limit} — dataset or query drift",
             compiled.len()
         ));
     }
-    if compiled.len() != projected.len() {
+    let c_digest = board_rows_digest(compiled);
+    let r_digest = board_rows_digest(projected_row);
+    let p_digest = board_rows_digest(projected_packed);
+    if compiled.len() != projected_row.len() || compiled.len() != projected_packed.len() {
         return Err(format!(
             "measurement-integrity: board_page_projected({limit}) row count \
-             compiled={} projected={} digests compiled={} projected={}",
+             compiled={} projected_row={} projected_packed={} digests \
+             compiled={c_digest} projected_row={r_digest} projected_packed={p_digest}",
             compiled.len(),
-            projected.len(),
-            board_rows_digest(compiled),
-            board_rows_digest(projected)
+            projected_row.len(),
+            projected_packed.len(),
         ));
     }
-    for (index, (left, right)) in compiled.iter().zip(projected.iter()).enumerate() {
-        if left != right {
+    for (index, ((left, row), packed)) in compiled
+        .iter()
+        .zip(projected_row.iter())
+        .zip(projected_packed.iter())
+        .enumerate()
+    {
+        if left != row || left != packed {
             return Err(format!(
                 "measurement-integrity: CROSS-PATH DIVERGENCE board_page_projected({limit}) \
-                 at index {index}: digests compiled={} projected={}",
-                board_rows_digest(compiled),
-                board_rows_digest(projected)
+                 at index {index}: digests compiled={c_digest} projected_row={r_digest} \
+                 projected_packed={p_digest}"
             ));
         }
     }
@@ -547,9 +779,12 @@ const fn status_tag(status: TicketStatus) -> u8 {
 mod tests {
     use super::request_shape::{BoardRequestShape, inspect_board_request};
     use super::{
-        TicketStatusEnumIds, assert_board_rows_equivalent, board_rows_digest, commit_token_bytes,
+        TicketStatusEnumIds, assert_board_rows_equivalent, assert_board_rows_three_way_equivalent,
+        board_rows_digest, commit_token_bytes, decode_projected_board_rows_packed,
     };
     use riffdb_app_baseline_core::{TicketRow, TicketStatus};
+    use riffdb_proto::app::v1 as app_v1;
+    use riffdb_types::{CanonicalValue, encode_canonical_value};
 
     fn status_ids() -> TicketStatusEnumIds {
         TicketStatusEnumIds {
@@ -623,5 +858,154 @@ mod tests {
         assert!(!bytes.is_empty());
         // version + incarnation + position tag + sequence
         assert!(bytes.len() >= 18);
+    }
+
+    #[test]
+    fn three_way_gate_detects_packed_divergence() {
+        let compiled = vec![sample_row(1), sample_row(2)];
+        let row = compiled.clone();
+        let mut packed = compiled.clone();
+        packed[1].title = "swapped-column-effect".to_owned();
+        let err =
+            assert_board_rows_three_way_equivalent(&compiled, &row, &packed, 2).expect_err("div");
+        assert!(err.contains("CROSS-PATH DIVERGENCE"));
+        assert!(err.contains("projected_packed"));
+        assert!(err.contains("digests"));
+    }
+
+    #[test]
+    fn three_way_gate_accepts_identical_paths() {
+        let rows = vec![sample_row(3), sample_row(4)];
+        assert_board_rows_three_way_equivalent(&rows, &rows, &rows, 2).expect("identical");
+    }
+
+    #[test]
+    fn three_way_gate_anchors_count_like_pairwise() {
+        let err = assert_board_rows_three_way_equivalent(&[], &[], &[], 50).expect_err("empty");
+        assert!(err.contains("expected exactly 50"));
+    }
+
+    /// Falsifiability (a): corrupt one column's offsets by one → packed decode fails.
+    #[test]
+    fn packed_decode_rejects_corrupt_offsets() {
+        let status_ids = status_ids();
+        let ticket = CanonicalValue::Uuid([1; 16]);
+        let title = CanonicalValue::string("t").expect("s");
+        let project = CanonicalValue::Uuid([2; 16]);
+        let status = CanonicalValue::Enum {
+            type_id: riffdb_types::EnumTypeId::new(status_ids.type_id).expect("t"),
+            variant_id: riffdb_types::EnumVariantId::new(status_ids.open).expect("v"),
+        };
+        let reporter = CanonicalValue::Uuid([3; 16]);
+        let assignee = CanonicalValue::Uuid([4; 16]);
+        let org = CanonicalValue::Uuid([5; 16]);
+
+        let pack_one = |value: &CanonicalValue| {
+            let data = encode_canonical_value(value).expect("enc");
+            let end = data.len() as u32;
+            app_v1::PackedColumn {
+                data,
+                offsets: vec![0, end],
+            }
+        };
+
+        // Column order: PK first (organization_id, ticket_id), then select.
+        let mut packed = app_v1::ProjectedReadyPacked {
+            fields: super::BOARD_SELECT
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+            primary_key_fields: vec!["organization_id".to_owned(), "ticket_id".to_owned()],
+            row_count: 1,
+            columns: vec![
+                pack_one(&org),
+                pack_one(&ticket),
+                pack_one(&project),
+                pack_one(&title),
+                pack_one(&status),
+                pack_one(&reporter),
+                pack_one(&assignee),
+            ],
+            frontier: Vec::new(),
+            head: Vec::new(),
+            commit_token: Vec::new(),
+        };
+        // Corrupt title column offsets by one.
+        packed.columns[3].offsets[1] = packed.columns[3].offsets[1].saturating_add(1);
+        let err = decode_projected_board_rows_packed(packed, [5; 16], status_ids)
+            .expect_err("corrupt offsets");
+        // Named failure: Decode or Rpc from length mismatch / bad cell.
+        let msg = err.to_string();
+        assert!(
+            msg.to_lowercase().contains("decode") || msg.contains("offset"),
+            "corrupt offsets must fail as a decode/offset error, got: {msg}"
+        );
+    }
+
+    fn valid_packed_fixture(status_ids: TicketStatusEnumIds) -> app_v1::ProjectedReadyPacked {
+        let pack_one = |value: &CanonicalValue| {
+            let data = encode_canonical_value(value).expect("enc");
+            let end = data.len() as u32;
+            app_v1::PackedColumn {
+                data,
+                offsets: vec![0, end],
+            }
+        };
+        let status = CanonicalValue::Enum {
+            type_id: riffdb_types::EnumTypeId::new(status_ids.type_id).expect("t"),
+            variant_id: riffdb_types::EnumVariantId::new(status_ids.open).expect("v"),
+        };
+        app_v1::ProjectedReadyPacked {
+            fields: super::BOARD_SELECT
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+            primary_key_fields: vec!["organization_id".to_owned(), "ticket_id".to_owned()],
+            row_count: 1,
+            columns: vec![
+                pack_one(&CanonicalValue::Uuid([5; 16])),
+                pack_one(&CanonicalValue::Uuid([1; 16])),
+                pack_one(&CanonicalValue::Uuid([2; 16])),
+                pack_one(&CanonicalValue::string("t").expect("s")),
+                pack_one(&status),
+                pack_one(&CanonicalValue::Uuid([3; 16])),
+                pack_one(&CanonicalValue::Uuid([4; 16])),
+            ],
+            frontier: Vec::new(),
+            head: Vec::new(),
+            commit_token: Vec::new(),
+        }
+    }
+
+    /// Review probes promoted to permanent coverage: every malformed packed
+    /// shape must fail closed, and the pristine fixture must decode.
+    #[test]
+    fn packed_decoder_rejects_hostile_shapes_and_accepts_the_baseline() {
+        let ids = status_ids();
+        assert!(
+            decode_projected_board_rows_packed(valid_packed_fixture(ids), [5; 16], ids).is_ok()
+        );
+
+        // Truncated data: last offset beyond the buffer.
+        let mut truncated = valid_packed_fixture(ids);
+        truncated.columns[0].data.pop();
+        assert!(decode_projected_board_rows_packed(truncated, [5; 16], ids).is_err());
+
+        // Non-monotone offsets.
+        let mut nonmono = valid_packed_fixture(ids);
+        nonmono.columns[1].offsets = vec![1, 0];
+        assert!(decode_projected_board_rows_packed(nonmono, [5; 16], ids).is_err());
+
+        // Trailing garbage inside a cell (canonical decode rejects trailing bytes).
+        let mut garbage = valid_packed_fixture(ids);
+        garbage.columns[2].data.push(0xFF);
+        let end = garbage.columns[2].data.len() as u32;
+        garbage.columns[2].offsets = vec![0, end];
+        assert!(decode_projected_board_rows_packed(garbage, [5; 16], ids).is_err());
+
+        // Row-count mismatch: offsets say one row, header says two.
+        let mut mismatch = valid_packed_fixture(ids);
+        mismatch.row_count = 2;
+        assert!(decode_projected_board_rows_packed(mismatch, [5; 16], ids).is_err());
     }
 }

@@ -31,6 +31,12 @@ pub enum ScenarioId {
     BoardPageProjected200,
     /// Projected columnar board page (RiffDB only): 450 open tickets.
     BoardPageProjected450,
+    /// Packed projected board page (RiffDB only): 50 open tickets.
+    BoardPagePacked50,
+    /// Packed projected board page (RiffDB only): 200 open tickets.
+    BoardPagePacked200,
+    /// Packed projected board page (RiffDB only): 450 open tickets.
+    BoardPagePacked450,
     /// Post-seed write: create comment.
     CreateComment,
     /// Atomic multi-entity write: close ticket + comment.
@@ -59,6 +65,9 @@ impl ScenarioId {
             Self::BoardPageProjected50 => "board_page_projected_50",
             Self::BoardPageProjected200 => "board_page_projected_200",
             Self::BoardPageProjected450 => "board_page_projected_450",
+            Self::BoardPagePacked50 => "board_page_packed_50",
+            Self::BoardPagePacked200 => "board_page_packed_200",
+            Self::BoardPagePacked450 => "board_page_packed_450",
             Self::CreateComment => "create_comment",
             Self::CloseTicketWithComment => "close_ticket_with_comment",
             Self::SwapMemberRoles => "swap_member_roles",
@@ -70,9 +79,13 @@ impl ScenarioId {
     #[must_use]
     pub const fn board_page_limit(self) -> Option<u32> {
         match self {
-            Self::BoardPage50 | Self::BoardPageProjected50 => Some(50),
-            Self::BoardPage200 | Self::BoardPageProjected200 => Some(200),
-            Self::BoardPage450 | Self::BoardPageProjected450 => Some(450),
+            Self::BoardPage50 | Self::BoardPageProjected50 | Self::BoardPagePacked50 => Some(50),
+            Self::BoardPage200 | Self::BoardPageProjected200 | Self::BoardPagePacked200 => {
+                Some(200)
+            }
+            Self::BoardPage450 | Self::BoardPageProjected450 | Self::BoardPagePacked450 => {
+                Some(450)
+            }
             _ => None,
         }
     }
@@ -83,6 +96,15 @@ impl ScenarioId {
         matches!(
             self,
             Self::BoardPageProjected50 | Self::BoardPageProjected200 | Self::BoardPageProjected450
+        )
+    }
+
+    /// Whether this scenario is the packed projected board path (RiffDB only).
+    #[must_use]
+    pub const fn is_packed_board(self) -> bool {
+        matches!(
+            self,
+            Self::BoardPagePacked50 | Self::BoardPagePacked200 | Self::BoardPagePacked450
         )
     }
 
@@ -97,7 +119,7 @@ impl ScenarioId {
 
     /// All scenarios in report order (including board; may be filtered by scale).
     #[must_use]
-    pub const fn all() -> [Self; 17] {
+    pub const fn all() -> [Self; 20] {
         [
             Self::PointGetTicket,
             Self::PointGetUser,
@@ -112,6 +134,9 @@ impl ScenarioId {
             Self::BoardPageProjected50,
             Self::BoardPageProjected200,
             Self::BoardPageProjected450,
+            Self::BoardPagePacked50,
+            Self::BoardPagePacked200,
+            Self::BoardPagePacked450,
             Self::CreateComment,
             Self::CloseTicketWithComment,
             Self::SwapMemberRoles,
@@ -142,7 +167,9 @@ impl ScenarioId {
         Self::all()
             .into_iter()
             .filter(|scenario| {
-                if scenario.is_projected_board() && !include_projected {
+                if (scenario.is_projected_board() || scenario.is_packed_board())
+                    && !include_projected
+                {
                     return false;
                 }
                 match scenario.board_page_limit() {
@@ -200,6 +227,21 @@ pub fn board_projected_marginal_from_results(results: &[ScenarioResult]) -> Opti
     board_marginal_ns_per_row(
         p50(ScenarioId::BoardPageProjected50)?,
         p50(ScenarioId::BoardPageProjected450)?,
+    )
+}
+
+/// Extracts packed projected board p50s and computes marginal cost (same formula).
+#[must_use]
+pub fn board_packed_marginal_from_results(results: &[ScenarioResult]) -> Option<u64> {
+    let p50 = |id: ScenarioId| -> Option<u64> {
+        results
+            .iter()
+            .find(|row| row.scenario == id)
+            .map(|row| row.samples.summary().p50_ns)
+    };
+    board_marginal_ns_per_row(
+        p50(ScenarioId::BoardPagePacked50)?,
+        p50(ScenarioId::BoardPagePacked450)?,
     )
 }
 
@@ -338,6 +380,23 @@ pub fn run_scenarios_with_options<B: AppBackend>(
                     });
                     value.map(|rows| (rows.len(), elapsed))
                 }
+                ScenarioId::BoardPagePacked50
+                | ScenarioId::BoardPagePacked200
+                | ScenarioId::BoardPagePacked450 => {
+                    let limit = result
+                        .scenario
+                        .board_page_limit()
+                        .expect("packed board scenario has limit");
+                    let (value, elapsed) = time_call(|| {
+                        backend.board_page_packed(
+                            probes.board_organization_id,
+                            probes.board_project_id,
+                            probes.open_status,
+                            limit,
+                        )
+                    });
+                    value.map(|rows| (rows.len(), elapsed))
+                }
                 ScenarioId::CreateComment => {
                     // Each sample inserts a distinct comment (new idempotency
                     // key + comment id) so RiffDB never takes the replay path
@@ -434,6 +493,17 @@ fn run_once<B: AppBackend>(
             | ScenarioId::BoardPageProjected450 => {
                 let limit = scenario.board_page_limit().expect("projected board limit");
                 let _ = backend.board_page_projected(
+                    probes.board_organization_id,
+                    probes.board_project_id,
+                    probes.open_status,
+                    limit,
+                )?;
+            }
+            ScenarioId::BoardPagePacked50
+            | ScenarioId::BoardPagePacked200
+            | ScenarioId::BoardPagePacked450 => {
+                let limit = scenario.board_page_limit().expect("packed board limit");
+                let _ = backend.board_page_packed(
                     probes.board_organization_id,
                     probes.board_project_id,
                     probes.open_status,
@@ -684,12 +754,16 @@ mod tests {
         assert!(ids.contains(&ScenarioId::BoardPage200));
         assert!(ids.contains(&ScenarioId::BoardPage450));
         assert!(!ids.iter().any(|id| id.is_projected_board()));
+        assert!(!ids.iter().any(|id| id.is_packed_board()));
         assert_eq!(ids.len(), 14);
         let with_projected = ScenarioId::for_dataset_with_projected(&dataset);
         assert!(with_projected.contains(&ScenarioId::BoardPageProjected50));
         assert!(with_projected.contains(&ScenarioId::BoardPageProjected200));
         assert!(with_projected.contains(&ScenarioId::BoardPageProjected450));
-        assert_eq!(with_projected.len(), 17);
+        assert!(with_projected.contains(&ScenarioId::BoardPagePacked50));
+        assert!(with_projected.contains(&ScenarioId::BoardPagePacked200));
+        assert!(with_projected.contains(&ScenarioId::BoardPagePacked450));
+        assert_eq!(with_projected.len(), 20);
     }
 
     #[test]

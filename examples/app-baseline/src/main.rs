@@ -349,6 +349,7 @@ fn run() -> Result<(), String> {
                 "Reads via named RiffQL queries (one public RPC per page)".to_owned(),
                 "ticket_detail_page is one TicketPage query with dependent key batches".to_owned(),
                 "board_page_projected_* via ExecuteProjectedQuery (generated tonic client) after Causal catch-up".to_owned(),
+                "board_page_packed_* via ExecuteProjectedQuery response_encoding=PACKED (column-major canonical cells)".to_owned(),
                 "Synchronous durable command commits".to_owned(),
             ],
             seed_ns,
