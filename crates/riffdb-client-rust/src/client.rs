@@ -326,6 +326,12 @@ impl RiffDbClient {
         app_v1::GetQueryModuleRequest,
         app_v1::GetQueryModuleResponse
     );
+    unary_application!(
+        execute_projected_query_raw,
+        execute_projected_query,
+        app_v1::ExecuteProjectedQueryRequest,
+        app_v1::ExecuteProjectedQueryResponse
+    );
 
     unary_exchange!(
         validate_contract,

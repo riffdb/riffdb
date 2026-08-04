@@ -10,13 +10,15 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use clap::Parser;
 use riffdb_client_rust::{
-    ApplicationError, ApplicationErrorContext, ApplicationOperation, ApplyContractMigration,
-    AttemptBudget, BackupNameV1, BootstrapCapabilityCreateTemplate, CallMetadata,
-    CheckContractMigration, ClientError, ContractMigrationOperationId, CreateOfflineBackup,
+    ApplicationContract, ApplicationError, ApplicationErrorContext, ApplicationOperation,
+    ApplicationUuid, ApplicationValue, ApplyContractMigration, AttemptBudget, BackupNameV1,
+    BootstrapCapabilityCreateTemplate, CallMetadata, CheckContractMigration, ClientError,
+    CommitToken, ContractMigrationOperationId, CreateOfflineBackup, FreshnessPolicy,
     IdempotentCommand, MigrationBundleHash, NormalCapabilityCreateTemplate,
-    OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, RestoreOfflineBackup,
-    RiffDbClient, app_v1, generate_capability_id, generate_offline_maintenance_operation_id,
-    generate_request_id, v1,
+    OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, ProjectedOrder,
+    ProjectedPredicate, ProjectedQuery, ProjectedQueryOutcome, ProjectedResponseEncoding,
+    ProjectedSortDirection, RestoreOfflineBackup, RiffDbClient, app_v1, generate_capability_id,
+    generate_offline_maintenance_operation_id, generate_request_id, v1,
 };
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_diagnostics::{AuthoringDiagnostics, AuthoringSourcePath};
@@ -26,9 +28,11 @@ use riffdb_query_module::{
     compile_application_role,
 };
 use riffdb_types::{
-    CapabilityGrantV1, CapabilityPermissionV1, PartitionScopeV1, TenantId, TenantScope,
+    CanonicalValue, CapabilityGrantV1, CapabilityPermissionV1, PartitionScopeV1, TenantId,
+    TenantScope,
 };
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 use crate::batch::{
     BatchError, BatchOptions, BatchReport, MAX_BATCH_CONCURRENCY, MAX_BATCH_SOURCE_BYTES,
@@ -59,6 +63,10 @@ use crate::output::{
 };
 use crate::runner::{RunnerError, RunnerStream, run_budget};
 use crate::value::format_uuid;
+
+/// Bound on decoded bytes accepted for an opaque commit token supplied as hex.
+/// A v1 commit token is 18 bytes; the headroom absorbs encoding revisions.
+const MAX_OPAQUE_TOKEN_BYTES: usize = 128;
 
 const APPLICATION_DEPLOYMENT_STATE_SCHEMA: &str = "riffdb.application-deployment-state/v1";
 const APPLICATION_DEPLOYMENT_TEST_INTERRUPT_AFTER: &str = "RIFFDB_APPLICATION_TEST_INTERRUPT_AFTER";
@@ -2121,6 +2129,7 @@ async fn query_command(
         QueryCommand::Explain { .. } => CommandIdentity::QueryExplain,
         QueryCommand::Run { .. } => CommandIdentity::QueryRun,
         QueryCommand::RunNamed { .. } => CommandIdentity::QueryRunNamed,
+        QueryCommand::Projected { .. } => CommandIdentity::QueryProjected,
         QueryCommand::Watch { .. } => CommandIdentity::QueryWatch,
         QueryCommand::Deploy { .. } => CommandIdentity::QueryDeploy,
         QueryCommand::Module { .. } => CommandIdentity::QueryModule,
@@ -2429,6 +2438,44 @@ async fn query_command(
                 Err(error) => client_error(identity, &error),
             }
         }
+        QueryCommand::Projected {
+            projection_name,
+            org_scope,
+            select,
+            eq,
+            range,
+            order,
+            limit,
+            freshness,
+            token_hex,
+            token_file,
+            token_stdin,
+            max_wait_nanos,
+            packed,
+            contract,
+        } => {
+            return execute_projected_query_cli(
+                identity,
+                &mut client,
+                &metadata,
+                stdin,
+                projection_name,
+                org_scope,
+                select,
+                eq,
+                range,
+                order,
+                limit,
+                freshness,
+                token_hex,
+                token_file,
+                token_stdin,
+                max_wait_nanos,
+                packed,
+                contract,
+            )
+            .await;
+        }
         QueryCommand::Repl { contract } => {
             let mut source = String::new();
             if stdin.read_to_string(&mut source).is_err() || source.len() > MAX_INPUT_BYTES {
@@ -2482,6 +2529,490 @@ async fn query_command(
                 &serde_json::json!({"results": results}),
             )
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_projected_query_cli(
+    identity: CommandIdentity,
+    client: &mut RiffDbClient,
+    metadata: &CallMetadata,
+    stdin: &mut dyn Read,
+    projection_name: String,
+    org_scope: String,
+    select: Vec<String>,
+    eq: Vec<String>,
+    range: Vec<String>,
+    order: Vec<String>,
+    limit: Option<String>,
+    freshness: String,
+    token_hex: Option<String>,
+    token_file: Option<OsString>,
+    token_stdin: bool,
+    max_wait_nanos: Option<String>,
+    packed: bool,
+    contract: ContractSelectionArgs,
+) -> Terminal {
+    let contract = match application_contract_from_selection(contract) {
+        Ok(contract) => contract,
+        Err(()) => return invalid_input(identity),
+    };
+    let org_scope = match parse_application_value_json(&org_scope) {
+        Ok(value) => value,
+        Err(()) => return invalid_input(identity),
+    };
+    let mut predicates = Vec::new();
+    for item in eq {
+        match parse_eq_predicate(&item) {
+            Ok(predicate) => predicates.push(predicate),
+            Err(()) => return invalid_input(identity),
+        }
+    }
+    for item in range {
+        match parse_range_predicate(&item) {
+            Ok(predicate) => predicates.push(predicate),
+            Err(()) => return invalid_input(identity),
+        }
+    }
+    let order = match order
+        .into_iter()
+        .map(|item| parse_order_spec(&item))
+        .collect::<Result<Vec<_>, ()>>()
+    {
+        Ok(order) => order,
+        Err(()) => return invalid_input(identity),
+    };
+    let limit = match limit.as_deref().map(parse_u32).transpose() {
+        Ok(limit) => limit,
+        Err(()) => return invalid_input(identity),
+    };
+    let freshness = match parse_freshness_policy(
+        &freshness,
+        token_hex,
+        token_file,
+        token_stdin,
+        max_wait_nanos,
+        stdin,
+    ) {
+        Ok(policy) => policy,
+        Err(()) => return invalid_input(identity),
+    };
+    let query = match ProjectedQuery::new(contract, projection_name, org_scope) {
+        Ok(query) => query
+            .select(select)
+            .predicates(predicates)
+            .order(order)
+            .limit(limit)
+            .freshness(freshness)
+            .encoding(projected_response_encoding(packed)),
+        Err(_) => return invalid_input(identity),
+    };
+    match client.execute_projected_query(query, metadata).await {
+        Ok(outcome) => render_projected_outcome(identity, &outcome),
+        Err(error) => application_client_error(identity, error),
+    }
+}
+
+/// Maps `--packed` onto the SDK response encoding.
+const fn projected_response_encoding(packed: bool) -> ProjectedResponseEncoding {
+    if packed {
+        ProjectedResponseEncoding::Packed
+    } else {
+        ProjectedResponseEncoding::Row
+    }
+}
+
+fn application_client_error(
+    identity: CommandIdentity,
+    error: riffdb_client_rust::ApplicationClientError,
+) -> Terminal {
+    use riffdb_client_rust::ApplicationClientError;
+    match error {
+        ApplicationClientError::Client(error) => client_error(identity, &error),
+        ApplicationClientError::InvalidInput => invalid_input(identity),
+        ApplicationClientError::InvalidResponse => local_error(
+            identity,
+            "invalid_response",
+            "application response is invalid",
+        ),
+        ApplicationClientError::IdentifierUnavailable => local_error(
+            identity,
+            "identifier_generation_failed",
+            "request identifier generation failed",
+        ),
+    }
+}
+
+fn application_contract_from_selection(
+    args: ContractSelectionArgs,
+) -> Result<ApplicationContract, ()> {
+    match symbolic_contract_selection(args)? {
+        None => Ok(ApplicationContract::Active),
+        Some(selector) => {
+            let bundle_hash = if selector.bundle_hash.is_empty() {
+                None
+            } else {
+                Some(selector.bundle_hash.try_into().map_err(|_| ())?)
+            };
+            Ok(ApplicationContract::Exact {
+                lineage: selector.lineage,
+                version: selector.version,
+                bundle_hash,
+            })
+        }
+    }
+}
+
+fn parse_application_value_json(raw: &str) -> Result<ApplicationValue, ()> {
+    let input: InputValue = serde_json::from_str(raw).map_err(|_| ())?;
+    application_value_from_input(input)
+}
+
+fn application_value_from_input(input: InputValue) -> Result<ApplicationValue, ()> {
+    let proto = input.into_proto().map_err(|_| ())?;
+    wire_value_to_application(proto)
+}
+
+fn wire_value_to_application(value: v1::Value) -> Result<ApplicationValue, ()> {
+    use v1::value::Kind;
+    match value.kind.ok_or(())? {
+        Kind::NullValue(_) => Ok(ApplicationValue::Null),
+        Kind::BoolValue(value) => Ok(ApplicationValue::Bool(value)),
+        Kind::I64Value(value) => Ok(ApplicationValue::I64(value)),
+        Kind::U64Value(value) => Ok(ApplicationValue::U64(value)),
+        Kind::DecimalValue(value) => Ok(ApplicationValue::Decimal {
+            coefficient_twos_complement: value.coefficient_twos_complement,
+            scale: value.scale,
+            precision: value.precision,
+        }),
+        Kind::MoneyValue(value) => {
+            let amount = value.amount.ok_or(())?;
+            Ok(ApplicationValue::Money {
+                currency: value.currency,
+                amount: Box::new(ApplicationValue::Decimal {
+                    coefficient_twos_complement: amount.coefficient_twos_complement,
+                    scale: amount.scale,
+                    precision: amount.precision,
+                }),
+            })
+        }
+        Kind::StringValue(value) => Ok(ApplicationValue::String(value)),
+        Kind::BytesValue(value) => Ok(ApplicationValue::Bytes(value)),
+        Kind::UuidValue(bytes) => {
+            let bytes: [u8; 16] = bytes.try_into().map_err(|_| ())?;
+            Ok(ApplicationValue::Uuid(ApplicationUuid::from_bytes(bytes)))
+        }
+        Kind::DateValue(value) => Ok(ApplicationValue::Date(value.days_since_unix_epoch)),
+        Kind::TimestampValue(value) => Ok(ApplicationValue::Timestamp {
+            seconds: value.seconds,
+            nanos: value.nanos,
+        }),
+        Kind::EnumValue(value) => {
+            if value.type_id != 0 && value.variant_id != 0 {
+                Ok(ApplicationValue::EnumIdentity {
+                    type_id: value.type_id,
+                    variant_id: value.variant_id,
+                    name: value.name,
+                })
+            } else if !value.name.is_empty() {
+                Ok(ApplicationValue::Enum(value.name))
+            } else {
+                Err(())
+            }
+        }
+        Kind::ListValue(list) => Ok(ApplicationValue::List(
+            list.values
+                .into_iter()
+                .map(wire_value_to_application)
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        Kind::RecordValue(record) => {
+            let mut fields = std::collections::BTreeMap::new();
+            for field in record.fields {
+                if field.name.is_empty() {
+                    return Err(());
+                }
+                let value = field.value.ok_or(())?;
+                fields.insert(field.name, wire_value_to_application(value)?);
+            }
+            Ok(ApplicationValue::Record(fields))
+        }
+    }
+}
+
+fn parse_eq_predicate(raw: &str) -> Result<ProjectedPredicate, ()> {
+    let (field, value) = raw.split_once('=').ok_or(())?;
+    if field.is_empty() {
+        return Err(());
+    }
+    Ok(ProjectedPredicate::Eq {
+        field: field.to_owned(),
+        value: parse_application_value_json(value)?,
+    })
+}
+
+/// Parses `FIELD=[LOW,HIGH]` where each bound is a typed InputValue JSON object
+/// or JSON `null` for unbounded.
+///
+/// The bounds are one JSON array rather than a delimited pair because every
+/// non-null InputValue literal itself contains commas.
+fn parse_range_predicate(raw: &str) -> Result<ProjectedPredicate, ()> {
+    let (field, bounds) = raw.split_once('=').ok_or(())?;
+    if field.is_empty() {
+        return Err(());
+    }
+    let [low, high]: [Option<InputValue>; 2] = serde_json::from_str(bounds).map_err(|_| ())?;
+    let low = low.map(application_value_from_input).transpose()?;
+    let high = high.map(application_value_from_input).transpose()?;
+    if low.is_none() && high.is_none() {
+        // Two unbounded bounds select every row; require a real bound.
+        return Err(());
+    }
+    Ok(ProjectedPredicate::Range {
+        field: field.to_owned(),
+        low,
+        high,
+    })
+}
+
+fn parse_order_spec(raw: &str) -> Result<ProjectedOrder, ()> {
+    let (field, direction) = match raw.rsplit_once(':') {
+        Some((field, "desc")) => (field, ProjectedSortDirection::Desc),
+        Some((field, "asc")) => (field, ProjectedSortDirection::Asc),
+        Some((_, _)) => return Err(()),
+        None => (raw, ProjectedSortDirection::Asc),
+    };
+    if field.is_empty() {
+        return Err(());
+    }
+    Ok(ProjectedOrder {
+        field: field.to_owned(),
+        direction,
+    })
+}
+
+fn parse_u32(value: &str) -> Result<u32, ()> {
+    value.parse().map_err(|_| ())
+}
+
+fn parse_freshness_policy(
+    raw: &str,
+    token_hex: Option<String>,
+    token_file: Option<OsString>,
+    token_stdin: bool,
+    max_wait_nanos: Option<String>,
+    stdin: &mut dyn Read,
+) -> Result<FreshnessPolicy, ()> {
+    if raw == "available" {
+        if token_hex.is_some() || token_file.is_some() || token_stdin || max_wait_nanos.is_some() {
+            return Err(());
+        }
+        return Ok(FreshnessPolicy::Available);
+    }
+    if let Some(lag) = raw.strip_prefix("bounded:") {
+        if token_hex.is_some() || token_file.is_some() || token_stdin || max_wait_nanos.is_some() {
+            return Err(());
+        }
+        let max_lag_sequences = lag.parse().map_err(|_| ())?;
+        return Ok(FreshnessPolicy::Bounded { max_lag_sequences });
+    }
+    if raw == "causal" {
+        let token_bytes = read_causal_token(token_hex, token_file, token_stdin, stdin)?;
+        let token = CommitToken::from_bytes(token_bytes).map_err(|_| ())?;
+        let max_wait = match max_wait_nanos {
+            Some(value) => Duration::from_nanos(value.parse().map_err(|_| ())?),
+            None => Duration::from_secs(30),
+        };
+        return Ok(FreshnessPolicy::Causal { token, max_wait });
+    }
+    Err(())
+}
+
+fn read_causal_token(
+    token_hex: Option<String>,
+    token_file: Option<OsString>,
+    token_stdin: bool,
+    stdin: &mut dyn Read,
+) -> Result<Vec<u8>, ()> {
+    if let Some(hex) = token_hex {
+        // Opaque token bytes are not a fixed-width hash: a commit token is
+        // 18 bytes today and its encoding is versioned.
+        return parse_opaque_hex(&hex, MAX_OPAQUE_TOKEN_BYTES);
+    }
+    if let Some(path) = token_file {
+        let bytes = read_file(Path::new(&path), MAX_INPUT_BYTES).map_err(|_| ())?;
+        return Ok(bytes);
+    }
+    if token_stdin {
+        let mut bytes = Vec::new();
+        stdin.read_to_end(&mut bytes).map_err(|_| ())?;
+        if bytes.is_empty() || bytes.len() > MAX_INPUT_BYTES {
+            return Err(());
+        }
+        return Ok(bytes);
+    }
+    Err(())
+}
+
+fn render_projected_outcome(
+    identity: CommandIdentity,
+    outcome: &ProjectedQueryOutcome,
+) -> Terminal {
+    match outcome {
+        ProjectedQueryOutcome::Ready {
+            fields,
+            primary_key_fields,
+            rows,
+            frontier,
+            head,
+            commit_token,
+        } => success(
+            identity,
+            "ready",
+            &serde_json::json!({
+                "status": "ready",
+                "fields": fields,
+                "primary_key_fields": primary_key_fields,
+                "rows": rows.iter().map(|row| serde_json::json!({
+                    "cells": row.cells.iter().map(canonical_value_json).collect::<Vec<_>>(),
+                    "primary_key": row.primary_key.iter().map(canonical_value_json).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+                "frontier": hex(frontier.as_bytes()),
+                "head": hex(head.as_bytes()),
+                "commit_token": commit_token.as_ref().map(|token| hex(token.as_bytes())),
+            }),
+        ),
+        ProjectedQueryOutcome::Lagging {
+            required,
+            current,
+            head,
+            lag_sequences,
+            retry_after,
+        } => success(
+            identity,
+            "lagging",
+            &serde_json::json!({
+                "status": "lagging",
+                "required": hex(required.as_bytes()),
+                "current": hex(current.as_bytes()),
+                "head": hex(head.as_bytes()),
+                "lag_sequences": lag_sequences,
+                "retry_after_nanos": retry_after.map(|duration| u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)),
+            }),
+        ),
+        ProjectedQueryOutcome::Building {
+            applied_through,
+            head,
+        } => success(
+            identity,
+            "building",
+            &serde_json::json!({
+                "status": "building",
+                "applied_through": hex(applied_through.as_bytes()),
+                "head": hex(head.as_bytes()),
+            }),
+        ),
+        ProjectedQueryOutcome::Rebuilding {
+            reason,
+            progress_applied,
+            progress_total,
+        } => success(
+            identity,
+            "rebuilding",
+            &serde_json::json!({
+                "status": "rebuilding",
+                "reason": format!("{reason:?}"),
+                "progress_applied": progress_applied,
+                "progress_total": progress_total,
+            }),
+        ),
+        ProjectedQueryOutcome::Degraded { reason, current } => success(
+            identity,
+            "degraded",
+            &serde_json::json!({
+                "status": "degraded",
+                "reason": format!("{reason:?}"),
+                "current": hex(current.as_bytes()),
+            }),
+        ),
+        ProjectedQueryOutcome::Invalid {
+            expected_fingerprint,
+            found_fingerprint,
+        } => success(
+            identity,
+            "invalid",
+            &serde_json::json!({
+                "status": "invalid",
+                "expected_fingerprint": hex(expected_fingerprint),
+                "found_fingerprint": hex(found_fingerprint),
+            }),
+        ),
+    }
+}
+
+fn canonical_value_json(value: &CanonicalValue) -> serde_json::Value {
+    match value {
+        CanonicalValue::Null => serde_json::json!({"type": "null"}),
+        CanonicalValue::Bool(value) => serde_json::json!({"type": "bool", "value": value}),
+        CanonicalValue::I64(value) => {
+            serde_json::json!({"type": "i64", "value": value.to_string()})
+        }
+        CanonicalValue::U64(value) => {
+            serde_json::json!({"type": "u64", "value": value.to_string()})
+        }
+        CanonicalValue::Decimal(value) => serde_json::json!({
+            "type": "decimal",
+            "coefficient_twos_complement": STANDARD.encode(value.coefficient().to_be_bytes()),
+            "scale": value.spec().scale(),
+            "precision": value.spec().precision(),
+        }),
+        CanonicalValue::Money(value) => serde_json::json!({
+            "type": "money",
+            "currency": value.currency().to_string(),
+            "amount": {
+                "coefficient_twos_complement": STANDARD.encode(value.amount().coefficient().to_be_bytes()),
+                "scale": value.amount().spec().scale(),
+                "precision": value.amount().spec().precision(),
+            }
+        }),
+        CanonicalValue::String(value) => {
+            serde_json::json!({"type": "string", "value": value.as_str()})
+        }
+        CanonicalValue::Bytes(value) => {
+            serde_json::json!({"type": "bytes", "value": STANDARD.encode(value.as_bytes())})
+        }
+        CanonicalValue::Timestamp(value) => serde_json::json!({
+            "type": "timestamp",
+            "seconds": value.seconds().to_string(),
+            "nanos": value.nanos(),
+        }),
+        CanonicalValue::Date(value) => serde_json::json!({
+            "type": "date",
+            "days_since_unix_epoch": value.days_since_unix_epoch(),
+        }),
+        CanonicalValue::Uuid(value) => serde_json::json!({
+            "type": "uuid",
+            "value": format_uuid(value.as_slice()).unwrap_or_else(|| hex(value)),
+        }),
+        CanonicalValue::Enum {
+            type_id,
+            variant_id,
+        } => serde_json::json!({
+            "type": "enum",
+            "type_id": type_id.get(),
+            "variant_id": variant_id.get(),
+        }),
+        CanonicalValue::List(values) => serde_json::json!({
+            "type": "list",
+            "values": values.values().iter().map(canonical_value_json).collect::<Vec<_>>(),
+        }),
+        CanonicalValue::Record(record) => serde_json::json!({
+            "type": "record",
+            "fields": record.fields().iter().map(|(field_id, value)| serde_json::json!({
+                "field_id": field_id.get(),
+                "value": canonical_value_json(value),
+            })).collect::<Vec<_>>(),
+        }),
     }
 }
 
@@ -2686,6 +3217,22 @@ fn parse_hash(value: &str) -> Result<Vec<u8>, ()> {
     if value.len() != 64 {
         return Err(());
     }
+    decode_hex_digits(value)
+}
+
+/// Parses bounded even-length hex for an opaque variable-width identity.
+///
+/// Unlike [`parse_hash`] this accepts any nonempty even length up to
+/// `max_bytes` decoded, because opaque tokens and frontiers are versioned
+/// encodings whose width is not part of the CLI contract.
+fn parse_opaque_hex(value: &str, max_bytes: usize) -> Result<Vec<u8>, ()> {
+    if value.is_empty() || !value.len().is_multiple_of(2) || value.len() > max_bytes * 2 {
+        return Err(());
+    }
+    decode_hex_digits(value)
+}
+
+fn decode_hex_digits(value: &str) -> Result<Vec<u8>, ()> {
     value
         .as_bytes()
         .chunks_exact(2)
@@ -6310,6 +6857,9 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
             command: QueryCommand::RunNamed { .. },
         } => CommandIdentity::QueryRunNamed,
         TopLevel::Query {
+            command: QueryCommand::Projected { .. },
+        } => CommandIdentity::QueryProjected,
+        TopLevel::Query {
             command: QueryCommand::Watch { .. },
         } => CommandIdentity::QueryWatch,
         TopLevel::Query {
@@ -7702,6 +8252,183 @@ mod tests {
             )
             .expect("profile request");
             NormalCapabilityCreateTemplate::new(request).expect("canonical profile");
+        }
+    }
+
+    fn i64_bound(value: i64) -> String {
+        format!(r#"{{"type":"i64","value":"{value}"}}"#)
+    }
+
+    #[test]
+    fn range_predicate_accepts_json_array_bounds_in_every_bounded_shape() {
+        let low = i64_bound(1);
+        let high = i64_bound(9);
+
+        let both = parse_range_predicate(&format!("created_at=[{low},{high}]"))
+            .expect("low and high bounds");
+        assert_eq!(
+            both,
+            ProjectedPredicate::Range {
+                field: "created_at".to_owned(),
+                low: Some(ApplicationValue::I64(1)),
+                high: Some(ApplicationValue::I64(9)),
+            }
+        );
+
+        let low_only =
+            parse_range_predicate(&format!("created_at=[{low},null]")).expect("low bound only");
+        assert_eq!(
+            low_only,
+            ProjectedPredicate::Range {
+                field: "created_at".to_owned(),
+                low: Some(ApplicationValue::I64(1)),
+                high: None,
+            }
+        );
+
+        let high_only =
+            parse_range_predicate(&format!("created_at=[null,{high}]")).expect("high bound only");
+        assert_eq!(
+            high_only,
+            ProjectedPredicate::Range {
+                field: "created_at".to_owned(),
+                low: None,
+                high: Some(ApplicationValue::I64(9)),
+            }
+        );
+    }
+
+    #[test]
+    fn range_predicate_rejects_malformed_bounds() {
+        let low = i64_bound(1);
+        let high = i64_bound(9);
+        for raw in [
+            // Both bounds unbounded selects everything: meaningless as a range.
+            "created_at=[null,null]".to_owned(),
+            // Not a JSON array.
+            format!("created_at={low}"),
+            // Wrong arity.
+            format!("created_at=[{low}]"),
+            format!("created_at=[{low},{high},{high}]"),
+            "created_at=[]".to_owned(),
+            // Bare literals are not typed InputValue objects.
+            "created_at=[1,9]".to_owned(),
+            // Unknown value type.
+            r#"created_at=[{"type":"nope","value":"1"},null]"#.to_owned(),
+            // Missing field name, and no bounds at all.
+            format!("=[{low},{high}]"),
+            "created_at".to_owned(),
+        ] {
+            assert!(
+                parse_range_predicate(&raw).is_err(),
+                "accepted malformed range {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn causal_token_hex_round_trips_the_commit_token_the_cli_reports() {
+        let token = CommitToken::new(
+            4,
+            riffdb_types::CommitSequence::new(7).expect("commit sequence"),
+        );
+        let outcome = ProjectedQueryOutcome::Ready {
+            fields: Vec::new(),
+            primary_key_fields: Vec::new(),
+            rows: Vec::new(),
+            frontier: riffdb_types::ProjectionFrontier::new(
+                4,
+                riffdb_types::FrontierPosition::BeforeFirst,
+            ),
+            head: riffdb_types::ProjectionFrontier::new(
+                4,
+                riffdb_types::FrontierPosition::BeforeFirst,
+            ),
+            commit_token: Some(token.clone()),
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let _ = render_projected_outcome(CommandIdentity::QueryProjected, &outcome).emit(
+            crate::cli::OutputMode::Json,
+            &mut stdout,
+            &mut stderr,
+        );
+        assert!(stderr.is_empty());
+        let rendered: serde_json::Value = serde_json::from_slice(&stdout).expect("rendered JSON");
+        let reported = rendered
+            .pointer("/result/commit_token")
+            .and_then(serde_json::Value::as_str)
+            .expect("commit_token hex in the ready render")
+            .to_owned();
+        assert_eq!(reported.len(), 36, "a v1 commit token is 18 bytes of hex");
+
+        // The hex the CLI prints must be accepted by the flag that consumes it.
+        let policy = parse_freshness_policy(
+            "causal",
+            Some(reported),
+            None,
+            false,
+            None,
+            &mut Cursor::new(Vec::new()),
+        )
+        .expect("reported commit-token hex must parse");
+        match policy {
+            FreshnessPolicy::Causal {
+                token: parsed,
+                max_wait,
+            } => {
+                assert_eq!(parsed.as_bytes(), token.as_bytes());
+                assert_eq!(max_wait, Duration::from_secs(30));
+            }
+            other => panic!("expected causal policy, got {other:?}"),
+        }
+
+        // Non-token hex still fails closed: a 64-char hash is not a token shape,
+        // and odd or oversized hex is refused before decoding.
+        for candidate in ["a".repeat(64), "abc".to_owned(), "ab".repeat(129)] {
+            assert!(
+                parse_freshness_policy(
+                    "causal",
+                    Some(candidate.clone()),
+                    None,
+                    false,
+                    None,
+                    &mut Cursor::new(Vec::new()),
+                )
+                .is_err(),
+                "accepted non-token hex {candidate}"
+            );
+        }
+        // Fixed-width hash parsing stays exactly 64 characters.
+        assert!(parse_hash(&"ab".repeat(18)).is_err());
+        assert!(parse_hash(&"a".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn packed_flag_selects_the_packed_response_encoding() {
+        assert_eq!(
+            projected_response_encoding(true),
+            ProjectedResponseEncoding::Packed
+        );
+        assert_eq!(
+            projected_response_encoding(false),
+            ProjectedResponseEncoding::Row
+        );
+        // The mapping must survive into the wire request the SDK builds.
+        for (packed, expected) in [
+            (true, app_v1::ProjectedResponseEncoding::Packed as i32),
+            (false, app_v1::ProjectedResponseEncoding::Row as i32),
+        ] {
+            let wire = ProjectedQuery::new(
+                ApplicationContract::Active,
+                "board",
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes([7; 16])),
+            )
+            .expect("query")
+            .encoding(projected_response_encoding(packed))
+            .into_wire_request()
+            .expect("wire request");
+            assert_eq!(wire.response_encoding, Some(expected));
         }
     }
 }

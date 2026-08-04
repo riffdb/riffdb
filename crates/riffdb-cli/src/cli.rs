@@ -444,6 +444,53 @@ pub(crate) enum QueryCommand {
         #[command(flatten)]
         contract: ContractSelectionArgs,
     },
+    /// Executes one org-scoped projected columnar query under a freshness policy.
+    Projected {
+        /// Registered projection name.
+        #[arg(value_name = "PROJECTION_NAME")]
+        projection_name: String,
+        /// Organization scope as typed InputValue JSON (e.g. `{"type":"uuid","value":"..."}`).
+        #[arg(long, value_name = "JSON_VALUE")]
+        org_scope: String,
+        /// Selected field names (repeatable). Empty = all projected fields.
+        #[arg(long = "select", value_name = "FIELD")]
+        select: Vec<String>,
+        /// Equality predicate as `FIELD=JSON_VALUE` (repeatable).
+        #[arg(long = "eq", value_name = "FIELD=JSON_VALUE")]
+        eq: Vec<String>,
+        /// Range predicate as `FIELD=[LOW_JSON,HIGH_JSON]`: a JSON two-element
+        /// array whose bounds are typed JSON values or `null` for unbounded
+        /// (inclusive low, exclusive high; at least one bound; repeatable).
+        #[arg(long = "range", value_name = "FIELD=[LOW,HIGH]")]
+        range: Vec<String>,
+        /// Order key as `FIELD` or `FIELD:desc` (repeatable).
+        #[arg(long = "order", value_name = "FIELD[:desc]")]
+        order: Vec<String>,
+        /// Post-sort row limit.
+        #[arg(long, value_name = "ROWS")]
+        limit: Option<String>,
+        /// Freshness policy: `available`, `bounded:N`, or `causal` (requires token).
+        #[arg(long, value_name = "POLICY", default_value = "available")]
+        freshness: String,
+        /// Opaque commit-token bytes as hex, exactly as `commit_token` is
+        /// reported by a ready projected read (causal only).
+        #[arg(long, value_name = "HEX", group = "causal_token")]
+        token_hex: Option<String>,
+        /// Opaque commit-token raw bytes (not hex) from a file (causal only).
+        #[arg(long, value_name = "PATH", group = "causal_token")]
+        token_file: Option<OsString>,
+        /// Opaque commit-token raw bytes (not hex) from stdin (causal only).
+        #[arg(long, group = "causal_token")]
+        token_stdin: bool,
+        /// Maximum wait for causal catch-up (nanoseconds). Default 30s.
+        #[arg(long, value_name = "NANOSECONDS")]
+        max_wait_nanos: Option<String>,
+        /// Request packed column-major Ready encoding.
+        #[arg(long)]
+        packed: bool,
+        #[command(flatten)]
+        contract: ContractSelectionArgs,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -855,6 +902,78 @@ mod tests {
                 }
             }
         ));
+    }
+
+    #[test]
+    fn query_projected_parses_and_packed_flag_is_observed() {
+        let cli = Cli::try_parse_from([
+            "riffdb",
+            "query",
+            "projected",
+            "board",
+            "--org-scope",
+            r#"{"type":"uuid","value":"11111111-1111-1111-1111-111111111111"}"#,
+            "--eq",
+            r#"project_id={"type":"uuid","value":"22222222-2222-2222-2222-222222222222"}"#,
+            "--range",
+            r#"created_at=[{"type":"i64","value":"1"},null]"#,
+            "--select",
+            "title",
+            "--order",
+            "ticket_id",
+            "--limit",
+            "50",
+            "--freshness",
+            "available",
+            "--packed",
+            "--contract-lineage",
+            "TicketDesk",
+            "--contract-version",
+            "1",
+        ])
+        .expect("accepted projected query");
+        match cli.command {
+            TopLevel::Query {
+                command:
+                    QueryCommand::Projected {
+                        projection_name,
+                        packed,
+                        limit,
+                        freshness,
+                        range,
+                        ..
+                    },
+            } => {
+                assert_eq!(projection_name, "board");
+                assert!(packed, "falsifiability (c): --packed must set packed=true");
+                assert_eq!(limit.as_deref(), Some("50"));
+                assert_eq!(freshness, "available");
+                // JSON-array bounds reach the parser as one unsplit argument.
+                assert_eq!(
+                    range,
+                    vec![r#"created_at=[{"type":"i64","value":"1"},null]"#.to_owned()]
+                );
+            }
+            other => panic!("expected Query::Projected, got {other:?}"),
+        }
+
+        let row = Cli::try_parse_from([
+            "riffdb",
+            "query",
+            "projected",
+            "board",
+            "--org-scope",
+            r#"{"type":"uuid","value":"11111111-1111-1111-1111-111111111111"}"#,
+            "--freshness",
+            "available",
+        ])
+        .expect("row default");
+        match row.command {
+            TopLevel::Query {
+                command: QueryCommand::Projected { packed: false, .. },
+            } => {}
+            other => panic!("default must not be packed: {other:?}"),
+        }
     }
 
     #[test]

@@ -1218,7 +1218,9 @@ fn validate_query_response_identity(
     Ok(())
 }
 
-fn validate_contract(contract: &ApplicationContract) -> Result<(), ApplicationClientError> {
+pub(crate) fn validate_contract(
+    contract: &ApplicationContract,
+) -> Result<(), ApplicationClientError> {
     if let ApplicationContract::Exact {
         lineage, version, ..
     } = contract
