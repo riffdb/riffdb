@@ -1296,6 +1296,11 @@ fn rust_encode_application_expr(value_type: &NamedTypeSchema, access: &str) -> S
                 "ApplicationValue::Decimal {{ coefficient_twos_complement: {access}.coefficient_twos_complement, \
                  scale: {access}.scale, precision: {access}.precision }}"
             ),
+            value if value.starts_with("money<") => format!(
+                "ApplicationValue::Money {{ currency: {access}.currency, amount: Box::new(ApplicationValue::Decimal {{ \
+                 coefficient_twos_complement: {access}.amount.coefficient_twos_complement, scale: {access}.amount.scale, \
+                 precision: {access}.amount.precision }}) }}"
+            ),
             value if value.starts_with("string<") => format!("ApplicationValue::String({access})"),
             _ => format!("ApplicationValue::Enum({access})"),
         },
@@ -1368,6 +1373,10 @@ fn rust_decode_application_expr(
             "date" => format!("application_date({access})?"),
             value if value.starts_with("bytes<") => format!("application_bytes({access})?"),
             value if value.starts_with("decimal<") => format!("application_decimal({access})?"),
+            value if value.starts_with("money<") => format!(
+                "match {access} {{ ApplicationValue::Money {{ currency, amount }} => MoneyValue {{ currency, amount: application_decimal(*amount)? }}, \
+                 _ => return Err(ApplicationClientError::InvalidResponse) }}"
+            ),
             value if value.starts_with("string<") => format!("application_string({access})?"),
             _ => format!("application_enum({access})?"),
         },
@@ -1850,7 +1859,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
     emit_typescript_application_errors(&mut output);
     writeln!(
         output,
-        "export type ApplicationValueSchema =\n  | {{ readonly kind: \"bool\" | \"i64\" | \"u64\" | \"string\" | \"uuid\" | \"enum\" | \"bytes\" | \"date\" | \"timestamp\" | \"decimal\" | \"money\" | \"cursor\" | \"limit\" }}\n  | {{ readonly kind: \"optional\"; readonly value: ApplicationValueSchema }}\n  | {{ readonly kind: \"list\"; readonly value: ApplicationValueSchema; readonly maximum?: number }}\n  | {{ readonly kind: \"record\"; readonly fields: ReadonlyArray<{{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }}> }};\n\
+        "export type ApplicationValueSchema =\n  | {{ readonly kind: \"bool\" | \"i64\" | \"u64\" | \"string\" | \"uuid\" | \"enum\" | \"bytes\" | \"date\" | \"timestamp\" | \"cursor\" | \"limit\" }}\n  | {{ readonly kind: \"decimal\"; readonly precision?: number; readonly scale?: number }}\n  | {{ readonly kind: \"money\"; readonly precision?: number; readonly scale?: number; readonly currency?: string }}\n  | {{ readonly kind: \"optional\"; readonly value: ApplicationValueSchema }}\n  | {{ readonly kind: \"list\"; readonly value: ApplicationValueSchema; readonly maximum?: number }}\n  | {{ readonly kind: \"record\"; readonly fields: ReadonlyArray<{{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }}> }};\n\
          export interface NamedQueryRequest<P, R> {{ readonly contractLineage: typeof CONTRACT_LINEAGE; \
          readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; \
          readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly planHash: string; readonly parameters: P; \
@@ -2693,6 +2702,7 @@ fn rust_query_type(value_type: &NamedTypeSchema, nested_name: &str) -> String {
             "date" => "i32".to_owned(),
             value if value.starts_with("bytes<") => "Vec<u8>".to_owned(),
             value if value.starts_with("decimal<") => "DecimalValue".to_owned(),
+            value if value.starts_with("money<") => "MoneyValue".to_owned(),
             _ => "String".to_owned(),
         },
         NamedTypeSchema::Optional(inner) => {
@@ -2750,6 +2760,9 @@ fn ts_query_type(value_type: &NamedTypeSchema) -> String {
             value if value.starts_with("decimal<") => {
                 "{ readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision?: number }".to_owned()
             }
+            value if value.starts_with("money<") => {
+                "{ readonly currency: string; readonly amount: { readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision?: number } }".to_owned()
+            }
             _ => "string".to_owned(),
         },
         NamedTypeSchema::Optional(inner) => format!("{} | null", ts_query_type(inner)),
@@ -2791,6 +2804,17 @@ fn ts_named_record_schema<'a>(
 fn ts_named_value_schema(value_type: &NamedTypeSchema, contract: &ContractBundle) -> Value {
     match value_type {
         NamedTypeSchema::Scalar(name) => {
+            if let Some((precision, scale)) = decimal_type_parts(name) {
+                return json!({"kind": "decimal", "precision": precision, "scale": scale});
+            }
+            if let Some(currency) = money_type_currency(name) {
+                return json!({
+                    "kind": "money",
+                    "precision": 38,
+                    "scale": 2,
+                    "currency": currency,
+                });
+            }
             let kind = match name.as_str() {
                 "bool" => "bool",
                 "i64" => "i64",
@@ -2799,7 +2823,6 @@ fn ts_named_value_schema(value_type: &NamedTypeSchema, contract: &ContractBundle
                 "timestamp" => "timestamp",
                 "date" => "date",
                 value if value.starts_with("bytes<") => "bytes",
-                value if value.starts_with("decimal<") => "decimal",
                 value
                     if contract
                         .schema()
@@ -2869,12 +2892,28 @@ fn ts_contract_value_schema(value_type: &ValueType, contract: &ContractBundle) -
             "maximum": maximum,
         });
     }
+    if let Some(spec) = value_type.decimal_spec() {
+        return json!({
+            "kind": "decimal",
+            "precision": spec.precision(),
+            "scale": spec.scale(),
+        });
+    }
+    if let Some(currency) = value_type.currency() {
+        return json!({
+            "kind": "money",
+            "precision": 38,
+            "scale": 2,
+            "currency": currency.to_string(),
+        });
+    }
     let kind = match value_type.tag() {
         ValueTypeTag::Bool => "bool",
         ValueTypeTag::I64 => "i64",
         ValueTypeTag::U64 => "u64",
-        ValueTypeTag::Decimal => "decimal",
-        ValueTypeTag::Money => "money",
+        ValueTypeTag::Decimal | ValueTypeTag::Money => {
+            unreachable!("exact numeric schemas returned above")
+        }
         ValueTypeTag::String => "string",
         ValueTypeTag::Bytes => "bytes",
         ValueTypeTag::Timestamp => "timestamp",
@@ -3083,5 +3122,58 @@ mod tests {
         assert!(generated.contains("pub use riffdb_client_rust::QueryOptions;"));
         assert!(generated.contains("pub async fn item_page_after_commit("));
         assert!(generated.contains("QueryOptions::new().read_after_commit(commit_sequence)"));
+    }
+
+    #[test]
+    fn generated_typescript_preserves_exact_money_query_results() {
+        let contract = compile_contract_source(
+            "contract Commerce version 1 {\n\
+             entity Product { key (product_id: uuid) field price: money<USD> }\n\
+             aggregate Products { root Product partition_by product_id conflict_key (product_id) }\n\
+             }",
+        )
+        .expect("contract");
+        let query = NamedQuerySource::new(
+            "ProductPage",
+            "query ProductPage($product_id: Product.product_id) { one product from Product where product_id == $product_id else NotFound return Found { product: product { product_id price } } outcomes Found | NotFound }",
+        )
+        .expect("query source");
+        let candidate = QueryModuleCandidate::new(
+            QueryModuleName::new("CommerceQueries").expect("module name"),
+            QueryModuleVersion::new(1).expect("module version"),
+            vec![query],
+        )
+        .expect("candidate");
+        let module = QueryModule::compile(candidate, &contract).expect("module");
+
+        let generated = generate_typescript_client(&module, &contract);
+        let generated_rust = generate_rust_client(&module, &contract);
+
+        assert!(generated.contains(
+            "readonly price: { readonly currency: string; readonly amount: { readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision?: number } }"
+        ));
+        assert!(!generated.contains("readonly price: string;"));
+        assert!(
+            generated.contains(r#"{"currency":"USD","kind":"money","precision":38,"scale":2}"#)
+        );
+        assert!(generated_rust.contains("pub price: MoneyValue,"));
+
+        let price = contract
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Product")
+            .and_then(|entity| {
+                entity
+                    .record()
+                    .fields()
+                    .iter()
+                    .find(|field| field.name() == "price")
+            })
+            .expect("price field");
+        assert_eq!(
+            ts_contract_value_schema(price.value_type(), &contract),
+            json!({"kind": "money", "precision": 38, "scale": 2, "currency": "USD"})
+        );
     }
 }
