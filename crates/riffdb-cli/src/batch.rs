@@ -23,6 +23,7 @@ pub(crate) const MAX_BATCH_ITEMS: usize = 4_096;
 pub(crate) const MAX_BATCH_CONCURRENCY: usize = 32;
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 1_024;
 const MAX_ERROR_MESSAGE_BYTES: usize = 1_024;
+const MAX_REPORTED_REJECTIONS: usize = 16;
 const CHECKPOINT_SCHEMA: &str = "riffdb.command-batch-checkpoint/v1";
 
 #[derive(Debug)]
@@ -73,6 +74,17 @@ pub(crate) struct BatchReport {
     pub(crate) pending: usize,
     pub(crate) resumed: usize,
     pub(crate) checkpoint: Option<String>,
+    pub(crate) rejected_items: Vec<BatchRejectedItem>,
+    pub(crate) rejected_items_truncated: usize,
+}
+
+/// One bounded, value-free terminal rejection included in the public batch summary.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct BatchRejectedItem {
+    pub(crate) ordinal: u32,
+    pub(crate) outcome: Option<String>,
+    pub(crate) error_code: String,
+    pub(crate) error_message: String,
 }
 
 impl BatchReport {
@@ -308,6 +320,7 @@ pub(crate) async fn execute(
         .items
         .len()
         .saturating_sub(succeeded.saturating_add(rejected));
+    let (rejected_items, rejected_items_truncated) = rejection_summary(&checkpoint);
     Ok(BatchReport {
         status: if pending_count != 0 {
             "pending"
@@ -327,7 +340,36 @@ pub(crate) async fn execute(
             .checkpoint_path
             .as_deref()
             .map(|path| path.to_string_lossy().into_owned()),
+        rejected_items,
+        rejected_items_truncated,
     })
+}
+
+fn rejection_summary(checkpoint: &Checkpoint) -> (Vec<BatchRejectedItem>, usize) {
+    let mut total = 0_usize;
+    let mut items = Vec::new();
+    for (ordinal, entry) in &checkpoint.entries {
+        if entry.disposition != ReceiptDisposition::Rejected {
+            continue;
+        }
+        total = total.saturating_add(1);
+        if items.len() == MAX_REPORTED_REJECTIONS {
+            continue;
+        }
+        items.push(BatchRejectedItem {
+            ordinal: *ordinal,
+            outcome: entry.outcome.clone(),
+            error_code: entry
+                .error_code
+                .clone()
+                .unwrap_or_else(|| "batch_item_rejected".to_owned()),
+            error_message: entry
+                .error_message
+                .clone()
+                .unwrap_or_else(|| "the command reached a terminal rejected result".to_owned()),
+        });
+    }
+    (items, total.saturating_sub(MAX_REPORTED_REJECTIONS))
 }
 
 fn fill_tasks(
@@ -695,6 +737,78 @@ mod tests {
         let serialized = serde_json::to_string(&checkpoint).expect("json");
         assert!(!serialized.contains("secret-key"));
         assert!(!serialized.contains("secret-title"));
+    }
+
+    #[test]
+    fn batch_summary_names_bounded_rejected_items_without_input_values() {
+        let source = parse_source(
+            br#"{"idempotency_key":"secret-key","price":{"$decimal":"12.34"}}"#,
+            "CreateTicket",
+            Some(7),
+            "idempotency_key",
+        )
+        .expect("source");
+        let mut checkpoint = new_checkpoint(&source, &options()).expect("checkpoint");
+        checkpoint.entries.insert(
+            1,
+            ReceiptEntry {
+                item_sha256: source.items[0].digest.clone(),
+                disposition: ReceiptDisposition::Rejected,
+                outcome: Some("InvalidPrice".to_owned()),
+                commit_sequence: Some(1),
+                contract_version: Some(7),
+                plan_hash: Some("00".repeat(32)),
+                outcome_uri: None,
+                provenance_uri: None,
+                error_code: Some("declared_error_outcome".to_owned()),
+                error_message: Some("the command returned an import error".to_owned()),
+            },
+        );
+
+        let (items, truncated) = rejection_summary(&checkpoint);
+        assert_eq!(truncated, 0);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].ordinal, 1);
+        assert_eq!(items[0].outcome.as_deref(), Some("InvalidPrice"));
+        let serialized = serde_json::to_string(&items).expect("summary JSON");
+        assert!(serialized.contains("declared_error_outcome"));
+        assert!(!serialized.contains("secret-key"));
+        assert!(!serialized.contains("12.34"));
+    }
+
+    #[test]
+    fn batch_summary_truncation_is_explicit_and_deterministic() {
+        let source = parse_source(
+            br#"{"idempotency_key":"seed:1","title":"one"}"#,
+            "CreateTicket",
+            Some(7),
+            "idempotency_key",
+        )
+        .expect("source");
+        let mut checkpoint = new_checkpoint(&source, &options()).expect("checkpoint");
+        for ordinal in 1..=MAX_REPORTED_REJECTIONS as u32 + 3 {
+            checkpoint.entries.insert(
+                ordinal,
+                ReceiptEntry {
+                    item_sha256: "00".repeat(32),
+                    disposition: ReceiptDisposition::Rejected,
+                    outcome: None,
+                    commit_sequence: None,
+                    contract_version: None,
+                    plan_hash: None,
+                    outcome_uri: None,
+                    provenance_uri: None,
+                    error_code: Some("RDB-INPUT-0101".to_owned()),
+                    error_message: Some("input does not match the command schema".to_owned()),
+                },
+            );
+        }
+
+        let (items, truncated) = rejection_summary(&checkpoint);
+        assert_eq!(items.len(), MAX_REPORTED_REJECTIONS);
+        assert_eq!(items.first().map(|item| item.ordinal), Some(1));
+        assert_eq!(items.last().map(|item| item.ordinal), Some(16));
+        assert_eq!(truncated, 3);
     }
 
     #[test]

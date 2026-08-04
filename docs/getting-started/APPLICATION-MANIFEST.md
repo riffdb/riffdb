@@ -207,6 +207,13 @@ riffdb role bind riffdb.application.json \
 riffdb role revoke <capability-uuidv7> --reason replaced
 ```
 
+`tenant_scope` is exact author intent. A role declaring `"tenant"` requires
+`--tenant <tenant-id>` on check, describe, bind, development binding, and
+provisioning. A role declaring `"global"` requires that `--tenant` be omitted.
+The CLI reports `application_role_tenant_required` or
+`application_role_tenant_forbidden` with that precise recovery action before
+role compilation; it never silently widens a tenant role or invents a tenant.
+
 The compiled role has a domain-separated identity covering the manifest,
 contract, immutable query modules, environment, tenant binding, named
 operations, compiler-derived visibility, and resource ceiling. That identity

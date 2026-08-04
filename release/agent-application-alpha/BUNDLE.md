@@ -19,6 +19,10 @@ application client is patched to the bundled public SDK, and network access is
 disabled. The bundle self-test creates a fresh application and completes
 `riffdb dev --seed --acceptance` through this offline path.
 
+A freshly scaffolded Rust repository intentionally derives its local
+`Cargo.lock` from that sealed dependency set. Run `cargo generate-lockfile`
+once before the first `cargo check --locked`; both commands remain offline.
+
 For TypeScript, `riffdb new --language typescript` materializes the exact
 compiler, Node types, product runtime, lockfile, build scripts, and HTTP starter
 from `$RIFFDB_TYPESCRIPT_RUNTIME`; no registry operation is required.

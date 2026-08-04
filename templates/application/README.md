@@ -25,6 +25,26 @@ and Python runners may complete as one-shot checks; TypeScript web runners
 remain attached until you stop them. Use `riffdb dev --seed --watch` when you want contract/query
 regeneration without starting the application process.
 
+Seed JSONL uses symbolic tagged values. UUID and enum examples are
+`{"$uuid":"01900000-0000-7000-8000-000000000001"}` and
+`{"$enum":"Open"}`. Write exact decimals as strings—
+`{"$decimal":"12.34"}` or
+`{"$money":{"currency":"USD","amount":"12.34"}}`—never as JSON
+floating-point numbers. If a batch rejects an item, rerun with `--output json`;
+the bounded `rejected_items` list names its JSONL ordinal, symbolic outcome,
+public code, and corrective message without echoing the input.
+
+For a generated Rust application, create the repository-local dependency lock
+before the first locked check:
+
+```text
+cargo generate-lockfile
+cargo check --locked
+```
+
+The sealed evaluator and installed release provide the SDK and vendored
+dependencies offline; generating the lock does not fetch from the network.
+
 Handwritten code belongs in `src/`. Files below `generated/`, plus a Python
 module at the exact locked `generation.python` path, are compiler-owned.
 `riffdb.application.json` contains symbolic author intent.

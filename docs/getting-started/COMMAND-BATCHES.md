@@ -46,6 +46,20 @@ UUIDs use `{"$uuid":"canonical-uuid"}` and enum variants use
 `{"$enum":"VariantName"}`. RiffDB never guesses a type from string contents,
 and neither form contains a compiler-allocated numeric ID.
 
+Exact decimals use a string tag, never a JSON floating-point number:
+
+```json
+{"unit_price":{"$decimal":"12.34"},"total":{"$money":{"currency":"USD","amount":"12.34"}}}
+```
+
+The decimal text accepts canonical base-10 notation with an optional leading
+minus and optional fractional digits. Exponents, a leading plus, leading
+zeroes such as `01.25`, and a trailing decimal point are rejected. The
+selected command schema supplies the declared precision; the text supplies
+the exact coefficient and scale. The older explicit
+`coefficient_twos_complement`/`scale` object remains accepted for compatible
+machine-generated inputs.
+
 Successful and declared business outcomes are terminal per item. Add
 `--error-outcome OutcomeName` to classify a durable declared outcome as a
 recorded item failure for import policy purposes. Authorization, contract,
@@ -54,6 +68,14 @@ Transport uncertainty, cancellation, deadlines, and storage unavailability
 remain pending; a later invocation resubmits the identical command input and
 key through normal idempotency recovery. Response-size rejection is a terminal
 recorded item failure under the CLI path (one ordinary `Execute` per line).
+
+When any item is rejected, `--output json` includes at most 16
+`rejected_items`, each containing only its one-based `ordinal`, optional
+symbolic `outcome`, public `error_code`, and public `error_message`.
+`rejected_items_truncated` reports how many additional rejections were omitted.
+The summary never copies command input, idempotency keys, credentials, or
+business values. Use the ordinal to correct the corresponding JSONL line, then
+start a reviewed new batch or resume only items still marked pending.
 
 The checkpoint is also the stable receipt. It is replaced atomically after each
 completed item. A killed client may lose only knowledge of a completion, never
