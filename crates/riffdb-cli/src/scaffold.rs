@@ -142,7 +142,8 @@ pub(crate) fn generate_application(
         Some(
             "riffdb.application-source/v1"
             | "riffdb.application-source/v2"
-            | "riffdb.application-source/v3",
+            | "riffdb.application-source/v3"
+            | "riffdb.application-source/v4",
         ) if locked => generate_application_locked(
             manifest_path,
             lock_path.unwrap_or_else(|| Path::new(DEFAULT_LOCK_PATH)),
@@ -150,7 +151,8 @@ pub(crate) fn generate_application(
         Some(
             "riffdb.application-source/v1"
             | "riffdb.application-source/v2"
-            | "riffdb.application-source/v3",
+            | "riffdb.application-source/v3"
+            | "riffdb.application-source/v4",
         ) => Err(ScaffoldError::LockRequired),
         _ => Err(ScaffoldError::Manifest),
     }
@@ -2436,6 +2438,34 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v4_application_generation_uses_the_symbolic_lock_rules() {
+        let base = std::env::temp_dir().join(format!(
+            "riffdb-v4-generate-dispatch-test-{}",
+            std::process::id()
+        ));
+        if base.exists() {
+            fs::remove_dir_all(&base).expect("remove prior test directory");
+        }
+        fs::create_dir(&base).expect("test directory");
+        let source_path = base.join("riffdb.application.json");
+        fs::write(
+            &source_path,
+            br#"{"schema":"riffdb.application-source/v4"}"#,
+        )
+        .expect("source");
+
+        assert!(matches!(
+            generate_application(&source_path, false, None),
+            Err(ScaffoldError::LockRequired)
+        ));
+        assert!(matches!(
+            generate_application(&source_path, true, None),
+            Err(ScaffoldError::Io(error)) if error.kind() == io::ErrorKind::NotFound
+        ));
+        fs::remove_dir_all(base).expect("cleanup");
+    }
 
     #[test]
     fn rejects_unsafe_or_ambiguous_names_before_writing() {
