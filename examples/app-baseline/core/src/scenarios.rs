@@ -25,6 +25,12 @@ pub enum ScenarioId {
     BoardPage200,
     /// Board-scale wide page: 450 open tickets in the dense cell.
     BoardPage450,
+    /// Projected columnar board page (RiffDB only): 50 open tickets.
+    BoardPageProjected50,
+    /// Projected columnar board page (RiffDB only): 200 open tickets.
+    BoardPageProjected200,
+    /// Projected columnar board page (RiffDB only): 450 open tickets.
+    BoardPageProjected450,
     /// Post-seed write: create comment.
     CreateComment,
     /// Atomic multi-entity write: close ticket + comment.
@@ -50,6 +56,9 @@ impl ScenarioId {
             Self::BoardPage50 => "board_page_50",
             Self::BoardPage200 => "board_page_200",
             Self::BoardPage450 => "board_page_450",
+            Self::BoardPageProjected50 => "board_page_projected_50",
+            Self::BoardPageProjected200 => "board_page_projected_200",
+            Self::BoardPageProjected450 => "board_page_projected_450",
             Self::CreateComment => "create_comment",
             Self::CloseTicketWithComment => "close_ticket_with_comment",
             Self::SwapMemberRoles => "swap_member_roles",
@@ -61,16 +70,34 @@ impl ScenarioId {
     #[must_use]
     pub const fn board_page_limit(self) -> Option<u32> {
         match self {
-            Self::BoardPage50 => Some(50),
-            Self::BoardPage200 => Some(200),
-            Self::BoardPage450 => Some(450),
+            Self::BoardPage50 | Self::BoardPageProjected50 => Some(50),
+            Self::BoardPage200 | Self::BoardPageProjected200 => Some(200),
+            Self::BoardPage450 | Self::BoardPageProjected450 => Some(450),
             _ => None,
         }
     }
 
+    /// Whether this scenario is the projected columnar board path (RiffDB only).
+    #[must_use]
+    pub const fn is_projected_board(self) -> bool {
+        matches!(
+            self,
+            Self::BoardPageProjected50 | Self::BoardPageProjected200 | Self::BoardPageProjected450
+        )
+    }
+
+    /// Whether this scenario is the compiled named-query board path.
+    #[must_use]
+    pub const fn is_compiled_board(self) -> bool {
+        matches!(
+            self,
+            Self::BoardPage50 | Self::BoardPage200 | Self::BoardPage450
+        )
+    }
+
     /// All scenarios in report order (including board; may be filtered by scale).
     #[must_use]
-    pub const fn all() -> [Self; 14] {
+    pub const fn all() -> [Self; 17] {
         [
             Self::PointGetTicket,
             Self::PointGetUser,
@@ -82,6 +109,9 @@ impl ScenarioId {
             Self::BoardPage50,
             Self::BoardPage200,
             Self::BoardPage450,
+            Self::BoardPageProjected50,
+            Self::BoardPageProjected200,
+            Self::BoardPageProjected450,
             Self::CreateComment,
             Self::CloseTicketWithComment,
             Self::SwapMemberRoles,
@@ -89,18 +119,36 @@ impl ScenarioId {
         ]
     }
 
-    /// Scenarios measured for `dataset`.
+    /// Scenarios measured for `dataset` (compiled board only; no projected).
     ///
     /// Board scenarios require a dense open cell large enough to fill the page.
     /// Smoke (`board_dense_open == 0`) skips all board scenarios to stay fast.
+    /// Use [`Self::for_dataset_with_projected`] for the RiffDB projected path.
     #[must_use]
     pub fn for_dataset(dataset: &SeedDataset) -> Vec<Self> {
+        Self::for_dataset_filtered(dataset, false)
+    }
+
+    /// Scenarios measured for `dataset`, optionally including projected board pages.
+    ///
+    /// Projected variants are RiffDB-only (PG has no columnar path).
+    #[must_use]
+    pub fn for_dataset_with_projected(dataset: &SeedDataset) -> Vec<Self> {
+        Self::for_dataset_filtered(dataset, true)
+    }
+
+    fn for_dataset_filtered(dataset: &SeedDataset, include_projected: bool) -> Vec<Self> {
         let dense = dataset.board_dense_open_count();
         Self::all()
             .into_iter()
-            .filter(|scenario| match scenario.board_page_limit() {
-                Some(limit) => dense >= limit as usize,
-                None => true,
+            .filter(|scenario| {
+                if scenario.is_projected_board() && !include_projected {
+                    return false;
+                }
+                match scenario.board_page_limit() {
+                    Some(limit) => dense >= limit as usize,
+                    None => true,
+                }
             })
             .collect()
     }
@@ -125,7 +173,7 @@ pub fn board_marginal_ns_per_row(p50_50_ns: u64, p50_450_ns: u64) -> Option<u64>
     p50_450_ns.checked_sub(p50_50_ns).map(|delta| delta / 400)
 }
 
-/// Extracts board p50s from measured results and computes marginal cost.
+/// Extracts compiled board p50s from measured results and computes marginal cost.
 #[must_use]
 pub fn board_marginal_from_results(results: &[ScenarioResult]) -> Option<u64> {
     let p50 = |id: ScenarioId| -> Option<u64> {
@@ -140,6 +188,21 @@ pub fn board_marginal_from_results(results: &[ScenarioResult]) -> Option<u64> {
     )
 }
 
+/// Extracts projected board p50s and computes marginal cost (same formula).
+#[must_use]
+pub fn board_projected_marginal_from_results(results: &[ScenarioResult]) -> Option<u64> {
+    let p50 = |id: ScenarioId| -> Option<u64> {
+        results
+            .iter()
+            .find(|row| row.scenario == id)
+            .map(|row| row.samples.summary().p50_ns)
+    };
+    board_marginal_ns_per_row(
+        p50(ScenarioId::BoardPageProjected50)?,
+        p50(ScenarioId::BoardPageProjected450)?,
+    )
+}
+
 /// Runs warmups + measured samples for every scenario against one backend.
 pub fn run_scenarios<B: AppBackend>(
     backend: &mut B,
@@ -147,8 +210,23 @@ pub fn run_scenarios<B: AppBackend>(
     warmups: usize,
     samples: usize,
 ) -> Result<Vec<ScenarioResult>, B::Error> {
+    run_scenarios_with_options(backend, dataset, warmups, samples, false)
+}
+
+/// Like [`run_scenarios`], optionally including RiffDB projected board scenarios.
+pub fn run_scenarios_with_options<B: AppBackend>(
+    backend: &mut B,
+    dataset: &SeedDataset,
+    warmups: usize,
+    samples: usize,
+    include_projected: bool,
+) -> Result<Vec<ScenarioResult>, B::Error> {
     let probes = dataset.probes();
-    let scenario_ids = ScenarioId::for_dataset(dataset);
+    let scenario_ids = if include_projected {
+        ScenarioId::for_dataset_with_projected(dataset)
+    } else {
+        ScenarioId::for_dataset(dataset)
+    };
     for _ in 0..warmups {
         run_once(backend, &probes, &scenario_ids)?;
     }
@@ -235,6 +313,23 @@ pub fn run_scenarios<B: AppBackend>(
                         .expect("board scenario has limit");
                     let (value, elapsed) = time_call(|| {
                         backend.board_page(
+                            probes.board_organization_id,
+                            probes.board_project_id,
+                            probes.open_status,
+                            limit,
+                        )
+                    });
+                    value.map(|rows| (rows.len(), elapsed))
+                }
+                ScenarioId::BoardPageProjected50
+                | ScenarioId::BoardPageProjected200
+                | ScenarioId::BoardPageProjected450 => {
+                    let limit = result
+                        .scenario
+                        .board_page_limit()
+                        .expect("projected board scenario has limit");
+                    let (value, elapsed) = time_call(|| {
+                        backend.board_page_projected(
                             probes.board_organization_id,
                             probes.board_project_id,
                             probes.open_status,
@@ -334,6 +429,17 @@ fn run_once<B: AppBackend>(
                     limit,
                 )?;
             }
+            ScenarioId::BoardPageProjected50
+            | ScenarioId::BoardPageProjected200
+            | ScenarioId::BoardPageProjected450 => {
+                let limit = scenario.board_page_limit().expect("projected board limit");
+                let _ = backend.board_page_projected(
+                    probes.board_organization_id,
+                    probes.board_project_id,
+                    probes.open_status,
+                    limit,
+                )?;
+            }
             // Write scenarios are not warmed: each measured sample must be a
             // genuinely new durable write with a distinct idempotency key.
             ScenarioId::CreateComment
@@ -349,6 +455,7 @@ fn run_once<B: AppBackend>(
 mod tests {
     use super::{
         ScenarioId, ScenarioResult, board_marginal_from_results, board_marginal_ns_per_row,
+        board_projected_marginal_from_results,
     };
     use crate::{
         AppBackend, CloseTicketWithCommentSeed, CommentRow, CommentSeed, LoadErrorClass,
@@ -457,6 +564,17 @@ mod tests {
             self.last_board_ids = rows.iter().map(|row| row.ticket_id).collect();
             Ok(rows)
         }
+        fn board_page_projected(
+            &mut self,
+            organization_id: UuidBytes,
+            project_id: UuidBytes,
+            status: TicketStatus,
+            limit: u32,
+        ) -> Result<Vec<TicketRow>, Self::Error> {
+            // Seed-backed stand-in uses the same filter as the compiled path so
+            // unit tests can exercise equivalence without a live engine.
+            self.board_page(organization_id, project_id, status, limit)
+        }
         fn create_comment(&mut self, _: &CommentSeed) -> Result<(), Self::Error> {
             Ok(())
         }
@@ -514,11 +632,48 @@ mod tests {
     }
 
     #[test]
+    fn board_projected_marginal_uses_projected_scenario_ids() {
+        let mut s50 = SampleSet::default();
+        let mut s450 = SampleSet::default();
+        for _ in 0..3 {
+            s50.record(std::time::Duration::from_nanos(2_000));
+            s450.record(std::time::Duration::from_nanos(42_000));
+        }
+        let results = vec![
+            ScenarioResult {
+                scenario: ScenarioId::BoardPageProjected50,
+                samples: s50,
+                last_row_count: 50,
+            },
+            ScenarioResult {
+                scenario: ScenarioId::BoardPageProjected450,
+                samples: s450,
+                last_row_count: 450,
+            },
+        ];
+        assert_eq!(board_projected_marginal_from_results(&results), Some(100));
+    }
+
+    /// Falsifiability (c): swapping 50/450 in the marginal formula fails the shape.
+    #[test]
+    fn board_marginal_rejects_swapped_50_450_order() {
+        // Correct order: (450 - 50) / 400. Swapped yields None (negative delta).
+        assert_eq!(board_marginal_ns_per_row(41_000, 1_000), None);
+        assert_eq!(board_marginal_ns_per_row(1_000, 41_000), Some(100));
+    }
+
+    #[test]
     fn smoke_skips_board_scenarios() {
         let dataset = SeedDataset::generate(Scale::smoke());
         let ids = ScenarioId::for_dataset(&dataset);
         assert!(!ids.iter().any(|id| id.board_page_limit().is_some()));
         assert_eq!(ids.len(), 11);
+        let with_projected = ScenarioId::for_dataset_with_projected(&dataset);
+        assert!(
+            !with_projected
+                .iter()
+                .any(|id| id.is_projected_board() || id.is_compiled_board())
+        );
     }
 
     #[test]
@@ -528,7 +683,13 @@ mod tests {
         assert!(ids.contains(&ScenarioId::BoardPage50));
         assert!(ids.contains(&ScenarioId::BoardPage200));
         assert!(ids.contains(&ScenarioId::BoardPage450));
+        assert!(!ids.iter().any(|id| id.is_projected_board()));
         assert_eq!(ids.len(), 14);
+        let with_projected = ScenarioId::for_dataset_with_projected(&dataset);
+        assert!(with_projected.contains(&ScenarioId::BoardPageProjected50));
+        assert!(with_projected.contains(&ScenarioId::BoardPageProjected200));
+        assert!(with_projected.contains(&ScenarioId::BoardPageProjected450));
+        assert_eq!(with_projected.len(), 17);
     }
 
     #[test]

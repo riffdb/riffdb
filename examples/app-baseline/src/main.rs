@@ -17,6 +17,7 @@ use riffdb_app_baseline_core::{
     assert_board_ticket_sequences_equal, board_marginal_from_results, build_report,
     concurrency_curve_point, print_concurrency_sweep_summary, print_load_summary,
     run_closed_loop_load, run_closed_loop_load_with_abort, run_scenarios,
+    run_scenarios_with_options,
 };
 use riffdb_app_baseline_postgres::{PostgresAppBackend, PostgresDurabilitySettings};
 use riffdb_app_baseline_riffdb::{
@@ -225,8 +226,20 @@ fn run() -> Result<(), String> {
                 return Err(error.to_string());
             }
             let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            let scenarios =
-                run_scenarios(&mut session.backend, &dataset, args.warmups, args.samples);
+            // Catch-up + compiled-vs-projected equivalence must pass before timing.
+            if let Err(error) = session.backend.prepare_projected_board_gates(&dataset) {
+                if let Ok(groups) = session.shutdown() {
+                    eprintln!("riffdb write completion groups 1..64: {groups:?}");
+                }
+                return Err(error.to_string());
+            }
+            let scenarios = run_scenarios_with_options(
+                &mut session.backend,
+                &dataset,
+                args.warmups,
+                args.samples,
+                true,
+            );
             let scenarios = match scenarios {
                 Ok(scenarios) => scenarios,
                 Err(error) => {
@@ -323,12 +336,19 @@ fn run() -> Result<(), String> {
         let scenarios = median_scenarios(&rd_rep_scenarios);
         backends.push(BackendReport {
             backend_id: "riffdb_public_grpc",
-            description: "Live riffdbd over public gRPC (symbolic commands + named RiffQL)"
+            description: "Live riffdbd over public gRPC (symbolic commands + named RiffQL + projected board)"
                 .to_owned(),
             guarantee_notes: vec![
+                "cross-era comparability: since CP3, compiled named reads execute via \
+                 NamedQuery with the deployed module hash (client decode differs from \
+                 the pre-CP3 generated-client era) and all scenarios run on a \
+                 projection-enabled server with background apply — compare compiled \
+                 p50s across eras with this disclosure, not raw"
+                    .to_owned(),
                 "Symbolic TicketDesk commands for seed/writes".to_owned(),
                 "Reads via named RiffQL queries (one public RPC per page)".to_owned(),
                 "ticket_detail_page is one TicketPage query with dependent key batches".to_owned(),
+                "board_page_projected_* via ExecuteProjectedQuery (generated tonic client) after Causal catch-up".to_owned(),
                 "Synchronous durable command commits".to_owned(),
             ],
             seed_ns,
@@ -1030,8 +1050,7 @@ fn assert_postgres_load_quiesced(
     clients: usize,
     rep: usize,
 ) -> Result<(), String> {
-    let mut control =
-        PostgresAppBackend::new(database_url).map_err(|error| error.to_string())?;
+    let mut control = PostgresAppBackend::new(database_url).map_err(|error| error.to_string())?;
     // Long tail: a single stuck multi-entity write under c=128 can take seconds;
     // 30s is well above expected TCP close after join.
     const QUIESCE_TIMEOUT: Duration = Duration::from_secs(30);

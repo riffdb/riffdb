@@ -135,6 +135,19 @@ pub trait AppBackend {
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error>;
 
+    /// Projected columnar board page (RiffDB ExecuteProjectedQuery path).
+    ///
+    /// PostgreSQL has no projected path; implementations may return a typed
+    /// unsupported error. The harness only schedules projected scenarios on
+    /// the RiffDB backend after catch-up and cross-path equivalence gates.
+    fn board_page_projected(
+        &mut self,
+        organization_id: UuidBytes,
+        project_id: UuidBytes,
+        status: TicketStatus,
+        limit: u32,
+    ) -> Result<Vec<TicketRow>, Self::Error>;
+
     /// Append one comment (post-seed write path).
     fn create_comment(&mut self, comment: &CommentSeed) -> Result<(), Self::Error>;
 
