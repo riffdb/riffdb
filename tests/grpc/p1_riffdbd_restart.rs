@@ -38,15 +38,17 @@ use riffdb_client_rust::{
 };
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_errors::PublicErrorKind;
+use riffdb_proto::app::v1 as app_v1;
 use riffdb_proto::decimal_from_proto;
 use riffdb_proto::v1;
 use riffdb_storage_api::{
+    AdministrationAuditReader, AdministrationAuditScan, AdministrationAuditScanRequest,
     EvidencePageLimit, OutboxClaimV1, OutboxDestinationIdV1, OutboxPageLimit, OutboxRepository,
     OutboxSucceedV1, OutboxTransitionResultV1, PendingOutboxScanV1,
-    ReactiveModuleAdministrationRepository, ReadableCapabilityDigestInventory, ReadableDigestKey,
-    ReadableIdempotencyDigestInventory, StartupValidationInputs, StructuralEvidenceCursor,
-    StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession,
-    StructuralOpenOutcome,
+    ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+    StartupValidationInputs, StorageScanLimit, StoredAdministrationAuditRecordV1,
+    StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
+    StructuralEvidenceSession, StructuralOpenOutcome,
 };
 use riffdb_storage_redb::{
     RedbDormantPorts, RedbOfflineRetention, RedbOperationalPorts, RedbStore,
@@ -54,8 +56,9 @@ use riffdb_storage_redb::{
     read_validated_prefix_checkpoint_commit_sequence_fixture,
 };
 use riffdb_types::{
-    AggregateTypeId, DecimalSpec, DigestKeyId, EntityKey, EntityKeyBuilder, EntityTypeId,
-    IndexEntryKeyBuilder, IndexId, PartitionKeyBuilder, Timestamp,
+    AdministrationSequence, AggregateTypeId, DecimalSpec, DigestKeyId, EntityKey, EntityKeyBuilder,
+    EntityTypeId, IndexEntryKeyBuilder, IndexId, PartitionKeyBuilder, ReactiveModuleHash,
+    ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceOperationV1, Timestamp,
 };
 use tokio::time::timeout;
 use tonic::transport::Endpoint;
@@ -520,6 +523,238 @@ fn streamable_budget_fixture_compiles_and_proves_application_routing() {
     let _ = module.identity();
 }
 
+// A successful DeployReactiveModule publication must be able to record its OWN
+// terminal audit record through the daemon.
+//
+// Regression (confirmed production defect): riffdb-storage-api's
+// `validate_service_audit_phase_link` omitted `DeployReactiveModule` from its
+// Succeeded/ControlPlane arm, so the coordinator's own Succeeded audit append
+// failed `InvalidShape`. The module was already durably published, but the failed
+// Succeeded finish mapped to `PublicError::outcome_unknown()` and the
+// audit-unavailable readiness failure degraded the daemon. Falsifiability:
+// removing `DeployReactiveModule` from that arm again turns the SUCCESS
+// assertion below into an outcome_unknown failure, and the audit assertions
+// below find no Succeeded record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_riffdbd_publishes_a_reactive_module_and_records_its_own_success_audit()
+-> TestResult<()> {
+    let temporary = TemporaryDirectory::new()?;
+    let database_path = temporary.path().join("riffdb.redb");
+    let capability_keys_path = temporary.path().join("capability.keys");
+    let idempotency_keys_path = temporary.path().join("idempotency.keys");
+    let bootstrap_path = temporary.path().join("bootstrap.credential");
+
+    write_protected_file(&capability_keys_path, CAPABILITY_KEY_DOCUMENT)?;
+    write_protected_file(&idempotency_keys_path, IDEMPOTENCY_KEY_DOCUMENT)?;
+    let generated_bootstrap =
+        generate_bootstrap_credential(BOOTSTRAP_UNIX_MILLISECONDS, &SystemEntropy)?;
+    write_protected_file(
+        &bootstrap_path,
+        generated_bootstrap.render_document().expose_secret(),
+    )?;
+    drop(generated_bootstrap);
+    let retained_bootstrap = load_bootstrap_credential_file(&bootstrap_path)?;
+    let root_metadata = CallMetadata::authenticated(bearer_credential(&retained_bootstrap)?);
+
+    let mut process = ServerProcess::spawn(
+        &database_path,
+        &capability_keys_path,
+        &idempotency_keys_path,
+    )?;
+    let address = process.wait_for_ready_address()?;
+    let mut client = connect(address).await?;
+
+    let bootstrap_created = bounded_rpc(
+        "reactive publication bootstrap",
+        client.create_bootstrap_capability(
+            pruned_history_bootstrap_request(&retained_bootstrap)?,
+            &bootstrap_metadata(&retained_bootstrap)?,
+        ),
+    )
+    .await?;
+    let _ = created_bootstrap_transition(bootstrap_created)?;
+
+    let deployment = bounded_rpc(
+        "streamable budget contract deployment",
+        client.deploy_contract(
+            v1::DeployContractRequest {
+                request_id: fresh_request_id_bytes()?,
+                source: STREAMABLE_BUDGET_CONTRACT.to_owned(),
+                expected_active_version: None,
+                expected_active_bundle_hash: Vec::new(),
+                expected_candidate_bundle_hash: Vec::new(),
+            },
+            &root_metadata,
+        ),
+    )
+    .await?;
+    let Some(v1::deploy_contract_response::Result::Activated(active)) = deployment.result else {
+        return Err(test_failure(
+            "the streamable budget contract was not newly activated",
+        ));
+    };
+
+    // The one RPC under test. A rejected Succeeded audit record cannot be
+    // distinguished from a lost write by the caller, so it surfaces as the typed
+    // outcome_unknown public error rather than a transport fault.
+    let publication = match timeout(
+        RPC_TIMEOUT,
+        client.deploy_reactive_module(
+            app_v1::DeployReactiveModuleRequest {
+                contract: Some(app_v1::ContractSelector {
+                    lineage: active.contract_lineage.clone(),
+                    version: active.contract_version,
+                    bundle_hash: active.bundle_hash.clone(),
+                }),
+                source: BUDGET_STREAM_MODULE.to_owned(),
+                query_module_hashes: Vec::new(),
+                request_id: fresh_request_id_bytes()?,
+            },
+            &root_metadata,
+        ),
+    )
+    .await
+    {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            return Err(test_failure(format!(
+                "DeployReactiveModule must report SUCCESS over the real daemon, got {error:?} \
+                 (outcome_unknown here means the publication's own Succeeded audit record \
+                 was rejected by the storage-side phase/link validator)"
+            )));
+        }
+        Err(_) => return Err(test_failure("DeployReactiveModule exceeded its deadline")),
+    };
+    assert_eq!(
+        publication.outcome,
+        app_v1::ReactiveModuleDeploymentOutcome::Published as i32,
+        "a first publication of the budget stream module must publish"
+    );
+    assert_eq!(publication.unavailable_query_module_hash, None);
+    let descriptor = publication
+        .module
+        .ok_or_else(|| test_failure("a published module must return its descriptor"))?;
+    assert_eq!(descriptor.contract_lineage, CONTRACT_LINEAGE);
+    assert_eq!(descriptor.contract_version, CONTRACT_VERSION);
+    assert_eq!(
+        descriptor.operation_names,
+        vec![BUDGET_STREAM_OPERATION.to_owned()]
+    );
+    let module_hash: [u8; 32] = descriptor
+        .module_hash
+        .clone()
+        .try_into()
+        .map_err(|_| test_failure("a module hash is exactly 32 bytes"))?;
+
+    drop(client);
+    process.shutdown_cleanly()?;
+
+    // The durable proof: the daemon wrote BOTH lifecycle records for the
+    // publication, and the terminal one names the authoritative transition.
+    let records = reactive_publication_service_audits(&database_path);
+    let started = records
+        .iter()
+        .filter(|(phase, _)| *phase == ServiceAuditPhaseV1::Started)
+        .count();
+    assert_eq!(
+        started, 1,
+        "the publication must record exactly one authenticated Started record"
+    );
+    let terminals = records
+        .iter()
+        .filter(|(phase, _)| *phase != ServiceAuditPhaseV1::Started)
+        .collect::<Vec<_>>();
+    let [(phase, link)] = terminals.as_slice() else {
+        return Err(test_failure(format!(
+            "the publication must record exactly one terminal audit record, got {terminals:?}"
+        )));
+    };
+    assert_eq!(
+        *phase,
+        ServiceAuditPhaseV1::Succeeded,
+        "a published module must record Succeeded, never a failure or uncertainty"
+    );
+    let ServiceAuditLinkV1::ControlPlane {
+        administration_sequence,
+    } = *link
+    else {
+        return Err(test_failure(format!(
+            "a published module's success must name its administration transition, got {link:?}"
+        )));
+    };
+    assert_eq!(
+        reactive_administration_module_hash(&database_path, administration_sequence),
+        Some(ReactiveModuleHash::from_bytes(module_hash)),
+        "the linked administration sequence must name the exact published module"
+    );
+    Ok(())
+}
+
+/// Reads every `DeployReactiveModule` service-audit phase and link from the
+/// stopped daemon database, in administration order.
+fn reactive_publication_service_audits(
+    database_path: &Path,
+) -> Vec<(ServiceAuditPhaseV1, ServiceAuditLinkV1)> {
+    scan_administration_audit_records(database_path)
+        .into_iter()
+        .filter_map(|record| match record {
+            StoredAdministrationAuditRecordV1::Service(service)
+                if service.operation() == ServiceOperationV1::DeployReactiveModule =>
+            {
+                Some((service.phase(), service.link()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Returns the module published by the reactive administration record at the
+/// exact shared administration sequence, if that sequence names one.
+fn reactive_administration_module_hash(
+    database_path: &Path,
+    administration_sequence: AdministrationSequence,
+) -> Option<ReactiveModuleHash> {
+    scan_administration_audit_records(database_path)
+        .into_iter()
+        .find_map(|record| match record {
+            StoredAdministrationAuditRecordV1::ReactiveModule(published)
+                if published.administration_sequence() == administration_sequence =>
+            {
+                Some(published.module_hash())
+            }
+            _ => None,
+        })
+}
+
+/// Scans the complete shared administration stream off a stopped database.
+fn scan_administration_audit_records(
+    database_path: &Path,
+) -> Vec<StoredAdministrationAuditRecordV1> {
+    let ports = open_operational_offline(database_path);
+    let limit = StorageScanLimit::new(64).expect("bounded administration scan limit");
+    let mut collected = Vec::new();
+    let mut after = None;
+    loop {
+        match ports
+            .scan_administration_audit(AdministrationAuditScanRequest::new(after, limit))
+            .expect("scan the shared administration stream")
+        {
+            AdministrationAuditScan::Page {
+                records,
+                next_after,
+            } => {
+                collected.extend(records.into_iter().map(|item| item.into_parts().0));
+                after = Some(next_after);
+            }
+            AdministrationAuditScan::ExactEnd { records } => {
+                collected.extend(records.into_iter().map(|item| item.into_parts().0));
+                break;
+            }
+        }
+    }
+    collected
+}
+
 // Covers RT-A/RT-B owed tail: end-to-end typed pruned reads over a REAL pruned
 // database through the composed daemon (service + server read adapters + gRPC).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -576,7 +811,12 @@ async fn real_riffdbd_serves_typed_history_pruned_replay_and_consumer_after_offl
         ),
     )
     .await?;
-    assert_activated_budget_contract(deployment)?;
+    let Some(v1::deploy_contract_response::Result::Activated(active_contract)) = deployment.result
+    else {
+        return Err(test_failure(
+            "the streamable budget contract was not newly activated",
+        ));
+    };
 
     // Commit sequence 1 (no event), then 2/3/4 (one BudgetAllocated each).
     // The streamable contract's plans differ from the generated bindings'
@@ -646,22 +886,48 @@ async fn real_riffdbd_serves_typed_history_pruned_replay_and_consumer_after_offl
         .event_id
         .ok_or_else(|| test_failure("baseline replay item omitted its event ID"))?;
 
+    // The reactive stream module is published through the daemon's own
+    // DeployReactiveModule RPC, over the live process, before shutdown. This
+    // path used to be unusable: the storage-side phase/link validators omitted
+    // DeployReactiveModule, so the publication's Succeeded audit record was
+    // rejected and the RPC reported outcome_unknown for an already durable
+    // module. This test previously routed around it by publishing offline
+    // through the storage repository.
+    let publication = bounded_rpc(
+        "pruned-history stream module publication",
+        first_client.deploy_reactive_module(
+            app_v1::DeployReactiveModuleRequest {
+                contract: Some(app_v1::ContractSelector {
+                    lineage: active_contract.contract_lineage.clone(),
+                    version: active_contract.contract_version,
+                    bundle_hash: active_contract.bundle_hash.clone(),
+                }),
+                source: BUDGET_STREAM_MODULE.to_owned(),
+                query_module_hashes: Vec::new(),
+                request_id: fresh_request_id_bytes()?,
+            },
+            &root_metadata,
+        ),
+    )
+    .await?;
+    assert_eq!(
+        publication.outcome,
+        app_v1::ReactiveModuleDeploymentOutcome::Published as i32,
+        "the stream module must publish through the live daemon"
+    );
+    let module_hash = publication
+        .module
+        .ok_or_else(|| test_failure("a published module must return its descriptor"))?
+        .module_hash;
+
     drop(first_client);
     first_process.shutdown_cleanly()?;
 
-    // ---- Offline: publish the stream module, deliver the outbox, obtain ----
-    // ---- fencing, prune sequences 1-2.                                  ----
-    // The reactive stream module is published through the real storage
-    // publication machinery over the stopped database. (Publishing through the
-    // daemon's DeployReactiveModule RPC is blocked by a pre-existing defect:
-    // riffdb-storage-api's validate_service_audit_phase_link omits
-    // DeployReactiveModule from its ControlPlane-link arm, so the SUCCEEDED
-    // audit record of a daemon publication is rejected as InvalidShape and the
-    // RPC reports outcome_unknown. Out of this package's fence; reported.)
+    // ---- Offline: deliver the outbox, obtain fencing, prune sequences 1-2. ----
     // Undelivered outbox intents fence retention (fail toward NOT deleting),
     // so the operator flow drains them through the real claim/succeed
     // transitions before the watermark may cover their commits.
-    let (module_hash, delivered) = publish_stream_module_and_drain_outbox(&database_path);
+    let delivered = drain_outbox_offline(&database_path);
     assert_eq!(
         delivered, 3,
         "each allocation event must carry exactly one pending outbox intent"
@@ -1039,48 +1305,13 @@ fn open_operational_offline(database_path: &Path) -> RedbOperationalPorts {
         .expect("activate operational ports over the stopped daemon database")
 }
 
-/// Offline preparation over the stopped daemon database: publishes the stream
-/// module through the real storage publication machinery and drains every
-/// pending outbox intent. Returns the module hash bytes and the delivered count.
-fn publish_stream_module_and_drain_outbox(database_path: &Path) -> (Vec<u8>, usize) {
-    use riffdb_storage_api::ReactiveModulePublicationResult;
-
+/// Offline preparation over the stopped daemon database: drains every pending
+/// outbox intent and returns the delivered count.
+fn drain_outbox_offline(database_path: &Path) -> usize {
     let mut ports = open_operational_offline(database_path);
-    let catalog = riffdb_catalog::ActiveCatalogSnapshot::read(&ports)
-        .expect("read the active catalog")
-        .expect("the streamable budget contract is active");
-    let module = ValidatedReactiveModule::compile(BUDGET_STREAM_MODULE, catalog.bundle(), &[])
-        .expect("stream module compiles against the active contract");
-    let module_hash = module.identity();
-    let principal = riffdb_storage_api::AuditPrincipalV1::new(
-        riffdb_types::ActorId::new("p1-offline-operator").expect("bounded actor id"),
-        riffdb_types::ActorKind::Human,
-        riffdb_types::CapabilityId::from_bytes(offline_uuid_bytes(0x31)).expect("capability id"),
-        std::num::NonZeroU64::new(1).expect("nonzero revision"),
-    );
-    let outcome = ports
-        .publish_reactive_module(&riffdb_storage_api::ReactiveModulePublicationIntentV1::new(
-            module.to_stored().expect("stream module encodes"),
-            riffdb_types::RequestId::from_bytes(offline_uuid_bytes(0x32)).expect("request id"),
-            principal,
-            Timestamp::new(1_700_000_150, 0).expect("publication timestamp"),
-            None,
-        ))
-        .expect("publish the stream module offline");
-    assert!(
-        matches!(outcome, ReactiveModulePublicationResult::Published { .. }),
-        "offline stream module publication must publish: {outcome:?}"
-    );
     let delivered = deliver_all_pending_outbox(&mut ports);
     drop(ports);
-    (module_hash.as_bytes().to_vec(), delivered)
-}
-
-fn offline_uuid_bytes(fill: u8) -> [u8; 16] {
-    let mut bytes = [fill; 16];
-    bytes[6] = 0x70 | (fill & 0x0f);
-    bytes[8] = 0x80 | (fill & 0x3f);
-    bytes
+    delivered
 }
 
 /// Drains every pending outbox intent through the REAL claim/succeed

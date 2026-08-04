@@ -1122,6 +1122,10 @@ fn service_link_is_valid(state: &MemoryState, intent: &ServiceAuditAppendIntentV
                     StoredAdministrationAuditRecordV1::Catalog(_),
                 ) => true,
                 (
+                    ServiceOperationV1::DeployReactiveModule,
+                    StoredAdministrationAuditRecordV1::ReactiveModule(_),
+                ) => true,
+                (
                     ServiceOperationV1::CreateCapability,
                     StoredAdministrationAuditRecordV1::Capability(record),
                 ) => {

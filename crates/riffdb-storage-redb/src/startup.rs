@@ -5351,6 +5351,10 @@ fn service_link_is_valid(
                     riffdb_types::ServiceOperationV1::DeployQueryModule,
                 ) => true,
                 (
+                    riffdb_storage_api::StoredAdministrationAuditRecordV1::ReactiveModule(_),
+                    riffdb_types::ServiceOperationV1::DeployReactiveModule,
+                ) => true,
+                (
                     riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(target),
                     riffdb_types::ServiceOperationV1::CreateCapability,
                 ) => matches!(
