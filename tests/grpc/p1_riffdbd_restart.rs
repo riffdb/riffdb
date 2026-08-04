@@ -726,6 +726,255 @@ fn reactive_administration_module_hash(
         })
 }
 
+// An idempotent REPUBLISH of an already published reactive module is a SUCCESS
+// over the real daemon, and it must record one. Before this fix the
+// already-published storage result carried no administration sequence, so the
+// coordinator produced `transition_sequence: None`, the terminal audit degraded
+// to `ControlPlaneTerminalAudit::Failed`, and a successful RPC durably wrote a
+// **Failed** audit record -- while the catalog and query-module already-active
+// arms recorded success from their original activation. Falsifiability: putting
+// the arm back to sequence-less turns the terminal assertions below into a
+// Failed/None record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_riffdbd_republishes_a_reactive_module_as_success_linking_the_original()
+-> TestResult<()> {
+    let temporary = TemporaryDirectory::new()?;
+    let database_path = temporary.path().join("riffdb.redb");
+    let capability_keys_path = temporary.path().join("capability.keys");
+    let idempotency_keys_path = temporary.path().join("idempotency.keys");
+    let bootstrap_path = temporary.path().join("bootstrap.credential");
+
+    write_protected_file(&capability_keys_path, CAPABILITY_KEY_DOCUMENT)?;
+    write_protected_file(&idempotency_keys_path, IDEMPOTENCY_KEY_DOCUMENT)?;
+    let generated_bootstrap =
+        generate_bootstrap_credential(BOOTSTRAP_UNIX_MILLISECONDS, &SystemEntropy)?;
+    write_protected_file(
+        &bootstrap_path,
+        generated_bootstrap.render_document().expose_secret(),
+    )?;
+    drop(generated_bootstrap);
+    let retained_bootstrap = load_bootstrap_credential_file(&bootstrap_path)?;
+    let root_metadata = CallMetadata::authenticated(bearer_credential(&retained_bootstrap)?);
+
+    let mut process = ServerProcess::spawn(
+        &database_path,
+        &capability_keys_path,
+        &idempotency_keys_path,
+    )?;
+    let address = process.wait_for_ready_address()?;
+    let mut client = connect(address).await?;
+
+    let bootstrap_created = bounded_rpc(
+        "reactive republication bootstrap",
+        client.create_bootstrap_capability(
+            pruned_history_bootstrap_request(&retained_bootstrap)?,
+            &bootstrap_metadata(&retained_bootstrap)?,
+        ),
+    )
+    .await?;
+    let _ = created_bootstrap_transition(bootstrap_created)?;
+
+    let deployment = bounded_rpc(
+        "streamable budget contract deployment",
+        client.deploy_contract(
+            v1::DeployContractRequest {
+                request_id: fresh_request_id_bytes()?,
+                source: STREAMABLE_BUDGET_CONTRACT.to_owned(),
+                expected_active_version: None,
+                expected_active_bundle_hash: Vec::new(),
+                expected_candidate_bundle_hash: Vec::new(),
+            },
+            &root_metadata,
+        ),
+    )
+    .await?;
+    let Some(v1::deploy_contract_response::Result::Activated(active)) = deployment.result else {
+        return Err(test_failure(
+            "the streamable budget contract was not newly activated",
+        ));
+    };
+    let contract = app_v1::ContractSelector {
+        lineage: active.contract_lineage.clone(),
+        version: active.contract_version,
+        bundle_hash: active.bundle_hash.clone(),
+    };
+
+    let first = bounded_rpc(
+        "first reactive publication",
+        client.deploy_reactive_module(
+            app_v1::DeployReactiveModuleRequest {
+                contract: Some(contract.clone()),
+                source: BUDGET_STREAM_MODULE.to_owned(),
+                query_module_hashes: Vec::new(),
+                request_id: fresh_request_id_bytes()?,
+            },
+            &root_metadata,
+        ),
+    )
+    .await?;
+    assert_eq!(
+        first.outcome,
+        app_v1::ReactiveModuleDeploymentOutcome::Published as i32,
+        "the first publication of the budget stream module must publish"
+    );
+    let first_descriptor = first
+        .module
+        .ok_or_else(|| test_failure("a published module must return its descriptor"))?;
+
+    // The RPC under test: the identical module, a fresh request identity. No
+    // durable module write happens, yet the invocation succeeded.
+    let republication = match timeout(
+        RPC_TIMEOUT,
+        client.deploy_reactive_module(
+            app_v1::DeployReactiveModuleRequest {
+                contract: Some(contract),
+                source: BUDGET_STREAM_MODULE.to_owned(),
+                query_module_hashes: Vec::new(),
+                request_id: fresh_request_id_bytes()?,
+            },
+            &root_metadata,
+        ),
+    )
+    .await
+    {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            return Err(test_failure(format!(
+                "an idempotent republish must report ALREADY_PUBLISHED over the real \
+                 daemon, got {error:?}"
+            )));
+        }
+        Err(_) => {
+            return Err(test_failure(
+                "the reactive republication exceeded its deadline",
+            ));
+        }
+    };
+    assert_eq!(
+        republication.outcome,
+        app_v1::ReactiveModuleDeploymentOutcome::AlreadyPublished as i32,
+        "republishing the exact same module must report ALREADY_PUBLISHED"
+    );
+    assert_eq!(republication.unavailable_query_module_hash, None);
+    let republished_descriptor = republication
+        .module
+        .ok_or_else(|| test_failure("a republished module must return its descriptor"))?;
+    assert_eq!(
+        republished_descriptor, first_descriptor,
+        "an idempotent republish must describe the exact same module"
+    );
+    assert_eq!(republished_descriptor.contract_lineage, CONTRACT_LINEAGE);
+    assert_eq!(republished_descriptor.contract_version, CONTRACT_VERSION);
+    assert_eq!(
+        republished_descriptor.operation_names,
+        vec![BUDGET_STREAM_OPERATION.to_owned()]
+    );
+    let module_hash: [u8; 32] = republished_descriptor
+        .module_hash
+        .clone()
+        .try_into()
+        .map_err(|_| test_failure("a module hash is exactly 32 bytes"))?;
+    let module_hash = ReactiveModuleHash::from_bytes(module_hash);
+
+    drop(client);
+    process.shutdown_cleanly()?;
+
+    // The durable proof. Exactly ONE publication record exists -- the republish
+    // wrote nothing -- and BOTH invocations recorded a Succeeded terminal whose
+    // control-plane link names that one publication.
+    let publications = scan_administration_audit_records(&database_path)
+        .into_iter()
+        .filter_map(|record| match record {
+            StoredAdministrationAuditRecordV1::ReactiveModule(published) => Some(published),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [publication] = publications.as_slice() else {
+        return Err(test_failure(format!(
+            "an idempotent republish must write no second publication record, got \
+             {publications:?}"
+        )));
+    };
+    assert_eq!(publication.module_hash(), module_hash);
+    let original = publication.administration_sequence();
+
+    let records = reactive_publication_service_audits(&database_path);
+    let started = records
+        .iter()
+        .filter(|(phase, _)| *phase == ServiceAuditPhaseV1::Started)
+        .count();
+    assert_eq!(
+        started, 2,
+        "each publication attempt must record its own authenticated Started record"
+    );
+    let terminals = records
+        .iter()
+        .filter(|(phase, _)| *phase != ServiceAuditPhaseV1::Started)
+        .collect::<Vec<_>>();
+    let [
+        (publish_phase, publish_link),
+        (republish_phase, republish_link),
+    ] = terminals.as_slice()
+    else {
+        return Err(test_failure(format!(
+            "two attempts must record exactly two terminal records, got {terminals:?}"
+        )));
+    };
+    assert_eq!(
+        *publish_phase,
+        ServiceAuditPhaseV1::Succeeded,
+        "the first publication must record Succeeded"
+    );
+    assert_eq!(
+        *republish_phase,
+        ServiceAuditPhaseV1::Succeeded,
+        "an idempotent republish is a SUCCESS and must never record a failure"
+    );
+    let expected_link = ServiceAuditLinkV1::ControlPlane {
+        administration_sequence: original,
+    };
+    assert_eq!(
+        *publish_link, expected_link,
+        "the publication's success must name its own transition"
+    );
+    assert_eq!(
+        *republish_link, expected_link,
+        "the republish's success must name the ORIGINAL publication's transition"
+    );
+    assert_eq!(
+        reactive_administration_module_hash(&database_path, original),
+        Some(module_hash),
+        "the linked administration sequence must name the exact published module"
+    );
+
+    // The linked record is older than the invocation that names it, exactly as a
+    // catalog or query-module replay success is. The startup structural pass must
+    // still validate the stopped database clean.
+    let mut session = RedbStore::open(&database_path)
+        .expect("reopen the stopped daemon database")
+        .begin_structural_evidence(daemon_startup_inputs())
+        .expect("begin structural evidence");
+    let mut cursor =
+        StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
+    let mut findings = Vec::new();
+    while let StructuralEvidencePage::Page {
+        findings: page,
+        next,
+        ..
+    } = session
+        .read_structural_evidence(cursor, EvidencePageLimit::new(256).expect("page limit"))
+        .expect("structural page")
+    {
+        findings.extend(page);
+        cursor = next;
+    }
+    assert!(
+        findings.is_empty(),
+        "a republished module's linked success must validate clean, got {findings:?}"
+    );
+    Ok(())
+}
+
 /// Scans the complete shared administration stream off a stopped database.
 fn scan_administration_audit_records(
     database_path: &Path,
