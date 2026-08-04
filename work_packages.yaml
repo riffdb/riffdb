@@ -7198,3 +7198,56 @@ work_packages:
     control-plane arm turns the unit matrix, the cross-crate pin, and the real-daemon
     acceptance red; the full workspace battery reports zero failures.
   human_review_triggers: *id001
+- id: WP-436
+  name: Reactive republish audit parity, memory publish conformance, and write-time linkless
+    tightening (FY)
+  depends_on: [WP-435]
+  objective: Close the three audit-semantics items the WP-435 review confirmed — a successful
+    idempotent reactive republish durably recorded a Failed audit record because the
+    already-published storage result carried no administration sequence; the memory
+    write-path control-plane allowlist omitted DeployQueryModule while the same crate's
+    integrity pass accepted it, and both memory validator sites had zero test coverage; and
+    a DeployReactiveModule linkless success remained durably writable even though every one
+    of its successes is linked.
+  requirements: []
+  required_adrs: [ADR-0021]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-api/src/audit.rs, crates/riffdb-storage-api/src/reactive_module.rs,
+    crates/riffdb-commit/src/control_plane.rs, crates/riffdb-storage-redb/src/administration.rs,
+    crates/riffdb-storage-redb/src/startup.rs, crates/riffdb-storage-memory/src/administration.rs,
+    crates/riffdb-storage-memory/src/integrity_administration.rs, tests/grpc/**]
+  deliverables:
+  - ReactiveModulePublicationResult::AlreadyPublished carries the original publication's
+    shared administration sequence, threaded out of both backends, so the coordinator
+    records Succeeded with a control-plane link naming that publication — exact parity with
+    the catalog and query-module already-active arms — with no durable encoding, schema
+    hash, or registry pin touched
+  - DeployQueryModule added to the memory write-path control-plane link allowlist, removing
+    the backend drift against the same crate's integrity pass
+  - Memory-backend publish conformance for both reactive and query modules, driving the real
+    repository traits, the real ServiceAuditAppendRepository write path, and the real
+    structural pass, so neither memory validator site is covered by nothing
+  - DeployReactiveModule refused a linkless success at append time only, through
+    ServiceAuditAppendIntentV1::new, while durable reconstruction and both structural passes
+    keep the released tolerance so no historical database is refused at open, with the
+    one-sided asymmetry documented where each list lives and pinned by tests on both sides
+  - Real-daemon acceptance that republishing an identical reactive module reports
+    ALREADY_PUBLISHED, writes no second publication record, and records a Succeeded terminal
+    whose control-plane link names the original publication's transition
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api --lib --all-features -- audit::tests
+  - cargo +1.97.0 test -p riffdb-storage-memory --lib --all-features -- administration::tests
+  - cargo +1.97.0 test -p riffdb-storage-redb --lib --all-features -- startup::tests
+  - cargo +1.97.0 test -p riffdb-server --test p1_riffdbd_restart --all-features
+  - cargo +1.97.0 test --workspace --all-features
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  exit_gate: An idempotent reactive republish over the real daemon reports ALREADY_PUBLISHED
+    and durably records Succeeded linked to the original publication, and reverting the
+    coordinator arm to sequence-less turns that acceptance red with a Failed record;
+    re-narrowing either memory control-plane allowlist turns the new memory conformance
+    cases red; a DeployReactiveModule linkless success cannot be appended yet a synthetic
+    durable one still opens clean on both structural passes; the full workspace battery
+    reports zero failures.
+  human_review_triggers: *id001

@@ -287,9 +287,17 @@ pub enum ReactiveModulePublicationResult {
         administration_sequence: AdministrationSequence,
     },
     /// The exact immutable module already exists; no write occurred.
+    ///
+    /// The original publication's shared administration sequence is returned so
+    /// an idempotent republish records a linked success naming that publication,
+    /// exactly as the catalog and query-module already-active results do. A
+    /// retained module always has exactly one publication record: the
+    /// administration stream is append-only and contiguous, never pruned.
     AlreadyPublished {
         /// Existing module identity.
         module_hash: ReactiveModuleHash,
+        /// Shared administration sequence of the original publication.
+        administration_sequence: AdministrationSequence,
     },
     /// Another artifact already owns the declared name and version.
     ModuleVersionConflict,

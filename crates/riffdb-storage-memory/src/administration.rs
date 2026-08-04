@@ -836,9 +836,17 @@ fn prepare_reactive_module_publication(
         if state.reactive_modules[index] != *candidate {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
+        // An idempotent republish records a success linked to the original
+        // publication, so the no-write result carries that publication's own
+        // sequence. A retained module without its publication record is
+        // corruption, exactly as `read_reactive_module` already treats it.
+        let administration_sequence =
+            reactive_publication_sequence(state, candidate.module_hash())?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
         return Ok(AdministrationPreparation::NoChange(
             ReactiveModulePublicationResult::AlreadyPublished {
                 module_hash: candidate.module_hash(),
+                administration_sequence,
             },
         ));
     }
@@ -1120,6 +1128,10 @@ fn service_link_is_valid(state: &MemoryState, intent: &ServiceAuditAppendIntentV
                 (
                     ServiceOperationV1::DeployContract,
                     StoredAdministrationAuditRecordV1::Catalog(_),
+                ) => true,
+                (
+                    ServiceOperationV1::DeployQueryModule,
+                    StoredAdministrationAuditRecordV1::QueryModule(_),
                 ) => true,
                 (
                     ServiceOperationV1::DeployReactiveModule,
@@ -1845,14 +1857,18 @@ mod tests {
         CapabilityCreateCandidateTransaction, CapabilityGrantV1, CapabilityPermissionKindV1,
         CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityRequestedRecordV1,
         CapabilityRevokeAwaitingDecision, CapabilityRevokeCandidateTransaction,
-        DatabaseInitializationPort, DatabaseInitializationResult, HISTORY_INCARNATION_INITIAL,
-        PartitionScopeV1, RevocationReasonCodeV1, StorageFormatVersion, StorageScanLimit,
-        StorageValueError,
+        DatabaseInitializationPort, DatabaseInitializationResult, EvidencePageLimit,
+        HISTORY_INCARNATION_INITIAL, PartitionScopeV1, ReadableCapabilityDigestInventory,
+        ReadableDigestKey, ReadableIdempotencyDigestInventory, RevocationReasonCodeV1,
+        StartupValidationInputs, StorageFormatVersion, StorageScanLimit, StorageValueError,
+        StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
+        StructuralEvidenceSession, StructuralFinding,
     };
     use riffdb_types::{
         ActorId, ActorKind, Audience, CommitSequence, ContractBundleHash, DatabaseId, DigestKeyId,
-        Environment, ProvenanceId, ServiceAuditTargetsV1, ServiceIngressKindV1, TenantScope,
-        Timestamp,
+        Environment, ProvenanceId, QueryModuleName, QueryModuleVersion, ServiceAuditTargetsV1,
+        ServiceIngressKindV1, TenantScope, Timestamp, hash_query_module, hash_reactive_module,
+        hash_reactive_source,
     };
 
     use super::*;
@@ -2693,5 +2709,388 @@ mod tests {
             CapabilityRevokeResult::AlreadyRevoked { .. }
         ));
         assert_eq!(audit_length(&store), after_revoke);
+    }
+
+    // ------------------------------------------------------------------
+    // Memory-backend control-plane publish conformance.
+    //
+    // Both memory `service_link_is_valid` sites -- the write path above and the
+    // integrity pass in `integrity_administration.rs` -- had ZERO coverage: the
+    // whole workspace battery stayed green with both neutered, because nothing
+    // drove a memory publication all the way to its own terminal audit record.
+    // These cases close that hole. They publish through the real repository
+    // traits, append the publication's own Started/Succeeded pair through the
+    // real `ServiceAuditAppendRepository`, and then run the real structural pass
+    // over the resulting state. Re-narrowing either memory allowlist turns them
+    // red.
+    // ------------------------------------------------------------------
+
+    fn structural_inputs() -> StartupValidationInputs {
+        let key = ReadableDigestKey::v1(DigestKeyId::new(1).expect("digest key ID"));
+        StartupValidationInputs::new(
+            Timestamp::new(1, 0).expect("validation timestamp"),
+            ReadableCapabilityDigestInventory::new(vec![key]).expect("capability inventory"),
+            ReadableIdempotencyDigestInventory::new(vec![key]).expect("idempotency inventory"),
+        )
+    }
+
+    /// Runs the complete memory structural pass and returns every finding.
+    fn structural_findings(store: MemoryStore) -> Vec<StructuralFinding> {
+        let mut session = store
+            .begin_structural_evidence(structural_inputs())
+            .expect("begin structural evidence");
+        let mut cursor =
+            StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
+        let mut collected = Vec::new();
+        loop {
+            match session
+                .read_structural_evidence(cursor, EvidencePageLimit::new(64).expect("page limit"))
+                .expect("structural page")
+            {
+                StructuralEvidencePage::Page { findings, next, .. } => {
+                    collected.extend(findings);
+                    cursor = next;
+                }
+                StructuralEvidencePage::ExactEnd(_) => return collected,
+            }
+        }
+    }
+
+    fn conformance_query_module(
+        contract: &StoredContractBundleV1,
+        canonical_bytes: Vec<u8>,
+    ) -> StoredQueryModuleV1 {
+        StoredQueryModuleV1::new(
+            QueryModuleName::new("conformance").expect("module name"),
+            QueryModuleVersion::new(1).expect("module version"),
+            hash_query_module(&canonical_bytes),
+            contract.lineage().clone(),
+            contract.contract_version(),
+            contract.bundle_hash(),
+            canonical_bytes,
+        )
+        .expect("stored query module")
+    }
+
+    fn conformance_reactive_module(
+        contract: &StoredContractBundleV1,
+        source: &[u8],
+        artifact: &[u8],
+    ) -> StoredReactiveModuleV1 {
+        StoredReactiveModuleV1::new(
+            "conformance".to_owned(),
+            1,
+            hash_reactive_module(artifact),
+            contract.lineage().clone(),
+            contract.contract_version(),
+            contract.bundle_hash(),
+            hash_reactive_source(source),
+            Vec::new(),
+            source.to_vec(),
+            artifact.to_vec(),
+        )
+        .expect("stored reactive module")
+    }
+
+    fn reactive_intent(
+        module: StoredReactiveModuleV1,
+        request: u8,
+    ) -> ReactiveModulePublicationIntentV1 {
+        ReactiveModulePublicationIntentV1::new(
+            module,
+            request_id(request),
+            principal(capability_id(2)),
+            Timestamp::new(i64::from(request), 0).expect("timestamp"),
+            None,
+        )
+    }
+
+    /// Appends the publication's own authenticated Started/terminal pair through
+    /// the real write path and returns the terminal append result.
+    fn append_publication_lifecycle(
+        ports: &mut MemoryOperationalPorts,
+        request: u8,
+        operation: ServiceOperationV1,
+        link: ServiceAuditLinkV1,
+    ) -> ServiceAuditAppendResult {
+        let actor = principal(capability_id(3));
+        let started = audit_intent(
+            request,
+            operation,
+            ServiceAuditPhaseV1::Started,
+            actor.clone(),
+            ServiceAuditLinkV1::None,
+        );
+        assert!(matches!(
+            ServiceAuditAppendRepository::append_service_audit(ports, &started)
+                .expect("append the authenticated Started record"),
+            ServiceAuditAppendResult::Appended(_)
+        ));
+        let terminal = audit_intent(
+            request,
+            operation,
+            ServiceAuditPhaseV1::Succeeded,
+            actor,
+            link,
+        );
+        ServiceAuditAppendRepository::append_service_audit(ports, &terminal)
+            .expect("append the terminal record")
+    }
+
+    #[test]
+    fn memory_reactive_publication_records_its_own_success_and_validates_clean() {
+        let mut store = MemoryStore::new();
+        store
+            .initialize_database(database_id())
+            .expect("initialize database");
+        let observer = store.reopen();
+        let mut ports = MemoryDormantPorts { store }.into_operational();
+
+        let contract = bundle("reactive-conformance", 1, 0x21);
+        let activation = catalog_intent(None, contract.clone(), 80);
+        assert!(matches!(
+            CatalogAdministrationRepository::activate_catalog(&mut ports, &activation)
+                .expect("activate the contract the module compiles against"),
+            CatalogActivationResult::Activated { .. }
+        ));
+
+        let module = conformance_reactive_module(&contract, b"stream source", b"stream artifact");
+        let publication = ReactiveModuleAdministrationRepository::publish_reactive_module(
+            &mut ports,
+            &reactive_intent(module.clone(), 81),
+        )
+        .expect("publish the immutable module");
+        let ReactiveModulePublicationResult::Published {
+            module_hash,
+            administration_sequence,
+        } = publication
+        else {
+            panic!("a first publication must publish, got {publication:?}");
+        };
+        assert_eq!(module_hash, module.module_hash());
+
+        // The write path: the publication's own terminal audit names its own
+        // transition. Memory rejected this shape before the FX repair.
+        assert!(
+            matches!(
+                append_publication_lifecycle(
+                    &mut ports,
+                    82,
+                    ServiceOperationV1::DeployReactiveModule,
+                    ServiceAuditLinkV1::ControlPlane {
+                        administration_sequence,
+                    },
+                ),
+                ServiceAuditAppendResult::Appended(_)
+            ),
+            "a published reactive module must record its own success"
+        );
+
+        // Republish parity: an idempotent republish is a SUCCESS linked to the
+        // ORIGINAL publication, never a linkless failure.
+        let republished = ReactiveModuleAdministrationRepository::publish_reactive_module(
+            &mut ports,
+            &reactive_intent(module.clone(), 83),
+        )
+        .expect("republish the identical module");
+        assert_eq!(
+            republished,
+            ReactiveModulePublicationResult::AlreadyPublished {
+                module_hash: module.module_hash(),
+                administration_sequence,
+            },
+            "a republish must name the original publication's transition"
+        );
+        assert!(
+            matches!(
+                append_publication_lifecycle(
+                    &mut ports,
+                    84,
+                    ServiceOperationV1::DeployReactiveModule,
+                    ServiceAuditLinkV1::ControlPlane {
+                        administration_sequence,
+                    },
+                ),
+                ServiceAuditAppendResult::Appended(_)
+            ),
+            "an idempotent republish must record a linked success too"
+        );
+
+        // Honesty check: the allowlist is a per-operation pairing, not a blanket
+        // allowance. A contract deployment may not claim a module publication.
+        assert_eq!(
+            append_publication_lifecycle(
+                &mut ports,
+                85,
+                ServiceOperationV1::DeployContract,
+                ServiceAuditLinkV1::ControlPlane {
+                    administration_sequence,
+                },
+            ),
+            ServiceAuditAppendResult::PhaseConflict,
+            "a control-plane link must match its own administration record kind"
+        );
+
+        drop(ports);
+        assert_eq!(
+            structural_findings(observer),
+            Vec::new(),
+            "the published module and both of its terminal audits must validate clean"
+        );
+    }
+
+    #[test]
+    fn memory_query_module_publication_records_its_own_success_and_validates_clean() {
+        let mut store = MemoryStore::new();
+        store
+            .initialize_database(database_id())
+            .expect("initialize database");
+        let observer = store.reopen();
+        let mut ports = MemoryDormantPorts { store }.into_operational();
+
+        let contract = bundle("query-conformance", 1, 0x22);
+        let activation = catalog_intent(None, contract.clone(), 90);
+        assert!(matches!(
+            CatalogAdministrationRepository::activate_catalog(&mut ports, &activation)
+                .expect("activate the contract the module compiles against"),
+            CatalogActivationResult::Activated { .. }
+        ));
+
+        let module = conformance_query_module(&contract, b"query module bytes".to_vec());
+        let activation = QueryModuleActivationIntentV1::new(
+            QueryModuleActiveExpectationV1::Absent,
+            module.clone(),
+            request_id(91),
+            principal(capability_id(2)),
+            Timestamp::new(91, 0).expect("timestamp"),
+            None,
+        );
+        let result =
+            QueryModuleAdministrationRepository::activate_query_module(&mut ports, &activation)
+                .expect("activate the immutable query module");
+        let QueryModuleActivationResult::Activated {
+            administration_sequence,
+            ..
+        } = result
+        else {
+            panic!("a first activation must activate, got {result:?}");
+        };
+
+        // Backend drift repair: this memory write path omitted DeployQueryModule
+        // entirely, so a query-module publication against the memory backend
+        // could not record its own success even though the same crate's
+        // integrity pass accepted the record.
+        assert!(
+            matches!(
+                append_publication_lifecycle(
+                    &mut ports,
+                    92,
+                    ServiceOperationV1::DeployQueryModule,
+                    ServiceAuditLinkV1::ControlPlane {
+                        administration_sequence,
+                    },
+                ),
+                ServiceAuditAppendResult::Appended(_)
+            ),
+            "an activated query module must record its own success"
+        );
+        assert_eq!(
+            append_publication_lifecycle(
+                &mut ports,
+                93,
+                ServiceOperationV1::DeployReactiveModule,
+                ServiceAuditLinkV1::ControlPlane {
+                    administration_sequence,
+                },
+            ),
+            ServiceAuditAppendResult::PhaseConflict,
+            "a control-plane link must match its own administration record kind"
+        );
+
+        drop(ports);
+        assert_eq!(
+            structural_findings(observer),
+            Vec::new(),
+            "the activated module and its terminal audit must validate clean"
+        );
+    }
+
+    /// The append side refuses a linkless `DeployReactiveModule` success; this
+    /// integrity pass must keep tolerating one that is already durable. Pins the
+    /// intentional write-vs-startup asymmetry on the memory backend.
+    #[test]
+    fn memory_integrity_pass_tolerates_a_durable_linkless_reactive_success() {
+        let mut store = MemoryStore::new();
+        store
+            .initialize_database(database_id())
+            .expect("initialize database");
+        let observer = store.reopen();
+        let actor = principal(capability_id(4));
+        let request = request_id(94);
+        let records = [
+            (
+                AdministrationSequence::first(),
+                ServiceAuditPhaseV1::Started,
+            ),
+            (
+                AdministrationSequence::new(2).expect("terminal sequence"),
+                ServiceAuditPhaseV1::Succeeded,
+            ),
+        ]
+        .map(|(sequence, phase)| {
+            StoredServiceAuditRecordV1::from_stored_parts(
+                sequence,
+                request,
+                Timestamp::new(sequence.get().cast_signed(), 0).expect("timestamp"),
+                ServiceOperationV1::DeployReactiveModule,
+                phase,
+                Some(actor.clone()),
+                ServiceIngressKindV1::Grpc,
+                ServiceAuditTargetsV1::empty(),
+                None,
+                ServiceAuditLinkV1::None,
+            )
+            .expect("a durable linkless success must reconstruct")
+        });
+        let terminal_sequence = records[1].administration_sequence();
+        store
+            .acquire()
+            .expect("write access")
+            .write(|state| {
+                // Allocate through the real allocator so the stream stays exactly
+                // as contiguous as a written one; only the record SHAPE is
+                // synthetic.
+                let allocation = state.prepare_administration_allocation(2)?;
+                assert_eq!(
+                    allocation.assigned(),
+                    &[AdministrationSequence::first(), terminal_sequence]
+                );
+                let metadata = allocation.into_metadata_post_image();
+                for record in records.clone() {
+                    state
+                        .administration_audit
+                        .push(StoredAdministrationAuditRecordV1::Service(record));
+                }
+                state
+                    .service_audit_invocations
+                    .push(ServiceAuditInvocationIndexRow {
+                        request_id: request,
+                        lifecycle: ServiceAuditLifecycleIndex::Started {
+                            started_sequence: AdministrationSequence::first(),
+                            terminal_sequence: Some(terminal_sequence),
+                        },
+                    });
+                state.metadata = MemoryMetadataSlot::Retained(metadata);
+                Ok(())
+            })
+            .expect("install the historical fixture");
+        drop(store);
+
+        assert_eq!(
+            structural_findings(observer),
+            Vec::new(),
+            "a historical linkless reactive-publication success must never be \
+             refused at open"
+        );
     }
 }

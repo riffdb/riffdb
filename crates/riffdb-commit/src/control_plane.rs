@@ -1037,12 +1037,16 @@ where
             outcome: ReactiveModulePublicationOutcome::Published(published),
             transition_sequence: Some(administration_sequence),
         },
-        ReactiveModulePublicationResult::AlreadyPublished { .. } => {
-            ReactiveModulePublicationExecutionResult {
-                outcome: ReactiveModulePublicationOutcome::AlreadyPublished(published),
-                transition_sequence: None,
-            }
-        }
+        // Parity with the catalog and query-module already-active arms below: an
+        // idempotent republish is a SUCCESS, so its terminal audit names the
+        // original publication's transition instead of degrading to Failed.
+        ReactiveModulePublicationResult::AlreadyPublished {
+            administration_sequence,
+            ..
+        } => ReactiveModulePublicationExecutionResult {
+            outcome: ReactiveModulePublicationOutcome::AlreadyPublished(published),
+            transition_sequence: Some(administration_sequence),
+        },
         ReactiveModulePublicationResult::ModuleVersionConflict => {
             ReactiveModulePublicationExecutionResult {
                 outcome: ReactiveModulePublicationOutcome::ModuleVersionConflict,
