@@ -146,6 +146,16 @@ impl SharedRedbOperationalPorts {
         }
         error
     }
+
+    /// Writes one proof-carrying validated-prefix checkpoint (ADR-0019 A1 / ADR-0085 A1).
+    ///
+    /// Used by graceful shutdown after the writer lane drains. A write failure
+    /// is non-fatal at the process boundary — only the next open's fast path is
+    /// lost — and is counted on the underlying port.
+    pub(crate) fn write_validated_prefix_checkpoint(&self) -> Result<bool, StorageError> {
+        self.cell
+            .with_mut(|ports| ports.write_validated_prefix_checkpoint())
+    }
 }
 
 impl Clone for SharedRedbOperationalPorts {

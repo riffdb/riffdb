@@ -1,0 +1,92 @@
+contract LegalSpend version 1 {
+  entity Budget {
+    key (organization_id: uuid, fiscal_year: i64)
+    field approved_amount: decimal<28,2>
+    field allocated_amount: decimal<28,2>
+    field updated_at: timestamp
+
+    invariant non_negative:
+      allocated_amount >= 0.00
+
+    invariant within_approval:
+      allocated_amount <= approved_amount
+  }
+
+  event BudgetAllocated {
+    partition_by (organization_id)
+    organization_id: uuid
+    fiscal_year: i64
+    matter_id: uuid
+    amount: decimal<28,2>
+  }
+
+  aggregate AnnualBudget {
+    root Budget
+    partition_by organization_id
+    conflict_key (organization_id, fiscal_year)
+  }
+
+  command CreateBudget {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input fiscal_year: i64
+    input approved_amount: decimal<28,2>
+
+    idempotency_key idempotency_key
+    create Budget(organization_id, fiscal_year) as budget
+      else BudgetAlreadyExists {
+        organization_id: organization_id,
+        fiscal_year: fiscal_year
+      }
+
+    require positive_approval: approved_amount > 0.00
+      else InvalidApprovedAmount { minimum: 0.01 }
+
+    set budget.approved_amount = approved_amount
+    set budget.allocated_amount = 0.00
+    set budget.updated_at = tx.time
+
+    return BudgetCreated { budget: budget }
+  }
+
+  command AllocateBudget {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input fiscal_year: i64
+    input matter_id: uuid
+    input amount: decimal<28,2>
+
+    idempotency_key idempotency_key
+    mutate Budget(organization_id, fiscal_year) as budget
+      else BudgetNotFound {
+        organization_id: organization_id,
+        fiscal_year: fiscal_year
+      }
+
+    require positive_amount: amount > 0.00
+      else InvalidAmount { minimum: 0.01 }
+
+    require sufficient_budget:
+      budget.allocated_amount + amount <= budget.approved_amount
+      else InsufficientBudget {
+        approved: budget.approved_amount,
+        allocated: budget.allocated_amount,
+        requested: amount
+      }
+
+    set budget.allocated_amount = budget.allocated_amount + amount
+    set budget.updated_at = tx.time
+
+    emit BudgetAllocated {
+      organization_id: organization_id,
+      fiscal_year: fiscal_year,
+      matter_id: matter_id,
+      amount: amount
+    }
+
+    return Allocated {
+      budget: budget,
+      remaining: budget.approved_amount - budget.allocated_amount
+    }
+  }
+}

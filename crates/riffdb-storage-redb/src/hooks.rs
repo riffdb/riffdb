@@ -1,6 +1,7 @@
 //! Closed, redaction-safe storage diagnostics and process-test failpoints.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use riffdb_storage_api::{StorageError, StorageErrorKind};
@@ -81,8 +82,10 @@ pub struct RedbTestController {
 }
 
 struct TestControllerInner {
-    armed: Option<ArmedFailpoint>,
-    fired: AtomicBool,
+    /// Closed failpoint sequence for one operation. Each matching phase hit
+    /// consumes the front step whose phase matches; unmatched phases are ignored.
+    operation: Option<RedbTestOperation>,
+    steps: Mutex<VecDeque<(RedbTestPhase, FailpointAction)>>,
     events: Mutex<Vec<RedbTestEvent>>,
     index_migration: Mutex<IndexMigrationObservation>,
     audit_sequence_begin_reads: AtomicU64,
@@ -93,13 +96,6 @@ struct IndexMigrationObservation {
     pages: usize,
     v1_rewrites: usize,
     v2_confirms: usize,
-}
-
-#[derive(Clone, Copy)]
-struct ArmedFailpoint {
-    operation: RedbTestOperation,
-    phase: RedbTestPhase,
-    action: FailpointAction,
 }
 
 #[derive(Clone, Copy)]
@@ -115,8 +111,8 @@ impl RedbTestController {
     pub fn observe_index_migration() -> Self {
         Self {
             inner: Arc::new(TestControllerInner {
-                armed: None,
-                fired: AtomicBool::new(false),
+                operation: None,
+                steps: Mutex::new(VecDeque::new()),
                 events: Mutex::new(Vec::new()),
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
@@ -184,6 +180,50 @@ impl RedbTestController {
         )
     }
 
+    /// First matching before-commit returns Unavailable; the second aborts the process.
+    ///
+    /// Used by shutdown-path checkpoint crash arms: the startup finish write is
+    /// non-fatally rejected (clean flag set, no durable checkpoint), then the
+    /// public [`crate::RedbOperationalPorts::write_validated_prefix_checkpoint`]
+    /// entry is the write that aborts.
+    #[must_use]
+    pub fn return_before_then_abort_before(operation: RedbTestOperation) -> Self {
+        Self::sequence(
+            operation,
+            &[
+                (
+                    RedbTestPhase::BeforeEngineCommit,
+                    FailpointAction::ReturnBeforeCommit,
+                ),
+                (
+                    RedbTestPhase::BeforeEngineCommit,
+                    FailpointAction::AbortProcess,
+                ),
+            ],
+        )
+    }
+
+    /// First matching before-commit returns Unavailable; the next after-commit aborts.
+    ///
+    /// Startup finish write is non-fatally rejected; the subsequent public
+    /// checkpoint write commits, then the process aborts.
+    #[must_use]
+    pub fn return_before_then_abort_after(operation: RedbTestOperation) -> Self {
+        Self::sequence(
+            operation,
+            &[
+                (
+                    RedbTestPhase::BeforeEngineCommit,
+                    FailpointAction::ReturnBeforeCommit,
+                ),
+                (
+                    RedbTestPhase::AfterEngineCommit,
+                    FailpointAction::AbortProcess,
+                ),
+            ],
+        )
+    }
+
     /// Returns the bounded redaction-safe event history.
     #[must_use]
     pub fn events(&self) -> Vec<RedbTestEvent> {
@@ -205,14 +245,14 @@ impl RedbTestController {
     }
 
     fn new(operation: RedbTestOperation, phase: RedbTestPhase, action: FailpointAction) -> Self {
+        Self::sequence(operation, &[(phase, action)])
+    }
+
+    fn sequence(operation: RedbTestOperation, steps: &[(RedbTestPhase, FailpointAction)]) -> Self {
         Self {
             inner: Arc::new(TestControllerInner {
-                armed: Some(ArmedFailpoint {
-                    operation,
-                    phase,
-                    action,
-                }),
-                fired: AtomicBool::new(false),
+                operation: Some(operation),
+                steps: Mutex::new(steps.iter().copied().collect()),
                 events: Mutex::new(Vec::new()),
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
@@ -285,15 +325,15 @@ impl RedbTestController {
         operation: RedbTestOperation,
         phase: RedbTestPhase,
     ) -> Option<FailpointAction> {
-        let armed = self.inner.armed?;
-        if armed.operation != operation || armed.phase != phase {
+        if self.inner.operation != Some(operation) {
             return None;
         }
-        self.inner
-            .fired
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .ok()
-            .map(|_| armed.action)
+        let mut steps = self.inner.steps.lock().ok()?;
+        let front = steps.front()?;
+        if front.0 != phase {
+            return None;
+        }
+        steps.pop_front().map(|(_, action)| action)
     }
 }
 
