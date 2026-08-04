@@ -67,7 +67,7 @@ for root in "$@"; do
                 ;;
             *.rs|*.ts|*.tsx|*.js|*.jsx)
                 if rg -n \
-                    'RiffDbClient|GetEntityRequest|ScanIndexRequest|FieldSelection|NamedQueryResult|NamedQuery::new|IdempotentCommand|execute_application_command|entity_type_id|field_visibility|capability_mask|encoded[_A-Za-z]*key|tonic::|prost::|riffdb_client_rust::v1|[[:<:]]v1::' \
+                    'RiffDbClient|GetEntityRequest|ScanIndexRequest|FieldSelection|NamedQueryResult|NamedQuery::new|IdempotentCommand|execute_application_command|entity_type_id|field_visibility|capability_mask|encoded[_A-Za-z]*key|tonic::|prost::|riffdb_client_rust::v1|[[:<:]]v1::|as[[:space:]]+unknown[[:space:]]+as[[:space:]]+ReactiveApplicationTransport' \
                     "$file" >/dev/null; then
                     echo "$file: handwritten application code crosses the RiffDB kernel boundary" >&2
                     status=1

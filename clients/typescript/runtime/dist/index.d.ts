@@ -128,6 +128,28 @@ export interface ReactiveConsumerBatch<E> {
     readonly waitTimedOut: boolean;
     readonly status: ReactiveConsumerStatus;
 }
+export interface ContextualHydration {
+    readonly name: string;
+    readonly outcome: string;
+    readonly fields: Readonly<Record<string, unknown>>;
+}
+export interface ContextualReaction {
+    readonly name: string;
+    readonly commandName: string;
+    readonly commandId: number;
+    readonly causationToken: string;
+}
+export interface ContextualWorkItem<E> {
+    readonly delivery: ReactiveEventDelivery<E>;
+    readonly contextHead: bigint;
+    readonly hydrations: ReadonlyArray<ContextualHydration>;
+    readonly availableReactions: ReadonlyArray<ContextualReaction>;
+}
+export interface ContextualBatch<E> {
+    readonly items: ReadonlyArray<ContextualWorkItem<E>>;
+    readonly waitTimedOut: boolean;
+    readonly status: ReactiveConsumerStatus;
+}
 export interface ReactiveConsumerStatus {
     readonly revision: bigint;
     readonly checkpoint: string;
@@ -196,6 +218,11 @@ export declare class CliApplicationTransport {
     negativeAcknowledgeEvent<P>(request: ReactiveConsumerRequest<P>, delivery: ReactiveEventDelivery<unknown>, retryDelayMs?: number): Promise<ReactiveEventMutationResult>;
     seekEventConsumer<P>(request: ReactiveConsumerRequest<P>, checkpoint: string): Promise<ReactiveEventMutationResult>;
     eventConsumerStatus<P>(request: ReactiveConsumerRequest<P>): Promise<ReactiveConsumerStatus | undefined>;
+    consumeContextualSubscription<P, E>(request: ReactiveConsumerRequest<P>, maximumWaitMs?: number): Promise<ContextualBatch<E>>;
+    acknowledgeContextualItem<P>(request: ReactiveConsumerRequest<P>, item: ContextualWorkItem<unknown>): Promise<ReactiveEventMutationResult>;
+    negativeAcknowledgeContextualItem<P>(request: ReactiveConsumerRequest<P>, item: ContextualWorkItem<unknown>, retryDelayMs?: number): Promise<ReactiveEventMutationResult>;
+    contextualSubscriptionStatus<P>(request: ReactiveConsumerRequest<P>): Promise<ReactiveConsumerStatus | undefined>;
+    executeContextualReaction<P, I, R>(request: ReactiveConsumerRequest<P>, reaction: ContextualReaction, command: CommandRequest<I, R>): Promise<TypedCommandResult<R>>;
     watchNamedQuery<P, T>(request: {
         readonly reactiveModuleHash: string;
         readonly operationName: string;
@@ -204,6 +231,7 @@ export declare class CliApplicationTransport {
         readonly cursor?: string;
     }): AsyncIterable<LiveQueryUpdate<T>>;
     private mutateEventLease;
+    private mutateContextualItem;
     private reactiveArguments;
     private baseArguments;
     private invoke;
