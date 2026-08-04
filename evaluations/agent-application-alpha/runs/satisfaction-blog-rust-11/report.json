@@ -1,0 +1,29 @@
+{
+  "schema": "riffdb-agent-application-alpha-run/v1",
+  "run_id": "satisfaction-blog-rust-11",
+  "bundle_hash": "63f3e4e51c0065e6a20bf402cd7311ec3d4925aad481d18fd3c4469b7b65a5ca",
+  "agent_identity": "codex-satisfaction-blog-rust-11",
+  "domain": "blog",
+  "language": "rust",
+  "independent": true,
+  "fresh_context": true,
+  "human_interventions": 0,
+  "kernel_attempts": 0,
+  "kernel_successes": 0,
+  "handwritten_glue_lines": 0,
+  "compiler_failures": 3,
+  "runtime_failures": 0,
+  "unsupported_shapes": [],
+  "first_write_seconds": 293,
+  "first_page_read_seconds": 293,
+  "time_to_complete_seconds": 307,
+  "source_access": {
+    "riffdb_implementation": false,
+    "ticketdesk": false
+  },
+  "boundary_passed": true,
+  "golden_passed": true,
+  "rating": 9.2,
+  "explanation": "The complete unfamiliar Blog/CMS workload compiled and ran from the sealed public bundle: typed commands model sites, authors, draft/published posts, comments, tags, and moderation; bounded generated RiffQL operations cover feed, moderation, slug lookup, and a single post-detail request with author, comments, and tags. The generated Rust client committed AddComment and performed the fenced PostDetail read; every returned identity matched the exact lock. Public diagnostics supported normal source correction. The documented sealed Cargo environment was required for the offline build; without it Cargo could not locate the bundled SDK. No human intervention, kernel API, source inspection, or handwritten RiffDB adaptation was used.",
+  "transcript_sha256": "3e14866db14f7982d56defe6eb2da02271f142a0d2bf82543ef58928b9577477"
+}

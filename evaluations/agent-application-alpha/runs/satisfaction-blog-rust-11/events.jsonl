@@ -1,0 +1,13 @@
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":0,"kind":"start","operation":"blog-rust"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":12000,"kind":"tool","operation":"riffdb.new"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":83000,"kind":"compiler_failure","code":"RDB-C020","operation":"application.check"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":97000,"kind":"compiler_failure","code":"RDB-QP003","operation":"application.check"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":164000,"kind":"compiler_failure","code":"cargo.offline_dependency_unresolved","operation":"cargo.check"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":196000,"kind":"tool","operation":"application.lock"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":240000,"kind":"tool","operation":"application.boundary_check"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":292000,"kind":"tool","operation":"dev.acceptance"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":293000,"kind":"first_write","operation":"AddComment"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":293000,"kind":"first_page_read","operation":"PostDetail"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":294000,"kind":"source_access","code":"public_bundle_only"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":307000,"kind":"complete","operation":"blog-rust"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":307000,"kind":"rating","operation":"blog-rust"}
