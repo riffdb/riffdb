@@ -39,7 +39,10 @@ pub use backup::{
 pub use durable_fixtures::{MigrationDurableFixture, migration_durable_fixture_set};
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
-pub use fixtures::downgrade_all_index_rows_to_v1_fixture;
+pub use fixtures::{
+    downgrade_all_index_rows_to_v1_fixture,
+    read_validated_prefix_checkpoint_commit_sequence_fixture,
+};
 #[doc(hidden)]
 pub use hooks::{RedbTestController, RedbTestEvent, RedbTestOperation, RedbTestPhase};
 #[cfg(feature = "test-fixtures")]

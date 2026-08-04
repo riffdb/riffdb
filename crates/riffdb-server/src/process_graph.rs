@@ -1204,6 +1204,34 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_shutdown_writes_the_checkpoint_after_the_final_port_drain() {
+        // ADR-0019 A1 applies to BOTH graceful teardown paths: the maintenance
+        // shutdown must also place the checkpoint write after the blocking
+        // ports drain (the last commit-capable stage) and before the pure
+        // error aggregation.
+        let source = production_source();
+        let body = source
+            .split_once("pub(crate) async fn shutdown_for_maintenance")
+            .expect("maintenance shutdown method")
+            .1
+            // Bound the body to this method only (the helper definition follows).
+            .split_once("\nfn write_shutdown_validated_prefix_checkpoint")
+            .expect("checkpoint helper follows the maintenance shutdown")
+            .0;
+        let drain_boundary = body
+            .find("MaintenanceRecoveryBoundary::DrainComplete")
+            .expect("maintenance drain boundary");
+        let ports = body.find("let blocking = self").expect("port drain");
+        let checkpoint = body
+            .find("write_shutdown_validated_prefix_checkpoint")
+            .expect("maintenance checkpoint write");
+        let aggregation = body.find("shutdown_result(").expect("error aggregation");
+        assert!(drain_boundary < ports);
+        assert!(ports < checkpoint);
+        assert!(checkpoint < aggregation);
+    }
+
+    #[test]
     fn shutdown_checkpoint_write_failure_is_non_fatal() {
         // Falsifiability (a): making the write fatal (propagating Err into
         // shutdown_result) must fail this pin — the write is deliberately

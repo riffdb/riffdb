@@ -141,6 +141,28 @@ fn run_crashing_child(mode: &str, path: &Path) {
     run_crashing_child_with_profile(mode, path, RedbCommitProfile::Standard);
 }
 
+/// Every armed child terminates through `std::process::abort()` (SIGABRT).
+/// Discriminating on the signal keeps 'before' arms honest: a child that
+/// panics without reaching its failpoint exits with a plain nonzero code and
+/// must fail here instead of passing the parent's negative assertions vacuously.
+fn assert_child_aborted(status: std::process::ExitStatus, label: &str) {
+    assert!(
+        !status.success(),
+        "the armed {label} child must terminate abruptly"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        const SIGABRT: i32 = 6;
+        assert_eq!(
+            status.signal(),
+            Some(SIGABRT),
+            "the armed {label} child must die on SIGABRT at its failpoint, \
+             not exit through an unrelated panic (status {status})"
+        );
+    }
+}
+
 fn run_crashing_child_prune(mode: &str, path: &Path, prune_target: u64) {
     let status = Command::new(std::env::current_exe().expect("current test executable"))
         .arg("--exact")
@@ -155,10 +177,7 @@ fn run_crashing_child_prune(mode: &str, path: &Path, prune_target: u64) {
         .stderr(Stdio::null())
         .status()
         .expect("run recovery prune child");
-    assert!(
-        !status.success(),
-        "the armed prune child must terminate abruptly"
-    );
+    assert_child_aborted(status, "prune");
 }
 
 fn run_crashing_child_with_profile(mode: &str, path: &Path, profile: RedbCommitProfile) {
@@ -178,7 +197,7 @@ fn run_crashing_child_with_profile(mode: &str, path: &Path, profile: RedbCommitP
         .stderr(Stdio::null())
         .status()
         .expect("run recovery child");
-    assert!(!status.success(), "the armed child must terminate abruptly");
+    assert_child_aborted(status, "recovery");
 }
 
 fn complete_startup_pass(

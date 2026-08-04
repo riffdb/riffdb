@@ -1,0 +1,6 @@
+reactive BudgetActivity version 1 {
+  stream BudgetAllocations($organization_id: Budget.organization_id) {
+    partition (organization_id = $organization_id);
+    event BudgetAllocated select (organization_id, fiscal_year, matter_id, amount);
+  }
+}
