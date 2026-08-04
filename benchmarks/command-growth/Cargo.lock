@@ -693,6 +693,7 @@ version = "0.1.0"
 dependencies = [
  "riffdb-contract-ir",
  "riffdb-query-ir",
+ "riffdb-query-syntax",
  "riffdb-riffql-syntax",
  "riffdb-types",
 ]
@@ -723,10 +724,15 @@ dependencies = [
  "riffdb-contract-syntax",
  "riffdb-query-compiler",
  "riffdb-query-ir",
+ "riffdb-query-syntax",
  "riffdb-riffql-syntax",
  "riffdb-types",
  "serde_json",
 ]
+
+[[package]]
+name = "riffdb-query-syntax"
+version = "0.1.0"
 
 [[package]]
 name = "riffdb-riffql-syntax"
