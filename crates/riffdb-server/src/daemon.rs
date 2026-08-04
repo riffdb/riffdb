@@ -493,7 +493,8 @@ async fn run_server(
     let lifecycle_for_grpc: Arc<dyn GrpcLifecycleRoute> = lifecycle.clone();
     let limits = GrpcRequestLimits::new(REQUEST_DURATION_LIMIT)
         .map_err(|_| DaemonError::GrpcConfiguration)?;
-    let application = GrpcApplication::new(lifecycle_for_grpc, limits);
+    let application =
+        GrpcApplication::new_with_audience(lifecycle_for_grpc, limits, config.audience().clone());
     let mut transport = HostedGrpc::bind(config.listen_address(), &application)?;
     drop(application);
     let (maintenance_storage, reconciliation) =
@@ -2799,7 +2800,8 @@ async fn start_generation(
     let lifecycle_for_grpc: Arc<dyn GrpcLifecycleRoute> = lifecycle.clone();
     let limits = GrpcRequestLimits::new(REQUEST_DURATION_LIMIT)
         .map_err(|_| DaemonError::GrpcConfiguration)?;
-    let application = GrpcApplication::new(lifecycle_for_grpc, limits);
+    let application =
+        GrpcApplication::new_with_audience(lifecycle_for_grpc, limits, config.audience().clone());
     let mut transport = HostedGrpc::bind(listen_address, &application)?;
     let graph = match ProductionGraphBuilder::new(
         startup,
