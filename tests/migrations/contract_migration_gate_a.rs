@@ -50,6 +50,11 @@ const SHUTDOWN: &[u8] = b"shutdown\n";
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 const STOP_TIMEOUT: Duration = Duration::from_secs(20);
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
+/// Hang ceiling only: the terminal wait ends on migration phase state.
+/// Sized for full-workspace parallel load, not isolation runs.
+const MIGRATION_TERMINAL_HANG_CEILING: Duration = Duration::from_secs(600);
+/// Backoff between terminal polls so a tight spin cannot starve the child daemon.
+const MIGRATION_TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const CAPABILITY_LIFETIME_SECONDS: u32 = 3_600;
 const VALID_TICKET_COUNT: usize = 70;
 const ORGANIZATION_ID: [u8; 16] = [0x41; 16];
@@ -633,13 +638,18 @@ fn command(
     )?)
 }
 
+/// Wait until the migration operation reaches a terminal phase.
+///
+/// Completes on observed state (Succeeded / FailedClosed / FailedRolledBack).
+/// The hang ceiling is only a safety net under a wedged daemon — it is not the
+/// success condition and must stay generous under full-workspace CPU load.
 async fn poll_terminal_migration(
     client: &mut RiffDbClient,
     address: SocketAddr,
     operation_id: riffdb_types::ContractMigrationOperationId,
     metadata: &CallMetadata,
 ) -> TestResult<v1::ContractMigrationOperation> {
-    timeout(START_TIMEOUT, async {
+    timeout(MIGRATION_TERMINAL_HANG_CEILING, async {
         loop {
             let request = v1::GetContractMigrationOperationRequest {
                 request_id: fresh_request_id_bytes()?,
@@ -667,11 +677,15 @@ async fn poll_terminal_migration(
                     *client = connect_eventually(address).await?;
                 }
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(MIGRATION_TERMINAL_POLL_INTERVAL).await;
         }
     })
     .await
-    .map_err(|_| test_failure("migration did not become terminal"))?
+    .map_err(|_| {
+        test_failure(format!(
+            "migration did not become terminal within hang ceiling ({MIGRATION_TERMINAL_HANG_CEILING:?})"
+        ))
+    })?
 }
 
 fn assert_terminal_success(
