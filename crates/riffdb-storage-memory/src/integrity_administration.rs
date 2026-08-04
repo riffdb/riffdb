@@ -572,6 +572,9 @@ fn service_link_is_valid(state: &MemoryState, record: &StoredServiceAuditRecordV
                     ServiceOperationV1::DeployQueryModule,
                     StoredAdministrationAuditRecordV1::QueryModule(_)
                 ) | (
+                    ServiceOperationV1::DeployReactiveModule,
+                    StoredAdministrationAuditRecordV1::ReactiveModule(_)
+                ) | (
                     ServiceOperationV1::CreateCapability,
                     StoredAdministrationAuditRecordV1::Capability(_)
                 ) | (

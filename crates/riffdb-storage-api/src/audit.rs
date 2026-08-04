@@ -734,10 +734,15 @@ fn validate_service_audit_phase_link(
                 operation,
                 ServiceOperationV1::ExecuteCommand | ServiceOperationV1::ResolveCommandOutcome
             ),
+            // Every operation named here has a live emitter of a linked
+            // success. The five coordinator control-plane operations finish
+            // through `ControlPlaneTerminalAudit::Succeeded`, and the redb
+            // migration cutover stage appends `ApplyContractMigration` itself.
             ServiceAuditLinkV1::ControlPlane { .. } => matches!(
                 operation,
                 ServiceOperationV1::DeployContract
                     | ServiceOperationV1::DeployQueryModule
+                    | ServiceOperationV1::DeployReactiveModule
                     | ServiceOperationV1::ApplyContractMigration
                     | ServiceOperationV1::CreateCapability
                     | ServiceOperationV1::RevokeCapability
@@ -1267,23 +1272,94 @@ mod tests {
         );
     }
 
-    #[test]
-    fn service_audit_phase_and_link_matrix_is_exhaustive() {
-        let command = ServiceAuditLinkV1::Command {
+    /// Operations whose successful terminal audit names a command result.
+    ///
+    /// Ground truth is the emitting code, never this table. `ExecuteCommand`
+    /// success is linked by `riffdb-commit`'s
+    /// `prepare_command_terminal_audit`; `ResolveCommandOutcome` is retained as
+    /// a still-permitted shape whose service path currently carries no audit
+    /// class, so it emits nothing.
+    const COMMAND_LINKED_SUCCESS_OPERATIONS: &[ServiceOperationV1] = &[
+        ServiceOperationV1::ExecuteCommand,
+        ServiceOperationV1::ResolveCommandOutcome,
+    ];
+
+    /// Operations whose successful terminal audit names an authoritative
+    /// administration transition.
+    ///
+    /// Every entry has a live emitter: the five service-coordinator control
+    /// plane operations finish through `ControlPlaneTerminalAudit::Succeeded`,
+    /// and `ApplyContractMigration` is appended by the redb migration cutover
+    /// stage.
+    const CONTROL_PLANE_LINKED_SUCCESS_OPERATIONS: &[ServiceOperationV1] = &[
+        ServiceOperationV1::DeployContract,
+        ServiceOperationV1::DeployQueryModule,
+        ServiceOperationV1::DeployReactiveModule,
+        ServiceOperationV1::ApplyContractMigration,
+        ServiceOperationV1::CreateCapability,
+        ServiceOperationV1::RevokeCapability,
+    ];
+
+    /// Operations that may never record a success without an authoritative link.
+    ///
+    /// This is deliberately narrower than the union of the two link tables:
+    /// `DeployReactiveModule` produces only linked successes today, but its
+    /// linkless-success allowance predates this table and tightening a durable
+    /// write validator is a maintainer decision, not a drift repair.
+    const LINKLESS_SUCCESS_EXCLUSIONS: &[ServiceOperationV1] = &[
+        ServiceOperationV1::ExecuteCommand,
+        ServiceOperationV1::ResolveCommandOutcome,
+        ServiceOperationV1::DeployContract,
+        ServiceOperationV1::DeployQueryModule,
+        ServiceOperationV1::ApplyContractMigration,
+        ServiceOperationV1::CreateCapability,
+        ServiceOperationV1::RevokeCapability,
+    ];
+
+    fn command_link() -> ServiceAuditLinkV1 {
+        ServiceAuditLinkV1::Command {
             commit_sequence: riffdb_types::CommitSequence::first(),
             provenance_id: riffdb_types::ProvenanceId::from_bytes([
                 0x01, 0x8f, 0x00, 0x00, 0x00, 0x00, 0x70, 0x01, 0x80, 0x02, 0x00, 0x00, 0x00, 0x00,
                 0x00, 0x03,
             ])
             .expect("valid UUIDv7"),
-        };
-        let control = ServiceAuditLinkV1::ControlPlane {
-            administration_sequence: AdministrationSequence::first(),
-        };
+        }
+    }
 
+    fn control_plane_link() -> ServiceAuditLinkV1 {
+        ServiceAuditLinkV1::ControlPlane {
+            administration_sequence: AdministrationSequence::first(),
+        }
+    }
+
+    fn standalone_intent(
+        operation: ServiceOperationV1,
+        phase: ServiceAuditPhaseV1,
+        link: ServiceAuditLinkV1,
+    ) -> Result<ServiceAuditAppendIntentV1, StorageValueError> {
+        ServiceAuditAppendIntentV1::new(
+            bootstrap_start().request_id(),
+            Timestamp::new(9, 10).expect("timestamp"),
+            operation,
+            phase,
+            audit_principal(),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            link,
+        )
+    }
+
+    #[test]
+    fn service_audit_phase_and_link_matrix_is_exhaustive() {
         for operation in ServiceOperationV1::ALL {
             for phase in ServiceAuditPhaseV1::ALL {
-                for link in [ServiceAuditLinkV1::None, command, control] {
+                for link in [
+                    ServiceAuditLinkV1::None,
+                    command_link(),
+                    control_plane_link(),
+                ] {
                     let expected = match phase {
                         ServiceAuditPhaseV1::Started
                         | ServiceAuditPhaseV1::Denied
@@ -1293,29 +1369,15 @@ mod tests {
                             matches!(link, ServiceAuditLinkV1::None)
                         }
                         ServiceAuditPhaseV1::Succeeded => match link {
-                            ServiceAuditLinkV1::None => !matches!(
-                                operation,
-                                ServiceOperationV1::ExecuteCommand
-                                    | ServiceOperationV1::ResolveCommandOutcome
-                                    | ServiceOperationV1::DeployContract
-                                    | ServiceOperationV1::DeployQueryModule
-                                    | ServiceOperationV1::ApplyContractMigration
-                                    | ServiceOperationV1::CreateCapability
-                                    | ServiceOperationV1::RevokeCapability
-                            ),
-                            ServiceAuditLinkV1::Command { .. } => matches!(
-                                operation,
-                                ServiceOperationV1::ExecuteCommand
-                                    | ServiceOperationV1::ResolveCommandOutcome
-                            ),
-                            ServiceAuditLinkV1::ControlPlane { .. } => matches!(
-                                operation,
-                                ServiceOperationV1::DeployContract
-                                    | ServiceOperationV1::DeployQueryModule
-                                    | ServiceOperationV1::ApplyContractMigration
-                                    | ServiceOperationV1::CreateCapability
-                                    | ServiceOperationV1::RevokeCapability
-                            ),
+                            ServiceAuditLinkV1::None => {
+                                !LINKLESS_SUCCESS_EXCLUSIONS.contains(&operation)
+                            }
+                            ServiceAuditLinkV1::Command { .. } => {
+                                COMMAND_LINKED_SUCCESS_OPERATIONS.contains(&operation)
+                            }
+                            ServiceAuditLinkV1::ControlPlane { .. } => {
+                                CONTROL_PLANE_LINKED_SUCCESS_OPERATIONS.contains(&operation)
+                            }
                         },
                     };
                     assert_eq!(
@@ -1326,5 +1388,64 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn linkless_success_exclusions_only_name_link_producing_operations() {
+        for operation in LINKLESS_SUCCESS_EXCLUSIONS {
+            assert!(
+                COMMAND_LINKED_SUCCESS_OPERATIONS.contains(operation)
+                    || CONTROL_PLANE_LINKED_SUCCESS_OPERATIONS.contains(operation),
+                "{operation:?} may not record a linkless success yet produces no link"
+            );
+        }
+    }
+
+    #[test]
+    fn deploy_reactive_module_success_accepts_its_own_control_plane_link() {
+        // Regression (production defect): the coordinator finishes a successful
+        // DeployReactiveModule with Succeeded + ControlPlane, but this validator
+        // omitted the operation from its control-plane arm. The append intent
+        // for the publication's own audit record failed InvalidShape, the
+        // service mapped the failed Succeeded finish to outcome_unknown, and the
+        // module was reported uncertain while already durably published.
+        assert!(
+            standalone_intent(
+                ServiceOperationV1::DeployReactiveModule,
+                ServiceAuditPhaseV1::Succeeded,
+                control_plane_link(),
+            )
+            .is_ok(),
+            "a published reactive module must be able to record its own success"
+        );
+        assert!(
+            validate_service_audit_phase_link(
+                ServiceOperationV1::DeployReactiveModule,
+                ServiceAuditPhaseV1::Succeeded,
+                control_plane_link(),
+            )
+            .is_ok()
+        );
+        assert!(
+            reconstruct_service_record(
+                AdministrationSequence::new(4).expect("sequence four"),
+                ServiceOperationV1::DeployReactiveModule,
+                ServiceAuditPhaseV1::Succeeded,
+                Some(audit_principal()),
+                ServiceIngressKindV1::Grpc,
+                control_plane_link(),
+            )
+            .is_ok(),
+            "the durable record must reconstruct on the startup structural pass"
+        );
+        assert_eq!(
+            standalone_intent(
+                ServiceOperationV1::DeployReactiveModule,
+                ServiceAuditPhaseV1::Succeeded,
+                command_link(),
+            ),
+            Err(StorageValueError::InvalidShape),
+            "a reactive publication never resolves to a command result"
+        );
     }
 }

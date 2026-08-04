@@ -7150,3 +7150,50 @@ work_packages:
     panicking or reserving remote-chosen capacity; encode-into is byte-identical to the
     allocating encoder and leaves a rejected cell out of the caller's buffer entirely.
   human_review_triggers: *id001
+- id: WP-435
+  name: DeployReactiveModule audit link allowlist repair and cross-crate pin (FX)
+  depends_on: [WP-434]
+  objective: Repair the confirmed production defect in which a successful DeployReactiveModule
+    publication could not record its own terminal audit record — every storage-side
+    phase/link and link-reciprocity validator omitted the operation from its control-plane
+    arm, so the coordinator's Succeeded append failed and the RPC reported outcome_unknown
+    for an already durable module — and pin the service and storage allowlists against
+    each other so they cannot drift apart again.
+  requirements: []
+  required_adrs: [ADR-0021]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-api/src/audit.rs, crates/riffdb-service/src/audit.rs,
+    crates/riffdb-storage-redb/src/administration.rs, crates/riffdb-storage-redb/src/startup.rs,
+    crates/riffdb-storage-memory/src/administration.rs, crates/riffdb-storage-memory/src/integrity_administration.rs,
+    tests/grpc/**]
+  deliverables:
+  - DeployReactiveModule accepted with a Succeeded control-plane link by the storage-api
+    phase/link validator, by the redb and memory write-time link-reciprocity checks, and
+    by the redb startup and memory integrity structural passes, with no existing allowance
+    narrowed and no durable encoding, schema hash, or registry pin touched
+  - Storage-api unit matrix driven by declarative operation tables instead of a copy of
+    the implementation match, plus a named regression case asserting the exact previously
+    rejected DeployReactiveModule/Succeeded/ControlPlane append intent and stored record
+  - Cross-crate pin in riffdb-service asserting the service pre-check and the durable
+    storage validator name the same operations for each authoritative link kind, with the
+    single storage-only exception (ApplyContractMigration, appended by the redb migration
+    cutover stage) listed with evidence rather than silently tolerated
+  - Real-daemon acceptance that the DeployReactiveModule RPC reports PUBLISHED and that
+    the durable administration stream carries exactly one Started and one Succeeded record
+    whose control-plane link names the reactive publication's own transition
+  - The pruned-history acceptance publishes its stream module through the daemon RPC
+    instead of routing around the defect through the offline storage repository
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api --lib --all-features -- audit::tests
+  - cargo +1.97.0 test -p riffdb-service --lib --all-features -- audit::tests
+  - cargo +1.97.0 test -p riffdb-server --test p1_riffdbd_restart --all-features
+  - cargo +1.97.0 test --workspace --all-features
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  exit_gate: A reactive module published through the real daemon returns PUBLISHED rather than
+    outcome_unknown and its Succeeded control-plane audit record is durable and reciprocal
+    across a full startup structural pass; re-removing the operation from the storage-api
+    control-plane arm turns the unit matrix, the cross-crate pin, and the real-daemon
+    acceptance red; the full workspace battery reports zero failures.
+  human_review_triggers: *id001

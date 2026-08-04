@@ -420,12 +420,26 @@ fn version_and_projection(
 #[cfg(test)]
 mod tests {
     use riffdb_policy::ProvenanceSelector;
+    use riffdb_storage_api::{AuditPrincipalV1, ServiceAuditAppendIntentV1};
     use riffdb_types::{
-        CapabilityId, CommandId, CommitSequence, ContractLineage, ContractVersion, EntityTypeId,
-        IndexId, ProjectionId, ProvenanceId,
+        AdministrationSequence, CapabilityId, CommandId, CommitSequence, ContractLineage,
+        ContractVersion, EntityTypeId, IndexId, ProjectionId, ProvenanceId, Timestamp,
     };
 
     use super::*;
+
+    /// Operations whose authoritative-link allowance may differ between the two
+    /// validators because they never reach `ServiceAuditInput`.
+    ///
+    /// `ApplyContractMigration` has no service coordinator path at all: the redb
+    /// migration cutover stage builds its own `ServiceAuditAppendIntentV1`
+    /// in-transaction (`riffdb-storage-redb/src/migration_stage.rs`), so the
+    /// storage validator must accept the pairing while this module's matrix
+    /// never sees it. Removing the storage allowance would break the migration
+    /// cutover; adding it here would widen a service pre-check that has no
+    /// emitter. Any NEW entry in this list needs the same kind of evidence.
+    const STORAGE_ONLY_LINKED_OPERATIONS: &[ServiceOperationV1] =
+        &[ServiceOperationV1::ApplyContractMigration];
 
     #[test]
     fn only_succeeded_may_carry_an_authoritative_result_link() {
@@ -811,5 +825,112 @@ mod tests {
         bytes[6] = 0x70 | (seed & 0x0f);
         bytes[8] = 0x80 | (seed & 0x3f);
         bytes
+    }
+
+    /// Probes the durable storage validator through its only public entry point.
+    fn storage_accepts(
+        operation: ServiceOperationV1,
+        phase: ServiceAuditPhaseV1,
+        link: ServiceAuditLinkV1,
+    ) -> bool {
+        ServiceAuditAppendIntentV1::new(
+            RequestId::from_bytes(uuid_bytes(0x71)).expect("UUIDv7"),
+            Timestamp::new(11, 12).expect("timestamp"),
+            operation,
+            phase,
+            AuditPrincipalV1::new(
+                ActorId::new("maintainer").expect("principal ID"),
+                ActorKind::Human,
+                CapabilityId::from_bytes(uuid_bytes(0x72)).expect("UUIDv7"),
+                NonZeroU64::MIN,
+            ),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            link,
+        )
+        .is_ok()
+    }
+
+    /// Cross-crate pin: the service pre-check and the durable storage validator
+    /// must name the SAME operations for each authoritative link kind.
+    ///
+    /// These two allowlists live in different crates and drifted apart in both
+    /// directions: the service accepted `DeployReactiveModule` with a
+    /// control-plane link while storage rejected it, so a published reactive
+    /// module could not record its own success and the RPC reported
+    /// `outcome_unknown`. The service check runs first and therefore cannot
+    /// detect its own over-permissiveness — only this comparison can.
+    #[test]
+    fn service_and_storage_authoritative_link_allowlists_agree() {
+        let command = ServiceAuditLinkV1::Command {
+            commit_sequence: CommitSequence::first(),
+            provenance_id: ProvenanceId::from_bytes(uuid_bytes(0x73)).expect("UUIDv7"),
+        };
+        let control = ServiceAuditLinkV1::ControlPlane {
+            administration_sequence: AdministrationSequence::first(),
+        };
+
+        for operation in ServiceOperationV1::ALL {
+            for link in [command, control] {
+                let service =
+                    validate_phase_link(operation, ServiceAuditPhaseV1::Succeeded, link).is_ok();
+                let storage = storage_accepts(operation, ServiceAuditPhaseV1::Succeeded, link);
+                if STORAGE_ONLY_LINKED_OPERATIONS.contains(&operation) {
+                    assert!(
+                        !service,
+                        "{operation:?} is documented as storage-only yet the service accepts {link:?}"
+                    );
+                    continue;
+                }
+                assert_eq!(
+                    service, storage,
+                    "allowlist drift for {operation:?} with {link:?}: \
+                     service accepts={service}, storage accepts={storage}"
+                );
+            }
+        }
+    }
+
+    /// Pin the one remaining asymmetry so it cannot silently grow.
+    ///
+    /// The service pre-check permits a linkless success for every operation; the
+    /// durable validator additionally forbids it for operations whose success is
+    /// always linked. That direction is safe (storage stays authoritative), but
+    /// every storage rejection must correspond to an operation that really does
+    /// produce a link, otherwise a reachable success shape is unwritable.
+    #[test]
+    fn every_linkless_success_the_service_permits_is_either_writable_or_always_linked() {
+        let command = ServiceAuditLinkV1::Command {
+            commit_sequence: CommitSequence::first(),
+            provenance_id: ProvenanceId::from_bytes(uuid_bytes(0x74)).expect("UUIDv7"),
+        };
+        let control = ServiceAuditLinkV1::ControlPlane {
+            administration_sequence: AdministrationSequence::first(),
+        };
+
+        for operation in ServiceOperationV1::ALL {
+            assert!(
+                validate_phase_link(
+                    operation,
+                    ServiceAuditPhaseV1::Succeeded,
+                    ServiceAuditLinkV1::None,
+                )
+                .is_ok(),
+                "the service pre-check must stay a superset for linkless success"
+            );
+            if storage_accepts(
+                operation,
+                ServiceAuditPhaseV1::Succeeded,
+                ServiceAuditLinkV1::None,
+            ) {
+                continue;
+            }
+            assert!(
+                storage_accepts(operation, ServiceAuditPhaseV1::Succeeded, command)
+                    || storage_accepts(operation, ServiceAuditPhaseV1::Succeeded, control),
+                "{operation:?} can record no successful terminal audit at all"
+            );
+        }
     }
 }
