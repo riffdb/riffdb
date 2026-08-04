@@ -235,6 +235,17 @@ if ! "${operator[@]}" query deploy "$queries" \
 fi
 jq -e '.ok == true and .command == "query.deploy"' "$work_root/module.json" >/dev/null
 
+if ((generic_application)) && jq -e '(.reactive_modules | length) > 0' "$application_manifest" >/dev/null; then
+    (
+        cd "$application_root"
+        "${operator[@]}" application deploy \
+            riffdb.application.json \
+            --lock riffdb.application.lock.json
+    ) >"$work_root/application.json"
+    jq -e '.ok == true and .command == "application.deploy"' \
+        "$work_root/application.json" >/dev/null
+fi
+
 if ((generic_application)); then
     "${operator[@]}" role bind "$application_manifest" \
         --role "$role_symbol" \

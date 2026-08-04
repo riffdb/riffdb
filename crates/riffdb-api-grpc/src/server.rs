@@ -470,6 +470,20 @@ impl GrpcApplication {
         }
     }
 
+    /// Wires one route and the configured public authentication audience.
+    #[must_use]
+    pub fn new_with_audience(
+        lifecycle: Arc<dyn GrpcLifecycleRoute>,
+        limits: GrpcRequestLimits,
+        authentication_audience: Audience,
+    ) -> Self {
+        Self {
+            routes: Arc::new(GrpcDatabaseRoutes::single(lifecycle)),
+            limits,
+            authentication_audience: Some(authentication_audience),
+        }
+    }
+
     /// Wires transport-only dependencies around a checked multi-database route registry.
     #[must_use]
     pub fn with_database_routes(

@@ -1936,6 +1936,11 @@ fn assert_authenticated_health(
     expected_contract_version: Option<u64>,
     expected_last_commit_sequence: Option<u64>,
 ) -> TestResult<()> {
+    if response.authentication_audience != AUDIENCE {
+        return Err(test_failure(
+            "authenticated Health omitted the configured authentication audience",
+        ));
+    }
     let Some(v1::health_response::Result::Authenticated(report)) = response.result.as_ref() else {
         return Err(test_failure("Health did not use the authenticated result"));
     };

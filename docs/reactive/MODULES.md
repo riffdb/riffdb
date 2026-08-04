@@ -74,6 +74,10 @@ then retains the module atomically through the shared authorized control plane.
 Publishing the same immutable module again is idempotent. Reusing a name and
 version for different content is a closed version conflict.
 
+`riffdb dev` uses this same locked publication path before it binds the
+selected development role, so generated watches and contextual subscriptions
+are available when the readiness line is emitted.
+
 A durable consumer is identified by the complete tuple of reactive module hash,
 operation name, canonical typed parameters, and consumer name. It is therefore
 not silently rebound when a module changes. Within one consumer, eligible
