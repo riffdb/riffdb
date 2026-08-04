@@ -101,7 +101,7 @@ Use the exact module hash from the application lock:
 riffdb event consume \
   --module-hash <64-hex-module-hash> \
   --operation TicketEvents \
-  --parameter 'organization_id="acme"' \
+  --parameter 'organization_id={"type":"uuid","value":"018f6f50-6f31-7d62-9a7e-4f8b913d2f11"}' \
   --consumer-name ticket-worker \
   --batch-limit 4 \
   --lease-seconds 60
@@ -109,12 +109,12 @@ riffdb event consume \
 riffdb event status \
   --module-hash <64-hex-module-hash> \
   --operation TicketEvents \
-  --parameter 'organization_id="acme"' \
+  --parameter 'organization_id={"type":"uuid","value":"018f6f50-6f31-7d62-9a7e-4f8b913d2f11"}' \
   --consumer-name ticket-worker
 
 riffdb query watch \
   --module-hash <64-hex-module-hash> \
-  --parameter 'organization_id="acme"' \
+  --parameter 'organization_id={"type":"uuid","value":"018f6f50-6f31-7d62-9a7e-4f8b913d2f11"}' \
   TicketWatch
 ```
 
@@ -122,6 +122,36 @@ riffdb query watch \
 the consume or status result. `query watch` returns one update and cursor per
 invocation so shell programs can durably apply the update before reconnecting.
 See the [CLI reference](../reference/CLI.md) for every bound and option.
+
+Contextual workers use the same generated module, operation, parameters, and
+consumer identity:
+
+```bash
+riffdb contextual next \
+  --module-hash <64-hex-module-hash> \
+  --operation TriageTicket \
+  --parameter 'organization_id={"type":"uuid","value":"018f6f50-6f31-7d62-9a7e-4f8b913d2f11"}' \
+  --consumer-name triage-worker \
+  --wait-nanos 30000000000
+
+riffdb contextual react \
+  --module-hash <64-hex-module-hash> \
+  --operation TriageTicket \
+  --parameter 'organization_id={"type":"uuid","value":"018f6f50-6f31-7d62-9a7e-4f8b913d2f11"}' \
+  --consumer-name triage-worker \
+  --reaction comment \
+  --causation-token <token-from-next> \
+  --command-name CreateComment \
+  --input comment.json \
+  --expected-version 1
+```
+
+`contextual ack` and `contextual nack` require the exact event ID, lease token,
+and history incarnation returned by `contextual next`; `contextual status`
+uses only the stable consumer identity. Prefer the generated SDK helpers in
+application workers because they carry this evidence without reconstructing
+it. The raw CLI is intended for process integrations and diagnosis, and still
+uses the same authorization and application-service path as generated clients.
 
 ## MCP operations and wakeups
 

@@ -326,3 +326,100 @@ process.stdout.write(JSON.stringify({
         await rm(directory, { recursive: true, force: true });
     }
 });
+test("contextual transport preserves work evidence, hydration, reactions, and command identity", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "riffdb-typescript-contextual-"));
+    const executable = join(directory, "riffdb-fake.cjs");
+    await writeFile(executable, `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+let result;
+if (args.includes("next")) {
+  result = {
+    items: [{
+      delivery: {
+        event_id: "7:0", event_name: "TicketCreated", attempt: 1,
+        lease_token: "${"a".repeat(64)}", history_incarnation: "3",
+        expires_at: { seconds: "12", nanos: 4 },
+        fields: [{ name: "priority", value: { type: "i64", value: "42" } }],
+      },
+      context_head: "9",
+      hydrations: [{
+        name: "ticket", outcome: "Found",
+        fields: [{ name: "ticket", cardinality: 1, rows: [{
+          entity: "Ticket", fields: [{ name: "title", value: { type: "string", value: "checked" } }],
+        }] }],
+      }],
+      available_reactions: [{
+        name: "comment", command_name: "CreateComment", command_id: 4,
+        causation_token: "${"c".repeat(66)}",
+      }],
+    }],
+    wait_timed_out: false,
+    status: { revision: "2", checkpoint: "before-first", history_incarnation: "3", live_leases: 1, retries: 0, dead_letters: 0 },
+  };
+} else if (args.includes("status")) {
+  result = { found: true, status: { revision: "2", checkpoint: "before-first", history_incarnation: "3", live_leases: 1, retries: 0, dead_letters: 0 } };
+} else if (args.includes("react")) {
+  const inputPath = args[args.indexOf("--input") + 1];
+  if (!inputPath || !fs.readFileSync(inputPath, "utf8").includes("checked")) process.exit(9);
+  result = {
+    plan_hash: "${"d".repeat(64)}", outcome_type: "CommentCreated",
+    outcome: { type: "record", fields: [{ field_id: 1, value: { type: "string", value: "done" } }] },
+    contract_version: "1", commit_sequence: "10", status: "committed",
+  };
+} else {
+  result = { result: "applied" };
+}
+process.stdout.write(JSON.stringify({ schema: "riffdb.cli.output/v1", ok: true, result }) + "\\n");
+`);
+    await chmod(executable, 0o700);
+    try {
+        const transport = new CliApplicationTransport({
+            riffdbPath: executable,
+            endpoint: "http://127.0.0.1:7443",
+            credentialFile: join(directory, "credential"),
+        });
+        const request = {
+            reactiveModuleHash: "b".repeat(64),
+            operationName: "TriageTicket",
+            parameters: { organization_id: "01900000-0000-7000-8000-000000000001" },
+            parameterSchema: {
+                kind: "record",
+                fields: [{ name: "organization_id", schema: { kind: "uuid" } }],
+            },
+            consumerName: "TriageWorker",
+        };
+        const batch = await transport.consumeContextualSubscription(request, 1_000);
+        const item = batch.items[0];
+        assert.ok(item);
+        assert.equal(item.delivery.event.priority, 42n);
+        assert.equal(item.contextHead, 9n);
+        assert.deepEqual(item.hydrations[0]?.fields.ticket, { title: "checked" });
+        const reaction = item.availableReactions[0];
+        assert.ok(reaction);
+        assert.equal(await transport.acknowledgeContextualItem(request, item), "applied");
+        assert.equal(await transport.negativeAcknowledgeContextualItem(request, item, 25), "applied");
+        assert.equal((await transport.contextualSubscriptionStatus(request))?.historyIncarnation, 3n);
+        const outcome = await transport.executeContextualReaction(request, reaction, {
+            contractLineage: "TicketDesk",
+            contractVersion: 1,
+            commandName: "CreateComment",
+            planHash: "d".repeat(64),
+            input: { body: "checked" },
+            idempotencyKey: "ignored-by-contextual-service",
+            inputSchema: { kind: "record", fields: [{ name: "body", schema: { kind: "string" } }] },
+            outcomeSchemas: {
+                CommentCreated: {
+                    kind: "record",
+                    fields: [{ name: "status", schema: { kind: "string" }, wireId: 1 }],
+                },
+            },
+            decodeError: () => new Error("unexpected application error"),
+        });
+        assert.equal(outcome.commitSequence, 10n);
+        assert.deepEqual(outcome.outcome, { outcome: "CommentCreated", status: "done" });
+    }
+    finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});

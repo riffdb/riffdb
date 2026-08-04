@@ -115,32 +115,7 @@ export class CliApplicationTransport {
         const args = this.baseArguments(attemptBudget);
         args.push("command", "run", request.commandName, "--expected-version", String(request.contractVersion));
         const envelope = await this.invoke(args, input, request.decodeError);
-        const result = exactObject(envelope.result);
-        if (expectHash(result.plan_hash) !== request.planHash) {
-            throw new Error("RiffDB application identity mismatch");
-        }
-        const outcomeName = expectSymbol(result.outcome_type);
-        const schema = request.outcomeSchemas[outcomeName];
-        if (schema === undefined)
-            throw new Error("RiffDB application response has an unknown outcome");
-        const payload = decodeWire(result.outcome, schema);
-        const outcome = { outcome: outcomeName, ...exactObject(payload) };
-        const typed = {
-            outcome,
-            contractVersion: positiveNumber(result.contract_version),
-            planHash: request.planHash,
-            replayed: result.status === "replayed",
-        };
-        if (result.commit_sequence !== undefined) {
-            return {
-                ...typed,
-                commitSequence: positiveBigInt(result.commit_sequence),
-                ...(result.outcome_uri === undefined
-                    ? {}
-                    : { outcomeUri: expectBoundedString(result.outcome_uri, 4096) }),
-            };
-        }
-        return typed;
+        return decodeTypedCommandResult(exactObject(envelope.result), request);
     }
     async *consumeEventStream(request, options = {}) {
         validateReactiveRequest(request);
@@ -198,6 +173,48 @@ export class CliApplicationTransport {
             return undefined;
         return decodeReactiveConsumerStatus(result.status);
     }
+    async consumeContextualSubscription(request, maximumWaitMs = 30_000) {
+        validateReactiveRequest(request);
+        const wait = boundedInteger(maximumWaitMs, 0, 30_000);
+        const args = this.reactiveArguments(request);
+        args.push("contextual", "next", "--module-hash", request.reactiveModuleHash, "--operation", request.operationName, "--consumer-name", request.consumerName, "--wait-nanos", String(wait * 1_000_000));
+        addReactiveParameters(args, request.parameters, request.parameterSchema);
+        const result = exactObject((await this.invokeArguments(args)).result);
+        return {
+            items: expectArray(result.items).map((value) => decodeContextualItem(value)),
+            waitTimedOut: result.wait_timed_out === true,
+            status: decodeReactiveConsumerStatus(result.status),
+        };
+    }
+    async acknowledgeContextualItem(request, item) {
+        return this.mutateContextualItem("ack", request, item);
+    }
+    async negativeAcknowledgeContextualItem(request, item, retryDelayMs = 0) {
+        return this.mutateContextualItem("nack", request, item, retryDelayMs);
+    }
+    async contextualSubscriptionStatus(request) {
+        validateReactiveRequest(request);
+        const args = this.reactiveArguments(request);
+        args.push("contextual", "status", "--module-hash", request.reactiveModuleHash, "--operation", request.operationName, "--consumer-name", request.consumerName);
+        addReactiveParameters(args, request.parameters, request.parameterSchema);
+        const result = exactObject((await this.invokeArguments(args)).result);
+        if (result.found !== true)
+            return undefined;
+        return decodeReactiveConsumerStatus(result.status);
+    }
+    async executeContextualReaction(request, reaction, command) {
+        validateReactiveRequest(request);
+        validateIdentity(command);
+        if (reaction.commandName !== command.commandName) {
+            throw new Error("contextual reaction command identity mismatch");
+        }
+        const input = encodeValue(command.input, command.inputSchema);
+        const args = this.reactiveArguments(request);
+        args.push("contextual", "react", "--module-hash", request.reactiveModuleHash, "--operation", request.operationName, "--consumer-name", request.consumerName, "--reaction", expectSymbol(reaction.name), "--causation-token", expectBoundedLowerHex(reaction.causationToken, 2_048), "--command-name", command.commandName, "--expected-version", String(command.contractVersion));
+        addReactiveParameters(args, request.parameters, request.parameterSchema);
+        const envelope = await this.invoke(args, input, command.decodeError, "input");
+        return decodeTypedCommandResult(exactObject(envelope.result), command);
+    }
     async *watchNamedQuery(request) {
         if (!HASH.test(request.reactiveModuleHash) || !SYMBOL.test(request.operationName)) {
             throw new Error("invalid reactive operation identity");
@@ -250,6 +267,16 @@ export class CliApplicationTransport {
         addReactiveParameters(args, request.parameters, request.parameterSchema);
         return decodeEventMutationResult((await this.invokeArguments(args)).result);
     }
+    async mutateContextualItem(action, request, item, retryDelayMs = 0) {
+        validateReactiveRequest(request);
+        const delay = boundedInteger(retryDelayMs, 0, 3_600_000);
+        const args = this.reactiveArguments(request);
+        args.push("contextual", action, "--module-hash", request.reactiveModuleHash, "--operation", request.operationName, "--consumer-name", request.consumerName, "--event-id", expectBoundedString(item.delivery.eventId, 64), "--lease-token", expectHash(item.delivery.leaseToken), "--history-incarnation", item.delivery.historyIncarnation.toString());
+        if (action === "nack")
+            args.push("--retry-delay-nanos", String(delay * 1_000_000));
+        addReactiveParameters(args, request.parameters, request.parameterSchema);
+        return decodeEventMutationResult((await this.invokeArguments(args)).result);
+    }
     reactiveArguments(request) {
         validateReactiveRequest(request);
         return this.baseArguments();
@@ -264,17 +291,14 @@ export class CliApplicationTransport {
             args.push("--max-attempts", String(attemptBudget));
         return args;
     }
-    async invoke(args, input, decodeError) {
+    async invoke(args, input, decodeError, inputKind) {
         const directory = await mkdtemp(join(tmpdir(), "riffdb-typescript-"));
         const inputPath = join(directory, "input.json");
         try {
             await writeFile(inputPath, `${JSON.stringify(input)}\n`, { encoding: "utf8", mode: 0o600 });
             const commandArgs = [...args];
-            const operation = commandArgs.indexOf("command");
-            if (operation >= 0)
-                commandArgs.push("--input", inputPath);
-            else
-                commandArgs.push("--parameters", inputPath);
+            const selectedInput = inputKind ?? (commandArgs.includes("command") ? "input" : "parameters");
+            commandArgs.push(selectedInput === "input" ? "--input" : "--parameters", inputPath);
             let stdout;
             try {
                 ({ stdout } = await executeFile(this.options.riffdbPath, commandArgs, {
@@ -320,6 +344,96 @@ export class CliApplicationTransport {
             throw new Error("RiffDB reactive operation failed");
         return envelope;
     }
+}
+function decodeTypedCommandResult(result, request) {
+    if (expectHash(result.plan_hash) !== request.planHash) {
+        throw new Error("RiffDB application identity mismatch");
+    }
+    const outcomeName = expectSymbol(result.outcome_type);
+    const schema = request.outcomeSchemas[outcomeName];
+    if (schema === undefined)
+        throw new Error("RiffDB application response has an unknown outcome");
+    const payload = decodeWire(result.outcome, schema);
+    const outcome = { outcome: outcomeName, ...exactObject(payload) };
+    const typed = {
+        outcome,
+        contractVersion: positiveNumber(result.contract_version),
+        planHash: request.planHash,
+        replayed: result.status === "replayed",
+    };
+    if (result.commit_sequence === undefined)
+        return typed;
+    return {
+        ...typed,
+        commitSequence: positiveBigInt(result.commit_sequence),
+        ...(result.outcome_uri === undefined
+            ? {}
+            : { outcomeUri: expectBoundedString(result.outcome_uri, 4096) }),
+    };
+}
+function decodeContextualItem(value) {
+    const item = exactObject(value);
+    return {
+        delivery: decodeContextualDelivery(item.delivery),
+        contextHead: positiveBigInt(item.context_head),
+        hydrations: expectArray(item.hydrations).map(decodeContextualHydration),
+        availableReactions: expectArray(item.available_reactions).map((raw) => {
+            const reaction = exactObject(raw);
+            return {
+                name: expectSymbol(reaction.name),
+                commandName: expectSymbol(reaction.command_name),
+                commandId: positiveNumber(reaction.command_id),
+                causationToken: expectBoundedLowerHex(reaction.causation_token, 2_048),
+            };
+        }),
+    };
+}
+function decodeContextualDelivery(value) {
+    const delivery = exactObject(value);
+    const fields = Object.fromEntries(expectArray(delivery.fields).map((raw) => {
+        const field = exactObject(raw);
+        return [expectSymbol(field.name), decodeTagged(field.value)];
+    }));
+    const expiration = exactObject(delivery.expires_at);
+    return {
+        eventId: expectBoundedString(delivery.event_id, 64),
+        event: { type: expectSymbol(delivery.event_name), ...fields },
+        attempt: positiveNumber(delivery.attempt),
+        leaseToken: expectHash(delivery.lease_token),
+        expiresAt: `${expectBoundedString(expiration.seconds, 32)}.${String(boundedInteger(expiration.nanos, 0, 999_999_999)).padStart(9, "0")}`,
+        historyIncarnation: positiveBigInt(delivery.history_incarnation),
+    };
+}
+function decodeContextualHydration(value) {
+    const hydration = exactObject(value);
+    const fields = Object.fromEntries(expectArray(hydration.fields).map((raw) => {
+        const field = exactObject(raw);
+        const rows = expectArray(field.rows).map((rawRow) => {
+            const row = exactObject(rawRow);
+            expectBoundedString(row.entity, 256);
+            return Object.fromEntries(expectArray(row.fields).map((rawValue) => {
+                const item = exactObject(rawValue);
+                return [expectSymbol(item.name), decodeTagged(item.value)];
+            }));
+        });
+        const cardinality = boundedInteger(field.cardinality, 1, 3);
+        if ((cardinality === 1 && rows.length !== 1) || (cardinality === 2 && rows.length > 1)) {
+            throw new Error("invalid RiffDB contextual cardinality");
+        }
+        return [expectSymbol(field.name), cardinality === 3 ? rows : (rows[0] ?? null)];
+    }));
+    return {
+        name: expectSymbol(hydration.name),
+        outcome: expectSymbol(hydration.outcome),
+        fields,
+    };
+}
+function expectBoundedLowerHex(value, maximum) {
+    const text = expectBoundedString(value, maximum);
+    if (text.length <= 64 || text.length % 2 !== 0 || !/^[0-9a-f]+$/.test(text)) {
+        throw new Error("invalid opaque RiffDB token");
+    }
+    return text;
 }
 function validateIdentity(value) {
     expectSymbol(value.contractLineage);

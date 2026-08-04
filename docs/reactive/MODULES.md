@@ -91,7 +91,7 @@ state. Parameters use `NAME=JSON_VALUE`, so string values include JSON quotes:
 riffdb event consume \
   --module-hash <64-hex-module-hash> \
   --operation TicketEvents \
-  --parameter 'organization_id="acme"' \
+  --parameter 'organization_id={"type":"uuid","value":"018f6f50-6f31-7d62-9a7e-4f8b913d2f11"}' \
   --consumer-name ticket-indexer \
   --batch-limit 4 \
   --lease-seconds 60
@@ -99,7 +99,7 @@ riffdb event consume \
 riffdb event ack \
   --module-hash <64-hex-module-hash> \
   --operation TicketEvents \
-  --parameter 'organization_id="acme"' \
+  --parameter 'organization_id={"type":"uuid","value":"018f6f50-6f31-7d62-9a7e-4f8b913d2f11"}' \
   --consumer-name ticket-indexer \
   --event-id <commit-sequence:event-ordinal> \
   --lease-token <64-hex-lease-token> \
@@ -108,7 +108,7 @@ riffdb event ack \
 riffdb event status \
   --module-hash <64-hex-module-hash> \
   --operation TicketEvents \
-  --parameter 'organization_id="acme"' \
+  --parameter 'organization_id={"type":"uuid","value":"018f6f50-6f31-7d62-9a7e-4f8b913d2f11"}' \
   --consumer-name ticket-indexer
 ```
 

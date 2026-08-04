@@ -6,7 +6,6 @@ import { CliApplicationTransport } from "@riffdb/application";
 
 import {
   TicketDeskReactiveClient,
-  type ReactiveApplicationTransport,
   createTicketPageWatchSseRelay,
   createTicketQueueWatchSseRelay,
 } from "./generated/client.js";
@@ -18,9 +17,7 @@ if (endpoint === undefined || credentialFile === undefined || riffdbPath === und
 
 const session = process.env["RIFFDB_TICKETDESK_SESSION"] ?? "ticketdesk-local-session";
 const transport = new CliApplicationTransport({ riffdbPath, endpoint, credentialFile });
-const application = new TicketDeskReactiveClient(
-  transport as unknown as ReactiveApplicationTransport,
-);
+const application = new TicketDeskReactiveClient(transport);
 const publicRoot = resolve(process.cwd(), "public");
 
 const server = createServer(async (request, response) => {

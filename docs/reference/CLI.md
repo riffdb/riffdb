@@ -21,6 +21,7 @@ Commands:
   entity
   commit
   event        Describes and reads partitioned domain events
+  contextual   Consumes and resolves contextual agent work through generated identities
   projection
   query
   role         Checks, describes, binds, or revokes an exact symbolic application role
@@ -249,6 +250,30 @@ Commands:
   seek      Moves a consumer checkpoint after exact seek authorization
   retire    Retires one consumer and releases its retention fence
   status    Reads bounded status for one exact consumer
+
+Options:
+      --config <PATH>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+### `riffdb contextual`
+
+```text
+Consumes and resolves contextual agent work through generated identities
+
+Usage: riffdb contextual [OPTIONS] <COMMAND>
+
+Commands:
+  next    Leases at most one event with fresh same-snapshot context
+  ack     Acknowledges one exact contextual work-item lease
+  nack    Negatively acknowledges one exact contextual work-item lease
+  status  Reads bounded status for one exact contextual consumer
+  react   Executes one declared command reaction using its server-issued proof
 
 Options:
       --config <PATH>
@@ -1059,6 +1084,124 @@ Options:
       --max-attempts <1..10>
       --credential-file <PATH>
   -h, --help                               Print help
+```
+
+#### `riffdb contextual next`
+
+```text
+Leases at most one event with fresh same-snapshot context
+
+Usage: riffdb contextual next [OPTIONS] --module-hash <64_HEX_CHARS> --operation <OPERATION> --consumer-name <CONSUMER>
+
+Options:
+      --config <PATH>
+      --module-hash <64_HEX_CHARS>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --operation <OPERATION>
+      --database <DATABASE>
+      --parameter <NAME=JSON_VALUE>
+      --consumer-name <CONSUMER>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --wait-nanos <NANOSECONDS>           [default: 0]
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb contextual ack`
+
+```text
+Acknowledges one exact contextual work-item lease
+
+Usage: riffdb contextual ack [OPTIONS] --module-hash <64_HEX_CHARS> --operation <OPERATION> --consumer-name <CONSUMER> --event-id <COMMIT:ORDINAL> --lease-token <64_HEX_CHARS> --history-incarnation <INCARNATION>
+
+Options:
+      --config <PATH>
+      --module-hash <64_HEX_CHARS>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --operation <OPERATION>
+      --database <DATABASE>
+      --parameter <NAME=JSON_VALUE>
+      --consumer-name <CONSUMER>
+      --output <human|json>                [possible values: human, json]
+      --event-id <COMMIT:ORDINAL>
+      --max-attempts <1..10>
+      --credential-file <PATH>
+      --lease-token <64_HEX_CHARS>
+      --history-incarnation <INCARNATION>
+  -h, --help                               Print help
+```
+
+#### `riffdb contextual nack`
+
+```text
+Negatively acknowledges one exact contextual work-item lease
+
+Usage: riffdb contextual nack [OPTIONS] --module-hash <64_HEX_CHARS> --operation <OPERATION> --consumer-name <CONSUMER> --event-id <COMMIT:ORDINAL> --lease-token <64_HEX_CHARS> --history-incarnation <INCARNATION>
+
+Options:
+      --config <PATH>
+      --module-hash <64_HEX_CHARS>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --operation <OPERATION>
+      --database <DATABASE>
+      --parameter <NAME=JSON_VALUE>
+      --consumer-name <CONSUMER>
+      --output <human|json>                [possible values: human, json]
+      --event-id <COMMIT:ORDINAL>
+      --max-attempts <1..10>
+      --credential-file <PATH>
+      --lease-token <64_HEX_CHARS>
+      --history-incarnation <INCARNATION>
+      --retry-delay-nanos <NANOSECONDS>    [default: 0]
+  -h, --help                               Print help
+```
+
+#### `riffdb contextual status`
+
+```text
+Reads bounded status for one exact contextual consumer
+
+Usage: riffdb contextual status [OPTIONS] --module-hash <64_HEX_CHARS> --operation <OPERATION> --consumer-name <CONSUMER>
+
+Options:
+      --config <PATH>
+      --module-hash <64_HEX_CHARS>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --operation <OPERATION>
+      --database <DATABASE>
+      --parameter <NAME=JSON_VALUE>
+      --consumer-name <CONSUMER>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb contextual react`
+
+```text
+Executes one declared command reaction using its server-issued proof
+
+Usage: riffdb contextual react [OPTIONS] --module-hash <64_HEX_CHARS> --operation <OPERATION> --consumer-name <CONSUMER> --reaction <REACTION> --causation-token <OPAQUE_LOWER_HEX> --command-name <COMMAND> --input <JSON_INPUT>
+
+Options:
+      --config <PATH>
+      --module-hash <64_HEX_CHARS>
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+      --operation <OPERATION>
+      --database <DATABASE>
+      --parameter <NAME=JSON_VALUE>
+      --consumer-name <CONSUMER>
+      --output <human|json>                 [possible values: human, json]
+      --max-attempts <1..10>
+      --reaction <REACTION>
+      --causation-token <OPAQUE_LOWER_HEX>
+      --credential-file <PATH>
+      --command-name <COMMAND>
+      --input <JSON_INPUT>
+      --expected-version <VERSION>
+  -h, --help                                Print help
 ```
 
 #### `riffdb projection query`

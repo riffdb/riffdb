@@ -25,7 +25,7 @@ use riffdb_diagnostics::{AuthoringDiagnostics, AuthoringSourcePath};
 use riffdb_query_module::{
     ApplicationManifest, CompiledApplicationRole, ManifestTenantScope, NamedQuerySource,
     QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
-    compile_application_role,
+    compile_application_role, compile_application_role_v2, compile_reactive_source,
 };
 use riffdb_types::{
     CanonicalValue, CapabilityGrantV1, CapabilityPermissionV1, PartitionScopeV1, TenantId,
@@ -40,10 +40,10 @@ use crate::batch::{
 };
 use crate::cli::{
     ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli, CommandCommand,
-    CommitCommand, ContractCommand, ContractSelectionArgs, DemoCommand, EntityCommand,
-    EventCommand, EventConsumerArgs, MigrationCommand, OutputMode, ProjectionCommand, QueryCommand,
-    RetentionCommand, RetentionHoldCommand, RevocationReason, RoleActorKind, RoleCommand,
-    ServerCommand, TopLevel,
+    CommitCommand, ContextualCommand, ContractCommand, ContractSelectionArgs, DemoCommand,
+    EntityCommand, EventCommand, EventConsumerArgs, MigrationCommand, OutputMode,
+    ProjectionCommand, QueryCommand, RetentionCommand, RetentionHoldCommand, RevocationReason,
+    RoleActorKind, RoleCommand, ServerCommand, TopLevel,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -684,6 +684,9 @@ async fn dispatch(
         TopLevel::Entity { command } => entity_command(command, config, environment).await,
         TopLevel::Commit { command } => commit_command(command, config, environment).await,
         TopLevel::Event { command } => event_command(command, config, environment).await,
+        TopLevel::Contextual { command } => {
+            contextual_command(command, config, environment, stdin).await
+        }
         TopLevel::Projection { command } => {
             projection_command(command, config, environment, stdin).await
         }
@@ -4071,8 +4074,206 @@ async fn event_command(
                 )
                 .await
             {
-                Ok(response) => render_consumer_status(&response),
+                Ok(response) => render_consumer_status(identity, &response),
                 Err(error) => client_error(identity, &error),
+            }
+        }
+    }
+}
+
+async fn contextual_command(
+    command: ContextualCommand,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+    stdin: &mut dyn Read,
+) -> Terminal {
+    let identity = match command {
+        ContextualCommand::Next { .. } => CommandIdentity::ContextualNext,
+        ContextualCommand::Ack { .. } => CommandIdentity::ContextualAck,
+        ContextualCommand::Nack { .. } => CommandIdentity::ContextualNack,
+        ContextualCommand::Status { .. } => CommandIdentity::ContextualStatus,
+        ContextualCommand::React { .. } => CommandIdentity::ContextualReact,
+    };
+    let metadata = match required_metadata(identity, config, environment) {
+        Ok(metadata) => metadata,
+        Err(terminal) => return terminal,
+    };
+    let mut client = match connect(config).await {
+        Ok(client) => client,
+        Err(error) => return client_error(identity, &error),
+    };
+    let request_id = match request_id() {
+        Ok(request_id) => request_id,
+        Err(error) => return client_error(identity, &error),
+    };
+    match command {
+        ContextualCommand::Next {
+            consumer,
+            wait_nanos,
+        } => {
+            let selection = match event_consumer_selection(consumer) {
+                Ok(selection) => selection,
+                Err(()) => return invalid_input(identity),
+            };
+            let maximum_wait_nanos = match parse_u64(&wait_nanos) {
+                Ok(value) if value <= 30_000_000_000 => value,
+                _ => return invalid_input(identity),
+            };
+            match client
+                .consume_contextual_subscription(
+                    v1::ConsumeContextualSubscriptionRequest {
+                        request_id,
+                        selection: Some(selection),
+                        maximum_wait_nanos,
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => render_contextual_response(&response),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        ContextualCommand::Ack {
+            consumer,
+            event_id,
+            lease_token,
+            history_incarnation,
+        } => {
+            let Some((selection, event_id, lease_token, history_incarnation)) =
+                event_consumer_lease_input(consumer, &event_id, &lease_token, &history_incarnation)
+            else {
+                return invalid_input(identity);
+            };
+            match client
+                .acknowledge_contextual_subscription(
+                    v1::AcknowledgeContextualSubscriptionRequest {
+                        request_id,
+                        selection: Some(selection),
+                        event_id: Some(event_id),
+                        lease_token,
+                        history_incarnation,
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => render_consumer_mutation(identity, &response),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        ContextualCommand::Nack {
+            consumer,
+            event_id,
+            lease_token,
+            history_incarnation,
+            retry_delay_nanos,
+        } => {
+            let Some((selection, event_id, lease_token, history_incarnation)) =
+                event_consumer_lease_input(consumer, &event_id, &lease_token, &history_incarnation)
+            else {
+                return invalid_input(identity);
+            };
+            let retry_delay_nanos = match parse_u64(&retry_delay_nanos) {
+                Ok(value) if value <= 3_600_000_000_000 => value,
+                _ => return invalid_input(identity),
+            };
+            match client
+                .negative_acknowledge_contextual_subscription(
+                    v1::NegativeAcknowledgeContextualSubscriptionRequest {
+                        request_id,
+                        selection: Some(selection),
+                        event_id: Some(event_id),
+                        lease_token,
+                        history_incarnation,
+                        retry_delay_nanos,
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => render_consumer_mutation(identity, &response),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        ContextualCommand::Status { consumer } => {
+            let selection = match event_consumer_selection(consumer) {
+                Ok(selection) => selection,
+                Err(()) => return invalid_input(identity),
+            };
+            match client
+                .get_contextual_subscription_status(
+                    v1::GetContextualSubscriptionStatusRequest {
+                        request_id,
+                        selection: Some(selection),
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => render_consumer_status(identity, &response),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        ContextualCommand::React {
+            consumer,
+            reaction,
+            causation_token,
+            command_name,
+            input,
+            expected_version,
+        } => {
+            let selection = match event_consumer_selection(consumer) {
+                Ok(selection) => selection,
+                Err(()) => return invalid_input(identity),
+            };
+            let causation_token = match parse_opaque_hex(&causation_token, 1_024) {
+                Ok(value) if value.len() > 32 => value,
+                _ => return invalid_input(identity),
+            };
+            let input = match read_json::<serde_json::Map<String, serde_json::Value>>(&input, stdin)
+                .and_then(|input| natural_command_record(input).map_err(|()| InputError::Invalid))
+            {
+                Ok(input) => input,
+                Err(error) => return input_terminal(identity, error),
+            };
+            let expected_version = match expected_version
+                .as_deref()
+                .map(parse_nonzero_u64)
+                .transpose()
+            {
+                Ok(value) => value,
+                Err(()) => return invalid_input(identity),
+            };
+            let command =
+                match IdempotentCommand::new(command_name.clone(), expected_version, input) {
+                    Ok(command) => command,
+                    Err(_) => return invalid_input(identity),
+                };
+            let command_request = v1::ExecuteCommandRequest {
+                request_id: request_id.clone(),
+                command_name: command.command_name().to_owned(),
+                expected_contract_version: command.expected_contract_version(),
+                input: Some(command.input().clone()),
+            };
+            match client
+                .execute_contextual_reaction(
+                    v1::ExecuteContextualReactionRequest {
+                        request_id,
+                        selection: Some(selection),
+                        causation_token,
+                        reaction_name: reaction,
+                        command: Some(command_request),
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => render_execution(identity, &response),
+                Err(error) => {
+                    let error = contextualize_application_command_error(error, &command_name);
+                    client_error(identity, &error)
+                }
             }
         }
     }
@@ -4422,6 +4623,7 @@ fn render_consume_response(response: &v1::ConsumeEventStreamResponse) -> Termina
                 })).collect::<Vec<_>>()),
                 "attempt": consumed.attempt,
                 "lease_token": hex(&consumed.lease_token),
+                "history_incarnation": event.map(|value| value.history_incarnation.to_string()),
                 "expires_at": consumed.expires_at.as_ref().map(|time| serde_json::json!({
                     "seconds": time.seconds.to_string(),
                     "nanos": time.nanos,
@@ -4435,6 +4637,119 @@ fn render_consume_response(response: &v1::ConsumeEventStreamResponse) -> Termina
         "wait_timed_out": response.wait_timed_out,
     });
     success(CommandIdentity::EventConsume, "leased", &result)
+}
+
+fn render_contextual_response(response: &v1::ConsumeContextualSubscriptionResponse) -> Terminal {
+    let Some(status) = response.status.as_ref() else {
+        return local_error(
+            CommandIdentity::ContextualNext,
+            "invalid_response",
+            "contextual response is incomplete",
+        );
+    };
+    let items = response
+        .items
+        .iter()
+        .map(contextual_item_json)
+        .collect::<Option<Vec<_>>>();
+    let Some(items) = items else {
+        return local_error(
+            CommandIdentity::ContextualNext,
+            "invalid_response",
+            "contextual response is incomplete",
+        );
+    };
+    success(
+        CommandIdentity::ContextualNext,
+        "leased",
+        &serde_json::json!({
+            "items": items,
+            "status": consumer_status_json(status),
+            "wait_timed_out": response.wait_timed_out,
+        }),
+    )
+}
+
+fn contextual_item_json(item: &v1::ContextualWorkItem) -> Option<serde_json::Value> {
+    let delivery = item.delivery.as_ref()?;
+    let event = delivery.event.as_ref()?;
+    let event_id = event.event_id.as_ref()?;
+    let expires_at = delivery.expires_at.as_ref()?;
+    let fields = event
+        .fields
+        .iter()
+        .map(|field| {
+            Some(serde_json::json!({
+                "name": field.name,
+                "value": serde_json::to_value(crate::value::OutputValue(field.value.as_ref()?)).ok()?,
+            }))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let hydrations = item
+        .hydrations
+        .iter()
+        .map(|hydration| {
+            let fields = hydration
+                .fields
+                .iter()
+                .map(|field| {
+                    let rows = field
+                        .rows
+                        .iter()
+                        .map(|row| {
+                            let values = row
+                                .fields
+                                .iter()
+                                .map(|field| {
+                                    Some(serde_json::json!({
+                                        "name": field.name,
+                                        "value": serde_json::to_value(crate::value::OutputValue(field.value.as_ref()?)).ok()?,
+                                    }))
+                                })
+                                .collect::<Option<Vec<_>>>()?;
+                            Some(serde_json::json!({"entity": row.entity, "fields": values}))
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    Some(serde_json::json!({
+                        "name": field.name,
+                        "cardinality": field.cardinality,
+                        "rows": rows,
+                    }))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(serde_json::json!({
+                "name": hydration.name,
+                "outcome": hydration.outcome,
+                "fields": fields,
+            }))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let available_reactions = item
+        .available_reactions
+        .iter()
+        .map(|reaction| {
+            serde_json::json!({
+                "name": reaction.name,
+                "command_name": reaction.command_name,
+                "command_id": reaction.command_id,
+                "causation_token": hex(&reaction.causation_token),
+            })
+        })
+        .collect::<Vec<_>>();
+    Some(serde_json::json!({
+        "delivery": {
+            "event_id": format!("{}:{}", event_id.commit_sequence, event_id.event_ordinal),
+            "event_name": event.event_name,
+            "fields": fields,
+            "attempt": delivery.attempt,
+            "lease_token": hex(&delivery.lease_token),
+            "expires_at": {"seconds": expires_at.seconds.to_string(), "nanos": expires_at.nanos},
+            "history_incarnation": event.history_incarnation.to_string(),
+        },
+        "context_head": item.context_head.to_string(),
+        "hydrations": hydrations,
+        "available_reactions": available_reactions,
+    }))
 }
 
 fn render_consumer_mutation(
@@ -4463,7 +4778,10 @@ fn render_consumer_mutation(
     success(identity, "updated", &serde_json::json!({"result": result}))
 }
 
-fn render_consumer_status(response: &v1::GetEventStreamConsumerStatusResponse) -> Terminal {
+fn render_consumer_status(
+    identity: CommandIdentity,
+    response: &v1::GetEventStreamConsumerStatusResponse,
+) -> Terminal {
     let result = match response.result.as_ref() {
         Some(v1::get_event_stream_consumer_status_response::Result::NotFound(_)) => {
             serde_json::json!({"found": false})
@@ -4479,7 +4797,7 @@ fn render_consumer_status(response: &v1::GetEventStreamConsumerStatusResponse) -
             );
         }
     };
-    success(CommandIdentity::EventStatus, "read", &result)
+    success(identity, "read", &result)
 }
 
 fn consumer_status_json(status: &v1::EventConsumerStatus) -> serde_json::Value {
@@ -4805,7 +5123,12 @@ fn compile_role_from_workspace(
         requested_value
             .get("schema")
             .and_then(serde_json::Value::as_str),
-        Some("riffdb.application-source/v1" | "riffdb.application-source/v2")
+        Some(
+            "riffdb.application-source/v1"
+                | "riffdb.application-source/v2"
+                | "riffdb.application-source/v3"
+                | "riffdb.application-source/v4"
+        )
     );
     let source_locked = requested_is_source
         .then(|| load_locked_application(requested_path, None))
@@ -4886,7 +5209,29 @@ fn compile_role_from_workspace(
     let tenant = tenant
         .map(|tenant| TenantId::new(tenant.to_owned()).map_err(|_| RoleWorkspaceError::Invalid))
         .transpose()?;
-    compile_application_role(&manifest, role_name, tenant, &contract, &modules).map_err(|error| {
+    let reactive_modules = manifest
+        .reactive_modules()
+        .iter()
+        .map(|module| {
+            let source = read_workspace_text(&workspace, module.source())
+                .map_err(|()| RoleWorkspaceError::Invalid)?;
+            compile_reactive_source(&source, &contract, &modules)
+                .map_err(|_| RoleWorkspaceError::Invalid)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let compiled = if reactive_modules.is_empty() {
+        compile_application_role(&manifest, role_name, tenant, &contract, &modules)
+    } else {
+        compile_application_role_v2(
+            &manifest,
+            role_name,
+            tenant,
+            &contract,
+            &modules,
+            &reactive_modules,
+        )
+    };
+    compiled.map_err(|error| {
         AuthoringSourcePath::new(
             requested_path
                 .file_name()
@@ -6840,6 +7185,21 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Event {
             command: EventCommand::Status { .. },
         } => CommandIdentity::EventStatus,
+        TopLevel::Contextual {
+            command: ContextualCommand::Next { .. },
+        } => CommandIdentity::ContextualNext,
+        TopLevel::Contextual {
+            command: ContextualCommand::Ack { .. },
+        } => CommandIdentity::ContextualAck,
+        TopLevel::Contextual {
+            command: ContextualCommand::Nack { .. },
+        } => CommandIdentity::ContextualNack,
+        TopLevel::Contextual {
+            command: ContextualCommand::Status { .. },
+        } => CommandIdentity::ContextualStatus,
+        TopLevel::Contextual {
+            command: ContextualCommand::React { .. },
+        } => CommandIdentity::ContextualReact,
         TopLevel::Projection { .. } => CommandIdentity::ProjectionQuery,
         TopLevel::Query {
             command: QueryCommand::Describe { .. },
@@ -8102,6 +8462,112 @@ mod tests {
                     if hash.as_slice() == role.identity().as_bytes()
             )
         }));
+    }
+
+    #[test]
+    fn reactive_v4_roles_compile_identically_from_source_and_exact_manifest() {
+        let mut workspace = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        assert!(workspace.pop());
+        assert!(workspace.pop());
+        let source_path = workspace.join("examples/ticketdesk/riffdb.application.json");
+        let exact_path =
+            workspace.join("examples/ticketdesk/generated/riffdb.application.exact.json");
+
+        let source_role =
+            compile_role_from_workspace(&source_path.into_os_string(), "TicketDeskAgent", None)
+                .expect("V4 source role");
+        let exact_role =
+            compile_role_from_workspace(&exact_path.into_os_string(), "TicketDeskAgent", None)
+                .expect("V2 exact role");
+
+        assert_eq!(source_role.identity(), exact_role.identity());
+        assert_eq!(source_role.reactive_module_hashes().len(), 1);
+        assert!(source_role.operations().iter().any(|operation| {
+            operation.kind() == riffdb_query_module::ApplicationRoleOperationKind::AgentSubscription
+                && operation.name() == "TriageTicket"
+        }));
+    }
+
+    #[test]
+    fn contextual_cli_rendering_preserves_required_evidence_and_fails_closed() {
+        let status = v1::EventConsumerStatus {
+            revision: 2,
+            checkpoint: Some(v1::EventConsumerCheckpoint {
+                position: Some(v1::event_consumer_checkpoint::Position::BeforeFirst(
+                    v1::Unit {},
+                )),
+            }),
+            history_incarnation: 3,
+            live_leases: 1,
+            retries: 0,
+            dead_letters: 0,
+        };
+        let response = v1::ConsumeContextualSubscriptionResponse {
+            items: vec![v1::ContextualWorkItem {
+                delivery: Some(v1::ConsumedEvent {
+                    event: Some(v1::SymbolicEvent {
+                        event_id: Some(v1::EventId {
+                            commit_sequence: 7,
+                            event_ordinal: 0,
+                        }),
+                        event_name: "TicketCreated".to_owned(),
+                        history_incarnation: 3,
+                        ..v1::SymbolicEvent::default()
+                    }),
+                    attempt: 1,
+                    lease_token: vec![0xaa; 32],
+                    expires_at: Some(v1::Timestamp {
+                        seconds: 12,
+                        nanos: 4,
+                    }),
+                }),
+                context_head: 9,
+                hydrations: Vec::new(),
+                available_reactions: vec![v1::AvailableContextualReaction {
+                    name: "comment".to_owned(),
+                    command_name: "CreateComment".to_owned(),
+                    command_id: 4,
+                    causation_token: vec![0xcc; 33],
+                }],
+            }],
+            status: Some(status),
+            wait_timed_out: false,
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            render_contextual_response(&response).emit(OutputMode::Json, &mut stdout, &mut stderr),
+            ExitCode::SUCCESS
+        );
+        assert!(stderr.is_empty());
+        let output: serde_json::Value = serde_json::from_slice(&stdout).expect("contextual JSON");
+        assert_eq!(output["command"], "contextual.next");
+        assert_eq!(
+            output["result"]["items"][0]["delivery"]["history_incarnation"],
+            "3"
+        );
+        assert_eq!(output["result"]["items"][0]["context_head"], "9");
+        assert_eq!(
+            output["result"]["items"][0]["available_reactions"][0]["causation_token"],
+            "cc".repeat(33)
+        );
+
+        stdout.clear();
+        let incomplete = v1::ConsumeContextualSubscriptionResponse {
+            items: vec![v1::ContextualWorkItem::default()],
+            status: Some(status),
+            wait_timed_out: false,
+        };
+        assert_ne!(
+            render_contextual_response(&incomplete).emit(
+                OutputMode::Json,
+                &mut stdout,
+                &mut stderr
+            ),
+            ExitCode::SUCCESS
+        );
+        let output: serde_json::Value = serde_json::from_slice(&stdout).expect("failure JSON");
+        assert_eq!(output["error"]["code"], "invalid_response");
     }
 
     #[test]

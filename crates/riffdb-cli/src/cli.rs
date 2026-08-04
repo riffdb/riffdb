@@ -86,6 +86,11 @@ pub(crate) enum TopLevel {
         #[command(subcommand)]
         command: EventCommand,
     },
+    /// Consumes and resolves contextual agent work through generated identities.
+    Contextual {
+        #[command(subcommand)]
+        command: ContextualCommand,
+    },
     Projection {
         #[command(subcommand)]
         command: ProjectionCommand,
@@ -699,6 +704,61 @@ pub(crate) struct EventConsumerArgs {
 }
 
 #[derive(Debug, Subcommand)]
+pub(crate) enum ContextualCommand {
+    /// Leases at most one event with fresh same-snapshot context.
+    Next {
+        #[command(flatten)]
+        consumer: EventConsumerArgs,
+        #[arg(long, default_value = "0", value_name = "NANOSECONDS")]
+        wait_nanos: String,
+    },
+    /// Acknowledges one exact contextual work-item lease.
+    Ack {
+        #[command(flatten)]
+        consumer: EventConsumerArgs,
+        #[arg(long, value_name = "COMMIT:ORDINAL")]
+        event_id: String,
+        #[arg(long, value_name = "64_HEX_CHARS")]
+        lease_token: String,
+        #[arg(long, value_name = "INCARNATION")]
+        history_incarnation: String,
+    },
+    /// Negatively acknowledges one exact contextual work-item lease.
+    Nack {
+        #[command(flatten)]
+        consumer: EventConsumerArgs,
+        #[arg(long, value_name = "COMMIT:ORDINAL")]
+        event_id: String,
+        #[arg(long, value_name = "64_HEX_CHARS")]
+        lease_token: String,
+        #[arg(long, value_name = "INCARNATION")]
+        history_incarnation: String,
+        #[arg(long, default_value = "0", value_name = "NANOSECONDS")]
+        retry_delay_nanos: String,
+    },
+    /// Reads bounded status for one exact contextual consumer.
+    Status {
+        #[command(flatten)]
+        consumer: EventConsumerArgs,
+    },
+    /// Executes one declared command reaction using its server-issued proof.
+    React {
+        #[command(flatten)]
+        consumer: EventConsumerArgs,
+        #[arg(long, value_name = "REACTION")]
+        reaction: String,
+        #[arg(long, value_name = "OPAQUE_LOWER_HEX")]
+        causation_token: String,
+        #[arg(long, value_name = "COMMAND")]
+        command_name: String,
+        #[arg(long, value_name = "JSON_INPUT")]
+        input: OsString,
+        #[arg(long, value_name = "VERSION")]
+        expected_version: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub(crate) enum ProjectionCommand {
     Query {
         #[arg(value_name = "PROJECTION_ID")]
@@ -1105,6 +1165,76 @@ mod tests {
             }
         ));
         assert!(Cli::try_parse_from(["riffdb", "dev", "--run", "--watch"]).is_err());
+    }
+
+    #[test]
+    fn contextual_commands_require_exact_generated_identity_and_lease_evidence() {
+        let module = "ab".repeat(32);
+        let next = Cli::try_parse_from([
+            "riffdb",
+            "contextual",
+            "next",
+            "--module-hash",
+            &module,
+            "--operation",
+            "TriageTicket",
+            "--consumer-name",
+            "triage-worker",
+            "--parameter",
+            "organization_id={\"type\":\"string\",\"value\":\"acme\"}",
+            "--wait-nanos",
+            "1000000",
+        ])
+        .expect("contextual next");
+        assert!(matches!(
+            next.command,
+            TopLevel::Contextual {
+                command: ContextualCommand::Next { wait_nanos, .. }
+            } if wait_nanos == "1000000"
+        ));
+
+        let react = Cli::try_parse_from([
+            "riffdb",
+            "contextual",
+            "react",
+            "--module-hash",
+            &module,
+            "--operation",
+            "TriageTicket",
+            "--consumer-name",
+            "triage-worker",
+            "--reaction",
+            "comment",
+            "--causation-token",
+            &"cd".repeat(33),
+            "--command-name",
+            "CreateComment",
+            "--input",
+            "comment.json",
+            "--expected-version",
+            "1",
+        ])
+        .expect("contextual reaction");
+        assert!(matches!(
+            react.command,
+            TopLevel::Contextual {
+                command: ContextualCommand::React { command_name, .. }
+            } if command_name == "CreateComment"
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "riffdb",
+                "contextual",
+                "ack",
+                "--module-hash",
+                &module,
+                "--operation",
+                "TriageTicket",
+                "--consumer-name",
+                "triage-worker",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
