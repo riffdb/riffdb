@@ -42,6 +42,11 @@ floating-point numbers. If a batch rejects an item, rerun with `--output json`;
 the bounded `rejected_items` list names its JSONL ordinal, symbolic outcome,
 public code, and corrective message without echoing the input.
 
+In TypeScript application code, import `exactMoney` or `exactDecimal` from
+`@riffdb/application` and pass their results directly to generated command
+methods. These helpers parse decimal text exactly and remove any need to encode
+coefficient bytes by hand. See `AUTHORING.md` for the complete example.
+
 For a generated Rust application, the repository already contains the exact
 dependency lock. The first build is therefore the same locked build used by
 automation:

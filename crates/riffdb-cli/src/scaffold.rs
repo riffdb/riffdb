@@ -2600,6 +2600,9 @@ mod tests {
         let cargo_lock = fs::read_to_string(first.join("Cargo.lock")).expect("Cargo lock");
         assert!(cargo_lock.contains("name = \"order-desk\""));
         assert!(!cargo_lock.contains("{{APPLICATION_NAME}}"));
+        let authoring = fs::read_to_string(first.join("AUTHORING.md")).expect("authoring guide");
+        assert!(authoring.contains("exactMoney(\"USD\", \"25.00\")"));
+        assert!(authoring.contains("application code never decodes transport JSON"));
         let source = fs::read(first.join("riffdb.application.json")).expect("source");
         ApplicationSourceManifest::decode_canonical(&source).expect("canonical source");
         let lock = fs::read(first.join(DEFAULT_LOCK_PATH)).expect("lock");

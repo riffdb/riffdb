@@ -2369,10 +2369,10 @@ fn ts_reactive_type(type_name: &str, contract: &ContractBundle) -> String {
             .join(" | ");
     }
     if type_name.starts_with("decimal<") {
-        return "{ readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision?: number }".to_owned();
+        return "{ readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision: number }".to_owned();
     }
     if type_name.starts_with("money<") {
-        return "{ readonly currency: string; readonly amount: { readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision?: number } }".to_owned();
+        return "{ readonly currency: string; readonly amount: { readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision: number } }".to_owned();
     }
     if type_name.starts_with("bytes<") {
         return "Uint8Array".to_owned();
@@ -2758,10 +2758,10 @@ fn ts_query_type(value_type: &NamedTypeSchema) -> String {
             "date" => "number".to_owned(),
             value if value.starts_with("bytes<") => "Uint8Array".to_owned(),
             value if value.starts_with("decimal<") => {
-                "{ readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision?: number }".to_owned()
+                "{ readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision: number }".to_owned()
             }
             value if value.starts_with("money<") => {
-                "{ readonly currency: string; readonly amount: { readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision?: number } }".to_owned()
+                "{ readonly currency: string; readonly amount: { readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision: number } }".to_owned()
             }
             _ => "string".to_owned(),
         },
@@ -2957,10 +2957,10 @@ fn ts_contract_type(value_type: &ValueType, contract: &ContractBundle) -> String
         ValueTypeTag::Timestamp => "{ readonly seconds: bigint; readonly nanos: number }",
         ValueTypeTag::Date => "number",
         ValueTypeTag::Decimal => {
-            "{ readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision?: number }"
+            "{ readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision: number }"
         }
         ValueTypeTag::Money => {
-            "{ readonly currency: string; readonly amount: { readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision?: number } }"
+            "{ readonly currency: string; readonly amount: { readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision: number } }"
         }
         ValueTypeTag::Record => match value_type.record_ref() {
             Some(RecordTypeRef::Entity(entity_id)) => {
@@ -3150,7 +3150,7 @@ mod tests {
         let generated_rust = generate_rust_client(&module, &contract);
 
         assert!(generated.contains(
-            "readonly price: { readonly currency: string; readonly amount: { readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision?: number } }"
+            "readonly price: { readonly currency: string; readonly amount: { readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision: number } }"
         ));
         assert!(!generated.contains("readonly price: string;"));
         assert!(

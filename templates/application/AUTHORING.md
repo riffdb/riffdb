@@ -165,6 +165,24 @@ invariant available_non_negative: available >= 0
 Use one caller-stable idempotency input for the command. Reuse it after an
 uncertain response; generated clients recover the original outcome.
 
+## Construct exact values without wire encoding
+
+TypeScript application code must not use JavaScript floating-point numbers or
+hand-build two's-complement coefficient bytes. The bundled application runtime
+owns exact decimal parsing and generated-schema validation:
+
+```ts
+import { exactDecimal, exactMoney } from "@riffdb/application";
+
+const unitPrice = exactMoney("USD", "25.00"); // money<USD>
+const taxRate = exactDecimal("0.0825", 8, 4); // decimal<8,4>
+```
+
+Pass those values directly to generated command methods. The generated client
+owns the tagged CLI representation and rejects currency, precision, or scale
+drift. Query results return the same exact shape with `precision`, `scale`, and
+`coefficientTwosComplement`; application code never decodes transport JSON.
+
 ## Make every page indexed, ordered, and bounded
 
 For `many` reads, predicates must supply the leading index fields and `order

@@ -28,6 +28,24 @@ export type ApplicationValueSchema = {
         readonly wireId?: number;
     }>;
 };
+/** One exact fixed-point value accepted by generated decimal fields. */
+export interface ExactDecimalValue {
+    readonly coefficientTwosComplement: Uint8Array;
+    readonly scale: number;
+    readonly precision: number;
+}
+/** One exact currency value accepted by generated `money<CURRENCY>` fields. */
+export interface ExactMoneyValue<Currency extends string = string> {
+    readonly currency: Currency;
+    readonly amount: ExactDecimalValue;
+}
+/**
+ * Constructs an exact fixed-point value from decimal text without using a
+ * JavaScript floating-point number.
+ */
+export declare function exactDecimal(value: string, precision: number, scale: number): ExactDecimalValue;
+/** Constructs the exact precision-38, scale-2 value used by `money<CURRENCY>`. */
+export declare function exactMoney<const Currency extends string>(currency: Currency, value: string): ExactMoneyValue<Currency>;
 export interface QueryOptions {
     readonly cursor?: string;
     readonly readAfterCommit?: bigint;

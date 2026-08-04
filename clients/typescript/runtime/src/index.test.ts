@@ -4,7 +4,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { CliApplicationTransport } from "./index.js";
+import { CliApplicationTransport, exactDecimal, exactMoney } from "./index.js";
+
+test("exact decimal helpers remove handwritten coefficient encoding", () => {
+  assert.deepEqual(exactMoney("USD", "25.00"), {
+    currency: "USD",
+    amount: {
+      coefficientTwosComplement: Uint8Array.of(0x09, 0xc4),
+      scale: 2,
+      precision: 38,
+    },
+  });
+  assert.deepEqual(exactDecimal("-1.29", 4, 2), {
+    coefficientTwosComplement: Uint8Array.of(0xff, 0x7f),
+    scale: 2,
+    precision: 4,
+  });
+  assert.deepEqual(exactDecimal("0", 1, 0).coefficientTwosComplement, Uint8Array.of(0));
+  assert.throws(() => exactMoney("usd", "1.00"), /invalid exact money currency/);
+  assert.throws(() => exactDecimal("1.001", 4, 2), /exceeds scale/);
+  assert.throws(() => exactDecimal("100.00", 4, 2), /exceeds precision/);
+});
 
 test("transport configuration is bounded before any process is started", () => {
   assert.throws(
@@ -69,8 +89,8 @@ process.stdout.write(JSON.stringify({
         fields: [
           { name: "signed", schema: { kind: "i64" } },
           { name: "unsigned", schema: { kind: "u64" } },
-          { name: "decimal", schema: { kind: "decimal" } },
-          { name: "money", schema: { kind: "money" } },
+          { name: "decimal", schema: { kind: "decimal", precision: 3, scale: 2 } },
+          { name: "money", schema: { kind: "money", currency: "USD", precision: 3, scale: 2 } },
           { name: "bytes", schema: { kind: "bytes" } },
           { name: "date", schema: { kind: "date" } },
           { name: "timestamp", schema: { kind: "timestamp" } },
@@ -182,7 +202,7 @@ process.stdout.write(JSON.stringify({
       records: [{ fields: [
         { name: "product_id", value: { type: "uuid", value: "01900000-0000-7000-8000-000000000001" } },
         { name: "price", value: { type: "money", currency: "USD", amount: {
-          coefficient_twos_complement: "ew==", precision: 38, scale: 2,
+          coefficient_twos_complement: "ew==", scale: 2,
         } } },
       ] }],
     }],
@@ -228,7 +248,7 @@ process.stdout.write(JSON.stringify({
       readonly product: {
         readonly price: {
           readonly currency: string;
-          readonly amount: { readonly coefficientTwosComplement: Uint8Array; readonly precision?: number; readonly scale: number };
+          readonly amount: { readonly coefficientTwosComplement: Uint8Array; readonly precision: number; readonly scale: number };
         };
       };
     }).product;

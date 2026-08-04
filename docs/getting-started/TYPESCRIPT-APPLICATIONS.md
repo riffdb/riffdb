@@ -41,6 +41,22 @@ compiler-owned schemas. The runtime rejects a response before returning it if
 its identity, cardinality, outcome, symbolic fields, wire field identities, or
 value types differ.
 
+Exact decimals and money never pass through a JavaScript `number`. Use the
+first-party constructors instead of manually encoding coefficient bytes:
+
+```ts
+import { exactDecimal, exactMoney } from "@riffdb/application";
+
+const unitPrice = exactMoney("USD", "25.00");       // money<USD>
+const taxRate = exactDecimal("0.0825", 8, 4);       // decimal<8,4>
+```
+
+The constructors reject exponents, excess scale or precision, invalid
+currencies, and floating-point inputs. The current CLI preserves the compiled
+precision in tagged results. Generated decoding also restores it from the
+exact result schema when a compatible older tagged value omits the redundant
+field, while still rejecting a conflicting precision, scale, or currency.
+
 The credential must be the protected application-role credential produced by
 `riffdb dev`. Do not pass the bootstrap or administrative credential to a web
 application. Do not expose the credential to browser JavaScript; the generated
