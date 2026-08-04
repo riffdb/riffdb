@@ -427,10 +427,7 @@ impl PostgresAppBackend {
     ///
     /// Call after every Postgres load point (and after the full PG phase) so a
     /// "phase complete" claim is server-verified, not just "worker threads joined".
-    pub fn wait_until_load_clients_gone(
-        &mut self,
-        timeout: Duration,
-    ) -> Result<(), PostgresError> {
+    pub fn wait_until_load_clients_gone(&mut self, timeout: Duration) -> Result<(), PostgresError> {
         let deadline = Instant::now() + timeout;
         loop {
             let counts = self.foreign_client_session_counts()?;
@@ -740,6 +737,17 @@ impl AppBackend for PostgresAppBackend {
         rows.iter()
             .map(|row| decode_board_ticket(row, organization_id))
             .collect()
+    }
+
+    fn board_page_projected(
+        &mut self,
+        _organization_id: UuidBytes,
+        _project_id: UuidBytes,
+        _status: TicketStatus,
+        _limit: u32,
+    ) -> Result<Vec<TicketRow>, Self::Error> {
+        // PG has no projected columnar path; harness never schedules these scenarios.
+        Err(PostgresError::InvalidConfiguration)
     }
 
     fn list_open_tickets_for_assignee(

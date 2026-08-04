@@ -1032,11 +1032,14 @@ dependencies = [
 name = "riffdb-app-baseline-riffdb"
 version = "0.1.0"
 dependencies = [
+ "riffdb-api-grpc",
  "riffdb-app-baseline-core",
  "riffdb-auth",
  "riffdb-bench-root",
  "riffdb-client-rust",
  "riffdb-contract-compiler",
+ "riffdb-contract-ir",
+ "riffdb-proto",
  "riffdb-query-module",
  "riffdb-ticketdesk",
  "riffdb-types",

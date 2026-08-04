@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod projected;
 mod server;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -20,22 +21,25 @@ use riffdb_app_baseline_core::{
     SwapMemberRolesSeed, TicketDetailPage, TicketRow, TicketStatus, UserRow, UuidBytes,
     format_uuid,
 };
+use riffdb_client_rust::ApplicationRecord;
 use riffdb_client_rust::{
-    ApplicationClientError, AttemptBudget, BearerCredential, CallMetadata, GeneratedBatchError,
-    GeneratedBatchOptions, GeneratedBatchResult, StableApplicationClient,
+    ApplicationClientError, ApplicationContract, ApplicationUuid, ApplicationValue, AttemptBudget,
+    BearerCredential, CallMetadata, GeneratedBatchError, GeneratedBatchOptions,
+    GeneratedBatchResult, NamedQuery, NamedQueryResult, StableApplicationClient,
 };
 use riffdb_ticketdesk::{
-    AddProjectMemberInput, AttachLabelInput, BoardPage50Params, BoardPage50Result,
-    BoardPage200Params, BoardPage200Result, BoardPage450Params, BoardPage450Result,
-    CloseTicketWithCommentInput, CreateCommentInput, CreateLabelInput, CreateOrganizationInput,
-    CreateProjectInput, CreateTicketInput, CreateUserInput, GetTicketParams, GetTicketResult,
-    GetUserParams, GetUserResult, ListCommentsParams, ListCommentsResult,
-    ListTicketsByAssigneeParams, ListTicketsByAssigneeResult, ListTicketsParams, ListTicketsResult,
-    OpenTicketWithLabelsInput, ProjectMembersParams, ProjectMembersResult, SwapMemberRolesInput,
-    TicketDeskClient, TicketPageParams, TicketPageResult,
+    AddProjectMemberInput, AttachLabelInput, CloseTicketWithCommentInput, CreateCommentInput,
+    CreateLabelInput, CreateOrganizationInput, CreateProjectInput, CreateTicketInput,
+    CreateUserInput, OpenTicketWithLabelsInput, SwapMemberRolesInput, TicketDeskClient,
 };
 use tonic::transport::Endpoint;
 
+pub use projected::{
+    BOARD_PROJECTION_NAME, BOARD_ROW_FIELDS, BOARD_SELECT, TicketStatusEnumIds,
+    assert_board_rows_equivalent, board_rows_digest, build_board_projected_request,
+    catchup_projected_board, commit_token_bytes, execute_projected_board, freshness_available,
+    freshness_causal, request_shape,
+};
 pub use server::{
     DATABASE_ROOT_ENV, DEFAULT_DATABASE_ROOT, MIN_FREE_BYTES, MIN_FREE_BYTES_FULL,
     MIN_FREE_BYTES_SMOKE, RiffDbServerSession, ServerStartOptions, min_free_bytes_for_full,
@@ -50,15 +54,51 @@ const MAX_SEED_CONCURRENCY: usize = 128;
 #[derive(Clone)]
 pub struct RiffDbPublicBackend {
     endpoint: Endpoint,
+    projected_channel: tokio::sync::OnceCell<tonic::transport::Channel>,
     transport: StableApplicationClient,
     metadata: CallMetadata,
+    /// Raw bearer token for the generated ApplicationQueryService client path.
+    bearer_token: String,
     command_attempts: AttemptBudget,
     runtime: tokio::runtime::Handle,
+    /// TicketStatus enum ids for projected predicates/decoding.
+    status_ids: TicketStatusEnumIds,
+    /// Deployed query-module hash (must match NamedQuery requests; generated
+    /// TicketDesk client embeds a stale hash that would yield RDB-MODULE-0101).
+    query_module_hash: [u8; 32],
+    /// Max commit sequence observed during seed (for Causal catch-up).
+    last_seed_commit_sequence: Option<u64>,
+    /// History incarnation for Causal tokens (fresh DBs use 1).
+    history_incarnation: u64,
+    /// Whether the projected catch-up + equivalence gates have passed.
+    projected_gates_ready: bool,
 }
 
 impl RiffDbPublicBackend {
+    /// One lazily-connected shared channel for the projected wire path, so
+    /// timed projected samples ride warm HTTP/2 exactly like compiled ones
+    /// ride the client's persistent transport (review must-fix: symmetric
+    /// transport).
+    async fn projected_channel(&self) -> Result<tonic::transport::Channel, RiffDbError> {
+        self.projected_channel
+            .get_or_try_init(|| async {
+                self.endpoint
+                    .connect()
+                    .await
+                    .map_err(|_| RiffDbError::Connection)
+            })
+            .await
+            .cloned()
+    }
+
     /// Connects to an already bootstrapped TicketDesk-ready endpoint.
-    pub async fn connect(endpoint: &str, bearer_token: &str) -> Result<Self, RiffDbError> {
+    pub async fn connect(
+        endpoint: &str,
+        bearer_token: &str,
+        status_ids: TicketStatusEnumIds,
+        query_module_hash: [u8; 32],
+        history_incarnation: u64,
+    ) -> Result<Self, RiffDbError> {
         let endpoint = Endpoint::from_shared(endpoint.to_owned())
             .map_err(|_| RiffDbError::Connection)?
             .connect_timeout(std::time::Duration::from_secs(10))
@@ -74,10 +114,17 @@ impl RiffDbPublicBackend {
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| RiffDbError::Runtime)?;
         Ok(Self {
             endpoint,
+            projected_channel: tokio::sync::OnceCell::new(),
             transport,
             metadata,
+            bearer_token: bearer_token.to_owned(),
             command_attempts: AttemptBudget::new(3).expect("positive command attempt budget"),
             runtime,
+            status_ids,
+            query_module_hash,
+            last_seed_commit_sequence: None,
+            history_incarnation,
+            projected_gates_ready: false,
         })
     }
 
@@ -93,12 +140,45 @@ impl RiffDbPublicBackend {
             .block_on(StableApplicationClient::connect(endpoint.clone()))
             .map_err(|_| RiffDbError::Connection)?;
         Ok(Self {
+            projected_channel: tokio::sync::OnceCell::new(),
             endpoint,
             transport,
             metadata,
+            bearer_token: self.bearer_token.clone(),
             command_attempts: self.command_attempts,
             runtime,
+            status_ids: self.status_ids,
+            query_module_hash: self.query_module_hash,
+            last_seed_commit_sequence: self.last_seed_commit_sequence,
+            history_incarnation: self.history_incarnation,
+            projected_gates_ready: self.projected_gates_ready,
         })
+    }
+
+    async fn execute_named(
+        &self,
+        name: &str,
+        parameters: BTreeMap<String, ApplicationValue>,
+    ) -> Result<NamedQueryResult, RiffDbError> {
+        let query = NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: "TicketDesk".to_owned(),
+                version: 1,
+                bundle_hash: None,
+            },
+            name.to_owned(),
+            Some(self.query_module_hash),
+            parameters,
+            None,
+        )
+        .map_err(map_app)?;
+        // Clone the stable client (shared channel) so &self call sites can run
+        // named queries inside block_on without exclusive self borrows.
+        let mut transport = self.transport.clone();
+        transport
+            .execute_named_query(query, &self.metadata)
+            .await
+            .map_err(map_app)
     }
 
     /// Selects the explicit command transport-submission budget.
@@ -137,6 +217,76 @@ fn seed_concurrency() -> usize {
         .and_then(|value| value.parse().ok())
         .unwrap_or(DEFAULT_SEED_CONCURRENCY)
         .clamp(1, MAX_SEED_CONCURRENCY)
+}
+
+impl RiffDbPublicBackend {
+    /// Catch-up + cross-path equivalence gates (must pass before projected timing).
+    ///
+    /// Causal to the last seed commit proves the projection reached the head;
+    /// then each board page size is compared compiled vs projected (never
+    /// path-to-self). Divergence aborts with both digests.
+    pub fn prepare_projected_board_gates(
+        &mut self,
+        dataset: &SeedDataset,
+    ) -> Result<(), RiffDbError> {
+        let dense = dataset.board_dense_open_count();
+        let limits: Vec<u32> = [50_u32, 200, 450]
+            .into_iter()
+            .filter(|&limit| dense >= limit as usize)
+            .collect();
+        if limits.is_empty() {
+            self.projected_gates_ready = true;
+            return Ok(());
+        }
+        let probes = dataset.probes();
+        let sequence = self.last_seed_commit_sequence.ok_or_else(|| {
+            RiffDbError::Rpc("projected catch-up requires a seed commit sequence".into())
+        })?;
+        let token = commit_token_bytes(self.history_incarnation, sequence)?;
+        self.block_on(async {
+            let channel = self.projected_channel().await?;
+            catchup_projected_board(
+                &channel,
+                &self.bearer_token,
+                probes.board_organization_id,
+                probes.board_project_id,
+                probes.open_status,
+                self.status_ids,
+                token,
+            )
+            .await
+        })?;
+        for limit in limits {
+            let compiled = self.board_page(
+                probes.board_organization_id,
+                probes.board_project_id,
+                probes.open_status,
+                limit,
+            )?;
+            // Equivalence uses the projected wire path directly (gates not yet open
+            // for timed samples). Never compare a path to itself.
+            let projected = self.block_on(async {
+                execute_projected_board(
+                    &self.projected_channel().await?,
+                    &self.bearer_token,
+                    probes.board_organization_id,
+                    probes.board_project_id,
+                    probes.open_status,
+                    limit,
+                    self.status_ids,
+                    freshness_available(),
+                )
+                .await
+            })?;
+            assert_board_rows_equivalent(&compiled, &projected, limit).map_err(RiffDbError::Rpc)?;
+        }
+        self.projected_gates_ready = true;
+        eprintln!(
+            "projected-board gates ok: catch-up Ready at commit_sequence={sequence}; \
+             compiled vs projected row content identical for limits that fit the dense cell"
+        );
+        Ok(())
+    }
 }
 
 impl AppBackend for RiffDbPublicBackend {
@@ -187,7 +337,8 @@ impl AppBackend for RiffDbPublicBackend {
     }
 
     fn seed(&mut self, dataset: &SeedDataset) -> Result<(), Self::Error> {
-        self.block_on(async {
+        self.projected_gates_ready = false;
+        let max_commit = self.block_on(async {
             let concurrency = seed_concurrency();
             let total = dataset.organizations.len()
                 + dataset.users.len()
@@ -198,6 +349,7 @@ impl AppBackend for RiffDbPublicBackend {
                 + dataset.comments.len()
                 + dataset.ticket_labels.len();
             let progress = Arc::new(SeedProgress::new(total));
+            let max_commit = Arc::new(AtomicUsize::new(0));
             eprintln!("riffdb-seed-start\ttotal={total}\tconcurrency={concurrency}");
 
             // Phases respect foreign-key order. Each phase uses bounded public
@@ -210,6 +362,7 @@ impl AppBackend for RiffDbPublicBackend {
                     for chunk in inputs.chunks(4_096) {
                         finish_generated_batch(
                             &progress,
+                            &max_commit,
                             $phase,
                             self.ticketdesk().$method(chunk.to_vec(), options).await,
                         )?;
@@ -331,8 +484,10 @@ impl AppBackend for RiffDbPublicBackend {
             run_seed_batches!("ticket_label", links, attach_label_batch);
 
             progress.finish();
-            Ok(())
-        })
+            Ok::<u64, RiffDbError>(max_commit.load(Ordering::Relaxed) as u64)
+        })?;
+        self.last_seed_commit_sequence = (max_commit > 0).then_some(max_commit);
+        Ok(())
     }
 
     fn point_get_ticket(
@@ -341,26 +496,25 @@ impl AppBackend for RiffDbPublicBackend {
         ticket_id: UuidBytes,
     ) -> Result<Option<TicketRow>, Self::Error> {
         self.block_on(async {
-            match self
-                .ticketdesk()
-                .get_ticket(GetTicketParams {
-                    organization_id: uuid_text(organization_id),
-                    ticket_id: uuid_text(ticket_id),
-                })
-                .await
-                .map_err(map_app)?
-            {
-                GetTicketResult::Found(found) => Ok(Some(TicketRow {
-                    organization_id,
-                    ticket_id: parse_uuid(&found.ticket.ticket_id)?,
-                    project_id: parse_uuid(&found.ticket.project_id)?,
-                    reporter_id: parse_uuid(&found.ticket.reporter_id)?,
-                    assignee_id: parse_uuid(&found.ticket.assignee_id)?,
-                    status: parse_status(&found.ticket.status)?,
-                    title: found.ticket.title,
-                })),
-                GetTicketResult::NotFound(_) => Ok(None),
+            let mut parameters = BTreeMap::new();
+            parameters.insert(
+                "organization_id".to_owned(),
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes(organization_id)),
+            );
+            parameters.insert(
+                "ticket_id".to_owned(),
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes(ticket_id)),
+            );
+            let result = self.execute_named("GetTicket", parameters).await?;
+            if result.outcome != "Found" {
+                return Ok(None);
             }
+            let ticket = result
+                .fields
+                .get("ticket")
+                .and_then(|field| field.records.first())
+                .ok_or(RiffDbError::Decode)?;
+            Ok(Some(decode_ticket_record(ticket, organization_id)?))
         })
     }
 
@@ -370,23 +524,30 @@ impl AppBackend for RiffDbPublicBackend {
         user_id: UuidBytes,
     ) -> Result<Option<UserRow>, Self::Error> {
         self.block_on(async {
-            match self
-                .ticketdesk()
-                .get_user(GetUserParams {
-                    organization_id: uuid_text(organization_id),
-                    user_id: uuid_text(user_id),
-                })
-                .await
-                .map_err(map_app)?
-            {
-                GetUserResult::Found(found) => Ok(Some(UserRow {
-                    organization_id,
-                    user_id: parse_uuid(&found.user.user_id)?,
-                    email: found.user.email,
-                    display_name: found.user.display_name,
-                })),
-                GetUserResult::NotFound(_) => Ok(None),
+            let mut parameters = BTreeMap::new();
+            parameters.insert(
+                "organization_id".to_owned(),
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes(organization_id)),
+            );
+            parameters.insert(
+                "user_id".to_owned(),
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes(user_id)),
+            );
+            let result = self.execute_named("GetUser", parameters).await?;
+            if result.outcome != "Found" {
+                return Ok(None);
             }
+            let user = result
+                .fields
+                .get("user")
+                .and_then(|field| field.records.first())
+                .ok_or(RiffDbError::Decode)?;
+            Ok(Some(UserRow {
+                organization_id,
+                user_id: value_uuid(user.fields.get("user_id"))?,
+                email: value_string(user.fields.get("email"))?,
+                display_name: value_string(user.fields.get("display_name"))?,
+            }))
         })
     }
 
@@ -398,32 +559,54 @@ impl AppBackend for RiffDbPublicBackend {
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error> {
         self.block_on(async {
-            let ListTicketsResult::Found(found) = self
-                .ticketdesk()
-                .list_tickets(ListTicketsParams {
-                    organization_id: uuid_text(organization_id),
-                    project_id: uuid_text(project_id),
-                    statuses: vec![status_name(status).to_owned()],
-                    after: None,
-                    limit: u64::from(limit),
-                })
-                .await
-                .map_err(map_app)?;
-            found
-                .tickets
-                .into_iter()
-                .map(|ticket| {
-                    Ok(TicketRow {
-                        organization_id,
-                        ticket_id: parse_uuid(&ticket.ticket_id)?,
-                        project_id: parse_uuid(&ticket.project_id)?,
-                        reporter_id: parse_uuid(&ticket.reporter_id)?,
-                        assignee_id: parse_uuid(&ticket.assignee_id)?,
-                        status: parse_status(&ticket.status)?,
-                        title: ticket.title,
-                    })
-                })
-                .collect()
+            let mut parameters = BTreeMap::new();
+            parameters.insert(
+                "organization_id".to_owned(),
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes(organization_id)),
+            );
+            parameters.insert(
+                "project_id".to_owned(),
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes(project_id)),
+            );
+            parameters.insert(
+                "statuses".to_owned(),
+                ApplicationValue::List(vec![ApplicationValue::Enum(
+                    status_name(status).to_owned(),
+                )]),
+            );
+            parameters.insert("limit".to_owned(), ApplicationValue::U64(u64::from(limit)));
+            let result = self.execute_named("ListTickets", parameters).await?;
+            if result.outcome != "Found" {
+                return Ok(Vec::new());
+            }
+            decode_ticket_list_field(&result, "tickets", organization_id)
+        })
+    }
+
+    fn board_page_projected(
+        &mut self,
+        organization_id: UuidBytes,
+        project_id: UuidBytes,
+        status: TicketStatus,
+        limit: u32,
+    ) -> Result<Vec<TicketRow>, Self::Error> {
+        if !self.projected_gates_ready {
+            return Err(RiffDbError::Rpc(
+                "projected board measured before catch-up/equivalence gates".into(),
+            ));
+        }
+        self.block_on(async {
+            execute_projected_board(
+                &self.projected_channel().await?,
+                &self.bearer_token,
+                organization_id,
+                project_id,
+                status,
+                limit,
+                self.status_ids,
+                freshness_available(),
+            )
+            .await
         })
     }
 
@@ -437,99 +620,40 @@ impl AppBackend for RiffDbPublicBackend {
         // Static BoardPage50/200/450 only. take 500 (static or runtime Limit)
         // trips MAX_QUERY_SCANNED_ROWS=500 via continuation probe (scan 501 →
         // RDB-INTERNAL-0001; incident 019fbf5b-1a64-7877-94c3-47d7a0763539).
-        self.block_on(async {
-            let org = uuid_text(organization_id);
-            let project = uuid_text(project_id);
-            let status_s = status_name(status).to_owned();
-            // Each static query has a distinct generated row type; decode to
-            // TicketRow inside each arm so the match unifies.
-            match limit {
-                50 => {
-                    let BoardPage50Result::Found(found) = self
-                        .ticketdesk()
-                        .board_page50(BoardPage50Params {
-                            organization_id: org,
-                            project_id: project,
-                            status: status_s,
-                        })
-                        .await
-                        .map_err(map_app)?;
-                    found
-                        .tickets
-                        .into_iter()
-                        .map(|ticket| {
-                            Ok(TicketRow {
-                                organization_id,
-                                ticket_id: parse_uuid(&ticket.ticket_id)?,
-                                project_id: parse_uuid(&ticket.project_id)?,
-                                reporter_id: parse_uuid(&ticket.reporter_id)?,
-                                assignee_id: parse_uuid(&ticket.assignee_id)?,
-                                status: parse_status(&ticket.status)?,
-                                title: ticket.title,
-                            })
-                        })
-                        .collect()
-                }
-                200 => {
-                    let BoardPage200Result::Found(found) = self
-                        .ticketdesk()
-                        .board_page200(BoardPage200Params {
-                            organization_id: org,
-                            project_id: project,
-                            status: status_s,
-                        })
-                        .await
-                        .map_err(map_app)?;
-                    found
-                        .tickets
-                        .into_iter()
-                        .map(|ticket| {
-                            Ok(TicketRow {
-                                organization_id,
-                                ticket_id: parse_uuid(&ticket.ticket_id)?,
-                                project_id: parse_uuid(&ticket.project_id)?,
-                                reporter_id: parse_uuid(&ticket.reporter_id)?,
-                                assignee_id: parse_uuid(&ticket.assignee_id)?,
-                                status: parse_status(&ticket.status)?,
-                                title: ticket.title,
-                            })
-                        })
-                        .collect()
-                }
-                450 => {
-                    let BoardPage450Result::Found(found) = self
-                        .ticketdesk()
-                        .board_page450(BoardPage450Params {
-                            organization_id: org,
-                            project_id: project,
-                            status: status_s,
-                        })
-                        .await
-                        .map_err(map_app)?;
-                    found
-                        .tickets
-                        .into_iter()
-                        .map(|ticket| {
-                            Ok(TicketRow {
-                                organization_id,
-                                ticket_id: parse_uuid(&ticket.ticket_id)?,
-                                project_id: parse_uuid(&ticket.project_id)?,
-                                reporter_id: parse_uuid(&ticket.reporter_id)?,
-                                assignee_id: parse_uuid(&ticket.assignee_id)?,
-                                status: parse_status(&ticket.status)?,
-                                title: ticket.title,
-                            })
-                        })
-                        .collect()
-                }
-                other => Err(RiffDbError::Application {
+        // Named via deployed module hash (not the stale generated-client hash).
+        let query_name = match limit {
+            50 => "BoardPage50",
+            200 => "BoardPage200",
+            450 => "BoardPage450",
+            other => {
+                return Err(RiffDbError::Application {
                     code: "RDB-INTERNAL-0001".to_owned(),
                     detail: format!(
                         "board_page limit {other} has no static BoardPage query \
                          (only 50/200/450; take 500 trips MAX_QUERY_SCANNED_ROWS via continuation probe)"
                     ),
-                }),
+                });
             }
+        };
+        self.block_on(async {
+            let mut parameters = BTreeMap::new();
+            parameters.insert(
+                "organization_id".to_owned(),
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes(organization_id)),
+            );
+            parameters.insert(
+                "project_id".to_owned(),
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes(project_id)),
+            );
+            parameters.insert(
+                "status".to_owned(),
+                ApplicationValue::Enum(status_name(status).to_owned()),
+            );
+            let result = self.execute_named(query_name, parameters).await?;
+            if result.outcome != "Found" {
+                return Ok(Vec::new());
+            }
+            decode_ticket_list_field(&result, "tickets", organization_id)
         })
     }
 
@@ -540,32 +664,27 @@ impl AppBackend for RiffDbPublicBackend {
         limit: u32,
     ) -> Result<Vec<TicketRow>, Self::Error> {
         self.block_on(async {
-            let ListTicketsByAssigneeResult::Found(found) = self
-                .ticketdesk()
-                .list_tickets_by_assignee(ListTicketsByAssigneeParams {
-                    organization_id: uuid_text(organization_id),
-                    assignee_id: uuid_text(assignee_id),
-                    statuses: vec![status_name(TicketStatus::Open).to_owned()],
-                    after: None,
-                    limit: u64::from(limit),
-                })
-                .await
-                .map_err(map_app)?;
-            found
-                .tickets
-                .into_iter()
-                .map(|ticket| {
-                    Ok(TicketRow {
-                        organization_id,
-                        ticket_id: parse_uuid(&ticket.ticket_id)?,
-                        project_id: parse_uuid(&ticket.project_id)?,
-                        reporter_id: parse_uuid(&ticket.reporter_id)?,
-                        assignee_id: parse_uuid(&ticket.assignee_id)?,
-                        status: parse_status(&ticket.status)?,
-                        title: ticket.title,
-                    })
-                })
-                .collect()
+            let mut parameters = BTreeMap::new();
+            parameters.insert(
+                "organization_id".to_owned(),
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes(organization_id)),
+            );
+            parameters.insert(
+                "assignee_id".to_owned(),
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes(assignee_id)),
+            );
+            parameters.insert(
+                "statuses".to_owned(),
+                ApplicationValue::List(vec![ApplicationValue::Enum("Open".to_owned())]),
+            );
+            parameters.insert("limit".to_owned(), ApplicationValue::U64(u64::from(limit)));
+            let result = self
+                .execute_named("ListTicketsByAssignee", parameters)
+                .await?;
+            if result.outcome != "Found" {
+                return Ok(Vec::new());
+            }
+            decode_ticket_list_field(&result, "tickets", organization_id)
         })
     }
 
@@ -576,26 +695,31 @@ impl AppBackend for RiffDbPublicBackend {
         limit: u32,
     ) -> Result<Vec<CommentRow>, Self::Error> {
         self.block_on(async {
-            let ListCommentsResult::Found(found) = self
-                .ticketdesk()
-                .list_comments(ListCommentsParams {
-                    organization_id: uuid_text(organization_id),
-                    ticket_id: uuid_text(ticket_id),
-                    after: None,
-                    limit: u64::from(limit),
-                })
-                .await
-                .map_err(map_app)?;
-            found
-                .comments
-                .into_iter()
-                .map(|comment| {
+            let mut parameters = BTreeMap::new();
+            parameters.insert(
+                "organization_id".to_owned(),
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes(organization_id)),
+            );
+            parameters.insert(
+                "ticket_id".to_owned(),
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes(ticket_id)),
+            );
+            parameters.insert("limit".to_owned(), ApplicationValue::U64(u64::from(limit)));
+            let result = self.execute_named("ListComments", parameters).await?;
+            if result.outcome != "Found" {
+                return Ok(Vec::new());
+            }
+            let comments = result.fields.get("comments").ok_or(RiffDbError::Decode)?;
+            comments
+                .records
+                .iter()
+                .map(|record| {
                     Ok(CommentRow {
                         organization_id,
-                        comment_id: parse_uuid(&comment.comment_id)?,
+                        comment_id: value_uuid(record.fields.get("comment_id"))?,
                         ticket_id,
-                        author_id: parse_uuid(&comment.author_id)?,
-                        body: comment.body,
+                        author_id: value_uuid(record.fields.get("author_id"))?,
+                        body: value_string(record.fields.get("body"))?,
                     })
                 })
                 .collect()
@@ -609,25 +733,30 @@ impl AppBackend for RiffDbPublicBackend {
         limit: u32,
     ) -> Result<Vec<ProjectMemberRow>, Self::Error> {
         self.block_on(async {
-            let ProjectMembersResult::Found(found) = self
-                .ticketdesk()
-                .project_members(ProjectMembersParams {
-                    organization_id: uuid_text(organization_id),
-                    project_id: uuid_text(project_id),
-                    after: None,
-                })
-                .await
-                .map_err(map_app)?;
-            found
-                .members
-                .into_iter()
+            let mut parameters = BTreeMap::new();
+            parameters.insert(
+                "organization_id".to_owned(),
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes(organization_id)),
+            );
+            parameters.insert(
+                "project_id".to_owned(),
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes(project_id)),
+            );
+            let result = self.execute_named("ProjectMembers", parameters).await?;
+            if result.outcome != "Found" {
+                return Ok(Vec::new());
+            }
+            let members = result.fields.get("members").ok_or(RiffDbError::Decode)?;
+            members
+                .records
+                .iter()
                 .take(limit as usize)
-                .map(|member| {
+                .map(|record| {
                     Ok(ProjectMemberRow {
                         organization_id,
                         project_id,
-                        user_id: parse_uuid(&member.user_id)?,
-                        role: member.role,
+                        user_id: value_uuid(record.fields.get("user_id"))?,
+                        role: value_string(record.fields.get("role"))?,
                     })
                 })
                 .collect()
@@ -641,87 +770,124 @@ impl AppBackend for RiffDbPublicBackend {
         comment_limit: u32,
     ) -> Result<Option<TicketDetailPage>, Self::Error> {
         self.block_on(async {
-            match self
-                .ticketdesk()
-                .ticket_page(TicketPageParams {
-                    organization_id: uuid_text(organization_id),
-                    ticket_id: uuid_text(ticket_id),
-                })
-                .await
-                .map_err(map_app)?
-            {
-                TicketPageResult::NotFound(_) => Ok(None),
-                TicketPageResult::IntegrityFailure(_) => {
-                    Err(RiffDbError::Rpc("TicketPage integrity failure".into()))
-                }
-                TicketPageResult::Found(page) => {
-                    let project_id = parse_uuid(&page.project.project_id)?;
-                    let assignee_id = page
-                        .assignee
-                        .as_ref()
-                        .map(|assignee| parse_uuid(&assignee.user_id))
-                        .transpose()?
-                        .unwrap_or([0; 16]);
-                    let assignee = page
-                        .assignee
-                        .map(|assignee| {
+            let mut parameters = BTreeMap::new();
+            parameters.insert(
+                "organization_id".to_owned(),
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes(organization_id)),
+            );
+            parameters.insert(
+                "ticket_id".to_owned(),
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes(ticket_id)),
+            );
+            let result = self.execute_named("TicketPage", parameters).await?;
+            match result.outcome.as_str() {
+                "NotFound" => Ok(None),
+                "IntegrityFailure" => Err(RiffDbError::Rpc("TicketPage integrity failure".into())),
+                "Found" => {
+                    let ticket_rec = result
+                        .fields
+                        .get("ticket")
+                        .and_then(|field| field.records.first())
+                        .ok_or(RiffDbError::Decode)?;
+                    let project_rec = result
+                        .fields
+                        .get("project")
+                        .and_then(|field| field.records.first())
+                        .ok_or(RiffDbError::Decode)?;
+                    let org_rec = result
+                        .fields
+                        .get("organization")
+                        .and_then(|field| field.records.first())
+                        .ok_or(RiffDbError::Decode)?;
+                    let reporter_rec = result
+                        .fields
+                        .get("reporter")
+                        .and_then(|field| field.records.first())
+                        .ok_or(RiffDbError::Decode)?;
+                    let project_id = value_uuid(project_rec.fields.get("project_id"))?;
+                    let assignee = result
+                        .fields
+                        .get("assignee")
+                        .and_then(|field| field.records.first())
+                        .map(|record| {
                             Ok(UserRow {
                                 organization_id,
-                                user_id: parse_uuid(&assignee.user_id)?,
+                                user_id: value_uuid(record.fields.get("user_id"))?,
                                 email: String::new(),
-                                display_name: assignee.display_name,
+                                display_name: value_string(record.fields.get("display_name"))?,
                             })
                         })
                         .transpose()?;
-                    let comments = page
-                        .comments
-                        .into_iter()
-                        .take(comment_limit as usize)
-                        .map(|comment| {
-                            Ok(CommentRow {
-                                organization_id,
-                                comment_id: parse_uuid(&comment.comment_id)?,
-                                ticket_id,
-                                author_id: parse_uuid(&comment.author_id)?,
-                                body: comment.body,
-                            })
+                    let assignee_id = assignee
+                        .as_ref()
+                        .map(|user| user.user_id)
+                        .unwrap_or([0; 16]);
+                    let comments = result
+                        .fields
+                        .get("comments")
+                        .map(|field| {
+                            field
+                                .records
+                                .iter()
+                                .take(comment_limit as usize)
+                                .map(|record| {
+                                    Ok(CommentRow {
+                                        organization_id,
+                                        comment_id: value_uuid(record.fields.get("comment_id"))?,
+                                        ticket_id,
+                                        author_id: value_uuid(record.fields.get("author_id"))?,
+                                        body: value_string(record.fields.get("body"))?,
+                                    })
+                                })
+                                .collect::<Result<Vec<_>, RiffDbError>>()
                         })
-                        .collect::<Result<Vec<_>, RiffDbError>>()?;
-                    let labels = page
-                        .labels
-                        .into_iter()
-                        .map(|label| {
-                            Ok(LabelRow {
-                                organization_id,
-                                label_id: parse_uuid(&label.label_id)?,
-                                name: label.name,
-                            })
+                        .transpose()?
+                        .unwrap_or_default();
+                    let labels = result
+                        .fields
+                        .get("labels")
+                        .map(|field| {
+                            field
+                                .records
+                                .iter()
+                                .map(|record| {
+                                    Ok(LabelRow {
+                                        organization_id,
+                                        label_id: value_uuid(record.fields.get("label_id"))?,
+                                        name: value_string(record.fields.get("name"))?,
+                                    })
+                                })
+                                .collect::<Result<Vec<_>, RiffDbError>>()
                         })
-                        .collect::<Result<Vec<_>, RiffDbError>>()?;
+                        .transpose()?
+                        .unwrap_or_default();
                     Ok(Some(TicketDetailPage {
                         ticket: TicketRow {
                             organization_id,
-                            ticket_id: parse_uuid(&page.ticket.ticket_id)?,
+                            ticket_id: value_uuid(ticket_rec.fields.get("ticket_id"))?,
                             project_id,
-                            reporter_id: parse_uuid(&page.reporter.user_id)?,
+                            reporter_id: value_uuid(reporter_rec.fields.get("user_id"))?,
                             assignee_id,
-                            status: parse_status(&page.ticket.status)?,
-                            title: page.ticket.title,
+                            status: value_status(ticket_rec.fields.get("status"))?,
+                            title: value_string(ticket_rec.fields.get("title"))?,
                         },
                         project: ProjectRow {
                             organization_id,
                             project_id,
-                            name: page.project.name,
+                            name: value_string(project_rec.fields.get("name"))?,
                         },
                         organization: OrganizationRow {
-                            organization_id: parse_uuid(&page.organization.organization_id)?,
-                            name: page.organization.name,
+                            organization_id: value_uuid(org_rec.fields.get("organization_id"))?,
+                            name: value_string(org_rec.fields.get("name"))?,
                         },
                         assignee,
                         comments,
                         labels,
                     }))
                 }
+                other => Err(RiffDbError::Rpc(format!(
+                    "TicketPage unexpected outcome {other}"
+                ))),
             }
         })
     }
@@ -834,14 +1000,20 @@ fn spread_conflict_domains<T, K: Ord>(items: &[T], key: impl Fn(&T) -> K) -> Vec
 
 fn finish_generated_batch<T>(
     progress: &SeedProgress,
+    max_commit: &AtomicUsize,
     phase: &'static str,
     result: Result<GeneratedBatchResult<T>, GeneratedBatchError>,
 ) -> Result<(), RiffDbError> {
     let result = result.map_err(map_generated_batch)?;
     for item in result.items {
-        item.result
+        let typed = item
+            .result
             .map_err(ApplicationClientError::from)
             .map_err(map_app)?;
+        if let Some(sequence) = typed.commit_sequence {
+            let sequence = usize::try_from(sequence).unwrap_or(usize::MAX);
+            max_commit.fetch_max(sequence, Ordering::Relaxed);
+        }
         progress.tick(phase);
     }
     Ok(())
@@ -910,19 +1082,6 @@ fn uuid_text(bytes: UuidBytes) -> String {
     format_uuid(bytes)
 }
 
-fn parse_uuid(text: &str) -> Result<UuidBytes, RiffDbError> {
-    if text.len() != 36 {
-        return Err(RiffDbError::Decode);
-    }
-    let mut out = [0_u8; 16];
-    let hex = |i: usize| u8::from_str_radix(&text[i..i + 2], 16).map_err(|_| RiffDbError::Decode);
-    let positions = [0, 2, 4, 6, 9, 11, 14, 16, 19, 21, 24, 26, 28, 30, 32, 34];
-    for (index, start) in positions.into_iter().enumerate() {
-        out[index] = hex(start)?;
-    }
-    Ok(out)
-}
-
 fn status_name(status: TicketStatus) -> &'static str {
     match status {
         TicketStatus::Open => "Open",
@@ -931,11 +1090,77 @@ fn status_name(status: TicketStatus) -> &'static str {
     }
 }
 
-fn parse_status(name: &str) -> Result<TicketStatus, RiffDbError> {
-    match name {
-        "Open" => Ok(TicketStatus::Open),
-        "Closed" => Ok(TicketStatus::Closed),
-        "InProgress" => Ok(TicketStatus::InProgress),
+fn decode_ticket_list_field(
+    result: &NamedQueryResult,
+    field: &str,
+    organization_id: UuidBytes,
+) -> Result<Vec<TicketRow>, RiffDbError> {
+    let tickets = result.fields.get(field).ok_or(RiffDbError::Decode)?;
+    tickets
+        .records
+        .iter()
+        .map(|record| decode_ticket_record(record, organization_id))
+        .collect()
+}
+
+fn decode_ticket_record(
+    record: &ApplicationRecord,
+    organization_id: UuidBytes,
+) -> Result<TicketRow, RiffDbError> {
+    Ok(TicketRow {
+        organization_id,
+        ticket_id: value_uuid(record.fields.get("ticket_id"))?,
+        project_id: value_uuid(record.fields.get("project_id"))?,
+        reporter_id: value_uuid(record.fields.get("reporter_id"))?,
+        assignee_id: value_uuid(record.fields.get("assignee_id"))?,
+        status: value_status(record.fields.get("status"))?,
+        title: value_string(record.fields.get("title"))?,
+    })
+}
+
+fn value_uuid(value: Option<&ApplicationValue>) -> Result<UuidBytes, RiffDbError> {
+    match value {
+        Some(ApplicationValue::Uuid(uuid)) => Ok(*uuid.as_bytes()),
+        Some(ApplicationValue::String(text)) => {
+            if text.len() != 36 {
+                return Err(RiffDbError::Decode);
+            }
+            let mut out = [0_u8; 16];
+            let hex =
+                |i: usize| u8::from_str_radix(&text[i..i + 2], 16).map_err(|_| RiffDbError::Decode);
+            let positions = [0, 2, 4, 6, 9, 11, 14, 16, 19, 21, 24, 26, 28, 30, 32, 34];
+            for (index, start) in positions.into_iter().enumerate() {
+                out[index] = hex(start)?;
+            }
+            Ok(out)
+        }
+        _ => Err(RiffDbError::Decode),
+    }
+}
+
+fn value_string(value: Option<&ApplicationValue>) -> Result<String, RiffDbError> {
+    match value {
+        Some(ApplicationValue::String(text)) => Ok(text.clone()),
+        _ => Err(RiffDbError::Decode),
+    }
+}
+
+fn value_status(value: Option<&ApplicationValue>) -> Result<TicketStatus, RiffDbError> {
+    match value {
+        Some(ApplicationValue::Enum(name)) | Some(ApplicationValue::String(name)) => {
+            match name.as_str() {
+                "Open" => Ok(TicketStatus::Open),
+                "Closed" => Ok(TicketStatus::Closed),
+                "InProgress" => Ok(TicketStatus::InProgress),
+                _ => Err(RiffDbError::Decode),
+            }
+        }
+        Some(ApplicationValue::EnumIdentity { name, .. }) => match name.as_str() {
+            "Open" => Ok(TicketStatus::Open),
+            "Closed" => Ok(TicketStatus::Closed),
+            "InProgress" => Ok(TicketStatus::InProgress),
+            _ => Err(RiffDbError::Decode),
+        },
         _ => Err(RiffDbError::Decode),
     }
 }

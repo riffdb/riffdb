@@ -25,11 +25,24 @@ use riffdb_query_module::{
     ApplicationManifest, CompiledApplicationRole, NamedQuerySource, QueryModule,
     QueryModuleCandidate, QueryModuleName, QueryModuleVersion, compile_application_role,
 };
-use riffdb_types::{CapabilityGrantV1, CapabilityPermissionV1, PartitionScopeV1, TenantScope};
+use riffdb_types::{
+    CapabilityGrantV1, CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
+    PartitionScopeV1, TenantScope,
+};
 use tokio::time::timeout;
 use tonic::transport::Endpoint;
 
+use crate::projected::TicketStatusEnumIds;
 use crate::{RiffDbError, RiffDbPublicBackend};
+
+/// TOML body registering the board columnar projection (ADR-0086 config form).
+const BOARD_PROJECTIONS_TOML: &str = r#"
+[[projections]]
+name = "board"
+entity = "Ticket"
+projected_fields = ["project_id", "reporter_id", "assignee_id", "status", "title"]
+org_scope_field = "organization_id"
+"#;
 
 const AUDIENCE: &str = "riffdb-grpc-loopback";
 const ENVIRONMENT: &str = "app-baseline";
@@ -167,6 +180,11 @@ impl RiffDbServerSession {
     }
 
     /// Like [`start`](Self::start) with optional process overrides (saturation capacity).
+    ///
+    /// Two-phase bootstrap: (1) deploy TicketDesk on a process without columnar
+    /// projections (ColumnarRuntime::open requires an active catalog), then
+    /// clean shutdown; (2) restart the same database with `--projections-root`
+    /// and the board projection document so the projected board path is live.
     pub async fn start_with_options(
         riffdbd_bin: &Path,
         options: ServerStartOptions,
@@ -183,14 +201,23 @@ impl RiffDbServerSession {
             })?;
         let database_path = temporary.path().join("riffdb.redb");
         let backup_root = temporary.path().join("backups");
+        let projections_root = temporary.path().join("projections");
+        let projections_config_path = temporary.path().join("projections.toml");
         let capability_keys_path = temporary.path().join("capability.keys");
         let idempotency_keys_path = temporary.path().join("idempotency.keys");
         let bootstrap_path = temporary.path().join("bootstrap.credential");
 
+        fs::create_dir_all(&projections_root).map_err(|_| RiffDbError::Io)?;
+        fs::create_dir_all(&backup_root).map_err(|_| RiffDbError::Io)?;
         write_protected_file(&capability_keys_path, CAPABILITY_KEY_DOCUMENT)
             .map_err(|_| RiffDbError::Io)?;
         write_protected_file(&idempotency_keys_path, IDEMPOTENCY_KEY_DOCUMENT)
             .map_err(|_| RiffDbError::Io)?;
+        write_protected_file(
+            &projections_config_path,
+            BOARD_PROJECTIONS_TOML.trim_start().as_bytes(),
+        )
+        .map_err(|_| RiffDbError::Io)?;
         let generated = generate_bootstrap_credential(BOOTSTRAP_UNIX_MILLISECONDS, &SystemEntropy)
             .map_err(|_| RiffDbError::Bootstrap)?;
         write_protected_file(&bootstrap_path, generated.render_document().expose_secret())
@@ -199,6 +226,40 @@ impl RiffDbServerSession {
         let retained =
             load_bootstrap_credential_file(&bootstrap_path).map_err(|_| RiffDbError::Bootstrap)?;
 
+        // Phase 1: deploy contract + module + issue capability (no projections).
+        let mut phase1 = ServerProcess::spawn(
+            riffdbd_bin,
+            &database_path,
+            &backup_root,
+            &capability_keys_path,
+            &idempotency_keys_path,
+            options.coordinator_workload_capacity,
+            None,
+            None,
+        )
+        .map_err(|error| RiffDbError::Server {
+            detail: error.to_string(),
+        })?;
+        let address = phase1.wait_for_ready_address().map_err(|error| {
+            let detail = phase1.diagnostic_detail(&error.to_string());
+            RiffDbError::Server { detail }
+        })?;
+        let endpoint = format!("http://{address}");
+        let mut client = connect(&endpoint).await?;
+        // Phase 1 only activates the contract so ColumnarRuntime can resolve the
+        // Ticket entity on the next process open. Query module + runner capability
+        // are issued after the projection-enabled restart (avoids MODULE_UNAVAILABLE
+        // from a pre-restart module identity that is not re-bound on reopen).
+        let status_ids = bootstrap_and_deploy_contract(&mut client, &retained).await?;
+        // History incarnation for a fresh DB is 1; Causal tokens bind it.
+        let history_incarnation = 1_u64;
+        phase1
+            .shutdown_cleanly()
+            .map_err(|error| RiffDbError::Server {
+                detail: error.to_string(),
+            })?;
+
+        // Phase 2: same database with board projection registration.
         let process = ServerProcess::spawn(
             riffdbd_bin,
             &database_path,
@@ -206,6 +267,8 @@ impl RiffDbServerSession {
             &capability_keys_path,
             &idempotency_keys_path,
             options.coordinator_workload_capacity,
+            Some(projections_root.as_path()),
+            Some(projections_config_path.as_path()),
         )
         .map_err(|error| RiffDbError::Server {
             detail: error.to_string(),
@@ -216,8 +279,15 @@ impl RiffDbServerSession {
         })?;
         let endpoint = format!("http://{address}");
         let mut client = connect(&endpoint).await?;
-        let token = bootstrap_deploy_and_issue(&mut client, &retained).await?;
-        let backend = RiffDbPublicBackend::connect(&endpoint, &token).await?;
+        let (token, module_hash) = deploy_module_and_issue_runner(&mut client, &retained).await?;
+        let backend = RiffDbPublicBackend::connect(
+            &endpoint,
+            &token,
+            status_ids,
+            module_hash,
+            history_incarnation,
+        )
+        .await?;
         Ok(Self {
             _temporary: temporary,
             process,
@@ -281,10 +351,11 @@ impl RiffDbServerSession {
     }
 }
 
-async fn bootstrap_deploy_and_issue(
+/// Phase 1: bootstrap capability + deploy TicketDesk contract only.
+async fn bootstrap_and_deploy_contract(
     client: &mut RiffDbClient,
     credential: &RetainedBootstrapCredential,
-) -> Result<String, RiffDbError> {
+) -> Result<TicketStatusEnumIds, RiffDbError> {
     let token = std::str::from_utf8(credential.token().expose_secret())
         .map_err(|_| RiffDbError::Bootstrap)?;
     let bootstrap_metadata = BootstrapCallMetadata::new(
@@ -337,6 +408,19 @@ async fn bootstrap_deploy_and_issue(
             contract.contract_lineage, contract.contract_version
         )));
     }
+    ticket_status_enum_ids()
+}
+
+/// Phase 2: deploy query module and issue the hybrid runner capability.
+async fn deploy_module_and_issue_runner(
+    client: &mut RiffDbClient,
+    credential: &RetainedBootstrapCredential,
+) -> Result<(String, [u8; 32]), RiffDbError> {
+    let token = std::str::from_utf8(credential.token().expose_secret())
+        .map_err(|_| RiffDbError::Bootstrap)?;
+    let authenticated = CallMetadata::authenticated(
+        BearerCredential::new(token).map_err(|_| RiffDbError::Bootstrap)?,
+    );
 
     let module = bounded_rpc(
         "deploy_query_module",
@@ -386,13 +470,20 @@ async fn bootstrap_deploy_and_issue(
             "deployed query-module hash does not match compiled role module identity".into(),
         ));
     }
+    let module_hash: [u8; 32] = module
+        .module_hash
+        .as_slice()
+        .try_into()
+        .map_err(|_| RiffDbError::Deploy)?;
+
+    // Hybrid grant: application role atoms + ExecuteAdHocQuery so the same
+    // runner token covers compiled named board queries and ExecuteProjectedQuery
+    // (policy maps projected reads to Kind::ExecuteAdHocQuery).
+    let grant = runner_grant_with_projected_read(role.internal_grant())?;
 
     let response = bounded_rpc(
         "create_runner_capability",
-        client.create_capability(
-            role_capability_request(role.internal_grant())?,
-            &authenticated,
-        ),
+        client.create_capability(role_capability_request(&grant)?, &authenticated),
     )
     .await?;
     let Some(v1::create_capability_response::Result::Normal(result)) = response.result else {
@@ -403,7 +494,54 @@ async fn bootstrap_deploy_and_issue(
     let Some(v1::normal_create_capability_result::Result::Created(created)) = result.result else {
         return Err(RiffDbError::Rpc("runner capability was not created".into()));
     };
-    Ok(created.token)
+    Ok((created.token, module_hash))
+}
+
+/// Application-role grant plus ExecuteAdHocQuery for the projected board path.
+fn runner_grant_with_projected_read(
+    base: &CapabilityGrantV1,
+) -> Result<CapabilityGrantV1, RiffDbError> {
+    let mut permissions = base.permissions().as_slice().to_vec();
+    permissions.push(
+        CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ExecuteAdHocQuery)
+            .map_err(|_| RiffDbError::Bootstrap)?,
+    );
+    let permissions =
+        CapabilityPermissionsV1::new(permissions).map_err(|_| RiffDbError::Bootstrap)?;
+    CapabilityGrantV1::new(
+        base.tenant_scope().clone(),
+        base.partition_scope().clone(),
+        permissions,
+        base.field_visibility().to_vec(),
+        base.max_scan_rows(),
+        Vec::new(),
+    )
+    .map_err(|_| RiffDbError::Bootstrap)
+}
+
+/// Resolves TicketStatus type/variant ids from the harness contract source.
+fn ticket_status_enum_ids() -> Result<TicketStatusEnumIds, RiffDbError> {
+    let bundle = compile_contract_source(TICKETDESK_CONTRACT).map_err(|_| RiffDbError::Deploy)?;
+    let ticket_status = bundle
+        .schema()
+        .enums()
+        .iter()
+        .find(|candidate| candidate.name() == "TicketStatus")
+        .ok_or(RiffDbError::Deploy)?;
+    let variant = |name: &str| -> Result<u32, RiffDbError> {
+        ticket_status
+            .variants()
+            .iter()
+            .find(|candidate| candidate.name() == name)
+            .map(|candidate| candidate.id().get())
+            .ok_or(RiffDbError::Deploy)
+    };
+    Ok(TicketStatusEnumIds {
+        type_id: ticket_status.id().get(),
+        open: variant("Open")?,
+        closed: variant("Closed")?,
+        in_progress: variant("InProgress")?,
+    })
 }
 
 fn bootstrap_request(
@@ -557,6 +695,16 @@ fn application_role_permission_to_proto(
         CapabilityPermissionV1::ApplicationRoleIdentity(role_hash) => {
             Permission::ApplicationRoleIdentity(role_hash.as_bytes().to_vec())
         }
+        CapabilityPermissionV1::Unparameterized(kind) => match kind {
+            CapabilityPermissionKindV1::ExecuteAdHocQuery => {
+                Permission::ExecuteAdHocQuery(v1::Unit {})
+            }
+            _ => {
+                return Err(RiffDbError::Rpc(format!(
+                    "unsupported unparameterized capability permission: {kind:?}"
+                )));
+            }
+        },
         _ => {
             return Err(RiffDbError::Rpc(
                 "application role compiler emitted non-application authority".into(),
@@ -708,6 +856,7 @@ struct ServerProcess {
 }
 
 impl ServerProcess {
+    #[allow(clippy::too_many_arguments)]
     fn spawn(
         binary: &Path,
         database_path: &Path,
@@ -715,6 +864,8 @@ impl ServerProcess {
         capability_keys_path: &Path,
         idempotency_keys_path: &Path,
         coordinator_workload_capacity: Option<u16>,
+        projections_root: Option<&Path>,
+        projections_config: Option<&Path>,
     ) -> io::Result<Self> {
         let mut command = Command::new(binary);
         command
@@ -737,6 +888,12 @@ impl ServerProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(root) = projections_root {
+            command.arg("--projections-root").arg(root);
+        }
+        if let Some(config) = projections_config {
+            command.arg("--config").arg(config);
+        }
         if let Some(capacity) = coordinator_workload_capacity {
             command.env(
                 "RIFFDB_P1_COORDINATOR_WORKLOAD_CAPACITY",
