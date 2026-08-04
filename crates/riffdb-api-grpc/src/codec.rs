@@ -126,7 +126,9 @@ fn invalid_message_status<MessageType: PublicMessage>() -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use riffdb_proto::{app::v1 as app_v1, decode_application_error, v1};
+    use riffdb_proto::v1;
+    #[cfg(feature = "server")]
+    use riffdb_proto::{app::v1 as app_v1, decode_application_error};
 
     const _: () = {
         assert!(v1::ExecuteCommandRequest::MAX_ENCODED_BYTES > 0);
@@ -139,6 +141,8 @@ mod tests {
         assert!(decode_public_message::<v1::ValidateContractRequest>(&bytes).is_err());
     }
 
+    // The application error envelope exists only under the server feature.
+    #[cfg(feature = "server")]
     #[test]
     fn application_codec_rejection_uses_the_application_envelope() {
         let status = invalid_message_status::<app_v1::ExecuteQueryRequest>();

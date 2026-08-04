@@ -7111,3 +7111,42 @@ work_packages:
     a shed-distinguishing observable with a nonzero positive control; gate_a completes on terminal
     migration phase; three consecutive full workspace batteries report zero failures.
   human_review_triggers: *id001
+- id: WP-434
+  name: Projected-read SDK facade, CLI verb, and packed encode-into (CP4)
+  depends_on: [WP-433]
+  objective: Give first-party callers a typed projected-read surface — a riffdb-client-rust
+    request builder and outcome facade with hostile-shape packed decoding, a riffdb query
+    projected CLI verb over it, and a canonical encode-into codec entry point that removes
+    per-cell intermediate allocations from the api-grpc packed path without changing bytes.
+  requirements: []
+  required_adrs: [ADR-0086, ADR-0011]
+  allowed_paths: [work_packages.yaml, docs/reference/CLI.md, crates/riffdb-client-rust/**,
+    crates/riffdb-cli/**, crates/riffdb-types/src/codec.rs, crates/riffdb-api-grpc/**]
+  deliverables:
+  - ProjectedQuery builder plus ProjectedQueryOutcome mirroring every wire arm, on both
+    RiffDbClient and StableApplicationClient, with opaque frontier/token carriage
+  - Packed Ready block decoder with fail-closed offset validation (length, first zero,
+    last equals data length, monotone spans, exact cell documents) and a nonzero row
+    count refused without columns so remote input never sizes an allocation
+  - Encoding-arm agreement enforced both ways; the row arm is refused under a PACKED
+    request and the packed arm under a row request
+  - riffdb query projected with org scope, equality and JSON-array range predicates,
+    order, limit, freshness policies with hex or raw commit-token input, and --packed
+  - encode_canonical_value_into with document-relative size accounting, byte-identical
+    to encode_canonical_value and all-or-nothing on error, reserved through
+    canonical_value_encoded_len on the api-grpc pack path
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-client-rust --lib -- projected::tests
+  - cargo +1.97.0 test -p riffdb-types --lib -- codec::tests
+  - cargo +1.97.0 test -p riffdb-cli --lib
+  - cargo +1.97.0 test -p riffdb-api-grpc --all-features
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/generate-cli-reference --check
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  exit_gate: A projected read is expressible from Rust and from the CLI under every freshness
+    policy; the packed decoder rejects each hostile offset and row-count shape without
+    panicking or reserving remote-chosen capacity; encode-into is byte-identical to the
+    allocating encoder and leaves a rejected cell out of the caller's buffer entirely.
+  human_review_triggers: *id001
