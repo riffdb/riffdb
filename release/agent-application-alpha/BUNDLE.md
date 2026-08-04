@@ -39,6 +39,14 @@ product-owned public packages and tools; using them is not handwritten
 transport glue. Agents must not inspect or receive any other RiffDB source
 tree.
 
+For evaluation, handwritten RiffDB glue means application-authored transport
+or RPC wrappers, parameter/result maps, wire encoders/decoders, capability or
+grant construction, or response decoding that replaces generated operations.
+Normal application code—HTTP handlers, domain decisions, generated-client
+calls, typed outcome handling, rendering, tests, and value-free identity
+evidence—is not glue. A boundary-clean application with none of the former
+reports zero even though it necessarily contains ordinary application code.
+
 An evaluator records ordinary value-free chronology with
 `evaluation/event-schema.json`. A `first_write` or `first_page_read` event is
 not a successful milestone by itself: it must have a matching record under

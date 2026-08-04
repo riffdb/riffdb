@@ -37,6 +37,9 @@ The main correction codes are deliberately executable concepts:
 - `correct_symbol` / `correct_type`: resolve the named contract operation or
   make exact types agree.
 - `supply_partition_route`: add the complete same-partition route.
+- `model_one_mutation_aggregate`: place every entity changed atomically under
+  one declared aggregate root, or split the workflow into independently
+  idempotent commands.
 - `add_index`: add the bounded index identified by query explain.
 - `add_bound`: declare explicit positive cardinality/work bounds.
 - `reduce_input`: reduce a complete worst-case input or query-work bound. For
@@ -47,6 +50,15 @@ The main correction codes are deliberately executable concepts:
   `riffdb application lock --write`.
 - `generate_locked`: restore compiler-owned output with
   `riffdb application generate --locked`.
+
+`RDB-C017` deliberately reports both `supply_partition_route` and
+`model_one_mutation_aggregate`. It covers two unsafe shapes: bindings whose
+route expressions are not provably identical, and one command that creates or
+mutates records owned by different aggregates. A shared route does not make
+independent aggregate writes atomic. Start from the command's complete mutation
+set, choose one business root, make every written entity a root or child of
+that aggregate, and put the route first in every key. If that ownership would
+be false, keep the roots independent and use separate idempotent commands.
 
 `application check` always reports `no_files_changed`. A staged write failure
 reports whether staging was discarded, the previous generation remains

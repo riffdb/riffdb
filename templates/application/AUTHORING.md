@@ -4,6 +4,66 @@ Keep this page beside the application while replacing the sample domain. It
 collects the rules most often needed together; the installed handbook remains
 the complete reference.
 
+## Design transaction routes before writing entities
+
+RiffDB proves safety from the model; it cannot infer a transaction boundary
+after independently owned entities have been declared. Before writing contract
+syntax, make this short worksheet:
+
+1. List every command and the complete set of records it must change atomically.
+2. Give each mutation set exactly one aggregate root and one route parameter.
+3. List every page or dashboard and the exact route parameter it will receive.
+4. Only then define entity keys and indexes, with the route first.
+
+For example, if `ReserveInventory` must atomically change both a purchase order
+and stock, `PurchaseOrder` and `Inventory` cannot be independent roots. A safe,
+simple store-routed model is:
+
+```riff
+enum OrderStatus { Open, Reserved, Fulfilled, Cancelled }
+
+entity Store {
+  key (store_id: uuid)
+  field name: string<64>
+}
+
+entity PurchaseOrder {
+  key (store_id: uuid, order_id: uuid)
+  field status: OrderStatus
+  index by_status (store_id, status, order_id)
+}
+
+entity Inventory {
+  key (store_id: uuid, product_id: uuid)
+  field available: i64
+  invariant available_non_negative: available >= 0
+  index by_store (store_id, product_id)
+}
+
+entity OrderLine {
+  key (store_id: uuid, order_id: uuid, product_id: uuid)
+  field quantity: i64
+  index by_order (store_id, order_id, product_id)
+}
+
+aggregate StoreRoot {
+  root Store
+  child PurchaseOrder
+  child Inventory
+  child OrderLine
+  partition_by store_id
+  conflict_key (store_id)
+}
+```
+
+Now `ReserveInventory` may mutate the order and inventory in one safe command,
+and `InventoryDashboard($store_id)` has an exact route and bounded leading
+index. The tradeoff is intentionally visible: this first model serializes
+writes within one store. Refine ownership later only when every atomic mutation
+set still has one root. If records must remain independently rooted, use
+separate idempotent commands and treat the operation as a workflow rather than
+claiming one atomic transaction.
+
 ## Iterate without manufactured lock failures
 
 While editing author-owned contract, query, role, or seed files, run:
@@ -34,37 +94,21 @@ belong to their enum, outcomes to their command, and indexes to their entity.
 When a name is genuinely duplicated, the diagnostic identifies both source
 spans. Contract and query source support `//` line comments, not block comments.
 
-## Model one routed aggregate
+## Encode the selected routed aggregate
 
-Put the tenant or organization route first in every entity key that belongs to
-that partition. An aggregate has one root; child keys begin with the complete
-root key. A command may read other entities in the same partition, but every
-`create` and `mutate` binding in one command belongs to one aggregate.
+Put the tenant, store, or organization route first in every entity key in that
+partition. An aggregate has one root; every child key begins with the complete
+root key. A command may read another aggregate in the same partition, but every
+`create` and `mutate` binding in one command must belong to the single mutation
+aggregate selected in the worksheet.
 
-```riff
-entity PurchaseOrder {
-  key (organization_id: uuid, order_id: uuid)
-  field status: OrderStatus
-  index by_status (organization_id, status, order_id)
-}
-
-entity OrderLine {
-  key (organization_id: uuid, order_id: uuid, product_id: uuid)
-  field quantity: i64
-  index by_order (organization_id, order_id, product_id)
-}
-
-aggregate OrderRoot {
-  root PurchaseOrder
-  child OrderLine
-  partition_by organization_id
-  conflict_key (organization_id, order_id)
-}
-```
-
-If one atomic operation truly changes two independently keyed roots, remodel
-them as one business aggregate or use two idempotent commands. RiffDB does not
-turn cross-aggregate writes into an implicit distributed transaction.
+`RDB-C017` means either that two bindings derive different route values or that
+the command writes two aggregate roots. Supplying the same route fixes only the
+first case. For the second, move the written entities under one business root
+or split the operation into separate idempotent commands. RiffDB never turns
+cross-aggregate writes into an implicit distributed transaction.
+Its two corrective-action codes are `supply_partition_route` and
+`model_one_mutation_aggregate`; satisfy both claims before retrying.
 
 ## Prove relationships inside commands
 

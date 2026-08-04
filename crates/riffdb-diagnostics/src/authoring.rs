@@ -142,6 +142,8 @@ pub enum AuthoringFix {
     CorrectType,
     /// Supply the complete partition route.
     SupplyPartitionRoute,
+    /// Model every atomic create/mutate binding under one aggregate root.
+    ModelOneMutationAggregate,
     /// Add the compiler-suggested bounded index.
     AddIndex,
     /// Add an explicit positive bound.
@@ -171,6 +173,7 @@ impl AuthoringFix {
             Self::CorrectSymbol => "correct_symbol",
             Self::CorrectType => "correct_type",
             Self::SupplyPartitionRoute => "supply_partition_route",
+            Self::ModelOneMutationAggregate => "model_one_mutation_aggregate",
             Self::AddIndex => "add_index",
             Self::AddBound => "add_bound",
             Self::WriteLock => "write_lock",
@@ -423,16 +426,16 @@ impl AuthoringDiagnostics {
                 .map(|diagnostic| {
                     let span = diagnostic.primary_span();
                     let code = diagnostic.code();
-                    let (cause, fix) = contract_semantic_class(code);
+                    let (cause, fixes) = contract_semantic_class(code);
                     diagnostic_value(
                         AuthoringStage::ContractSemantic,
                         AuthoringDiagnosticCode(code.as_str()),
                         path.clone(),
                         Some((span.start(), span.end())),
                         Vec::new(),
-                        code.summary(),
+                        contract_semantic_summary(code),
                         cause,
-                        vec![fix],
+                        fixes,
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?,
@@ -813,25 +816,48 @@ fn check_render_bound(output: String) -> Result<String, AuthoringDiagnosticBound
 
 fn contract_semantic_class(
     code: riffdb_contract_compiler::CompilerDiagnosticCode,
-) -> (AuthoringCause, AuthoringFix) {
+) -> (AuthoringCause, Vec<AuthoringFix>) {
     use riffdb_contract_compiler::CompilerDiagnosticCode as Code;
     match code {
-        Code::UnknownName => (AuthoringCause::UnknownSymbol, AuthoringFix::CorrectSymbol),
-        Code::TypeMismatch | Code::InvalidType => {
-            (AuthoringCause::TypeMismatch, AuthoringFix::CorrectType)
-        }
-        Code::CrossPartitionMutation => {
-            (AuthoringCause::NonLocal, AuthoringFix::SupplyPartitionRoute)
-        }
-        Code::BoundExceeded => (AuthoringCause::LimitExceeded, AuthoringFix::ReduceInput),
+        Code::UnknownName => (
+            AuthoringCause::UnknownSymbol,
+            vec![AuthoringFix::CorrectSymbol],
+        ),
+        Code::TypeMismatch | Code::InvalidType => (
+            AuthoringCause::TypeMismatch,
+            vec![AuthoringFix::CorrectType],
+        ),
+        Code::CrossPartitionMutation => (
+            AuthoringCause::NonLocal,
+            vec![
+                AuthoringFix::SupplyPartitionRoute,
+                AuthoringFix::ModelOneMutationAggregate,
+            ],
+        ),
+        Code::BoundExceeded => (
+            AuthoringCause::LimitExceeded,
+            vec![AuthoringFix::ReduceInput],
+        ),
         Code::InvalidIr => (
             AuthoringCause::InternalInvariant,
-            AuthoringFix::ContactOperator,
+            vec![AuthoringFix::ContactOperator],
         ),
         _ => (
             AuthoringCause::InvalidSyntax,
-            AuthoringFix::UseLanguageReference,
+            vec![AuthoringFix::UseLanguageReference],
         ),
+    }
+}
+
+fn contract_semantic_summary(
+    code: riffdb_contract_compiler::CompilerDiagnosticCode,
+) -> &'static str {
+    use riffdb_contract_compiler::CompilerDiagnosticCode as Code;
+    match code {
+        Code::CrossPartitionMutation => {
+            "atomic command writes span multiple aggregate roots or partition routes"
+        }
+        _ => code.summary(),
     }
 }
 
@@ -1081,6 +1107,75 @@ query Bad($organization_id: Organization.organization_id, $title: Ticket.title) 
         assert_eq!(
             value["diagnostics"][0].as_object().expect("object").len(),
             10
+        );
+    }
+
+    #[test]
+    fn cross_aggregate_diagnostic_names_both_required_model_corrections() {
+        let source = r#"
+contract Orders version 1 {
+  entity PurchaseOrder { key (store_id: uuid, order_id: uuid) }
+  entity Inventory { key (store_id: uuid, product_id: uuid) field available: i64 }
+  aggregate OrdersRoot {
+    root PurchaseOrder
+    partition_by store_id
+    conflict_key (store_id, order_id)
+  }
+  aggregate InventoryRoot {
+    root Inventory
+    partition_by store_id
+    conflict_key (store_id, product_id)
+  }
+  command Reserve {
+    input request_key: string<128>
+    input store_id: uuid
+    input order_id: uuid
+    input product_id: uuid
+    idempotency_key request_key
+    mutate PurchaseOrder(store_id, order_id) as purchase else OrderMissing {}
+    mutate Inventory(store_id, product_id) as inventory else InventoryMissing {}
+    set inventory.available = inventory.available - 1
+    return Reserved { purchase: purchase, inventory: inventory }
+  }
+}
+"#;
+        let error = compile_contract_source(source).expect_err("two mutation aggregates reject");
+        let diagnostics = AuthoringDiagnostics::from_contract(
+            AuthoringSourcePath::new("riffdb/contract.riff").expect("path"),
+            &error,
+        )
+        .expect("diagnostics");
+        let diagnostic = diagnostics
+            .as_slice()
+            .iter()
+            .find(|diagnostic| diagnostic.code().as_str() == "RDB-C017")
+            .expect("cross-aggregate diagnostic");
+        let expected_start = source.find("Inventory(store_id").expect("second mutation");
+
+        assert_eq!(diagnostic.cause(), AuthoringCause::NonLocal);
+        assert_eq!(
+            diagnostic.summary(),
+            "atomic command writes span multiple aggregate roots or partition routes"
+        );
+        assert_eq!(
+            diagnostic.span().map(|span| (span.start(), span.end())),
+            Some((
+                u32::try_from(expected_start).expect("start"),
+                u32::try_from(expected_start + "Inventory".len()).expect("end")
+            ))
+        );
+        assert_eq!(
+            diagnostic.fixes(),
+            &[
+                AuthoringFix::SupplyPartitionRoute,
+                AuthoringFix::ModelOneMutationAggregate,
+            ]
+        );
+        assert!(
+            diagnostics
+                .render_human()
+                .expect("human")
+                .contains("fixes: supply_partition_route,model_one_mutation_aggregate")
         );
     }
 

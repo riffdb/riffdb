@@ -20,7 +20,12 @@
     },
     "fresh_context": {"type": "boolean"},
     "golden_passed": {"type": "boolean"},
-    "handwritten_glue_lines": {"maximum": 1000000, "minimum": 0, "type": "integer"},
+    "handwritten_glue_lines": {
+      "description": "Lines of application-authored RiffDB transport/RPC wrappers, parameter/result maps, wire encoders/decoders, capability/grant code, or response decoders replacing the generated application client. Ordinary domain logic, HTTP handlers, generated-client calls, typed outcome branching, view rendering, tests, identity evidence, generated files, and product runtimes do not count.",
+      "maximum": 1000000,
+      "minimum": 0,
+      "type": "integer"
+    },
     "human_interventions": {"maximum": 1000, "minimum": 0, "type": "integer"},
     "independent": {"type": "boolean"},
     "kernel_attempts": {"minimum": 0, "type": "integer"},
