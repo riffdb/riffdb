@@ -1,0 +1,35 @@
+{
+  "schema": "riffdb-reactive-ticketdesk-run/v1",
+  "run_id": "wp421-reactive-codex-06",
+  "bundle_hash": "4b5cdf43127649970753b50697e71c185a290880f80c6bbb79240b4804786500",
+  "agent_identity": "wp421-reactive-codex-06",
+  "independent": true,
+  "fresh_context": true,
+  "human_interventions": 0,
+  "kernel_attempts": 0,
+  "kernel_successes": 0,
+  "handwritten_glue_lines": 0,
+  "compiler_failures": 1,
+  "runtime_failures": 9,
+  "time_to_complete_seconds": 831,
+  "source_access": {
+    "riffdb_implementation": false,
+    "ticketdesk_implementation": false
+  },
+  "checks": {
+    "application_boundary": true,
+    "browser_credentials_absent": true,
+    "browser_two_session_convergence": false,
+    "commit_before_ack_recovery": false,
+    "contextual_one_snapshot": false,
+    "generated_bindings_exact": true,
+    "mcp_wakeup_payload_free": false,
+    "reaction_retry_idempotent": false,
+    "reconnect_reset": false,
+    "revocation_clears_state": false
+  },
+  "completed": false,
+  "rating": 3.0,
+  "explanation": "The sealed compiler produced exact Lock V5 Rust, TypeScript, Python, MCP, manifest, contract, and reactive artifacts. Locked regeneration, offline TypeScript compilation, and the application boundary checker passed, and the browser source contained no protected RiffDB material. Compiled seeder commands and the exact named queue query succeeded. The required live evaluation could not proceed because every generated live watch and contextual next request failed at the public service boundary with root-level validation_failed/invalid_value, including a fresh disposable deployment whose selected profile was the exact application role. The standalone exact deployment path also rejected the authenticated health response because it omitted the configured audience. Consequently convergence, contextual hydration, commit-before-ack redelivery, retry idempotency, reconnect reset, revocation clearing, and MCP wakeup disclosure could not be proven and are reported false.",
+  "transcript_sha256": "07bab7d6a5ddf6b802d153f34f07cb3872046b0be05ff9acbd30bc600b930869"
+}
