@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+destination="${1:-}"
+[[ -n "$destination" && "$destination" == /* ]] || {
+    echo "usage: scripts/reactive-ticketdesk-evaluation-package /absolute/new-directory" >&2
+    exit 2
+}
+[[ ! -e "$destination" ]] || {
+    echo "sealed reactive bundle destination already exists" >&2
+    exit 2
+}
+parent="$(dirname "$destination")"
+[[ -d "$parent" ]] || {
+    echo "sealed reactive bundle parent is unavailable" >&2
+    exit 2
+}
+temporary="$(mktemp -d "$parent/.riffdb-reactive-ticketdesk.XXXXXX")"
+cleanup() {
+    rm -rf "$temporary"
+}
+trap cleanup EXIT INT TERM
+
+base="$temporary/base"
+base_hash="$("$repo_root/scripts/agent-application-alpha-package" "$base")"
+mkdir "$temporary/package"
+cp -a "$base/." "$temporary/package/"
+rm -rf "$base"
+
+mkdir -p "$temporary/package/application/riffdb" \
+    "$temporary/package/evaluation/reactive-ticketdesk" \
+    "$temporary/package/docs/operations"
+cp "$repo_root/examples/ticketdesk/riffdb.application.json" \
+    "$temporary/package/application/riffdb.application.json"
+cp -R "$repo_root/examples/ticketdesk/riffdb/." \
+    "$temporary/package/application/riffdb/"
+cp "$repo_root/evaluations/reactive-ticketdesk/BRIEF.md" \
+    "$temporary/package/evaluation/reactive-ticketdesk/"
+cp "$repo_root/evaluations/reactive-ticketdesk/PROTOCOL.md" \
+    "$temporary/package/evaluation/reactive-ticketdesk/"
+cp "$repo_root/evaluations/reactive-ticketdesk/event-schema.json" \
+    "$temporary/package/evaluation/reactive-ticketdesk/"
+cp "$repo_root/evaluations/reactive-ticketdesk/report-schema.json" \
+    "$temporary/package/evaluation/reactive-ticketdesk/"
+cp -R "$repo_root/docs/reactive" "$temporary/package/docs/"
+cp "$repo_root/docs/operations/TICKETDESK-REACTIVE-ACCEPTANCE.md" \
+    "$temporary/package/docs/operations/"
+
+if find "$temporary/package/application" -type f \
+    \( -path '*/generated/*' -o -path '*/web/*' -o -path '*/src/*' \
+       -name 'riffdb.application.lock.json' \) \
+    | grep -q .; then
+    echo "sealed reactive bundle contains a TicketDesk implementation artifact" >&2
+    exit 1
+fi
+if find "$temporary/package" -type f -name '*.rs' \
+    ! -path "$temporary/package/public/rust-sdk/*" | grep -q .; then
+    echo "sealed reactive bundle contains non-SDK Rust implementation source" >&2
+    exit 1
+fi
+
+rm "$temporary/package/bundle.json" "$temporary/package/checksums.sha256"
+(
+    cd "$temporary/package"
+    find . \( -type f -o -type l \) \
+        ! -name bundle.json \
+        ! -name checksums.sha256 \
+        -print0 \
+        | sort -z \
+        | xargs -0 sha256sum >checksums.sha256
+)
+bundle_hash="$(sha256sum "$temporary/package/checksums.sha256" | cut -d' ' -f1)"
+jq -n \
+    --arg hash "$bundle_hash" \
+    --arg base "$base_hash" \
+    --arg revision "$(git -C "$repo_root" rev-parse HEAD)" '
+  {
+    schema: "riffdb-reactive-ticketdesk-evaluation-bundle/v1",
+    bundle_hash: $hash,
+    base_bundle_hash: $base,
+    revision: $revision,
+    sealed: true,
+    contains_riffdb_implementation: false,
+    contains_ticketdesk_implementation: false,
+    contains_ticketdesk_symbolic_sources: true
+  }
+' >"$temporary/package/bundle.json"
+
+mv "$temporary/package" "$destination"
+rmdir "$temporary"
+trap - EXIT INT TERM
+echo "$bundle_hash"

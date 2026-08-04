@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "agent_identity": {"pattern": "^[A-Za-z0-9_.-]{1,128}$", "type": "string"},
+    "bundle_hash": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "checks": {
+      "additionalProperties": false,
+      "properties": {
+        "application_boundary": {"type": "boolean"},
+        "browser_credentials_absent": {"type": "boolean"},
+        "browser_two_session_convergence": {"type": "boolean"},
+        "commit_before_ack_recovery": {"type": "boolean"},
+        "contextual_one_snapshot": {"type": "boolean"},
+        "generated_bindings_exact": {"type": "boolean"},
+        "mcp_wakeup_payload_free": {"type": "boolean"},
+        "reaction_retry_idempotent": {"type": "boolean"},
+        "reconnect_reset": {"type": "boolean"},
+        "revocation_clears_state": {"type": "boolean"}
+      },
+      "required": [
+        "application_boundary", "browser_credentials_absent",
+        "browser_two_session_convergence", "commit_before_ack_recovery",
+        "contextual_one_snapshot", "generated_bindings_exact",
+        "mcp_wakeup_payload_free", "reaction_retry_idempotent",
+        "reconnect_reset", "revocation_clears_state"
+      ],
+      "type": "object"
+    },
+    "compiler_failures": {"maximum": 1000, "minimum": 0, "type": "integer"},
+    "completed": {"type": "boolean"},
+    "explanation": {"maxLength": 4096, "minLength": 1, "type": "string"},
+    "fresh_context": {"type": "boolean"},
+    "handwritten_glue_lines": {"maximum": 1000000, "minimum": 0, "type": "integer"},
+    "human_interventions": {"maximum": 1000, "minimum": 0, "type": "integer"},
+    "independent": {"type": "boolean"},
+    "kernel_attempts": {"maximum": 1000, "minimum": 0, "type": "integer"},
+    "kernel_successes": {"maximum": 1000, "minimum": 0, "type": "integer"},
+    "rating": {"maximum": 10, "minimum": 0, "type": "number"},
+    "run_id": {"pattern": "^[a-z0-9-]{1,64}$", "type": "string"},
+    "runtime_failures": {"maximum": 1000, "minimum": 0, "type": "integer"},
+    "schema": {"const": "riffdb-reactive-ticketdesk-run/v1"},
+    "source_access": {
+      "additionalProperties": false,
+      "properties": {
+        "riffdb_implementation": {"type": "boolean"},
+        "ticketdesk_implementation": {"type": "boolean"}
+      },
+      "required": ["riffdb_implementation", "ticketdesk_implementation"],
+      "type": "object"
+    },
+    "time_to_complete_seconds": {"maximum": 14400, "minimum": 0, "type": "integer"},
+    "transcript_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"}
+  },
+  "required": [
+    "schema", "run_id", "bundle_hash", "agent_identity", "independent",
+    "fresh_context", "human_interventions", "kernel_attempts",
+    "kernel_successes", "handwritten_glue_lines", "compiler_failures",
+    "runtime_failures", "time_to_complete_seconds", "source_access", "checks",
+    "completed", "rating", "explanation", "transcript_sha256"
+  ],
+  "type": "object"
+}

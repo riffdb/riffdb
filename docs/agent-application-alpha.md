@@ -330,6 +330,12 @@ Operational alpha and replication remain blocked. A failed report cannot be
 reclassified or edited into a pass; a future evaluation must use a newly
 sealed bundle and fresh agent identities.
 
+That historical decision has not been superseded. The passing WP-365 and
+satisfaction canaries demonstrate that the repaired authoring path works, but
+they do not cover the four Blog/Orders by Rust/TypeScript profiles required by
+WP-370. The satisfaction campaign's additional Python profile and stricter
+rating threshold do not waive the missing official profiles.
+
 ## Recovery plan after Terra campaign 01
 
 The failed campaign identified an application-authoring defect rather than a
@@ -611,6 +617,16 @@ reports; it never deletes or rewrites Terra campaign 01.
 WP-370 repeats the four official domain/language evaluations only after
 WP-345 through WP-365 pass. It uses a new bundle hash and four new agent
 identities. The AAA-012 thresholds remain unchanged.
+
+WP-379 is also a hard dependency. Its checked v1 decision remains
+`not_eligible`, so `campaign-02` must not be selected or published until a new
+immutable WP-379 decision passes every unchanged parity threshold. The official
+verifier selects only one campaign manifest:
+
+```bash
+TMPDIR="$HOME/tmp" ./scripts/agent-application-alpha-acceptance \
+  --campaign campaign-02 --runs 4 --sealed --assert-gate
+```
 
 Campaign 02 is eligible only when all four runs:
 
