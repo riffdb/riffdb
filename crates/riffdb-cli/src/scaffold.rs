@@ -34,6 +34,7 @@ const TYPESCRIPT_MAIN_TEMPLATE: &str =
 const PYTHON_MAIN_TEMPLATE: &str = include_str!("../../../templates/application/python-main.py");
 const PYPROJECT_TEMPLATE: &str = include_str!("../../../templates/application/pyproject.toml");
 const CARGO_TEMPLATE: &str = include_str!("../../../templates/application/Cargo.toml");
+const CARGO_LOCK_TEMPLATE: &str = include_str!("../../../templates/application/Cargo.lock");
 const PACKAGE_TEMPLATE: &str = include_str!("../../../templates/application/package.json");
 const PACKAGE_LOCK_BASE: &str =
     include_str!("../../../clients/typescript/runtime/package-lock.json");
@@ -79,6 +80,7 @@ pub(crate) enum ScaffoldError {
     SourceLimit,
     GenerateMcp,
     GeneratePython,
+    RustDependencyLock,
     PythonWheelUnavailable,
     UnsafePath,
     Authoring(AuthoringDiagnostics),
@@ -107,6 +109,7 @@ impl fmt::Display for ScaffoldError {
             Self::SourceLimit => "an application source exceeds the bounded compiler input limit",
             Self::GenerateMcp => "the generated MCP application surface is invalid",
             Self::GeneratePython => "the generated Python application surface is invalid",
+            Self::RustDependencyLock => "the built-in Rust dependency lock is invalid",
             Self::PythonWheelUnavailable => {
                 "a matching riffdb-application wheel is not installed; set RIFFDB_APPLICATION_WHEEL"
             }
@@ -1646,6 +1649,11 @@ fn write_repository(
             )?;
             write_file(
                 root,
+                "Cargo.lock",
+                render_cargo_lock(application, contract_name, role_name, module_client)?.as_bytes(),
+            )?;
+            write_file(
+                root,
                 "src/main.rs",
                 render(
                     RUST_MAIN_TEMPLATE,
@@ -1790,6 +1798,59 @@ fn write_repository(
         }
     }
     Ok(())
+}
+
+fn render_cargo_lock(
+    application: &str,
+    contract_name: &str,
+    role_name: &str,
+    module_client: &str,
+) -> Result<String, ScaffoldError> {
+    let mut sections = CARGO_LOCK_TEMPLATE
+        .split("\n\n")
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let header = (!sections.is_empty())
+        .then(|| sections.remove(0))
+        .ok_or(ScaffoldError::RustDependencyLock)?;
+    let application_section = sections
+        .iter()
+        .position(|section| section.contains("name = \"{{APPLICATION_NAME}}\""))
+        .map(|index| sections.remove(index))
+        .ok_or(ScaffoldError::RustDependencyLock)?;
+    if sections
+        .iter()
+        .any(|section| section.contains("{{APPLICATION_NAME}}"))
+    {
+        return Err(ScaffoldError::RustDependencyLock);
+    }
+    let application_section = render(
+        &application_section,
+        application,
+        contract_name,
+        role_name,
+        module_client,
+    );
+    let mut insertion = sections.len();
+    for (index, section) in sections.iter().enumerate() {
+        let name = cargo_lock_package_name(section).ok_or(ScaffoldError::RustDependencyLock)?;
+        if name >= application {
+            insertion = index;
+            break;
+        }
+    }
+    sections.insert(insertion, application_section);
+    let mut rendered = Vec::with_capacity(sections.len() + 1);
+    rendered.push(header);
+    rendered.extend(sections);
+    Ok(rendered.join("\n\n"))
+}
+
+fn cargo_lock_package_name(section: &str) -> Option<&str> {
+    section.lines().find_map(|line| {
+        line.strip_prefix("name = \"")
+            .and_then(|name| name.strip_suffix('"'))
+    })
 }
 
 fn render_package_lock(application: &str) -> Result<String, ScaffoldError> {
@@ -2441,6 +2502,40 @@ mod tests {
     }
 
     #[test]
+    fn rust_scaffold_lock_places_the_rendered_root_package_canonically() {
+        let early = render_cargo_lock(
+            "agent-alpha-smoke",
+            "AgentAlphaSmoke",
+            "AgentAlphaSmokeApplication",
+            "AgentAlphaSmokeClient",
+        )
+        .expect("early lock");
+        assert!(
+            early
+                .find("name = \"agent-alpha-smoke\"")
+                .expect("root package")
+                < early
+                    .find("name = \"aho-corasick\"")
+                    .expect("first dependency")
+        );
+
+        let later = render_cargo_lock(
+            "order-desk",
+            "OrderDesk",
+            "OrderDeskApplication",
+            "OrderDeskClient",
+        )
+        .expect("later lock");
+        let first = later
+            .find("name = \"aho-corasick\"")
+            .expect("first dependency");
+        let root = later.find("name = \"order-desk\"").expect("root package");
+        let tokio = later.find("name = \"tokio\"").expect("later dependency");
+        assert!(first < root);
+        assert!(root < tokio);
+    }
+
+    #[test]
     fn scaffold_is_deterministic_and_compiled() {
         let base = std::env::temp_dir().join(format!(
             "riffdb-new-test-{}-{}",
@@ -2456,6 +2551,7 @@ mod tests {
         create_application("order-desk", ScaffoldLanguage::Rust, &first).expect("first");
         create_application("order-desk", ScaffoldLanguage::Rust, &second).expect("second");
         for relative in [
+            "Cargo.lock",
             "riffdb.application.json",
             "riffdb.application.lock.json",
             "riffdb/contract.riff",
@@ -2472,6 +2568,9 @@ mod tests {
                 "{relative}"
             );
         }
+        let cargo_lock = fs::read_to_string(first.join("Cargo.lock")).expect("Cargo lock");
+        assert!(cargo_lock.contains("name = \"order-desk\""));
+        assert!(!cargo_lock.contains("{{APPLICATION_NAME}}"));
         let source = fs::read(first.join("riffdb.application.json")).expect("source");
         ApplicationSourceManifest::decode_canonical(&source).expect("canonical source");
         let lock = fs::read(first.join(DEFAULT_LOCK_PATH)).expect("lock");
