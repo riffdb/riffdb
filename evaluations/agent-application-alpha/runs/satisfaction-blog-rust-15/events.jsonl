@@ -1,0 +1,7 @@
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":0,"kind":"start"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":100,"kind":"tool","operation":"riffdb.new"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":348000,"kind":"first_write","operation":"AddComment"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":348001,"kind":"first_page_read","operation":"PostDetail"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":348100,"kind":"tool","operation":"check-application-boundary"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":348200,"kind":"rating","code":"independent-9.7"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":452000,"kind":"complete"}

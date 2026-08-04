@@ -3072,7 +3072,7 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{NamedQuerySource, QueryModuleCandidate};
+    use crate::{NamedQuerySource, QueryModuleCandidate, generate_python_client};
     use riffdb_contract_compiler::compile_contract_source;
     use riffdb_types::{QueryModuleName, QueryModuleVersion};
 
@@ -3125,7 +3125,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_typescript_preserves_exact_money_query_results() {
+    fn generated_clients_preserve_exact_money_query_results() {
         let contract = compile_contract_source(
             "contract Commerce version 1 {\n\
              entity Product { key (product_id: uuid) field price: money<USD> }\n\
@@ -3148,6 +3148,7 @@ mod tests {
 
         let generated = generate_typescript_client(&module, &contract);
         let generated_rust = generate_rust_client(&module, &contract);
+        let generated_python = generate_python_client(&module, &contract).expect("Python");
 
         assert!(generated.contains(
             "readonly price: { readonly currency: string; readonly amount: { readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision: number } }"
@@ -3157,6 +3158,8 @@ mod tests {
             generated.contains(r#"{"currency":"USD","kind":"money","precision":38,"scale":2}"#)
         );
         assert!(generated_rust.contains("pub price: MoneyValue,"));
+        assert!(generated_python.contains("    price: Money"));
+        assert!(!generated_python.contains("    price: str"));
 
         let price = contract
             .schema()

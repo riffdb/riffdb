@@ -183,6 +183,40 @@ owns the tagged CLI representation and rejects currency, precision, or scale
 drift. Query results return the same exact shape with `precision`, `scale`, and
 `coefficientTwosComplement`; application code never decodes transport JSON.
 
+## Model singular routes as primary-key entities
+
+`one` and `maybe` are point reads. Their predicates must constrain the target
+entity's complete primary key; adding a secondary index does not turn a
+singular binding into an index lookup. This keeps cardinality and work
+independent of data distribution.
+
+When a page uses an external route such as a slug, email address, or vendor
+reference that is not the entity's primary key, model the route explicitly:
+
+```riff
+entity PostSlug {
+    key (site_id: uuid, slug: string<96>)
+    field post_id: uuid
+}
+```
+
+Resolve the route and then the entity with two singular bindings in the same
+named query:
+
+```riffql
+one route from PostSlug
+    where site_id == $site_id && slug == $slug
+    else NotFound
+
+one post from Post
+    where site_id == $site_id && post_id == route.post_id
+    else IntegrityFailure
+```
+
+Create or replace the route through a symbolic command. Do not fall back to a
+scan or a client-side lookup. Use a bounded `many` binding when the intended
+result is genuinely a collection selected through a declared secondary index.
+
 ## Make every page indexed, ordered, and bounded
 
 For `many` reads, predicates must supply the leading index fields and `order

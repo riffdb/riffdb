@@ -1,0 +1,9 @@
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":0,"kind":"start","operation":"orders-typescript"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":180000,"kind":"compiler_failure","operation":"application.check.source-only","code":"RDB-S004"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":195000,"kind":"compiler_failure","operation":"application.check.source-only","code":"RDB-S004"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":215000,"kind":"compiler_failure","operation":"application.check.source-only","code":"RDB-C024"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":330000,"kind":"runtime_failure","operation":"http.order","code":"ERR_HTTP_HEADERS_SENT"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":353764,"kind":"first_write","operation":"ReserveInventory"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":353764,"kind":"first_page_read","operation":"OrderDetail"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":540000,"kind":"rating","operation":"orders-typescript"}
+{"schema":"riffdb-agent-application-alpha-event/v1","elapsed_ms":540000,"kind":"complete","operation":"orders-typescript"}

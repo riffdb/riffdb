@@ -30,7 +30,7 @@
     "independent": {"type": "boolean"},
     "kernel_attempts": {"minimum": 0, "type": "integer"},
     "kernel_successes": {"minimum": 0, "type": "integer"},
-    "language": {"enum": ["rust", "typescript"]},
+    "language": {"enum": ["python", "rust", "typescript"]},
     "rating": {"maximum": 10, "minimum": 0, "type": "number"},
     "run_id": {"pattern": "^[a-z0-9-]{1,64}$", "type": "string"},
     "runtime_failures": {"maximum": 1000, "minimum": 0, "type": "integer"},

@@ -1,0 +1,75 @@
+{
+  "schema": "riffdb-agent-application-alpha-campaign/v1",
+  "campaign_id": "satisfaction-canary-02",
+  "bundle_hash": "8f711184eee56a172bfb88a2c0fcb0b144789f881883f1dbb0f4e1c8a1b12f9c",
+  "status": "passed",
+  "immutable": true,
+  "runs": [
+    {
+      "run_id": "satisfaction-blog-rust-15",
+      "domain": "blog",
+      "language": "rust",
+      "agent_identity": "codex-satisfaction-blog-rust-15",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/satisfaction-blog-rust-15/report.json",
+        "sha256": "3da9a629965670e1f18b921fe30ab8937139601e7d933857ec1dcf74526ce3dd"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/satisfaction-blog-rust-15/events.jsonl",
+        "sha256": "700c14b63572c1ee49160b20f17f8eec1ecbc3a3e641304dd124692fe14f501e"
+      },
+      "qualified_events": {
+        "path": "evaluations/agent-application-alpha/runs/satisfaction-blog-rust-15/qualified-events.jsonl",
+        "sha256": "ba85121b44ffc38ccf30f24a40f031de9006ef6588c0f2e99eeeb758e82fc9f3"
+      },
+      "application_lock": {
+        "path": "evaluations/agent-application-alpha/runs/satisfaction-blog-rust-15/riffdb.application.lock.json",
+        "sha256": "88eeb7b033a936b2ba69a7b291f3797fc49978974802f45c684403fd228be462"
+      }
+    },
+    {
+      "run_id": "satisfaction-orders-python-15",
+      "domain": "orders",
+      "language": "python",
+      "agent_identity": "codex-satisfaction-orders-python-15",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/satisfaction-orders-python-15/report.json",
+        "sha256": "4a58419a7e78e2d48710d04938b21c5d9dfee4f2db71067f506d327835112e1e"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/satisfaction-orders-python-15/events.jsonl",
+        "sha256": "42b0bb5c248dd9a524e4334bf2ec3d583b7441c4f34cf68cf08b29a11b4bf9e5"
+      },
+      "qualified_events": {
+        "path": "evaluations/agent-application-alpha/runs/satisfaction-orders-python-15/qualified-events.jsonl",
+        "sha256": "448c273c53910366e006f7ea682c9c0140abdb13a3a5cf712415d7f234b576b7"
+      },
+      "application_lock": {
+        "path": "evaluations/agent-application-alpha/runs/satisfaction-orders-python-15/riffdb.application.lock.json",
+        "sha256": "2e5ea5ca3a1dfe6e0002bd0fc5d9901b50f40cc1f339a44cbe9c00afc61c3a30"
+      }
+    },
+    {
+      "run_id": "satisfaction-orders-typescript-15b",
+      "domain": "orders",
+      "language": "typescript",
+      "agent_identity": "codex-satisfaction-orders-typescript-15b",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/satisfaction-orders-typescript-15b/report.json",
+        "sha256": "79b98ef9546de26a2287d59314ae3db588a27fc34ce690accf61b962bf0bb107"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/satisfaction-orders-typescript-15b/events.jsonl",
+        "sha256": "1d06c588fa35cca82af18bb881796c1e9dcb88cbd95c12238392cff54add35b4"
+      },
+      "qualified_events": {
+        "path": "evaluations/agent-application-alpha/runs/satisfaction-orders-typescript-15b/qualified-events.jsonl",
+        "sha256": "55375c3f50c161836f3b6d7726d83c5e62824cee3f0f461ac658567c855773dd"
+      },
+      "application_lock": {
+        "path": "evaluations/agent-application-alpha/runs/satisfaction-orders-typescript-15b/riffdb.application.lock.json",
+        "sha256": "cbe8866b121901455fdd17f6378700aa03e3df1a72b56e06f6d48e66b9162bc2"
+      }
+    }
+  ]
+}

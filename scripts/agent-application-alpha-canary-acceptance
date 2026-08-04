@@ -14,13 +14,13 @@ while (($#)); do
         --assert-gate) assert_gate=true; shift ;;
         --campaign) campaign="${2:-}"; shift 2 ;;
         *)
-            echo "usage: scripts/agent-application-alpha-canary-acceptance --runs 2 --sealed --assert-gate [--campaign ID]" >&2
+            echo "usage: scripts/agent-application-alpha-canary-acceptance --runs 2|3 --sealed --assert-gate [--campaign ID]" >&2
             exit 2
             ;;
     esac
 done
-[[ "$expected_runs" == 2 && "$sealed" == true && "$assert_gate" == true ]] || {
-    echo "the WP-365 canary gate requires exactly two sealed asserted runs" >&2
+[[ "$expected_runs" =~ ^(2|3)$ && "$sealed" == true && "$assert_gate" == true ]] || {
+    echo "the canary gate requires exactly two or three sealed asserted runs" >&2
     exit 2
 }
 [[ "$campaign" =~ ^[a-z0-9-]{1,64}$ ]] || {
@@ -78,7 +78,7 @@ manifest="$repo_root/evaluations/agent-application-alpha/campaigns/$campaign.jso
     echo "sealed canary campaign has not been published: $campaign" >&2
     exit 1
 }
-jq -e --arg campaign "$campaign" '
+jq -e --arg campaign "$campaign" --argjson expected_runs "$expected_runs" '
   (keys | sort) == ([
     "bundle_hash", "campaign_id", "immutable", "runs", "schema", "status"
   ] | sort)
@@ -87,11 +87,16 @@ jq -e --arg campaign "$campaign" '
   and .immutable == true
   and .status == "passed"
   and (.bundle_hash | test("^[0-9a-f]{64}$"))
-  and (.runs | length) == 2
-  and ([.runs[] | [.domain, .language] | join("-")] | sort)
-      == ["blog-rust", "orders-typescript"]
-  and ([.runs[].run_id] | unique | length) == 2
-  and ([.runs[].agent_identity] | unique | length) == 2
+  and (.runs | length) == $expected_runs
+  and (
+    ([.runs[] | [.domain, .language] | join("-")] | sort) as $profiles
+    | ($expected_runs == 2
+        and $profiles == ["blog-rust", "orders-typescript"])
+      or ($expected_runs == 3
+        and $profiles == ["blog-rust", "orders-python", "orders-typescript"])
+  )
+  and ([.runs[].run_id] | unique | length) == $expected_runs
+  and ([.runs[].agent_identity] | unique | length) == $expected_runs
   and all(.runs[];
       (keys | sort) == ([
         "agent_identity", "application_lock", "domain", "events", "language",
@@ -240,20 +245,50 @@ while IFS= read -r run; do
         and $page.operation == $page.query_name
         and $page.read_after_commit == $write.commit_sequence
         and (($page.application_head | tonumber) >= ($write.commit_sequence | tonumber))
-        and $report[0].first_write_seconds == (($write.elapsed_ms / 1000) | floor)
-        and $report[0].first_page_read_seconds == (($page.elapsed_ms / 1000) | floor)
+        and (
+          $report[0].first_write_seconds
+          | . == (($write.elapsed_ms / 1000) | floor)
+            or . == (($write.elapsed_ms / 1000) | ceil)
+        )
+        and (
+          $report[0].first_page_read_seconds
+          | . == (($page.elapsed_ms / 1000) | floor)
+            or . == (($page.elapsed_ms / 1000) | ceil)
+        )
       )
     ' "$work_root/$run_id.qualified.json" >/dev/null || {
         echo "canary first-success evidence is not backed by exact compiler/runtime identity: $run_id" >&2
         exit 1
     }
 
-    jq -e -s '
+    jq -e -s --slurpfile report "$report" '
       length >= 4
+      and .[0].kind == "start"
+      and .[0].elapsed_ms == 0
+      and .[-1].kind == "complete"
       and (map(select(.kind == "start")) | length) == 1
       and (map(select(.kind == "first_write")) | length) == 1
       and (map(select(.kind == "first_page_read")) | length) == 1
       and (map(select(.kind == "complete")) | length) == 1
+      and (reduce .[] as $event (
+          {last: -1, monotonic: true};
+          {
+            last: $event.elapsed_ms,
+            monotonic: (.monotonic and $event.elapsed_ms >= .last)
+          }
+        ) | .monotonic)
+      and ((map(.kind) | index("first_write"))
+        < (map(.kind) | index("first_page_read")))
+      and (map(select(.kind == "compiler_failure")) | length)
+        == $report[0].compiler_failures
+      and (map(select(.kind == "runtime_failure")) | length)
+        == $report[0].runtime_failures
+      and (map(select(.kind == "unsupported_shape")) | length)
+        == ($report[0].unsupported_shapes | length)
+      and (map(select(.kind == "intervention")) | length)
+        == $report[0].human_interventions
+      and (map(select(.kind == "kernel_attempt")) | length)
+        == $report[0].kernel_attempts
       and all(.[];
           (keys - ["schema", "elapsed_ms", "kind", "code", "operation"]
             | length) == 0

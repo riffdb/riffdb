@@ -83,8 +83,6 @@ done
 application_manifest="$application_root/generated/riffdb.application.exact.json"
 "$boundary_check" "$application_root"
 contract="$application_root/$(jq -er '.contract.source' "$application_manifest")"
-query_source="$application_root/$(jq -er '.query_modules[0].queries[0].source' "$application_manifest")"
-queries="$(dirname "$query_source")"
 module_name="$(jq -er '.query_modules[0].name' "$application_manifest")"
 module_version="$(jq -er '.query_modules[0].version' "$application_manifest")"
 contract_lineage="$(jq -er '.contract.lineage' "$application_manifest")"
@@ -117,6 +115,31 @@ trap cleanup EXIT INT TERM
 random_hex_32() {
     od -An -tx1 -N32 /dev/urandom | tr -d ' \n'
 }
+
+application_query_stamp() {
+    while IFS= read -r relative; do
+        stat -c '%n:%Y:%s' "$application_root/$relative"
+    done < <(jq -er '.query_modules[0].queries[].source' "$application_manifest")
+}
+
+stage_application_queries() {
+    local staged="$work_root/query-module"
+    mkdir -p "$staged"
+    find "$staged" -maxdepth 1 -type f -name '*.riffq' -delete
+    local index=0
+    while IFS= read -r relative; do
+        cp -- "$application_root/$relative" \
+            "$staged/$(printf '%04d.riffq' "$index")"
+        ((index += 1))
+    done < <(jq -er '.query_modules[0].queries[].source' "$application_manifest")
+    ((index > 0)) || {
+        echo "application query module is empty" >&2
+        exit 1
+    }
+    queries="$staged"
+}
+
+stage_application_queries
 
 mkdir -p "$work_root/backups"
 mkfifo "$work_root/ready.fifo"
@@ -284,12 +307,18 @@ if ((seed_builtin || acceptance)); then
     printf 'riffdb-dev-seed-v1\t%s\tapplication-manifest\n' "$seed_count" >&2
 fi
 
+printf 'riffdb-dev-context-v1\tdatabase=%s\trole=%s\n' \
+    "default" "$role_symbol"
 printf 'riffdb-dev-ready-v1\t%s\t%s\t%s\n' \
     "$endpoint" "$work_root/profile.credential" "$role_symbol"
 
 if ((run)); then
-    if [[ -f "$application_root/Cargo.toml" && -f "$application_root/package.json" ]]; then
-        echo "application root contains ambiguous Rust and TypeScript runners" >&2
+    runner_count=0
+    for runner_manifest in Cargo.toml package.json pyproject.toml; do
+        [[ -f "$application_root/$runner_manifest" ]] && ((runner_count += 1))
+    done
+    if ((runner_count != 1)); then
+        echo "application root must contain exactly one supported runner manifest" >&2
         exit 2
     fi
     if [[ -f "$application_root/Cargo.toml" ]]; then
@@ -311,8 +340,20 @@ if ((run)); then
             npm run --silent build
             npm run --silent start -- "$endpoint" "$work_root/profile.credential" "$riffdb"
         )
+    elif [[ -f "$application_root/pyproject.toml" ]]; then
+        command -v uv >/dev/null 2>&1 || {
+            echo "required Python runner tool is missing: uv" >&2
+            exit 1
+        }
+        python_package="$(jq -er '.application | gsub("-"; "_")' "$application_manifest")"
+        (
+            cd "$application_root"
+            uv sync --locked >/dev/null
+            PYTHONPATH=src uv run --locked python -m "$python_package" \
+                "$endpoint" "$work_root/profile.credential" default
+        )
     else
-        echo "application root has no supported Rust or TypeScript runner" >&2
+        echo "application root has no supported runner" >&2
         exit 2
     fi
     exit 0
@@ -342,11 +383,11 @@ if ((watch == 0)); then
 fi
 
 contract_stamp="$(stat -c '%Y:%s' "$contract")"
-query_stamp="$(find "$queries" -maxdepth 1 -type f -name '*.riffq' -printf '%f:%T@:%s\n' | sort)"
+query_stamp="$(application_query_stamp)"
 while kill -0 "$server_pid" 2>/dev/null; do
     sleep 0.25
     next_contract_stamp="$(stat -c '%Y:%s' "$contract")"
-    next_query_stamp="$(find "$queries" -maxdepth 1 -type f -name '*.riffq' -printf '%f:%T@:%s\n' | sort)"
+    next_query_stamp="$(application_query_stamp)"
     if [[ "$next_contract_stamp" != "$contract_stamp" ]]; then
         "$riffdb" application lock "$application_source" --write
         "$riffdb" application generate "$application_source" --locked
@@ -359,6 +400,7 @@ while kill -0 "$server_pid" 2>/dev/null; do
         "$riffdb" application lock "$application_source" --write
         "$riffdb" application generate "$application_source" --locked
         "$boundary_check" "$application_root"
+        stage_application_queries
         "${operator[@]}" query deploy "$queries" \
             --module-name "$module_name" \
             --module-version "$module_version" \

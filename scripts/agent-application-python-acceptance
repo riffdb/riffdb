@@ -43,8 +43,10 @@ exec {dev_fd}<>"$temporary/dev.fifo"
     >"$temporary/dev.fifo" 2>"$temporary/dev.stderr" &
 dev_pid=$!
 ready=
+context=
 while IFS= read -r -t 60 line <&"$dev_fd"; do
     case "$line" in
+        riffdb-dev-context-v1$'\t'*) context="$line" ;;
         riffdb-dev-ready-v1$'\t'*) ready="$line"; break ;;
     esac
 done
@@ -54,7 +56,8 @@ done
     exit 1
 }
 IFS=$'\t' read -r _ endpoint credential role <<<"$ready"
-[[ "$role" == "PythonProofApplication" && -f "$credential" ]] || {
+[[ "$context" == $'riffdb-dev-context-v1\tdatabase=default\trole=PythonProofApplication' \
+    && "$role" == "PythonProofApplication" && -f "$credential" ]] || {
     echo "Python scaffold received an invalid application profile" >&2
     exit 1
 }

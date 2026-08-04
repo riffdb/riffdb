@@ -1082,6 +1082,7 @@ fn python_named_type(
             "date" => "RiffDate".to_owned(),
             value if value.starts_with("bytes<") => "bytes".to_owned(),
             value if value.starts_with("decimal<") => "Decimal".to_owned(),
+            value if value.starts_with("money<") => "Money".to_owned(),
             value
                 if contract
                     .schema()

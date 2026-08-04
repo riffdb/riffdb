@@ -19,6 +19,7 @@ Run one brief per isolated agent/context:
 - `briefs/blog-typescript.md`
 - `briefs/orders-rust.md`
 - `briefs/orders-typescript.md`
+- `briefs/orders-python.md`
 
 The evaluator provides the bundle and the selected brief, an empty writable
 repository, network disabled, and no RiffDB implementation or TicketDesk
@@ -98,8 +99,9 @@ TMPDIR="$HOME/tmp" ./scripts/agent-satisfaction-canary-acceptance \
   --campaign <new-sealed-campaign-id>
 ```
 
-The selected campaign must be a new two-agent Blog/Rust and Orders/TypeScript
-canary over the current sealed bundle. The ordinary canary checker first
+The selected campaign must contain three fresh agents covering Blog/Rust,
+Orders/TypeScript, and Orders/Python over one current sealed bundle. The
+ordinary canary checker first
 re-proves the exact bundle and evidence hashes, fresh independent contexts,
 golden workloads, qualified runtime identities, zero intervention, zero
 kernel attempts, zero handwritten glue, and zero unsupported shapes. The

@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+    cat <<'EOF'
+Usage: check-application-boundary [APPLICATION_ROOT ...]
+Checks generated-operation-only application boundary compliance.
+
+With no application roots, checks templates/application and examples/agent-alpha.
+EOF
+}
+
+case "${1:-}" in
+    -h|--help)
+        usage
+        exit 0
+        ;;
+esac
+
 if (($# == 0)); then
     set -- templates/application examples/agent-alpha
 fi

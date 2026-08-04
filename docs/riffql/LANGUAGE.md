@@ -12,6 +12,13 @@ For v1 application pages, start with a fixed bound such as `take 25` or
 `take 50`. Use a `Limit` parameter only when the role can afford its full
 500-row static charge; its default does not reduce that proof obligation.
 
+`one` and `maybe` are primary-key point reads: their predicates must constrain
+the target entity's complete primary key. A secondary index does not satisfy a
+singular binding. For a singular lookup by an external identifier such as a
+slug, declare a small route entity keyed by that identifier, point-read the
+route, and then point-read the target entity through its stored key. This
+makes the cardinality proof explicit and prevents data-dependent scans.
+
 One deliberately narrow collection dependency is available for operational
 junction reads. An earlier bounded `many` field may be consumed by `in` only to
 supply one component of a later `many` binding's complete primary key:

@@ -59,7 +59,7 @@ record zero. Product-owned generated files and bundled runtimes never count as
 handwritten glue.
 
 For a satisfaction campaign, evaluators follow this identical protocol; they
-are not told to manufacture a target score. After both immutable reports are
-published, `scripts/agent-satisfaction-canary-acceptance` independently checks
-that every rating is strictly greater than 9 in addition to all ordinary
-canary guarantees.
+are not told to manufacture a target score. After the Python, Rust, and
+TypeScript reports are published, `scripts/agent-satisfaction-canary-acceptance`
+independently checks that every rating is strictly greater than 9 in addition
+to all ordinary canary guarantees.
