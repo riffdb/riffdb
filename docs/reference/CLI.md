@@ -293,6 +293,7 @@ Commands:
   deploy
   module
   repl
+  projected  Executes one org-scoped projected columnar query under a freshness policy
 
 Options:
       --config <PATH>
@@ -1268,6 +1269,61 @@ Options:
       --max-attempts <1..10>
       --credential-file <PATH>
   -h, --help                               Print help
+```
+
+#### `riffdb query projected`
+
+```text
+Executes one org-scoped projected columnar query under a freshness policy
+
+Usage: riffdb query projected [OPTIONS] --org-scope <JSON_VALUE> <PROJECTION_NAME>
+
+Arguments:
+  <PROJECTION_NAME>  Registered projection name
+
+Options:
+      --config <PATH>
+
+      --org-scope <JSON_VALUE>
+          Organization scope as typed InputValue JSON (e.g. `{"type":"uuid","value":"..."}`)
+      --endpoint <LOOPBACK_HTTP_ENDPOINT>
+
+      --select <FIELD>
+          Selected field names (repeatable). Empty = all projected fields
+      --database <DATABASE>
+
+      --eq <FIELD=JSON_VALUE>
+          Equality predicate as `FIELD=JSON_VALUE` (repeatable)
+      --output <human|json>
+          [possible values: human, json]
+      --range <FIELD=[LOW,HIGH]>
+          Range predicate as `FIELD=[LOW_JSON,HIGH_JSON]`: a JSON two-element array whose bounds are typed JSON values or `null` for unbounded (inclusive low, exclusive high; at least one bound; repeatable)
+      --max-attempts <1..10>
+
+      --order <FIELD[:desc]>
+          Order key as `FIELD` or `FIELD:desc` (repeatable)
+      --credential-file <PATH>
+
+      --limit <ROWS>
+          Post-sort row limit
+      --freshness <POLICY>
+          Freshness policy: `available`, `bounded:N`, or `causal` (requires token) [default: available]
+      --token-hex <HEX>
+          Opaque commit-token bytes as hex, exactly as `commit_token` is reported by a ready projected read (causal only)
+      --token-file <PATH>
+          Opaque commit-token raw bytes (not hex) from a file (causal only)
+      --token-stdin
+          Opaque commit-token raw bytes (not hex) from stdin (causal only)
+      --max-wait-nanos <NANOSECONDS>
+          Maximum wait for causal catch-up (nanoseconds). Default 30s
+      --packed
+          Request packed column-major Ready encoding
+      --contract-lineage <LINEAGE>
+
+      --contract-version <VERSION>
+
+  -h, --help
+          Print help
 ```
 
 #### `riffdb role check`

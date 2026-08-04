@@ -14,6 +14,7 @@ mod credential_file;
 mod ids;
 mod maintenance;
 mod metadata;
+mod projected;
 mod reactive;
 mod status;
 
@@ -58,6 +59,11 @@ pub use metadata::{
     BearerCredential, BootstrapCallMetadata, BootstrapCredential, CallMetadata, MetadataError,
     TraceParent,
 };
+pub use projected::{
+    ProjectedDegradedReason, ProjectedOrder, ProjectedPredicate, ProjectedQuery,
+    ProjectedQueryOutcome, ProjectedReadyRow, ProjectedRebuildingReason, ProjectedResponseEncoding,
+    ProjectedSortDirection,
+};
 pub use reactive::{
     ApplicationContextualBatch, ApplicationContextualHydration, ApplicationContextualReaction,
     ApplicationContextualWorkItem, ApplicationEvent, ApplicationEventBatch,
@@ -69,6 +75,8 @@ pub use reactive::{
     LiveQueryTerminal, TypedContextualBatch, TypedContextualWorkItem, TypedEventBatch,
     TypedEventDelivery, TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream,
 };
+/// Freshness policy and commit token types used by projected queries.
+pub use riffdb_types::{CommitToken, FreshnessPolicy, ProjectionFrontier};
 pub use status::{
     ClientError, DetailsFreeStatus, OutcomeUnknown, ProtocolFailure, ProtocolFailureKind,
 };
