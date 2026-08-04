@@ -1,6 +1,6 @@
 # ADR-0093: Replicated Availability via Authoritative Changelog Shipping
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-04
 - **Decision owners:** RiffDB maintainers
 - **Related:** ADR-0082 (single total order), ADR-0083 (commit records carry no
@@ -243,4 +243,8 @@ which is precisely why it is not being contracted casually here.
 
 ## Acceptance
 
-Pending maintainer review.
+Accepted by the maintainer on 2026-08-04, as written: the asynchronous tier
+(authoritative changelog shipping, follower mode, incarnation-fenced
+promotion, retention fencing with hold budgets, capability-authorized
+replication transport) is contracted; the synchronous/quorum tier remains a
+named future amendment carrying the five §8 safeguards.
