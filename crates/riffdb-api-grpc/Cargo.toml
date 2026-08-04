@@ -39,9 +39,11 @@ tonic-prost-build = { version = "=0.14.6", default-features = false, features = 
 
 [dev-dependencies]
 riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
+riffdb-columnar = { version = "0.1.0", path = "../riffdb-columnar", default-features = false }
 riffdb-observability = { version = "0.1.0", path = "../riffdb-observability", default-features = false }
 riffdb-service = { version = "0.1.0", path = "../riffdb-service", default-features = false, features = ["test-fixtures"] }
 riffdb-testkit = { version = "0.1.0", path = "../riffdb-testkit", default-features = false }
+riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "sync"] }
 
 [[test]]

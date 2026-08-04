@@ -36,9 +36,10 @@ use tonic::transport::Endpoint;
 
 pub use projected::{
     BOARD_PROJECTION_NAME, BOARD_ROW_FIELDS, BOARD_SELECT, TicketStatusEnumIds,
-    assert_board_rows_equivalent, board_rows_digest, build_board_projected_request,
-    catchup_projected_board, commit_token_bytes, execute_projected_board, freshness_available,
-    freshness_causal, request_shape,
+    assert_board_rows_equivalent, assert_board_rows_three_way_equivalent, board_rows_digest,
+    build_board_projected_request, build_board_projected_request_with_encoding,
+    catchup_projected_board, commit_token_bytes, execute_projected_board,
+    execute_projected_board_packed, freshness_available, freshness_causal, request_shape,
 };
 pub use server::{
     DATABASE_ROOT_ENV, DEFAULT_DATABASE_ROOT, MIN_FREE_BYTES, MIN_FREE_BYTES_FULL,
@@ -223,8 +224,8 @@ impl RiffDbPublicBackend {
     /// Catch-up + cross-path equivalence gates (must pass before projected timing).
     ///
     /// Causal to the last seed commit proves the projection reached the head;
-    /// then each board page size is compared compiled vs projected (never
-    /// path-to-self). Divergence aborts with both digests.
+    /// then each board page size is compared three-way: compiled vs projected-row
+    /// vs projected-packed (never path-to-self). Divergence aborts with digests.
     pub fn prepare_projected_board_gates(
         &mut self,
         dataset: &SeedDataset,
@@ -265,9 +266,10 @@ impl RiffDbPublicBackend {
             )?;
             // Equivalence uses the projected wire path directly (gates not yet open
             // for timed samples). Never compare a path to itself.
-            let projected = self.block_on(async {
-                execute_projected_board(
-                    &self.projected_channel().await?,
+            let (projected_row, projected_packed) = self.block_on(async {
+                let channel = self.projected_channel().await?;
+                let row = execute_projected_board(
+                    &channel,
                     &self.bearer_token,
                     probes.board_organization_id,
                     probes.board_project_id,
@@ -276,14 +278,33 @@ impl RiffDbPublicBackend {
                     self.status_ids,
                     freshness_available(),
                 )
-                .await
+                .await?;
+                let packed = execute_projected_board_packed(
+                    &channel,
+                    &self.bearer_token,
+                    probes.board_organization_id,
+                    probes.board_project_id,
+                    probes.open_status,
+                    limit,
+                    self.status_ids,
+                    freshness_available(),
+                )
+                .await?;
+                Ok((row, packed))
             })?;
-            assert_board_rows_equivalent(&compiled, &projected, limit).map_err(RiffDbError::Rpc)?;
+            assert_board_rows_three_way_equivalent(
+                &compiled,
+                &projected_row,
+                &projected_packed,
+                limit,
+            )
+            .map_err(RiffDbError::Rpc)?;
         }
         self.projected_gates_ready = true;
         eprintln!(
             "projected-board gates ok: catch-up Ready at commit_sequence={sequence}; \
-             compiled vs projected row content identical for limits that fit the dense cell"
+             compiled vs projected-row vs projected-packed row content identical for \
+             limits that fit the dense cell"
         );
         Ok(())
     }
@@ -597,6 +618,33 @@ impl AppBackend for RiffDbPublicBackend {
         }
         self.block_on(async {
             execute_projected_board(
+                &self.projected_channel().await?,
+                &self.bearer_token,
+                organization_id,
+                project_id,
+                status,
+                limit,
+                self.status_ids,
+                freshness_available(),
+            )
+            .await
+        })
+    }
+
+    fn board_page_packed(
+        &mut self,
+        organization_id: UuidBytes,
+        project_id: UuidBytes,
+        status: TicketStatus,
+        limit: u32,
+    ) -> Result<Vec<TicketRow>, Self::Error> {
+        if !self.projected_gates_ready {
+            return Err(RiffDbError::Rpc(
+                "projected board measured before catch-up/equivalence gates".into(),
+            ));
+        }
+        self.block_on(async {
+            execute_projected_board_packed(
                 &self.projected_channel().await?,
                 &self.bearer_token,
                 organization_id,
