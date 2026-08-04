@@ -52,6 +52,7 @@ for required in \
     docs/getting-started/AUTHORING-DIAGNOSTICS.md \
     docs/getting-started/INSPECTION.md \
     evaluation/CANARY-PROTOCOL.md \
+    evaluation/briefs/orders-python.md \
     evaluation/qualified-event-schema.json \
     docs/riffql/LANGUAGE.md; do
     [[ -s "$bundle/$required" ]] || {
@@ -81,6 +82,13 @@ jq -e '
   .properties.handwritten_glue_lines.description
   | contains("Ordinary domain logic")
 ' "$bundle/evaluation/report-schema.json" >/dev/null
+jq -e '.properties.language.enum == ["python", "rust", "typescript"]' \
+    "$bundle/evaluation/report-schema.json" >/dev/null
+boundary_help="$($bundle/libexec/check-application-boundary --help)"
+grep -Fq 'Usage: check-application-boundary [APPLICATION_ROOT ...]' \
+    <<<"$boundary_help"
+grep -Fq 'Checks generated-operation-only application boundary compliance.' \
+    <<<"$boundary_help"
 rust_source_check="$(
     cd "$rust_run_root"
     "$bundle/bin/riffdb" application check --source-only
@@ -94,9 +102,25 @@ rust_run_output="$(
 rg -q '^riffdb-dev-ready-v1' <<<"$rust_run_output"
 rg -q '^Welcome to run-rust$' <<<"$rust_run_output"
 
+python_run_root="$work_root/python-run"
+"$bundle/bin/riffdb" new run-python --language python \
+    --directory "$python_run_root" >/dev/null
+python_run_output="$(
+    cd "$python_run_root"
+    UV_CACHE_DIR="$work_root/uv-cache" \
+        "$bundle/bin/riffdb" dev --seed --run
+)"
+rg -q '^riffdb-dev-ready-v1' <<<"$python_run_output"
+rg -Fq '"schema":"riffdb.application-parity/v1"' <<<"$python_run_output"
+
 typescript_run_root="$work_root/typescript-run"
 "$bundle/bin/riffdb" new run-typescript --language typescript \
     --directory "$typescript_run_root" >/dev/null
+# Exact development deployment must ignore sources that are not named by the
+# locked application manifest. Directory-wide deployment would reject this
+# duplicate declaration before the generated application starts.
+cp "$typescript_run_root/riffdb/queries/item_page.riffq" \
+    "$typescript_run_root/riffdb/queries/unreferenced-duplicate.riffq"
 typescript_run_log="$work_root/typescript-run.stdout"
 typescript_run_error="$work_root/typescript-run.stderr"
 (

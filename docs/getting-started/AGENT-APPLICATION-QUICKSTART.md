@@ -22,8 +22,14 @@ $ riffdb dev --seed --run
 generated exact application bindings
 application boundary check passed
 riffdb-dev-seed-v1  1  application-manifest
+riffdb-dev-context-v1 database=default role=OrderDeskApplication
 riffdb-dev-ready-v1 http://127.0.0.1:... ... OrderDeskApplication
 ```
+
+The context line names values that application clients need but that must not
+be guessed from the role symbol. Pass `database=default` as the generated
+client's database alias. The readiness line remains positional for existing
+launch supervisors; the context line is labelled for humans and agents.
 
 `riffdb new` compiles before it writes and refuses to overwrite an existing
 file or non-empty directory. It accepts either a new child directory or an

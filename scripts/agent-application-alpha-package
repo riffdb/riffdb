@@ -107,6 +107,8 @@ mkdir -p "$temporary/public/rust-sdk/fixtures"
 cp -R "$repo_root/fixtures/proto" "$temporary/public/rust-sdk/fixtures/"
 cp "$repo_root/release/agent-application-alpha/sdk-Cargo.toml" \
     "$temporary/public/rust-sdk/Cargo.toml"
+cp "$repo_root/templates/application/Cargo.lock" \
+    "$temporary/public/rust-sdk/Cargo.lock"
 cp "$repo_root/release/agent-application-alpha/riffdb-api-grpc-client.Cargo.toml" \
     "$temporary/public/rust-sdk/crates/riffdb-api-grpc/Cargo.toml"
 cp "$repo_root/release/agent-application-alpha/BUNDLE.md" "$temporary/README.md"
@@ -158,6 +160,8 @@ CARGO_HOME="$temporary/.cargo" CARGO_NET_OFFLINE=true \
     --config "$app_patch"
 cmp "$temporary/.application-smoke.Cargo.lock.expected" \
     "$temporary/.application-smoke/Cargo.lock" || {
+    diff -u "$temporary/.application-smoke.Cargo.lock.expected" \
+        "$temporary/.application-smoke/Cargo.lock" >&2 || true
     echo "Rust scaffold Cargo.lock is stale against the sealed dependency set" >&2
     exit 1
 }

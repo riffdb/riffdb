@@ -20,7 +20,7 @@ done
 }
 
 "$repo_root/scripts/agent-application-alpha-canary-acceptance" \
-    --runs 2 \
+    --runs 3 \
     --sealed \
     --assert-gate \
     --campaign "$campaign"
@@ -41,4 +41,4 @@ while IFS= read -r report; do
     }
 done < <(jq -er '.runs[].report.path' "$manifest")
 
-echo "Agent satisfaction sealed canary gate passed: every independent rating is above 9"
+echo "Agent satisfaction sealed canary gate passed: Python, Rust, and TypeScript ratings are each above 9"

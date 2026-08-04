@@ -9,13 +9,15 @@ output="$(cargo run --quiet -p riffdb-cli -- dev \
     --seed-dir fixtures/batches \
     --seed-concurrency 8 \
     --acceptance)"
-case "$output" in
-    riffdb-dev-ready-v1$'\t'*) ;;
-    *)
-        echo "riffdb dev acceptance returned an invalid readiness line" >&2
-        exit 1
-        ;;
-esac
+grep -Fxq $'riffdb-dev-context-v1\tdatabase=default\trole=ticketdesk-application' \
+    <<<"$output" || {
+    echo "riffdb dev acceptance did not identify its database alias" >&2
+    exit 1
+}
+grep -q '^riffdb-dev-ready-v1'$'\t' <<<"$output" || {
+    echo "riffdb dev acceptance returned an invalid readiness line" >&2
+    exit 1
+}
 
 ./scripts/check-ticketdesk-symbolic-boundary
 echo "riffdb dev bootstrap, role preset, contract, and query module acceptance passed."
