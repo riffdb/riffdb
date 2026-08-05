@@ -1105,6 +1105,24 @@ impl McpObserverState {
 
     /// Retains one canonical URI only when its v1 kind is subscribable.
     pub fn subscribe(&self, uri: &str) -> Result<McpSubscribeResult, McpObserverError> {
+        self.subscribe_inner(uri, None)
+    }
+
+    /// Retains one authorized subscription with the exact fingerprint read at
+    /// its successful subscription linearization point.
+    pub fn subscribe_with_baseline(
+        &self,
+        uri: &str,
+        baseline: McpVisibleFingerprint,
+    ) -> Result<McpSubscribeResult, McpObserverError> {
+        self.subscribe_inner(uri, Some(baseline))
+    }
+
+    fn subscribe_inner(
+        &self,
+        uri: &str,
+        baseline: Option<McpVisibleFingerprint>,
+    ) -> Result<McpSubscribeResult, McpObserverError> {
         let locator = parse_resource_locator(uri).map_err(|_| McpObserverError::Unsupported)?;
         if !subscribable(&locator) {
             return Err(McpObserverError::Unsupported);
@@ -1124,7 +1142,7 @@ impl McpObserverState {
             uri.to_owned(),
             SubscriptionObservation {
                 locator,
-                fingerprint: None,
+                fingerprint: baseline,
                 generation,
             },
         );
@@ -2033,13 +2051,16 @@ fn subscribable(locator: &McpResourceLocator) -> bool {
             | McpResourceLocator::CommandPlan { .. }
             | McpResourceLocator::ProjectionStatus { .. }
             | McpResourceLocator::ServerHealth
+            | McpResourceLocator::ReactiveWakeup
     )
 }
 
 fn polls_every_tick(locator: &McpResourceLocator) -> bool {
     matches!(
         locator,
-        McpResourceLocator::ProjectionStatus { .. } | McpResourceLocator::ServerHealth
+        McpResourceLocator::ProjectionStatus { .. }
+            | McpResourceLocator::ServerHealth
+            | McpResourceLocator::ReactiveWakeup
     )
 }
 
@@ -2801,8 +2822,12 @@ mod tests {
             state.subscribe("riffdb://commit/1"),
             Err(McpObserverError::Unsupported)
         );
+        assert_eq!(
+            state.subscribe("riffdb://reactive/wakeup"),
+            Ok(McpSubscribeResult::Added)
+        );
 
-        for projection in 1..=7 {
+        for projection in 1..=6 {
             assert_eq!(
                 state.subscribe(&format!(
                     "riffdb://projection/LegalSpend/{projection}/status"
@@ -2814,6 +2839,33 @@ mod tests {
             state.subscribe("riffdb://server/health"),
             Err(McpObserverError::LimitExceeded)
         );
+    }
+
+    #[test]
+    fn authorized_subscription_baseline_cannot_swallow_a_later_change() {
+        let uri = "riffdb://contract/active";
+        let state = McpObserverState::new();
+        state
+            .subscribe_with_baseline(uri, fingerprint(1))
+            .expect("subscribe with authorized baseline");
+        let snapshot = state
+            .subscription_snapshot()
+            .expect("subscription snapshot");
+        assert!(!snapshot[0].needs_baseline);
+
+        let updates = state
+            .apply_successful_pass(
+                None,
+                vec![(
+                    uri.to_owned(),
+                    McpSubscribedResourceObservation::Visible(fingerprint(2)),
+                    None,
+                    snapshot[0].generation,
+                )],
+            )
+            .expect("changed resource observation");
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].uri, uri);
     }
 
     #[test]
@@ -3311,19 +3363,20 @@ mod tests {
         let active = "riffdb://contract/active";
         let projection = "riffdb://projection/LegalSpend/1/status";
         let health = "riffdb://server/health";
-        for uri in [active, projection, health] {
+        let wakeup = "riffdb://reactive/wakeup";
+        for uri in [active, projection, health, wakeup] {
             backend.push_resource(
                 uri,
                 Ok(McpSubscribedResourceObservation::Visible(fingerprint(1))),
             );
         }
-        for uri in [projection, health] {
+        for uri in [projection, health, wakeup] {
             backend.push_resource(
                 uri,
                 Ok(McpSubscribedResourceObservation::Visible(fingerprint(2))),
             );
         }
-        for uri in [active, projection, health] {
+        for uri in [active, projection, health, wakeup] {
             backend.push_resource(
                 uri,
                 Ok(McpSubscribedResourceObservation::Visible(fingerprint(3))),
@@ -3331,7 +3384,7 @@ mod tests {
         }
 
         let state = Arc::new(McpObserverState::new());
-        for uri in [active, projection, health] {
+        for uri in [active, projection, health, wakeup] {
             state.subscribe(uri).expect("supported subscription");
         }
         let mut observer = McpObserverLoop::new(
@@ -3357,7 +3410,7 @@ mod tests {
                 .take_pending()
                 .expect("continuous markers")
                 .resource_updates(),
-            [projection, health]
+            [projection, wakeup, health]
         );
         assert_eq!(
             block_on(observer.observe_tick(Duration::from_secs(15))),
@@ -3366,17 +3419,23 @@ mod tests {
         let pending = state.take_pending().expect("catalog-driven reads");
         assert!(!pending.tools_list_changed);
         assert!(!pending.resources_list_changed);
-        assert_eq!(pending.resource_updates(), [active, projection, health]);
+        assert_eq!(
+            pending.resource_updates(),
+            [active, projection, wakeup, health]
+        );
         assert_eq!(
             backend.resource_calls(),
             [
                 active.to_owned(),
                 projection.to_owned(),
+                wakeup.to_owned(),
                 health.to_owned(),
                 projection.to_owned(),
+                wakeup.to_owned(),
                 health.to_owned(),
                 active.to_owned(),
                 projection.to_owned(),
+                wakeup.to_owned(),
                 health.to_owned(),
             ]
         );

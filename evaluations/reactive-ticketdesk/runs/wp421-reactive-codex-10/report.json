@@ -1,0 +1,35 @@
+{
+  "schema": "riffdb-reactive-ticketdesk-run/v1",
+  "run_id": "wp421-reactive-codex-10",
+  "bundle_hash": "be1d9e9cddc37eb41785188808e77479f05dd396ff6251e8aebd240f662695fc",
+  "agent_identity": "codex-independent-evaluator",
+  "independent": true,
+  "fresh_context": true,
+  "human_interventions": 0,
+  "kernel_attempts": 0,
+  "kernel_successes": 0,
+  "handwritten_glue_lines": 0,
+  "compiler_failures": 0,
+  "runtime_failures": 9,
+  "time_to_complete_seconds": 944,
+  "source_access": {
+    "riffdb_implementation": false,
+    "ticketdesk_implementation": false
+  },
+  "checks": {
+    "application_boundary": true,
+    "browser_credentials_absent": true,
+    "browser_two_session_convergence": true,
+    "commit_before_ack_recovery": true,
+    "contextual_one_snapshot": true,
+    "generated_bindings_exact": true,
+    "mcp_wakeup_payload_free": false,
+    "reaction_retry_idempotent": true,
+    "reconnect_reset": true,
+    "revocation_clears_state": true
+  },
+  "completed": false,
+  "rating": 8.0,
+  "explanation": "The sealed public application path compiled and generated exact Rust, TypeScript, Python, and MCP artifacts. The application boundary and browser disclosure scans passed. Real generated watches drove two independent authenticated browser stores to convergence; reconnect/reset behavior and authorization-terminal state clearing passed. A contextual worker received one TicketPage hydration under one context head, committed only through the generated reaction helper, crashed before acknowledgement, received the original work again after lease expiry, resolved the persisted outcome as a replay, acknowledged it, and proved no duplicate business mutation. The required MCP wakeup check failed: the exact reactive wakeup resource was discoverable and readable, but resources/subscribe reproducibly returned resource unavailable for both tested public reactive roles, so no notification could be inspected. Completion is therefore false despite all other required checks passing.",
+  "transcript_sha256": "2cd79e2a292607e38d0bf4b186ca16f3108c8d9dbd54c5a059aa9f1e38868e0e"
+}

@@ -578,6 +578,18 @@ pub trait CommitNotificationSource: Send {
 
 /// Authoritative entity, outcome, commit, provenance, and capability observations.
 pub trait AuthoritativeReadPort: Send + Sync {
+    /// Reserves capacity for one opaque-wakeup application-head observation.
+    fn reserve_application_head<'a>(
+        &'a self,
+        _control: &'a RequestControl,
+    ) -> PortFuture<
+        'a,
+        BoxPortCapacityPermit<(), FrontierPosition, AuthoritativeReadError>,
+        PortAdmissionError,
+    > {
+        Box::pin(async { Err(PortAdmissionError::Stopped) })
+    }
+
     /// Reserves capacity for one catalog-resolved reactive event window.
     fn reserve_reactive_event_window<'a>(
         &'a self,

@@ -1522,6 +1522,7 @@ async fn hydrate_contextual_delivery(
             Vec::new(),
             status,
             wait_timed_out,
+            Arc::clone(prepared.catalog.bundle().enum_variant_names()),
         ));
     }
     let query_modules = service.providers.query_modules.as_ref().ok_or_else(|| {
@@ -1652,6 +1653,7 @@ async fn hydrate_contextual_delivery(
         items,
         status,
         wait_timed_out,
+        Arc::clone(prepared.catalog.bundle().enum_variant_names()),
     ))
 }
 
@@ -1991,9 +1993,23 @@ pub(crate) async fn execute_contextual_reaction_operation(
         },
         admit_new,
     };
-    match crate::command_operations::execute_command(&service, &context, &command_request, mode)
-        .await
-    {
+    let command_context = context.child(
+        crate::derive_reaction_request_id(context.request_id(), &claims, &reaction_name)
+            .map_err(|_| invalid_consumer_request())?,
+    );
+    let command = crate::service::observe_inline_operation(
+        service.as_ref(),
+        ServiceOperationV1::ExecuteCommand,
+        command_context.ingress(),
+        crate::command_operations::execute_command(
+            service.as_ref(),
+            &command_context,
+            &command_request,
+            mode,
+        ),
+    )
+    .await;
+    match command {
         Ok(result) => {
             finish_success(&service, &context, &begun).await?;
             Ok(result)

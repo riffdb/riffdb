@@ -36,10 +36,10 @@ use crate::{
     McpAdmissionSessionKey, McpCancellationRegistry, McpCancellationSignal, McpInflightLimiter,
     McpInflightPermit, McpObserverError, McpObserverState, McpPostAuthenticationAdmission,
     McpProgressTracker, McpRequestId, McpResourceLocator, McpRiskClass, McpSchemaFailurePhase,
-    McpTelemetry, McpTelemetryEvent, McpTransportKind, NoopMcpTelemetry, RegistryError,
-    ResourceDefinition, ResourceSurface, SchemaDocument, decode_mcp_cursor, encode_mcp_cursor,
-    fixed_tool_registry, initialization_result, parse_resource_locator, resource_registry,
-    validate_command_tool_name,
+    McpTelemetry, McpTelemetryEvent, McpTransportKind, McpVisibleFingerprint, NoopMcpTelemetry,
+    RegistryError, ResourceDefinition, ResourceSurface, SchemaDocument, decode_mcp_cursor,
+    encode_mcp_cursor, fixed_tool_registry, initialization_result, parse_resource_locator,
+    resource_registry, validate_command_tool_name,
 };
 
 /// Exact service discovery page size used by both public MCP list methods.
@@ -1142,12 +1142,13 @@ pub trait McpBackend: Send + Sync + 'static {
         request: McpResourceReadRequest,
     ) -> McpBackendFuture<'a, McpResourceContent>;
 
-    /// Repeats current authorization before a local subscription transition.
+    /// Repeats current authorization and returns the exact resource baseline
+    /// before a local subscription transition.
     fn authorize_subscription<'a>(
         &'a self,
         invocation: &'a Self::Invocation,
         request: McpSubscriptionRequest,
-    ) -> McpBackendFuture<'a, ()>;
+    ) -> McpBackendFuture<'a, McpVisibleFingerprint>;
 }
 
 /// Closed backend failure classification.
@@ -1681,7 +1682,7 @@ where
         let invocation = self
             .begin_invocation(extensions, cancellation.clone())
             .map_err(resource_begin_error)?;
-        await_backend_with_cancellation(
+        let baseline = await_backend_with_cancellation(
             cancellation.as_ref(),
             self.backend.authorize_subscription(
                 &invocation,
@@ -1695,7 +1696,7 @@ where
         .map_err(resource_error)?;
         ensure_request_not_cancelled(cancellation.as_ref())?;
         self.observer
-            .subscribe(&request.uri)
+            .subscribe_with_baseline(&request.uri, baseline)
             .map(|_| ())
             .map_err(observer_error)
     }
@@ -2107,6 +2108,7 @@ fn locator_descriptor_branch(locator: &McpResourceLocator) -> &'static str {
         McpResourceLocator::Provenance(_) => "provenance.provenance_id",
         McpResourceLocator::ProjectionStatus { .. } => "projection_status",
         McpResourceLocator::ServerHealth => "server_health",
+        McpResourceLocator::ReactiveWakeup => "reactive_wakeup",
     }
 }
 
@@ -2752,10 +2754,17 @@ mod tests {
             &'a self,
             invocation: &'a Self::Invocation,
             _: McpSubscriptionRequest,
-        ) -> McpBackendFuture<'a, ()> {
+        ) -> McpBackendFuture<'a, McpVisibleFingerprint> {
             let _ = invocation.request_id;
-            self.state().subscription_calls += 1;
-            Box::pin(async { Ok(()) })
+            let baseline = {
+                let mut state = self.state();
+                state.subscription_calls += 1;
+                state
+                    .resource_content
+                    .visible_fingerprint()
+                    .expect("fixture resource fingerprint")
+            };
+            Box::pin(async move { Ok(baseline) })
         }
     }
 
@@ -3400,12 +3409,24 @@ mod tests {
             None,
         ))
         .expect("unsubscribe");
+        block_on(server.handle_subscribe(
+            SubscribeRequestParams::new("riffdb://reactive/wakeup"),
+            &extensions,
+            None,
+        ))
+        .expect("subscribe to reactive wakeup");
+        block_on(server.handle_unsubscribe(
+            UnsubscribeRequestParams::new("riffdb://reactive/wakeup"),
+            &extensions,
+            None,
+        ))
+        .expect("unsubscribe from reactive wakeup");
 
         let state = backend.state();
         assert_eq!(state.discover_resource_calls, 2);
         assert_eq!(state.read_calls, 1);
-        assert_eq!(state.subscription_calls, 3);
-        assert_eq!(state.begin_ids.len(), 6);
+        assert_eq!(state.subscription_calls, 5);
+        assert_eq!(state.begin_ids.len(), 8);
     }
 
     #[test]

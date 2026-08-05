@@ -788,8 +788,8 @@ mod tests {
         EntityObservation, EntityPostImage, EvaluatedCommand, EvaluationBudget, EventIntent,
         ExecutablePlanRef, IdempotencyIdentity, IdempotencyKeyDigest, IndexEntryMutationV1,
         IndexEpochAdvanceV1, IndexEpochPosition, PartitionIndexTarget, PreEvaluationCommitContext,
-        ReadSnapshot, SnapshotRequest, StoredAdmittedProvenanceClaimsV1, StoredIndexEntryV2,
-        StoredPendingAdmissionV1, command_write_set_upper_bound_v1,
+        ReadSnapshot, SnapshotRequest, StoredAdmittedProvenanceClaimsV1, StoredCommandCausationV1,
+        StoredIndexEntryV2, StoredPendingAdmissionV1, command_write_set_upper_bound_v1,
         encode_atomic_command_record_set_v1,
     };
     use riffdb_types::{
@@ -857,11 +857,12 @@ mod tests {
             .expect("entity target")
     }
 
-    fn fixture(
+    fn fixture_with_causation(
         observations: Vec<EntityObservation>,
         mutations: Vec<EntityMutation>,
         events: Vec<EventIntent>,
         include_index_change: bool,
+        causation: Option<StoredCommandCausationV1>,
     ) -> RecordGraphFixture {
         let plan = plan();
         let targets = observations
@@ -914,7 +915,7 @@ mod tests {
             PartitionKeyBuilder::new(AggregateTypeId::new(4).expect("aggregate type"));
         partition.push_u64(17).expect("partition component");
         let partition = partition.finish().expect("partition key");
-        let pending = StoredPendingAdmissionV1::new(
+        let mut pending = StoredPendingAdmissionV1::new(
             identity,
             CanonicalInputHash::from_bytes([0x33; 32]),
             RequestId::from_bytes(uuid_bytes(0x34)).expect("request ID"),
@@ -925,6 +926,11 @@ mod tests {
             claims.clone(),
         )
         .expect("pending admission");
+        if let Some(causation) = causation {
+            pending = pending
+                .with_causation(causation)
+                .expect("causal pending admission");
+        }
         let context = PreEvaluationCommitContext::new(
             pending,
             riffdb_types::hash_partition_key(partition.as_bytes()),
@@ -1021,6 +1027,35 @@ mod tests {
             write_plan,
             claims,
         }
+    }
+
+    fn fixture(
+        observations: Vec<EntityObservation>,
+        mutations: Vec<EntityMutation>,
+        events: Vec<EventIntent>,
+        include_index_change: bool,
+    ) -> RecordGraphFixture {
+        fixture_with_causation(observations, mutations, events, include_index_change, None)
+    }
+
+    #[test]
+    fn causal_command_charge_matches_its_complete_atomic_record_graph() {
+        let causation = StoredCommandCausationV1::new(
+            EventId::new(CommitSequence::new(4).expect("causing sequence"), 0),
+            RequestId::from_bytes(uuid_bytes(0x40)).expect("root request ID"),
+        );
+        let fixture =
+            fixture_with_causation(Vec::new(), Vec::new(), Vec::new(), false, Some(causation));
+
+        let records = build_record_graph_for_test(
+            fixture.assignment,
+            fixture.write_plan,
+            DurabilityMode::Group,
+        )
+        .expect("causal record graph");
+
+        assert_eq!(records.stored_outcome().causation(), Some(causation));
+        assert_eq!(records.provenance().causation(), Some(causation));
     }
 
     #[test]

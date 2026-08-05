@@ -685,6 +685,41 @@ fn expected_enum_values() -> BTreeSet<String> {
             "FIXED_TOOL_KIND_EXECUTE_QUERY",
         ),
         ("riffdb.v1.FixedToolKind", 19, "FIXED_TOOL_KIND_RUN_COMMAND"),
+        ("riffdb.v1.FixedToolKind", 20, "FIXED_TOOL_KIND_EVENT_NEXT"),
+        ("riffdb.v1.FixedToolKind", 21, "FIXED_TOOL_KIND_EVENT_ACK"),
+        ("riffdb.v1.FixedToolKind", 22, "FIXED_TOOL_KIND_EVENT_NACK"),
+        ("riffdb.v1.FixedToolKind", 23, "FIXED_TOOL_KIND_EVENT_SEEK"),
+        (
+            "riffdb.v1.FixedToolKind",
+            24,
+            "FIXED_TOOL_KIND_EVENT_STATUS",
+        ),
+        ("riffdb.v1.FixedToolKind", 25, "FIXED_TOOL_KIND_QUERY_WATCH"),
+        (
+            "riffdb.v1.FixedToolKind",
+            26,
+            "FIXED_TOOL_KIND_CONTEXTUAL_NEXT",
+        ),
+        (
+            "riffdb.v1.FixedToolKind",
+            27,
+            "FIXED_TOOL_KIND_CONTEXTUAL_ACK",
+        ),
+        (
+            "riffdb.v1.FixedToolKind",
+            28,
+            "FIXED_TOOL_KIND_CONTEXTUAL_NACK",
+        ),
+        (
+            "riffdb.v1.FixedToolKind",
+            29,
+            "FIXED_TOOL_KIND_CONTEXTUAL_STATUS",
+        ),
+        (
+            "riffdb.v1.FixedToolKind",
+            30,
+            "FIXED_TOOL_KIND_CONTEXTUAL_REACT",
+        ),
         (
             "riffdb.v1.OutboxDeliveryState",
             0,

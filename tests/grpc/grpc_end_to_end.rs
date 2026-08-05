@@ -35,17 +35,17 @@ use riffdb_service::{
     DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverResourcesRequest,
     DiscoverResourcesResult, DiscoveryApplication, DiscoveryCatalogFence, DiscoveryRepresentation,
     FixedToolKind, GetContractVersionResult, GetOfflineMaintenanceOperationResult,
-    GetProjectionStatusResult, HealthContext, HealthRequest, HealthResult,
+    GetProjectionStatusResult, GetReactiveWakeupResult, HealthContext, HealthRequest, HealthResult,
     ListPendingOutboxDeliveriesResult, OfflineMaintenanceApplication,
     OfflineMaintenanceObservationPhase, OfflineMaintenanceOperationObservation,
     OfflineMaintenanceStartDisposition, OfflineMaintenanceStartResult, OperationSchemaCatalog,
     Page, PageLimit, ProjectionFailureCode, ProjectionPageFence, ProjectionRow,
     ProjectionStatusSnapshot, ProjectionUnavailableReason, QueryApplication, QueryProjectionReady,
-    QueryProjectionRequest, QueryProjectionResult, RecoveryOfflineMaintenanceApplication,
-    RecoveryRestoreOfflineBackupInvocation, RequestContext, ResolveCommandOutcomeResult,
-    ResolveCommandOutcomeSelectorRef, ResourceDescriptor, RestoreOfflineBackupInvocation,
-    RestoreRetryOfflineMaintenanceApplication, ServiceFailure, ServiceFuture,
-    SymbolicQueryApplication, TraceProvenanceResult,
+    QueryProjectionRequest, QueryProjectionResult, ReactiveWakeupGeneration,
+    RecoveryOfflineMaintenanceApplication, RecoveryRestoreOfflineBackupInvocation, RequestContext,
+    ResolveCommandOutcomeResult, ResolveCommandOutcomeSelectorRef, ResourceDescriptor,
+    RestoreOfflineBackupInvocation, RestoreRetryOfflineMaintenanceApplication, ServiceFailure,
+    ServiceFuture, SymbolicQueryApplication, TraceProvenanceResult,
 };
 use riffdb_testkit::authorization::{
     AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
@@ -813,6 +813,18 @@ impl DiscoveryApplication for ProjectionService {
         };
         Box::pin(async move { Ok(result) })
     }
+
+    fn get_reactive_wakeup(
+        &self,
+        context: RequestContext,
+    ) -> ServiceFuture<'_, GetReactiveWakeupResult> {
+        self.observe(&context, ServiceOperationV1::GetReactiveWakeup);
+        Box::pin(async {
+            Ok(GetReactiveWakeupResult::new(
+                ReactiveWakeupGeneration::from_bytes([0x55; 32]),
+            ))
+        })
+    }
 }
 
 impl ProjectionService {
@@ -1122,6 +1134,7 @@ impl GrpcLifecycleRoute for ActiveRoute {
                 | ServiceOperationV1::ListPendingOutboxDeliveries
                 | ServiceOperationV1::DiscoverCommandTools
                 | ServiceOperationV1::DiscoverResources
+                | ServiceOperationV1::GetReactiveWakeup
                 | ServiceOperationV1::DescribeEvent
                 | ServiceOperationV1::ExecuteQuery
                 | ServiceOperationV1::WatchNamedQuery
@@ -1871,7 +1884,7 @@ async fn wp137_unary_surface_crosses_authenticated_loopback_grpc() {
     let metadata = CallMetadata::authenticated(
         BearerCredential::new(CAPABILITY_TOKEN).expect("valid credential presentation"),
     );
-    let request_ids = (10_u8..=19).map(request_id).collect::<Vec<_>>();
+    let request_ids = (10_u8..=20).map(request_id).collect::<Vec<_>>();
 
     let contract = client
         .get_contract_version(
@@ -2085,6 +2098,17 @@ async fn wp137_unary_surface_crosses_authenticated_loopback_grpc() {
         Some(v1::describe_event_response::Result::NotFound(_))
     ));
 
+    let wakeup = client
+        .get_reactive_wakeup(
+            v1::GetReactiveWakeupRequest {
+                request_id: request_ids[10].into_bytes().to_vec(),
+            },
+            &metadata,
+        )
+        .await
+        .expect("reactive wakeup response");
+    assert_eq!(wakeup.generation, vec![0x55; 32]);
+
     assert_eq!(service.command_discovery_prior(), vec![false, true, false]);
     assert_eq!(service.outcome_locators(), vec![OUTCOME_LOCATOR]);
     let expected_operations = [
@@ -2098,6 +2122,7 @@ async fn wp137_unary_surface_crosses_authenticated_loopback_grpc() {
         ServiceOperationV1::DiscoverCommandTools,
         ServiceOperationV1::ResolveCommandOutcome,
         ServiceOperationV1::DescribeEvent,
+        ServiceOperationV1::GetReactiveWakeup,
     ];
     let observed = service.observed();
     assert_eq!(observed.len(), expected_operations.len());

@@ -2833,6 +2833,46 @@ fn health_component_status(value: i32) -> Result<&'static str, ResponseConversio
 mod tests {
     use super::*;
 
+    #[test]
+    fn empty_event_pull_is_a_valid_completed_mcp_result() {
+        let result = event_next(v1::ConsumeEventStreamResponse {
+            events: Vec::new(),
+            status: Some(v1::EventConsumerStatus {
+                revision: 1,
+                checkpoint: Some(v1::EventConsumerCheckpoint {
+                    position: Some(v1::event_consumer_checkpoint::Position::BeforeFirst(
+                        v1::Unit {},
+                    )),
+                }),
+                history_incarnation: 1,
+                live_leases: 0,
+                retries: 0,
+                dead_letters: 0,
+            }),
+            wait_timed_out: false,
+        })
+        .expect("empty pull response");
+
+        assert_eq!(
+            result,
+            McpToolResult::from_serializable(&serde_json::json!({
+                "completed": {
+                    "events": [],
+                    "status": {
+                        "revision": "1",
+                        "checkpoint": "before-first",
+                        "history_incarnation": "1",
+                        "live_leases": 0,
+                        "retries": 0,
+                        "dead_letters": 0
+                    },
+                    "wait_timed_out": false
+                }
+            }))
+            .expect("expected MCP result")
+        );
+    }
+
     fn allocate_budget_definition() -> riffdb_api_mcp::McpDynamicToolDefinition {
         let input_schema = SchemaDocument::from_public_generated(
             McpGeneratedSchemaKind::CommandInput,

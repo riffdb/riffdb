@@ -47,6 +47,8 @@ use crate::{
     StorageValueError, ValidationReadRequest, canonical_codec_storage_error,
 };
 
+pub(crate) const STORED_COMMAND_CAUSATION_SEMANTIC_BYTES: usize = 28;
+
 /// Fixed provenance ID, partition hash, conflict-count framing, and empty conflict set.
 pub const COMMIT_INTENT_FIXED_NON_RUNTIME_SEMANTIC_BYTES: usize = 16 + 32 + 4;
 
@@ -361,7 +363,11 @@ impl StoredPendingAdmissionV1 {
         total = total
             .checked_add(self.provenance_claims.semantic_bytes()?)
             .ok_or(StorageValueError::SizeOverflow)?
-            .checked_add(if self.causation.is_some() { 28 } else { 0 })
+            .checked_add(if self.causation.is_some() {
+                STORED_COMMAND_CAUSATION_SEMANTIC_BYTES
+            } else {
+                0
+            })
             .ok_or(StorageValueError::SizeOverflow)?;
         Ok(total)
     }

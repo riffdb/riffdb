@@ -488,6 +488,18 @@ impl SymbolicEventEnvelope {
     pub fn fields(&self) -> &[crate::SymbolicEventField] {
         self.view.fields()
     }
+
+    /// Resolves one canonical enum identity through the active contract schema.
+    #[must_use]
+    pub fn enum_variant_name(&self, type_id: u32, variant_id: u32) -> Option<&str> {
+        self.view.enum_variant_name(type_id, variant_id)
+    }
+
+    /// Borrows the shared enum display-name table for protocol presentation.
+    #[must_use]
+    pub const fn enum_variant_names(&self) -> &crate::ContractEnumVariantNames {
+        self.view.enum_variant_names()
+    }
 }
 
 impl fmt::Debug for SymbolicEventEnvelope {

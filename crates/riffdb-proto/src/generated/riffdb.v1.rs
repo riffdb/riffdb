@@ -2702,7 +2702,7 @@ pub struct ProjectionStatusResource {
 pub struct ResourceDescriptor {
     #[prost(
         oneof = "resource_descriptor::Resource",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11"
     )]
     pub resource: ::core::option::Option<resource_descriptor::Resource>,
 }
@@ -2730,13 +2730,15 @@ pub mod resource_descriptor {
         ProjectionStatus(super::ProjectionStatusResource),
         #[prost(message, tag = "10")]
         ServerHealth(super::Unit),
+        #[prost(message, tag = "11")]
+        ReactiveWakeup(super::Unit),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CompactResourceDescriptor {
     #[prost(
         oneof = "compact_resource_descriptor::Resource",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11"
     )]
     pub resource: ::core::option::Option<compact_resource_descriptor::Resource>,
 }
@@ -2764,6 +2766,8 @@ pub mod compact_resource_descriptor {
         ProjectionStatus(super::ProjectionStatusResource),
         #[prost(message, tag = "10")]
         ServerHealth(super::Unit),
+        #[prost(message, tag = "11")]
+        ReactiveWakeup(super::Unit),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2814,6 +2818,16 @@ pub mod discover_resources_response {
         CompactPage(super::CompactResourceDiscoveryPage),
     }
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetReactiveWakeupRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetReactiveWakeupResponse {
+    #[prost(bytes = "vec", tag = "1")]
+    pub generation: ::prost::alloc::vec::Vec<u8>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum FixedToolKind {
@@ -2837,6 +2851,17 @@ pub enum FixedToolKind {
     ExplainQuery = 17,
     ExecuteQuery = 18,
     RunCommand = 19,
+    EventNext = 20,
+    EventAck = 21,
+    EventNack = 22,
+    EventSeek = 23,
+    EventStatus = 24,
+    QueryWatch = 25,
+    ContextualNext = 26,
+    ContextualAck = 27,
+    ContextualNack = 28,
+    ContextualStatus = 29,
+    ContextualReact = 30,
 }
 impl FixedToolKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -2867,6 +2892,17 @@ impl FixedToolKind {
             Self::ExplainQuery => "FIXED_TOOL_KIND_EXPLAIN_QUERY",
             Self::ExecuteQuery => "FIXED_TOOL_KIND_EXECUTE_QUERY",
             Self::RunCommand => "FIXED_TOOL_KIND_RUN_COMMAND",
+            Self::EventNext => "FIXED_TOOL_KIND_EVENT_NEXT",
+            Self::EventAck => "FIXED_TOOL_KIND_EVENT_ACK",
+            Self::EventNack => "FIXED_TOOL_KIND_EVENT_NACK",
+            Self::EventSeek => "FIXED_TOOL_KIND_EVENT_SEEK",
+            Self::EventStatus => "FIXED_TOOL_KIND_EVENT_STATUS",
+            Self::QueryWatch => "FIXED_TOOL_KIND_QUERY_WATCH",
+            Self::ContextualNext => "FIXED_TOOL_KIND_CONTEXTUAL_NEXT",
+            Self::ContextualAck => "FIXED_TOOL_KIND_CONTEXTUAL_ACK",
+            Self::ContextualNack => "FIXED_TOOL_KIND_CONTEXTUAL_NACK",
+            Self::ContextualStatus => "FIXED_TOOL_KIND_CONTEXTUAL_STATUS",
+            Self::ContextualReact => "FIXED_TOOL_KIND_CONTEXTUAL_REACT",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -2896,6 +2932,17 @@ impl FixedToolKind {
             "FIXED_TOOL_KIND_EXPLAIN_QUERY" => Some(Self::ExplainQuery),
             "FIXED_TOOL_KIND_EXECUTE_QUERY" => Some(Self::ExecuteQuery),
             "FIXED_TOOL_KIND_RUN_COMMAND" => Some(Self::RunCommand),
+            "FIXED_TOOL_KIND_EVENT_NEXT" => Some(Self::EventNext),
+            "FIXED_TOOL_KIND_EVENT_ACK" => Some(Self::EventAck),
+            "FIXED_TOOL_KIND_EVENT_NACK" => Some(Self::EventNack),
+            "FIXED_TOOL_KIND_EVENT_SEEK" => Some(Self::EventSeek),
+            "FIXED_TOOL_KIND_EVENT_STATUS" => Some(Self::EventStatus),
+            "FIXED_TOOL_KIND_QUERY_WATCH" => Some(Self::QueryWatch),
+            "FIXED_TOOL_KIND_CONTEXTUAL_NEXT" => Some(Self::ContextualNext),
+            "FIXED_TOOL_KIND_CONTEXTUAL_ACK" => Some(Self::ContextualAck),
+            "FIXED_TOOL_KIND_CONTEXTUAL_NACK" => Some(Self::ContextualNack),
+            "FIXED_TOOL_KIND_CONTEXTUAL_STATUS" => Some(Self::ContextualStatus),
+            "FIXED_TOOL_KIND_CONTEXTUAL_REACT" => Some(Self::ContextualReact),
             _ => None,
         }
     }

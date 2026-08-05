@@ -135,10 +135,14 @@ reset replace local state; patch applies its ordered closed operations;
 checkpoint advances the cursor without changing state; terminal requires the
 agent or application to clear retained query data and stop.
 
-`notifications/resources/updated` contains only a resource URI. It is a
-coalescible wakeup hint, never an event delivery or acknowledgement. Retrieve
-work through an authorized reactive tool and rely on the durable checkpoint or
-cursor for correctness. See [Reactive Application Clients](../reactive/CLIENTS.md).
+Subscribe to `riffdb://reactive/wakeup` for reactive work hints. Its resource
+body contains one opaque generation and `notifications/resources/updated`
+contains only that URI. Both are coalescible hints, never an event delivery,
+work count, commit sequence, or acknowledgement. Retrieve work through an
+authorized reactive tool and rely on the durable checkpoint or cursor for
+correctness. Fetch once immediately after subscribing; the first notification
+represents a later change, not the current queue state. See
+[Reactive Application Clients](../reactive/CLIENTS.md).
 
 ## Contextual work and reactions
 

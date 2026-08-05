@@ -7970,6 +7970,28 @@ pub enum FixedToolKind {
     ExecuteQuery,
     /// Name-addressed command invocation.
     RunCommand,
+    /// Event-stream lease.
+    EventNext,
+    /// Event-stream acknowledgement.
+    EventAck,
+    /// Event-stream negative acknowledgement.
+    EventNack,
+    /// Event-stream consumer seek.
+    EventSeek,
+    /// Event-stream consumer status.
+    EventStatus,
+    /// Named-query live watch.
+    QueryWatch,
+    /// Contextual subscription lease.
+    ContextualNext,
+    /// Contextual subscription acknowledgement.
+    ContextualAck,
+    /// Contextual subscription negative acknowledgement.
+    ContextualNack,
+    /// Contextual subscription status.
+    ContextualStatus,
+    /// Contextual reaction execution.
+    ContextualReact,
 }
 
 impl FixedToolKind {
@@ -7994,6 +8016,17 @@ impl FixedToolKind {
             FixedToolCandidate::ExplainQuery => Self::ExplainQuery,
             FixedToolCandidate::ExecuteQuery => Self::ExecuteQuery,
             FixedToolCandidate::RunCommand => Self::RunCommand,
+            FixedToolCandidate::EventNext => Self::EventNext,
+            FixedToolCandidate::EventAck => Self::EventAck,
+            FixedToolCandidate::EventNack => Self::EventNack,
+            FixedToolCandidate::EventSeek => Self::EventSeek,
+            FixedToolCandidate::EventStatus => Self::EventStatus,
+            FixedToolCandidate::QueryWatch => Self::QueryWatch,
+            FixedToolCandidate::ContextualNext => Self::ContextualNext,
+            FixedToolCandidate::ContextualAck => Self::ContextualAck,
+            FixedToolCandidate::ContextualNack => Self::ContextualNack,
+            FixedToolCandidate::ContextualStatus => Self::ContextualStatus,
+            FixedToolCandidate::ContextualReact => Self::ContextualReact,
         }
     }
 
@@ -8020,6 +8053,17 @@ impl FixedToolKind {
             Self::ExplainQuery => 17,
             Self::ExecuteQuery => 18,
             Self::RunCommand => 19,
+            Self::EventNext => 20,
+            Self::EventAck => 21,
+            Self::EventNack => 22,
+            Self::EventSeek => 23,
+            Self::EventStatus => 24,
+            Self::QueryWatch => 25,
+            Self::ContextualNext => 26,
+            Self::ContextualAck => 27,
+            Self::ContextualNack => 28,
+            Self::ContextualStatus => 29,
+            Self::ContextualReact => 30,
         }
     }
 }
@@ -8484,6 +8528,50 @@ impl Default for DiscoverResourcesRequest {
     }
 }
 
+/// Opaque change token for the policy-authorized reactive wakeup resource.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ReactiveWakeupGeneration([u8; 32]);
+
+impl ReactiveWakeupGeneration {
+    /// Creates one generation from a domain-separated digest.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Borrows the opaque generation bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ReactiveWakeupGeneration {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ReactiveWakeupGeneration([OPAQUE])")
+    }
+}
+
+/// One freshly authorized reactive wakeup observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GetReactiveWakeupResult {
+    generation: ReactiveWakeupGeneration,
+}
+
+impl GetReactiveWakeupResult {
+    /// Creates one opaque wakeup result.
+    #[must_use]
+    pub const fn new(generation: ReactiveWakeupGeneration) -> Self {
+        Self { generation }
+    }
+
+    /// Returns the opaque change generation.
+    #[must_use]
+    pub const fn generation(self) -> ReactiveWakeupGeneration {
+        self.generation
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ResourceDescriptorInner {
     ActiveContract,
@@ -8524,6 +8612,7 @@ enum ResourceDescriptorInner {
         projection_id: ProjectionId,
     },
     ServerHealth,
+    ReactiveWakeup,
 }
 
 /// Borrowed closed resource descriptor branch.
@@ -8568,6 +8657,7 @@ pub enum ResourceDescriptorRef<'a> {
         projection_id: ProjectionId,
     },
     ServerHealth,
+    ReactiveWakeup,
 }
 
 /// One protocol-neutral visible resource identity.
@@ -8683,6 +8773,12 @@ impl ResourceDescriptor {
         Self(ResourceDescriptorInner::ServerHealth)
     }
 
+    /// Creates the singleton reactive wakeup resource.
+    #[must_use]
+    pub const fn reactive_wakeup() -> Self {
+        Self(ResourceDescriptorInner::ReactiveWakeup)
+    }
+
     /// Borrows the exact closed semantic branch.
     #[must_use]
     pub const fn resource(&self) -> ResourceDescriptorRef<'_> {
@@ -8750,6 +8846,7 @@ impl ResourceDescriptor {
                 projection_id: *projection_id,
             },
             ResourceDescriptorInner::ServerHealth => ResourceDescriptorRef::ServerHealth,
+            ResourceDescriptorInner::ReactiveWakeup => ResourceDescriptorRef::ReactiveWakeup,
         }
     }
 
@@ -8848,6 +8945,7 @@ impl ResourceDescriptor {
                 key.extend_from_slice(&projection_id.to_be_bytes());
             }
             ResourceDescriptorInner::ServerHealth => key.push(10),
+            ResourceDescriptorInner::ReactiveWakeup => key.push(11),
         }
         key
     }
@@ -8921,6 +9019,9 @@ impl ResourceDescriptor {
                 projection_id: *projection_id,
             },
             ResourceDescriptorInner::ServerHealth => CompactResourceDescriptorInner::ServerHealth,
+            ResourceDescriptorInner::ReactiveWakeup => {
+                CompactResourceDescriptorInner::ReactiveWakeup
+            }
         })
     }
 }
@@ -8978,6 +9079,7 @@ enum CompactResourceDescriptorInner {
         projection_id: ProjectionId,
     },
     ServerHealth,
+    ReactiveWakeup,
 }
 
 /// Borrowed closed compact resource descriptor branch.
@@ -9022,6 +9124,7 @@ pub enum CompactResourceDescriptorRef<'a> {
         projection_id: ProjectionId,
     },
     ServerHealth,
+    ReactiveWakeup,
 }
 
 /// Identity-only projection of one resource descriptor.
@@ -9101,6 +9204,9 @@ impl CompactResourceDescriptor {
             },
             CompactResourceDescriptorInner::ServerHealth => {
                 CompactResourceDescriptorRef::ServerHealth
+            }
+            CompactResourceDescriptorInner::ReactiveWakeup => {
+                CompactResourceDescriptorRef::ReactiveWakeup
             }
         }
     }
@@ -9191,6 +9297,9 @@ impl CompactResourceDescriptor {
                 projection_id: *projection_id,
             },
             CompactResourceDescriptorInner::ServerHealth => ResourceDescriptorInner::ServerHealth,
+            CompactResourceDescriptorInner::ReactiveWakeup => {
+                ResourceDescriptorInner::ReactiveWakeup
+            }
         })
         .canonical_identity_key()
     }

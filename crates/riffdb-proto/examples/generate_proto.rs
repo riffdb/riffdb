@@ -513,6 +513,7 @@ const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("ContractService", "ExplainCommand", false),
     ("ContractService", "GetActiveContract", false),
     ("ContractService", "GetContractVersion", false),
+    ("ContractService", "GetReactiveWakeup", false),
     ("ContractService", "ValidateContract", false),
     ("QueryService", "GetEntity", false),
     ("QueryService", "GetProjectionStatus", false),
@@ -1928,7 +1929,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
 
     if actual != expected {
         return Err(io::Error::other(format!(
-            "service inventory differs from the accepted seven-service, fifty-three-RPC baseline: expected {expected:?}, found {actual:?}"
+            "service inventory differs from the accepted seven-service, fifty-four-RPC baseline: expected {expected:?}, found {actual:?}"
         ))
         .into());
     }

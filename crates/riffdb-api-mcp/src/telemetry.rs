@@ -71,13 +71,21 @@ pub enum McpRiskClass {
     ReadOnlyCompute,
     /// A read-only data operation.
     ReadOnlyData,
+    /// A symbolic read compiled at the request boundary.
+    SymbolicRead,
+    /// A bounded durable-consumer or contextual operation.
+    ReactiveApplication,
+    /// An explicit durable-consumer control mutation.
+    ConsumerControl,
+    /// A fixed application command mutation.
+    ApplicationMutation,
     /// A compiler-owned dynamic command tool.
     DynamicCommand,
 }
 
 impl McpRiskClass {
     /// Every closed risk class in stable metric order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 12] = [
         Self::AdministrativeMutation,
         Self::AdministrativeRead,
         Self::BoundedAdministrativeRead,
@@ -85,6 +93,10 @@ impl McpRiskClass {
         Self::ReadOnly,
         Self::ReadOnlyCompute,
         Self::ReadOnlyData,
+        Self::SymbolicRead,
+        Self::ReactiveApplication,
+        Self::ConsumerControl,
+        Self::ApplicationMutation,
         Self::DynamicCommand,
     ];
 
@@ -97,6 +109,10 @@ impl McpRiskClass {
             "read_only" => Some(Self::ReadOnly),
             "read_only_compute" => Some(Self::ReadOnlyCompute),
             "read_only_data" => Some(Self::ReadOnlyData),
+            "symbolic_read" => Some(Self::SymbolicRead),
+            "reactive_application" => Some(Self::ReactiveApplication),
+            "consumer_control" => Some(Self::ConsumerControl),
+            "application_mutation" => Some(Self::ApplicationMutation),
             _ => None,
         }
     }
@@ -231,10 +247,26 @@ mod tests {
         assert_eq!(events.len(), 3);
         assert_eq!(McpTransportKind::Stdio.as_str(), "stdio");
         assert_eq!(McpTransportRejection::Limit.as_str(), "limit");
-        assert_eq!(McpRiskClass::ALL.len(), 8);
+        assert_eq!(McpRiskClass::ALL.len(), 12);
         assert_eq!(
             McpRiskClass::from_fixed("administrative_mutation"),
             Some(McpRiskClass::AdministrativeMutation)
+        );
+        assert_eq!(
+            McpRiskClass::from_fixed("symbolic_read"),
+            Some(McpRiskClass::SymbolicRead)
+        );
+        assert_eq!(
+            McpRiskClass::from_fixed("reactive_application"),
+            Some(McpRiskClass::ReactiveApplication)
+        );
+        assert_eq!(
+            McpRiskClass::from_fixed("consumer_control"),
+            Some(McpRiskClass::ConsumerControl)
+        );
+        assert_eq!(
+            McpRiskClass::from_fixed("application_mutation"),
+            Some(McpRiskClass::ApplicationMutation)
         );
         assert_eq!(McpRiskClass::from_fixed("caller-controlled"), None);
     }

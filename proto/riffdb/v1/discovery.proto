@@ -26,6 +26,17 @@ enum FixedToolKind {
   FIXED_TOOL_KIND_EXPLAIN_QUERY = 17;
   FIXED_TOOL_KIND_EXECUTE_QUERY = 18;
   FIXED_TOOL_KIND_RUN_COMMAND = 19;
+  FIXED_TOOL_KIND_EVENT_NEXT = 20;
+  FIXED_TOOL_KIND_EVENT_ACK = 21;
+  FIXED_TOOL_KIND_EVENT_NACK = 22;
+  FIXED_TOOL_KIND_EVENT_SEEK = 23;
+  FIXED_TOOL_KIND_EVENT_STATUS = 24;
+  FIXED_TOOL_KIND_QUERY_WATCH = 25;
+  FIXED_TOOL_KIND_CONTEXTUAL_NEXT = 26;
+  FIXED_TOOL_KIND_CONTEXTUAL_ACK = 27;
+  FIXED_TOOL_KIND_CONTEXTUAL_NACK = 28;
+  FIXED_TOOL_KIND_CONTEXTUAL_STATUS = 29;
+  FIXED_TOOL_KIND_CONTEXTUAL_REACT = 30;
 }
 
 message CommandToolDescriptor {
@@ -241,6 +252,7 @@ message ResourceDescriptor {
     ProvenanceResource provenance = 8;
     ProjectionStatusResource projection_status = 9;
     Unit server_health = 10;
+    Unit reactive_wakeup = 11;
   }
 }
 
@@ -256,6 +268,7 @@ message CompactResourceDescriptor {
     ProvenanceResource provenance = 8;
     ProjectionStatusResource projection_status = 9;
     Unit server_health = 10;
+    Unit reactive_wakeup = 11;
   }
 }
 
@@ -285,4 +298,13 @@ message DiscoverResourcesResponse {
     ResourceDiscoveryPage page = 2;
     CompactResourceDiscoveryPage compact_page = 3;
   }
+}
+
+message GetReactiveWakeupRequest {
+  bytes request_id = 1;
+}
+
+message GetReactiveWakeupResponse {
+  // Exact opaque 32-byte generation. Its bytes carry no application payload.
+  bytes generation = 1;
 }

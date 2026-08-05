@@ -1104,6 +1104,58 @@ fn unchanged_command_discovery_observations_repeat_the_authorized_current_catalo
 }
 
 #[test]
+fn compact_tool_and_resource_discovery_share_the_active_query_module_fence() {
+    run_async(async move {
+        let (mut harness, _module_hash) = named_query_harness(None);
+        let compact_page = PageRequest::new(PageLimit::default(), None);
+
+        let (tools_context, _cancellation) = harness.context(0x8e);
+        let tools = harness
+            .service
+            .discover_command_tools(
+                tools_context,
+                DiscoverCommandToolsRequest::with_options(
+                    compact_page,
+                    DiscoveryRepresentation::CompactObservation,
+                    None,
+                )
+                .expect("valid compact tool discovery"),
+            )
+            .await
+            .expect("compact tools");
+        let DiscoverCommandToolsResultRef::CompactPage(tools) = tools.result() else {
+            panic!("initial compact tool discovery returns a page");
+        };
+
+        let (resources_context, _cancellation) = harness.context(0x8f);
+        let resources = harness
+            .service
+            .discover_resources(
+                resources_context,
+                DiscoverResourcesRequest::with_options(
+                    compact_page,
+                    DiscoveryRepresentation::CompactObservation,
+                    None,
+                    ResourceDiscoveryKind::All,
+                )
+                .expect("valid compact resource discovery"),
+            )
+            .await
+            .expect("compact resources");
+        let DiscoverResourcesResultRef::CompactPage(resources) = resources.result() else {
+            panic!("initial compact resource discovery returns a page");
+        };
+
+        assert_eq!(
+            tools.observed_fence(),
+            resources.observed_fence(),
+            "one active catalog must have one observer fence across inventories"
+        );
+        harness.stop_coordinator();
+    });
+}
+
+#[test]
 fn stale_resource_discovery_fence_returns_the_catalog_activated_at_reservation() {
     run_async(async move {
         const INITIAL_REQUEST: u8 = 0x92;
@@ -1257,7 +1309,7 @@ fn large_discovery_catalogs_batch_authorization_and_page_before_the_mcp_limit() 
             let mut cursor = None;
             let mut page_counts = Vec::new();
             let mut observed = 0;
-            let mut membership = [0_usize; 10];
+            let mut membership = [0_usize; 11];
             loop {
                 let (context, _cancellation) = harness.context(request_seed);
                 request_seed = request_seed.wrapping_add(1);
@@ -1303,6 +1355,7 @@ fn large_discovery_catalogs_batch_authorization_and_page_before_the_mcp_limit() 
                         CompactResourceDescriptorRef::Provenance { .. } => 7,
                         CompactResourceDescriptorRef::ProjectionStatus { .. } => 8,
                         CompactResourceDescriptorRef::ServerHealth => 9,
+                        CompactResourceDescriptorRef::ReactiveWakeup => 10,
                     };
                     membership[member] += 1;
                 }
@@ -1318,9 +1371,9 @@ fn large_discovery_catalogs_batch_authorization_and_page_before_the_mcp_limit() 
             assert_eq!(
                 membership,
                 match kind {
-                    ResourceDiscoveryKind::All => [1, 1, 1, 501, 501, 501, 1, 1, 1, 1],
-                    ResourceDiscoveryKind::Concrete => [1, 1, 1, 501, 501, 0, 0, 0, 1, 1],
-                    ResourceDiscoveryKind::Template => [0, 0, 0, 0, 0, 501, 1, 1, 0, 0],
+                    ResourceDiscoveryKind::All => [1, 1, 1, 501, 501, 501, 1, 1, 1, 1, 0],
+                    ResourceDiscoveryKind::Concrete => [1, 1, 1, 501, 501, 0, 0, 0, 1, 1, 0],
+                    ResourceDiscoveryKind::Template => [0, 0, 0, 0, 0, 501, 1, 1, 0, 0, 0],
                 },
                 "resource kind membership is exact"
             );

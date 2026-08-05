@@ -38,6 +38,12 @@ declared reaction name. It replaces caller input at the service boundary. The
 command's mutations, outcome, events, causing event, inherited root request,
 provenance, and commit record are then atomic.
 
+The reaction operation and its nested command are separate audited service
+operations. RiffDB derives a deterministic child request ID for the nested
+command so their audit lifecycles cannot collide, while the durable causation
+record continues to carry the original root request ID. Applications must not
+construct or substitute either identity.
+
 If the reaction commits but its response or the following acknowledgement is
 lost, the event is redelivered. Repeating the reaction resolves the persisted
 outcome and cannot duplicate authoritative state. An expired token may resolve

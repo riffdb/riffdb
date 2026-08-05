@@ -1191,7 +1191,7 @@ messages
     7 query_module_hash optional bytes
     8 input_schema_hash optional bytes
     9 result_schema_hash optional bytes
-  riffdb.v1.CompactResourceDescriptor fields=10
+  riffdb.v1.CompactResourceDescriptor fields=11
     1 active_contract optional .riffdb.v1.Unit oneof=resource
     2 contract_version optional .riffdb.v1.ContractVersionResource oneof=resource
     3 entity_schema optional .riffdb.v1.CompactEntitySchemaResource oneof=resource
@@ -1202,6 +1202,7 @@ messages
     8 provenance optional .riffdb.v1.ProvenanceResource oneof=resource
     9 projection_status optional .riffdb.v1.ProjectionStatusResource oneof=resource
     10 server_health optional .riffdb.v1.Unit oneof=resource
+    11 reactive_wakeup optional .riffdb.v1.Unit oneof=resource
   riffdb.v1.CompactResourceDiscoveryPage fields=3
     1 items repeated .riffdb.v1.CompactResourceDescriptor
     2 next_cursor optional bytes proto3-optional oneof=_next_cursor
@@ -1566,6 +1567,10 @@ messages
   riffdb.v1.GetProjectionStatusResponse fields=2
     1 not_found optional .riffdb.v1.Unit oneof=result
     2 found optional .riffdb.v1.ProjectionStatus oneof=result
+  riffdb.v1.GetReactiveWakeupRequest fields=1
+    1 request_id optional bytes
+  riffdb.v1.GetReactiveWakeupResponse fields=1
+    1 generation optional bytes
   riffdb.v1.HealthComponent fields=2
     1 component optional .riffdb.v1.HealthComponentKind
     2 status optional .riffdb.v1.HealthComponentStatus
@@ -1849,7 +1854,7 @@ messages
     5 observed_history_incarnation optional uint64
   riffdb.v1.ReplayEventsResponse fields=1
     1 page optional .riffdb.v1.EventPage
-  riffdb.v1.ResourceDescriptor fields=10
+  riffdb.v1.ResourceDescriptor fields=11
     1 active_contract optional .riffdb.v1.Unit oneof=resource
     2 contract_version optional .riffdb.v1.ContractVersionResource oneof=resource
     3 entity_schema optional .riffdb.v1.EntitySchemaResource oneof=resource
@@ -1860,6 +1865,7 @@ messages
     8 provenance optional .riffdb.v1.ProvenanceResource oneof=resource
     9 projection_status optional .riffdb.v1.ProjectionStatusResource oneof=resource
     10 server_health optional .riffdb.v1.Unit oneof=resource
+    11 reactive_wakeup optional .riffdb.v1.Unit oneof=resource
   riffdb.v1.ResourceDiscoveryPage fields=3
     1 items repeated .riffdb.v1.ResourceDescriptor
     2 next_cursor optional bytes proto3-optional oneof=_next_cursor
@@ -2409,7 +2415,7 @@ enums
     1 EXECUTION_FAILURE_CODE_ARITHMETIC_FAULT
     2 EXECUTION_FAILURE_CODE_RESOURCE_LIMIT
     3 EXECUTION_FAILURE_CODE_UNIQUE_CONFLICT
-  riffdb.v1.FixedToolKind values=20
+  riffdb.v1.FixedToolKind values=31
     0 FIXED_TOOL_KIND_UNSPECIFIED
     1 FIXED_TOOL_KIND_VALIDATE_CONTRACT
     2 FIXED_TOOL_KIND_GET_ACTIVE_CONTRACT
@@ -2430,6 +2436,17 @@ enums
     17 FIXED_TOOL_KIND_EXPLAIN_QUERY
     18 FIXED_TOOL_KIND_EXECUTE_QUERY
     19 FIXED_TOOL_KIND_RUN_COMMAND
+    20 FIXED_TOOL_KIND_EVENT_NEXT
+    21 FIXED_TOOL_KIND_EVENT_ACK
+    22 FIXED_TOOL_KIND_EVENT_NACK
+    23 FIXED_TOOL_KIND_EVENT_SEEK
+    24 FIXED_TOOL_KIND_EVENT_STATUS
+    25 FIXED_TOOL_KIND_QUERY_WATCH
+    26 FIXED_TOOL_KIND_CONTEXTUAL_NEXT
+    27 FIXED_TOOL_KIND_CONTEXTUAL_ACK
+    28 FIXED_TOOL_KIND_CONTEXTUAL_NACK
+    29 FIXED_TOOL_KIND_CONTEXTUAL_STATUS
+    30 FIXED_TOOL_KIND_CONTEXTUAL_REACT
   riffdb.v1.HealthComponentKind values=6
     0 HEALTH_COMPONENT_KIND_UNSPECIFIED
     1 HEALTH_COMPONENT_KIND_AUTHORITATIVE_STORAGE
@@ -2613,6 +2630,7 @@ services
     GetContractVersion .riffdb.v1.GetContractVersionRequest -> .riffdb.v1.GetContractVersionResponse (unary)
     DiscoverCommandTools .riffdb.v1.DiscoverCommandToolsRequest -> .riffdb.v1.DiscoverCommandToolsResponse (unary)
     DiscoverResources .riffdb.v1.DiscoverResourcesRequest -> .riffdb.v1.DiscoverResourcesResponse (unary)
+    GetReactiveWakeup .riffdb.v1.GetReactiveWakeupRequest -> .riffdb.v1.GetReactiveWakeupResponse (unary)
   riffdb.v1.EventService
     DescribeEvent .riffdb.v1.DescribeEventRequest -> .riffdb.v1.DescribeEventResponse (unary)
     ReplayEvents .riffdb.v1.ReplayEventsRequest -> .riffdb.v1.ReplayEventsResponse (unary)

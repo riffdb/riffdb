@@ -1586,6 +1586,7 @@ const fn operation_name(operation: ServiceOperationV1) -> &'static str {
         }
         ServiceOperationV1::GetContextualSubscriptionStatus => "get_contextual_subscription_status",
         ServiceOperationV1::ExecuteContextualReaction => "execute_contextual_reaction",
+        ServiceOperationV1::GetReactiveWakeup => "get_reactive_wakeup",
     }
 }
 
@@ -1687,7 +1688,11 @@ const fn mcp_risk_index(risk: McpRiskClass) -> usize {
         McpRiskClass::ReadOnly => 4,
         McpRiskClass::ReadOnlyCompute => 5,
         McpRiskClass::ReadOnlyData => 6,
-        McpRiskClass::DynamicCommand => 7,
+        McpRiskClass::SymbolicRead => 7,
+        McpRiskClass::ReactiveApplication => 8,
+        McpRiskClass::ConsumerControl => 9,
+        McpRiskClass::ApplicationMutation => 10,
+        McpRiskClass::DynamicCommand => 11,
     }
 }
 

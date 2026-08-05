@@ -1080,6 +1080,13 @@ mod tests {
             riffdb_service::DiscoverResourcesRequest,
             riffdb_service::DiscoverResourcesResult
         );
+
+        fn get_reactive_wakeup(
+            &self,
+            _context: RequestContext,
+        ) -> ServiceFuture<'_, riffdb_service::GetReactiveWakeupResult> {
+            denied()
+        }
     }
 
     fn test_security_context() -> CheckedGrpcSecurityContext {

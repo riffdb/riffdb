@@ -4132,6 +4132,7 @@ fn validate_resource_descriptor(
             (9, validate_projection_status_resource(value)?)
         }
         v1::resource_descriptor::Resource::ServerHealth(_) => (10, Vec::new()),
+        v1::resource_descriptor::Resource::ReactiveWakeup(_) => (11, Vec::new()),
     };
     let mut key = vec![tag];
     key.extend_from_slice(&tail);
@@ -4172,6 +4173,7 @@ fn validate_compact_resource_descriptor(
             (9, validate_projection_status_resource(value)?)
         }
         v1::compact_resource_descriptor::Resource::ServerHealth(_) => (10, Vec::new()),
+        v1::compact_resource_descriptor::Resource::ReactiveWakeup(_) => (11, Vec::new()),
     };
     let mut key = vec![tag];
     key.extend_from_slice(&tail);
@@ -4302,6 +4304,21 @@ fn validate_discover_resources_request(
         {
             return Err(PublicWireError::InconsistentFields);
         }
+    }
+    Ok(())
+}
+
+fn validate_get_reactive_wakeup_request(
+    message: &v1::GetReactiveWakeupRequest,
+) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)
+}
+
+fn validate_get_reactive_wakeup_response(
+    message: &v1::GetReactiveWakeupResponse,
+) -> Result<(), PublicWireError> {
+    if message.generation.len() != 32 {
+        return Err(PublicWireError::InvalidBytes);
     }
     Ok(())
 }
@@ -8081,6 +8098,24 @@ impl_public_message!(
     &[&[1, 2, 3]],
     preflight_discover_resources_response,
     validate_discover_resources_response
+);
+impl_public_message!(
+    v1::GetReactiveWakeupRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    1,
+    &[],
+    &[],
+    preflight_noop,
+    validate_get_reactive_wakeup_request
+);
+impl_public_message!(
+    v1::GetReactiveWakeupResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    1,
+    &[],
+    &[],
+    preflight_noop,
+    validate_get_reactive_wakeup_response
 );
 impl_public_message!(
     v1::GetOutcomeRequest,

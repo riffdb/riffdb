@@ -193,6 +193,7 @@ pub struct ConsumeContextualSubscriptionResult {
     items: Vec<ContextualWorkItem>,
     status: EventConsumerStatus,
     wait_timed_out: bool,
+    enum_variant_names: crate::SharedEnumVariantNames,
 }
 
 impl ConsumeContextualSubscriptionResult {
@@ -200,11 +201,13 @@ impl ConsumeContextualSubscriptionResult {
         items: Vec<ContextualWorkItem>,
         status: EventConsumerStatus,
         wait_timed_out: bool,
+        enum_variant_names: crate::SharedEnumVariantNames,
     ) -> Self {
         Self {
             items,
             status,
             wait_timed_out,
+            enum_variant_names,
         }
     }
     /// Leased contextual work in stream order.
@@ -221,6 +224,14 @@ impl ConsumeContextualSubscriptionResult {
     #[must_use]
     pub const fn wait_timed_out(&self) -> bool {
         self.wait_timed_out
+    }
+
+    /// Resolves one canonical enum identity through the active contract schema.
+    #[must_use]
+    pub fn enum_variant_name(&self, type_id: u32, variant_id: u32) -> Option<&str> {
+        self.enum_variant_names
+            .get(&(type_id, variant_id))
+            .map(String::as_str)
     }
 }
 
@@ -706,17 +717,7 @@ pub fn derive_reaction_idempotency(
     reaction_name: &str,
     uuid_input: bool,
 ) -> Result<ReactionIdempotencyValue, ContextualCausationError> {
-    if reaction_name.is_empty() || reaction_name.len() > 256 {
-        return Err(ContextualCausationError);
-    }
-    let mut transcript = Vec::with_capacity(32 + 32 + 12 + 4 + 4 + reaction_name.len());
-    transcript.extend_from_slice(claims.module_hash.as_bytes());
-    transcript.extend_from_slice(claims.operation_hash.as_bytes());
-    transcript.extend_from_slice(&claims.event_id.commit_sequence().get().to_be_bytes());
-    transcript.extend_from_slice(&claims.event_id.event_ordinal().to_be_bytes());
-    transcript.extend_from_slice(&claims.command_id.to_be_bytes());
-    push_bytes(&mut transcript, reaction_name.as_bytes())?;
-    let digest = *hash(HashDomain::ContextualReaction, &transcript).as_bytes();
+    let digest = reaction_identity_digest(claims, reaction_name)?;
     if uuid_input {
         let mut uuid = [0_u8; 16];
         uuid.copy_from_slice(&digest[..16]);
@@ -731,6 +732,52 @@ pub fn derive_reaction_idempotency(
         }
         Ok(ReactionIdempotencyValue::String(encoded))
     }
+}
+
+pub(crate) fn derive_reaction_request_id(
+    parent: RequestId,
+    claims: &ContextualCausationClaimsV1,
+    reaction_name: &str,
+) -> Result<RequestId, ContextualCausationError> {
+    let digest = reaction_identity_digest(claims, reaction_name)?;
+    let mut bytes = parent.into_bytes();
+    let mut changed = false;
+    for (target, mask) in [
+        (6_usize, digest[0] & 0x0f),
+        (7, digest[1]),
+        (8, digest[2] & 0x3f),
+        (9, digest[3]),
+        (10, digest[4]),
+        (11, digest[5]),
+        (12, digest[6]),
+        (13, digest[7]),
+        (14, digest[8]),
+        (15, digest[9]),
+    ] {
+        bytes[target] ^= mask;
+        changed |= mask != 0;
+    }
+    if !changed {
+        bytes[15] ^= 1;
+    }
+    RequestId::from_bytes(bytes).map_err(|_| ContextualCausationError)
+}
+
+fn reaction_identity_digest(
+    claims: &ContextualCausationClaimsV1,
+    reaction_name: &str,
+) -> Result<[u8; 32], ContextualCausationError> {
+    if reaction_name.is_empty() || reaction_name.len() > 256 {
+        return Err(ContextualCausationError);
+    }
+    let mut transcript = Vec::with_capacity(32 + 32 + 12 + 4 + 4 + reaction_name.len());
+    transcript.extend_from_slice(claims.module_hash.as_bytes());
+    transcript.extend_from_slice(claims.operation_hash.as_bytes());
+    transcript.extend_from_slice(&claims.event_id.commit_sequence().get().to_be_bytes());
+    transcript.extend_from_slice(&claims.event_id.event_ordinal().to_be_bytes());
+    transcript.extend_from_slice(&claims.command_id.to_be_bytes());
+    push_bytes(&mut transcript, reaction_name.as_bytes())?;
+    Ok(*hash(HashDomain::ContextualReaction, &transcript).as_bytes())
 }
 
 /// Applies the contextual reaction identity through the production binder.

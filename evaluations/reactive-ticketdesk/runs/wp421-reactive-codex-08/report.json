@@ -1,0 +1,35 @@
+{
+  "schema": "riffdb-reactive-ticketdesk-run/v1",
+  "run_id": "wp421-reactive-codex-08",
+  "bundle_hash": "67787f0091caf73bc60ce3c21782a00b322d990d848745567ae216a054a98846",
+  "agent_identity": "wp421-reactive-codex-08",
+  "independent": true,
+  "fresh_context": true,
+  "human_interventions": 0,
+  "kernel_attempts": 0,
+  "kernel_successes": 0,
+  "handwritten_glue_lines": 0,
+  "compiler_failures": 1,
+  "runtime_failures": 18,
+  "time_to_complete_seconds": 1376,
+  "source_access": {
+    "riffdb_implementation": false,
+    "ticketdesk_implementation": false
+  },
+  "checks": {
+    "application_boundary": true,
+    "browser_credentials_absent": true,
+    "browser_two_session_convergence": true,
+    "commit_before_ack_recovery": false,
+    "contextual_one_snapshot": false,
+    "generated_bindings_exact": true,
+    "mcp_wakeup_payload_free": false,
+    "reaction_retry_idempotent": false,
+    "reconnect_reset": true,
+    "revocation_clears_state": true
+  },
+  "completed": false,
+  "rating": 5.0,
+  "explanation": "The exact Lock V5 and Rust, TypeScript, Python, MCP, and reactive artifacts generated reproducibly, compiled, and passed the application boundary. The authenticated application-owned queue/detail UI compiled and served successfully. Two independent live stores converged after a real CreateTicket mutation; cursor reconnect and reset handling passed; authorization termination cleared retained state; browser source disclosed no RiffDB credential, capability, lease, causation, storage, or kernel material. The required contextual path is blocked because both generated TypeScript and Rust clients reject the server-returned TriageTicket work item as InvalidResponse before application code can inspect hydration or call react_comment, so crash-before-ack recovery and reaction replay cannot be proven without forbidden handwritten decoding. The live MCP role catalog exposes neither the generated TicketEvents next tool nor an authorized event-next tool, and subscribed resources emitted no wakeup after mutations; therefore no payload-free notification could be observed. No kernel path, handwritten RiffDB transport, source access, or human intervention was used.",
+  "transcript_sha256": "6d6684107848a039f53f271d6222a5cd2c3bf03df87be805b36b8c56c32f0966"
+}

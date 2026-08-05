@@ -1338,7 +1338,11 @@ impl StoredProvenanceRecordV1 {
             self.event_ids.len(),
             &self.admitted_claims,
         )?
-        .checked_add(if self.causation.is_some() { 28 } else { 0 })
+        .checked_add(if self.causation.is_some() {
+            crate::command::STORED_COMMAND_CAUSATION_SEMANTIC_BYTES
+        } else {
+            0
+        })
         .ok_or(StorageValueError::SizeOverflow)
     }
 }
@@ -2671,7 +2675,13 @@ fn projected_atomic_semantic_breakdown(
         evaluated.mutations().iter().map(EntityMutation::target),
         evaluated.event_intents().len(),
         pending.provenance_claims(),
-    )?;
+    )?
+    .checked_add(if pending.causation().is_some() {
+        crate::command::STORED_COMMAND_CAUSATION_SEMANTIC_BYTES
+    } else {
+        0
+    })
+    .ok_or(StorageValueError::SizeOverflow)?;
     let commit_bytes = stored_commit_semantic_bytes(
         evaluated.plan(),
         pending.actor(),

@@ -75,7 +75,8 @@ events_rel="$(jq -er '.run.events.path' "$manifest")"
 lock_rel="$(jq -er '.run.application_lock.path' "$manifest")"
 validate_evidence "$report_rel" "$(jq -er '.run.report.sha256' "$manifest")"
 validate_evidence "$events_rel" "$(jq -er '.run.events.sha256' "$manifest")"
-validate_evidence "$lock_rel" "$(jq -er '.run.application_lock.sha256' "$manifest")"
+lock_hash="$(jq -er '.run.application_lock.sha256' "$manifest")"
+validate_evidence "$lock_rel" "$lock_hash"
 
 bundle_hash="$(jq -er '.bundle_hash' "$manifest")"
 events_hash="$(sha256sum "$repo_root/$events_rel" | cut -d' ' -f1)"
@@ -149,9 +150,18 @@ actual_bundle="$("$repo_root/scripts/reactive-ticketdesk-evaluation-package" "$w
     exit 1
 }
 cp "$repo_root/$lock_rel" "$work_root/bundle/application/riffdb.application.lock.json"
-"$work_root/bundle/bin/riffdb" application lock --check \
-    "$work_root/bundle/application/riffdb.application.json" \
-    --lock riffdb.application.lock.json --output json >/dev/null
+(
+    cd "$work_root/bundle/application"
+    export RIFFDB_TYPESCRIPT_RUNTIME="$work_root/bundle/public/typescript"
+    export RIFFDB_RUST_SDK="$work_root/bundle/public/rust-sdk/crates/riffdb-client-rust"
+    ../bin/riffdb application lock --write --output json >/dev/null
+    [[ "$(sha256sum riffdb.application.lock.json | cut -d' ' -f1)" == "$lock_hash" ]] || {
+        echo "reactive evaluator lock is not reproducible from the sealed sources" >&2
+        exit 1
+    }
+    ../bin/riffdb application generate --locked --output json >/dev/null
+    ../bin/riffdb application lock --check --output json >/dev/null
+)
 
 manifest_hash="$(sha256sum "$manifest" | cut -d' ' -f1)"
 decision="$repo_root/release/evidence/wp421-reactive-fresh-agent-v1.json"

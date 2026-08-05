@@ -24,10 +24,10 @@ use riffdb_service::{
     ExplainCommandRequest, ExplainCommandResult, ExplainSymbolicQueryResult, ExplainedCommand,
     FieldSelection, GetActiveContractRequest, GetActiveContractResult, GetCommitRequest,
     GetContractVersionRequest, GetContractVersionResult, GetEntityRequest,
-    GetProjectionStatusRequest, GetProjectionStatusResult, HealthContext, HealthRequest,
-    HealthResult, ListPendingOutboxDeliveriesRequest, LiveNamedQuerySelection, LiveQueryCursor,
-    LiveQueryFrontier, LiveQueryPatchOperation, LiveQueryResetReason, LiveQueryTerminalReason,
-    LiveQueryUpdate, NamedQueryToolDescriptor, NamedSymbolicQueryRequest,
+    GetProjectionStatusRequest, GetProjectionStatusResult, GetReactiveWakeupResult, HealthContext,
+    HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest, LiveNamedQuerySelection,
+    LiveQueryCursor, LiveQueryFrontier, LiveQueryPatchOperation, LiveQueryResetReason,
+    LiveQueryTerminalReason, LiveQueryUpdate, NamedQueryToolDescriptor, NamedSymbolicQueryRequest,
     NegativeAcknowledgeEventStreamRequest, OperationSchemaCatalog, PageLimit, PageRequest,
     ProvenanceSelection, QueryParameters, QueryProjectionRequest, QueryResultValue,
     RequestCancellationHandle, RequestContext, RequestControl, ResolveCommandOutcomeRequest,
@@ -78,7 +78,8 @@ use crate::{
     format_commit_template_locator, format_contract_version_locator, format_entity_schema_locator,
     format_outcome_locator, format_outcome_template_locator_from_public,
     format_projection_status_locator, format_provenance_locator,
-    format_provenance_template_locator, format_server_health_locator,
+    format_provenance_template_locator, format_reactive_wakeup_locator,
+    format_server_health_locator,
 };
 
 const HOSTED_SERVICE_CALL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -98,6 +99,7 @@ pub(crate) enum HostedObserverServiceRequest {
     GetActiveContract,
     GetProjectionStatus(GetProjectionStatusRequest),
     Health,
+    GetReactiveWakeup,
 }
 
 pub(crate) enum HostedObserverServiceResponse {
@@ -107,6 +109,7 @@ pub(crate) enum HostedObserverServiceResponse {
     GetActiveContract(GetActiveContractResult),
     GetProjectionStatus(GetProjectionStatusResult),
     Health(HealthResult),
+    GetReactiveWakeup(GetReactiveWakeupResult),
 }
 
 pub(crate) trait HostedObserverServiceCaller: Send + Sync {
@@ -778,6 +781,19 @@ impl HostedServiceMcpBackend {
                     return Err(McpBackendError::TargetUnavailable);
                 };
                 health_resource(report)
+            }
+            McpResourceLocator::ReactiveWakeup => {
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::GetReactiveWakeup),
+                )?;
+                let result = self
+                    .service
+                    .get_reactive_wakeup(call.take_context()?)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                reactive_wakeup_resource(result)
             }
         }
     }
@@ -1780,6 +1796,19 @@ impl HostedServiceMcpBackend {
                 call.complete();
                 Ok(HostedObserverServiceResponse::Health(result))
             }
+            HostedObserverServiceRequest::GetReactiveWakeup => {
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::GetReactiveWakeup),
+                )?;
+                let result = self
+                    .service
+                    .get_reactive_wakeup(call.take_context()?)
+                    .await
+                    .map_err(map_service_failure)?;
+                call.complete();
+                Ok(HostedObserverServiceResponse::GetReactiveWakeup(result))
+            }
         }
     }
 
@@ -1912,6 +1941,18 @@ impl HostedServiceMcpBackend {
                     ))) => health_resource(report),
                     Ok(HostedObserverServiceResponse::Health(HealthResult::PreBootstrap(_))) => {
                         Err(McpBackendError::InvalidResponse)
+                    }
+                    Ok(_) => Err(McpBackendError::InvalidResponse),
+                    Err(error) => Err(error),
+                }
+            }
+            McpResourceLocator::ReactiveWakeup => {
+                match caller
+                    .call(HostedObserverServiceRequest::GetReactiveWakeup)
+                    .await
+                {
+                    Ok(HostedObserverServiceResponse::GetReactiveWakeup(result)) => {
+                        reactive_wakeup_resource(result)
                     }
                     Ok(_) => Err(McpBackendError::InvalidResponse),
                     Err(error) => Err(error),
@@ -2084,17 +2125,18 @@ impl McpBackend for HostedServiceMcpBackend {
         &'a self,
         invocation: &'a Self::Invocation,
         request: McpSubscriptionRequest,
-    ) -> McpBackendFuture<'a, ()> {
+    ) -> McpBackendFuture<'a, McpVisibleFingerprint> {
         Box::pin(async move {
             match request.locator() {
                 McpResourceLocator::ActiveContract
                 | McpResourceLocator::CommandPlan { .. }
                 | McpResourceLocator::ProjectionStatus { .. }
-                | McpResourceLocator::ServerHealth => {
-                    self.read_resource_locator(invocation, request.locator().clone())
-                        .await?;
-                    Ok(())
-                }
+                | McpResourceLocator::ServerHealth
+                | McpResourceLocator::ReactiveWakeup => self
+                    .read_resource_locator(invocation, request.locator().clone())
+                    .await?
+                    .visible_fingerprint()
+                    .map_err(|_| McpBackendError::InvalidResponse),
                 McpResourceLocator::ContractVersion { .. }
                 | McpResourceLocator::EntitySchema { .. }
                 | McpResourceLocator::CommandDocumentation { .. }
@@ -2544,6 +2586,10 @@ fn resource_descriptor_from_service(
         ResourceDescriptorRef::ServerHealth => {
             ("server_health", format_server_health_locator().to_owned())
         }
+        ResourceDescriptorRef::ReactiveWakeup => (
+            "reactive_wakeup",
+            format_reactive_wakeup_locator().to_owned(),
+        ),
     };
     McpResourceDescriptor::new(branch, uri).map_err(|_| McpBackendError::InvalidResponse)
 }
@@ -2626,6 +2672,10 @@ fn compact_resource_descriptor_from_service(
         CompactResourceDescriptorRef::ServerHealth => {
             ("server_health", format_server_health_locator().to_owned())
         }
+        CompactResourceDescriptorRef::ReactiveWakeup => (
+            "reactive_wakeup",
+            format_reactive_wakeup_locator().to_owned(),
+        ),
     };
     McpResourceDescriptor::new(branch, uri).map_err(invalid_response)
 }
@@ -5361,6 +5411,19 @@ fn health_resource(
         format_server_health_locator().to_owned(),
         McpResourceJson::from_serializable(&authenticated_health_payload(&report))
             .map_err(invalid_response)?,
+    )
+}
+
+fn reactive_wakeup_resource(
+    result: GetReactiveWakeupResult,
+) -> Result<McpResourceContent, McpBackendError> {
+    json_resource(
+        "reactive_wakeup",
+        format_reactive_wakeup_locator().to_owned(),
+        McpResourceJson::from_serializable(&serde_json::json!({
+            "generation": lower_hex(result.generation().as_bytes()),
+        }))
+        .map_err(invalid_response)?,
     )
 }
 

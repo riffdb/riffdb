@@ -66,8 +66,8 @@ pub use locator::{
     format_outcome_locator_from_public, format_outcome_template_locator_from_public,
     format_projection_status_locator, format_projection_status_locator_from_public,
     format_provenance_locator, format_provenance_locator_from_public,
-    format_provenance_template_locator, format_server_health_locator, parse_resource_locator,
-    validate_command_tool_name,
+    format_provenance_template_locator, format_reactive_wakeup_locator,
+    format_server_health_locator, parse_resource_locator, validate_command_tool_name,
 };
 pub use observer::*;
 pub use observer_budget::*;

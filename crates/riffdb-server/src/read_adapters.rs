@@ -49,7 +49,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{
     CanonicalValue, CapabilityId, CommitSequence, ContractLineage, ContractVersion, DatabaseId,
-    Environment, QueryModuleHash, ReactiveModuleHash,
+    Environment, FrontierPosition, QueryModuleHash, ReactiveModuleHash,
 };
 
 const MAX_REACTIVE_EVENT_WINDOW_ROUTE_PAGES: u16 = 256;
@@ -600,6 +600,7 @@ impl fmt::Debug for ServerCatalogReadPort {
 
 /// Authoritative service reads driven through narrow storage and catalog operations.
 pub(crate) struct ServerAuthoritativeReadPort {
+    application_head: BlockingPortExecutor<(), FrontierPosition, AuthoritativeReadError>,
     event_replay: BlockingPortExecutor<
         AuthoritativeEventReplayRequest,
         riffdb_catalog::SymbolicEventReplayPage,
@@ -703,6 +704,18 @@ impl ServerAuthoritativeReadPort {
         let commit_storage = storage.clone();
         let commit = driver.executor(move |sequence| read_commit(&commit_storage, sequence));
 
+        let head_storage = storage.clone();
+        let application_head = driver.executor(move |()| {
+            scan_commits(
+                &head_storage,
+                AuthoritativeCommitScanRequest::initial(
+                    riffdb_service::PageLimit::new(1)
+                        .expect("one application-head observation is bounded"),
+                ),
+            )
+            .map(|page| page.inclusive_upper())
+        });
+
         let scan_storage = storage.clone();
         let commit_scan = driver.executor(move |request| scan_commits(&scan_storage, request));
 
@@ -722,6 +735,7 @@ impl ServerAuthoritativeReadPort {
         });
 
         Self {
+            application_head,
             event_replay,
             reactive_event_window,
             entity,
@@ -737,6 +751,17 @@ impl ServerAuthoritativeReadPort {
 }
 
 impl AuthoritativeReadPort for ServerAuthoritativeReadPort {
+    fn reserve_application_head<'a>(
+        &'a self,
+        control: &'a RequestControl,
+    ) -> PortFuture<
+        'a,
+        BoxPortCapacityPermit<(), FrontierPosition, AuthoritativeReadError>,
+        PortAdmissionError,
+    > {
+        ready_port_reservation(self.application_head.reserve_async(control))
+    }
+
     fn reserve_reactive_event_window<'a>(
         &'a self,
         control: &'a RequestControl,

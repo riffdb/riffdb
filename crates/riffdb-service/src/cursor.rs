@@ -2538,7 +2538,7 @@ mod tests {
 
     #[test]
     fn command_discovery_cursor_accepts_only_the_structural_candidate_bound() {
-        assert_eq!(MAX_COMMAND_DISCOVERY_CURSOR_CANDIDATES, 4_115);
+        assert_eq!(MAX_COMMAND_DISCOVERY_CURSOR_CANDIDATES, 4_126);
         let operation_schemas = crate::OperationSchemaCatalog::accepted()
             .expect("accepted operation schemas")
             .identity();

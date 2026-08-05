@@ -227,8 +227,13 @@ fn observer_physical_calls_are_charged_before_every_stdio_dispatch() {
         ),
         (
             "McpResourceLocator::ServerHealth =>",
-            "pub(crate) async fn observe_command_plan",
+            "McpResourceLocator::ReactiveWakeup =>",
             ".health(",
+        ),
+        (
+            "McpResourceLocator::ReactiveWakeup =>",
+            "pub(crate) async fn observe_command_plan",
+            ".get_reactive_wakeup(",
         ),
     ] {
         let resource = section(&backend, start, end);

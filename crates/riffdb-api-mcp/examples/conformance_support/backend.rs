@@ -352,11 +352,12 @@ impl McpBackend for ConformanceBackend {
         &'a self,
         invocation: &'a Self::Invocation,
         _request: McpSubscriptionRequest,
-    ) -> McpBackendFuture<'a, ()> {
+    ) -> McpBackendFuture<'a, McpVisibleFingerprint> {
         Box::pin(async move {
             invocation.admit(McpRateTarget::Service(
                 ServiceOperationV1::DiscoverResources,
-            ))
+            ))?;
+            McpVisibleFingerprint::new(vec![1]).map_err(|_| McpBackendError::InvalidResponse)
         })
     }
 }
@@ -539,6 +540,7 @@ fn concrete_resources(deployed: bool) -> Result<Vec<McpResourceDescriptor>, McpB
         ),
         ("projection_status", PROJECTION_STATUS_URI),
         ("server_health", "riffdb://server/health"),
+        ("reactive_wakeup", "riffdb://reactive/wakeup"),
     ]
     .into_iter()
     .map(|(branch, uri)| {
@@ -579,6 +581,7 @@ fn resource_rate_target(locator: &McpResourceLocator) -> McpRateTarget {
         | McpResourceLocator::CommandDocumentation { .. } => ServiceOperationV1::ExplainCommand,
         McpResourceLocator::ProjectionStatus { .. } => ServiceOperationV1::GetProjectionStatus,
         McpResourceLocator::ServerHealth => ServiceOperationV1::GetHealth,
+        McpResourceLocator::ReactiveWakeup => ServiceOperationV1::GetReactiveWakeup,
         McpResourceLocator::Outcome { .. } => ServiceOperationV1::ResolveCommandOutcome,
         McpResourceLocator::Commit(_) => ServiceOperationV1::GetCommit,
         McpResourceLocator::Provenance(_) => ServiceOperationV1::TraceProvenance,
@@ -710,6 +713,13 @@ fn resource_content(
             "server_health",
             "riffdb://server/health".to_owned(),
             json_body(json!({"readiness": "ready", "status": "serving"}))?,
+        ),
+        McpResourceLocator::ReactiveWakeup => (
+            "reactive_wakeup",
+            "riffdb://reactive/wakeup".to_owned(),
+            json_body(json!({
+                "generation": "5555555555555555555555555555555555555555555555555555555555555555"
+            }))?,
         ),
         McpResourceLocator::Outcome { .. }
         | McpResourceLocator::Commit(_)

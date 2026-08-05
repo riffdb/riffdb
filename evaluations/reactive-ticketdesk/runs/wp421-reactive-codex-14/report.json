@@ -1,0 +1,35 @@
+{
+  "schema": "riffdb-reactive-ticketdesk-run/v1",
+  "run_id": "wp421-reactive-codex-14",
+  "bundle_hash": "830e29902c69496584861d7c3dd205ac7bb21201cecee7ed40dcf644b7c5b09d",
+  "agent_identity": "codex-independent-evaluator",
+  "independent": true,
+  "fresh_context": true,
+  "human_interventions": 0,
+  "kernel_attempts": 0,
+  "kernel_successes": 0,
+  "handwritten_glue_lines": 0,
+  "compiler_failures": 1,
+  "runtime_failures": 1,
+  "time_to_complete_seconds": 688,
+  "source_access": {
+    "riffdb_implementation": false,
+    "ticketdesk_implementation": false
+  },
+  "checks": {
+    "application_boundary": true,
+    "browser_credentials_absent": true,
+    "browser_two_session_convergence": true,
+    "commit_before_ack_recovery": false,
+    "contextual_one_snapshot": false,
+    "generated_bindings_exact": true,
+    "mcp_wakeup_payload_free": false,
+    "reaction_retry_idempotent": false,
+    "reconnect_reset": false,
+    "revocation_clears_state": false
+  },
+  "completed": false,
+  "rating": 6.0,
+  "explanation": "The complete generated application surface, authenticated browser relay, queue/detail UI, contextual worker, and deterministic acceptance runner were built. Exact generation, TypeScript compilation, the application boundary, and two-session browser convergence passed. The mandatory MCP wakeup check failed: after successful initialization and subscription, the opaque wakeup generation changed following qualifying reactive work, but no resources-updated notification was emitted across fresh sessions and repeated observer waits. The protocol therefore stopped at a product failure before contextual crash recovery, reconnect/reset, and authorization-termination checks could be completed.",
+  "transcript_sha256": "39fe7b4e47bffbd9b49d3c599ecbb9eaff1420204e1bcf171e7f14babd35f4b0"
+}

@@ -201,6 +201,12 @@ impl ServiceAuditTargetMap {
         ServiceAuditTargetsV1::empty()
     }
 
+    /// Targets for the singleton opaque reactive wakeup read.
+    #[must_use]
+    pub(crate) const fn reactive_wakeup() -> ServiceAuditTargetsV1 {
+        ServiceAuditTargetsV1::empty()
+    }
+
     /// Targets for one historical contract version.
     pub(crate) fn get_contract_version(
         lineage: ContractLineage,
@@ -767,6 +773,10 @@ mod tests {
                 )
                 .expect("canonical targets"),
             ),
+            (
+                ServiceOperationV1::GetReactiveWakeup,
+                ServiceAuditTargetMap::reactive_wakeup(),
+            ),
         ];
 
         let public_operations = ServiceOperationV1::ALL
@@ -784,7 +794,7 @@ mod tests {
 
         let expected_nonempty_lengths = [
             0, 2, 1, 0, 1, 2, 1, 2, 2, 2, 2, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0,
         ];
         assert_eq!(
             mapped.each_ref().map(|(_, targets)| targets.len()),

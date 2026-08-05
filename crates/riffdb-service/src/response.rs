@@ -27,10 +27,10 @@ use crate::{
     ExecuteProjectedQueryResult, ExecuteSymbolicQueryResult, ExplainCommandResult,
     ExplainSymbolicQueryResult, GeneratedSchemaIdentity, GetActiveContractResult, GetCommitResult,
     GetContractMigrationOperationResult, GetContractVersionResult, GetEntityResult,
-    GetOfflineMaintenanceOperationResult, GetProjectionStatusResult, HealthReport, HealthResult,
-    IndexRowView, IndexScanFence, JournaledCommandResult, ListPendingOutboxDeliveriesResult,
-    LiveQueryPatchOperation, LiveQueryUpdate, NamedQueryToolDescriptor,
-    NamedQueryToolSchemaArtifact, NormalCreateCapabilityResult,
+    GetOfflineMaintenanceOperationResult, GetProjectionStatusResult, GetReactiveWakeupResult,
+    HealthReport, HealthResult, IndexRowView, IndexScanFence, JournaledCommandResult,
+    ListPendingOutboxDeliveriesResult, LiveQueryPatchOperation, LiveQueryUpdate,
+    NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact, NormalCreateCapabilityResult,
     OfflineMaintenanceOperationObservation, OfflineMaintenanceStartResult, OperationSchemaArtifact,
     OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
     OutboxDeliverySummary, Page, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
@@ -1604,6 +1604,16 @@ impl ServiceResponseCharge for HealthResult {
     }
 }
 
+impl ServiceResponseCharge for GetReactiveWakeupResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.bytes(self.generation().as_bytes().len())?;
+        Ok(charge.finish())
+    }
+}
+
 impl ServiceResponseCharge for StatisticsResult {
     fn service_response_charge_v1(
         &self,
@@ -1987,7 +1997,9 @@ impl ServiceResponseCharge for ResourceDescriptor {
         let mut charge = ChargeAccumulator::message();
         charge.fields(1)?;
         match self.resource() {
-            ResourceDescriptorRef::ActiveContract | ResourceDescriptorRef::ServerHealth => {}
+            ResourceDescriptorRef::ActiveContract
+            | ResourceDescriptorRef::ServerHealth
+            | ResourceDescriptorRef::ReactiveWakeup => {}
             ResourceDescriptorRef::ContractVersion { lineage, .. } => {
                 charge_lineage(&mut charge, lineage)?;
                 charge.fields(1)?;
@@ -2044,7 +2056,8 @@ impl ServiceResponseCharge for CompactResourceDescriptor {
         charge.fields(1)?;
         match self.resource() {
             CompactResourceDescriptorRef::ActiveContract
-            | CompactResourceDescriptorRef::ServerHealth => {}
+            | CompactResourceDescriptorRef::ServerHealth
+            | CompactResourceDescriptorRef::ReactiveWakeup => {}
             CompactResourceDescriptorRef::ContractVersion { lineage, .. } => {
                 charge_lineage(&mut charge, lineage)?;
                 charge.fields(1)?;
@@ -2162,6 +2175,7 @@ seal_response_types!(
     ProvenanceView,
     TraceProvenanceResult,
     HealthResult,
+    GetReactiveWakeupResult,
     StatisticsResult,
     CreateCapabilityResult,
     RevokeCapabilityResult,

@@ -1,0 +1,16 @@
+{"schema":"riffdb-reactive-ticketdesk-event/v1","elapsed_ms":0,"kind":"start","operation":"sealed_evaluation"}
+{"schema":"riffdb-reactive-ticketdesk-event/v1","elapsed_ms":1,"kind":"tool","operation":"read_evaluation_specification"}
+{"schema":"riffdb-reactive-ticketdesk-event/v1","elapsed_ms":120000,"kind":"check","operation":"generated_bindings_exact","code":"passed"}
+{"schema":"riffdb-reactive-ticketdesk-event/v1","elapsed_ms":150000,"kind":"check","operation":"application_boundary","code":"passed"}
+{"schema":"riffdb-reactive-ticketdesk-event/v1","elapsed_ms":180000,"kind":"runtime_failure","operation":"sealed_server_seed","code":"RDB-AUTH-0214"}
+{"schema":"riffdb-reactive-ticketdesk-event/v1","elapsed_ms":360000,"kind":"compiler_failure","operation":"typescript_check","code":"TS2345"}
+{"schema":"riffdb-reactive-ticketdesk-event/v1","elapsed_ms":390000,"kind":"check","operation":"typescript_check","code":"passed"}
+{"schema":"riffdb-reactive-ticketdesk-event/v1","elapsed_ms":400000,"kind":"check","operation":"browser_credentials_absent","code":"passed"}
+{"schema":"riffdb-reactive-ticketdesk-event/v1","elapsed_ms":401000,"kind":"check","operation":"browser_two_session_convergence","code":"passed"}
+{"schema":"riffdb-reactive-ticketdesk-event/v1","elapsed_ms":402000,"kind":"check","operation":"reconnect_reset","code":"passed"}
+{"schema":"riffdb-reactive-ticketdesk-event/v1","elapsed_ms":403000,"kind":"check","operation":"revocation_clears_state","code":"passed"}
+{"schema":"riffdb-reactive-ticketdesk-event/v1","elapsed_ms":410000,"kind":"check","operation":"live_contextual_runtime","code":"blocked"}
+{"schema":"riffdb-reactive-ticketdesk-event/v1","elapsed_ms":411000,"kind":"check","operation":"live_reaction_recovery","code":"blocked"}
+{"schema":"riffdb-reactive-ticketdesk-event/v1","elapsed_ms":412000,"kind":"check","operation":"live_mcp_wakeup","code":"blocked"}
+{"schema":"riffdb-reactive-ticketdesk-event/v1","elapsed_ms":420000,"kind":"complete","operation":"evaluation_incomplete","code":"runtime_prerequisite_failed"}
+{"schema":"riffdb-reactive-ticketdesk-event/v1","elapsed_ms":420001,"kind":"rating","operation":"independent_assessment","code":"4.5"}
