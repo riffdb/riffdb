@@ -34,17 +34,42 @@ pageStore.subscribe((value) => pageObserved.push(value));
 await pageStore.connect(pageUpdates(page));
 assert(pageObserved[0]?.outcome === "NotFound" && pageObserved[1] === undefined, "detail browser retained revoked data");
 
+const failedStore = createTicketQueueWatchStore();
+const failedObserved: Array<TicketQueueResult | undefined> = [];
+failedStore.subscribe((value) => failedObserved.push(value));
+let failedWatch = false;
+try {
+  await failedStore.connect(snapshotThenFail(queue));
+} catch {
+  failedWatch = true;
+}
+assert(failedWatch, "failed watch did not surface its transport failure");
+assert(
+  failedObserved[0]?.outcome === "Found" && failedObserved[1] === undefined,
+  "failed watch retained protected state",
+);
+
 const queueFrames = await collect(createTicketQueueWatchSseRelay(async () => true, snapshotOnly(queue)));
 const pageFrames = await collect(createTicketPageWatchSseRelay(async () => true, snapshotOnly(page)));
-assert(queueFrames === 1 && pageFrames === 1, "generated SSE relays did not emit one authorized frame");
+assert(
+  queueFrames.length === 2 && pageFrames.length === 2,
+  "generated SSE relays did not terminate a completed upstream watch",
+);
+assert(queueFrames[0]?.startsWith("event: snapshot\ndata: ") === true, "queue snapshot frame missing");
+assert(pageFrames[0]?.startsWith("event: snapshot\ndata: ") === true, "page snapshot frame missing");
+assert(
+  queueFrames[1] === 'event: terminal\ndata: {"type":"terminal","reason":"service_unavailable"}\n\n',
+  "completed upstream watch did not clear queue state",
+);
 
-let denied = false;
-try {
-  await collect(createTicketQueueWatchSseRelay(async () => false, snapshotOnly(queue)));
-} catch {
-  denied = true;
-}
-assert(denied, "SSE relay did not reauthorize before delivery");
+const deniedFrames = await collect(
+  createTicketQueueWatchSseRelay(async () => false, snapshotOnly(queue)),
+);
+assert(
+  deniedFrames.length === 1
+    && deniedFrames[0] === 'event: terminal\ndata: {"type":"terminal","reason":"authorization_changed"}\n\n',
+  "SSE relay did not clear state when application authorization ended",
+);
 
 process.stdout.write("TicketDesk generated two-browser relay acceptance passed.\n");
 
@@ -62,6 +87,11 @@ async function* snapshotOnly<T>(value: T): AsyncIterable<LiveQueryUpdate<T>> {
   yield snapshot(value);
 }
 
+async function* snapshotThenFail<T>(value: T): AsyncIterable<LiveQueryUpdate<T>> {
+  yield snapshot(value);
+  throw new Error("injected watch failure");
+}
+
 function snapshot<T>(value: T): LiveQueryUpdate<T> {
   return { type: "snapshot", value, cursor: "AQIDBA==", applicationHead: 1n, historyIncarnation: 1n };
 }
@@ -70,13 +100,12 @@ function terminal<T>(): LiveQueryUpdate<T> {
   return { type: "terminal", reason: "authorization_changed" };
 }
 
-async function collect(values: AsyncIterable<string>): Promise<number> {
-  let count = 0;
+async function collect(values: AsyncIterable<string>): Promise<string[]> {
+  const frames: string[] = [];
   for await (const value of values) {
-    assert(value.startsWith("event: snapshot\ndata: "), "invalid SSE frame");
-    count += 1;
+    frames.push(value);
   }
-  return count;
+  return frames;
 }
 
 function assert(condition: boolean, message: string): asserts condition {

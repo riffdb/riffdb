@@ -170,12 +170,26 @@ the work item; possession of that token never bypasses current policy or lease
 validation.
 
 An MCP `notifications/resources/updated` message is only a payload-free wakeup
-hint. Its parameters contain one authorized resource URI and no event,
+hint. Subscribe to the exact `riffdb://reactive/wakeup` URI. The resource is
+discoverable only when the role has at least one watch, event-consumer, or
+contextual-consumer permission that does not require approval. Its body is an
+opaque generation and must not be interpreted as a commit sequence or work
+count. A change may be caused by unrelated application work, so clients should
+coalesce refreshes. Fetch current work immediately after subscribing because a
+subscription reports later changes and does not assert that the current queue
+is empty.
+
+The notification parameters contain one authorized resource URI and no event,
 parameters, context, field values, or lease evidence. The client must retrieve
 work with `riffdb_event_next` or refresh a watch with `riffdb_query_watch`;
 reading a notification is never an acknowledgement. Notifications may
 coalesce, so correctness must depend on the durable consumer checkpoint or live
 cursor rather than notification count.
+
+A successful `resources/subscribe` retains only the bounded fingerprint from
+its fresh authorized resource read as the observer baseline. This is the
+subscription linearization point: a later resource change is compared against
+that baseline and cannot be absorbed by the first five-second observer pass.
 
 See [Reactive Modules](MODULES.md), [Live Named Queries](LIVE-QUERIES.md), and
 [MCP for Agents](../mcp/agent-cookbook.md).

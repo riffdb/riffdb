@@ -15,7 +15,7 @@ use riffdb_types::{
 
 use crate::lineage::{LineageMaterializationProof, RecordOwnerV1, WriterRelation};
 use crate::materialization::validate_static_value;
-use crate::{ActiveCatalogSnapshot, ValidatedContractBundle};
+use crate::{ActiveCatalogSnapshot, ContractEnumVariantNames, ValidatedContractBundle};
 
 /// Maximum explicitly selected payload fields in one application event view.
 pub const MAX_EVENT_MATERIALIZATION_FIELDS: usize = 256;
@@ -383,6 +383,7 @@ impl ResolvedEventMaterializer {
             writer_plan_hash: writer.command_plan_hash(),
             command_name: writer_plan.plan().name().to_owned(),
             fields,
+            enum_variant_names: Arc::clone(self.active_bundle.enum_variant_names()),
         })
     }
 }
@@ -440,6 +441,7 @@ pub struct SymbolicEventView {
     writer_plan_hash: PlanHash,
     command_name: String,
     fields: Vec<SymbolicEventField>,
+    enum_variant_names: ContractEnumVariantNames,
 }
 
 impl SymbolicEventView {
@@ -477,6 +479,20 @@ impl SymbolicEventView {
     #[must_use]
     pub fn fields(&self) -> &[SymbolicEventField] {
         &self.fields
+    }
+
+    /// Resolves one canonical enum identity through the active contract schema.
+    #[must_use]
+    pub fn enum_variant_name(&self, type_id: u32, variant_id: u32) -> Option<&str> {
+        self.enum_variant_names
+            .get(&(type_id, variant_id))
+            .map(String::as_str)
+    }
+
+    /// Borrows the shared enum display-name table for protocol presentation.
+    #[must_use]
+    pub const fn enum_variant_names(&self) -> &ContractEnumVariantNames {
+        &self.enum_variant_names
     }
 }
 

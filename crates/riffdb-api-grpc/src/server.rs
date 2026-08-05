@@ -1226,6 +1226,18 @@ impl ContractService for GrpcApplication {
             history_incarnation,
         )?))
     }
+
+    async fn get_reactive_wakeup(
+        &self,
+        request: Request<v1::GetReactiveWakeupRequest>,
+    ) -> Result<Response<v1::GetReactiveWakeupResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let request_id = get_reactive_wakeup_request_from_proto(message)?;
+        let (service, context, _cancellation) =
+            self.normal_invocation(ServiceOperationV1::GetReactiveWakeup, &metadata, request_id)?;
+        let result = map_service(service.get_reactive_wakeup(context).await)?;
+        Ok(Response::new(get_reactive_wakeup_result_to_proto(result)))
+    }
 }
 
 #[tonic::async_trait]

@@ -14,10 +14,11 @@ use crate::{
     GetContractMigrationOperationResult, GetContractVersionRequest, GetContractVersionResult,
     GetEntityRequest, GetEntityResult, GetOfflineMaintenanceOperationRequest,
     GetOfflineMaintenanceOperationResult, GetProjectionStatusRequest, GetProjectionStatusResult,
-    HealthContext, HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest,
-    ListPendingOutboxDeliveriesResult, OfflineMaintenanceStartResult, QueryProjectionRequest,
-    QueryProjectionResult, RecoveryRestoreOfflineBackupInvocation, ReplayEventsRequest,
-    ReplayEventsResult, RequestContext, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
+    GetReactiveWakeupResult, HealthContext, HealthRequest, HealthResult,
+    ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
+    OfflineMaintenanceStartResult, QueryProjectionRequest, QueryProjectionResult,
+    RecoveryRestoreOfflineBackupInvocation, ReplayEventsRequest, ReplayEventsResult,
+    RequestContext, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
     RestoreOfflineBackupInvocation, RevokeCapabilityRequest, RevokeCapabilityResult,
     ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult, ServiceResult,
     StatisticsRequest, StatisticsResult, SubscribeToCommitsRequest, SubscribeToCommitsResult,
@@ -300,6 +301,12 @@ pub trait DiscoveryApplication: Send + Sync {
         context: RequestContext,
         request: DiscoverResourcesRequest,
     ) -> ServiceFuture<'_, DiscoverResourcesResult>;
+
+    /// Reads the opaque generation for the singleton reactive wakeup resource.
+    fn get_reactive_wakeup(
+        &self,
+        context: RequestContext,
+    ) -> ServiceFuture<'_, GetReactiveWakeupResult>;
 }
 
 /// Marker trait grouping the coherent object-safe application surfaces.

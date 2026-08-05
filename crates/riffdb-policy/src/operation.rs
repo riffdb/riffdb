@@ -131,6 +131,8 @@ pub enum DiscoveryResource {
     Provenance,
     /// Server health metadata.
     Health,
+    /// Opaque reactive-change wakeup metadata.
+    ReactiveWakeup,
 }
 
 impl fmt::Debug for DiscoveryResource {
@@ -146,6 +148,7 @@ impl fmt::Debug for DiscoveryResource {
             Self::Commit => "Commit",
             Self::Provenance => "Provenance",
             Self::Health => "Health",
+            Self::ReactiveWakeup => "ReactiveWakeup",
         };
         write!(formatter, "DiscoveryResource::{name}([REDACTED])")
     }
@@ -231,11 +234,33 @@ pub enum FixedToolCandidate {
     ExecuteQuery,
     /// `riffdb_command_run`.
     RunCommand,
+    /// `riffdb_event_next`.
+    EventNext,
+    /// `riffdb_event_ack`.
+    EventAck,
+    /// `riffdb_event_nack`.
+    EventNack,
+    /// `riffdb_event_seek`.
+    EventSeek,
+    /// `riffdb_event_status`.
+    EventStatus,
+    /// `riffdb_query_watch`.
+    QueryWatch,
+    /// `riffdb_contextual_next`.
+    ContextualNext,
+    /// `riffdb_contextual_ack`.
+    ContextualAck,
+    /// `riffdb_contextual_nack`.
+    ContextualNack,
+    /// `riffdb_contextual_status`.
+    ContextualStatus,
+    /// `riffdb_contextual_react`.
+    ContextualReact,
 }
 
 impl FixedToolCandidate {
     /// The exact SPEC POC fixed-tool inventory in stable presentation order.
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 30] = [
         Self::ValidateContract,
         Self::GetActiveContract,
         Self::ExplainCommand,
@@ -255,6 +280,17 @@ impl FixedToolCandidate {
         Self::ExplainQuery,
         Self::ExecuteQuery,
         Self::RunCommand,
+        Self::EventNext,
+        Self::EventAck,
+        Self::EventNack,
+        Self::EventSeek,
+        Self::EventStatus,
+        Self::QueryWatch,
+        Self::ContextualNext,
+        Self::ContextualAck,
+        Self::ContextualNack,
+        Self::ContextualStatus,
+        Self::ContextualReact,
     ];
 }
 
@@ -781,6 +817,7 @@ enum OperationKind {
     },
     DiscoverCommandTools,
     DiscoverResources,
+    GetReactiveWakeup,
     DescribeContract,
     CheckAdHocQuery,
     ExplainAdHocQuery,
@@ -1152,6 +1189,12 @@ impl OperationRequest {
         Self(OperationKind::DiscoverResources)
     }
 
+    /// Constructs one opaque reactive-wakeup observation.
+    #[must_use]
+    pub const fn get_reactive_wakeup() -> Self {
+        Self(OperationKind::GetReactiveWakeup)
+    }
+
     /// Constructs one symbolic contract-description request.
     #[must_use]
     pub const fn describe_contract() -> Self {
@@ -1415,6 +1458,7 @@ impl OperationRequest {
             }
             OperationKind::DiscoverCommandTools => ServiceOperationV1::DiscoverCommandTools,
             OperationKind::DiscoverResources => ServiceOperationV1::DiscoverResources,
+            OperationKind::GetReactiveWakeup => ServiceOperationV1::GetReactiveWakeup,
             OperationKind::DescribeContract => ServiceOperationV1::DescribeContract,
             OperationKind::CheckAdHocQuery => ServiceOperationV1::CheckQuery,
             OperationKind::ExplainAdHocQuery | OperationKind::ExplainNamedQuery { .. } => {
@@ -1656,6 +1700,11 @@ impl OperationRequest {
             OperationKind::ListPendingOutboxDeliveries { .. } => {
                 PermissionRequirement::Kind(Kind::InspectOutbox)
             }
+            OperationKind::GetReactiveWakeup => PermissionRequirement::AnyKind([
+                Kind::WatchNamedQuery,
+                Kind::ConsumeEventStream,
+                Kind::ConsumeContextualSubscription,
+            ]),
             OperationKind::DiscoverCommandTools | OperationKind::DiscoverResources => return None,
         };
         Some(requirement)
@@ -1826,6 +1875,7 @@ impl OperationRequest {
             | OperationKind::GetContextualSubscriptionStatus { .. } => {
                 Some(AuditClass::AdministrativeRead)
             }
+            OperationKind::GetReactiveWakeup => Some(AuditClass::AdministrativeRead),
             OperationKind::GetCommit { .. }
             | OperationKind::ScanCommits { .. }
             | OperationKind::SubscribeToCommits
@@ -1861,6 +1911,7 @@ impl OperationRequest {
             | OperationKind::ExecuteContextualReaction { .. } => {
                 OutputClassification::PolicyFilteredApplicationData
             }
+            OperationKind::GetReactiveWakeup => OutputClassification::PublicMetadata,
             OperationKind::DeployContract { .. }
             | OperationKind::DeployQueryModule { .. }
             | OperationKind::DeployReactiveModule { .. }
@@ -1952,6 +2003,7 @@ pub(crate) enum PermissionRequirement {
     Kind(CapabilityPermissionKindV1),
     Exact(CapabilityPermissionV1),
     Either(CapabilityPermissionKindV1, CapabilityPermissionKindV1),
+    AnyKind([CapabilityPermissionKindV1; 3]),
 }
 
 pub(crate) enum PartitionRequirement<'a> {
@@ -2037,6 +2089,11 @@ pub(crate) fn resource_permission(candidate: &DiscoveryResource) -> PermissionRe
         DiscoveryResource::Commit => PermissionRequirement::Kind(Kind::ReadCommit),
         DiscoveryResource::Provenance => PermissionRequirement::Kind(Kind::ReadProvenance),
         DiscoveryResource::Health => PermissionRequirement::Kind(Kind::ReadHealth),
+        DiscoveryResource::ReactiveWakeup => PermissionRequirement::AnyKind([
+            Kind::WatchNamedQuery,
+            Kind::ConsumeEventStream,
+            Kind::ConsumeContextualSubscription,
+        ]),
     }
 }
 
@@ -2064,6 +2121,17 @@ pub(crate) const fn fixed_tool_permission_kind(
         FixedToolCandidate::ExplainQuery => Kind::ExplainAdHocQuery,
         FixedToolCandidate::ExecuteQuery => Kind::ExecuteAdHocQuery,
         FixedToolCandidate::RunCommand => Kind::InvokeCommand,
+        FixedToolCandidate::EventNext
+        | FixedToolCandidate::EventAck
+        | FixedToolCandidate::EventNack
+        | FixedToolCandidate::EventStatus => Kind::ConsumeEventStream,
+        FixedToolCandidate::EventSeek => Kind::SeekEventStreamConsumer,
+        FixedToolCandidate::QueryWatch => Kind::WatchNamedQuery,
+        FixedToolCandidate::ContextualNext
+        | FixedToolCandidate::ContextualAck
+        | FixedToolCandidate::ContextualNack
+        | FixedToolCandidate::ContextualStatus
+        | FixedToolCandidate::ContextualReact => Kind::ConsumeContextualSubscription,
     }
 }
 
@@ -2304,6 +2372,7 @@ mod tests {
             OperationRequest::list_pending_outbox_deliveries(NonZeroU16::new(10).expect("nonzero")),
             OperationRequest::discover_command_tools(),
             OperationRequest::discover_resources(),
+            OperationRequest::get_reactive_wakeup(),
             OperationRequest::describe_contract(),
             OperationRequest::check_ad_hoc_query(),
             OperationRequest::explain_ad_hoc_query(),
@@ -2364,7 +2433,7 @@ mod tests {
     #[test]
     fn request_inventory_covers_every_shared_operation() {
         let requests = requests();
-        assert_eq!(requests.len(), 46);
+        assert_eq!(requests.len(), 47);
         // WP-408 needs the durable audit tag; WP-409 owns its public policy request.
         let policy_operations = ServiceOperationV1::ALL
             .into_iter()
@@ -2396,6 +2465,9 @@ mod tests {
                 PermissionRequirement::Either(left, right) => {
                     kinds.insert(left);
                     kinds.insert(right);
+                }
+                PermissionRequirement::AnyKind(candidates) => {
+                    kinds.extend(candidates);
                 }
             }
         }

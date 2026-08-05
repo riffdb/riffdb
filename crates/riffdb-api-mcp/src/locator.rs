@@ -143,6 +143,8 @@ pub enum McpResourceLocator {
     },
     /// Server health and readiness.
     ServerHealth,
+    /// Opaque reactive-change wakeup generation.
+    ReactiveWakeup,
 }
 
 /// Returns the exact active-contract locator.
@@ -243,6 +245,12 @@ pub fn format_projection_status_locator(
 #[must_use]
 pub const fn format_server_health_locator() -> &'static str {
     "riffdb://server/health"
+}
+
+/// Returns the exact reactive-wakeup locator.
+#[must_use]
+pub const fn format_reactive_wakeup_locator() -> &'static str {
+    "riffdb://reactive/wakeup"
 }
 
 /// Formats a contract-version locator from checked public-wire scalar parts.
@@ -429,6 +437,7 @@ pub fn parse_resource_locator(text: &str) -> Result<McpResourceLocator, Resource
             }
         }
         ("server", ["health"]) => McpResourceLocator::ServerHealth,
+        ("reactive", ["wakeup"]) => McpResourceLocator::ReactiveWakeup,
         _ => return Err(ResourceLocatorError),
     };
 
@@ -471,6 +480,7 @@ fn format_parsed_locator(locator: &McpResourceLocator) -> Result<String, Resourc
             projection_id,
         } => Ok(format_projection_status_locator(lineage, *projection_id)),
         McpResourceLocator::ServerHealth => Ok(format_server_health_locator().to_owned()),
+        McpResourceLocator::ReactiveWakeup => Ok(format_reactive_wakeup_locator().to_owned()),
     }
 }
 

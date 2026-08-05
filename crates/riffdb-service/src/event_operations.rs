@@ -406,6 +406,7 @@ pub struct SymbolicEvent {
     provenance_id: ProvenanceId,
     history_incarnation: u64,
     fields: Vec<SymbolicEventField>,
+    enum_variant_names: riffdb_catalog::ContractEnumVariantNames,
 }
 
 impl SymbolicEvent {
@@ -428,6 +429,7 @@ impl SymbolicEvent {
                 .iter()
                 .map(SymbolicEventField::from_catalog)
                 .collect(),
+            enum_variant_names: Arc::clone(value.enum_variant_names()),
         }
     }
     /// Returns authoritative event identity.
@@ -494,6 +496,14 @@ impl SymbolicEvent {
     #[must_use]
     pub fn fields(&self) -> &[SymbolicEventField] {
         &self.fields
+    }
+
+    /// Resolves one canonical enum identity through the event's active schema.
+    #[must_use]
+    pub fn enum_variant_name(&self, type_id: u32, variant_id: u32) -> Option<&str> {
+        self.enum_variant_names
+            .get(&(type_id, variant_id))
+            .map(String::as_str)
     }
 }
 

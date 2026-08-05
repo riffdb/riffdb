@@ -3803,13 +3803,25 @@ The MCP protocol request identifier and the service-generated outer `RequestId` 
 
 Administrative tools MUST be absent from `tools/list` when the session lacks permission, rather than merely failing after selection.
 
-These are exactly the 14 fixed tools in their displayed order and correspond to
-ADR-0040 `FixedToolKind` tags 1 through 14. WP-140 owns one versioned
-`riffdb-api-mcp` registry, not runtime reflection, Protobuf debug output, or
-`schemars` generation. The complete operation/fixed manifest has 29 unique
-artifacts: the generic command envelope, the reused GetOutcome result, 14 fixed
-inputs, and 13 new fixed results. Each fixed artifact is at most 65,536 bytes
-and the 27 new artifacts together are at most 1,048,576 bytes. The full
+These are the base 14 fixed tools in their displayed order and correspond to
+ADR-0040 `FixedToolKind` tags 1 through 14. Accepted symbolic and reactive
+extensions append, without renumbering, tags 15 through 30:
+`riffdb_contract_describe`, `riffdb_query_check`, `riffdb_query_explain`,
+`riffdb_query`, `riffdb_command_run`, `riffdb_event_next`, `riffdb_event_ack`,
+`riffdb_event_nack`, `riffdb_event_seek`, `riffdb_event_status`,
+`riffdb_query_watch`, `riffdb_contextual_next`, `riffdb_contextual_ack`,
+`riffdb_contextual_nack`, `riffdb_contextual_status`, and
+`riffdb_contextual_react`. Policy-filtered discovery and the MCP registry MUST
+use this exact 30-member order. ADR-0064 owns tags 15 through 19 and ADR-0080
+owns tags 20 through 30.
+
+WP-140 owns one versioned `riffdb-api-mcp` base registry, not runtime
+reflection, Protobuf debug output, or `schemars` generation. The base
+operation/fixed manifest has 29 unique artifacts: the generic command envelope,
+the reused GetOutcome result, 14 fixed inputs, and 13 new fixed results. Each
+fixed artifact is at most 65,536 bytes and the 27 new base artifacts together
+are at most 1,048,576 bytes. Additive symbolic and reactive schema sources
+remain inside the same fixed-schema component ceiling. The full
 `tools/list` ledger is exactly 2,621,440 bytes of service discovery,
 1,048,576 bytes of local fixed schemas, and 524,288 bytes of all remaining MCP
 keys/text/annotations/JSON-RPC/link/framing, totaling 4,194,304 bytes. WP-140's
@@ -3835,6 +3847,7 @@ MCP resources provide application-controlled context. Resources are redacted by 
 | `riffdb://provenance/<provenance-id>` | `application/json` | Actor, agent session, source, approval, contract, and affected aggregates |
 | `riffdb://projection/<lineage>/<projection-id>/status` | `application/json` | Lifecycle, frontier, lag, and error state |
 | `riffdb://server/health` | `application/json` | Health and readiness information |
+| `riffdb://reactive/wakeup` | `application/json` | Opaque generation for authorized reactive work |
 
 The active-contract JSON includes
 `links.contract_version` for its exact canonical version URI. The immutable
@@ -3958,10 +3971,23 @@ After initialization, list-change notifications are emitted when the
 corresponding already-authorized visible fingerprint inventory changes; they do
 not depend on a client capability bit. Resource updates are emitted only for an
 explicitly subscribed exact URI. The subscribable v1 set is exactly active
-contract, command plan, projection status, and server health, with at most eight
-distinct URIs per session. Other resource kinds reject subscription. Repeating
-subscribe is idempotent; hidden/revoked resources are removed without exposing
-why.
+contract, command plan, projection status, server health, and reactive wakeup,
+with at most eight distinct URIs per session. Other resource kinds reject
+subscription. Repeating subscribe is idempotent; hidden/revoked resources are
+removed without exposing why.
+
+`riffdb://reactive/wakeup` is visible, readable, and subscribable only when the
+current capability contains at least one non-approval-gated `WatchNamedQuery`,
+`ConsumeEventStream`, or `ConsumeContextualSubscription` permission. Its JSON
+contains exactly one `generation` member encoded as 64 lowercase hexadecimal
+characters. The generation is a domain-separated opaque digest of database
+identity, history incarnation, and authoritative application head; it does not
+expose a commit sequence, event, parameters, context, fields, lease, or work
+count. The resource is deliberately coarse and may change because of unrelated
+application work. Notifications are URI-only,
+coalescible hints: clients MUST rerun an authorized reactive tool and rely on
+that tool's durable checkpoint or cursor for correctness. MCP obtains the value
+through the API-neutral application service and MUST NOT read storage directly.
 
 One bounded observer per session runs on injected five-second monotonic ticks
 for at most the 900-second session lifetime. It conditionally scans both compact

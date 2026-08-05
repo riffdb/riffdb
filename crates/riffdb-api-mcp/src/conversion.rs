@@ -1583,7 +1583,7 @@ const fn default_event_lease() -> u64 {
     60
 }
 const fn default_event_wait() -> u64 {
-    30_000_000_000
+    0
 }
 
 #[derive(Deserialize)]
@@ -2050,8 +2050,7 @@ mod tests {
                 "consumer_name": "Worker_1",
                 "batch_limit": 4,
                 "in_flight_limit": 8,
-                "lease_seconds": 60,
-                "maximum_wait_nanos": 1_000_000
+                "lease_seconds": 60
             })),
         )
         .expect("reactive request");
@@ -2060,6 +2059,7 @@ mod tests {
             operation_name,
             consumer_name,
             batch_limit,
+            maximum_wait_nanos,
             ..
         } = request
         else {
@@ -2069,6 +2069,7 @@ mod tests {
         assert_eq!(operation_name, "RowChanges");
         assert_eq!(consumer_name, "Worker_1");
         assert_eq!(batch_limit, 4);
+        assert_eq!(maximum_wait_nanos, 0);
 
         let watch = decode_fixed_tool_request(
             25,

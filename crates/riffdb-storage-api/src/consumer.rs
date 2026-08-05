@@ -1447,13 +1447,51 @@ pub fn coordinate_consumer_lease<R: EventConsumerRepository>(
     {
         return Err(invariant_error("invalid coordinated consumer lease"));
     }
-    let current = repository.inspect_event_consumer(identity_hash)?;
+    let mut current = repository.inspect_event_consumer(identity_hash)?;
     if let Some(snapshot) = current.as_ref()
         && (snapshot.consumer().identity() != &request.identity
             || snapshot.consumer().partition_hash() != request.partition_hash
             || snapshot.consumer().history_incarnation() != request.history_incarnation)
     {
         return Err(invariant_error("consumer identity fence mismatch"));
+    }
+
+    if current.as_ref().is_some_and(|snapshot| {
+        snapshot.deliveries().iter().any(|delivery| {
+            matches!(
+                delivery.state(),
+                ConsumerDeliveryStateV1::Leased { expires_at, .. }
+                    if request.observed_at >= expires_at
+            )
+        })
+    }) {
+        let snapshot = current
+            .as_ref()
+            .ok_or_else(|| invariant_error("consumer disappeared during lease normalization"))?;
+        let (replacement_consumer, replacement_deliveries) = normalize_consumer_recovery(
+            snapshot,
+            request.observed_at,
+            request.history_incarnation,
+            false,
+        )?;
+        let transition =
+            repository.transition_event_consumer(EventConsumerTransitionV1::Recover {
+                expected_revision: snapshot.consumer().revision(),
+                observed_at: request.observed_at,
+                replacement_consumer,
+                replacement_deliveries,
+            })?;
+        if transition != EventConsumerTransitionResultV1::Applied
+            && transition != EventConsumerTransitionResultV1::StateChanged
+        {
+            return Err(invariant_error("consumer lease normalization failed"));
+        }
+        current = repository.inspect_event_consumer(identity_hash)?;
+        return Ok(CoordinateConsumerLeaseResultV1 {
+            transition: EventConsumerTransitionResultV1::StateChanged,
+            leases: Vec::new(),
+            status: current.as_ref().map(status_from_snapshot),
+        });
     }
 
     let live = current.as_ref().map_or(0, |snapshot| {
@@ -2124,6 +2162,56 @@ mod tests {
                 eligible_at: observed_at,
             }
         );
+    }
+
+    #[test]
+    fn normal_lease_coordination_releases_expired_work_before_redelivery() {
+        let event_id = event(1, 0);
+        let snapshot =
+            EventConsumerSnapshotV1::new(initial_consumer(), vec![leased_delivery(event_id)])
+                .expect("snapshot");
+        let mut repository = TestRepository {
+            snapshots: vec![snapshot],
+            transitions: 0,
+        };
+        let request = || CoordinateConsumerLeaseV1 {
+            identity: identity(),
+            partition_hash: PartitionKeyHash::from_bytes([3; 32]),
+            history_incarnation: 1,
+            observed_at: Timestamp::new(11, 0).expect("observation"),
+            expires_at: Timestamp::new(20, 0).expect("expiry"),
+            selected_events: vec![event_id],
+            tokens: vec![EventLeaseToken::from_bytes([5; 32])],
+            batch_limit: 1,
+            in_flight_limit: 1,
+        };
+
+        let normalized =
+            coordinate_consumer_lease(&mut repository, request()).expect("normalize expired lease");
+        assert_eq!(
+            normalized.transition,
+            EventConsumerTransitionResultV1::StateChanged
+        );
+        assert!(normalized.leases.is_empty());
+        assert_eq!(repository.transitions, 1);
+        assert_eq!(
+            repository.snapshots[0].deliveries()[0].state(),
+            ConsumerDeliveryStateV1::Retry {
+                failed_attempts: EventDeliveryAttempt::first(),
+                eligible_at: Timestamp::new(11, 0).expect("observation"),
+            }
+        );
+
+        let redelivered =
+            coordinate_consumer_lease(&mut repository, request()).expect("redeliver event");
+        assert_eq!(
+            redelivered.transition,
+            EventConsumerTransitionResultV1::Applied
+        );
+        assert_eq!(redelivered.leases.len(), 1);
+        assert_eq!(redelivered.leases[0].event_id, event_id);
+        assert_eq!(redelivered.leases[0].attempt.get(), 2);
+        assert_eq!(repository.transitions, 2);
     }
 
     #[test]

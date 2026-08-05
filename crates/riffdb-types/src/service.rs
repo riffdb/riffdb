@@ -103,11 +103,13 @@ pub enum ServiceOperationV1 {
     GetContextualSubscriptionStatus,
     /// Execute one causally fenced contextual reaction.
     ExecuteContextualReaction,
+    /// Read one opaque reactive wakeup generation.
+    GetReactiveWakeup,
 }
 
 impl ServiceOperationV1 {
     /// Every accepted v1 service operation, in tag order.
-    pub const ALL: [Self; 45] = [
+    pub const ALL: [Self; 46] = [
         Self::ValidateContract,
         Self::ExplainCommand,
         Self::DeployContract,
@@ -153,6 +155,7 @@ impl ServiceOperationV1 {
         Self::NegativeAcknowledgeContextualSubscription,
         Self::GetContextualSubscriptionStatus,
         Self::ExecuteContextualReaction,
+        Self::GetReactiveWakeup,
     ];
 
     /// Returns the stable v1 semantic tag.
@@ -204,6 +207,7 @@ impl ServiceOperationV1 {
             Self::NegativeAcknowledgeContextualSubscription => 0x2b,
             Self::GetContextualSubscriptionStatus => 0x2c,
             Self::ExecuteContextualReaction => 0x2d,
+            Self::GetReactiveWakeup => 0x2e,
         }
     }
 
@@ -256,6 +260,7 @@ impl ServiceOperationV1 {
             0x2b => Some(Self::NegativeAcknowledgeContextualSubscription),
             0x2c => Some(Self::GetContextualSubscriptionStatus),
             0x2d => Some(Self::ExecuteContextualReaction),
+            0x2e => Some(Self::GetReactiveWakeup),
             _ => None,
         }
     }
@@ -690,7 +695,7 @@ mod tests {
 
     #[test]
     fn service_operation_registry_is_exact_and_closed() {
-        let expected: Vec<u8> = (0x01..=0x2d).collect();
+        let expected: Vec<u8> = (0x01..=0x2e).collect();
         assert_eq!(
             ServiceOperationV1::ALL
                 .into_iter()
@@ -705,7 +710,11 @@ mod tests {
             );
         }
         assert_eq!(ServiceOperationV1::from_tag(0), None);
-        assert_eq!(ServiceOperationV1::from_tag(0x2e), None);
+        assert_eq!(
+            ServiceOperationV1::from_tag(0x2e),
+            Some(ServiceOperationV1::GetReactiveWakeup)
+        );
+        assert_eq!(ServiceOperationV1::from_tag(0x2f), None);
         assert_eq!(ServiceOperationV1::from_tag(u8::MAX), None);
     }
 

@@ -30,6 +30,20 @@ acknowledges only after the reaction result is durable.
 watch, stream, contextual, or ticket-mutation authority and is never used by
 the browser relay or agent worker.
 
+The complete live acceptance uses one deployed application and three retained
+credentials. Deploy the exact lock without provisioning a role, then use
+`riffdb role bind` against `generated/riffdb.application.exact.json` once for
+each of `TicketDeskSeeder`, `TicketDeskApplication`, and `TicketDeskAgent`.
+Seed through the first credential, serve browser reads and writes through the
+second, and run contextual work plus MCP through the third.
+
+Do not use one `riffdb dev --seed` invocation for this three-role proof: the
+helper intentionally selects one application role, while TicketDesk seed
+authority is separate. Do not use successive
+`application deploy --provision-role` calls either, because replacement of the
+deployment's retained role credential revokes the preceding capability. The
+sealed evaluation protocol includes the exact role-bind shape.
+
 ## Verification
 
 Run the P8 gate tests:

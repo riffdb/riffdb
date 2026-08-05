@@ -98,11 +98,13 @@ pub enum HashDomain {
     CommandBatch,
     /// Generated contextual-reaction idempotency.
     ContextualReaction,
+    /// Opaque MCP reactive-resource wakeup generation.
+    ReactiveWakeup,
 }
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 36] = [
+    pub const ALL: [Self; 37] = [
         Self::CanonicalValue,
         Self::Source,
         Self::MigrationSource,
@@ -139,6 +141,7 @@ impl HashDomain {
         Self::ContractMigrationValidation,
         Self::CommandBatch,
         Self::ContextualReaction,
+        Self::ReactiveWakeup,
     ];
 
     /// Returns the immutable ASCII v1 domain label.
@@ -180,6 +183,7 @@ impl HashDomain {
             Self::ContractMigrationValidation => "riffdb.contract-migration-validation/v1",
             Self::CommandBatch => "riffdb.command-batch/v1",
             Self::ContextualReaction => "riffdb.contextual-reaction/v1",
+            Self::ReactiveWakeup => "riffdb.reactive-wakeup/v1",
         }
     }
 }

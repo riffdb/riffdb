@@ -110,7 +110,8 @@ impl McpObserverBackend for PublicGrpcMcpObserverBackend {
                 }
                 locator @ (riffdb_api_mcp::McpResourceLocator::ActiveContract
                 | riffdb_api_mcp::McpResourceLocator::ProjectionStatus { .. }
-                | riffdb_api_mcp::McpResourceLocator::ServerHealth) => self
+                | riffdb_api_mcp::McpResourceLocator::ServerHealth
+                | riffdb_api_mcp::McpResourceLocator::ReactiveWakeup) => self
                     .resource_reader
                     .read_resource_locator(&invocation, locator)
                     .await

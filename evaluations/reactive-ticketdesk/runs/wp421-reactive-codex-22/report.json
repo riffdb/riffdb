@@ -1,0 +1,35 @@
+{
+  "schema": "riffdb-reactive-ticketdesk-run/v1",
+  "run_id": "wp421-reactive-codex-22",
+  "bundle_hash": "88cc26931f99832360fdf5fd0d41c892e5fa21b66e08735fbf7dcce5978e5ce8",
+  "agent_identity": "codex-independent-evaluator",
+  "independent": true,
+  "fresh_context": true,
+  "human_interventions": 0,
+  "kernel_attempts": 0,
+  "kernel_successes": 0,
+  "handwritten_glue_lines": 0,
+  "compiler_failures": 0,
+  "runtime_failures": 8,
+  "time_to_complete_seconds": 76,
+  "source_access": {
+    "riffdb_implementation": false,
+    "ticketdesk_implementation": false
+  },
+  "checks": {
+    "application_boundary": true,
+    "browser_credentials_absent": true,
+    "browser_two_session_convergence": true,
+    "commit_before_ack_recovery": true,
+    "contextual_one_snapshot": true,
+    "generated_bindings_exact": true,
+    "mcp_wakeup_payload_free": true,
+    "reaction_retry_idempotent": true,
+    "reconnect_reset": true,
+    "revocation_clears_state": true
+  },
+  "completed": true,
+  "rating": 9.0,
+  "explanation": "Exact V4-to-V5 generation and final drift checks passed for Rust, TypeScript, Python, and MCP artifacts. A strict TypeScript acceptance used only the documented generated TicketDesk clients and product-owned CliApplicationTransport. Two independent live stores converged after mutation; the detail watch updated; cursor reconnect succeeded; contextual hydration contained one named one-snapshot page; a generated reaction committed before ack, redelivered after lease expiry, returned its replayed original outcome, and left one business comment; exact ack applied; authorization termination cleared protected state. An actual MCP stdio subscription emitted a URI-only wakeup notification. The application boundary checker passed. Eight recorded runtime/tooling failures during harness refinement were resolved without human intervention, source access, kernel use, or handwritten RiffDB glue.",
+  "transcript_sha256": "8dc06f276472622e494e94603883f229d34adad1d9fae0892607b18c7bd9ff9f"
+}

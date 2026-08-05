@@ -169,6 +169,13 @@ impl RequestControl {
         }
         Ok(control)
     }
+
+    fn fork(&self) -> Self {
+        Self {
+            deadline: self.deadline,
+            cancellation: Arc::clone(&self.cancellation),
+        }
+    }
 }
 
 impl fmt::Debug for RequestControl {
@@ -330,6 +337,17 @@ impl RequestContext {
     #[must_use]
     pub const fn trace(&self) -> Option<&TraceContext> {
         self.trace.as_ref()
+    }
+
+    pub(crate) fn child(&self, request_id: RequestId) -> Self {
+        Self {
+            request_id,
+            principal: self.principal.clone(),
+            ingress: self.ingress,
+            claims: self.claims.clone(),
+            control: self.control.fork(),
+            trace: self.trace.clone(),
+        }
     }
 }
 
@@ -563,6 +581,18 @@ mod tests {
 
         cancellation.cancel();
         assert!(control.is_cancelled());
+    }
+
+    #[test]
+    fn forked_control_preserves_deadline_and_shares_cancellation() {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let (control, cancellation) = RequestControl::new(deadline);
+        let fork = control.fork();
+
+        assert_eq!(fork.deadline(), deadline);
+        cancellation.cancel();
+        assert!(control.is_cancelled());
+        assert!(fork.is_cancelled());
     }
 
     #[test]

@@ -1259,6 +1259,17 @@ pub(crate) fn check_permission(
                     .and_then(|permission| inspect(&permission))
             })
         }
+        PermissionRequirement::AnyKind(kinds) => kinds.iter().find_map(|kind| {
+            if !grant.permissions().contains_kind(*kind) {
+                return None;
+            }
+            if grant.approval_required().binary_search(kind).is_ok() {
+                present_requiring_approval = true;
+                None
+            } else {
+                Some(PermissionCheck::Allowed)
+            }
+        }),
     };
     allowed.unwrap_or(if present_requiring_approval {
         PermissionCheck::ApprovalRequired
@@ -1413,7 +1424,7 @@ mod tests {
     };
     use riffdb_types::{
         AggregateTypeId, CapabilityPermissionKindV1, CapabilityPermissionsV1, CommandId,
-        EntityFieldVisibilityV1, PartitionKeyBuilder,
+        EntityFieldVisibilityV1, PartitionKeyBuilder, ReactiveModuleHash, ReactiveOperationName,
     };
     #[cfg(feature = "test-fixtures")]
     use riffdb_types::{Audience, RequestId, Timestamp};
@@ -1851,6 +1862,118 @@ mod tests {
         .tool_catalog(FixedToolCandidate::ALL.as_slice(), &[], &[candidate])
         .expect("bounded catalog");
         assert_eq!(hidden.named_query_tools(), &[DiscoveryVisibility::Hidden]);
+    }
+
+    #[test]
+    fn reactive_fixed_tool_discovery_follows_permission_families() {
+        let module = ReactiveModuleHash::from_bytes([0x71; 32]);
+        let stream = ReactiveOperationName::new("TicketEvents").expect("operation name");
+        let watch = ReactiveOperationName::new("TicketQueueWatch").expect("operation name");
+        let contextual = ReactiveOperationName::new("TriageTicket").expect("operation name");
+        let cases = [
+            (
+                CapabilityPermissionV1::ConsumeEventStream(lineage(), module, stream.clone()),
+                &[
+                    FixedToolCandidate::EventNext,
+                    FixedToolCandidate::EventAck,
+                    FixedToolCandidate::EventNack,
+                    FixedToolCandidate::EventStatus,
+                ][..],
+            ),
+            (
+                CapabilityPermissionV1::SeekEventStreamConsumer(lineage(), module, stream),
+                &[FixedToolCandidate::EventSeek][..],
+            ),
+            (
+                CapabilityPermissionV1::WatchNamedQuery(lineage(), module, watch),
+                &[FixedToolCandidate::QueryWatch][..],
+            ),
+            (
+                CapabilityPermissionV1::ConsumeContextualSubscription(
+                    lineage(),
+                    module,
+                    contextual,
+                ),
+                &[
+                    FixedToolCandidate::ContextualNext,
+                    FixedToolCandidate::ContextualAck,
+                    FixedToolCandidate::ContextualNack,
+                    FixedToolCandidate::ContextualStatus,
+                    FixedToolCandidate::ContextualReact,
+                ][..],
+            ),
+        ];
+
+        for (permission, expected) in cases {
+            let visibility = discovery(
+                OperationRequest::discover_command_tools(),
+                grant(
+                    TenantScope::Global,
+                    PartitionScopeV1::All,
+                    vec![permission],
+                    Vec::new(),
+                    Vec::new(),
+                ),
+            )
+            .tool_catalog(FixedToolCandidate::ALL.as_slice(), &[], &[])
+            .expect("bounded catalog");
+            let visible = FixedToolCandidate::ALL
+                .iter()
+                .zip(visibility.fixed_tools())
+                .filter_map(|(candidate, visibility)| {
+                    (*visibility == DiscoveryVisibility::Visible).then_some(*candidate)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(visible, expected);
+        }
+    }
+
+    #[test]
+    fn reactive_wakeup_resource_requires_one_unapproved_reactive_permission() {
+        let module = ReactiveModuleHash::from_bytes([0x73; 32]);
+        let operation = ReactiveOperationName::new("ReactiveOperation").expect("operation name");
+        let permissions = [
+            CapabilityPermissionV1::WatchNamedQuery(lineage(), module, operation.clone()),
+            CapabilityPermissionV1::ConsumeEventStream(lineage(), module, operation.clone()),
+            CapabilityPermissionV1::ConsumeContextualSubscription(lineage(), module, operation),
+        ];
+
+        for permission in permissions {
+            let kind = permission.kind();
+            let visible = |approval_required| {
+                discovery(
+                    OperationRequest::discover_resources(),
+                    grant(
+                        TenantScope::Global,
+                        PartitionScopeV1::All,
+                        vec![permission.clone()],
+                        Vec::new(),
+                        approval_required,
+                    ),
+                )
+                .resource_catalog(&[DiscoveryResource::ReactiveWakeup])
+                .expect("bounded resource catalog")
+            };
+            assert!(matches!(
+                visible(Vec::new()).as_slice(),
+                [ResourceDiscoveryVisibility::Visible { field_mask: None }]
+            ));
+            assert_eq!(visible(vec![kind]), [ResourceDiscoveryVisibility::Hidden]);
+        }
+
+        let hidden = discovery(
+            OperationRequest::discover_resources(),
+            grant(
+                TenantScope::Global,
+                PartitionScopeV1::All,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+        )
+        .resource_catalog(&[DiscoveryResource::ReactiveWakeup])
+        .expect("bounded resource catalog");
+        assert_eq!(hidden, [ResourceDiscoveryVisibility::Hidden]);
     }
 
     #[test]

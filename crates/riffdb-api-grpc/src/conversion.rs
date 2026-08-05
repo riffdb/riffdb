@@ -38,21 +38,22 @@ use riffdb_service::{
     GetContractMigrationOperationResult, GetContractVersionRequest, GetContractVersionResult,
     GetEntityRequest, GetEntityResult, GetOfflineMaintenanceOperationRequest,
     GetOfflineMaintenanceOperationResult, GetProjectionStatusRequest, GetProjectionStatusResult,
-    GetQueryModuleRequest, HealthComponentKind, HealthComponentStatus, HealthRequest, HealthResult,
-    HealthStatus, JournaledCommandResult, JournaledCompletion, ListPendingOutboxDeliveriesRequest,
-    ListPendingOutboxDeliveriesResult, LiveNamedQuerySelection, LiveQueryCursor,
-    LiveQueryPatchOperation, LiveQueryResetReason, LiveQueryTerminalReason, LiveQueryUpdate,
-    NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact, NamedSymbolicQueryRequest,
-    NegativeAcknowledgeEventStreamRequest, NormalCreateCapabilityRequest,
-    NormalCreateCapabilityResult, OfflineMaintenanceObservationFailure,
-    OfflineMaintenanceObservationPhase, OfflineMaintenanceOperationObservation,
-    OfflineMaintenanceStartDisposition, OfflineMaintenanceStartResult, OperationSchemaArtifact,
-    OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
-    OutboxDeliveryState, OutcomeResourceLocator, PageLimit, PageRequest, PreBootstrapLifecycle,
-    ProjectionFailureCode, ProjectionLifecycle, ProjectionUnavailableReason, ProvenanceSelection,
-    PublishedApplyMode, QueryModuleActiveExpectation, QueryModuleDeploymentDisposition,
-    QueryModuleInspection, QueryProjectionRequest, QueryProjectionResult, QueryResultValue,
-    QueryRow, ReactiveModuleDeploymentDisposition, ReplayEventsRequest, ReplayEventsResult,
+    GetQueryModuleRequest, GetReactiveWakeupResult, HealthComponentKind, HealthComponentStatus,
+    HealthRequest, HealthResult, HealthStatus, JournaledCommandResult, JournaledCompletion,
+    ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult, LiveNamedQuerySelection,
+    LiveQueryCursor, LiveQueryPatchOperation, LiveQueryResetReason, LiveQueryTerminalReason,
+    LiveQueryUpdate, NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact,
+    NamedSymbolicQueryRequest, NegativeAcknowledgeEventStreamRequest,
+    NormalCreateCapabilityRequest, NormalCreateCapabilityResult,
+    OfflineMaintenanceObservationFailure, OfflineMaintenanceObservationPhase,
+    OfflineMaintenanceOperationObservation, OfflineMaintenanceStartDisposition,
+    OfflineMaintenanceStartResult, OperationSchemaArtifact, OperationSchemaCatalog,
+    OperationSchemaCatalogIdentity, OperationSchemaIdentity, OutboxDeliveryState,
+    OutcomeResourceLocator, PageLimit, PageRequest, PreBootstrapLifecycle, ProjectionFailureCode,
+    ProjectionLifecycle, ProjectionUnavailableReason, ProvenanceSelection, PublishedApplyMode,
+    QueryModuleActiveExpectation, QueryModuleDeploymentDisposition, QueryModuleInspection,
+    QueryProjectionRequest, QueryProjectionResult, QueryResultValue, QueryRow,
+    ReactiveModuleDeploymentDisposition, ReplayEventsRequest, ReplayEventsResult,
     ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, ResourceDescriptor,
     ResourceDescriptorRef, ResourceDiscoveryKind, RestoreOfflineBackupRequest,
     RevokeCapabilityRequest, RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult,
@@ -1187,6 +1188,13 @@ pub fn discover_resources_request_from_proto(
     Ok((request_id, request))
 }
 
+/// Converts one opaque reactive-wakeup request.
+pub fn get_reactive_wakeup_request_from_proto(
+    request: v1::GetReactiveWakeupRequest,
+) -> Result<RequestId, Status> {
+    request_id_from_bytes(&request.request_id)
+}
+
 /// Converts Execute input mechanically and leaves schema resolution to the service.
 pub fn execute_command_request_from_proto(
     request: v1::ExecuteCommandRequest,
@@ -1731,9 +1739,16 @@ fn symbolic_event_to_proto(value: &SymbolicEvent) -> Result<v1::SymbolicEvent, S
             .fields()
             .iter()
             .map(|field| {
+                let mut presented = canonical_value_to_proto(field.value())
+                    .map_err(|_| invalid_service_response())?;
+                name_live_enum_values(&mut presented, &|type_id, variant_id| {
+                    value
+                        .enum_variant_name(type_id, variant_id)
+                        .map(str::to_owned)
+                })?;
                 Ok(v1::SymbolicEventField {
                     name: field.name().to_owned(),
-                    value: Some(canonical_value_to_public(field.value())?),
+                    value: Some(presented),
                 })
             })
             .collect::<Result<Vec<_>, Status>>()?,
@@ -2052,15 +2067,21 @@ pub fn execute_contextual_reaction_request_from_proto(
     Ok((request_id, request))
 }
 
-fn contextual_query_row_to_proto(row: &QueryRow) -> Result<v1::ContextualQueryRow, Status> {
+fn contextual_query_row_to_proto(
+    row: &QueryRow,
+    resolve: &impl Fn(u32, u32) -> Option<String>,
+) -> Result<v1::ContextualQueryRow, Status> {
     Ok(v1::ContextualQueryRow {
         entity: row.entity().to_owned(),
         fields: row
             .fields()
             .map(|(name, value)| {
+                let mut presented =
+                    canonical_value_to_proto(value).map_err(|_| invalid_service_response())?;
+                name_live_enum_values(&mut presented, resolve)?;
                 Ok(v1::EventConsumerParameter {
                     name: name.to_owned(),
-                    value: Some(canonical_value_to_public(value)?),
+                    value: Some(presented),
                 })
             })
             .collect::<Result<Vec<_>, Status>>()?,
@@ -2069,6 +2090,7 @@ fn contextual_query_row_to_proto(row: &QueryRow) -> Result<v1::ContextualQueryRo
 
 fn contextual_hydration_to_proto(
     hydration: &ContextualHydration,
+    resolve: &impl Fn(u32, u32) -> Option<String>,
 ) -> Result<v1::ContextualHydration, Status> {
     let fields = hydration
         .fields()
@@ -2088,7 +2110,7 @@ fn contextual_hydration_to_proto(
                 cardinality: cardinality as i32,
                 rows: rows
                     .into_iter()
-                    .map(contextual_query_row_to_proto)
+                    .map(|row| contextual_query_row_to_proto(row, resolve))
                     .collect::<Result<Vec<_>, Status>>()?,
             })
         })
@@ -2102,6 +2124,7 @@ fn contextual_hydration_to_proto(
 
 fn contextual_work_item_to_proto(
     item: &ContextualWorkItem,
+    resolve: &impl Fn(u32, u32) -> Option<String>,
 ) -> Result<v1::ContextualWorkItem, Status> {
     Ok(v1::ContextualWorkItem {
         delivery: Some(consumed_event_to_proto(item.delivery())?),
@@ -2109,7 +2132,7 @@ fn contextual_work_item_to_proto(
         hydrations: item
             .hydrations()
             .iter()
-            .map(contextual_hydration_to_proto)
+            .map(|hydration| contextual_hydration_to_proto(hydration, resolve))
             .collect::<Result<Vec<_>, Status>>()?,
         available_reactions: item
             .available_reactions()
@@ -2128,11 +2151,16 @@ fn contextual_work_item_to_proto(
 pub fn consume_contextual_subscription_result_to_proto(
     result: &ConsumeContextualSubscriptionResult,
 ) -> Result<v1::ConsumeContextualSubscriptionResponse, Status> {
+    let resolve = |type_id, variant_id| {
+        result
+            .enum_variant_name(type_id, variant_id)
+            .map(str::to_owned)
+    };
     Ok(v1::ConsumeContextualSubscriptionResponse {
         items: result
             .items()
             .iter()
-            .map(contextual_work_item_to_proto)
+            .map(|item| contextual_work_item_to_proto(item, &resolve))
             .collect::<Result<Vec<_>, Status>>()?,
         status: Some(event_consumer_status_to_proto(result.status())),
         wait_timed_out: result.wait_timed_out(),
@@ -2850,6 +2878,16 @@ pub fn discover_resources_result_to_proto(
     })
 }
 
+/// Converts one opaque reactive-wakeup result without exposing its frontier input.
+#[must_use]
+pub fn get_reactive_wakeup_result_to_proto(
+    result: GetReactiveWakeupResult,
+) -> v1::GetReactiveWakeupResponse {
+    v1::GetReactiveWakeupResponse {
+        generation: result.generation().as_bytes().to_vec(),
+    }
+}
+
 fn command_tool_discovery_item_to_proto(
     item: &CommandToolDiscoveryItem,
 ) -> Result<v1::CommandToolDiscoveryItem, Status> {
@@ -2917,6 +2955,17 @@ const fn fixed_tool_to_proto(kind: FixedToolKind) -> v1::FixedToolKind {
         FixedToolKind::ExplainQuery => v1::FixedToolKind::ExplainQuery,
         FixedToolKind::ExecuteQuery => v1::FixedToolKind::ExecuteQuery,
         FixedToolKind::RunCommand => v1::FixedToolKind::RunCommand,
+        FixedToolKind::EventNext => v1::FixedToolKind::EventNext,
+        FixedToolKind::EventAck => v1::FixedToolKind::EventAck,
+        FixedToolKind::EventNack => v1::FixedToolKind::EventNack,
+        FixedToolKind::EventSeek => v1::FixedToolKind::EventSeek,
+        FixedToolKind::EventStatus => v1::FixedToolKind::EventStatus,
+        FixedToolKind::QueryWatch => v1::FixedToolKind::QueryWatch,
+        FixedToolKind::ContextualNext => v1::FixedToolKind::ContextualNext,
+        FixedToolKind::ContextualAck => v1::FixedToolKind::ContextualAck,
+        FixedToolKind::ContextualNack => v1::FixedToolKind::ContextualNack,
+        FixedToolKind::ContextualStatus => v1::FixedToolKind::ContextualStatus,
+        FixedToolKind::ContextualReact => v1::FixedToolKind::ContextualReact,
     }
 }
 
@@ -3077,6 +3126,7 @@ fn resource_descriptor_to_proto(
             projection_id: projection_id.get(),
         }),
         ResourceDescriptorRef::ServerHealth => Resource::ServerHealth(v1::Unit {}),
+        ResourceDescriptorRef::ReactiveWakeup => Resource::ReactiveWakeup(v1::Unit {}),
     };
     Ok(v1::ResourceDescriptor {
         resource: Some(resource),
@@ -3147,6 +3197,7 @@ fn compact_resource_descriptor_to_proto(
             projection_id: projection_id.get(),
         }),
         CompactResourceDescriptorRef::ServerHealth => Resource::ServerHealth(v1::Unit {}),
+        CompactResourceDescriptorRef::ReactiveWakeup => Resource::ReactiveWakeup(v1::Unit {}),
     };
     Ok(v1::CompactResourceDescriptor {
         resource: Some(resource),
@@ -5258,9 +5309,31 @@ mod tests {
             FixedToolKind::GetProjectionStatus,
             FixedToolKind::ListPendingOutboxDeliveries,
             FixedToolKind::GetHealth,
+            FixedToolKind::DescribeContract,
+            FixedToolKind::CheckQuery,
+            FixedToolKind::ExplainQuery,
+            FixedToolKind::ExecuteQuery,
+            FixedToolKind::RunCommand,
+            FixedToolKind::EventNext,
+            FixedToolKind::EventAck,
+            FixedToolKind::EventNack,
+            FixedToolKind::EventSeek,
+            FixedToolKind::EventStatus,
+            FixedToolKind::QueryWatch,
+            FixedToolKind::ContextualNext,
+            FixedToolKind::ContextualAck,
+            FixedToolKind::ContextualNack,
+            FixedToolKind::ContextualStatus,
+            FixedToolKind::ContextualReact,
         ];
         let actual = service.map(|kind| fixed_tool_to_proto(kind) as i32);
-        assert_eq!(actual, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+        assert_eq!(
+            actual,
+            [
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+                24, 25, 26, 27, 28, 29, 30,
+            ]
+        );
     }
 
     #[test]
@@ -5778,6 +5851,38 @@ mod tests {
                 "into/borrow mismatch for {sample:?}"
             );
         }
+    }
+
+    #[test]
+    fn reactive_presentation_names_nested_enum_identities_or_fails_closed() {
+        let enum_value = |type_id, variant_id| v1::Value {
+            kind: Some(v1::value::Kind::EnumValue(v1::EnumValue {
+                type_id,
+                variant_id,
+                name: String::new(),
+            })),
+        };
+        let mut value = v1::Value {
+            kind: Some(v1::value::Kind::ListValue(v1::ValueList {
+                values: vec![enum_value(4, 1)],
+            })),
+        };
+        name_live_enum_values(&mut value, &|type_id, variant_id| {
+            (type_id == 4 && variant_id == 1).then(|| "Open".to_owned())
+        })
+        .expect("published enum identity");
+        let Some(v1::value::Kind::ListValue(values)) = value.kind else {
+            panic!("list value");
+        };
+        let Some(v1::value::Kind::EnumValue(presented)) = &values.values[0].kind else {
+            panic!("enum value");
+        };
+        assert_eq!(presented.name, "Open");
+
+        assert!(
+            name_live_enum_values(&mut enum_value(4, 2), &|_, _| None).is_err(),
+            "an unknown stable enum identity must never be presented without a name"
+        );
     }
 
     /// F4: the single top-level `validate_value` must reject a value that is

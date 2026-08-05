@@ -19,6 +19,7 @@ service ContractService {
   rpc GetContractVersion(GetContractVersionRequest) returns (GetContractVersionResponse);
   rpc DiscoverCommandTools(DiscoverCommandToolsRequest) returns (DiscoverCommandToolsResponse);
   rpc DiscoverResources(DiscoverResourcesRequest) returns (DiscoverResourcesResponse);
+  rpc GetReactiveWakeup(GetReactiveWakeupRequest) returns (GetReactiveWakeupResponse);
 }
 
 service CommandService {

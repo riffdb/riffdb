@@ -27,10 +27,10 @@ use riffdb_policy::{
 };
 use riffdb_query_module::generate_mcp_tools;
 use riffdb_types::{
-    CanonicalRecord, CanonicalValue, ContractLineage, EntityKey, FieldId,
-    MAX_CAPABILITY_FIELD_VISIBILITY, PartitionKey, PartitionScopeV1, ProjectionGeneration,
-    QueryOperationName, ScopedPartitionV1, ServiceAuditLinkV1, ServiceAuditPhaseV1,
-    ServiceOperationV1, TenantScope,
+    CanonicalRecord, CanonicalValue, ContractLineage, EntityKey, FieldId, FrontierPosition,
+    HashDomain, MAX_CAPABILITY_FIELD_VISIBILITY, PartitionKey, PartitionScopeV1,
+    ProjectionGeneration, QueryOperationName, ScopedPartitionV1, ServiceAuditLinkV1,
+    ServiceAuditPhaseV1, ServiceOperationV1, TenantScope, hash,
 };
 
 use crate::command_operations::{SubmittedValueMaterializationError, materialize_submitted_value};
@@ -44,18 +44,19 @@ use crate::{
     DiscoverCommandToolsRequest, DiscoverCommandToolsResult, DiscoverResourcesRequest,
     DiscoverResourcesResult, DiscoveryCatalogFence, DiscoveryRepresentation, EntityView,
     FieldSelection, FixedToolKind, GetEntityRequest, GetEntityResult, GetProjectionStatusRequest,
-    GetProjectionStatusResult, IndexRowView, IndexScanCursorLookup, IndexScanCursorPolicy,
-    IndexScanCursorState, IndexScanFence, InternalDefect, NamedQueryToolDescriptor,
-    NamedQueryToolSchemaArtifact, OperationSchemaCatalog, Page, PageLimit, PortAdmissionError,
-    PortDriverStopped, ProjectionCursorLookup, ProjectionCursorPolicy, ProjectionCursorState,
-    ProjectionPageFence, ProjectionPortError, ProjectionPortReady, ProjectionPortRequest,
-    ProjectionPortResult, ProjectionStateFence, QueryApplication, QueryProjectionReady,
-    QueryProjectionRequest, QueryProjectionResult, RequestContext, ResourceDescriptor,
-    ResourceDiscoveryCursorLookup, ResourceDiscoveryCursorState, ResourceDiscoveryCursorVisibility,
-    RiffDbService, RiffDbServiceInner, ScanIndexRequest, ScanIndexResult, ServiceAuditTargetMap,
-    ServiceFailure, ServiceFuture, ServiceResult, ServiceTelemetryEvent, SubmittedValue,
-    ensure_response_budget, fit_full_command_discovery_page_items,
-    fit_full_resource_discovery_page_items, fit_page_items, fit_sparse_page_items,
+    GetProjectionStatusResult, GetReactiveWakeupResult, IndexRowView, IndexScanCursorLookup,
+    IndexScanCursorPolicy, IndexScanCursorState, IndexScanFence, InternalDefect,
+    NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact, OperationSchemaCatalog, Page,
+    PageLimit, PortAdmissionError, PortDriverStopped, ProjectionCursorLookup,
+    ProjectionCursorPolicy, ProjectionCursorState, ProjectionPageFence, ProjectionPortError,
+    ProjectionPortReady, ProjectionPortRequest, ProjectionPortResult, ProjectionStateFence,
+    QueryApplication, QueryProjectionReady, QueryProjectionRequest, QueryProjectionResult,
+    ReactiveWakeupGeneration, RequestContext, ResourceDescriptor, ResourceDiscoveryCursorLookup,
+    ResourceDiscoveryCursorState, ResourceDiscoveryCursorVisibility, RiffDbService,
+    RiffDbServiceInner, ScanIndexRequest, ScanIndexResult, ServiceAuditTargetMap, ServiceFailure,
+    ServiceFuture, ServiceResult, ServiceTelemetryEvent, SubmittedValue, ensure_response_budget,
+    fit_full_command_discovery_page_items, fit_full_resource_discovery_page_items, fit_page_items,
+    fit_sparse_page_items,
 };
 use crate::{CursorAccessError, CursorContractIdentity};
 
@@ -187,6 +188,130 @@ impl crate::DiscoveryApplication for RiffDbService {
             discover_resources(service, context, request).await
         })
     }
+
+    fn get_reactive_wakeup(
+        &self,
+        context: RequestContext,
+    ) -> ServiceFuture<'_, GetReactiveWakeupResult> {
+        let service = Arc::clone(&self.inner);
+        let ingress = context.ingress();
+        self.spawn_operation(ServiceOperationV1::GetReactiveWakeup, ingress, async move {
+            get_reactive_wakeup(service, context).await
+        })
+    }
+}
+
+async fn get_reactive_wakeup(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+) -> ServiceResult<GetReactiveWakeupResult> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::GetReactiveWakeup;
+    let begun = service
+        .begin_invocation(
+            &context,
+            OperationRequest::get_reactive_wakeup(),
+            ServiceAuditTargetMap::reactive_wakeup(),
+            AuditScope::Intrinsic,
+        )
+        .await?;
+    if !valid_reactive_wakeup_authorization(&service, begun.initial_authorization()) {
+        let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    }
+
+    let permit = match wait_with_control(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        service
+            .providers
+            .authoritative
+            .reserve_application_head(context.control()),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(error)) => {
+            return Err(finish_admission_failure(&service, &context, &begun, error).await);
+        }
+        Err(error) => {
+            return Err(finish_controlled_wait(&service, &context, &begun, error).await);
+        }
+    };
+
+    let authorization = begun.reauthorize(&service, &context).await?;
+    if !valid_reactive_wakeup_authorization(&service, &authorization) {
+        let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    }
+    let receipt = match permit.submit(()) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            return Err(finish_admission_failure(&service, &context, &begun, error).await);
+        }
+    };
+    let head = match wait_with_control(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        receipt,
+    )
+    .await
+    {
+        Ok(Ok(Ok(head))) => head,
+        Ok(Ok(Err(error))) => {
+            let failure = authoritative_read_failure(&service, OPERATION, error);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+        Ok(Err(PortDriverStopped)) => {
+            let failure = lower_integrity_failure(&service, OPERATION);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+        Err(error) => {
+            return Err(finish_controlled_wait(&service, &context, &begun, error).await);
+        }
+    };
+
+    let authorization = begun.reauthorize(&service, &context).await?;
+    if !valid_reactive_wakeup_authorization(&service, &authorization) {
+        let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    }
+    let result = GetReactiveWakeupResult::new(reactive_wakeup_generation(
+        service.identity.database_id(),
+        service.identity.history_incarnation(),
+        head,
+    ));
+    finish_success(&service, &context, &begun).await?;
+    Ok(result)
+}
+
+fn valid_reactive_wakeup_authorization(
+    service: &RiffDbServiceInner,
+    authorization: &AuthorizedOperation,
+) -> bool {
+    let obligations = authorization.obligations();
+    authorization.database_id() == service.identity.database_id()
+        && authorization.environment() == service.identity.environment()
+        && authorization.operation() == ServiceOperationV1::GetReactiveWakeup
+        && obligations.audit_class() == Some(riffdb_policy::AuditClass::AdministrativeRead)
+        && obligations.output_classification() == OutputClassification::PublicMetadata
+        && obligations.partition_constraint().is_none()
+        && obligations.field_mask().is_none()
+        && obligations.row_limit().is_none()
+}
+
+fn reactive_wakeup_generation(
+    database_id: riffdb_types::DatabaseId,
+    history_incarnation: u64,
+    head: FrontierPosition,
+) -> ReactiveWakeupGeneration {
+    let mut transcript = [0_u8; 33];
+    transcript[..16].copy_from_slice(database_id.as_bytes());
+    transcript[16..24].copy_from_slice(&history_incarnation.to_be_bytes());
+    if let FrontierPosition::AppliedThrough(sequence) = head {
+        transcript[24] = 1;
+        transcript[25..].copy_from_slice(&sequence.to_be_bytes());
+    }
+    ReactiveWakeupGeneration::from_bytes(*hash(HashDomain::ReactiveWakeup, &transcript).as_bytes())
 }
 
 async fn get_entity(
@@ -1302,7 +1427,14 @@ async fn discover_command_tools(
     };
     let active_query_module = match active.as_ref() {
         Some(bundle) => {
-            match read_active_query_module_for_discovery(&service, &context, bundle.clone()).await {
+            match read_active_query_module_for_discovery(
+                &service,
+                &context,
+                bundle.clone(),
+                OPERATION,
+            )
+            .await
+            {
                 Ok(module) => module,
                 Err(failure) => {
                     return Err(finish_failure(&service, &context, &begun, failure).await);
@@ -1672,7 +1804,29 @@ async fn discover_resources(
             return Err(finish_failure(&service, &context, &begun, failure).await);
         }
     };
-    let fence = discovery_catalog_fence(active.as_ref(), None, operation_schemas.identity());
+    let active_query_module = match active.as_ref() {
+        Some(bundle) => {
+            match read_active_query_module_for_discovery(
+                &service,
+                &context,
+                bundle.clone(),
+                OPERATION,
+            )
+            .await
+            {
+                Ok(module) => module,
+                Err(failure) => {
+                    return Err(finish_failure(&service, &context, &begun, failure).await);
+                }
+            }
+        }
+        None => None,
+    };
+    let fence = discovery_catalog_fence(
+        active.as_ref(),
+        active_query_module.as_ref(),
+        operation_schemas.identity(),
+    );
     if request.prior_fence() == Some(&fence) {
         drop(authorization);
         let result = match DiscoverResourcesResult::catalog_unchanged(&request, fence) {
@@ -1715,6 +1869,11 @@ async fn discover_resources(
         &mut candidates,
         DiscoveryResource::Health,
         ResourceDescriptor::server_health(),
+    );
+    push_resource(
+        &mut candidates,
+        DiscoveryResource::ReactiveWakeup,
+        ResourceDescriptor::reactive_wakeup(),
     );
     candidates.retain(|candidate| candidate.descriptor.matches_discovery_kind(request.kind()));
     candidates.sort_unstable_by_key(|candidate| candidate.descriptor.canonical_identity_key());
@@ -2281,6 +2440,7 @@ async fn read_active_query_module_for_discovery(
     service: &RiffDbServiceInner,
     context: &RequestContext,
     contract: ValidatedContractBundle,
+    operation: ServiceOperationV1,
 ) -> ServiceResult<Option<ValidatedQueryModule>> {
     let Some(modules) = service.providers.query_modules.as_ref() else {
         return Ok(None);
@@ -2296,10 +2456,9 @@ async fn read_active_query_module_for_discovery(
         Ok(Err(crate::QueryModuleReadError::Unavailable)) => {
             Err(PublicError::storage_unavailable().into())
         }
-        Ok(Err(crate::QueryModuleReadError::Integrity)) => Err(service.internal_failure(
-            ServiceOperationV1::DiscoverCommandTools,
-            InternalDefect::LowerIntegrity,
-        )),
+        Ok(Err(crate::QueryModuleReadError::Integrity)) => {
+            Err(service.internal_failure(operation, InternalDefect::LowerIntegrity))
+        }
         Err(ControlledWaitError::Cancelled) => Err(ServiceFailure::Cancelled),
         Err(ControlledWaitError::DeadlineExceeded) => Err(ServiceFailure::DeadlineExceeded),
     }
@@ -3415,6 +3574,37 @@ mod tests {
 
     fn page_limit(value: u16) -> PageLimit {
         PageLimit::new(value).expect("test page limit")
+    }
+
+    #[test]
+    fn reactive_wakeup_generation_is_opaque_stable_and_identity_bound() {
+        let database = riffdb_types::DatabaseId::from_unix_milliseconds_and_random(1, [1; 10])
+            .expect("database ID");
+        let other_database =
+            riffdb_types::DatabaseId::from_unix_milliseconds_and_random(1, [2; 10])
+                .expect("database ID");
+        let before_first = FrontierPosition::BeforeFirst;
+        let first = FrontierPosition::AppliedThrough(CommitSequence::first());
+
+        let baseline = reactive_wakeup_generation(database, 1, before_first);
+        assert_eq!(
+            baseline,
+            reactive_wakeup_generation(database, 1, before_first)
+        );
+        assert_ne!(baseline, reactive_wakeup_generation(database, 1, first));
+        assert_ne!(
+            baseline,
+            reactive_wakeup_generation(database, 2, before_first)
+        );
+        assert_ne!(
+            baseline,
+            reactive_wakeup_generation(other_database, 1, before_first)
+        );
+        assert_eq!(baseline.as_bytes().len(), 32);
+        assert_eq!(
+            format!("{baseline:?}"),
+            "ReactiveWakeupGeneration([OPAQUE])"
+        );
     }
 
     fn index_view(component: u64) -> IndexRowView {

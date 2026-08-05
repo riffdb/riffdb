@@ -966,7 +966,7 @@ function createLiveStore<T>(): LiveStore<T> {
   return {
     get current() { return current; }, get connected() { return connected; },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    async connect(updates) { connected = true; try { for await (const update of updates) { if (update.type === "snapshot" || update.type === "reset") { current = update.value; publish(); } else if (update.type === "patch") { current = applyLivePatch(current, update); publish(); } else if (update.type === "terminal") { current = undefined; publish(); break; } } } finally { connected = false; } },
+    async connect(updates) { connected = true; try { for await (const update of updates) { if (update.type === "snapshot" || update.type === "reset") { current = update.value; publish(); } else if (update.type === "patch") { current = applyLivePatch(current, update); publish(); } else if (update.type === "terminal") { current = undefined; publish(); break; } } } finally { connected = false; if (current !== undefined) { current = undefined; publish(); } } },
     close() { connected = false; current = undefined; publish(); listeners.clear(); },
   };
 }
@@ -990,7 +990,16 @@ function liveKeyMatches(value: unknown, key: Readonly<Record<string, unknown>>):
   return Object.entries(key).every(([name, expected]) => Object.is(record[name], expected));
 }
 async function* applicationSseRelay<T>(authorized: () => Promise<boolean>, updates: AsyncIterable<LiveQueryUpdate<T>>): AsyncIterable<string> {
-  for await (const update of updates) { if (!(await authorized())) throw new Error("application authorization denied"); yield `event: ${update.type}\ndata: ${JSON.stringify(update, (_key, value) => typeof value === "bigint" ? value.toString() : value)}\n\n`; }
+  try {
+    for await (const update of updates) {
+      if (!(await authorized())) { yield `event: terminal\ndata: {"type":"terminal","reason":"authorization_changed"}\n\n`; return; }
+      yield `event: ${update.type}\ndata: ${JSON.stringify(update, (_key, value) => typeof value === "bigint" ? value.toString() : value)}\n\n`;
+      if (update.type === "terminal") return;
+    }
+    yield `event: terminal\ndata: {"type":"terminal","reason":"service_unavailable"}\n\n`;
+  } catch {
+    yield `event: terminal\ndata: {"type":"terminal","reason":"service_unavailable"}\n\n`;
+  }
 }
 export interface TicketEventsParams {
   readonly organization_id: string;

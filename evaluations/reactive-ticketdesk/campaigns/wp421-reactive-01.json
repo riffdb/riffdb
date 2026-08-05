@@ -1,0 +1,23 @@
+{
+  "schema": "riffdb-reactive-ticketdesk-campaign/v1",
+  "campaign_id": "wp421-reactive-01",
+  "immutable": true,
+  "status": "passed",
+  "bundle_hash": "88cc26931f99832360fdf5fd0d41c892e5fa21b66e08735fbf7dcce5978e5ce8",
+  "run": {
+    "run_id": "wp421-reactive-codex-22",
+    "agent_identity": "codex-independent-evaluator",
+    "report": {
+      "path": "evaluations/reactive-ticketdesk/runs/wp421-reactive-codex-22/report.json",
+      "sha256": "d3a53a83daa55944c1f7272265b6ae77cec9c7554c4118452a2714925e917151"
+    },
+    "events": {
+      "path": "evaluations/reactive-ticketdesk/runs/wp421-reactive-codex-22/events.jsonl",
+      "sha256": "8dc06f276472622e494e94603883f229d34adad1d9fae0892607b18c7bd9ff9f"
+    },
+    "application_lock": {
+      "path": "evaluations/reactive-ticketdesk/runs/wp421-reactive-codex-22/riffdb.application.lock.json",
+      "sha256": "2fc9980226ba129e0eb0e337f183ba63a64ca735b7375d388f400355274b44a8"
+    }
+  }
+}

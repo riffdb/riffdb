@@ -16,6 +16,7 @@ const RESOURCE_REGISTRY_SOURCE: &str = include_str!("../fixtures/resource-regist
 const FIXED_TOOL_REGISTRY_ID: &str = "riffdb.mcp.fixed-tool-registry/v1";
 const RESOURCE_REGISTRY_ID: &str = "riffdb.mcp.resource-registry/v1";
 const ACCEPTED_CHECKPOINT: &str = "accepted-by-human-maintainer-2026-07-30";
+const RESOURCE_ACCEPTED_CHECKPOINT: &str = "accepted-by-human-maintainer-2026-08-04";
 const SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 const MAX_SCHEMA_BYTES: usize = 65_536;
 const MAX_DYNAMIC_SCHEMA_BYTES: usize = 1_048_576;
@@ -470,7 +471,7 @@ pub struct ResourceRegistry {
 }
 
 impl ResourceRegistry {
-    /// Returns all 12 mappings in structural registry order.
+    /// Returns all 13 mappings in structural registry order.
     #[must_use]
     pub fn entries(&self) -> &[ResourceDefinition] {
         &self.entries
@@ -851,7 +852,7 @@ fn append_contextual_tools(
             "consumer_name",
         ];
         if kind == 26 {
-            properties.insert("maximum_wait_nanos".to_owned(), serde_json::json!({"type":"integer", "minimum":0, "maximum":30_000_000_000_u64, "default":30_000_000_000_u64}));
+            properties.insert("maximum_wait_nanos".to_owned(), serde_json::json!({"type":"integer", "minimum":0, "maximum":30_000_000_000_u64, "default":0}));
         }
         if matches!(kind, 27 | 28) {
             properties.insert(
@@ -1032,7 +1033,7 @@ fn append_reactive_tools(
                 "lease_seconds".to_owned(),
                 serde_json::json!({"type":"integer", "minimum":5, "maximum":900, "default":60}),
             );
-            properties.insert("maximum_wait_nanos".to_owned(), serde_json::json!({"type":"integer", "minimum":0, "maximum":30_000_000_000_u64, "default":30_000_000_000_u64}));
+            properties.insert("maximum_wait_nanos".to_owned(), serde_json::json!({"type":"integer", "minimum":0, "maximum":30_000_000_000_u64, "default":0}));
             vec![
                 "module_hash",
                 "operation_name",
@@ -1261,16 +1262,16 @@ fn load_resource_registry() -> Result<ResourceRegistry, RegistryError> {
     let wire: ResourceRegistryWire =
         serde_json::from_str(RESOURCE_REGISTRY_SOURCE).map_err(|_| RegistryError)?;
     if wire.schema != RESOURCE_REGISTRY_ID
-        || wire.compatibility_checkpoint != ACCEPTED_CHECKPOINT
+        || wire.compatibility_checkpoint != RESOURCE_ACCEPTED_CHECKPOINT
         || wire.counts
             != (ResourceCountsWire {
-                concrete: 9,
-                content_goldens: 12,
-                entries: 12,
-                subscribable: 4,
+                concrete: 10,
+                content_goldens: 13,
+                entries: 13,
+                subscribable: 5,
                 templates: 3,
             })
-        || wire.entries.len() != 12
+        || wire.entries.len() != 13
     {
         return Err(RegistryError);
     }
@@ -1288,12 +1289,14 @@ fn load_resource_registry() -> Result<ResourceRegistry, RegistryError> {
         "provenance.provenance_id",
         "projection_status",
         "server_health",
+        "reactive_wakeup",
     ];
     let expected_subscribable = [
         "active_contract",
         "command_plan",
         "projection_status",
         "server_health",
+        "reactive_wakeup",
     ];
     let mut entries = Vec::with_capacity(wire.entries.len());
     for (entry, expected_branch) in wire.entries.into_iter().zip(expected_branches) {
@@ -1754,20 +1757,26 @@ mod tests {
             assert!(!tool.name().contains('.'));
             assert!(tool.input_schema().canonical_bytes() <= MAX_SCHEMA_BYTES);
             assert!(tool.result_schema().canonical_bytes() <= MAX_SCHEMA_BYTES);
+            if matches!(name, "riffdb_event_next" | "riffdb_contextual_next") {
+                assert_eq!(
+                    tool.input_schema().json_object()["properties"]["maximum_wait_nanos"]["default"],
+                    0
+                );
+            }
         }
     }
 
     #[test]
     fn resource_registry_has_one_surface_and_exact_subscription_set() {
         let registry = resource_registry().expect("accepted resource registry loads");
-        assert_eq!(registry.entries().len(), 12);
+        assert_eq!(registry.entries().len(), 13);
         assert_eq!(
             registry
                 .entries()
                 .iter()
                 .filter(|entry| entry.surface() == ResourceSurface::Concrete)
                 .count(),
-            9
+            10
         );
         assert_eq!(
             registry
@@ -1788,7 +1797,8 @@ mod tests {
                 "active_contract",
                 "command_plan",
                 "projection_status",
-                "server_health"
+                "server_health",
+                "reactive_wakeup"
             ]
         );
     }

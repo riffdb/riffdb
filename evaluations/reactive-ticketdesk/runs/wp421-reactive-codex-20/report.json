@@ -1,0 +1,35 @@
+{
+  "schema": "riffdb-reactive-ticketdesk-run/v1",
+  "run_id": "wp421-reactive-codex-20",
+  "bundle_hash": "d3515fba93f835a27d3a9a9a881d11410a1b6a0b03910a3df7703ce84a2447b1",
+  "agent_identity": "codex-independent-evaluator",
+  "independent": true,
+  "fresh_context": true,
+  "human_interventions": 0,
+  "kernel_attempts": 0,
+  "kernel_successes": 0,
+  "handwritten_glue_lines": 0,
+  "compiler_failures": 1,
+  "runtime_failures": 0,
+  "time_to_complete_seconds": 155,
+  "source_access": {
+    "riffdb_implementation": false,
+    "ticketdesk_implementation": false
+  },
+  "checks": {
+    "application_boundary": true,
+    "browser_credentials_absent": true,
+    "browser_two_session_convergence": true,
+    "commit_before_ack_recovery": true,
+    "contextual_one_snapshot": true,
+    "generated_bindings_exact": true,
+    "mcp_wakeup_payload_free": true,
+    "reaction_retry_idempotent": true,
+    "reconnect_reset": true,
+    "revocation_clears_state": true
+  },
+  "completed": true,
+  "rating": 10,
+  "explanation": "The immutable symbolic Application Source V4 compiled to an exact Lock V5 and exact Rust, TypeScript, Python, and MCP artifacts. The complete application used the generated TypeScript client and product-owned CLI transport behind an authenticated HTTP/SSE relay and usable queue/detail UI. Deterministic live tests used two independent browser sessions and stores, exercised mutation convergence, detail updates, reconnect and reset handling, one-snapshot contextual hydration, a committed generated reaction followed by lease-expiry redelivery before acknowledgement, retry-stable outcome reuse with one resulting comment, payload-free MCP wakeup notification inspection, and application-role revocation with protected-state clearing. The supplied application-boundary checker and final locked regeneration checks passed. One initial acceptance-harness TypeScript declaration-order check failed and was corrected; no runtime test failed. No handwritten RiffDB glue, kernel API attempt, implementation source access, prior-run access, or human intervention occurred.",
+  "transcript_sha256": "034ffc84d18d2712f25d2142e590edfdb391619eb87762b4a175ee0d0c73e0bd"
+}

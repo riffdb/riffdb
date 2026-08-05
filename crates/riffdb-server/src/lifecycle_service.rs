@@ -28,20 +28,20 @@ use riffdb_service::{
     GetActiveContractResult, GetCommitRequest, GetCommitResult, GetContractVersionRequest,
     GetContractVersionResult, GetEntityRequest, GetEntityResult,
     GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
-    GetProjectionStatusRequest, GetProjectionStatusResult, GetQueryModuleRequest, HealthContext,
-    HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest,
-    ListPendingOutboxDeliveriesResult, LiveNamedQueryApplication, NamedSymbolicQueryRequest,
-    NegativeAcknowledgeEventStreamRequest, OfflineMaintenanceApplication,
-    OfflineMaintenanceStartResult, ProjectedQueryApplication, QueryApplication,
-    QueryModuleInspection, QueryProjectionRequest, QueryProjectionResult, ReplayEventsRequest,
-    ReplayEventsResult, RequestContext, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
-    RestoreOfflineBackupInvocation, RevokeCapabilityRequest, RevokeCapabilityResult,
-    ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult,
-    SeekEventStreamConsumerRequest, ServiceFuture, StatisticsRequest, StatisticsResult,
-    SubscribeToCommitsRequest, SubscribeToCommitsResult, SymbolicContractSelector,
-    SymbolicQueryApplication, TailEventsRequest, TailEventsResult, TraceProvenanceRequest,
-    TraceProvenanceResult, ValidateContractRequest, WatchLiveNamedQueryRequest,
-    WatchLiveNamedQueryResult,
+    GetProjectionStatusRequest, GetProjectionStatusResult, GetQueryModuleRequest,
+    GetReactiveWakeupResult, HealthContext, HealthRequest, HealthResult,
+    ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
+    LiveNamedQueryApplication, NamedSymbolicQueryRequest, NegativeAcknowledgeEventStreamRequest,
+    OfflineMaintenanceApplication, OfflineMaintenanceStartResult, ProjectedQueryApplication,
+    QueryApplication, QueryModuleInspection, QueryProjectionRequest, QueryProjectionResult,
+    ReplayEventsRequest, ReplayEventsResult, RequestContext, ResolveCommandOutcomeRequest,
+    ResolveCommandOutcomeResult, RestoreOfflineBackupInvocation, RevokeCapabilityRequest,
+    RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest,
+    ScanIndexResult, SeekEventStreamConsumerRequest, ServiceFuture, StatisticsRequest,
+    StatisticsResult, SubscribeToCommitsRequest, SubscribeToCommitsResult,
+    SymbolicContractSelector, SymbolicQueryApplication, TailEventsRequest, TailEventsResult,
+    TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
+    WatchLiveNamedQueryRequest, WatchLiveNamedQueryResult,
 };
 use riffdb_types::ServiceOperationV1;
 
@@ -457,16 +457,37 @@ impl OfflineMaintenanceApplication for LifecycleApplicationService {
     }
 }
 
-delegate_operation! {
-    DiscoveryApplication {
-        discover_command_tools(
-            context: RequestContext,
-            request: DiscoverCommandToolsRequest
-        ) -> DiscoverCommandToolsResult => DiscoverCommandTools;
-        discover_resources(
-            context: RequestContext,
-            request: DiscoverResourcesRequest
-        ) -> DiscoverResourcesResult => DiscoverResources;
+impl DiscoveryApplication for LifecycleApplicationService {
+    fn discover_command_tools(
+        &self,
+        context: RequestContext,
+        request: DiscoverCommandToolsRequest,
+    ) -> ServiceFuture<'_, DiscoverCommandToolsResult> {
+        let Some(service) = self.admit(ServiceOperationV1::DiscoverCommandTools) else {
+            return unavailable();
+        };
+        Box::pin(async move { service.discover_command_tools(context, request).await })
+    }
+
+    fn discover_resources(
+        &self,
+        context: RequestContext,
+        request: DiscoverResourcesRequest,
+    ) -> ServiceFuture<'_, DiscoverResourcesResult> {
+        let Some(service) = self.admit(ServiceOperationV1::DiscoverResources) else {
+            return unavailable();
+        };
+        Box::pin(async move { service.discover_resources(context, request).await })
+    }
+
+    fn get_reactive_wakeup(
+        &self,
+        context: RequestContext,
+    ) -> ServiceFuture<'_, GetReactiveWakeupResult> {
+        let Some(service) = self.admit(ServiceOperationV1::GetReactiveWakeup) else {
+            return unavailable();
+        };
+        Box::pin(async move { service.get_reactive_wakeup(context).await })
     }
 }
 

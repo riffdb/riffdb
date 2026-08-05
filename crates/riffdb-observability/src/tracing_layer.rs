@@ -1025,7 +1025,11 @@ const fn mcp_risk_tag(risk: McpRiskClass) -> u8 {
         McpRiskClass::ReadOnly => 5,
         McpRiskClass::ReadOnlyCompute => 6,
         McpRiskClass::ReadOnlyData => 7,
-        McpRiskClass::DynamicCommand => 8,
+        McpRiskClass::SymbolicRead => 8,
+        McpRiskClass::ReactiveApplication => 9,
+        McpRiskClass::ConsumerControl => 10,
+        McpRiskClass::ApplicationMutation => 11,
+        McpRiskClass::DynamicCommand => 12,
     }
 }
 

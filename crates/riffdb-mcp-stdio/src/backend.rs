@@ -19,7 +19,7 @@ use riffdb_api_mcp::{
     format_outcome_template_locator_from_public, format_projection_status_locator,
     format_projection_status_locator_from_public, format_provenance_locator,
     format_provenance_locator_from_public, format_provenance_template_locator,
-    format_server_health_locator, parse_resource_locator,
+    format_reactive_wakeup_locator, format_server_health_locator, parse_resource_locator,
 };
 use riffdb_client_rust::{
     ApplicationContract, ApplicationValue, CallMetadata, ClientError, DetailsFreeStatus,
@@ -428,6 +428,30 @@ impl PublicGrpcMcpBackend {
                     format_server_health_locator().to_owned(),
                     response::authenticated_health_resource(health)
                         .map_err(|_| McpBackendError::InvalidResponse)?,
+                )
+            }
+            McpResourceLocator::ReactiveWakeup => {
+                let mut client = self.client.clone();
+                invocation.charge_observer_physical_call()?;
+                let response = client
+                    .get_reactive_wakeup(
+                        v1::GetReactiveWakeupRequest {
+                            request_id: invocation.request_id.to_vec(),
+                        },
+                        &self.metadata,
+                    )
+                    .await
+                    .authenticated_client_result(&self.client_activity)?;
+                if response.generation.len() != 32 {
+                    return Err(McpBackendError::InvalidResponse);
+                }
+                json_resource(
+                    "reactive_wakeup",
+                    format_reactive_wakeup_locator().to_owned(),
+                    McpResourceJson::from_serializable(&serde_json::json!({
+                        "generation": lower_hex(&response.generation),
+                    }))
+                    .map_err(|_| McpBackendError::InvalidResponse)?,
                 )
             }
         }
@@ -1261,18 +1285,19 @@ impl McpBackend for PublicGrpcMcpBackend {
         &'a self,
         invocation: &'a Self::Invocation,
         request: McpSubscriptionRequest,
-    ) -> McpBackendFuture<'a, ()> {
+    ) -> McpBackendFuture<'a, riffdb_api_mcp::McpVisibleFingerprint> {
         Box::pin(async move {
             reject_cancelled(invocation)?;
             match request.locator() {
                 McpResourceLocator::ActiveContract
                 | McpResourceLocator::CommandPlan { .. }
                 | McpResourceLocator::ProjectionStatus { .. }
-                | McpResourceLocator::ServerHealth => {
-                    self.read_resource_locator(invocation, request.locator().clone())
-                        .await?;
-                    Ok(())
-                }
+                | McpResourceLocator::ServerHealth
+                | McpResourceLocator::ReactiveWakeup => self
+                    .read_resource_locator(invocation, request.locator().clone())
+                    .await?
+                    .visible_fingerprint()
+                    .map_err(|_| McpBackendError::InvalidResponse),
                 McpResourceLocator::ContractVersion { .. }
                 | McpResourceLocator::EntitySchema { .. }
                 | McpResourceLocator::CommandDocumentation { .. }
@@ -1583,6 +1608,10 @@ pub(crate) fn compact_resource_descriptor_from_public(
             .map_err(|_| McpBackendError::InvalidResponse)?,
         ),
         Resource::ServerHealth(_) => ("server_health", format_server_health_locator().to_owned()),
+        Resource::ReactiveWakeup(_) => (
+            "reactive_wakeup",
+            format_reactive_wakeup_locator().to_owned(),
+        ),
     };
     McpResourceDescriptor::new(branch, uri).map_err(|_| McpBackendError::InvalidResponse)
 }
@@ -2108,6 +2137,10 @@ fn resource_descriptor_from_public(
             .map_err(|_| McpBackendError::InvalidResponse)?,
         ),
         Resource::ServerHealth(_) => ("server_health", format_server_health_locator().to_owned()),
+        Resource::ReactiveWakeup(_) => (
+            "reactive_wakeup",
+            format_reactive_wakeup_locator().to_owned(),
+        ),
     };
     McpResourceDescriptor::new(branch, uri).map_err(|_| McpBackendError::InvalidResponse)
 }

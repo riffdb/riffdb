@@ -457,7 +457,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 53);
+    assert_eq!(methods.len(), 54);
     let descriptor_order = descriptors
         .file
         .iter()
@@ -496,6 +496,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "GetContractVersion",
             "DiscoverCommandTools",
             "DiscoverResources",
+            "GetReactiveWakeup",
         ]
     );
     assert_eq!(
@@ -603,6 +604,8 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         "DiscoverCommandToolsResponse",
         "DiscoverResourcesRequest",
         "DiscoverResourcesResponse",
+        "GetReactiveWakeupRequest",
+        "GetReactiveWakeupResponse",
         "GetCommitRequest",
         "GetCommitResponse",
         "GetEntityRequest",
@@ -693,7 +696,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        231
+        233
     );
     assert_eq!(
         messages

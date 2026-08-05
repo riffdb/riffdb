@@ -388,6 +388,13 @@ impl RiffDbClient {
         validate_discover_resources_exchange
     );
     unary!(
+        get_reactive_wakeup,
+        contract,
+        get_reactive_wakeup,
+        v1::GetReactiveWakeupRequest,
+        v1::GetReactiveWakeupResponse
+    );
+    unary!(
         execute,
         command,
         execute,

@@ -481,77 +481,15 @@ impl RiffDbService {
         let lifecycle = Arc::new(OperationAuditLifecycle::new(operation));
         let spawn_submitted_at = Instant::now();
         let job = Box::pin(async move {
-            // First statement of the spawned task: measure submission → run gap.
-            // SpawnDispatch belongs to the read pipeline, so it is recorded only
-            // for the query operation class. Recording it for every operation
-            // would pollute the read-stage family with command, contract, and
-            // administration dispatch latencies that no read-stage consumer
-            // attributes to a read.
-            if operation == ServiceOperationV1::ExecuteQuery {
-                job_inner.providers.telemetry.record(
-                    crate::ServiceTelemetryEvent::ReadPipelineStageCompleted {
-                        stage: crate::ReadPipelineStage::SpawnDispatch,
-                        elapsed: spawn_submitted_at.elapsed(),
-                    },
-                );
-            }
-            let started_at = Instant::now();
-            let observed = catch_future_panic(future, &lifecycle).await;
-            let result = match observed {
-                Ok(result) if !lifecycle.normal_completion_requires_containment(result.is_ok()) => {
-                    result
-                }
-                // Pre-admission rejections with no durable Started may settle
-                // without an append under saturation (no free coordinator slot).
-                // Gate on lifecycle state, not error kind: a future post-Started
-                // Overloaded producer must not silently orphan the audit pair.
-                Ok(Err(failure)) if !lifecycle.has_durable_started() => {
-                    lifecycle.force_terminal_settled_for_pre_admission();
-                    Err(failure)
-                }
-                Ok(_) => {
-                    let failure =
-                        job_inner.internal_failure(operation, InternalDefect::UnterminatedAudit);
-                    match catch_future_panic(
-                        job_inner.settle_contained_failure_audit(&lifecycle),
-                        &lifecycle,
-                    )
-                    .await
-                    {
-                        Ok(Ok(())) => Err(failure),
-                        Ok(Err(failure)) => Err(contained_audit_failure(failure)),
-                        Err(()) => {
-                            job_inner.note_audit_failure(operation);
-                            Err(PublicError::storage_unavailable().into())
-                        }
-                    }
-                }
-                Err(()) => {
-                    let failure = job_inner.internal_failure(operation, InternalDefect::Panic);
-                    match catch_future_panic(
-                        job_inner.settle_contained_failure_audit(&lifecycle),
-                        &lifecycle,
-                    )
-                    .await
-                    {
-                        Ok(Ok(())) => Err(failure),
-                        Ok(Err(failure)) => Err(contained_audit_failure(failure)),
-                        Err(()) => {
-                            job_inner.note_audit_failure(operation);
-                            Err(PublicError::storage_unavailable().into())
-                        }
-                    }
-                }
-            };
-            job_inner
-                .providers
-                .telemetry
-                .record(ServiceTelemetryEvent::OperationTerminal {
-                    operation,
-                    ingress,
-                    terminal: service_terminal_class(&result),
-                    elapsed: started_at.elapsed(),
-                });
+            let result = observe_operation(
+                job_inner.as_ref(),
+                operation,
+                ingress,
+                future,
+                lifecycle,
+                Some(spawn_submitted_at),
+            )
+            .await;
             sender.complete(result);
         });
 
@@ -598,6 +536,103 @@ impl RiffDbService {
         spawn_trusted_service_job(self.inner.providers.spawner.as_ref(), job);
         Box::pin(trusted_service_job_completion(receipt))
     }
+}
+
+pub(crate) async fn observe_inline_operation<T, F>(
+    service: &RiffDbServiceInner,
+    operation: ServiceOperationV1,
+    ingress: riffdb_types::ServiceIngressKindV1,
+    future: F,
+) -> ServiceResult<T>
+where
+    F: Future<Output = ServiceResult<T>>,
+{
+    observe_operation(
+        service,
+        operation,
+        ingress,
+        future,
+        Arc::new(OperationAuditLifecycle::new(operation)),
+        None,
+    )
+    .await
+}
+
+async fn observe_operation<T, F>(
+    service: &RiffDbServiceInner,
+    operation: ServiceOperationV1,
+    ingress: riffdb_types::ServiceIngressKindV1,
+    future: F,
+    lifecycle: Arc<OperationAuditLifecycle>,
+    spawn_submitted_at: Option<Instant>,
+) -> ServiceResult<T>
+where
+    F: Future<Output = ServiceResult<T>>,
+{
+    // SpawnDispatch belongs only to the public query submission boundary.
+    if operation == ServiceOperationV1::ExecuteQuery
+        && let Some(submitted_at) = spawn_submitted_at
+    {
+        service.providers.telemetry.record(
+            crate::ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                stage: crate::ReadPipelineStage::SpawnDispatch,
+                elapsed: submitted_at.elapsed(),
+            },
+        );
+    }
+    let started_at = Instant::now();
+    let observed = catch_future_panic(future, &lifecycle).await;
+    let result = match observed {
+        Ok(result) if !lifecycle.normal_completion_requires_containment(result.is_ok()) => result,
+        // Pre-admission rejections with no durable Started may settle without an
+        // append under saturation. A post-Started rejection must be contained.
+        Ok(Err(failure)) if !lifecycle.has_durable_started() => {
+            lifecycle.force_terminal_settled_for_pre_admission();
+            Err(failure)
+        }
+        Ok(_) => {
+            let failure = service.internal_failure(operation, InternalDefect::UnterminatedAudit);
+            match catch_future_panic(
+                service.settle_contained_failure_audit(&lifecycle),
+                &lifecycle,
+            )
+            .await
+            {
+                Ok(Ok(())) => Err(failure),
+                Ok(Err(failure)) => Err(contained_audit_failure(failure)),
+                Err(()) => {
+                    service.note_audit_failure(operation);
+                    Err(PublicError::storage_unavailable().into())
+                }
+            }
+        }
+        Err(()) => {
+            let failure = service.internal_failure(operation, InternalDefect::Panic);
+            match catch_future_panic(
+                service.settle_contained_failure_audit(&lifecycle),
+                &lifecycle,
+            )
+            .await
+            {
+                Ok(Ok(())) => Err(failure),
+                Ok(Err(failure)) => Err(contained_audit_failure(failure)),
+                Err(()) => {
+                    service.note_audit_failure(operation);
+                    Err(PublicError::storage_unavailable().into())
+                }
+            }
+        }
+    };
+    service
+        .providers
+        .telemetry
+        .record(ServiceTelemetryEvent::OperationTerminal {
+            operation,
+            ingress,
+            terminal: service_terminal_class(&result),
+            elapsed: started_at.elapsed(),
+        });
+    result
 }
 
 pub(crate) struct MaintenanceSubmissionState(AtomicBool);
