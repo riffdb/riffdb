@@ -590,6 +590,23 @@ fn count_in_out(seq: &[Cls]) -> (usize, usize) {
 // --- Mandated tests 1–8 ---
 
 #[test]
+fn command_window_grows_only_before_a_bound_or_hard_barrier() {
+    let mut pending = VecDeque::from([command_msg_with_id(1)]);
+    assert!(command_prefix_can_grow(&pending));
+
+    pending.push_back(observation_msg(2));
+    assert!(command_prefix_can_grow(&pending));
+
+    pending.push_back(audit_msg(3));
+    assert!(!command_prefix_can_grow(&pending));
+
+    let full = (0..riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS)
+        .map(|ordinal| command_msg_with_id(u8::try_from(ordinal).expect("bounded ordinal")))
+        .collect::<VecDeque<_>>();
+    assert!(!command_prefix_can_grow(&full));
+}
+
+#[test]
 fn form_next_unit_preserves_order_and_loses_nothing() {
     // Property: random class sequences drain exhaustively; message count in == out
     // (modulo observation hoisting, which reorders but does not drop). Oracle

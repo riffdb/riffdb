@@ -323,6 +323,7 @@ const SUBMISSION_GATE_CLOSED: usize = 1 << (usize::BITS - 1);
 const SUBMISSION_COUNT_MASK: usize = !SUBMISSION_GATE_CLOSED;
 const MAX_QUEUED_COMMAND_BYTES: usize = 32 * 1_024 * 1_024;
 const QUEUED_COMMAND_BYTE_UNIT: usize = 1_024;
+const OLDEST_GROUPABLE_TRANSITION_MAX_AGE: Duration = Duration::from_micros(200);
 
 /// Exact number of coordinator workload messages admitted independently of shutdown.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -2422,6 +2423,51 @@ struct CommandCoordinatorActor {
     post_dispatch_hooks: Option<std::sync::mpsc::Receiver<Box<dyn FnOnce() + Send>>>,
 }
 
+fn command_prefix_can_grow(pending: &VecDeque<CoordinatorMessage>) -> bool {
+    if !matches!(
+        pending.front().map(command_grouping_class),
+        Some(CommandGroupingClass::Command)
+    ) {
+        return false;
+    }
+    let mut selected = 0_usize;
+    for message in pending {
+        match command_grouping_class(message) {
+            CommandGroupingClass::Command => {
+                selected += 1;
+                if selected >= riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
+                    return false;
+                }
+            }
+            CommandGroupingClass::DeferrableObservation => {}
+            CommandGroupingClass::Barrier => return false,
+        }
+    }
+    true
+}
+
+fn collect_until_group_deadline(
+    receiver: &mut mpsc::Receiver<CoordinatorMessage>,
+    pending: &mut VecDeque<CoordinatorMessage>,
+    workload_capacity: usize,
+    deadline: Instant,
+    shutting_down: &mut bool,
+) {
+    while pending.len() < workload_capacity
+        && command_prefix_can_grow(pending)
+        && Instant::now() < deadline
+    {
+        match receiver.try_recv() {
+            Ok(message) => pending.push_back(message),
+            Err(mpsc::error::TryRecvError::Empty) => std::hint::spin_loop(),
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                *shutting_down = true;
+                return;
+            }
+        }
+    }
+}
+
 impl CommandCoordinatorActor {
     async fn run(
         mut self,
@@ -2432,12 +2478,15 @@ impl CommandCoordinatorActor {
         let mut writer_busy = false;
         let mut shutting_down = false;
         let mut formation_anchor = Instant::now();
+        let mut formation_deadline = None;
         loop {
             if !writer_busy {
                 // Formation edge: drain ready channel messages into pending while
-                // under admission capacity (concurrent equal-key groups form here),
-                // then form. Concurrent intake while the writer is busy also fills
-                // pending via the select arm below.
+                // under admission capacity, then honor the oldest command's real
+                // 200-microsecond deadline with a timer-free bounded poll. Intake
+                // while the writer is busy normally consumes that deadline before
+                // the prior commit completes; only a genuinely fresh formation
+                // waits here.
                 //
                 // Accepted backlog under a *blocked* writer is 2C+1: pending ≤ C
                 // is enforced by the busy-path select arm (`pending.len() <
@@ -2468,6 +2517,20 @@ impl CommandCoordinatorActor {
                 // arrival after an idle park (not only on writer feedback).
                 if pending_was_empty && !pending.is_empty() {
                     formation_anchor = Instant::now();
+                    formation_deadline = Some(
+                        formation_anchor
+                            .checked_add(OLDEST_GROUPABLE_TRANSITION_MAX_AGE)
+                            .unwrap_or(formation_anchor),
+                    );
+                }
+                if !shutting_down && let Some(deadline) = formation_deadline {
+                    collect_until_group_deadline(
+                        &mut self.receiver,
+                        &mut pending,
+                        workload_capacity,
+                        deadline,
+                        &mut shutting_down,
+                    );
                 }
 
                 if let Some((unit, reason)) = form_next_unit(&mut pending) {
@@ -2512,6 +2575,10 @@ impl CommandCoordinatorActor {
                         .try_send(unit)
                         .expect("writer idle: work channel must accept the formed unit");
                     writer_busy = true;
+                    // Anything left was already available behind a count bound,
+                    // duplicate boundary, or hard barrier. It is not granted a
+                    // fresh delay when it reaches the front.
+                    formation_deadline = None;
                     #[cfg(test)]
                     {
                         let target = TEST_PANIC_LIFECYCLE.load(Ordering::Acquire);
@@ -2548,7 +2615,6 @@ impl CommandCoordinatorActor {
                         match completed {
                             Some(UnitCompleted) => {
                                 writer_busy = false;
-                                formation_anchor = Instant::now();
                                 if matches!(
                                     lifecycle_state(&self.lifecycle.lifecycle),
                                     CoordinatorLifecycleState::Fenced
@@ -2582,6 +2648,11 @@ impl CommandCoordinatorActor {
                                 // First message of a new collection after idle.
                                 if pending.is_empty() {
                                     formation_anchor = Instant::now();
+                                    formation_deadline = Some(
+                                        formation_anchor
+                                            .checked_add(OLDEST_GROUPABLE_TRANSITION_MAX_AGE)
+                                            .unwrap_or(formation_anchor),
+                                    );
                                 }
                                 pending.push_back(message);
                             }
@@ -2591,7 +2662,15 @@ impl CommandCoordinatorActor {
                 }
             } else if !shutting_down {
                 match self.receiver.recv().await {
-                    Some(message) => pending.push_back(message),
+                    Some(message) => {
+                        formation_anchor = Instant::now();
+                        formation_deadline = Some(
+                            formation_anchor
+                                .checked_add(OLDEST_GROUPABLE_TRANSITION_MAX_AGE)
+                                .unwrap_or(formation_anchor),
+                        );
+                        pending.push_back(message);
+                    }
                     None => shutting_down = true,
                 }
             } else {
@@ -3140,9 +3219,8 @@ impl CommandWriter {
 /// Pure selection kernel: form the next ordered work unit from the deque front.
 ///
 /// Front-only consumption preserves ADR-0058 anti-starvation and ADR-0060's
-/// deferred-before-new / barrier-overtaking prohibitions. The ADR-0060 MAY
-/// wait window is subsumed by the event-driven in-flight-commit formation
-/// window of the pipelined writer (timer-based group waits are forbidden).
+/// deferred-before-new / barrier-overtaking prohibitions. The caller performs
+/// ADR-0060's bounded timer-free collection before invoking this pure kernel.
 fn form_next_unit(
     pending: &mut VecDeque<CoordinatorMessage>,
 ) -> Option<(WorkUnit, CommitGroupDispatchReason)> {
