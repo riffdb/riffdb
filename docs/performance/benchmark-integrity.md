@@ -121,7 +121,7 @@ Results are embedded as `device_baseline` next to an `environment` block
 
 | Mode | Flag | Semantics |
 |------|------|-----------|
-| per-level daemon (default) | (none) / `--load-sweep-per-level-daemon` | Fresh daemon and identical seed per client point; histogram is that level’s cumulative shutdown report (`histogram_scope: per_level`). |
+| per-level daemon (default) | (none) / `--load-sweep-per-level-daemon` | Fresh daemon and identical seed per client point. RiffDB restarts after setup, so shutdown telemetry covers that point's warmup and measurement but excludes bootstrap/deploy/seed (`histogram_scope: per_level_process_after_setup_including_warmup`). |
 | accumulated history | `--load-accumulate-history` | One daemon for the whole sweep; later points include earlier writes and the final histogram has `histogram_scope: cumulative_final`. |
 
 Both modes remain available. Accumulation is a deliberate history-growth
@@ -149,7 +149,9 @@ explicitly never release evidence.
 
 Resource deltas are attribution aids, not application metrics: process CPU
 ticks/RSS/I/O and durable bytes for RiffDB; database blocks/temp/WAL/database
-size for PostgreSQL. Identifiers and application values are never labels.
+size for PostgreSQL. Byte growth and kernel/WAL writes are also normalized by
+successful mutations; a read-only point reports `null`, never a fabricated
+zero-per-mutation ratio. Identifiers and application values are never labels.
 
 ## Stderr capture
 

@@ -663,7 +663,14 @@ where
     }
 
     let compatibility_started = Instant::now();
-    let groups = partition_pending_fifo_by_compatibility(pending);
+    let (groups, conflict_key_splits, exact_access_splits) =
+        partition_pending_fifo_by_compatibility(pending);
+    telemetry.record(CommitTelemetryEvent::CommandGroupPartitioned {
+        selected: u16::try_from(groups.iter().map(Vec::len).sum::<usize>()).unwrap_or(u16::MAX),
+        completion_groups: u16::try_from(groups.len()).unwrap_or(u16::MAX),
+        conflict_key_splits,
+        exact_access_splits,
+    });
     telemetry.record(CommitTelemetryEvent::CommandPipelineStageCompleted {
         stage: CommandPipelineStage::Compatibility,
         command_count: u16::try_from(groups.iter().map(Vec::len).sum::<usize>())
@@ -833,14 +840,20 @@ struct CompatibleCommandGroup {
     writes: std::collections::HashSet<EntityTarget>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CompatibilityFailure {
+    ConflictKey,
+    ExactAccess,
+}
+
 impl CompatibleCommandGroup {
-    fn try_insert(&mut self, state: &PendingCommandAttempts) -> bool {
+    fn try_insert(&mut self, state: &PendingCommandAttempts) -> Result<(), CompatibilityFailure> {
         if state
             .raw_conflict_keys()
             .iter()
             .any(|key| self.keys.contains(key))
         {
-            return false;
+            return Err(CompatibilityFailure::ConflictKey);
         }
         let mut reads = std::collections::HashSet::new();
         let mut writes = std::collections::HashSet::new();
@@ -861,30 +874,40 @@ impl CompatibleCommandGroup {
         // merely the prefix visible when this candidate was staged. Reject
         // read/write and write/write overlap in either FIFO direction.
         if !exact_accesses_are_compatible(&self.reads, &self.writes, &reads, &writes) {
-            return false;
+            return Err(CompatibilityFailure::ExactAccess);
         }
         self.keys.extend(state.raw_conflict_keys().iter().cloned());
         self.reads.extend(reads);
         self.writes.extend(writes);
-        true
+        Ok(())
     }
 }
 
 fn partition_pending_fifo_by_compatibility(
     pending: Vec<(usize, PendingCommandAttempts)>,
-) -> Vec<Vec<(usize, PendingCommandAttempts)>> {
+) -> (Vec<Vec<(usize, PendingCommandAttempts)>>, u16, u16) {
     let mut groups = Vec::new();
     let mut current = Vec::new();
     let mut compatibility = CompatibleCommandGroup::default();
+    let mut conflict_key_splits = 0_u16;
+    let mut exact_access_splits = 0_u16;
     for item in pending {
-        if !compatibility.try_insert(&item.1) {
+        if let Err(reason) = compatibility.try_insert(&item.1) {
+            match reason {
+                CompatibilityFailure::ConflictKey => {
+                    conflict_key_splits = conflict_key_splits.saturating_add(1);
+                }
+                CompatibilityFailure::ExactAccess => {
+                    exact_access_splits = exact_access_splits.saturating_add(1);
+                }
+            }
             if !current.is_empty() {
                 groups.push(std::mem::take(&mut current));
             }
             compatibility = CompatibleCommandGroup::default();
             // A command's conflict keys and exact accesses are canonical and
             // duplicate-free internally, so a fresh group must accept it.
-            if !compatibility.try_insert(&item.1) {
+            if compatibility.try_insert(&item.1).is_err() {
                 groups.push(vec![item]);
                 continue;
             }
@@ -894,7 +917,7 @@ fn partition_pending_fifo_by_compatibility(
     if !current.is_empty() {
         groups.push(current);
     }
-    groups
+    (groups, conflict_key_splits, exact_access_splits)
 }
 
 fn exact_accesses_are_compatible(

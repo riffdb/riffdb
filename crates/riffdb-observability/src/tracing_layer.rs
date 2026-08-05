@@ -275,6 +275,9 @@ impl TraceRecord {
                 70 + commit_group_dispatch_reason_tag(reason),
                 saturating_duration_microseconds(elapsed),
             ),
+            CommitTelemetryEvent::CommandGroupPartitioned {
+                completion_groups, ..
+            } => (81, completion_groups as u64),
             CommitTelemetryEvent::StorageQueueCompleted {
                 ingress, elapsed, ..
             } => (ingress.tag(), saturating_duration_microseconds(elapsed)),

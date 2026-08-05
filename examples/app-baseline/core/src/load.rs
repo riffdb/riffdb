@@ -22,6 +22,10 @@ const NS_LOAD_WRITE: u8 = 0x7e;
 /// Named load profiles (weights and pacing, not free-form knobs).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkloadProfile {
+    /// Read-only diagnostic mix used to isolate application-port and RiffQL capacity.
+    ReadOnly,
+    /// Write-only diagnostic mix used to expose the physical durable-command ceiling.
+    WriteOnly,
     /// Mostly reads with a small write mix (~85/12/3).
     ///
     /// Omits `SwapMemberRoles` so the default mix does not serialize all clients
@@ -42,6 +46,8 @@ impl WorkloadProfile {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::ReadOnly => "read_only",
+            Self::WriteOnly => "write_only",
             Self::Interactive => "interactive",
             Self::Agent => "agent",
             Self::MembershipContention => "membership_contention",
@@ -51,6 +57,8 @@ impl WorkloadProfile {
     /// Parses a profile name.
     pub fn parse(text: &str) -> Option<Self> {
         match text {
+            "read_only" => Some(Self::ReadOnly),
+            "write_only" => Some(Self::WriteOnly),
             "interactive" => Some(Self::Interactive),
             "agent" => Some(Self::Agent),
             "membership_contention" => Some(Self::MembershipContention),
@@ -62,6 +70,16 @@ impl WorkloadProfile {
     #[must_use]
     pub fn weights(self) -> &'static [(LoadOp, u32)] {
         match self {
+            Self::ReadOnly => &[
+                (LoadOp::PointGetTicket, 20),
+                (LoadOp::PointGetUser, 15),
+                (LoadOp::ListTicketsByProjectStatus, 15),
+                (LoadOp::ListOpenTicketsForAssignee, 15),
+                (LoadOp::ListCommentsForTicket, 10),
+                (LoadOp::ListProjectMembers, 10),
+                (LoadOp::TicketDetailPage, 15),
+            ],
+            Self::WriteOnly => Self::saturating_weights(),
             // Default mixes intentionally omit SwapMemberRoles: that op serializes
             // on a shared membership pair and is not "isolated" under concurrency.
             // Use WorkloadProfile::MembershipContention for that stress path.
@@ -111,7 +129,7 @@ impl WorkloadProfile {
     #[must_use]
     pub const fn burst_ops(self) -> u32 {
         match self {
-            Self::Interactive | Self::MembershipContention => 1,
+            Self::ReadOnly | Self::WriteOnly | Self::Interactive | Self::MembershipContention => 1,
             Self::Agent => 8,
         }
     }
@@ -120,7 +138,9 @@ impl WorkloadProfile {
     #[must_use]
     pub const fn think_time(self) -> Duration {
         match self {
-            Self::Interactive | Self::MembershipContention => Duration::ZERO,
+            Self::ReadOnly | Self::WriteOnly | Self::Interactive | Self::MembershipContention => {
+                Duration::ZERO
+            }
             Self::Agent => Duration::from_millis(8),
         }
     }
@@ -130,7 +150,7 @@ impl WorkloadProfile {
     #[must_use]
     pub const fn replay_basis_points(self) -> u32 {
         match self {
-            Self::Interactive | Self::MembershipContention => 0,
+            Self::ReadOnly | Self::WriteOnly | Self::Interactive | Self::MembershipContention => 0,
             Self::Agent => 500, // 5%
         }
     }
@@ -231,6 +251,18 @@ impl LoadOp {
             Self::SwapMemberRoles,
             Self::OpenTicketWithLabels,
         ]
+    }
+
+    /// Whether this operation invokes one public application command.
+    #[must_use]
+    pub const fn is_command(self) -> bool {
+        matches!(
+            self,
+            Self::CreateComment
+                | Self::CloseTicketWithComment
+                | Self::SwapMemberRoles
+                | Self::OpenTicketWithLabels
+        )
     }
 }
 
@@ -532,6 +564,26 @@ pub struct OpenLoopReport {
 }
 
 impl LoadReport {
+    /// Successful application mutations in the measured window.
+    #[must_use]
+    pub fn successful_mutations(&self) -> u64 {
+        self.by_op
+            .iter()
+            .filter(|(operation, _)| operation.is_command())
+            .map(|(_, stats)| stats.success)
+            .fold(0_u64, u64::saturating_add)
+    }
+
+    /// Public command invocations in the measured window, including closed failures and replays.
+    #[must_use]
+    pub fn command_attempts(&self) -> u64 {
+        self.by_op
+            .iter()
+            .filter(|(operation, _)| operation.is_command())
+            .map(|(_, stats)| stats.total_operations())
+            .fold(0_u64, u64::saturating_add)
+    }
+
     /// JSON report under `riffdb.app-baseline-load/v1`.
     #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
@@ -541,6 +593,8 @@ impl LoadReport {
             .saturating_mul(1_000_000_000)
             .checked_div(elapsed_ns)
             .unwrap_or(0);
+        let successful_mutations = self.successful_mutations();
+        let command_attempts = self.command_attempts();
         let mut ops = serde_json::Map::new();
         for (op, stats) in &self.by_op {
             if stats.total_operations() > 0 {
@@ -633,6 +687,10 @@ impl LoadReport {
                 "max_pause_ns": worker_longest_pause_ns.iter().copied().max().unwrap_or(0),
             },
             "throughput_ops_s": throughput,
+            "command_attempts": command_attempts,
+            "command_attempts_s": command_attempts.saturating_mul(1_000_000_000).checked_div(elapsed_ns).unwrap_or(0),
+            "successful_mutations": successful_mutations,
+            "successful_mutations_s": successful_mutations.saturating_mul(1_000_000_000).checked_div(elapsed_ns).unwrap_or(0),
             "tenant_scope": if self.config.tenant_count == 1 { "single_organization" } else { "multiple_organizations" },
             "tenant_count": self.config.tenant_count,
             "hot_tenant_percent": self.config.hot_tenant_percent,
@@ -2001,6 +2059,39 @@ mod tests {
             .sum();
         let total: u32 = weights.iter().map(|(_, w)| *w).sum();
         assert!(reads * 100 / total >= 70);
+    }
+
+    #[test]
+    fn diagnostic_profiles_isolate_reads_and_writes() {
+        let is_write = |op: LoadOp| {
+            matches!(
+                op,
+                LoadOp::CreateComment
+                    | LoadOp::CloseTicketWithComment
+                    | LoadOp::SwapMemberRoles
+                    | LoadOp::OpenTicketWithLabels
+            )
+        };
+        assert!(
+            WorkloadProfile::ReadOnly
+                .weights()
+                .iter()
+                .all(|(op, _)| !is_write(*op))
+        );
+        assert!(
+            WorkloadProfile::WriteOnly
+                .weights()
+                .iter()
+                .all(|(op, _)| is_write(*op))
+        );
+        assert_eq!(
+            WorkloadProfile::parse("read_only"),
+            Some(WorkloadProfile::ReadOnly)
+        );
+        assert_eq!(
+            WorkloadProfile::parse("write_only"),
+            Some(WorkloadProfile::WriteOnly)
+        );
     }
 
     #[test]

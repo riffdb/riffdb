@@ -124,6 +124,17 @@ pub enum CommitTelemetryEvent {
         /// Time spent collecting after receiving the oldest groupable command.
         elapsed: Duration,
     },
+    /// One intake group was partitioned into exact compatible durable groups.
+    CommandGroupPartitioned {
+        /// Commands presented to the compatibility partitioner.
+        selected: u16,
+        /// Non-empty compatible groups emitted in stable FIFO order.
+        completion_groups: u16,
+        /// Group boundaries caused by an overlapping declared conflict key.
+        conflict_key_splits: u16,
+        /// Group boundaries caused by exact entity read/write overlap.
+        exact_access_splits: u16,
+    },
     /// An accepted command reached the actor after waiting in the bounded queue.
     StorageQueueCompleted {
         /// Exact command identity from the checked executable-plan reference.

@@ -7645,3 +7645,188 @@ work_packages:
     entity-chain fingerprint's current-state ENTITIES pass as the sole remaining
     history-independent residual; the full workspace battery reports zero failures.
   human_review_triggers: *id001
+- id: WP-449
+  name: Mixed-load writer evidence and fresh-history diagnosis
+  depends_on: [WP-445, WP-448]
+  objective: Turn the failed PERF-008 mixed-load curve into per-point causal evidence before changing
+    scheduling or durable semantics, and prevent accumulated history from being presented as a pure
+    concurrency curve.
+  requirements: [PERF-001, PERF-008]
+  required_adrs: [ADR-0056, ADR-0059, ADR-0060, ADR-0061]
+  allowed_paths: [work_packages.yaml, examples/app-baseline/**, benchmarks/run-app-baseline,
+    crates/riffdb-commit/**, crates/riffdb-observability/**, crates/riffdb-server/**,
+    docs/performance/**]
+  deliverables:
+  - Per-point delta evidence for commit/flush latency, durable batch size, writer busy/idle time,
+    command queue delay, dispatch selection, and compatibility splitting, with closed fixed labels
+  - Fresh identical database state by default for 1/8/32/128-client read-only, write-only, and mixed
+    sweeps; retained-history mode remains explicit and cannot satisfy concurrency-only gates
+  - Exact per-operation logical and physical command rates plus process CPU, RSS, durable growth, and
+    kernel-write amplification normalized by successful mutation
+  - A measured diagnosis naming the first saturated stage without weakening or bypassing any command
+    obligation
+  acceptance_commands:
+  - cd examples/app-baseline && cargo +1.97.0 test --workspace
+  - cargo +1.97.0 test -p riffdb-observability --all-features
+  - cargo +1.97.0 test -p riffdb-server --all-features
+  - ./benchmarks/run-app-baseline --self-test
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every concurrency point owns an independent telemetry delta and fresh database by
+    default, write-only saturation exposes the physical durable ceiling, and no PERF-008 conclusion
+    depends on cumulative shutdown-only counters or an accumulated-history curve.
+  human_review_triggers: *id001
+- id: WP-450
+  name: Independent read and command admission topology
+  depends_on: [WP-449]
+  objective: Prevent long durable commands from consuming the complete blocking application-port
+    worker set while retaining bounded admission, one authoritative writer, cancellation, shutdown,
+    and fail-closed readiness.
+  requirements: [PERF-007, PERF-008]
+  required_adrs: [ADR-0007, ADR-0060, ADR-0071]
+  allowed_paths: [work_packages.yaml, crates/riffdb-service/**, crates/riffdb-server/**,
+    crates/riffdb-observability/**, crates/riffdb-testkit/**, tests/grpc/**,
+    examples/app-baseline/**, benchmarks/run-app-baseline, docs/performance/**]
+  deliverables:
+  - Separately bounded command and read blocking-port lanes with CPU-aware closed worker counts and
+    independent permits, queues, waiter limits, lifecycle ownership, and shutdown evidence
+  - Typed routing that cannot send an authoritative mutation through a reader lane or expose a
+    storage handle outside the API-neutral service
+  - Deterministic saturation, cancellation, poisoning, shutdown, and reader-progress tests proving
+    that a full command lane neither starves reads nor creates a second writer
+  - Same-run 32/128-client evidence attributing any remaining ceiling beyond port admission
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-service --all-features
+  - cargo +1.97.0 test -p riffdb-server --all-features
+  - cargo +1.97.0 test -p riffdb-server --test p1_riffdbd_restart --all-features
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Slow commands cannot occupy read-lane capacity, every lane remains bounded and drains
+    deterministically, and the sole coordinator is still the only authoritative mutation owner.
+  human_review_triggers: *id001
+- id: WP-451
+  name: Conflict-aware bounded writer scheduling
+  depends_on: [WP-450]
+  objective: Increase safe durable group fill under skewed unary traffic without delaying lone
+    commands, bypassing control-plane barriers, changing per-conflict-key order, or starving a hot
+    key.
+  requirements: [PERF-004, PERF-005, PERF-006, PERF-008]
+  required_adrs: [ADR-0058, ADR-0059, ADR-0060, ADR-0061]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/**, crates/riffdb-conflict/**,
+    crates/riffdb-commit/**, crates/riffdb-observability/**, crates/riffdb-server/**,
+    tests/command_semantics/**, tests/observability/**, examples/app-baseline/**,
+    benchmarks/run-app-baseline, docs/performance/**]
+  deliverables:
+  - Bounded scheduler evidence distinguishing intake group size, compatible completion groups,
+    deferred conflicts, hard barriers, byte/count limits, and oldest-item age
+  - Stable conflict-aware selection that preserves ingress order for overlapping dependency sets,
+    never crosses a hard barrier, bounds overtaking for disjoint work, and dispatches a lone command
+    immediately
+  - Deterministic adversarial schedules for hot-key floods, cold-key progress, barriers,
+    cancellation, fencing, and shutdown
+  - Measured group-fill and mutation-throughput improvement under isolated and Zipfian workloads
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-conflict --all-features
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-server --all-features
+  - ./benchmarks/run-app-baseline --self-test
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Disjoint commands no longer remain behind a compatible-group cut caused only by a hot
+    key, overlapping commands retain exact order, barriers never move, starvation is bounded, and
+    unary latency does not regain a timer park.
+  human_review_triggers: *id001
+- id: WP-452
+  name: Authoritative write-amplification budget
+  depends_on: [WP-449]
+  objective: Attribute and reduce the observed redb kernel-write amplification per successful
+    command without deleting required durable facts, weakening recovery, changing compatibility
+    bytes silently, or replacing redb.
+  requirements: [PERF-008, PERF-009, PERF-010, PERF-011, PERF-012]
+  required_adrs: [ADR-0004, ADR-0021, ADR-0061, ADR-0083, ADR-0085]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-commit/**, crates/riffdb-observability/**,
+    benchmarks/command-growth/**, examples/app-baseline/**, fixtures/proto/**,
+    benchmarks/run-app-baseline, scripts/benchmark-command-growth, docs/performance/**]
+  deliverables:
+  - Per-table logical row/byte and redb physical-write attribution for representative commands and
+    retained database sizes
+  - Evidence-backed removal of redundant hot-path reads, encodes, table opens, page rewrites, or
+    records only where the same durable proof remains available
+  - Explicit page-size/cache/layout experiments kept non-production until crash, reopen, migration,
+    and full compatibility evidence justify a selected setting
+  - A fixed write-amplification report and regression budget normalized per successful command
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - ./scripts/benchmark-command-growth --assert-perf-008
+  - ./scripts/check-generated
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The dominant physical writes are named by table and cause, selected reductions retain
+    byte compatibility or a reviewed migration, and crash/reopen proves the complete command graph.
+  human_review_triggers: *id001
+- id: WP-453
+  name: Serial physical micro-batch decision and prototype
+  depends_on: [WP-451, WP-452]
+  objective: Decide from WP-449 through WP-452 evidence whether compatible-only grouping can satisfy
+    PERF-008; if not, prototype a bounded transaction-local serial command batch without releasing
+    partial state, acknowledgement, or authority.
+  requirements: [PERF-004, PERF-005, PERF-008, PERF-009, PERF-010]
+  required_adrs: [ADR-0004, ADR-0005, ADR-0058, ADR-0059, ADR-0060, ADR-0061]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/**, crates/riffdb-conflict/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-commit/**, crates/riffdb-runtime/**, crates/riffdb-observability/**,
+    tests/command_semantics/**, tests/recovery/**, benchmarks/command-growth/**,
+    examples/app-baseline/**, fixtures/proto/**, docs/performance/**]
+  deliverables:
+  - A machine-readable proceed/defer decision tied to fresh saturation evidence and the unchanged
+    PERF-008 gate
+  - If proceeding, an accepted ADR defining transaction-local revalidation, per-conflict-key serial
+    visibility, independent command outcomes and identities, all-or-absent physical recovery,
+    sequence order, capacity bounds, cancellation, and unknown-commit resolution
+  - A memory-backend semantic prototype before redb activation, with deterministic schedules proving
+    equivalence to separately committed FIFO commands for every supported overlap
+  - No non-durable visible redb commit chain and no acknowledgement before one complete durable tail
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-memory --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 test --test command_concurrency --all-features
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The evidence either proves compatible grouping sufficient and records a defer decision,
+    or the accepted prototype is observationally equivalent to sequential commands, exposes no
+    partial state, and retains every fail-closed boundary before redb production activation.
+  human_review_triggers: *id001
+- id: WP-454
+  name: Renewed mixed-load PostgreSQL parity evidence
+  depends_on: [WP-450, WP-451, WP-452, WP-453]
+  objective: Re-run the complete fresh-history, read-only, write-only, mixed, contention, history,
+    crash, and language matrix and publish alpha eligibility only under the unchanged PERF-008 gate.
+  requirements: [PERF-001, PERF-008, PERF-013, PERF-014, AAA-012]
+  required_adrs: [ADR-0056, ADR-0060, ADR-0061]
+  allowed_paths: [SPEC.md, work_packages.yaml, examples/app-baseline/**, benchmarks/**,
+    fixtures/performance/**, release/evidence/**, docs/performance/**]
+  deliverables:
+  - Same-run PostgreSQL minimal and safe-app comparisons at 1/8/32/128 clients from fresh identical
+    seeds, with read-only, write-only, and interactive mixed profiles reported separately
+  - Retained-history and contention curves labeled as distinct questions, never substituted for the
+    fresh parity gate
+  - Complete semantic reconciliation, crash recovery, public-language conformance, and resource
+    attribution retained with every result
+  - Immutable eligible or not-eligible decision with no threshold waiver
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./benchmarks/run-app-baseline --full --assert-all-parity --reps 3 --require-stable
+  - ./scripts/benchmark-command-growth --assert-perf-008
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every PERF-008 threshold passes from fresh same-run evidence and all semantic, crash,
+    compatibility, documentation, and generated-artifact checks remain green; otherwise alpha stays
+    blocked with every miss retained.
+  human_review_triggers: *id001
