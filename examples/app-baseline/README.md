@@ -92,6 +92,9 @@ answers concurrency, hot-key contention, and outcome mix:
 
 | Profile | Mix (approx) | Pacing |
 |---------|--------------|--------|
+| `read_only` | named RiffQL reads only | continuous diagnostic |
+| `write_only` | `CreateComment` 70%, root-mutating `CloseTicketWithComment` 20%, root-creating `OpenTicketWithLabels` 10% | continuous writer saturation |
+| `append_only` | compiler-proved `CreateComment` child appends only | continuous ADR-0094 grouping diagnostic |
 | `interactive` | ~85% reads / ~12% single writes / ~3% multi-entity | continuous closed-loop; **no** `SwapMemberRoles` |
 | `agent` | more multi-entity + detail pages | bursts of 8 ops + 8 ms think-time; ~5% intentional comment replays; **no** `SwapMemberRoles` |
 | `membership_contention` | hammers `SwapMemberRoles` on the shared membership pair | continuous; **not** isolated under concurrency (intentional) |

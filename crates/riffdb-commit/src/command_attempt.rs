@@ -117,6 +117,16 @@ impl PendingCommandAttempts {
     pub(crate) fn root_validation_targets(&self) -> &[riffdb_storage_api::EntityTarget] {
         self.snapshot_request.root_validation_targets()
     }
+
+    /// Returns the compiler-derived grouping proof, if this command remains a
+    /// pure child append under the exact deployed schema.
+    pub(crate) fn commutative_child_append_proof(
+        &self,
+    ) -> Option<riffdb_contract_ir::CommutativeChildAppendProof> {
+        self.resolved_plan
+            .plan()
+            .commutative_child_append_proof(self.resolved_plan.bundle().bundle().schema())
+    }
 }
 
 impl fmt::Debug for PendingCommandAttempts {
@@ -154,7 +164,7 @@ impl fmt::Debug for CommandAttemptResolution {
 /// Successful deterministic evaluation bundled with its exclusive capability.
 pub(crate) struct EvaluatedCommandAttempt {
     state: PendingCommandAttempts,
-    lease: MutationLease,
+    lease: CommandMutationAuthority,
     snapshot: MaterializedCommandSnapshot,
     evaluated: Arc<EvaluatedCommand>,
 }
@@ -490,17 +500,17 @@ impl fmt::Debug for ResourceLimitFaultEvidence {
 pub(crate) enum ExecutionFaultAttempt {
     Arithmetic {
         state: PendingCommandAttempts,
-        lease: MutationLease,
+        lease: CommandMutationAuthority,
         snapshot: MaterializedCommandSnapshot,
     },
     ResourceLimit {
         state: PendingCommandAttempts,
-        lease: MutationLease,
+        lease: CommandMutationAuthority,
         evidence: ResourceLimitFaultEvidence,
     },
     UniqueConflict {
         state: PendingCommandAttempts,
-        lease: MutationLease,
+        lease: CommandMutationAuthority,
         snapshot: MaterializedCommandSnapshot,
     },
 }
@@ -788,7 +798,26 @@ pub(crate) async fn evaluate_next_command_attempt(
 /// One uniquely owned conflict grant acquired in stable admission order.
 pub(crate) struct AcquiredCommandAttempt {
     state: PendingCommandAttempts,
-    lease: riffdb_conflict::MutationLease,
+    lease: CommandMutationAuthority,
+}
+
+/// Sealed ownership of the conflict capability retained by one attempt.
+///
+/// The shared form is constructed only after every member has independently
+/// supplied a compiler proof and the coordinator has acquired the canonical
+/// union of their keys as one lease.  It is intentionally private and has no
+/// general-purpose `Clone` implementation.
+pub(crate) enum CommandMutationAuthority {
+    Exclusive {
+        _lease: MutationLease,
+    },
+    ProvenCommutativeGroup {
+        _lease: Arc<ProvenCommutativeGroupLease>,
+    },
+}
+
+pub(crate) struct ProvenCommutativeGroupLease {
+    _lease: MutationLease,
 }
 
 impl AcquiredCommandAttempt {
@@ -819,7 +848,10 @@ pub(crate) async fn acquire_command_attempt(
         .map_err(map_conflict_error)?;
 
     check_request_control(state.deadline, &state.cancellation)?;
-    Ok(AcquiredCommandAttempt { state, lease })
+    Ok(AcquiredCommandAttempt {
+        state,
+        lease: CommandMutationAuthority::Exclusive { _lease: lease },
+    })
 }
 
 /// Rechecks, snapshots, and deterministically evaluates an acquired attempt.
@@ -932,6 +964,71 @@ pub(crate) fn evaluate_acquired_command_attempt(
         }
     };
     Ok(resolution)
+}
+
+/// Acquires one canonical capability for a compiler-proved commutative group.
+///
+/// Callers must already have rejected exact read/write and write/write overlap.
+/// This function repeats the semantic proof before creating the only shared
+/// ownership form accepted by command evaluation.
+pub(crate) async fn acquire_commutative_command_group(
+    states: Vec<PendingCommandAttempts>,
+    conflicts: &dyn ConflictManager,
+) -> Result<Vec<AcquiredCommandAttempt>, (Vec<PendingCommandAttempts>, CommandAttemptError)> {
+    if states.len() < 2
+        || states
+            .iter()
+            .any(|state| state.commutative_child_append_proof().is_none())
+    {
+        return Err((states, CommandAttemptError::Integrity));
+    }
+    if let Some(error) = states.iter().find_map(|state| {
+        if state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1 {
+            Some(CommandAttemptError::RetryBudgetExhausted)
+        } else {
+            check_request_control(state.deadline, &state.cancellation).err()
+        }
+    }) {
+        return Err((states, error));
+    }
+
+    let mut keys = states
+        .iter()
+        .flat_map(|state| state.raw_conflict_keys.iter().cloned())
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    keys.dedup();
+    let Some(first) = states.first() else {
+        return Err((states, CommandAttemptError::Integrity));
+    };
+    let deadline = states
+        .iter()
+        .map(|state| state.deadline)
+        .min()
+        .unwrap_or(first.deadline);
+    let cancellation = first.cancellation.clone();
+    let lease = match conflicts.acquire_mut(keys, deadline, cancellation).await {
+        Ok(lease) => lease,
+        Err(error) => return Err((states, map_conflict_error(error))),
+    };
+    if let Some(error) = states
+        .iter()
+        .find_map(|state| check_request_control(state.deadline, &state.cancellation).err())
+    {
+        drop(lease);
+        return Err((states, error));
+    }
+
+    let authority = Arc::new(ProvenCommutativeGroupLease { _lease: lease });
+    Ok(states
+        .into_iter()
+        .map(|state| AcquiredCommandAttempt {
+            state,
+            lease: CommandMutationAuthority::ProvenCommutativeGroup {
+                _lease: Arc::clone(&authority),
+            },
+        })
+        .collect())
 }
 
 fn transaction_context(context: &PreEvaluationCommitContext) -> TransactionContext {
@@ -2437,6 +2534,43 @@ contract AttemptMaterialization version {version} {{
         runtime
             .block_on(competing)
             .expect("dropping retained lease grants competitor")
+            .release();
+    }
+
+    #[test]
+    fn shared_group_authority_releases_only_after_every_member_drops() {
+        let (state, _) = execution_fixture();
+        let keys = state.raw_conflict_keys.clone();
+        let manager = manager();
+        let runtime = runtime();
+        let lease = runtime
+            .block_on(manager.acquire_mut(
+                keys.clone(),
+                future_deadline(),
+                CancellationToken::new(),
+            ))
+            .expect("group union lease");
+        let group = Arc::new(ProvenCommutativeGroupLease { _lease: lease });
+        let first = CommandMutationAuthority::ProvenCommutativeGroup {
+            _lease: Arc::clone(&group),
+        };
+        let second = CommandMutationAuthority::ProvenCommutativeGroup { _lease: group };
+
+        let mut competing = manager.acquire_mut(keys, future_deadline(), CancellationToken::new());
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            competing.as_mut().poll(&mut context),
+            Poll::Pending
+        ));
+        drop(first);
+        assert!(matches!(
+            competing.as_mut().poll(&mut context),
+            Poll::Pending
+        ));
+        drop(second);
+        runtime
+            .block_on(competing)
+            .expect("last group member releases union lease")
             .release();
     }
 

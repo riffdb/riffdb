@@ -134,6 +134,8 @@ pub enum CommitTelemetryEvent {
         conflict_key_splits: u16,
         /// Group boundaries caused by exact entity read/write overlap.
         exact_access_splits: u16,
+        /// Compatibility groups selected for one compiler-proved shared conflict lease.
+        commutative_shared_groups: u16,
     },
     /// An accepted command reached the actor after waiting in the bounded queue.
     StorageQueueCompleted {

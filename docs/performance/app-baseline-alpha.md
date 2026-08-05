@@ -98,16 +98,20 @@ The current application load uses deployed static page bounds (board
 evidence, not silently counted as an arbitrary deep-page load result.
 
 `read_only` contains only named RiffQL operations. `write_only` contains only
-symbolic application commands. They are diagnostic profiles, not alternative
-product semantics: use them to distinguish read/application-port saturation
-from the sole durable writer ceiling before interpreting a mixed curve.
+symbolic application commands, including child append, root mutation, and root
+creation. `append_only` isolates compiler-proved `CreateComment` child appends
+to measure ADR-0094 shared-conflict grouping without root-command compatibility
+cuts. They are diagnostic profiles, not alternative product semantics: use
+them to distinguish read/application-port saturation, mixed-command grouping,
+and the sole durable writer ceiling before interpreting a mixed curve.
 
 Each RiffDB point reports successful mutation and command-attempt rates,
 process and durable byte growth per successful mutation, and a closed writer
 evidence block. The writer block includes intake selection/defer counts,
-compatibility splits, queue delay, writer busy/idle time, physical commit and
-durable-flush histograms, and logical commands per physical commit. Labels are
-fixed and contain no contract, tenant, key, principal, or submitted value.
+compatibility splits, compiler-proved shared-conflict group count, queue delay,
+writer busy/idle time, physical commit and durable-flush histograms, and logical
+commands per physical commit. Labels are fixed and contain no contract, tenant,
+key, principal, or submitted value.
 
 The resilience report combines a real killed `riffdbd` under application load
 with focused deterministic tests for exact replay, durable-consumer crashes,

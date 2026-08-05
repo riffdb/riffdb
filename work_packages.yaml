@@ -1,4 +1,4 @@
-spec_version: '0.57'
+spec_version: '0.58'
 product: RiffDB
 repository: riffdb
 status: contract-migration-and-reactive-application-implementation
@@ -7705,36 +7705,42 @@ work_packages:
     deterministically, and the sole coordinator is still the only authoritative mutation owner.
   human_review_triggers: *id001
 - id: WP-451
-  name: Conflict-aware bounded writer scheduling
+  name: Compiler-proved commutative child-append grouping
   depends_on: [WP-450]
-  objective: Increase safe durable group fill under skewed unary traffic without delaying lone
-    commands, bypassing control-plane barriers, changing per-conflict-key order, or starving a hot
-    key.
+  objective: Increase safe durable group fill for exact-key-disjoint child appends sharing one hot
+    aggregate without delaying lone commands, bypassing barriers, weakening invariants, or changing
+    FIFO order.
   requirements: [PERF-004, PERF-005, PERF-006, PERF-008]
-  required_adrs: [ADR-0058, ADR-0059, ADR-0060, ADR-0061]
+  required_adrs: [ADR-0058, ADR-0059, ADR-0060, ADR-0061, ADR-0094]
   allowed_paths: [SPEC.md, work_packages.yaml, adr/**, crates/riffdb-conflict/**,
-    crates/riffdb-commit/**, crates/riffdb-observability/**, crates/riffdb-server/**,
-    tests/command_semantics/**, tests/observability/**, examples/app-baseline/**,
-    benchmarks/run-app-baseline, docs/performance/**]
+    crates/riffdb-contract-ir/**, crates/riffdb-commit/**, crates/riffdb-observability/**,
+    crates/riffdb-server/**, tests/command_semantics/**, tests/observability/**,
+    examples/app-baseline/**, benchmarks/run-app-baseline, docs/performance/**]
   deliverables:
   - Bounded scheduler evidence distinguishing intake group size, compatible completion groups,
-    deferred conflicts, hard barriers, byte/count limits, and oldest-item age
-  - Stable conflict-aware selection that preserves ingress order for overlapping dependency sets,
-    never crosses a hard barrier, bounds overtaking for disjoint work, and dispatches a lone command
-    immediately
-  - Deterministic adversarial schedules for hot-key floods, cold-key progress, barriers,
-    cancellation, fencing, and shutdown
-  - Measured group-fill and mutation-throughput improvement under isolated and Zipfian workloads
+    strict conflict cuts, proved shared-key groups, hard barriers, byte/count limits, and oldest-item
+    age
+  - An ephemeral compiler proof limited to input-keyed child creates with no root/existing-row
+    mutation, uniqueness, requirement, root/range validation, commit invariant, or unclassified
+    dependency
+  - One sealed group-owned union conflict capability retained through commit or proven rollback,
+    while FIFO order, exact bidirectional compatibility, and independent command semantics remain
+    unchanged
+  - Deterministic adversarial schedules for same/different child keys, root mutation, uniqueness,
+    invariants, cancellation, retry, fencing, barriers, crash recovery, and shutdown
+  - Measured group-fill and mutation-throughput improvement under isolated, uniform, and Zipfian
+    child-append workloads
   acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-contract-ir --all-features
   - cargo +1.97.0 test -p riffdb-conflict --all-features
   - cargo +1.97.0 test -p riffdb-commit --all-features
   - cargo +1.97.0 test -p riffdb-server --all-features
   - ./benchmarks/run-app-baseline --self-test
   - cargo +1.97.0 fmt --all -- --check
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
-  exit_gate: Disjoint commands no longer remain behind a compatible-group cut caused only by a hot
-    key, overlapping commands retain exact order, barriers never move, starvation is bounded, and
-    unary latency does not regain a timer park.
+  exit_gate: Proved disjoint child appends sharing one hot aggregate co-commit and remain equivalent
+    to FIFO serial execution; every unproved or overlapping command remains strictly serialized,
+    barriers never move, and unary latency does not regain a timer park.
   human_review_triggers: *id001
 - id: WP-452
   name: Authoritative write-amplification budget

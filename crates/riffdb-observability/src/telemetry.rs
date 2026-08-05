@@ -147,6 +147,7 @@ pub struct Observability {
     compatibility_group_total: AtomicU64,
     compatibility_conflict_key_split_total: AtomicU64,
     compatibility_exact_access_split_total: AtomicU64,
+    compatibility_commutative_shared_group_total: AtomicU64,
     metrics: MetricRegistry,
     traces: TraceCollector,
     health: HealthRegistry,
@@ -174,6 +175,7 @@ impl Observability {
             compatibility_group_total: AtomicU64::new(0),
             compatibility_conflict_key_split_total: AtomicU64::new(0),
             compatibility_exact_access_split_total: AtomicU64::new(0),
+            compatibility_commutative_shared_group_total: AtomicU64::new(0),
             metrics: MetricRegistry::new(),
             traces,
             health: HealthRegistry::new(),
@@ -231,6 +233,9 @@ impl Observability {
                 .load(Ordering::Relaxed),
             compatibility_exact_access_splits: self
                 .compatibility_exact_access_split_total
+                .load(Ordering::Relaxed),
+            compatibility_commutative_shared_groups: self
+                .compatibility_commutative_shared_group_total
                 .load(Ordering::Relaxed),
             queue_delay_estimate_us: self
                 .metrics
@@ -501,6 +506,8 @@ pub struct WriterEvidenceSnapshotV1 {
     pub compatibility_conflict_key_splits: u64,
     /// Boundaries caused by exact entity read/write overlap.
     pub compatibility_exact_access_splits: u64,
+    /// Groups admitted under the compiler-proved shared conflict lease.
+    pub compatibility_commutative_shared_groups: u64,
     /// Latest bounded command-queue EWMA, absent before the first writer unit.
     pub queue_delay_estimate_us: Option<u64>,
     /// Storage commit-call duration.
@@ -519,7 +526,7 @@ pub struct WriterEvidenceSnapshotV1 {
 #[must_use]
 pub fn format_writer_evidence_v1_line(snapshot: &WriterEvidenceSnapshotV1) -> String {
     let scalar = format!(
-        "busy_us={};idle_us={};dispatch_selected={};dispatch_deferred={};compatibility_selected={};compatibility_groups={};compatibility_conflict_key_splits={};compatibility_exact_access_splits={};queue_delay_estimate_us={}",
+        "busy_us={};idle_us={};dispatch_selected={};dispatch_deferred={};compatibility_selected={};compatibility_groups={};compatibility_conflict_key_splits={};compatibility_exact_access_splits={};compatibility_commutative_shared_groups={};queue_delay_estimate_us={}",
         snapshot.writer_busy_us,
         snapshot.writer_idle_us,
         snapshot.dispatch_selected,
@@ -528,6 +535,7 @@ pub fn format_writer_evidence_v1_line(snapshot: &WriterEvidenceSnapshotV1) -> St
         snapshot.compatibility_groups,
         snapshot.compatibility_conflict_key_splits,
         snapshot.compatibility_exact_access_splits,
+        snapshot.compatibility_commutative_shared_groups,
         snapshot
             .queue_delay_estimate_us
             .map_or_else(|| "none".to_owned(), |value| value.to_string()),
@@ -717,6 +725,7 @@ impl CommitTelemetry for Observability {
                 completion_groups,
                 conflict_key_splits,
                 exact_access_splits,
+                commutative_shared_groups,
             } => {
                 saturating_add(&self.compatibility_selected_total, u64::from(selected));
                 saturating_add(
@@ -730,6 +739,10 @@ impl CommitTelemetry for Observability {
                 saturating_add(
                     &self.compatibility_exact_access_split_total,
                     u64::from(exact_access_splits),
+                );
+                saturating_add(
+                    &self.compatibility_commutative_shared_group_total,
+                    u64::from(commutative_shared_groups),
                 );
             }
             CommitTelemetryEvent::StorageQueueCompleted { elapsed, .. } => {

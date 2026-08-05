@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.57
+**Version:** 0.58
 **Status:** Contract-migration and reactive-application implementation
-**Date:** 31 July 2026
+**Date:** 5 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -36,6 +36,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.58 | 2026-08-05 | Applied accepted ADR-0094: the FIFO writer may share one aggregate conflict lease only among compiler-proved, exact-key-disjoint child appends with no root/existing-row mutation, uniqueness domain, requirement, range/root validation, or commit invariant. Unproved commands retain strict serialization and every item retains independent command semantics. |
 | 0.1 | 2026-07-12 | Initial RiffDB implementation handoff specification for a standalone Rust POC and gated path to MVP. |
 | 0.2 | 2026-07-12 | Reconciled the canonical contract grammar and gRPC surface; fixed commit, idempotency, control-plane, capability, MCP, gate, evidence, and work-package ownership decisions approved after the initial planning review. Associated ADRs remain Proposed until separately reviewed and accepted. |
 | 0.3 | 2026-07-13 | Applied accepted ADR-0013 through ADR-0016: explicit binding-failure outcomes and command-only budget seeding, stable IR/hash/key boundaries, typed partition identity, and complete index-entry framing. |
@@ -2124,6 +2125,19 @@ corresponding conflict key is derived and acquired before evaluation; every
 influential observation outside those mutation domains is represented by
 canonical dependency evidence and revalidated. Cross-partition mutation,
 dynamic acquisition, and capability upgrade are rejected.
+
+The FIFO commit coordinator MAY acquire one canonical union lease for multiple
+commands that share an aggregate conflict key only when every sharing command
+has the ADR-0094 compiler proof: all writes are input-keyed creates of child
+entities in that aggregate, and the plan has no root or existing-row mutation,
+unique-conflict domain, requirement predicate, root/range validation, or commit
+invariant. The coordinator MUST additionally reject exact read/write and
+write/write overlap across the complete group. The sealed group authority MUST
+remain live through commit or proven rollback of every member. A missing proof,
+new unclassified dependency, overlapping exact key, or failed safe point MUST
+retain strict per-command conflict ownership. Group members observe the same
+pre-group state and the committed history MUST be equivalent to their FIFO
+serial order.
 
 ```rust
 pub trait ConflictManager: Send + Sync {
@@ -6529,7 +6543,14 @@ ADR-0055.
   aggregate, and only that aggregate derives logical conflict keys. External
   observations MUST remain explicit and MUST be revalidated exactly inside the
   authoritative commit transaction; cross-partition reads and multi-aggregate
-  writes MUST be rejected. Server evidence MUST report the bounded effective
+  writes MUST be rejected. Commands sharing one aggregate conflict key MAY
+  share a physical completion group only under the ADR-0094 compiler-derived
+  commutative child-append proof and complete exact-access compatibility check.
+  Contract annotations and scheduler inference from disjoint entity keys are
+  not proofs. Root or existing-row mutation, uniqueness, requirements,
+  root/range validation, commit invariants, and unclassified dependency forms
+  MUST make the command ineligible; unproved overlap remains strictly
+  serialized. Server evidence MUST report the bounded effective
   completion-group-size distribution without high-cardinality labels. On the
   checked profile, the full public-command TicketDesk seed and representative
   unary mutation p50 MUST each complete within twice the same-run PostgreSQL

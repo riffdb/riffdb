@@ -29,8 +29,8 @@ use crate::{
     command_attempt::{
         AcquiredCommandAttempt, CommandAttemptError, CommandAttemptResolution,
         EvaluatedCommandAttempt, ExecutionFaultAttempt, PendingCommandAttempts,
-        RolledBackCandidateDisposition, acquire_command_attempt, evaluate_acquired_command_attempt,
-        evaluate_next_command_attempt,
+        RolledBackCandidateDisposition, acquire_command_attempt, acquire_commutative_command_group,
+        evaluate_acquired_command_attempt, evaluate_next_command_attempt,
     },
     command_execution_failure::{
         ExecutionFailureCurrentDecision, ExecutionFailureTerminalizeResult,
@@ -663,22 +663,24 @@ where
     }
 
     let compatibility_started = Instant::now();
-    let (groups, conflict_key_splits, exact_access_splits) =
+    let (groups, conflict_key_splits, exact_access_splits, commutative_shared_groups) =
         partition_pending_fifo_by_compatibility(pending);
     telemetry.record(CommitTelemetryEvent::CommandGroupPartitioned {
-        selected: u16::try_from(groups.iter().map(Vec::len).sum::<usize>()).unwrap_or(u16::MAX),
+        selected: u16::try_from(groups.iter().map(|group| group.items.len()).sum::<usize>())
+            .unwrap_or(u16::MAX),
         completion_groups: u16::try_from(groups.len()).unwrap_or(u16::MAX),
         conflict_key_splits,
         exact_access_splits,
+        commutative_shared_groups,
     });
     telemetry.record(CommitTelemetryEvent::CommandPipelineStageCompleted {
         stage: CommandPipelineStage::Compatibility,
-        command_count: u16::try_from(groups.iter().map(Vec::len).sum::<usize>())
+        command_count: u16::try_from(groups.iter().map(|group| group.items.len()).sum::<usize>())
             .unwrap_or(u16::MAX),
         elapsed: compatibility_started.elapsed(),
     });
     for group in groups {
-        if group.len() > 1 {
+        if group.items.len() > 1 {
             let grouped = drive_compatible_pending_group(
                 port,
                 conflicts,
@@ -688,14 +690,15 @@ where
                 lifecycle,
                 telemetry,
                 evaluation_pool,
-                group,
+                group.items,
+                group.shared_conflict_lease,
             )
             .await;
             for (index, result) in grouped {
                 results[index] = Some(result);
             }
         } else {
-            for (index, state) in group {
+            for (index, state) in group.items {
                 results[index] = Some(
                     drive_pending_command_attempts(
                         port,
@@ -833,11 +836,24 @@ fn partition_fifo_by_compatibility<T>(
     groups
 }
 
-#[derive(Default)]
 struct CompatibleCommandGroup {
     keys: std::collections::HashSet<riffdb_types::ConflictKey>,
     reads: std::collections::HashSet<EntityTarget>,
     writes: std::collections::HashSet<EntityTarget>,
+    all_commutative_child_appends: bool,
+    shared_conflict_lease: bool,
+}
+
+impl Default for CompatibleCommandGroup {
+    fn default() -> Self {
+        Self {
+            keys: std::collections::HashSet::new(),
+            reads: std::collections::HashSet::new(),
+            writes: std::collections::HashSet::new(),
+            all_commutative_child_appends: true,
+            shared_conflict_lease: false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -848,11 +864,17 @@ enum CompatibilityFailure {
 
 impl CompatibleCommandGroup {
     fn try_insert(&mut self, state: &PendingCommandAttempts) -> Result<(), CompatibilityFailure> {
-        if state
+        let shares_conflict_key = state
             .raw_conflict_keys()
             .iter()
-            .any(|key| self.keys.contains(key))
-        {
+            .any(|key| self.keys.contains(key));
+        let is_commutative_child_append = state.commutative_child_append_proof().is_some();
+        if !shared_conflict_membership_is_compatible(
+            self.all_commutative_child_appends,
+            self.shared_conflict_lease,
+            shares_conflict_key,
+            is_commutative_child_append,
+        ) {
             return Err(CompatibilityFailure::ConflictKey);
         }
         let mut reads = std::collections::HashSet::new();
@@ -879,13 +901,30 @@ impl CompatibleCommandGroup {
         self.keys.extend(state.raw_conflict_keys().iter().cloned());
         self.reads.extend(reads);
         self.writes.extend(writes);
+        self.all_commutative_child_appends &= is_commutative_child_append;
+        self.shared_conflict_lease |= shares_conflict_key;
         Ok(())
     }
 }
 
+fn shared_conflict_membership_is_compatible(
+    prior_all_commutative: bool,
+    prior_uses_shared_lease: bool,
+    candidate_shares_key: bool,
+    candidate_is_commutative: bool,
+) -> bool {
+    (!candidate_shares_key || (prior_all_commutative && candidate_is_commutative))
+        && (!prior_uses_shared_lease || candidate_is_commutative)
+}
+
+struct PendingCompatibilityGroup {
+    items: Vec<(usize, PendingCommandAttempts)>,
+    shared_conflict_lease: bool,
+}
+
 fn partition_pending_fifo_by_compatibility(
     pending: Vec<(usize, PendingCommandAttempts)>,
-) -> (Vec<Vec<(usize, PendingCommandAttempts)>>, u16, u16) {
+) -> (Vec<PendingCompatibilityGroup>, u16, u16, u16) {
     let mut groups = Vec::new();
     let mut current = Vec::new();
     let mut compatibility = CompatibleCommandGroup::default();
@@ -902,22 +941,43 @@ fn partition_pending_fifo_by_compatibility(
                 }
             }
             if !current.is_empty() {
-                groups.push(std::mem::take(&mut current));
+                groups.push(PendingCompatibilityGroup {
+                    items: std::mem::take(&mut current),
+                    shared_conflict_lease: compatibility.shared_conflict_lease,
+                });
             }
             compatibility = CompatibleCommandGroup::default();
             // A command's conflict keys and exact accesses are canonical and
             // duplicate-free internally, so a fresh group must accept it.
             if compatibility.try_insert(&item.1).is_err() {
-                groups.push(vec![item]);
+                groups.push(PendingCompatibilityGroup {
+                    items: vec![item],
+                    shared_conflict_lease: false,
+                });
                 continue;
             }
         }
         current.push(item);
     }
     if !current.is_empty() {
-        groups.push(current);
+        groups.push(PendingCompatibilityGroup {
+            items: current,
+            shared_conflict_lease: compatibility.shared_conflict_lease,
+        });
     }
-    (groups, conflict_key_splits, exact_access_splits)
+    let commutative_shared_groups = u16::try_from(
+        groups
+            .iter()
+            .filter(|group| group.shared_conflict_lease)
+            .count(),
+    )
+    .unwrap_or(u16::MAX);
+    (
+        groups,
+        conflict_key_splits,
+        exact_access_splits,
+        commutative_shared_groups,
+    )
 }
 
 fn exact_accesses_are_compatible(
@@ -948,6 +1008,7 @@ async fn prepare_parallel_compatible_group<P>(
     telemetry: &dyn CommitTelemetry,
     pool: &CommandEvaluationPool,
     pending: Vec<(usize, PendingCommandAttempts)>,
+    shared_conflict_lease: bool,
 ) -> ParallelEvaluationPreparation
 where
     P: AdmissionRepository
@@ -958,7 +1019,46 @@ where
     let mut pending = std::collections::VecDeque::from(pending);
     let mut acquired = Vec::with_capacity(pending.len());
     let mut indices = Vec::with_capacity(pending.len());
-    while let Some((index, state)) = pending.pop_front() {
+    if shared_conflict_lease {
+        let items = pending.drain(..).collect::<Vec<_>>();
+        let (group_indices, states): (Vec<_>, Vec<_>) = items.into_iter().unzip();
+        match acquire_commutative_command_group(states, conflicts).await {
+            Ok(group) => {
+                indices = group_indices;
+                acquired = group;
+            }
+            Err((states, error)) => {
+                let error = command_attempt_failure(error, lifecycle);
+                if let Some(terminal_state) = group_peer_terminal_error(&error) {
+                    let mut pairs = group_indices.into_iter().zip(states);
+                    let Some((index, state)) = pairs.next() else {
+                        return ParallelEvaluationPreparation::Complete(Vec::new());
+                    };
+                    drop(state);
+                    let mut completed = vec![(index, Err(error))];
+                    completed.extend(pairs.map(|(index, state)| {
+                        drop(state);
+                        (index, Err(group_peer_error(terminal_state)))
+                    }));
+                    return ParallelEvaluationPreparation::Complete(completed);
+                }
+                return ParallelEvaluationPreparation::Complete(
+                    drive_pending_items(
+                        port,
+                        conflicts,
+                        administration_clock,
+                        provenance,
+                        durability,
+                        lifecycle,
+                        telemetry,
+                        group_indices.into_iter().zip(states).collect(),
+                    )
+                    .await,
+                );
+            }
+        }
+    }
+    while !shared_conflict_lease && let Some((index, state)) = pending.pop_front() {
         match acquire_command_attempt(state, conflicts).await {
             Ok(attempt) => {
                 indices.push(index);
@@ -1080,6 +1180,7 @@ async fn drive_compatible_pending_group<P>(
     telemetry: &dyn CommitTelemetry,
     evaluation_pool: Option<&CommandEvaluationPool>,
     pending: Vec<(usize, PendingCommandAttempts)>,
+    shared_conflict_lease: bool,
 ) -> Vec<(usize, Result<CommandExecutionResult, CommandExecutionError>)>
 where
     P: AdmissionRepository
@@ -1102,6 +1203,7 @@ where
 {
     let evaluation_started = Instant::now();
     let mut pending = std::collections::VecDeque::from(pending);
+    let mut retained_group = std::collections::VecDeque::new();
     let mut evaluated = Vec::with_capacity(pending.len());
     let mut completed = Vec::new();
     if let Some(pool) = evaluation_pool {
@@ -1116,6 +1218,7 @@ where
             telemetry,
             pool,
             owned_pending,
+            shared_conflict_lease,
         )
         .await
         {
@@ -1123,11 +1226,45 @@ where
             ParallelEvaluationPreparation::Complete(completed) => return completed,
         }
         pending = std::collections::VecDeque::new();
+    } else if shared_conflict_lease {
+        let items = pending.drain(..).collect::<Vec<_>>();
+        let (indices, states): (Vec<_>, Vec<_>) = items.into_iter().unzip();
+        match acquire_commutative_command_group(states, conflicts).await {
+            Ok(acquired) => retained_group = indices.into_iter().zip(acquired).collect(),
+            Err((states, _error)) => {
+                return drive_pending_items(
+                    port,
+                    conflicts,
+                    administration_clock,
+                    provenance,
+                    durability,
+                    lifecycle,
+                    telemetry,
+                    indices.into_iter().zip(states).collect(),
+                )
+                .await;
+            }
+        }
     }
     while evaluation_pool.is_none()
-        && let Some((index, state)) = pending.pop_front()
+        && let Some((index, resolution)) = if shared_conflict_lease {
+            retained_group.pop_front().map(|(index, acquired)| {
+                (
+                    index,
+                    evaluate_acquired_command_attempt(acquired, port, port),
+                )
+            })
+        } else {
+            match pending.pop_front() {
+                Some((index, state)) => Some((
+                    index,
+                    evaluate_next_command_attempt(state, port, port, conflicts).await,
+                )),
+                None => None,
+            }
+        }
     {
-        match evaluate_next_command_attempt(state, port, port, conflicts).await {
+        match resolution {
             Ok(CommandAttemptResolution::Evaluated(attempt)) => evaluated.push((index, attempt)),
             Ok(resolution) => {
                 let continuation = continuation_from_attempt_resolution(
@@ -1148,6 +1285,10 @@ where
                         drop(state);
                         (index, Err(group_peer_error(terminal_state)))
                     }));
+                    completed.extend(retained_group.into_iter().map(|(index, attempt)| {
+                        drop(attempt);
+                        (index, Err(group_peer_error(terminal_state)))
+                    }));
                     return completed;
                 }
                 let mut fallback = evaluated
@@ -1155,6 +1296,11 @@ where
                     .map(|(index, attempt)| (index, attempt.into_pending_without_commit()))
                     .collect::<Vec<_>>();
                 fallback.extend(pending);
+                fallback.extend(
+                    retained_group
+                        .into_iter()
+                        .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation())),
+                );
                 completed.extend(
                     drive_pending_items(
                         port,
@@ -1183,6 +1329,10 @@ where
                         drop(state);
                         (index, Err(group_peer_error(terminal_state)))
                     }));
+                    completed.extend(retained_group.into_iter().map(|(index, attempt)| {
+                        drop(attempt);
+                        (index, Err(group_peer_error(terminal_state)))
+                    }));
                     return completed;
                 }
                 let mut fallback = evaluated
@@ -1190,6 +1340,11 @@ where
                     .map(|(index, attempt)| (index, attempt.into_pending_without_commit()))
                     .collect::<Vec<_>>();
                 fallback.extend(pending);
+                fallback.extend(
+                    retained_group
+                        .into_iter()
+                        .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation())),
+                );
                 completed.extend(
                     drive_pending_items(
                         port,
@@ -2472,6 +2627,7 @@ fn conflict_failure(
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use riffdb_contract_compiler::compile_contract_source;
     use riffdb_types::{EntityKeyBuilder, EntityTypeId};
 
     use super::*;
@@ -2518,6 +2674,50 @@ mod tests {
         assert!(!exact_accesses_are_compatible(&none, &one, &one, &none));
         assert!(!exact_accesses_are_compatible(&none, &one, &none, &one));
         assert!(exact_accesses_are_compatible(&one, &none, &one, &none));
+    }
+
+    #[test]
+    fn ticketdesk_only_proves_exact_child_append_commands() {
+        let bundle = compile_contract_source(include_str!(
+            "../../../examples/app-baseline/contracts/ticketdesk.riff"
+        ))
+        .expect("TicketDesk contract compiles");
+        let proof = |name: &str| {
+            bundle
+                .commands()
+                .iter()
+                .find(|command| command.name() == name)
+                .expect("named command")
+                .commutative_child_append_proof(bundle.schema())
+        };
+
+        assert!(proof("CreateComment").is_some());
+        assert!(proof("AttachLabel").is_some());
+        assert!(proof("CreateTicket").is_none(), "aggregate root creation");
+        assert!(
+            proof("CloseTicketWithComment").is_none(),
+            "root mutation plus child append"
+        );
+        assert!(
+            proof("SwapMemberRoles").is_none(),
+            "existing child mutation"
+        );
+    }
+
+    #[test]
+    fn shared_lease_group_never_admits_a_later_unproved_member() {
+        assert!(shared_conflict_membership_is_compatible(
+            true, false, true, true
+        ));
+        assert!(shared_conflict_membership_is_compatible(
+            true, true, false, true
+        ));
+        assert!(!shared_conflict_membership_is_compatible(
+            true, true, false, false
+        ));
+        assert!(!shared_conflict_membership_is_compatible(
+            false, false, true, true
+        ));
     }
 
     #[test]

@@ -689,6 +689,7 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
             "compatibility_groups": evidence.writer.compatibility_groups,
             "compatibility_conflict_key_splits": evidence.writer.compatibility_conflict_key_splits,
             "compatibility_exact_access_splits": evidence.writer.compatibility_exact_access_splits,
+            "compatibility_commutative_shared_groups": evidence.writer.compatibility_commutative_shared_groups,
             "queue_delay_estimate_us": evidence.writer.queue_delay_estimate_us,
             "commit_duration_us": histogram(&evidence.writer.commit_duration),
             "durable_flush_duration_us": histogram(&evidence.writer.flush_duration),
@@ -2553,7 +2554,7 @@ impl Args {
                     let name = args.next().ok_or("--load needs a profile name")?;
                     load_profile = Some(WorkloadProfile::parse(&name).ok_or_else(|| {
                         format!(
-                            "unknown load profile '{name}' (read_only|write_only|interactive|agent|membership_contention)"
+                            "unknown load profile '{name}' (read_only|write_only|append_only|interactive|agent|membership_contention)"
                         )
                     })?);
                 }
@@ -2718,7 +2719,7 @@ impl Args {
                          [--postgres-comparator minimal|safe-app] \
                          [--output PATH] [--assert-write-parity|--assert-all-parity] \
                          [--concurrent-clients N] [--concurrent-operations N] \
-                         [--load read_only|write_only|interactive|agent|membership_contention] [--load-clients N] \
+                         [--load read_only|write_only|append_only|interactive|agent|membership_contention] [--load-clients N] \
                          [--load-duration-secs N] [--load-warmup-secs N] [--load-zipf-s F] \
                          [--load-open-loop-rate OPS] [--load-open-loop-queue-depth N] \
                          [--load-tenants N] [--load-hot-tenant-percent PERCENT] \

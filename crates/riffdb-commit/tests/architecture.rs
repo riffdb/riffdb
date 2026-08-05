@@ -981,7 +981,7 @@ fn command_admission_is_private_move_only_and_orders_external_calls_exactly() {
 }
 
 #[test]
-fn command_attempt_owns_one_lease_around_synchronous_recheck_snapshot_and_runtime() {
+fn command_attempt_owns_sealed_authority_around_synchronous_recheck_snapshot_and_runtime() {
     let production_source = COMMAND_ATTEMPT_SOURCE
         .split_once("#[cfg(test)]")
         .map_or(COMMAND_ATTEMPT_SOURCE, |(production, _)| production);
@@ -1007,6 +1007,10 @@ fn command_attempt_owns_one_lease_around_synchronous_recheck_snapshot_and_runtim
         "fn has_exact_semantic_join(&self) -> bool",
         "pub(crate) async fn evaluate_next_command_attempt(",
         "pub(crate) async fn acquire_command_attempt(",
+        "pub(crate) async fn acquire_commutative_command_group(",
+        "pub(crate) enum CommandMutationAuthority",
+        "ProvenCommutativeGroup",
+        "state.commutative_child_append_proof().is_none()",
         "pub(crate) fn evaluate_acquired_command_attempt(",
         ".acquire_mut(",
         ".lookup_admission(state.lookup_candidates.clone())",
@@ -1058,7 +1062,7 @@ fn command_attempt_owns_one_lease_around_synchronous_recheck_snapshot_and_runtim
     );
     let evaluation = production_source
         .split_once("pub(crate) fn evaluate_acquired_command_attempt(")
-        .and_then(|(_, remainder)| remainder.split_once("\nfn transaction_context("))
+        .and_then(|(_, remainder)| remainder.split_once("\n/// Acquires one canonical capability"))
         .map(|(body, _)| body)
         .expect("synchronous worker evaluation phase");
     assert!(!evaluation.contains(".await"));

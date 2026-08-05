@@ -590,6 +590,27 @@ pub enum ExecutionClass {
     IdempotentMutation = crate::format_registry::execution_class::IDEMPOTENT_MUTATION,
 }
 
+/// Ephemeral proof that one checked command is only a commutative child append.
+///
+/// This proof is deliberately derived from the complete checked plan and schema
+/// rather than persisted in the command IR.  It may be used by the commit lane
+/// only together with exact, input-derived entity keys.  Adding any root
+/// mutation, uniqueness domain, range/root validation, commit invariant, or
+/// command requirement makes the proof unavailable and preserves strict
+/// conflict-key serialization.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CommutativeChildAppendProof {
+    aggregate_id: AggregateTypeId,
+}
+
+impl CommutativeChildAppendProof {
+    /// Aggregate whose child collection receives the append.
+    #[must_use]
+    pub const fn aggregate_id(self) -> AggregateTypeId {
+        self.aggregate_id
+    }
+}
+
 /// Fixed grammar-v1 retry semantics.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
@@ -1084,6 +1105,56 @@ impl CommandPlan {
     #[must_use]
     pub const fn execution_class(&self) -> ExecutionClass {
         self.execution_class
+    }
+
+    /// Derives the narrow proof required to share one aggregate conflict lease
+    /// across exact-key-disjoint child appends in a physical commit group.
+    ///
+    /// Ordinary exact reads are permitted: every grouped item evaluates from
+    /// the same pre-group state and no proved item may mutate those rows.  The
+    /// commit coordinator separately rejects any exact read/write or
+    /// write/write overlap between items before using this proof.
+    #[must_use]
+    pub fn commutative_child_append_proof(
+        &self,
+        schema: &SchemaIr,
+    ) -> Option<CommutativeChildAppendProof> {
+        if self.execution_class != ExecutionClass::IdempotentMutation
+            || !self.unique_conflicts.is_empty()
+            || !self.root_validation_reads.is_empty()
+            || !self.commit_checks.is_empty()
+            || self
+                .instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Require { .. }))
+        {
+            return None;
+        }
+
+        let aggregate = schema.aggregate(self.locality.aggregate_id())?;
+        if !aggregate.invariants().is_empty() {
+            return None;
+        }
+        let mut creates_child = false;
+        for binding in &self.bindings {
+            match binding.mode() {
+                BindingMode::Read => {}
+                BindingMode::Mutate => return None,
+                BindingMode::Create => {
+                    if aggregate
+                        .children()
+                        .binary_search(&binding.entity_type())
+                        .is_err()
+                    {
+                        return None;
+                    }
+                    creates_child = true;
+                }
+            }
+        }
+        creates_child.then_some(CommutativeChildAppendProof {
+            aggregate_id: aggregate.id(),
+        })
     }
     /// Fixed bounded full-reevaluation retry rule.
     #[must_use]
