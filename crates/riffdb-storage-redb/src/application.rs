@@ -549,8 +549,10 @@ impl RedbExecutionFailureAwaitingDecision {
         } else {
             None
         };
-        self.access
-            .commit_for(RedbTestOperation::ExecutionFailure)?;
+        // The one lane that writes a terminal ExecutionFailed row commits through
+        // the one path that counts it, so the checkpoint's StoredOutcome-only
+        // idempotency count can be derived from the IDEMPOTENCY row count.
+        self.access.commit_execution_failure()?;
         Ok((terminal, terminal_audit))
     }
 }

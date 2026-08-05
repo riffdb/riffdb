@@ -1,6 +1,28 @@
 //! Validated-prefix startup checkpoint build/write (ADR-0085 Amendment 1).
+//!
+//! # What a wrong recorded count costs
+//!
+//! The eight recorded below-S counts are never taken on trust. At the next open
+//! they are checked twice: [`load_active_checkpoint`] refuses a checkpoint whose
+//! counts exceed redb's own row counts (`CountImpossible`, a fallback to full
+//! validation), and the session's `verify_checkpoint_prefix_counts` then requires,
+//! at structural ExactEnd, that `row_count − walked_suffix` equal every recorded
+//! range-skipped count and that every classified prefix row of the full-walk
+//! tables equal its recorded count. That second check does NOT fall back: per
+//! ADR-0019 A1 a divergence after verified bindings is authoritative corruption
+//! and the open REFUSES.
+//!
+//! So a wrong count can never be silently trusted — but the price of one is a
+//! refused open, not a slow one. That refusal is recoverable with existing
+//! offline tooling rather than from backup (see the recovery note on
+//! `verify_checkpoint_prefix_counts`), and it is still an outage. That is why the
+//! O(1) count derivation
+//! below checks what it can check cheaply, falls back to the reference walk the
+//! moment an assumption does not hold, and keeps its one maintained input (the
+//! terminal execution-failure census) to a single seeding site and a single
+//! counting site.
 
-use redb::{Durability, ReadTransaction, ReadableDatabase, ReadableTable};
+use redb::{Durability, ReadTransaction, ReadableDatabase, ReadableTable, ReadableTableMetadata};
 
 use riffdb_storage_api::{
     ApplicationSequenceAllocator, EntityChainFingerprint, EntityTarget, StorageError,
@@ -104,14 +126,51 @@ impl CheckpointIgnoreReason {
     }
 }
 
+/// How one checkpoint's eight below-S row counts are obtained.
+///
+/// Both variants define the SAME eight numbers, and therefore the same
+/// checkpoint bytes, for every database this crate can write; the checkpoint
+/// record, its semantics and its bindings are untouched by the choice.
+/// [`Self::Walked`] is the reference definition — one full pass per count class.
+/// [`Self::DurableLengths`] is the O(1) derivation the production write uses;
+/// `checkpoint_counts_from_durable_lengths_are_byte_identical_to_the_walk` pins
+/// the equality on randomized histories.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CheckpointCountSource {
+    /// Reference implementation: one full walk per count class — O(history).
+    ///
+    /// The production write never selects it; `build_checkpoint_from_snapshot`
+    /// reaches the same code directly when a `DurableLengths` precondition does
+    /// not hold. Selecting it is how the byte-identity property test states the
+    /// reference, and how the falsifiability transcript re-points the shutdown
+    /// write at the walk.
+    #[allow(
+        dead_code,
+        reason = "reference count source selected by the byte-identity property test"
+    )]
+    Walked,
+    /// O(1): redb's per-table row counts plus this process's terminal
+    /// execution-failure census (the one quantity a row count cannot express).
+    DurableLengths { execution_failed_rows: u64 },
+}
+
 /// Builds and durably writes one validated-prefix checkpoint under an exclusive writer.
 pub(crate) fn write_validated_prefix_checkpoint(
     shared: &SharedRedb,
     retained: &riffdb_storage_api::RetainedMetadataV1,
 ) -> Result<(), StorageError> {
     let transaction = shared.database.begin_read().map_err(transaction_error)?;
-    let checkpoint = build_checkpoint_from_snapshot(&transaction, retained)?;
+    let mut rows_walked = 0_u64;
+    // Counts come from table metadata, never from a history pass: at graceful
+    // shutdown this is the whole difference between O(1) and O(history), and
+    // the write happens after the writer lane has drained.
+    let source = CheckpointCountSource::DurableLengths {
+        execution_failed_rows: shared.terminal_execution_failure_rows(),
+    };
+    let checkpoint =
+        build_checkpoint_from_snapshot(&transaction, retained, source, &mut rows_walked)?;
     drop(transaction);
+    shared.note_checkpoint_count_rows_walked(rows_walked);
 
     let encoded =
         encode_validated_prefix_checkpoint_v1(&checkpoint).map_err(crate::error::codec_error)?;
@@ -130,9 +189,20 @@ pub(crate) fn write_validated_prefix_checkpoint(
     shared.after_test_commit(RedbTestOperation::ValidatedPrefixCheckpoint)
 }
 
-fn build_checkpoint_from_snapshot(
+/// Builds one checkpoint from an immutable snapshot.
+///
+/// `rows_walked` accumulates every history row the COUNT classes iterate, so a
+/// test can pin that the production path touches none of them
+/// (`the_shutdown_checkpoint_write_iterates_no_history_rows`). The ENTITIES pass
+/// behind the entity-chain fingerprint is deliberately not tallied there: it is
+/// current-state, not history, it is bounded by the live entity set rather than
+/// by history length, and it is the same pass every open already performs to
+/// verify a checkpoint's fingerprint.
+pub(crate) fn build_checkpoint_from_snapshot(
     transaction: &ReadTransaction,
     retained: &riffdb_storage_api::RetainedMetadataV1,
+    source: CheckpointCountSource,
+    rows_walked: &mut u64,
 ) -> Result<StoredValidatedPrefixCheckpointV1, StorageError> {
     let database_id = retained.database_id();
     let history_incarnation = retained.history_incarnation();
@@ -145,15 +215,25 @@ fn build_checkpoint_from_snapshot(
         .unwrap_or(0);
 
     let s = checkpoint_commit_sequence;
-    let counts = ValidatedPrefixSequenceCounts {
-        commits_count: count_commits_le(transaction, s)?,
-        events_count: count_event_keys_le(transaction, EVENTS, s)?,
-        event_routes_count: count_event_routes_le(transaction, s)?,
-        outbox_count: count_event_keys_le(transaction, OUTBOX, s)?,
-        outbox_status_count: count_event_keys_le(transaction, OUTBOX_STATUS, s)?,
-        idempotency_count: count_idempotency_le(transaction, s)?,
-        audit_count: count_audit_le(transaction, audit_sequence_bound)?,
-        audit_by_request_count: count_audit_by_request_le(transaction, audit_sequence_bound)?,
+    let counts = match source {
+        CheckpointCountSource::Walked => {
+            walked_counts(transaction, s, audit_sequence_bound, rows_walked)?
+        }
+        CheckpointCountSource::DurableLengths {
+            execution_failed_rows,
+        } => match counts_from_durable_lengths(
+            transaction,
+            s,
+            audit_sequence_bound,
+            execution_failed_rows,
+        )? {
+            Some(counts) => counts,
+            // A census larger than the table it counts within can only mean the
+            // census drifted. Fall back to the reference walk rather than write
+            // counts the next open would refuse (see the module note on why a
+            // wrong count refuses instead of falling back at open).
+            None => walked_counts(transaction, s, audit_sequence_bound, rows_walked)?,
+        },
     };
     let entity_chain_fingerprint = entity_chain_fingerprint_from_entities(transaction)?;
     let retained_snap = retained_snapshot(retained);
@@ -175,6 +255,113 @@ fn build_checkpoint_from_snapshot(
         retention_watermark_sequence,
     )
     .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
+}
+
+/// Reference definition of the eight below-S counts: one full pass per class.
+fn walked_counts(
+    transaction: &ReadTransaction,
+    s: u64,
+    audit_sequence_bound: u64,
+    rows_walked: &mut u64,
+) -> Result<ValidatedPrefixSequenceCounts, StorageError> {
+    Ok(ValidatedPrefixSequenceCounts {
+        commits_count: count_commits_le(transaction, s, rows_walked)?,
+        events_count: count_event_keys_le(transaction, EVENTS, s, rows_walked)?,
+        event_routes_count: count_event_routes_le(transaction, s, rows_walked)?,
+        outbox_count: count_event_keys_le(transaction, OUTBOX, s, rows_walked)?,
+        outbox_status_count: count_event_keys_le(transaction, OUTBOX_STATUS, s, rows_walked)?,
+        idempotency_count: count_idempotency_le(transaction, s, rows_walked)?,
+        audit_count: count_audit_le(transaction, audit_sequence_bound, rows_walked)?,
+        audit_by_request_count: count_audit_by_request_le(
+            transaction,
+            audit_sequence_bound,
+            rows_walked,
+        )?,
+    })
+}
+
+/// Derives the eight below-S counts from redb's per-table row counts — O(1).
+///
+/// Sound because of how S and the audit bound are chosen in
+/// [`build_checkpoint_from_snapshot`]: they are the LAST keys of `COMMITS` and
+/// `AUDIT` in this same immutable snapshot. Every sequence-linked row in the
+/// eight counted tables is born in the one durable transaction that writes its
+/// `COMMITS` row (or, for `OUTBOX_STATUS` and `AUDIT_BY_REQUEST`, keyed off a row
+/// that already exists), so no row can carry a sequence above those last keys:
+/// "rows with sequence ≤ S" is "every row in the table". Retention pruning only
+/// deletes from below, which lowers both sides identically. `COMMITS` and `AUDIT`
+/// carry that property by the definition of S and the bound; the three
+/// event-keyed tables have it CHECKED here from their last key, an O(log n)
+/// probe; `EVENT_ROUTES`, `AUDIT_BY_REQUEST` and `IDEMPOTENCY` are not ordered by
+/// sequence and rest on the birth argument alone.
+///
+/// Two departures from a plain row count are explicit:
+///   * S == 0 (empty application history) and bound == 0 (empty administration
+///     history): the walks return 0 without classifying a row, so the classes
+///     bounded by that sequence must be 0 whatever the table holds.
+///   * `IDEMPOTENCY` stores both terminal classes and `idempotency_count` admits
+///     only `StoredOutcome` rows; the `ExecutionFailed` census is subtracted.
+///
+/// Returns `None` — caller falls back to the reference walk — when the census
+/// exceeds the table it counts within, or when a checked table holds a row above
+/// S. Both mean an assumption this derivation rests on does not hold here, and a
+/// walk is always correct.
+fn counts_from_durable_lengths(
+    transaction: &ReadTransaction,
+    s: u64,
+    audit_sequence_bound: u64,
+    execution_failed_rows: u64,
+) -> Result<Option<ValidatedPrefixSequenceCounts>, StorageError> {
+    let idempotency = table_row_count(transaction, IDEMPOTENCY)?;
+    let Some(terminal_outcomes) = idempotency.checked_sub(execution_failed_rows) else {
+        return Ok(None);
+    };
+    for definition in [EVENTS, OUTBOX, OUTBOX_STATUS] {
+        if !event_keyed_table_ends_at_or_below(transaction, definition, s)? {
+            return Ok(None);
+        }
+    }
+    let below_s = |count: u64| if s == 0 { 0 } else { count };
+    let below_bound = |count: u64| if audit_sequence_bound == 0 { 0 } else { count };
+    Ok(Some(ValidatedPrefixSequenceCounts {
+        commits_count: below_s(table_row_count(transaction, COMMITS)?),
+        events_count: below_s(table_row_count(transaction, EVENTS)?),
+        event_routes_count: below_s(table_row_count(transaction, EVENT_ROUTES)?),
+        outbox_count: below_s(table_row_count(transaction, OUTBOX)?),
+        outbox_status_count: below_s(table_row_count(transaction, OUTBOX_STATUS)?),
+        idempotency_count: below_s(terminal_outcomes),
+        audit_count: below_bound(table_row_count(transaction, AUDIT)?),
+        audit_by_request_count: below_bound(table_row_count(transaction, AUDIT_BY_REQUEST)?),
+    }))
+}
+
+/// Whether an event-keyed table's LAST key sits at or below S — one B-tree
+/// descent that turns "every row is at or below S" from an assumption about the
+/// write lane into a checked fact for the sequence-ordered tables. Empty tables
+/// trivially qualify; an undecodable last key does not.
+fn event_keyed_table_ends_at_or_below(
+    transaction: &ReadTransaction,
+    definition: redb::TableDefinition<'_, &'static [u8], &'static [u8]>,
+    s: u64,
+) -> Result<bool, StorageError> {
+    let table = transaction.open_table(definition).map_err(table_error)?;
+    let Some((key, _)) = table.last().map_err(precommit_storage_error)? else {
+        return Ok(true);
+    };
+    Ok(keys::decode_event_key(key.value())
+        .is_ok_and(|id| id.commit_sequence().get() <= s && s != 0))
+}
+
+/// Reads one table's row count from redb's table metadata (no row is touched).
+fn table_row_count(
+    transaction: &ReadTransaction,
+    definition: redb::TableDefinition<'_, &'static [u8], &'static [u8]>,
+) -> Result<u64, StorageError> {
+    transaction
+        .open_table(definition)
+        .map_err(table_error)?
+        .len()
+        .map_err(precommit_storage_error)
 }
 
 /// Reads the live retention watermark sequence (0 when the meta key is absent).
@@ -365,7 +552,11 @@ fn last_audit_sequence(
     })?))
 }
 
-fn count_commits_le(transaction: &ReadTransaction, s: u64) -> Result<u64, StorageError> {
+fn count_commits_le(
+    transaction: &ReadTransaction,
+    s: u64,
+    rows_walked: &mut u64,
+) -> Result<u64, StorageError> {
     if s == 0 {
         return Ok(0);
     }
@@ -379,6 +570,7 @@ fn count_commits_le(transaction: &ReadTransaction, s: u64) -> Result<u64, Storag
         .map_err(precommit_storage_error)?
     {
         let (key, _) = entry.map_err(precommit_storage_error)?;
+        *rows_walked = rows_walked.saturating_add(1);
         let seq = keys::decode_application_sequence_key(key.value())
             .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
         if seq.get() <= s {
@@ -394,6 +586,7 @@ fn count_event_keys_le(
     transaction: &ReadTransaction,
     definition: redb::TableDefinition<'_, &'static [u8], &'static [u8]>,
     s: u64,
+    rows_walked: &mut u64,
 ) -> Result<u64, StorageError> {
     if s == 0 {
         return Ok(0);
@@ -402,6 +595,7 @@ fn count_event_keys_le(
     let mut count = 0_u64;
     for entry in table.iter().map_err(precommit_storage_error)? {
         let (key, _) = entry.map_err(precommit_storage_error)?;
+        *rows_walked = rows_walked.saturating_add(1);
         let Ok(id) = keys::decode_event_key(key.value()) else {
             continue;
         };
@@ -414,7 +608,11 @@ fn count_event_keys_le(
     Ok(count)
 }
 
-fn count_event_routes_le(transaction: &ReadTransaction, s: u64) -> Result<u64, StorageError> {
+fn count_event_routes_le(
+    transaction: &ReadTransaction,
+    s: u64,
+    rows_walked: &mut u64,
+) -> Result<u64, StorageError> {
     if s == 0 {
         return Ok(0);
     }
@@ -422,6 +620,7 @@ fn count_event_routes_le(transaction: &ReadTransaction, s: u64) -> Result<u64, S
     let mut count = 0_u64;
     for entry in table.iter().map_err(precommit_storage_error)? {
         let (key, _) = entry.map_err(precommit_storage_error)?;
+        *rows_walked = rows_walked.saturating_add(1);
         let Ok((_, id)) = keys::decode_event_route_key(key.value()) else {
             continue;
         };
@@ -434,7 +633,11 @@ fn count_event_routes_le(transaction: &ReadTransaction, s: u64) -> Result<u64, S
     Ok(count)
 }
 
-fn count_idempotency_le(transaction: &ReadTransaction, s: u64) -> Result<u64, StorageError> {
+fn count_idempotency_le(
+    transaction: &ReadTransaction,
+    s: u64,
+    rows_walked: &mut u64,
+) -> Result<u64, StorageError> {
     if s == 0 {
         return Ok(0);
     }
@@ -442,16 +645,8 @@ fn count_idempotency_le(transaction: &ReadTransaction, s: u64) -> Result<u64, St
     let mut count = 0_u64;
     for entry in table.iter().map_err(precommit_storage_error)? {
         let (_, value) = entry.map_err(precommit_storage_error)?;
-        let Ok(record) = codec::decode_idempotency_record_v1(value.value()) else {
-            continue;
-        };
-        let seq = match record.into_parts().0 {
-            crate::codec::IdempotencyRecordV1::StoredOutcome(outcome) => {
-                outcome.commit_sequence().get()
-            }
-            crate::codec::IdempotencyRecordV1::ExecutionFailed(_) => continue,
-        };
-        if seq <= s {
+        *rows_walked = rows_walked.saturating_add(1);
+        if classify_terminal_row(value.value()).is_prefix_outcome(s) {
             count = count
                 .checked_add(1)
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
@@ -460,7 +655,11 @@ fn count_idempotency_le(transaction: &ReadTransaction, s: u64) -> Result<u64, St
     Ok(count)
 }
 
-fn count_audit_le(transaction: &ReadTransaction, bound: u64) -> Result<u64, StorageError> {
+fn count_audit_le(
+    transaction: &ReadTransaction,
+    bound: u64,
+    rows_walked: &mut u64,
+) -> Result<u64, StorageError> {
     if bound == 0 {
         return Ok(0);
     }
@@ -474,6 +673,7 @@ fn count_audit_le(transaction: &ReadTransaction, bound: u64) -> Result<u64, Stor
         .map_err(precommit_storage_error)?
     {
         let (key, _) = entry.map_err(precommit_storage_error)?;
+        *rows_walked = rows_walked.saturating_add(1);
         let seq = keys::decode_audit_key(key.value())
             .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
         if seq.get() <= bound {
@@ -488,6 +688,7 @@ fn count_audit_le(transaction: &ReadTransaction, bound: u64) -> Result<u64, Stor
 fn count_audit_by_request_le(
     transaction: &ReadTransaction,
     bound: u64,
+    rows_walked: &mut u64,
 ) -> Result<u64, StorageError> {
     if bound == 0 {
         return Ok(0);
@@ -498,6 +699,7 @@ fn count_audit_by_request_le(
     let mut count = 0_u64;
     for entry in table.iter().map_err(precommit_storage_error)? {
         let (key, _) = entry.map_err(precommit_storage_error)?;
+        *rows_walked = rows_walked.saturating_add(1);
         let Ok((_, seq)) = keys::decode_audit_by_request_key(key.value()) else {
             continue;
         };
@@ -606,10 +808,16 @@ pub(crate) fn is_range_skipped_phase(phase: usize) -> bool {
 }
 
 /// Whether inspect may be skipped for a prefix row of a full-scan seq-linked table.
+///
+/// Phase 8 (`IDEMPOTENCY`) is NOT decided here: its prefix test and the terminal
+/// census that seeds [`CheckpointCountSource::DurableLengths`] are two questions
+/// about one decode, so the session classifies the row once with
+/// [`classify_terminal_row`] and answers both from
+/// [`TerminalRowClass::is_prefix_outcome`] — the identical predicate this arm
+/// used to spell out.
 pub(crate) fn skip_inspect_for_prefix_row(
     phase: usize,
     key: &[u8],
-    value: &[u8],
     s: u64,
     audit_bound: u64,
 ) -> bool {
@@ -617,16 +825,40 @@ pub(crate) fn skip_inspect_for_prefix_row(
         13 => {
             keys::decode_event_route_key(key).is_ok_and(|(_, id)| id.commit_sequence().get() <= s)
         }
-        8 => match codec::decode_idempotency_record_v1(value) {
-            Ok(item) => match item.into_parts().0 {
-                crate::codec::IdempotencyRecordV1::StoredOutcome(outcome) => {
-                    outcome.commit_sequence().get() <= s
-                }
-                crate::codec::IdempotencyRecordV1::ExecutionFailed(_) => false,
-            },
-            Err(_) => false,
-        },
         22 => keys::decode_audit_by_request_key(key).is_ok_and(|(_, seq)| seq.get() <= audit_bound),
         _ => false,
+    }
+}
+
+/// Closed classification of one `IDEMPOTENCY` row from a single decode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TerminalRowClass {
+    /// Terminal stored outcome at this commit sequence.
+    Outcome(u64),
+    /// Terminal execution failure; carries no commit sequence and is never
+    /// admitted by `idempotency_count`.
+    Failed,
+    /// Value the terminal codec rejects; the row inspector reports the finding.
+    Undecodable,
+}
+
+impl TerminalRowClass {
+    /// Whether this row belongs to the validated prefix of a checkpoint at S.
+    pub(crate) const fn is_prefix_outcome(self, s: u64) -> bool {
+        matches!(self, Self::Outcome(sequence) if sequence <= s)
+    }
+}
+
+/// Classifies one `IDEMPOTENCY` row: the single decode both the checkpointed
+/// prefix skip and the terminal execution-failure census read.
+pub(crate) fn classify_terminal_row(value: &[u8]) -> TerminalRowClass {
+    match codec::decode_idempotency_record_v1(value) {
+        Ok(item) => match item.into_parts().0 {
+            crate::codec::IdempotencyRecordV1::StoredOutcome(outcome) => {
+                TerminalRowClass::Outcome(outcome.commit_sequence().get())
+            }
+            crate::codec::IdempotencyRecordV1::ExecutionFailed(_) => TerminalRowClass::Failed,
+        },
+        Err(_) => TerminalRowClass::Undecodable,
     }
 }

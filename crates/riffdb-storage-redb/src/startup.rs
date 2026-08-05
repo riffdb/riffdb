@@ -254,6 +254,12 @@ pub struct RedbStructuralEvidenceSession {
     /// Prefix rows classified-and-skipped during the full walks of the
     /// non-sequence-prefixed tables (EVENT_ROUTES/IDEMPOTENCY/AUDIT_BY_REQUEST).
     walked_prefix_counts: [u64; STRUCTURAL_TABLE_COUNT],
+    /// Terminal `ExecutionFailed` rows seen in the IDEMPOTENCY phase — the whole
+    /// table on both the full walk and the checkpoint fast path, which classifies
+    /// every row of that table either way. Seeds the process census that lets a
+    /// checkpoint's StoredOutcome-only `idempotency_count` be derived from redb's
+    /// IDEMPOTENCY row count instead of a full pass.
+    terminal_execution_failure_rows: u64,
 }
 
 /// Cached single-pass entity history state for the ENTITIES structural phase.
@@ -712,6 +718,7 @@ impl StructuralEvidenceOpen for RedbStore {
             checkpoint_ignored_reason,
             walked_suffix_counts: [0; STRUCTURAL_TABLE_COUNT],
             walked_prefix_counts: [0; STRUCTURAL_TABLE_COUNT],
+            terminal_execution_failure_rows: 0,
         })
     }
 }
@@ -997,6 +1004,14 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
             // of any severity (authoritative, outbox, projection, sampled)
             // vetoes the write so the fast path can never silence it.
             if !self.any_finding_seen {
+                // Seed the terminal execution-failure census from THIS walk
+                // before the gate opens. The census and the write permission are
+                // established by the same statement pair, so no checkpoint can
+                // ever be built from an unseeded census; the IDEMPOTENCY phase
+                // classified every row of the table, on the full walk and on the
+                // fast path alike, so the seed is exact for this durable head.
+                self.shared
+                    .seed_terminal_execution_failure_rows(self.terminal_execution_failure_rows);
                 self.shared.set_startup_validation_clean(true);
                 let retained = self.retained_metadata.clone();
                 if crate::validated_prefix::write_validated_prefix_checkpoint(
@@ -1133,6 +1148,18 @@ impl RedbStructuralEvidenceSession {
     /// authoritative corruption: the recorded counts describe an immutable
     /// prefix, so the open REFUSES — exactly as full validation refuses on
     /// authoritative findings — instead of falling back.
+    ///
+    /// # Recovering a refusal
+    ///
+    /// A refusal here does not require restore-from-backup. `RetentionMaintenance::prune_to`
+    /// (`crate::retention`, `prune_to`) opens the database file directly — no validated
+    /// startup — and its FIRST exclusive transaction unconditionally deletes
+    /// `META_VALIDATED_PREFIX_CHECKPOINT`. Running the offline retention prune
+    /// therefore removes the disputed checkpoint, after which the next open finds
+    /// none and runs full validation, which re-derives every count from its own
+    /// walk. That is the operator lever for a count divergence, whatever produced
+    /// it — a drifted process census, or rows added or lost below S while the
+    /// database was closed.
     fn verify_checkpoint_prefix_counts(&self) -> Result<(), StorageError> {
         let Some(checkpoint) = self.checkpoint.as_ref() else {
             return Ok(());
@@ -1206,6 +1233,13 @@ impl RedbStructuralEvidenceSession {
     #[must_use]
     pub fn reactive_publication_audit_decodes(&self) -> u64 {
         self.reactive_publication_audit_decodes
+    }
+
+    /// Test observability: terminal `ExecutionFailed` rows this walk censused.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn terminal_execution_failure_rows(&self) -> u64 {
+        self.terminal_execution_failure_rows
     }
 }
 
@@ -1410,11 +1444,13 @@ impl RedbStructuralEvidenceSession {
         if phase == 28 {
             return self.inspect_reactive_module_row_with_witness(&key, &value);
         }
+        if phase == 8 {
+            return self.inspect_terminal_row_with_census(&key, &value);
+        }
         if let Some(checkpoint) = self.checkpoint.as_ref()
             && crate::validated_prefix::skip_inspect_for_prefix_row(
                 phase,
                 &key,
-                &value,
                 checkpoint.checkpoint_commit_sequence,
                 checkpoint.audit_sequence_bound,
             )
@@ -1524,6 +1560,42 @@ impl RedbStructuralEvidenceSession {
             key,
             value,
         )
+    }
+
+    /// Inspects one IDEMPOTENCY row and censuses its terminal class.
+    ///
+    /// Dispatched here rather than from `inspect_table_row_from_bytes` because
+    /// the checkpointed prefix skip and the terminal execution-failure census are
+    /// two questions about one decode: classifying twice would add a second full
+    /// protobuf pass over the largest-decode table at every open. The skip
+    /// predicate is unchanged — `TerminalRowClass::is_prefix_outcome` is the same
+    /// test `skip_inspect_for_prefix_row` spelled out for phase 8 — and the
+    /// findings this phase produces are unchanged.
+    ///
+    /// The census counts EVERY `ExecutionFailed` row in the table on both paths:
+    /// the skip admits only `StoredOutcome` rows at or below S, so no execution
+    /// failure is ever skipped, on the fast path or the full walk.
+    fn inspect_terminal_row_with_census(
+        &mut self,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<Option<StructuralFinding>, StorageError> {
+        let class = crate::validated_prefix::classify_terminal_row(value);
+        if class == crate::validated_prefix::TerminalRowClass::Failed {
+            self.terminal_execution_failure_rows =
+                self.terminal_execution_failure_rows.saturating_add(1);
+        }
+        if let Some(checkpoint) = self.checkpoint.as_ref()
+            && class.is_prefix_outcome(checkpoint.checkpoint_commit_sequence)
+        {
+            // Counting skip-walk: every classified prefix row is tallied and
+            // verified against the recorded count at ExactEnd, so a vanished
+            // below-S row in this full-walk table still fails closed.
+            self.walked_prefix_counts[8] = self.walked_prefix_counts[8].saturating_add(1);
+            return Ok(None);
+        }
+        let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+        inspect_terminal_row(transaction, &self.inputs, self.database_id, key, value)
     }
 
     fn inspect_entity_row_with_chains(
@@ -1807,7 +1879,9 @@ fn inspect_table_row_from_bytes(
         // `inspect_entity_row_with_chains` in `inspect_structural_forward`.
         6 => inspect_index_row(transaction, key, value),
         7 => inspect_epoch_row(transaction, key, value),
-        8 => inspect_terminal_row(transaction, inputs, database_id, key, value),
+        // Phase 8 (IDEMPOTENCY) is handled exclusively by
+        // `inspect_terminal_row_with_census` in `inspect_structural_forward`,
+        // which owns the single terminal-class decode.
         9 => inspect_pending_row(transaction, inputs, database_id, key, value),
         10 => inspect_commit_row(transaction, index, key, value),
         11 => inspect_provenance_row(transaction, key, value),
@@ -9052,5 +9126,957 @@ contract RedbMigration version 1 {
             "the witness pass must read the whole audit stream, never the \
              checkpoint-truncated suffix the AUDIT phase walks"
         );
+    }
+
+    // ==== O(1) validated-prefix checkpoint counts (WP-448) ====
+    //
+    // Falsifiability notes (what a neutered implementation would break):
+    // - `checkpoint_counts_from_durable_lengths_are_byte_identical_to_the_walk`:
+    //   dropping the ExecutionFailed subtraction, or the S == 0 / bound == 0
+    //   guards, turns the encoded bytes unequal on the shapes that exercise them.
+    // - `the_shutdown_checkpoint_write_iterates_no_history_rows`: re-pointing the
+    //   production write at `CheckpointCountSource::Walked` turns the row tally
+    //   nonzero.
+    // - `a_drifted_terminal_census_is_refused_at_the_next_open`: it is the whole
+    //   fail-closed claim — a wrong maintained count can never be silently
+    //   trusted.
+
+    /// One deterministic step of the house LCG used for randomized shapes.
+    fn checkpoint_shape_mix(state: &mut u64) -> u64 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        *state >> 17
+    }
+
+    /// Row population of one generated checkpoint-count shape. Every field stays
+    /// inside the envelope the write lane can actually produce: no counted table
+    /// ever holds a row whose sequence exceeds the last `COMMITS`/`AUDIT` key,
+    /// because every such row is born in the transaction that writes that key.
+    #[derive(Clone, Copy, Debug)]
+    struct CheckpointCountShape {
+        commits: u64,
+        /// First commit sequence; above 1 models a retention-pruned prefix.
+        first_commit: u64,
+        events: u64,
+        routes: u64,
+        outbox: u64,
+        outbox_status: u64,
+        outcomes: u64,
+        failures: u64,
+        audits: u64,
+        by_request: u64,
+        entities: u64,
+    }
+
+    fn checkpoint_count_plan(bundle: &StoredContractBundleV1) -> ExecutablePlanRef {
+        ExecutablePlanRef::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+            CommandId::first(),
+            PlanHash::from_bytes([0x4c; 32]),
+        )
+    }
+
+    fn checkpoint_count_identity(
+        bundle: &StoredContractBundleV1,
+        id: DatabaseId,
+        ordinal: u64,
+    ) -> IdempotencyIdentity {
+        let mut digest = [0x31_u8; 32];
+        digest[..8].copy_from_slice(&ordinal.to_be_bytes());
+        IdempotencyIdentity::new(
+            id,
+            Environment::new("checkpoint-counts").expect("environment"),
+            TenantScope::Global,
+            ActorId::new("checkpoint-actor").expect("actor"),
+            bundle.lineage().clone(),
+            CommandId::first(),
+            IdempotencyKeyDigest::from_hmac_bytes(DigestKeyId::new(1).expect("digest key"), digest),
+        )
+    }
+
+    fn checkpoint_count_actor() -> AdmittedActorContext {
+        AdmittedActorContext::new(
+            ActorId::new("checkpoint-actor").expect("actor"),
+            ActorKind::Human,
+            TenantScope::Global,
+            None,
+        )
+    }
+
+    fn checkpoint_count_partition() -> riffdb_types::PartitionKey {
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition.push_u64(1).expect("partition component");
+        partition.finish().expect("partition key")
+    }
+
+    /// One terminal stored outcome at `sequence`, keyed by `ordinal`.
+    fn checkpoint_count_outcome(
+        bundle: &StoredContractBundleV1,
+        id: DatabaseId,
+        ordinal: u64,
+        sequence: CommitSequence,
+    ) -> StoredOutcomeV1 {
+        let partition_key = checkpoint_count_partition();
+        let partition_hash = hash_partition_key(partition_key.as_bytes());
+        StoredOutcomeV1::new(
+            checkpoint_count_identity(bundle, id, ordinal),
+            sequence,
+            request_id(0x4d),
+            checkpoint_count_plan(bundle),
+            CanonicalInputHash::from_bytes([0x4e; 32]),
+            checkpoint_count_actor(),
+            LogicalTime::new(Timestamp::new(1, 0).expect("timestamp")),
+            partition_key,
+            partition_hash,
+            Vec::new(),
+            DeclaredOutcome::new(
+                OutcomeId::first(),
+                CanonicalRecord::new(Vec::new()).expect("outcome fields"),
+            )
+            .expect("declared outcome"),
+            StoredAdmittedProvenanceClaimsV1::default(),
+            ProvenanceId::from_bytes(uuid_bytes(0x4f)).expect("provenance ID"),
+            DurabilityMode::Sync,
+        )
+        .expect("stored outcome")
+    }
+
+    /// One terminal execution failure, keyed by `ordinal`. It carries no commit
+    /// sequence, which is exactly why the checkpoint count cannot be a row count.
+    fn checkpoint_count_failure(
+        bundle: &StoredContractBundleV1,
+        id: DatabaseId,
+        ordinal: u64,
+    ) -> riffdb_storage_api::StoredExecutionFailedV1 {
+        let pending = riffdb_storage_api::StoredPendingAdmissionV1::new(
+            checkpoint_count_identity(bundle, id, ordinal),
+            CanonicalInputHash::from_bytes([0x5a; 32]),
+            request_id(0x5b),
+            checkpoint_count_plan(bundle),
+            LogicalTime::new(Timestamp::new(1, 0).expect("timestamp")),
+            checkpoint_count_actor(),
+            checkpoint_count_partition(),
+            StoredAdmittedProvenanceClaimsV1::default(),
+        )
+        .expect("pending admission");
+        riffdb_storage_api::StoredExecutionFailedV1::new(
+            pending,
+            riffdb_types::ExecutionFailureCode::UniqueConflict,
+        )
+    }
+
+    /// Writes one generated shape as raw rows. Row VALUES matter only where a
+    /// count classifies them (IDEMPOTENCY) or the fingerprint decodes them
+    /// (ENTITIES); the other counted tables are classified from their keys, so
+    /// realistic filler keeps the fixture cheap without weakening the property.
+    fn write_checkpoint_count_shape(
+        store: &RedbStore,
+        id: DatabaseId,
+        bundle: &StoredContractBundleV1,
+        shape: &CheckpointCountShape,
+    ) {
+        let partition_hash = hash_partition_key(checkpoint_count_partition().as_bytes());
+        let last_commit = shape
+            .first_commit
+            .saturating_add(shape.commits.saturating_sub(1));
+        // Event-keyed rows must reference a sequence at or below the last commit,
+        // which is what the write lane guarantees by writing them in the same
+        // transaction as that commit.
+        let event_sequence = |ordinal: u64| {
+            let span = shape.commits.max(1);
+            CommitSequence::new(shape.first_commit.saturating_add(ordinal % span))
+                .expect("event commit sequence")
+        };
+        let write = store.shared.database.begin_write().expect("begin fixture");
+        {
+            let mut commits = write.open_table(COMMITS).expect("commits");
+            for ordinal in 0..shape.commits {
+                let sequence = CommitSequence::new(shape.first_commit.saturating_add(ordinal))
+                    .expect("commit sequence");
+                commits
+                    .insert(
+                        keys::encode_application_sequence_key(sequence).as_slice(),
+                        [0x11_u8; 48].as_slice(),
+                    )
+                    .expect("insert commit");
+            }
+            let mut events = write.open_table(EVENTS).expect("events");
+            for ordinal in 0..shape.events {
+                let event = riffdb_types::EventId::new(
+                    event_sequence(ordinal),
+                    u32::try_from(ordinal % 4).expect("event ordinal"),
+                );
+                events
+                    .insert(
+                        keys::encode_event_key(event).as_slice(),
+                        [0x22_u8; 32].as_slice(),
+                    )
+                    .expect("insert event");
+            }
+            let mut routes = write.open_table(EVENT_ROUTES).expect("routes");
+            for ordinal in 0..shape.routes {
+                let event = riffdb_types::EventId::new(
+                    event_sequence(ordinal),
+                    u32::try_from(ordinal % 4).expect("event ordinal"),
+                );
+                routes
+                    .insert(
+                        keys::encode_event_route_key(partition_hash, event).as_slice(),
+                        [0x33_u8; 16].as_slice(),
+                    )
+                    .expect("insert route");
+            }
+            let mut outbox = write.open_table(OUTBOX).expect("outbox");
+            for ordinal in 0..shape.outbox {
+                let event = riffdb_types::EventId::new(
+                    event_sequence(ordinal),
+                    u32::try_from(ordinal % 4).expect("event ordinal"),
+                );
+                outbox
+                    .insert(
+                        keys::encode_event_key(event).as_slice(),
+                        [0x44_u8; 24].as_slice(),
+                    )
+                    .expect("insert outbox");
+            }
+            let mut status = write.open_table(OUTBOX_STATUS).expect("status");
+            for ordinal in 0..shape.outbox_status {
+                let event = riffdb_types::EventId::new(
+                    event_sequence(ordinal),
+                    u32::try_from(ordinal % 4).expect("event ordinal"),
+                );
+                status
+                    .insert(
+                        keys::encode_event_key(event).as_slice(),
+                        [0x55_u8; 8].as_slice(),
+                    )
+                    .expect("insert status");
+            }
+            let mut terminal = write.open_table(IDEMPOTENCY).expect("idempotency");
+            for ordinal in 0..shape.outcomes {
+                let outcome =
+                    checkpoint_count_outcome(bundle, id, ordinal, event_sequence(ordinal));
+                let encoded = codec::encode_stored_outcome_v1(&outcome).expect("encode outcome");
+                let key = outcome.identity().storage_key().expect("identity key");
+                terminal
+                    .insert(key.as_bytes(), encoded.as_bytes())
+                    .expect("insert outcome");
+            }
+            for ordinal in 0..shape.failures {
+                let failure = checkpoint_count_failure(
+                    bundle,
+                    id,
+                    shape.outcomes.saturating_add(ordinal).saturating_add(1),
+                );
+                let encoded =
+                    codec::encode_execution_failed_v1(&failure).expect("encode execution failure");
+                let key = failure
+                    .pending()
+                    .identity()
+                    .storage_key()
+                    .expect("identity key");
+                terminal
+                    .insert(key.as_bytes(), encoded.as_bytes())
+                    .expect("insert execution failure");
+            }
+            let mut audit = write.open_table(AUDIT).expect("audit");
+            for ordinal in 0..shape.audits {
+                let sequence = AdministrationSequence::new(ordinal.saturating_add(1))
+                    .expect("administration sequence");
+                audit
+                    .insert(
+                        keys::encode_audit_key(sequence).as_slice(),
+                        [0x66_u8; 40].as_slice(),
+                    )
+                    .expect("insert audit");
+            }
+            let mut by_request = write.open_table(AUDIT_BY_REQUEST).expect("by request");
+            for ordinal in 0..shape.by_request {
+                let sequence =
+                    AdministrationSequence::new((ordinal % shape.audits.max(1)).saturating_add(1))
+                        .expect("administration sequence");
+                by_request
+                    .insert(
+                        keys::encode_audit_by_request_key(
+                            request_id(u8::try_from(ordinal % 251).expect("request seed")),
+                            sequence,
+                        )
+                        .as_slice(),
+                        [0x77_u8; 4].as_slice(),
+                    )
+                    .expect("insert audit index");
+            }
+            let mut entities = write.open_table(ENTITIES).expect("entities");
+            for ordinal in 0..shape.entities {
+                let record = history_entity(ordinal, EntityVersion::first(), b"counts", bundle);
+                let encoded = codec::encode_entity_record_v1(&record).expect("encode entity");
+                entities
+                    .insert(
+                        keys::encode_entity_key(record.target().key()),
+                        encoded.as_bytes(),
+                    )
+                    .expect("insert entity");
+            }
+            let _ = last_commit;
+        }
+        write.commit().expect("commit fixture");
+    }
+
+    /// Encodes the checkpoint both count sources produce over one snapshot and
+    /// returns `(walked bytes, derived bytes, rows the derived path iterated)`.
+    fn encoded_checkpoints_from_both_count_sources(
+        shared: &SharedRedb,
+        execution_failed_rows: u64,
+    ) -> (Vec<u8>, Vec<u8>, u64) {
+        use crate::validated_prefix::{CheckpointCountSource, build_checkpoint_from_snapshot};
+
+        let transaction = shared.database.begin_read().expect("checkpoint snapshot");
+        let retained = read_retained_metadata_pub(&transaction).expect("retained metadata");
+        let mut walked_rows = 0_u64;
+        let walked = build_checkpoint_from_snapshot(
+            &transaction,
+            &retained,
+            CheckpointCountSource::Walked,
+            &mut walked_rows,
+        )
+        .expect("reference checkpoint");
+        let mut derived_rows = 0_u64;
+        let derived = build_checkpoint_from_snapshot(
+            &transaction,
+            &retained,
+            CheckpointCountSource::DurableLengths {
+                execution_failed_rows,
+            },
+            &mut derived_rows,
+        )
+        .expect("derived checkpoint");
+        let encode = |checkpoint: &_| {
+            riffdb_storage_api::proto_codec::encode_validated_prefix_checkpoint_v1(checkpoint)
+                .expect("encode checkpoint")
+                .as_bytes()
+                .to_vec()
+        };
+        (encode(&walked), encode(&derived), derived_rows)
+    }
+
+    /// The O(1) count source must produce the SAME checkpoint bytes as the
+    /// reference walk on every history shape the write lane can reach — that
+    /// equality is the whole licence for not walking at shutdown.
+    #[test]
+    fn checkpoint_counts_from_durable_lengths_are_byte_identical_to_the_walk() {
+        let mut state = 0x5EED_C0FF_EE01_u64;
+        let mut saw_failures = false;
+        let mut saw_empty_history = false;
+        let mut saw_pruned_prefix = false;
+        let mut saw_full_population = false;
+        for trial in 0..24_u64 {
+            // Trial 0 is the empty database; trial 1 pins the S == 0 guard with a
+            // non-empty event population; the rest are randomized.
+            let shape = match trial {
+                0 => CheckpointCountShape {
+                    commits: 0,
+                    first_commit: 1,
+                    events: 0,
+                    routes: 0,
+                    outbox: 0,
+                    outbox_status: 0,
+                    outcomes: 0,
+                    failures: 0,
+                    audits: 0,
+                    by_request: 0,
+                    entities: 0,
+                },
+                1 => CheckpointCountShape {
+                    commits: 0,
+                    first_commit: 1,
+                    events: 3,
+                    routes: 3,
+                    outbox: 2,
+                    outbox_status: 1,
+                    outcomes: 0,
+                    failures: 0,
+                    audits: 0,
+                    by_request: 2,
+                    entities: 1,
+                },
+                _ => {
+                    let commits = 1 + checkpoint_shape_mix(&mut state) % 12;
+                    CheckpointCountShape {
+                        commits,
+                        first_commit: 1 + checkpoint_shape_mix(&mut state) % 5,
+                        events: checkpoint_shape_mix(&mut state) % 17,
+                        routes: checkpoint_shape_mix(&mut state) % 13,
+                        outbox: checkpoint_shape_mix(&mut state) % 11,
+                        outbox_status: checkpoint_shape_mix(&mut state) % 7,
+                        outcomes: checkpoint_shape_mix(&mut state) % 9,
+                        failures: checkpoint_shape_mix(&mut state) % 4,
+                        audits: checkpoint_shape_mix(&mut state) % 15,
+                        by_request: checkpoint_shape_mix(&mut state) % 15,
+                        entities: checkpoint_shape_mix(&mut state) % 6,
+                    }
+                }
+            };
+            saw_failures |= shape.failures > 0;
+            saw_empty_history |= shape.commits == 0;
+            saw_pruned_prefix |= shape.first_commit > 1;
+            saw_full_population |= shape.commits > 0
+                && shape.events > 0
+                && shape.routes > 0
+                && shape.outbox > 0
+                && shape.outbox_status > 0
+                && shape.outcomes > 0
+                && shape.audits > 0
+                && shape.by_request > 0;
+
+            let path = TestDatabasePath::new("checkpoint-count-shape");
+            let id = database_id(0x9a);
+            let store = initialized_store(&path, id);
+            let bundle = stored_bundle("checkpoint-counts", 1, b"checkpoint-counts-bundle");
+            write_checkpoint_count_shape(&store, id, &bundle, &shape);
+            let (walked, derived, derived_rows) =
+                encoded_checkpoints_from_both_count_sources(&store.shared, shape.failures);
+            assert_eq!(
+                derived, walked,
+                "trial {trial}: the O(1) count source must encode byte-identical \
+                 checkpoint bytes to the reference walk; shape={shape:?}"
+            );
+            assert_eq!(
+                derived_rows, 0,
+                "trial {trial}: the O(1) count source must not iterate history; \
+                 shape={shape:?}"
+            );
+        }
+        assert!(
+            saw_failures && saw_empty_history && saw_pruned_prefix && saw_full_population,
+            "the generated shapes must cover execution failures, empty history, a \
+             pruned prefix, and one fully populated database or the property is \
+             vacuous: failures={saw_failures} empty={saw_empty_history} \
+             pruned={saw_pruned_prefix} full={saw_full_population}"
+        );
+    }
+
+    /// The O(1) derivation's precondition — no counted row carries a sequence
+    /// above S — is CHECKED for the sequence-ordered event tables, not assumed.
+    /// A row above S must send the build to the reference walk, whose answer is
+    /// always correct, rather than let it trust a row count that includes a row
+    /// the recorded count must exclude.
+    ///
+    /// The write lane cannot produce this shape (every counted row is born in the
+    /// transaction that writes its `COMMITS` row), which is exactly why the probe
+    /// exists and why the row is constructed here directly.
+    #[test]
+    fn an_event_keyed_row_above_s_falls_back_to_the_reference_walk() {
+        let path = TestDatabasePath::new("checkpoint-row-above-s");
+        let id = database_id(0x9f);
+        let store = initialized_store(&path, id);
+        let bundle = stored_bundle("checkpoint-counts", 1, b"checkpoint-counts-bundle");
+        let shape = CheckpointCountShape {
+            commits: 4,
+            first_commit: 1,
+            events: 4,
+            routes: 2,
+            outbox: 3,
+            outbox_status: 2,
+            outcomes: 3,
+            failures: 1,
+            audits: 3,
+            by_request: 3,
+            entities: 2,
+        };
+        write_checkpoint_count_shape(&store, id, &bundle, &shape);
+
+        // Control: with every row at or below S the build touches no row at all.
+        let (walked, derived, derived_rows) =
+            encoded_checkpoints_from_both_count_sources(&store.shared, shape.failures);
+        assert_eq!(
+            derived, walked,
+            "control: an intact shape must derive the reference walk's bytes"
+        );
+        assert_eq!(
+            derived_rows, 0,
+            "control: an intact shape must be derived without iterating a row"
+        );
+
+        // One EVENTS row for a commit sequence above the last COMMITS key.
+        let above = CommitSequence::new(shape.commits.saturating_add(1)).expect("sequence above S");
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("begin row-above-S write");
+        {
+            let mut events = write.open_table(EVENTS).expect("events");
+            events
+                .insert(
+                    keys::encode_event_key(riffdb_types::EventId::new(above, 0)).as_slice(),
+                    [0x22_u8; 32].as_slice(),
+                )
+                .expect("insert event above S");
+        }
+        write.commit().expect("commit row above S");
+
+        let (walked, derived, derived_rows) =
+            encoded_checkpoints_from_both_count_sources(&store.shared, shape.failures);
+        assert!(
+            derived_rows > 0,
+            "a counted row above S must send the build to the reference walk; \
+             trusting the row count here would record an events_count that \
+             includes a row the count must exclude"
+        );
+        assert_eq!(
+            derived, walked,
+            "the fallback must produce exactly the reference walk's checkpoint"
+        );
+    }
+
+    /// A clean-validating database of `commits` single-entity commits.
+    fn checkpointable_history_store(
+        path: &TestDatabasePath,
+        id: DatabaseId,
+        commits: u64,
+    ) -> (RedbStore, StoredContractBundleV1) {
+        let store = initialized_store(path, id);
+        let bundle = stored_bundle("checkpoint-history", 1, b"checkpoint-history-bundle");
+        let plan = ExecutablePlanRef::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+            CommandId::first(),
+            PlanHash::from_bytes([0x4b; 32]),
+        );
+        let entities = (0..commits)
+            .map(|ordinal| {
+                history_entity(
+                    ordinal.saturating_add(1),
+                    EntityVersion::first(),
+                    b"history",
+                    &bundle,
+                )
+            })
+            .collect::<Vec<_>>();
+        let records = entities
+            .iter()
+            .enumerate()
+            .map(|(ordinal, entity)| {
+                history_commit(
+                    CommitSequence::new(u64::try_from(ordinal).expect("ordinal") + 1)
+                        .expect("commit sequence"),
+                    plan.clone(),
+                    &[entity],
+                )
+            })
+            .collect::<Vec<_>>();
+        write_entities_and_commits(&store, id, &bundle, &entities, &records);
+        (store, bundle)
+    }
+
+    /// Drains historical evidence without asserting the catalog is inactive
+    /// (`finish_historical` is for empty fixtures; these fixtures activate one).
+    fn drain_historical(session: &mut RedbStructuralEvidenceSession) -> RedbHistoricalEvidenceEnd {
+        let (end, _, _) = collect_historical(session, 8);
+        end
+    }
+
+    /// Completes one clean open and returns the activated ports.
+    fn open_cleanly(store: RedbStore) -> crate::RedbOperationalPorts {
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin structural evidence");
+        let structural_end = finish_structural(&mut session);
+        let historical_end = drain_historical(&mut session);
+        let outcome = session
+            .finish(structural_end, historical_end)
+            .expect("a clean structural pass must release the ports");
+        let StructuralOpenOutcome::Clean(opened) = outcome else {
+            panic!("an intact history must open clean");
+        };
+        let (_, _, _, dormant) = opened.into_parts();
+        dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate ports")
+    }
+
+    /// The graceful-shutdown checkpoint write must read row COUNTS, not rows: no
+    /// history row may be iterated to build it, at any history length.
+    #[test]
+    fn the_shutdown_checkpoint_write_iterates_no_history_rows() {
+        let path = TestDatabasePath::new("checkpoint-zero-walk");
+        let id = database_id(0x9b);
+        let (store, _bundle) = checkpointable_history_store(&path, id, 12);
+        {
+            let transaction = store.shared.database.begin_read().expect("read");
+            let rows = table_len(&transaction, COMMITS).expect("commit rows");
+            assert_eq!(
+                rows, 12,
+                "the pin proves nothing unless the database really holds history"
+            );
+        }
+        let ports = open_cleanly(store);
+        // Startup's own post-validation write comes first and is the same build.
+        assert_eq!(
+            ports.checkpoint_count_rows_walked(),
+            0,
+            "the post-validation checkpoint write must not walk history either"
+        );
+        assert!(
+            ports
+                .write_validated_prefix_checkpoint()
+                .expect("graceful-shutdown checkpoint write"),
+            "a clean validation must permit the shutdown checkpoint write"
+        );
+        assert_eq!(
+            ports.checkpoint_count_rows_walked(),
+            0,
+            "the graceful-shutdown checkpoint write must iterate no history row"
+        );
+        assert_eq!(
+            ports.terminal_execution_failure_rows(),
+            0,
+            "a history with no execution failures must census none"
+        );
+        drop(ports);
+
+        // The counts written without walking must be the true ones: a reopen
+        // verifies every recorded count against redb's own row counts and refuses
+        // on any divergence, so an accepted fast path IS the count proof.
+        let reopened = RedbStore::open(&path.0).expect("reopen checkpointed store");
+        let mut session = reopened
+            .begin_structural_evidence(inputs())
+            .expect("begin structural evidence");
+        assert!(
+            session.checkpoint_verified(),
+            "the checkpoint written without walking must be accepted: {:?}",
+            session.checkpoint_ignored_reason()
+        );
+        let structural_end = finish_structural(&mut session);
+        let historical_end = drain_historical(&mut session);
+        session
+            .finish(structural_end, historical_end)
+            .expect("the metadata-derived counts must survive verification");
+    }
+
+    /// The census the O(1) count source subtracts must advance with the lane that
+    /// makes a terminal `ExecutionFailed` row durable. After one such commit the
+    /// derived counts must still be byte-identical to the reference walk, which
+    /// classifies that row for itself — so a lane that stopped counting turns this
+    /// red rather than shipping a checkpoint the next open would refuse.
+    #[test]
+    fn a_committed_terminal_execution_failure_advances_the_census_it_is_counted_by() {
+        let path = TestDatabasePath::new("checkpoint-census-maintenance");
+        let id = database_id(0x9e);
+        let (store, bundle) = checkpointable_history_store(&path, id, 4);
+        let ports = open_cleanly(store);
+        assert_eq!(
+            ports.terminal_execution_failure_rows(),
+            0,
+            "the seed for a history without execution failures is zero"
+        );
+
+        // The execution-failure lane's own shape: stage the terminal row, then
+        // commit through the one path that counts it.
+        let failure = checkpoint_count_failure(&bundle, id, 0x7000);
+        let encoded =
+            codec::encode_execution_failed_v1(&failure).expect("encode execution failure");
+        let key = failure
+            .pending()
+            .identity()
+            .storage_key()
+            .expect("identity key");
+        let access = ports.begin_write().expect("begin write");
+        {
+            let transaction = access.transaction().expect("staged transaction");
+            let mut terminal = transaction.open_table(IDEMPOTENCY).expect("idempotency");
+            terminal
+                .insert(key.as_bytes(), encoded.as_bytes())
+                .expect("stage execution failure");
+        }
+        access
+            .commit_execution_failure()
+            .expect("commit execution failure");
+        assert_eq!(
+            ports.terminal_execution_failure_rows(),
+            1,
+            "the committed terminal execution failure must be censused"
+        );
+
+        let (walked, derived, derived_rows) = encoded_checkpoints_from_both_count_sources(
+            &ports.shared,
+            ports.terminal_execution_failure_rows(),
+        );
+        assert_eq!(
+            derived, walked,
+            "with the census maintained, the O(1) source must still encode the \
+             reference walk's checkpoint byte for byte"
+        );
+        assert_eq!(derived_rows, 0, "the O(1) source must not iterate history");
+        assert!(
+            ports
+                .write_validated_prefix_checkpoint()
+                .expect("graceful-shutdown checkpoint write"),
+            "a clean validation must permit the shutdown checkpoint write"
+        );
+        assert_eq!(
+            ports.checkpoint_count_rows_walked(),
+            0,
+            "the shutdown write must stay metadata-only with a maintained census"
+        );
+        drop(ports);
+
+        let census = session_execution_failure_census(&path);
+        assert_eq!(
+            census, 1,
+            "the next open must accept the checkpoint and re-seed the same census \
+             from its own walk"
+        );
+    }
+
+    /// Re-opens the database, requires the checkpoint fast path, and returns the
+    /// census this walk derived for itself.
+    fn session_execution_failure_census(path: &TestDatabasePath) -> u64 {
+        let store = RedbStore::open(&path.0).expect("reopen for census");
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin structural evidence");
+        assert!(
+            session.checkpoint_verified(),
+            "the checkpoint must be accepted: {:?}",
+            session.checkpoint_ignored_reason()
+        );
+        let structural_end = finish_structural(&mut session);
+        let historical_end = drain_historical(&mut session);
+        let census = session.terminal_execution_failure_rows();
+        session
+            .finish(structural_end, historical_end)
+            .expect("the censused terminal count must survive verification");
+        census
+    }
+
+    /// The fail-closed claim, in code: a maintained census that has drifted can
+    /// never be silently trusted. Too high a census under-reports
+    /// `idempotency_count`, and the next open REFUSES rather than skipping a
+    /// prefix it cannot account for; an impossible census is caught before the
+    /// write and falls back to the reference walk.
+    #[test]
+    fn a_drifted_terminal_census_is_refused_at_the_next_open() {
+        let path = TestDatabasePath::new("checkpoint-census-drift");
+        let id = database_id(0x9c);
+        let (store, _bundle) = checkpointable_history_store(&path, id, 6);
+        let ports = open_cleanly(store);
+
+        // Arm 1: an impossible census (more failures than terminal rows) is
+        // detected before the write and falls back to the walk, which is always
+        // correct. The row tally proves the fallback actually ran.
+        ports.shared.seed_terminal_execution_failure_rows(u64::MAX);
+        assert!(
+            ports
+                .write_validated_prefix_checkpoint()
+                .expect("write under impossible census"),
+            "the write must still succeed via the reference walk"
+        );
+        assert!(
+            ports.checkpoint_count_rows_walked() > 0,
+            "an impossible census must fall back to the reference walk"
+        );
+
+        // Arm 2: a census that is merely wrong (one too many) is NOT detectable
+        // at write time; it under-reports the terminal prefix by one row.
+        ports.shared.seed_terminal_execution_failure_rows(1);
+        assert!(
+            ports
+                .write_validated_prefix_checkpoint()
+                .expect("write under drifted census"),
+            "a drifted census cannot be detected at write time"
+        );
+        drop(ports);
+
+        let reopened = RedbStore::open(&path.0).expect("reopen drifted store");
+        let mut session = reopened
+            .begin_structural_evidence(inputs())
+            .expect("begin structural evidence");
+        assert!(
+            session.checkpoint_verified(),
+            "the drifted checkpoint binds and is accepted at load — refusal must \
+             come from count verification, not from a binding check: {:?}",
+            session.checkpoint_ignored_reason()
+        );
+        let mut cursor =
+            StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
+        let refused = loop {
+            match session
+                .read_structural_evidence(cursor, EvidencePageLimit::new(4).expect("page limit"))
+            {
+                Ok(StructuralEvidencePage::Page { next, .. }) => cursor = next,
+                Ok(StructuralEvidencePage::ExactEnd(_)) => break false,
+                Err(_) => break true,
+            }
+        };
+        assert!(
+            refused,
+            "a checkpoint whose recorded prefix count disagrees with redb's own \
+             row count must fail closed at open, never be silently trusted"
+        );
+    }
+
+    /// Scale evidence for the record (not a gate): decomposes the shutdown
+    /// checkpoint build over a large synthetic history and times the reference
+    /// walk against the O(1) derivation.
+    ///
+    /// Rows are raw and share one terminal value, which is faithful for the count
+    /// classes (they classify each row independently) and keeps generation cheap.
+    #[test]
+    #[ignore = "generates a large synthetic history to time the shutdown checkpoint build"]
+    fn shutdown_checkpoint_build_scale_evidence() {
+        use crate::validated_prefix::{CheckpointCountSource, build_checkpoint_from_snapshot};
+        use std::time::Instant;
+
+        let commits = std::env::var("RIFFDB_CHECKPOINT_SCALE_COMMITS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(200_000);
+        let entities = std::env::var("RIFFDB_CHECKPOINT_SCALE_ENTITIES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(commits / 4);
+        let path = TestDatabasePath::new("checkpoint-scale-evidence");
+        let id = database_id(0x9d);
+        let store = initialized_store(&path, id);
+        let bundle = stored_bundle("checkpoint-scale", 1, b"checkpoint-scale-bundle");
+        let started = Instant::now();
+        let chunk = 20_000_u64;
+        let mut next = 1_u64;
+        while next <= commits {
+            let take = chunk.min(commits.saturating_sub(next).saturating_add(1));
+            write_checkpoint_count_shape(
+                &store,
+                id,
+                &bundle,
+                &CheckpointCountShape {
+                    commits: take,
+                    first_commit: next,
+                    events: take,
+                    routes: take,
+                    outbox: take,
+                    outbox_status: take,
+                    outcomes: 0,
+                    failures: 0,
+                    audits: 0,
+                    by_request: 0,
+                    entities: 0,
+                },
+            );
+            next = next.saturating_add(take);
+        }
+        write_scale_terminal_and_audit_rows(&store, id, &bundle, commits, entities);
+        println!(
+            "generated commits={commits} entities={entities} in {:?}",
+            started.elapsed()
+        );
+
+        let transaction = store.shared.database.begin_read().expect("read");
+        let retained = read_retained_metadata_pub(&transaction).expect("retained metadata");
+        let mut walked_rows = 0_u64;
+        let walk_started = Instant::now();
+        let walked = build_checkpoint_from_snapshot(
+            &transaction,
+            &retained,
+            CheckpointCountSource::Walked,
+            &mut walked_rows,
+        )
+        .expect("reference checkpoint");
+        let walk_elapsed = walk_started.elapsed();
+        let mut derived_rows = 0_u64;
+        let derived_started = Instant::now();
+        let derived = build_checkpoint_from_snapshot(
+            &transaction,
+            &retained,
+            CheckpointCountSource::DurableLengths {
+                execution_failed_rows: 0,
+            },
+            &mut derived_rows,
+        )
+        .expect("derived checkpoint");
+        let derived_elapsed = derived_started.elapsed();
+        println!(
+            "walked: {walk_elapsed:?} over {walked_rows} rows; derived: \
+             {derived_elapsed:?} over {derived_rows} rows"
+        );
+        assert_eq!(
+            walked.counts(),
+            derived.counts(),
+            "the scale fixture must agree on counts or the timing compares \
+             different work"
+        );
+    }
+
+    /// Fills the terminal and administration tables for the scale fixture with
+    /// one shared value per class under distinct keys.
+    fn write_scale_terminal_and_audit_rows(
+        store: &RedbStore,
+        id: DatabaseId,
+        bundle: &StoredContractBundleV1,
+        rows: u64,
+        entities: u64,
+    ) {
+        let outcome = checkpoint_count_outcome(bundle, id, 0, CommitSequence::first());
+        let encoded = codec::encode_stored_outcome_v1(&outcome).expect("encode outcome");
+        let chunk = 20_000_u64;
+        let mut next = 0_u64;
+        while next < rows {
+            let end = chunk.saturating_add(next).min(rows);
+            let write = store.shared.database.begin_write().expect("begin write");
+            {
+                let mut terminal = write.open_table(IDEMPOTENCY).expect("idempotency");
+                let mut audit = write.open_table(AUDIT).expect("audit");
+                let mut by_request = write.open_table(AUDIT_BY_REQUEST).expect("by request");
+                for ordinal in next..end {
+                    terminal
+                        .insert(&ordinal.to_be_bytes()[..], encoded.as_bytes())
+                        .expect("insert outcome");
+                    let sequence = AdministrationSequence::new(ordinal.saturating_add(1))
+                        .expect("administration sequence");
+                    audit
+                        .insert(
+                            keys::encode_audit_key(sequence).as_slice(),
+                            [0x66_u8; 40].as_slice(),
+                        )
+                        .expect("insert audit");
+                    by_request
+                        .insert(
+                            keys::encode_audit_by_request_key(
+                                request_id(u8::try_from(ordinal % 251).expect("seed")),
+                                sequence,
+                            )
+                            .as_slice(),
+                            [0x77_u8; 4].as_slice(),
+                        )
+                        .expect("insert audit index");
+                }
+            }
+            write.commit().expect("commit scale chunk");
+            next = end;
+        }
+        let mut written = 0_u64;
+        while written < entities {
+            let end = chunk.saturating_add(written).min(entities);
+            let write = store.shared.database.begin_write().expect("begin write");
+            {
+                let mut table = write.open_table(ENTITIES).expect("entities");
+                for ordinal in written..end {
+                    let record = history_entity(ordinal, EntityVersion::first(), b"scale", bundle);
+                    let encoded = codec::encode_entity_record_v1(&record).expect("encode entity");
+                    table
+                        .insert(
+                            keys::encode_entity_key(record.target().key()),
+                            encoded.as_bytes(),
+                        )
+                        .expect("insert entity");
+                }
+            }
+            write.commit().expect("commit entity chunk");
+            written = end;
+        }
     }
 }

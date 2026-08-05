@@ -79,6 +79,26 @@ pub(crate) struct SharedRedb {
     /// which cannot run while this handle holds the database open, so reads
     /// never re-hash the meta record per call (ADR-0085 A2 hot-path rule).
     retention_watermark: AtomicU64,
+    /// Terminal `ExecutionFailed` rows in `IDEMPOTENCY`.
+    ///
+    /// The checkpoint's `idempotency_count` admits only `StoredOutcome` rows,
+    /// which redb's `IDEMPOTENCY` row count cannot distinguish; this census is
+    /// the one quantity the O(1) checkpoint build cannot read from table
+    /// metadata. It is seeded from the startup walk that also opens the
+    /// checkpoint write gate — the same statement pair, so a checkpoint can
+    /// never be written from an unseeded census — and advanced by the single
+    /// lane that writes such a row, inside that lane's mutation lease.
+    ///
+    /// Process memory only. It never survives a crash and never needs to:
+    /// checkpoints are written only at clean points, and every open re-seeds
+    /// from its own evidence. A drifted census can never be silently trusted —
+    /// the next open compares every recorded count against redb's own row counts
+    /// and refuses on divergence (`verify_checkpoint_prefix_counts`).
+    terminal_execution_failure_rows: AtomicU64,
+    /// History rows iterated to compute checkpoint counts on this handle. Stays
+    /// zero for the whole life of a handle whose checkpoints are all built from
+    /// table metadata (test observability; pins the O(1) claim).
+    checkpoint_count_rows_walked: AtomicU64,
 }
 
 /// Closed redb durability profiles for authoritative application writes.
@@ -168,6 +188,39 @@ impl SharedRedb {
 
     pub(crate) fn checkpoint_write_failures(&self) -> u64 {
         self.checkpoint_write_failures.load(Ordering::Relaxed)
+    }
+
+    /// Seeds the terminal execution-failure census from one completed startup
+    /// walk. Called only where the checkpoint write gate opens, so "the census
+    /// is exact for this durable head" and "checkpoints may be written" become
+    /// true together.
+    pub(crate) fn seed_terminal_execution_failure_rows(&self, rows: u64) {
+        self.terminal_execution_failure_rows
+            .store(rows, Ordering::Release);
+    }
+
+    pub(crate) fn terminal_execution_failure_rows(&self) -> u64 {
+        self.terminal_execution_failure_rows.load(Ordering::Acquire)
+    }
+
+    /// Counts one newly durable terminal `ExecutionFailed` row. Called from the
+    /// commit path while the mutation lease is still held, so a checkpoint write
+    /// that acquires the lease afterwards can never observe the row without its
+    /// census increment.
+    pub(crate) fn note_terminal_execution_failure_row(&self) {
+        let _ = self
+            .terminal_execution_failure_rows
+            .fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn note_checkpoint_count_rows_walked(&self, rows: u64) {
+        let _ = self
+            .checkpoint_count_rows_walked
+            .fetch_add(rows, Ordering::Relaxed);
+    }
+
+    pub(crate) fn checkpoint_count_rows_walked(&self) -> u64 {
+        self.checkpoint_count_rows_walked.load(Ordering::Relaxed)
     }
 
     pub(crate) fn note_checkpoint_ignored(
@@ -405,6 +458,8 @@ impl RedbStore {
                 checkpoint_write_failures: AtomicU64::new(0),
                 checkpoint_ignored: [(); 10].map(|()| AtomicU64::new(0)),
                 retention_watermark: AtomicU64::new(0),
+                terminal_execution_failure_rows: AtomicU64::new(0),
+                checkpoint_count_rows_walked: AtomicU64::new(0),
             }),
         };
         store.ensure_current_storage_format()?;
@@ -959,6 +1014,13 @@ impl RedbStore {
     #[must_use]
     pub fn checkpoint_ignore_counts(&self) -> [(&'static str, u64); 10] {
         self.shared.checkpoint_ignore_counts()
+    }
+
+    /// History rows iterated to compute checkpoint counts on this handle.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checkpoint_count_rows_walked(&self) -> u64 {
+        self.shared.checkpoint_count_rows_walked()
     }
 
     #[cfg(test)]
@@ -2056,6 +2118,23 @@ impl RedbOperationalPorts {
         self.shared.checkpoint_ignore_counts()
     }
 
+    /// History rows iterated to compute checkpoint counts on this database.
+    ///
+    /// Stays zero across a whole process, including the graceful-shutdown write:
+    /// checkpoint counts come from table metadata, never from a history pass.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checkpoint_count_rows_walked(&self) -> u64 {
+        self.shared.checkpoint_count_rows_walked()
+    }
+
+    /// Terminal `ExecutionFailed` rows counted on this database since open.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn terminal_execution_failure_rows(&self) -> u64 {
+        self.shared.terminal_execution_failure_rows()
+    }
+
     /// Returns a cloneable pure-read handle over the same activated database.
     ///
     /// Mutation exclusion is the exclusive mutation gate, not handle uniqueness.
@@ -2127,13 +2206,35 @@ impl RedbWriteAccess {
     }
 
     pub(crate) fn commit_for(self, operation: RedbTestOperation) -> Result<(), StorageError> {
-        self.commit_for_with_delta(operation, None)
+        self.commit_with_observations(operation, None, 0)
+    }
+
+    /// Commits one execution-failure terminalization, counting the terminal
+    /// `ExecutionFailed` row it adds to `IDEMPOTENCY`.
+    ///
+    /// The census must advance under the same mutation lease that made the row
+    /// durable: a validated-prefix checkpoint write acquires that lease, and one
+    /// acquired between the commit and the increment would read the new row from
+    /// redb's row count without its census entry and record an
+    /// `idempotency_count` one too high. Because this is the only lane that
+    /// writes such a row, this is the only counting site.
+    pub(crate) fn commit_execution_failure(self) -> Result<(), StorageError> {
+        self.commit_with_observations(RedbTestOperation::ExecutionFailure, None, 1)
     }
 
     pub(crate) fn commit_for_with_delta(
+        self,
+        operation: RedbTestOperation,
+        delta: Option<TransientIndexDelta>,
+    ) -> Result<(), StorageError> {
+        self.commit_with_observations(operation, delta, 0)
+    }
+
+    fn commit_with_observations(
         mut self,
         operation: RedbTestOperation,
         delta: Option<TransientIndexDelta>,
+        execution_failure_rows: u64,
     ) -> Result<(), StorageError> {
         if let Some(controller) = &self.shared.test_controller {
             controller.before_commit(operation)?;
@@ -2144,7 +2245,14 @@ impl RedbWriteAccess {
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         if let Err(error) = self.shared.commit_durable(transaction) {
             self.invalidate_transient_indexes();
+            // `commit_durable` fences writes on any commit error, and a fenced
+            // handle can no longer pass `ensure_writable`, so no checkpoint is
+            // ever built from the census after a commit whose rows may or may
+            // not have landed.
             return Err(error);
+        }
+        for _ in 0..execution_failure_rows {
+            self.shared.note_terminal_execution_failure_row();
         }
         if let Some(delta) = delta
             && let Ok(mut state) = self.shared.transient_indexes.lock()
