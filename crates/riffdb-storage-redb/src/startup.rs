@@ -229,6 +229,15 @@ pub struct RedbStructuralEvidenceSession {
     structural_cursors: Option<StructuralCursors>,
     /// Built at ENTITIES phase entry; dropped after orphan findings are queued.
     entity_chains: Option<EntityChainState>,
+    /// Reactive-module hashes a publication record names, collected in ONE
+    /// `AUDIT` pass; built on first need in the REACTIVE_MODULES phase and
+    /// dropped when that phase ends. See
+    /// [`build_reactive_publication_witness`].
+    reactive_publication_witness: Option<BTreeSet<riffdb_types::ReactiveModuleHash>>,
+    /// `AUDIT` rows decoded for publication witnesses this session. Exactly
+    /// `|AUDIT|` once when any retained reactive module is judged, never
+    /// `|REACTIVE_MODULES| × |AUDIT|`.
+    reactive_publication_audit_decodes: u64,
     /// Bounded cross-link findings for unconsumed/orphan chains (VecDeque: O(1) drain).
     pending_entity_orphan_findings: VecDeque<StructuralFinding>,
     historical_plan: Option<HistoricalEvidencePlan>,
@@ -693,6 +702,8 @@ impl StructuralEvidenceOpen for RedbStore {
             structural_read: Some(transaction),
             structural_cursors: None,
             entity_chains: None,
+            reactive_publication_witness: None,
+            reactive_publication_audit_decodes: 0,
             pending_entity_orphan_findings: VecDeque::new(),
             historical_plan: None,
             checkpoint,
@@ -741,6 +752,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
             self.structural_finished = true;
             self.structural_cursors = None;
             self.entity_chains = None;
+            self.reactive_publication_witness = None;
             self.structural_read = None;
             return Ok(StructuralEvidencePage::ExactEnd(
                 RedbStructuralEvidenceEnd { cursor },
@@ -1185,6 +1197,16 @@ impl RedbStructuralEvidenceSession {
     pub fn checkpoint_suffix_commits(&self) -> u64 {
         self.walked_suffix_counts[10]
     }
+
+    /// Test/benchmark observability: AUDIT rows decoded to witness reactive
+    /// publications. Zero when no retained reactive module reaches the
+    /// publication check, otherwise exactly `|AUDIT|` — one pass for the phase,
+    /// never one per row.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn reactive_publication_audit_decodes(&self) -> u64 {
+        self.reactive_publication_audit_decodes
+    }
 }
 
 /// Runs existing inspect functions over checkpoint-derived sample windows below S.
@@ -1385,6 +1407,9 @@ impl RedbStructuralEvidenceSession {
         if phase == 5 {
             return self.inspect_entity_row_with_chains(&key, &value);
         }
+        if phase == 28 {
+            return self.inspect_reactive_module_row_with_witness(&key, &value);
+        }
         if let Some(checkpoint) = self.checkpoint.as_ref()
             && crate::validated_prefix::skip_inspect_for_prefix_row(
                 phase,
@@ -1477,6 +1502,28 @@ impl RedbStructuralEvidenceSession {
             return;
         };
         mark_entity_chain_consumed(&mut state.chains, key);
+    }
+
+    /// Judges one retained `REACTIVE_MODULES` row against the transient
+    /// publication witness set, which the row inspection builds on first need.
+    ///
+    /// The set is session state rather than a per-row scan, so the whole
+    /// REACTIVE_MODULES phase costs ONE `AUDIT` pass instead of one per row.
+    fn inspect_reactive_module_row_with_witness(
+        &mut self,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<Option<StructuralFinding>, StorageError> {
+        // Disjoint field borrows: the snapshot is read-only, the witness and its
+        // decode counter are the only mutated state.
+        let transaction = self.structural_read.as_ref().ok_or_else(invariant)?;
+        inspect_reactive_module_row(
+            transaction,
+            &mut self.reactive_publication_witness,
+            &mut self.reactive_publication_audit_decodes,
+            key,
+            value,
+        )
     }
 
     fn inspect_entity_row_with_chains(
@@ -1732,6 +1779,12 @@ impl RedbStructuralEvidenceSession {
                 self.queue_entity_orphan_findings();
                 self.entity_chains = None;
             }
+            // Phase 28 is REACTIVE_MODULES: the publication witness set has no
+            // reader past it (EVENT_CONSUMERS checks row presence, not
+            // publication), so release it with the phase.
+            if leaving == 28 {
+                self.reactive_publication_witness = None;
+            }
         }
     }
 }
@@ -1774,7 +1827,9 @@ fn inspect_table_row_from_bytes(
         25 => inspect_contract_write_retirement_row(key, value),
         26 => inspect_retired_entity_row(transaction, key, value),
         27 => inspect_history_tombstone_row(key, value),
-        28 => inspect_reactive_module_row(transaction, key, value),
+        // Phase 28 (REACTIVE_MODULES) is handled exclusively by
+        // `inspect_reactive_module_row_with_witness` in
+        // `inspect_structural_forward`, which owns the one-pass witness set.
         29 => inspect_event_consumer_row(transaction, database_id, key, value),
         30 => inspect_event_consumer_delivery_row(transaction, key, value),
         _ => Err(invariant()),
@@ -1795,8 +1850,20 @@ fn inspect_history_tombstone_row(
     Ok(None)
 }
 
+/// Validates one retained reactive-module row against everything it names.
+///
+/// `witness` is the session's transient publication witness set, built here on
+/// first need — that is, the first row that reaches the publication check, which
+/// is exactly when the per-row scan this replaces would have opened `AUDIT`.
+/// Every later row answers by set lookup, so the phase costs ONE `AUDIT` pass
+/// rather than one per row (`|REACTIVE_MODULES| × |AUDIT|`, up to
+/// `MAX_RETAINED_REACTIVE_MODULES` = 4,096 full protobuf decode passes at every
+/// open). The proof itself is unchanged and stays unconditional: see
+/// [`build_reactive_publication_witness`].
 fn inspect_reactive_module_row(
     transaction: &ReadTransaction,
+    witness: &mut Option<BTreeSet<riffdb_types::ReactiveModuleHash>>,
+    audit_decodes: &mut u64,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -1839,35 +1906,79 @@ fn inspect_reactive_module_row(
         }
     }
     drop(query_modules);
-    if !reactive_module_has_publication(transaction, module_hash)? {
+    let published = match witness {
+        Some(published) => published,
+        None => witness.insert(build_reactive_publication_witness(
+            transaction,
+            audit_decodes,
+        )?),
+    };
+    if !published.contains(&module_hash) {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
     }
     Ok(None)
 }
 
-fn reactive_module_has_publication(
+/// Collects every reactive-module hash a publication record names, in ONE
+/// forward `AUDIT` pass, keeping only hashes a retained `REACTIVE_MODULES` row
+/// can actually name.
+///
+/// This replaces a per-row full `AUDIT` scan, and the proof it serves is
+/// unchanged: a retained row with no publication record still yields
+/// `Authoritative/MissingCrossLink`, and every retained row is still judged.
+///
+/// Two structural properties this pass deliberately does NOT delegate:
+///
+/// - **Unconditional under the validated-prefix checkpoint.** It is driven by the
+///   REACTIVE_MODULES phase, whose rows are an *additive* structural count; the
+///   checkpoint guard exempts only the prefix-bounded counts, so every retained
+///   row is inspected at every open, checkpointed or not. That unconditionality
+///   is what lets `read_reactive_module` skip the same check per read (see its
+///   ruling note), so it must not become skippable here.
+/// - **Its own `AUDIT` iteration.** The structural AUDIT phase (21) is
+///   range-skipped at the checkpoint's audit bound, so accumulating the set
+///   there would omit every below-bound publication record and report
+///   pre-checkpoint modules as unpublished. This pass reads the whole table from
+///   the same immutable snapshot instead.
+///
+/// Membership is filtered by a `REACTIVE_MODULES` point lookup so the transient
+/// set is bounded by the table under inspection (≤
+/// `MAX_RETAINED_REACTIVE_MODULES` after a clean open), never by audit history.
+fn build_reactive_publication_witness(
     transaction: &ReadTransaction,
-    module_hash: riffdb_types::ReactiveModuleHash,
-) -> Result<bool, StorageError> {
+    audit_decodes: &mut u64,
+) -> Result<BTreeSet<riffdb_types::ReactiveModuleHash>, StorageError> {
     let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+    let modules = transaction
+        .open_table(REACTIVE_MODULES)
+        .map_err(table_error)?;
+    let mut published = BTreeSet::new();
     for entry in audit.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
         let sequence = keys::decode_audit_key(key.value()).map_err(|_| corrupt())?;
         let record = codec::decode_administration_audit_record_v1(value.value())?
             .into_parts()
             .0;
+        *audit_decodes = audit_decodes.saturating_add(1);
+        // Retained from the per-row scan verbatim: a record whose own sequence
+        // disagrees with its key is corruption, not a missing witness.
         if record.administration_sequence() != sequence {
             return Err(corrupt());
         }
-        if matches!(
-            record,
-            riffdb_storage_api::StoredAdministrationAuditRecordV1::ReactiveModule(record)
-                if record.module_hash() == module_hash
-        ) {
-            return Ok(true);
+        let riffdb_storage_api::StoredAdministrationAuditRecordV1::ReactiveModule(record) = record
+        else {
+            continue;
+        };
+        let module_key = keys::encode_reactive_module_key(record.module_hash());
+        if modules
+            .get(module_key.as_slice())
+            .map_err(precommit_storage_error)?
+            .is_some()
+        {
+            published.insert(record.module_hash());
         }
     }
-    Ok(false)
+    Ok(published)
 }
 
 fn inspect_event_consumer_row(
@@ -5628,15 +5739,17 @@ mod tests {
         DatabaseInitializationPort, DeclaredOutcome, DurabilityMode, DurableKeySchemaBindingV1,
         EntityTarget, ExecutablePlanRef, ExpectedEntityState, HistoricalEvidencePage,
         IdempotencyIdentity, IdempotencyKeyDigest, PartitionScopeV1, ProjectionGenerationPosition,
-        ProjectionLifecycleV1, PublishedApplyModeV1, ReadDependencies, ReadDependency,
+        ProjectionLifecycleV1, PublishedApplyModeV1, ReactiveModuleAdministrationRepository,
+        ReactiveModulePublicationIntentV1, ReadDependencies, ReadDependency,
         ReadableCapabilityDigestInventory, ReadableIdempotencyDigestInventory,
         RevocationReasonCodeV1, StoredAdministrationAuditRecordV1,
         StoredAdmittedProvenanceClaimsV1, StoredCapabilityAdministrationV1,
         StoredCapabilityRecordV1, StoredCatalogAdministrationV1, StoredCommitRecordV1,
         StoredContractBundleV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
         StoredOutcomeV1, StoredProjectionApplyV1, StoredProjectionControlV1,
-        StoredProvenanceRecordV1, StoredReadDependenciesV1, StoredServiceAuditRecordV1,
-        StructuralEvidenceEnd, StructuralEvidencePage, derive_entity_record_hash_v1,
+        StoredProvenanceRecordV1, StoredReactiveModuleV1, StoredReadDependenciesV1,
+        StoredServiceAuditRecordV1, StructuralEvidenceEnd, StructuralEvidencePage,
+        derive_entity_record_hash_v1,
     };
     use riffdb_types::{
         ActorId, ActorKind, AdministrationSequence, AdmittedActorContext, AggregateTypeId,
@@ -8734,5 +8847,210 @@ contract RedbMigration version 1 {
         session
             .finish(structural_end, historical_end)
             .expect("a clean structural pass must release the ports");
+    }
+
+    fn reactive_fixture_module(
+        contract: &StoredContractBundleV1,
+        ordinal: u64,
+    ) -> StoredReactiveModuleV1 {
+        let source = format!("reactive witness source {ordinal}").into_bytes();
+        let artifact = format!("reactive witness artifact {ordinal}").into_bytes();
+        StoredReactiveModuleV1::new(
+            "witness".to_owned(),
+            ordinal.saturating_add(1),
+            hash_reactive_module(&artifact),
+            contract.lineage().clone(),
+            contract.contract_version(),
+            contract.bundle_hash(),
+            hash_reactive_source(&source),
+            Vec::new(),
+            source,
+            artifact,
+        )
+        .expect("stored reactive module")
+    }
+
+    /// Publishes `count` reactive modules through the real write path against a
+    /// freshly activated contract and returns the reopened store.
+    fn published_reactive_module_store(
+        path: &TestDatabasePath,
+        id: DatabaseId,
+        count: u64,
+    ) -> RedbStore {
+        let store = deployed_migration_store(path, id);
+        let dormant = RedbDormantPorts {
+            shared: Arc::clone(&store.shared),
+        };
+        drop(store);
+        let mut ports = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate reactive publication ports");
+        let contract = validated_migration_bundle()
+            .to_stored()
+            .expect("stored migration bundle");
+        for ordinal in 0..count {
+            let module = reactive_fixture_module(&contract, ordinal);
+            let request = u8::try_from(0x60 + ordinal).expect("fixture request seed");
+            let intent = ReactiveModulePublicationIntentV1::new(
+                module,
+                request_id(request),
+                audit_principal(0x61),
+                Timestamp::new(2 + i64::try_from(ordinal).expect("fixture instant"), 0)
+                    .expect("publication timestamp"),
+                None,
+            );
+            let published = ports
+                .publish_reactive_module(&intent)
+                .expect("publish the immutable module");
+            assert!(
+                matches!(
+                    published,
+                    riffdb_storage_api::ReactiveModulePublicationResult::Published { .. }
+                ),
+                "a first publication must publish, got {published:?}"
+            );
+        }
+        drop(ports);
+        RedbStore::open(&path.0).expect("reopen published reactive store")
+    }
+
+    fn audit_row_count(store: &RedbStore) -> u64 {
+        let transaction = store
+            .shared
+            .database
+            .begin_read()
+            .expect("read the audit stream length");
+        table_len(&transaction, AUDIT).expect("audit table length")
+    }
+
+    /// Installs one self-consistent reactive-module row that no publication
+    /// record names. The audit stream and the allocator stay untouched, so the
+    /// orphan is the only invariant under test.
+    fn install_orphan_reactive_module(store: &RedbStore) -> StoredReactiveModuleV1 {
+        let contract = validated_migration_bundle()
+            .to_stored()
+            .expect("stored migration bundle");
+        let orphan = reactive_fixture_module(&contract, 0x40);
+        let encoded = codec::encode_reactive_module_v1(&orphan).expect("encode orphan module");
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write orphan fixture");
+        {
+            let mut modules = write
+                .open_table(REACTIVE_MODULES)
+                .expect("reactive modules table");
+            modules
+                .insert(
+                    keys::encode_reactive_module_key(orphan.module_hash()).as_slice(),
+                    encoded.as_bytes(),
+                )
+                .expect("insert the orphaned reactive module row");
+        }
+        write.commit().expect("commit orphan fixture");
+        orphan
+    }
+
+    /// The startup publication proof is single-pass: the whole REACTIVE_MODULES
+    /// phase decodes the audit stream ONCE, not once per retained row, and the
+    /// findings are unchanged (none, on a cleanly published database).
+    #[test]
+    fn reactive_publication_verification_decodes_the_audit_stream_once() {
+        let path = TestDatabasePath::new("reactive-publication-witness");
+        let store = published_reactive_module_store(&path, database_id(0x86), 3);
+        let audit_rows = audit_row_count(&store);
+        assert!(audit_rows >= 4, "three publications plus one activation");
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin evidence");
+        let (structural_end, findings) = collect_structural(&mut session);
+        assert!(
+            findings.is_empty(),
+            "three published reactive modules must validate clean; got {findings:?}"
+        );
+        assert_eq!(
+            session.reactive_publication_audit_decodes(),
+            audit_rows,
+            "the publication witness must cost ONE audit pass for the phase, not \
+             one full scan per retained reactive module"
+        );
+        let (historical_end, _, _) = collect_historical(&mut session, 8);
+        session
+            .finish(structural_end, historical_end)
+            .expect("a clean structural pass must release the ports");
+    }
+
+    /// The single-pass proof still reports the orphan redb has always reported.
+    #[test]
+    fn a_reactive_module_without_a_publication_record_reports_missing_cross_link() {
+        let path = TestDatabasePath::new("reactive-publication-orphan");
+        let store = published_reactive_module_store(&path, database_id(0x87), 1);
+        let orphan = install_orphan_reactive_module(&store);
+        let audit_rows = audit_row_count(&store);
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin evidence");
+        let (_, findings) = collect_structural(&mut session);
+        assert_eq!(
+            findings,
+            vec![authoritative(StructuralFindingCode::MissingCrossLink)],
+            "a retained reactive module with no publication record must be \
+             reported exactly once, and the published row beside it must not be; \
+             orphan {:?}",
+            orphan.module_hash()
+        );
+        assert_eq!(
+            session.reactive_publication_audit_decodes(),
+            audit_rows,
+            "two retained rows must still share one audit pass"
+        );
+    }
+
+    /// The verification must stay UNCONDITIONAL under the ADR-0019
+    /// validated-prefix fast path, and its audit pass must not inherit that fast
+    /// path's audit-suffix range: reactive-module rows are an additive structural
+    /// count, so every retained row is judged at every open. This is the property
+    /// `read_reactive_module`'s ruling note depends on.
+    #[test]
+    fn the_publication_proof_survives_the_validated_prefix_fast_path() {
+        let path = TestDatabasePath::new("reactive-publication-checkpointed");
+        let store = published_reactive_module_store(&path, database_id(0x88), 1);
+        let audit_rows = audit_row_count(&store);
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin evidence");
+        let (structural_end, findings) = collect_structural(&mut session);
+        assert!(
+            findings.is_empty(),
+            "the first open must validate clean so the checkpoint is written; got {findings:?}"
+        );
+        let (historical_end, _, _) = collect_historical(&mut session, 8);
+        session
+            .finish(structural_end, historical_end)
+            .expect("a clean structural pass must release the ports");
+
+        let store = RedbStore::open(&path.0).expect("reopen checkpointed store");
+        install_orphan_reactive_module(&store);
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin evidence");
+        assert!(
+            session.checkpoint_verified(),
+            "the validated-prefix fast path must be active or this proves nothing: {:?}",
+            session.checkpoint_ignored_reason()
+        );
+        let (_, findings) = collect_structural(&mut session);
+        assert_eq!(
+            findings,
+            vec![authoritative(StructuralFindingCode::MissingCrossLink)],
+            "the fast path must not skip the reactive publication proof; got {findings:?}"
+        );
+        assert_eq!(
+            session.reactive_publication_audit_decodes(),
+            audit_rows,
+            "the witness pass must read the whole audit stream, never the \
+             checkpoint-truncated suffix the AUDIT phase walks"
+        );
     }
 }

@@ -76,7 +76,10 @@ fn inspect(
     snapshot(state, index).map(Some)
 }
 
-fn snapshot(state: &MemoryState, index: usize) -> Result<EventConsumerSnapshotV1, StorageError> {
+pub(crate) fn snapshot(
+    state: &MemoryState,
+    index: usize,
+) -> Result<EventConsumerSnapshotV1, StorageError> {
     let consumer = state.event_consumers[index].clone();
     let deliveries = state
         .event_consumer_deliveries
