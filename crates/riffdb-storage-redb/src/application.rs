@@ -1,6 +1,6 @@
 //! Redb application admission and atomic command transactions.
 
-use std::num::NonZeroU8;
+use std::num::NonZeroU16;
 use std::ops::Bound::{Excluded, Included};
 
 use redb::ReadableTable;
@@ -1496,7 +1496,8 @@ fn metrics_after(
         ),
     };
     StagedBatchMetrics::new(
-        NonZeroU8::new(count).ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+        NonZeroU16::new(count)
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
         semantic,
         encoded,
     )

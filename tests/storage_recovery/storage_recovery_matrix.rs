@@ -393,7 +393,7 @@ fn command_fixture() -> CommandFixture {
 fn command_fixture_at(ordinal: u64) -> CommandFixture {
     let plan = plan();
     let sequence = CommitSequence::new(ordinal).expect("fixture ordinal");
-    let ordinal_u8 = u8::try_from(ordinal).expect("small fixture ordinal");
+    let ordinal_u8 = u8::try_from(ordinal % 256).expect("bounded fixture ordinal");
     let (target, index_key, range) = target_and_index_at(ordinal);
     let tenant_scope = TenantScope::Tenant(TenantId::new("tenant-a").expect("tenant"));
     let principal = ActorId::new("principal-a").expect("principal");
@@ -412,12 +412,13 @@ fn command_fixture_at(ordinal: u64) -> CommandFixture {
         plan.command_id(),
         IdempotencyKeyDigest::from_hmac_bytes(
             DigestKeyId::new(1).expect("digest key"),
-            [0x40 + ordinal_u8; 32],
+            [0x40_u8.wrapping_add(ordinal_u8); 32],
         ),
     );
-    let request_id = RequestId::from_bytes(uuid_bytes(0x30 + ordinal_u8)).expect("request ID");
-    let provenance_id =
-        ProvenanceId::from_bytes(uuid_bytes(0x50 + ordinal_u8)).expect("provenance ID");
+    let request_id =
+        RequestId::from_bytes(uuid_bytes(0x30_u8.wrapping_add(ordinal_u8))).expect("request ID");
+    let provenance_id = ProvenanceId::from_bytes(uuid_bytes(0x50_u8.wrapping_add(ordinal_u8)))
+        .expect("provenance ID");
     let logical_time =
         LogicalTime::new(Timestamp::new(1_700_000_001, 0).expect("logical timestamp"));
     let mut partition = PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("aggregate"));
@@ -706,11 +707,8 @@ fn commit_command_fixture(ports: &RedbOperationalPorts, fixture: &CommandFixture
         .expect("commit complete command graph and audit lifecycle");
 }
 
-fn commit_two_command_group(
-    ports: &RedbOperationalPorts,
-    first: &CommandFixture,
-    second: &CommandFixture,
-) {
+fn commit_command_group(ports: &RedbOperationalPorts, fixtures: &[CommandFixture]) {
+    let (first, remaining) = fixtures.split_first().expect("non-empty recovery group");
     let candidate = ports
         .begin_empty_batch()
         .expect("begin serial recovery batch")
@@ -735,50 +733,50 @@ fn commit_two_command_group(
     else {
         panic!("first graph fits");
     };
-    let batch = candidate
+    let mut batch = candidate
         .assign_sequence()
         .expect("assign first sequence")
         .stage(first.records.clone())
         .expect("stage first graph");
 
-    let CandidateStartResult::Started(candidate) = batch
-        .begin_candidate(Box::new(second.intent.clone()))
-        .expect("begin second candidate")
-    else {
-        panic!("two-command recovery group fits");
-    };
-    let CandidateAdmissionResult::Proceed(candidate) = candidate
-        .recheck_admission()
-        .expect("recheck second admission")
-    else {
-        panic!("second fresh admission proceeds");
-    };
-    let (candidate, _) = candidate
-        .read_transaction_current()
-        .expect("read second transaction-local state");
-    let candidate = candidate
-        .plan_validated(second.affected_targets.clone())
-        .read_affected_epoch_current()
-        .expect("read second affected state");
-    let CandidateCapacityResult::Reserved(candidate) = candidate
-        .reserve_capacity(second.write_plan.clone())
-        .expect("reserve second graph")
-    else {
-        panic!("second graph fits");
-    };
-    candidate
-        .assign_sequence()
-        .expect("assign second sequence")
-        .stage(second.records.clone())
-        .expect("stage second graph")
+    for fixture in remaining {
+        let CandidateStartResult::Started(candidate) = batch
+            .begin_candidate(Box::new(fixture.intent.clone()))
+            .expect("begin next recovery candidate")
+        else {
+            panic!("bounded recovery group fits");
+        };
+        let CandidateAdmissionResult::Proceed(candidate) = candidate
+            .recheck_admission()
+            .expect("recheck next admission")
+        else {
+            panic!("fresh grouped admission proceeds");
+        };
+        let (candidate, _) = candidate
+            .read_transaction_current()
+            .expect("read next transaction-local state");
+        let candidate = candidate
+            .plan_validated(fixture.affected_targets.clone())
+            .read_affected_epoch_current()
+            .expect("read next affected state");
+        let CandidateCapacityResult::Reserved(candidate) = candidate
+            .reserve_capacity(fixture.write_plan.clone())
+            .expect("reserve next graph")
+        else {
+            panic!("next graph fits");
+        };
+        batch = candidate
+            .assign_sequence()
+            .expect("assign next sequence")
+            .stage(fixture.records.clone())
+            .expect("stage next graph");
+    }
+    batch
         .commit_with_service_audit_transitions(
             DurabilityMode::Sync,
-            vec![
-                command_audit_transition(first),
-                command_audit_transition(second),
-            ],
+            fixtures.iter().map(command_audit_transition).collect(),
         )
-        .expect("commit complete two-command graph and audit lifecycles");
+        .expect("commit complete command group and audit lifecycles");
 }
 
 fn command_audit_transition(
@@ -1351,7 +1349,12 @@ fn process_recovery_child() {
         }
         "before-command-group-commit" | "after-command-group-commit" => {
             let ports = open_operational(store);
-            commit_two_command_group(&ports, &command_fixture_at(1), &command_fixture_at(2));
+            let fixtures = (1..=riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS)
+                .map(|ordinal| {
+                    command_fixture_at(u64::try_from(ordinal).expect("bounded fixture ordinal"))
+                })
+                .collect::<Vec<_>>();
+            commit_command_group(&ports, &fixtures);
         }
         "before-index-migration-batch-commit" | "after-index-migration-batch-commit" => {
             let (_, catalog_outcome, outcome) = complete_startup_pass(store);
@@ -1903,7 +1906,8 @@ fn serial_group_crash_before_commit_leaves_every_command_absent() {
     );
 
     let ports = open_operational(RedbStore::open(&path.0).expect("recover group precommit crash"));
-    for fixture in [command_fixture_at(1), command_fixture_at(2)] {
+    for ordinal in 1..=riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
+        let fixture = command_fixture_at(u64::try_from(ordinal).expect("bounded fixture ordinal"));
         assert_eq!(
             ports
                 .lookup_admission(fixture.candidates.clone())
@@ -1935,7 +1939,8 @@ fn serial_group_crash_after_commit_preserves_every_complete_command() {
     );
 
     let ports = open_operational(RedbStore::open(&path.0).expect("recover group postcommit crash"));
-    for fixture in [command_fixture_at(1), command_fixture_at(2)] {
+    for ordinal in 1..=riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
+        let fixture = command_fixture_at(u64::try_from(ordinal).expect("bounded fixture ordinal"));
         let AdmissionLookupResultV1::Found(admission) = ports
             .lookup_admission(fixture.candidates.clone())
             .expect("lookup grouped identity")

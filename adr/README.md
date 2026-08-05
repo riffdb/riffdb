@@ -114,6 +114,7 @@ direction, merged draft, or implementation choice.
 | [0093](0093-replicated-availability-changelog-shipping.md) | Replicated Availability via Authoritative Changelog Shipping | Accepted |
 | [0094](0094-compiler-proved-commutative-child-append-groups.md) | Compiler-Proved Commutative Child-Append Groups | Accepted |
 | [0095](0095-transaction-local-serial-command-micro-batches.md) | Transaction-Local Serial Command Micro-Batches | Accepted |
+| [0096](0096-dynamic-groups-under-static-safety-ceiling.md) | Dynamic Physical Groups Under a Static Safety Ceiling | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

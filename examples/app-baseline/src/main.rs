@@ -230,7 +230,7 @@ fn run() -> Result<(), String> {
             let seed_started = Instant::now();
             if let Err(error) = session.backend.seed(&dataset) {
                 if let Ok(groups) = session.shutdown() {
-                    eprintln!("riffdb write completion groups 1..64: {groups:?}");
+                    eprintln!("riffdb write completion groups 1..={}: {groups:?}", groups.len());
                 }
                 return Err(error.to_string());
             }
@@ -238,7 +238,7 @@ fn run() -> Result<(), String> {
             // Catch-up + compiled-vs-projected equivalence must pass before timing.
             if let Err(error) = session.backend.prepare_projected_board_gates(&dataset) {
                 if let Ok(groups) = session.shutdown() {
-                    eprintln!("riffdb write completion groups 1..64: {groups:?}");
+                    eprintln!("riffdb write completion groups 1..={}: {groups:?}", groups.len());
                 }
                 return Err(error.to_string());
             }
@@ -253,7 +253,7 @@ fn run() -> Result<(), String> {
                 Ok(scenarios) => scenarios,
                 Err(error) => {
                     if let Ok(groups) = session.shutdown() {
-                        eprintln!("riffdb write completion groups 1..64: {groups:?}");
+                        eprintln!("riffdb write completion groups 1..={}: {groups:?}", groups.len());
                     }
                     return Err(error.to_string());
                 }

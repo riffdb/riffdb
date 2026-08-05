@@ -1,6 +1,6 @@
 //! In-memory application-state storage ports.
 
-use std::num::NonZeroU8;
+use std::num::NonZeroU16;
 
 use riffdb_storage_api::{
     AbandonedCandidate, AdmissionLookupResultV1, AdmissionRepository, AdmissionRequestV1,
@@ -1041,7 +1041,8 @@ fn metrics_after(
         ),
     };
     StagedBatchMetrics::new(
-        NonZeroU8::new(count).ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+        NonZeroU16::new(count)
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
         semantic,
         encoded,
     )

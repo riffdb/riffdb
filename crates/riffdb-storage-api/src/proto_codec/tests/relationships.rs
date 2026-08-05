@@ -321,7 +321,7 @@ fn append_bootstrap_success(
     fixture: &mut String,
     name: &str,
     before: AdministrationSequenceAllocator,
-    count: u8,
+    count: u16,
 ) {
     let allocated = before
         .allocate_consecutive(count)
@@ -359,7 +359,7 @@ fn append_bootstrap_failure(
     fixture: &mut String,
     name: &str,
     before: AdministrationSequenceAllocator,
-    count: u8,
+    count: u16,
 ) {
     assert_eq!(
         before.allocate_consecutive(count),

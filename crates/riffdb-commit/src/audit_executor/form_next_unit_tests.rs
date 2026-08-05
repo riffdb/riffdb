@@ -689,14 +689,16 @@ fn duplicate_request_id_audits_form_separate_units() {
 }
 
 #[test]
-fn sixty_five_commands_form_full_then_queue_drained() {
+fn one_above_command_ceiling_forms_full_then_queue_drained() {
+    let ceiling = riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
     let mut pending = VecDeque::new();
-    for seed in 1..=65u8 {
+    for ordinal in 0..=ceiling {
+        let seed = u8::try_from(ordinal % 256).expect("bounded command seed");
         pending.push_back(command_msg_with_id(seed));
     }
     let (u1, r1) = form_next_unit(&mut pending).expect("full group");
     assert_eq!(r1, CommitGroupDispatchReason::Full);
-    assert!(matches!(u1, WorkUnit::CommandGroup(ref g) if g.len() == 64));
+    assert!(matches!(u1, WorkUnit::CommandGroup(ref g) if g.len() == ceiling));
     let (u2, r2) = form_next_unit(&mut pending).expect("remainder");
     assert_eq!(r2, CommitGroupDispatchReason::QueueDrained);
     assert!(matches!(u2, WorkUnit::CommandGroup(ref g) if g.len() == 1));

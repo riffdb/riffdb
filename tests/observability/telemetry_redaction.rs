@@ -647,9 +647,13 @@ fn completion_group_evidence_accepts_exactly_the_internal_group_ceiling() {
         },
     );
     let groups = observability.write_completion_group_snapshot();
-    assert_eq!(groups.len(), 64);
-    assert!(groups[..63].iter().all(|count| *count == 0));
-    assert_eq!(groups[63], 1);
+    assert_eq!(groups.len(), MAX_WRITE_GROUP_SIZE);
+    assert!(
+        groups[..MAX_WRITE_GROUP_SIZE - 1]
+            .iter()
+            .all(|count| *count == 0)
+    );
+    assert_eq!(groups[MAX_WRITE_GROUP_SIZE - 1], 1);
 }
 
 #[test]
