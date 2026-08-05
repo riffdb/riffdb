@@ -6,7 +6,9 @@ use std::num::NonZeroU64;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use redb::{Database, Durability, ReadableDatabase, WriteTransaction};
+use redb::{
+    Database, Durability, ReadOnlyDatabase, ReadableDatabase, ReadableTable, WriteTransaction,
+};
 use riffdb_storage_api::{
     AuditPrincipalV1, DatabaseInitializationPort, DatabaseInitializationResult,
     ServiceAuditAppendIntentV1, ServiceAuditAppendRepository, ServiceAuditAppendResult,
@@ -18,8 +20,9 @@ use riffdb_types::{
 };
 
 use crate::layout::{
-    COMMITS, ENTITIES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS, META,
-    META_APPLICATION_SEQUENCE, OUTBOX, PROVENANCE, SECONDARY_INDEXES, create_all_tables,
+    AUDIT, AUDIT_BY_REQUEST, COMMITS, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY,
+    IDEMPOTENCY_PENDING, INDEX_EPOCHS, META, META_APPLICATION_SEQUENCE, OUTBOX, PROVENANCE,
+    SECONDARY_INDEXES, create_all_tables,
 };
 use crate::store::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
 
@@ -31,9 +34,136 @@ const INDEX_VALUE_BYTES: usize = 256;
 const EPOCH_VALUE_BYTES: usize = 128;
 const PROVENANCE_VALUE_BYTES: usize = 768;
 const EVENT_VALUE_BYTES: usize = 512;
+const EVENT_ROUTE_VALUE_BYTES: usize = 96;
 const OUTBOX_VALUE_BYTES: usize = 640;
 const COMMIT_VALUE_BYTES: usize = 1_024;
 const OUTCOME_VALUE_BYTES: usize = 768;
+const AUDIT_VALUE_BYTES: usize = 192;
+const AUDIT_REQUEST_VALUE_BYTES: usize = 96;
+
+/// Redb-owned bounded statistics for one authoritative command-path table.
+///
+/// These values are diagnostic only. They neither enter authorization nor
+/// alter the storage format, and table names come from a closed inventory.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthoritativeTableInventoryV1 {
+    name: &'static str,
+    rows: u64,
+    tree_height: u32,
+    leaf_pages: u64,
+    branch_pages: u64,
+    stored_bytes: u64,
+    metadata_bytes: u64,
+    fragmented_bytes: u64,
+}
+
+impl AuthoritativeTableInventoryV1 {
+    /// Closed physical table name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// Logical rows currently retained in the table.
+    #[must_use]
+    pub const fn rows(&self) -> u64 {
+        self.rows
+    }
+
+    /// Maximum redb tree traversal depth.
+    #[must_use]
+    pub const fn tree_height(&self) -> u32 {
+        self.tree_height
+    }
+
+    /// Leaf pages currently owned by the table.
+    #[must_use]
+    pub const fn leaf_pages(&self) -> u64 {
+        self.leaf_pages
+    }
+
+    /// Branch pages currently owned by the table.
+    #[must_use]
+    pub const fn branch_pages(&self) -> u64 {
+        self.branch_pages
+    }
+
+    /// Exact retained key and value bytes reported by redb.
+    #[must_use]
+    pub const fn stored_bytes(&self) -> u64 {
+        self.stored_bytes
+    }
+
+    /// Internal branch-key and table metadata bytes reported by redb.
+    #[must_use]
+    pub const fn metadata_bytes(&self) -> u64 {
+        self.metadata_bytes
+    }
+
+    /// Fragmented bytes attributed to the table by redb.
+    #[must_use]
+    pub const fn fragmented_bytes(&self) -> u64 {
+        self.fragmented_bytes
+    }
+}
+
+/// Reads the closed command-path table inventory from a cleanly stopped
+/// database without opening a writer or performing recovery.
+pub fn authoritative_table_inventory_v1(
+    path: &Path,
+) -> Result<Vec<AuthoritativeTableInventoryV1>, EngineBenchmarkError> {
+    let database = ReadOnlyDatabase::open(path).map_err(|_| EngineBenchmarkError::Engine)?;
+    let transaction = database
+        .begin_read()
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    let mut inventory = Vec::with_capacity(13);
+    let meta = transaction
+        .open_table(META)
+        .map_err(|_| EngineBenchmarkError::Engine)?;
+    inventory.push(table_inventory("meta", &meta)?);
+    drop(meta);
+    for (name, definition) in [
+        ("entities", ENTITIES),
+        ("secondary_indexes", SECONDARY_INDEXES),
+        ("index_epochs", INDEX_EPOCHS),
+        ("idempotency", IDEMPOTENCY),
+        ("idempotency_pending", IDEMPOTENCY_PENDING),
+        ("commits", COMMITS),
+        ("provenance", PROVENANCE),
+        ("events", EVENTS),
+        ("event_routes", EVENT_ROUTES),
+        ("outbox", OUTBOX),
+        ("audit", AUDIT),
+        ("audit_by_request", AUDIT_BY_REQUEST),
+    ] {
+        let table = transaction
+            .open_table(definition)
+            .map_err(|_| EngineBenchmarkError::Engine)?;
+        inventory.push(table_inventory(name, &table)?);
+    }
+    Ok(inventory)
+}
+
+fn table_inventory<K, V>(
+    name: &'static str,
+    table: &impl ReadableTable<K, V>,
+) -> Result<AuthoritativeTableInventoryV1, EngineBenchmarkError>
+where
+    K: redb::Key + 'static,
+    V: redb::Value + 'static,
+{
+    let stats = table.stats().map_err(|_| EngineBenchmarkError::Engine)?;
+    Ok(AuthoritativeTableInventoryV1 {
+        name,
+        rows: table.len().map_err(|_| EngineBenchmarkError::Engine)?,
+        tree_height: stats.tree_height(),
+        leaf_pages: stats.leaf_pages(),
+        branch_pages: stats.branch_pages(),
+        stored_bytes: stats.stored_bytes(),
+        metadata_bytes: stats.metadata_bytes(),
+        fragmented_bytes: stats.fragmented_bytes(),
+    })
+}
 
 /// Experimental engine durability used only by the benchmark harness.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -845,6 +975,13 @@ fn stage_terminals(
             PROVENANCE_VALUE_BYTES,
         )?;
         insert_record(transaction, EVENTS, sequence, 0x56, EVENT_VALUE_BYTES)?;
+        insert_record(
+            transaction,
+            EVENT_ROUTES,
+            sequence,
+            0x52,
+            EVENT_ROUTE_VALUE_BYTES,
+        )?;
         insert_record(transaction, OUTBOX, sequence, 0x4f, OUTBOX_VALUE_BYTES)?;
         insert_record(transaction, COMMITS, sequence, 0x43, COMMIT_VALUE_BYTES)?;
         insert_record(
@@ -853,6 +990,22 @@ fn stage_terminals(
             sequence,
             0x59,
             OUTCOME_VALUE_BYTES,
+        )?;
+        insert_record(transaction, AUDIT, sequence, 0xa1, AUDIT_VALUE_BYTES)?;
+        insert_record(transaction, AUDIT, sequence, 0xa2, AUDIT_VALUE_BYTES)?;
+        insert_record(
+            transaction,
+            AUDIT_BY_REQUEST,
+            sequence,
+            0xb1,
+            AUDIT_REQUEST_VALUE_BYTES,
+        )?;
+        insert_record(
+            transaction,
+            AUDIT_BY_REQUEST,
+            sequence,
+            0xb2,
+            AUDIT_REQUEST_VALUE_BYTES,
         )?;
         transaction
             .open_table(META)
@@ -956,8 +1109,9 @@ fn uuid_v7_bytes(tag: u8, sequence: u64) -> [u8; 16] {
 mod tests {
     use super::{
         EngineDurability, EngineMechanicsProfile, ServiceAuditGrowthHarness,
-        expected_evidence_page_capacity, initialize_engine_mechanics, measure_clean_startup,
-        measure_clean_startup_linear, run_engine_mechanics_window, split_half_page_durations,
+        authoritative_table_inventory_v1, expected_evidence_page_capacity,
+        initialize_engine_mechanics, measure_clean_startup, measure_clean_startup_linear,
+        run_engine_mechanics_window, split_half_page_durations,
     };
     use std::time::Duration;
 
@@ -1051,6 +1205,46 @@ mod tests {
             EngineMechanicsProfile::new(EngineDurability::ImmediateOnePhase, 1).expect("profile");
         let sample = run_engine_mechanics_window(&path, 1, 4, profile).expect("window");
         assert_eq!(sample.commands(), 4);
+    }
+
+    #[test]
+    fn command_table_inventory_attributes_rows_and_redb_pages_by_closed_table() {
+        let dir = tempfile_dir();
+        let path = dir.join("table-inventory.redb");
+        initialize_engine_mechanics(&path).expect("init");
+        let before = authoritative_table_inventory_v1(&path).expect("before inventory");
+        assert_eq!(before.len(), 13);
+        assert_eq!(before[0].name(), "meta");
+        assert!(before.iter().skip(1).all(|table| table.rows() == 0));
+
+        let profile =
+            EngineMechanicsProfile::new(EngineDurability::ImmediateOnePhase, 4).expect("profile");
+        run_engine_mechanics_window(&path, 1, 4, profile).expect("window");
+        let after = authoritative_table_inventory_v1(&path).expect("after inventory");
+        let rows = |name: &str| {
+            after
+                .iter()
+                .find(|table| table.name() == name)
+                .expect("closed table")
+                .rows()
+        };
+        for name in [
+            "entities",
+            "secondary_indexes",
+            "index_epochs",
+            "idempotency",
+            "commits",
+            "provenance",
+            "events",
+            "outbox",
+        ] {
+            assert_eq!(rows(name), 4, "{name}");
+        }
+        assert_eq!(rows("idempotency_pending"), 0);
+        assert_eq!(rows("event_routes"), 4);
+        assert_eq!(rows("audit"), 8);
+        assert_eq!(rows("audit_by_request"), 8);
+        assert!(after.iter().any(|table| table.leaf_pages() > 0));
     }
 
     fn tempfile_dir() -> std::path::PathBuf {

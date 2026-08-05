@@ -170,6 +170,30 @@ fn only_operational_ports_implement_semantic_runtime_traits() {
 }
 
 #[test]
+fn terminal_staging_reuses_the_same_transaction_current_admission_proof() {
+    let application = production_source(crate_root().join("src/application.rs"));
+    let apply = application
+        .split_once("fn apply_record_set(")
+        .expect("record staging function")
+        .1
+        .split_once("\nfn stage_application_allocator(")
+        .expect("record staging body")
+        .0;
+    assert!(!apply.contains("read_admission("));
+    assert!(!apply.contains("matching_admissions("));
+
+    let candidate = application
+        .split_once("fn recheck_admission(")
+        .expect("candidate transaction-current recheck")
+        .1
+        .split_once("impl CommandCandidateStateRead")
+        .expect("candidate recheck body")
+        .0;
+    assert!(candidate.contains("read_admission("));
+    assert!(candidate.contains("matching_admissions("));
+}
+
+#[test]
 fn partial_contract_migration_reopen_is_confined_to_the_witness_gate() {
     let sources = rust_sources();
     assert_eq!(

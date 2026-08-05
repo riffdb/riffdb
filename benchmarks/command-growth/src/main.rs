@@ -14,8 +14,8 @@ use riffdb_bench_root::{
 };
 use riffdb_storage_redb::benchmark_support::{
     EngineDurability, EngineMechanicsProfile, ServiceAuditGrowthHarness,
-    initialize_engine_mechanics, measure_clean_startup, measure_clean_startup_linear,
-    measure_engine_reopen, run_engine_mechanics_window,
+    authoritative_table_inventory_v1, initialize_engine_mechanics, measure_clean_startup,
+    measure_clean_startup_linear, measure_engine_reopen, run_engine_mechanics_window,
 };
 
 const CHECKED_CHECKPOINTS: [u64; 6] = [0, 1_024, 4_096, 16_384, 32_768, 65_536];
@@ -25,6 +25,7 @@ const SMOKE_WINDOW: usize = 32;
 const PERF_MIN_COMMANDS_PER_SECOND: u64 = 50;
 const PERF_MIN_RETAINED_BASIS_POINTS: u64 = 5_000;
 const PERF_MAX_GROUP_VS_SYNC_BASIS_POINTS: u64 = 7_500;
+const PERF_MAX_GROUPED_DATABASE_BYTES_PER_COMMAND: u64 = 64 * 1024;
 const PERF_013_MAX_GROWTH_RATIO: u64 = 32;
 const PERF_013_MAX_STARTUP_NS: u64 = 30_000_000_000;
 const PREFLIGHT_ENVIRONMENT: &str = "RIFFDB_COMMAND_GROWTH_PREFLIGHT";
@@ -211,12 +212,15 @@ fn run() -> Result<bool, ()> {
         && comparison.commands >= 32
         && group_basis_points <= PERF_MAX_GROUP_VS_SYNC_BASIS_POINTS;
     println!(
-        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"group_summary\",\"sync_elapsed_ns\":{},\"group_elapsed_ns\":{},\"commands\":{},\"group_commands\":{},\"group_vs_sync_basis_points\":{group_basis_points},\"maximum_group_vs_sync_basis_points\":{PERF_MAX_GROUP_VS_SYNC_BASIS_POINTS},\"engine_durability\":\"immediate_two_phase\",\"reps\":{},\"perf_004_passed\":{perf_004_passed},\"perf_006_mechanics_passed\":{perf_004_passed},\"perf_008_mechanics_passed\":{perf_004_passed}}}",
+        "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"group_summary\",\"sync_elapsed_ns\":{},\"group_elapsed_ns\":{},\"commands\":{},\"group_commands\":{},\"group_vs_sync_basis_points\":{group_basis_points},\"maximum_group_vs_sync_basis_points\":{PERF_MAX_GROUP_VS_SYNC_BASIS_POINTS},\"engine_durability\":\"immediate_two_phase\",\"reps\":{},\"perf_004_passed\":{perf_004_passed},\"perf_006_mechanics_passed\":{perf_004_passed},\"grouped_standard_database_bytes_per_command\":{},\"maximum_grouped_database_bytes_per_command\":{PERF_MAX_GROUPED_DATABASE_BYTES_PER_COMMAND},\"write_amplification_budget_passed\":{},\"perf_008_mechanics_passed\":{}}}",
         comparison.sync_elapsed_ns,
         comparison.group_elapsed_ns,
         comparison.commands,
         comparison.group_commands,
-        configuration.reps
+        configuration.reps,
+        comparison.grouped_standard_database_bytes_per_command,
+        comparison.write_amplification_budget_passed,
+        perf_004_passed && comparison.write_amplification_budget_passed,
     );
     let standard_vs_hardened_basis_points = comparison
         .standard_elapsed_ns
@@ -258,7 +262,8 @@ fn run() -> Result<bool, ()> {
         configuration.reps
     );
     let all_passed = (!configuration.assert_perf_003 || passed)
-        && (!group_gate_requested || perf_004_passed)
+        && (!group_gate_requested
+            || (perf_004_passed && comparison.write_amplification_budget_passed))
         && (!configuration.assert_perf_009 || perf_009_passed)
         && (!configuration.assert_perf_012 || perf_012_passed)
         && (!configuration.assert_perf_013 || perf_013_passed);
@@ -273,6 +278,8 @@ struct GroupComparison {
     hardened_elapsed_ns: u64,
     commands: usize,
     group_commands: usize,
+    grouped_standard_database_bytes_per_command: u64,
+    write_amplification_budget_passed: bool,
 }
 
 fn run_mechanics_comparison(root: &Path, checked: bool, rep: usize) -> Result<GroupComparison, ()> {
@@ -281,9 +288,11 @@ fn run_mechanics_comparison(root: &Path, checked: bool, rep: usize) -> Result<Gr
     let mut group_elapsed_ns = None;
     let mut standard_elapsed_ns = None;
     let mut hardened_elapsed_ns = None;
+    let mut grouped_standard_database_bytes_per_command = None;
     for (ordinal, (durability, group)) in [
         (EngineDurability::None, 1),
         (EngineDurability::ImmediateOnePhase, 1),
+        (EngineDurability::ImmediateOnePhase, 16),
         (EngineDurability::ImmediateTwoPhase, 1),
         (EngineDurability::ImmediateTwoPhase, 16),
     ]
@@ -292,11 +301,33 @@ fn run_mechanics_comparison(root: &Path, checked: bool, rep: usize) -> Result<Gr
     {
         let path = root.join(format!("mechanics-{ordinal}.redb"));
         initialize_engine_mechanics(&path).map_err(|_| ())?;
+        let initial_file_bytes = fs::metadata(&path).map_err(|_| ())?.len();
         let profile = EngineMechanicsProfile::new(durability, group).map_err(|_| ())?;
         let sample = run_engine_mechanics_window(&path, 1, commands, profile).map_err(|_| ())?;
         let elapsed_ns = u64::try_from(sample.elapsed().as_nanos()).map_err(|_| ())?;
         if durability == EngineDurability::ImmediateOnePhase && group == 1 {
             standard_elapsed_ns = Some(elapsed_ns);
+        } else if durability == EngineDurability::ImmediateOnePhase && group == 16 {
+            let per_command = sample.file_bytes() / u64::try_from(commands).map_err(|_| ())?.max(1);
+            grouped_standard_database_bytes_per_command = Some(per_command);
+            println!(
+                "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"write_amplification\",\"rep\":{rep},\"workload\":\"synthetic_complete_command_graph\",\"engine_durability\":\"immediate_one_phase\",\"group_commands\":{group},\"commands\":{commands},\"file_bytes_before\":{initial_file_bytes},\"database_bytes_after\":{},\"database_bytes_per_command\":{per_command},\"maximum_database_bytes_per_command\":{PERF_MAX_GROUPED_DATABASE_BYTES_PER_COMMAND},\"normalization_scope\":\"complete synthetic command graph including fixed database allocation\",\"budget_passed\":{}}}",
+                sample.file_bytes(),
+                per_command <= PERF_MAX_GROUPED_DATABASE_BYTES_PER_COMMAND,
+            );
+            for table in authoritative_table_inventory_v1(&path).map_err(|_| ())? {
+                println!(
+                    "{{\"schema\":\"riffdb.command-growth/v1\",\"record_type\":\"table_inventory\",\"rep\":{rep},\"table\":\"{}\",\"rows\":{},\"tree_height\":{},\"leaf_pages\":{},\"branch_pages\":{},\"stored_bytes\":{},\"metadata_bytes\":{},\"fragmented_bytes\":{}}}",
+                    table.name(),
+                    table.rows(),
+                    table.tree_height(),
+                    table.leaf_pages(),
+                    table.branch_pages(),
+                    table.stored_bytes(),
+                    table.metadata_bytes(),
+                    table.fragmented_bytes(),
+                );
+            }
         } else if durability == EngineDurability::ImmediateTwoPhase && group == 1 {
             sync_elapsed_ns = Some(elapsed_ns);
             hardened_elapsed_ns = Some(elapsed_ns);
@@ -322,6 +353,10 @@ fn run_mechanics_comparison(root: &Path, checked: bool, rep: usize) -> Result<Gr
         hardened_elapsed_ns: hardened_elapsed_ns.ok_or(())?,
         commands,
         group_commands: 16,
+        grouped_standard_database_bytes_per_command:
+            grouped_standard_database_bytes_per_command.ok_or(())?,
+        write_amplification_budget_passed: grouped_standard_database_bytes_per_command
+            .is_some_and(|value| value <= PERF_MAX_GROUPED_DATABASE_BYTES_PER_COMMAND),
     })
 }
 
@@ -384,6 +419,15 @@ fn median_group(values: &[GroupComparison]) -> Result<GroupComparison, ()> {
         ),
         commands: values[mid].commands,
         group_commands: values[mid].group_commands,
+        grouped_standard_database_bytes_per_command: median_u64(
+            &values
+                .iter()
+                .map(|v| v.grouped_standard_database_bytes_per_command)
+                .collect::<Vec<_>>(),
+        ),
+        write_amplification_budget_passed: values
+            .iter()
+            .all(|value| value.write_amplification_budget_passed),
     })
 }
 

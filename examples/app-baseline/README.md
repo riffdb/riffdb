@@ -311,6 +311,11 @@ human summary with p50 latencies and RiffDB/Postgres ratios.
   total in-flight work is bounded by `RIFFDB_SEED_CONCURRENCY` (default/max
   128). Every item retains independent authorization, idempotency, outcome,
   provenance, audit, and recovery semantics.
+- Per-level resource evidence normalizes process writes and durable growth by
+  every command committed by that daemon generation, including warmup. A
+  clean-shutdown inventory attributes retained rows, bytes, and redb pages to
+  the closed authoritative table set; page counts are retained footprint, not
+  per-table kernel-write counters.
 - PostgreSQL stays in the nested comparison workspace only.
 - Live `riffdbd` session databases default to **`target/app-baseline/db/`**
   (real disk under the repo; gitignored). They do **not** use `/tmp` (often a

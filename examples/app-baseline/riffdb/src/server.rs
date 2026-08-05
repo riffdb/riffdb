@@ -173,6 +173,8 @@ pub struct RiffDbServerSession {
     process: ServerProcess,
     riffdbd_bin: PathBuf,
     coordinator_workload_capacity: Option<u16>,
+    table_inventory_before_measurement:
+        Option<Vec<riffdb_storage_redb::benchmark_support::AuthoritativeTableInventoryV1>>,
     /// Resolved real-disk root used for this session.
     pub bench_root: riffdb_bench_root::BenchRoot,
     /// Public application backend.
@@ -192,6 +194,12 @@ pub struct RiffDbShutdownEvidence {
     pub command_stages: Vec<RiffDbReadStageEvidence>,
     /// Commit, queue, grouping, and writer-utilization evidence.
     pub writer: RiffDbWriterEvidence,
+    /// Command-table inventory after seed and before the measured process.
+    pub table_inventory_before_measurement:
+        Option<Vec<riffdb_storage_redb::benchmark_support::AuthoritativeTableInventoryV1>>,
+    /// Command-table inventory after the measured process stopped cleanly.
+    pub table_inventory_after_measurement:
+        Vec<riffdb_storage_redb::benchmark_support::AuthoritativeTableInventoryV1>,
 }
 
 /// Closed process-generation writer evidence emitted by `riffdbd`.
@@ -360,6 +368,7 @@ impl RiffDbServerSession {
             process,
             riffdbd_bin: riffdbd_bin.to_path_buf(),
             coordinator_workload_capacity: options.coordinator_workload_capacity,
+            table_inventory_before_measurement: None,
             bench_root,
             backend,
         })
@@ -381,6 +390,13 @@ impl RiffDbServerSession {
                 detail: error.to_string(),
             })?;
         let database_path = self._temporary.path().join("riffdb.redb");
+        let table_inventory_before_measurement =
+            riffdb_storage_redb::benchmark_support::authoritative_table_inventory_v1(
+                &database_path,
+            )
+            .map_err(|error| RiffDbError::Server {
+                detail: format!("read pre-measurement table inventory: {error}"),
+            })?;
         let backup_root = self._temporary.path().join("backups");
         let projections_root = self._temporary.path().join("projections");
         let projections_config_path = self._temporary.path().join("projections.toml");
@@ -407,6 +423,7 @@ impl RiffDbServerSession {
         let backend = self.backend.reconnect_endpoint(&endpoint).await?;
         self.process = process;
         self.backend = backend;
+        self.table_inventory_before_measurement = Some(table_inventory_before_measurement);
         Ok((self, setup_evidence))
     }
 
@@ -422,11 +439,23 @@ impl RiffDbServerSession {
 
     /// Stops cleanly and returns bounded stage/scheduler evidence.
     pub fn shutdown_with_evidence(mut self) -> Result<RiffDbShutdownEvidence, RiffDbError> {
-        self.process
+        let database_path = self._temporary.path().join("riffdb.redb");
+        let mut evidence = self
+            .process
             .shutdown_cleanly()
             .map_err(|error| RiffDbError::Server {
                 detail: error.to_string(),
-            })
+            })?;
+        evidence.table_inventory_before_measurement =
+            self.table_inventory_before_measurement.take();
+        evidence.table_inventory_after_measurement =
+            riffdb_storage_redb::benchmark_support::authoritative_table_inventory_v1(
+                &database_path,
+            )
+            .map_err(|error| RiffDbError::Server {
+                detail: format!("read post-measurement table inventory: {error}"),
+            })?;
+        Ok(evidence)
     }
 
     /// Last stderr lines captured from `riffdbd` (for crash diagnosis).
@@ -1276,6 +1305,8 @@ fn read_server_stdout(
                 read_stages,
                 command_stages,
                 writer,
+                table_inventory_before_measurement: None,
+                table_inventory_after_measurement: Vec::new(),
             })
         }
         (Some(Err(error)), _, _, _, _)

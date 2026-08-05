@@ -851,22 +851,13 @@ fn apply_record_set(
     encoded: &riffdb_storage_api::EncodedAtomicCommandRecordSetV1,
 ) -> Result<(), StorageError> {
     let identity_key = identity_key(records.expected_pending().identity())?;
-    match records.intent().admission_expectation() {
-        CommandAdmissionExpectationV1::ExistingPending => {
-            if read_admission(transaction, records.expected_pending().identity())?
-                != Some(StoredAdmissionStateV1::Pending(
-                    records.expected_pending().clone(),
-                ))
-            {
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
-        }
-        CommandAdmissionExpectationV1::Vacant(candidates) => {
-            if !matching_admissions(transaction, candidates)?.is_empty() {
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
-        }
-    }
+    // `RedbCandidateAdmission::recheck_admission` established this exact
+    // expectation earlier in the same exclusive write transaction. Every
+    // subsequent state is consuming and backend-private, so no path can stage
+    // without that transaction-current check and no other writer can alter the
+    // identity before this point. The terminal insert/remove below remains the
+    // authoritative duplicate/vacancy assertion. Re-reading and decoding both
+    // idempotency tables here supplied no newer evidence.
 
     apply_entities(transaction, records, encoded)?;
     apply_index_entries(transaction, records, encoded)?;
@@ -885,7 +876,7 @@ fn apply_record_set(
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
     }
-    {
+    if !records.events().is_empty() {
         let mut events = transaction.open_table(EVENTS).map_err(table_error)?;
         let mut event_routes = transaction.open_table(EVENT_ROUTES).map_err(table_error)?;
         let mut outbox = transaction.open_table(OUTBOX).map_err(table_error)?;
@@ -980,6 +971,9 @@ fn apply_entities(
     records: &AtomicCommandRecordSet,
     encoded: &riffdb_storage_api::EncodedAtomicCommandRecordSetV1,
 ) -> Result<(), StorageError> {
+    if records.entities().is_empty() {
+        return Ok(());
+    }
     let mut table = transaction.open_table(ENTITIES).map_err(table_error)?;
     for (mutation, bytes) in records.entities().iter().zip(encoded.entities()) {
         let key = encode_entity_key(mutation.post_image().target().key());
@@ -999,6 +993,9 @@ fn apply_index_entries(
     records: &AtomicCommandRecordSet,
     encoded: &riffdb_storage_api::EncodedAtomicCommandRecordSetV1,
 ) -> Result<(), StorageError> {
+    if records.index_entries().is_empty() {
+        return Ok(());
+    }
     let mut table = transaction
         .open_table(SECONDARY_INDEXES)
         .map_err(table_error)?;
@@ -1030,6 +1027,9 @@ fn apply_index_epochs(
     records: &AtomicCommandRecordSet,
     encoded: &riffdb_storage_api::EncodedAtomicCommandRecordSetV1,
 ) -> Result<(), StorageError> {
+    if records.index_epochs().is_empty() {
+        return Ok(());
+    }
     let mut table = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
     for (advance, bytes) in records.index_epochs().iter().zip(encoded.index_epochs()) {
         let key = encode_partition_index_key(advance.post_image().target());
@@ -1222,23 +1222,29 @@ fn current_state(
     request: &ValidationReadRequest,
 ) -> Result<TransactionCurrentState, StorageError> {
     let mut builder = TransactionCurrentStateBuilder::new(request);
-    for target in request.binding_targets() {
-        builder
-            .push_binding(entity_observation(transaction, target)?)
-            .map_err(materialization_value)?;
+    if !request.binding_targets().is_empty() || !request.root_validation_targets().is_empty() {
+        let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
+        for target in request.binding_targets() {
+            builder
+                .push_binding(entity_observation_from_table(&entities, target)?)
+                .map_err(materialization_value)?;
+        }
+        for target in request.root_validation_targets() {
+            builder
+                .push_root_validation(entity_observation_from_table(&entities, target)?)
+                .map_err(materialization_value)?;
+        }
     }
-    for target in request.root_validation_targets() {
-        builder
-            .push_root_validation(entity_observation(transaction, target)?)
-            .map_err(materialization_value)?;
-    }
-    for target in request.range_targets() {
-        builder
-            .push_range(CurrentRangeObservation::new(
-                target.clone(),
-                epoch_position(transaction, target.generation_target())?,
-            ))
-            .map_err(materialization_value)?;
+    if !request.range_targets().is_empty() {
+        let epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
+        for target in request.range_targets() {
+            builder
+                .push_range(CurrentRangeObservation::new(
+                    target.clone(),
+                    epoch_position_from_table(&epochs, target.generation_target())?,
+                ))
+                .map_err(materialization_value)?;
+        }
     }
     builder.finish().map_err(materialization_value)
 }
@@ -1248,41 +1254,46 @@ fn affected_current_state(
     targets: &AffectedIndexEpochTargets,
 ) -> Result<AffectedEpochCurrentState, StorageError> {
     let mut builder = AffectedEpochCurrentStateBuilder::new(targets);
-    for target in targets.as_slice() {
-        builder
-            .push(CurrentIndexGenerationObservation::new(
-                target.clone(),
-                epoch_position(transaction, target)?,
-            ))
-            .map_err(materialization_value)?;
+    if !targets.as_slice().is_empty() {
+        let epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
+        for target in targets.as_slice() {
+            builder
+                .push(CurrentIndexGenerationObservation::new(
+                    target.clone(),
+                    epoch_position_from_table(&epochs, target)?,
+                ))
+                .map_err(materialization_value)?;
+        }
     }
-    let table = transaction
-        .open_table(SECONDARY_INDEXES)
-        .map_err(table_error)?;
-    for target in targets.unique_targets() {
-        let prefix = target.prefix().prefix().as_bytes();
-        let upper = exclusive_prefix_end(prefix)
-            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-        let mut range = table
-            .range::<&[u8]>((Included(prefix), Excluded(upper.as_slice())))
-            .map_err(precommit_storage_error)?;
-        let first = range
-            .next()
-            .transpose()
-            .map_err(precommit_storage_error)?
-            .map(|(key, _)| key.value().to_vec());
-        let second = range.next().transpose().map_err(precommit_storage_error)?;
-        let kind = match (first, second) {
-            (None, None) => UniqueOccupancyKind::Vacant,
-            (Some(key), None) if key.as_slice() == target.expected_entry().as_bytes() => {
-                UniqueOccupancyKind::Owned
-            }
-            (Some(_), None) => UniqueOccupancyKind::Conflict,
-            _ => return Err(storage_error(StorageErrorKind::CorruptData)),
-        };
-        builder
-            .push_unique(UniqueIndexOccupancy::new(target.clone(), kind))
-            .map_err(materialization_value)?;
+    if !targets.unique_targets().is_empty() {
+        let table = transaction
+            .open_table(SECONDARY_INDEXES)
+            .map_err(table_error)?;
+        for target in targets.unique_targets() {
+            let prefix = target.prefix().prefix().as_bytes();
+            let upper = exclusive_prefix_end(prefix)
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            let mut range = table
+                .range::<&[u8]>((Included(prefix), Excluded(upper.as_slice())))
+                .map_err(precommit_storage_error)?;
+            let first = range
+                .next()
+                .transpose()
+                .map_err(precommit_storage_error)?
+                .map(|(key, _)| key.value().to_vec());
+            let second = range.next().transpose().map_err(precommit_storage_error)?;
+            let kind = match (first, second) {
+                (None, None) => UniqueOccupancyKind::Vacant,
+                (Some(key), None) if key.as_slice() == target.expected_entry().as_bytes() => {
+                    UniqueOccupancyKind::Owned
+                }
+                (Some(_), None) => UniqueOccupancyKind::Conflict,
+                _ => return Err(storage_error(StorageErrorKind::CorruptData)),
+            };
+            builder
+                .push_unique(UniqueIndexOccupancy::new(target.clone(), kind))
+                .map_err(materialization_value)?;
+        }
     }
     builder.finish().map_err(materialization_value)
 }
@@ -1295,11 +1306,10 @@ fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     Some(end)
 }
 
-fn entity_observation(
-    transaction: &redb::WriteTransaction,
+fn entity_observation_from_table(
+    table: &impl ReadableTable<&'static [u8], &'static [u8]>,
     target: &EntityTarget,
 ) -> Result<EntityObservation, StorageError> {
-    let table = transaction.open_table(ENTITIES).map_err(table_error)?;
     let Some(value) = table
         .get(encode_entity_key(target.key()))
         .map_err(precommit_storage_error)?
@@ -1313,11 +1323,10 @@ fn entity_observation(
     Ok(EntityObservation::Present(record))
 }
 
-fn epoch_position(
-    transaction: &redb::WriteTransaction,
+fn epoch_position_from_table(
+    table: &impl ReadableTable<&'static [u8], &'static [u8]>,
     target: &PartitionIndexTarget,
 ) -> Result<IndexEpochPosition, StorageError> {
-    let table = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
     let key = encode_partition_index_key(target);
     let Some(value) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
         return Ok(IndexEpochPosition::BeforeFirst);

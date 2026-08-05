@@ -557,6 +557,21 @@ fn checked_per_operation(bytes: u64, operations: u64) -> serde_json::Value {
         .map_or(serde_json::Value::Null, |value| json!(value))
 }
 
+fn add_riffdb_process_scope_resource_rates(
+    delta: &mut serde_json::Value,
+    process_scope_committed_commands: u64,
+) {
+    let process_write_bytes = delta["process_write_bytes"].as_u64().unwrap_or(0);
+    let durable_bytes_growth = delta["durable_bytes_growth"].as_u64().unwrap_or(0);
+    delta["process_scope_committed_commands"] = json!(process_scope_committed_commands);
+    delta["process_write_bytes_per_process_scope_committed_command"] =
+        checked_per_operation(process_write_bytes, process_scope_committed_commands);
+    delta["durable_bytes_growth_per_process_scope_committed_command"] =
+        checked_per_operation(durable_bytes_growth, process_scope_committed_commands);
+    delta["normalization_scope"] =
+        json!("complete measured process generation including warmup");
+}
+
 fn process_resource_snapshot(
     pid: u32,
     durable_root: &Path,
@@ -660,6 +675,38 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
     });
     let physical_commits = evidence.writer.commit_duration.count;
     let logical_commands_committed = evidence.writer.batch_size.sum_us;
+    let table_inventory = evidence
+        .table_inventory_after_measurement
+        .iter()
+        .map(|after| {
+            let before = evidence
+                .table_inventory_before_measurement
+                .as_ref()
+                .and_then(|inventory| inventory.iter().find(|item| item.name() == after.name()));
+            let before_rows = before.map_or(0, |item| item.rows());
+            let before_stored_bytes = before.map_or(0, |item| item.stored_bytes());
+            let before_leaf_pages = before.map_or(0, |item| item.leaf_pages());
+            let before_branch_pages = before.map_or(0, |item| item.branch_pages());
+            json!({
+                "table": after.name(),
+                "rows_before": before.map(|_| before_rows),
+                "rows_after": after.rows(),
+                "logical_row_delta": signed_delta(after.rows(), before_rows),
+                "stored_bytes_before": before.map(|_| before_stored_bytes),
+                "stored_bytes_after": after.stored_bytes(),
+                "logical_stored_byte_delta": signed_delta(after.stored_bytes(), before_stored_bytes),
+                "tree_height_after": after.tree_height(),
+                "leaf_pages_before": before.map(|_| before_leaf_pages),
+                "leaf_pages_after": after.leaf_pages(),
+                "leaf_page_delta": signed_delta(after.leaf_pages(), before_leaf_pages),
+                "branch_pages_before": before.map(|_| before_branch_pages),
+                "branch_pages_after": after.branch_pages(),
+                "branch_page_delta": signed_delta(after.branch_pages(), before_branch_pages),
+                "metadata_bytes_after": after.metadata_bytes(),
+                "fragmented_bytes_after": after.fragmented_bytes(),
+            })
+        })
+        .collect::<Vec<_>>();
     json!({
         "write_completion_groups_by_size": evidence.write_completion_groups.to_vec(),
         "dispatch_reasons": {
@@ -703,8 +750,19 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
                 json!(logical_commands_committed as f64 / physical_commits as f64)
             },
         },
+        "authoritative_table_inventory": table_inventory,
+        "table_inventory_scope": if evidence.table_inventory_before_measurement.is_some() {
+            "after_seed_before_measured_process_to_after_clean_shutdown"
+        } else {
+            "post_shutdown_inventory_only"
+        },
+        "table_page_note": "redb table pages attribute retained footprint; process_write_bytes attributes physical writes for the complete point",
         "labels": "closed_fixed_cardinality",
     })
+}
+
+fn signed_delta(after: u64, before: u64) -> i128 {
+    i128::from(after) - i128::from(before)
 }
 
 impl LoadEvidenceContext {
@@ -1413,6 +1471,16 @@ fn run_load(args: Args) -> Result<(), String> {
                             match owned.shutdown_with_evidence() {
                                 Ok(evidence) => {
                                     let groups = evidence.write_completion_groups;
+                                    let process_scope_committed_commands =
+                                        evidence.writer.batch_size.sum_us;
+                                    add_riffdb_process_scope_resource_rates(
+                                        &mut point["resource_delta"],
+                                        process_scope_committed_commands,
+                                    );
+                                    add_riffdb_process_scope_resource_rates(
+                                        &mut json_report["resource_delta"],
+                                        process_scope_committed_commands,
+                                    );
                                     point["write_completion_groups_by_size"] =
                                         json!(groups.to_vec());
                                     point["histogram_scope"] =
@@ -3045,13 +3113,21 @@ mod tests {
             write_bytes: 90,
             durable_bytes: 900,
         };
-        let delta = after.delta_json(before, 5);
+        let mut delta = after.delta_json(before, 5);
         assert_eq!(delta["cpu_ticks"], 15);
         assert_eq!(delta["rss_bytes_peak_sampled"], 100);
         assert_eq!(delta["process_write_bytes"], 50);
         assert_eq!(delta["process_write_bytes_per_successful_mutation"], 10);
         assert_eq!(delta["durable_bytes_growth"], 0);
         assert_eq!(delta["durable_bytes_growth_per_successful_mutation"], 0);
+        super::add_riffdb_process_scope_resource_rates(&mut delta, 10);
+        assert_eq!(delta["successful_mutations"], 5);
+        assert_eq!(delta["process_scope_committed_commands"], 10);
+        assert_eq!(delta["process_write_bytes_per_successful_mutation"], 10);
+        assert_eq!(
+            delta["process_write_bytes_per_process_scope_committed_command"],
+            5
+        );
         assert!(delta.get("path").is_none());
         assert!(delta.get("pid").is_none());
     }
