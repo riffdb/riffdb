@@ -7837,3 +7837,31 @@ work_packages:
     compatibility, documentation, and generated-artifact checks remain green; otherwise alpha stays
     blocked with every miss retained.
   human_review_triggers: *id001
+- id: WP-455
+  name: Columnar catch-up publication amplification
+  depends_on: [WP-432, WP-453]
+  objective: Remove unobservable whole-delta snapshot clones from columnar catch-up without
+    weakening commit-atomic visibility, monotonic frontiers, supersession holdback, freshness
+    notification, or checkpoint recovery semantics.
+  requirements: [PERF-008]
+  required_adrs: [ADR-0072, ADR-0086, ADR-0087]
+  allowed_paths: [work_packages.yaml, crates/riffdb-columnar/**, crates/riffdb-server/src/columnar_worker.rs,
+    examples/app-baseline/**, docs/performance/**]
+  deliverables:
+  - A deterministic publication observer test proving one catch-up pass does not materialize
+    intermediate snapshots that cannot escape the engine lock
+  - A supersession schedule proving the maximal fully applied prefix remains publishable while a
+    later commit is held back and the complete frontier becomes visible after the superseder arrives
+  - One bounded snapshot materialization per observable publication boundary, with unchanged
+    projected query results and checkpoint/reopen behavior
+  - Before/after CPU attribution and full-seed evidence naming the remaining authoritative and
+    derived-state costs
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-columnar --all-features
+  - cargo +1.97.0 test -p riffdb-server --lib
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Catch-up publishes the same latest race-free result and frontier with no reader-visible
+    partial commit, holdback never overclaims state, checkpoint/reopen remains equivalent, and the
+    full-seed run shows no regression.
+  human_review_triggers: *id001
