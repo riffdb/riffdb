@@ -2997,6 +2997,7 @@ async fn supervise_ready_process(
     let dispatch_reasons = graph.command_group_dispatch_snapshot();
     let read_stages = graph.read_stage_snapshot();
     let command_stages = graph.command_stage_snapshot();
+    let writer_evidence = graph.writer_evidence_snapshot();
     let notification_stop_failed = graph.begin_transport_shutdown().is_err();
     let transport_result = match &trigger {
         ReadyProcessTrigger::Transport(completion) => classify_transport_completion(completion),
@@ -3048,6 +3049,9 @@ async fn supervise_ready_process(
         let command_stages_line =
             riffdb_observability::format_command_stages_v1_line(&command_stages);
         let _ = writeln!(stdout, "{command_stages_line}");
+        let writer_evidence_line =
+            riffdb_observability::format_writer_evidence_v1_line(&writer_evidence);
+        let _ = writeln!(stdout, "{writer_evidence_line}");
         let _ = stdout.flush();
     }
     if maintenance_shutdown {

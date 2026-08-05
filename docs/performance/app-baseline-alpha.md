@@ -17,6 +17,12 @@ application surface, then separately tests sustained demand and recovery.
   --load-duration-secs 90 --load-warmup-secs 15 --load-journeys \
   --reps 3 --require-stable
 
+# Diagnostic capacity isolation (same public application surface)
+./benchmarks/run-app-baseline --full --load read_only --load-concurrency-sweep \
+  --load-duration-secs 90 --load-warmup-secs 15 --reps 3 --require-stable
+./benchmarks/run-app-baseline --full --load write_only --load-concurrency-sweep \
+  --load-duration-secs 90 --load-warmup-secs 15 --reps 3 --require-stable
+
 # Open-loop offered load
 ./benchmarks/run-app-baseline --full --load agent --load-clients 32 \
   --load-open-loop-rate 2000 --load-open-loop-queue-depth 4096 \
@@ -90,6 +96,18 @@ changes that question and is labeled as history growth.
 The current application load uses deployed static page bounds (board
 50/200/450, comments 50). Generated-client cursor resume is conformance
 evidence, not silently counted as an arbitrary deep-page load result.
+
+`read_only` contains only named RiffQL operations. `write_only` contains only
+symbolic application commands. They are diagnostic profiles, not alternative
+product semantics: use them to distinguish read/application-port saturation
+from the sole durable writer ceiling before interpreting a mixed curve.
+
+Each RiffDB point reports successful mutation and command-attempt rates,
+process and durable byte growth per successful mutation, and a closed writer
+evidence block. The writer block includes intake selection/defer counts,
+compatibility splits, queue delay, writer busy/idle time, physical commit and
+durable-flush histograms, and logical commands per physical commit. Labels are
+fixed and contain no contract, tenant, key, principal, or submitted value.
 
 The resilience report combines a real killed `riffdbd` under application load
 with focused deterministic tests for exact replay, durable-consumer crashes,

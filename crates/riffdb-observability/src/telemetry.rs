@@ -26,9 +26,9 @@ use riffdb_service::{
 use riffdb_types::{ConflictKeyHash, IncidentId};
 
 use crate::{
-    HISTOGRAM_UPPER_BOUNDS, HealthRegistry, MetricKey, MetricLabel, MetricRegistry,
-    READ_PIPELINE_STAGE_COUNT, RequiredCounter, RequiredGauge, RequiredHistogram, TraceCollector,
-    TraceRecord, read_pipeline_stage_index,
+    HISTOGRAM_UPPER_BOUNDS, HealthRegistry, HistogramSnapshot, MetricKey, MetricLabel,
+    MetricRegistry, READ_PIPELINE_STAGE_COUNT, RequiredCounter, RequiredGauge, RequiredHistogram,
+    TraceCollector, TraceRecord, read_pipeline_stage_index,
 };
 
 /// Maximum redacted incidents retained for operator correlation.
@@ -143,6 +143,10 @@ pub struct Observability {
     command_group_dispatch_reasons: [AtomicU64; COMMAND_GROUP_DISPATCH_REASON_COUNT],
     command_group_selected_total: AtomicU64,
     command_group_deferred_total: AtomicU64,
+    compatibility_selected_total: AtomicU64,
+    compatibility_group_total: AtomicU64,
+    compatibility_conflict_key_split_total: AtomicU64,
+    compatibility_exact_access_split_total: AtomicU64,
     metrics: MetricRegistry,
     traces: TraceCollector,
     health: HealthRegistry,
@@ -166,6 +170,10 @@ impl Observability {
             command_group_dispatch_reasons: std::array::from_fn(|_| AtomicU64::new(0)),
             command_group_selected_total: AtomicU64::new(0),
             command_group_deferred_total: AtomicU64::new(0),
+            compatibility_selected_total: AtomicU64::new(0),
+            compatibility_group_total: AtomicU64::new(0),
+            compatibility_conflict_key_split_total: AtomicU64::new(0),
+            compatibility_exact_access_split_total: AtomicU64::new(0),
             metrics: MetricRegistry::new(),
             traces,
             health: HealthRegistry::new(),
@@ -202,6 +210,44 @@ impl Observability {
             self.command_group_selected_total.load(Ordering::Relaxed),
             self.command_group_deferred_total.load(Ordering::Relaxed),
         )
+    }
+
+    /// Returns the complete fixed-cardinality writer evidence snapshot.
+    #[must_use]
+    pub fn writer_evidence_snapshot(&self) -> WriterEvidenceSnapshotV1 {
+        WriterEvidenceSnapshotV1 {
+            writer_busy_us: self
+                .metrics
+                .required_counter(RequiredCounter::WriterBusyMicroseconds),
+            writer_idle_us: self
+                .metrics
+                .required_counter(RequiredCounter::WriterIdleMicroseconds),
+            dispatch_selected: self.command_group_selected_total.load(Ordering::Relaxed),
+            dispatch_deferred: self.command_group_deferred_total.load(Ordering::Relaxed),
+            compatibility_selected: self.compatibility_selected_total.load(Ordering::Relaxed),
+            compatibility_groups: self.compatibility_group_total.load(Ordering::Relaxed),
+            compatibility_conflict_key_splits: self
+                .compatibility_conflict_key_split_total
+                .load(Ordering::Relaxed),
+            compatibility_exact_access_splits: self
+                .compatibility_exact_access_split_total
+                .load(Ordering::Relaxed),
+            queue_delay_estimate_us: self
+                .metrics
+                .required_gauge(RequiredGauge::CommandQueueDelayEstimateMicroseconds),
+            commit_duration_us: self
+                .metrics
+                .required_histogram(RequiredHistogram::CommitDurationMicroseconds),
+            durable_flush_duration_us: self
+                .metrics
+                .required_histogram(RequiredHistogram::DurableFlushDurationMicroseconds),
+            commit_batch_size: self
+                .metrics
+                .required_histogram(RequiredHistogram::CommitBatchSize),
+            storage_queue_duration_us: self
+                .metrics
+                .required_histogram(RequiredHistogram::StorageQueueLatencyMicroseconds),
+        }
     }
 
     /// Returns per-stage read-pipeline histogram snapshots in [`ReadPipelineStage::ALL`] order.
@@ -436,6 +482,75 @@ pub fn format_command_stages_v1_line(
     format!("riffdb-command-stages-v1\t{}", parts.join(";"))
 }
 
+/// Complete fixed-cardinality writer evidence captured from one process generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WriterEvidenceSnapshotV1 {
+    /// Cumulative writer-unit busy time.
+    pub writer_busy_us: u64,
+    /// Cumulative writer-unit idle time.
+    pub writer_idle_us: u64,
+    /// Commands selected by intake groups.
+    pub dispatch_selected: u64,
+    /// Messages left behind after intake selection, summed at dispatch edges.
+    pub dispatch_deferred: u64,
+    /// Commands presented to exact compatibility partitioning.
+    pub compatibility_selected: u64,
+    /// Compatible durable groups emitted by partitioning.
+    pub compatibility_groups: u64,
+    /// Boundaries caused by overlapping declared conflict keys.
+    pub compatibility_conflict_key_splits: u64,
+    /// Boundaries caused by exact entity read/write overlap.
+    pub compatibility_exact_access_splits: u64,
+    /// Latest bounded command-queue EWMA, absent before the first writer unit.
+    pub queue_delay_estimate_us: Option<u64>,
+    /// Storage commit-call duration.
+    pub commit_duration_us: HistogramSnapshot,
+    /// Durable flush duration under the configured profile.
+    pub durable_flush_duration_us: HistogramSnapshot,
+    /// Logical commands per successful physical commit call.
+    pub commit_batch_size: HistogramSnapshot,
+    /// Accepted command queue latency.
+    pub storage_queue_duration_us: HistogramSnapshot,
+}
+
+/// Renders one process-generation writer evidence line.
+///
+/// The line is closed and numeric: it carries no command, tenant, key, or principal labels.
+#[must_use]
+pub fn format_writer_evidence_v1_line(snapshot: &WriterEvidenceSnapshotV1) -> String {
+    let scalar = format!(
+        "busy_us={};idle_us={};dispatch_selected={};dispatch_deferred={};compatibility_selected={};compatibility_groups={};compatibility_conflict_key_splits={};compatibility_exact_access_splits={};queue_delay_estimate_us={}",
+        snapshot.writer_busy_us,
+        snapshot.writer_idle_us,
+        snapshot.dispatch_selected,
+        snapshot.dispatch_deferred,
+        snapshot.compatibility_selected,
+        snapshot.compatibility_groups,
+        snapshot.compatibility_conflict_key_splits,
+        snapshot.compatibility_exact_access_splits,
+        snapshot
+            .queue_delay_estimate_us
+            .map_or_else(|| "none".to_owned(), |value| value.to_string()),
+    );
+    let histograms = [
+        ("commit_us", snapshot.commit_duration_us),
+        ("flush_us", snapshot.durable_flush_duration_us),
+        ("batch_size", snapshot.commit_batch_size),
+        ("storage_queue_us", snapshot.storage_queue_duration_us),
+    ]
+    .map(|(name, histogram)| {
+        let buckets = histogram
+            .cumulative_buckets
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("{name}:{}:{}:{buckets}", histogram.count, histogram.sum)
+    })
+    .join(";");
+    format!("riffdb-writer-evidence-v1\t{scalar}\t{histograms}")
+}
+
 /// One parsed stage entry from a `riffdb-read-stages-v1` payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParsedReadStageV1 {
@@ -595,6 +710,26 @@ impl CommitTelemetry for Observability {
                     reason,
                     u64::from(selected),
                     u64::from(deferred),
+                );
+            }
+            CommitTelemetryEvent::CommandGroupPartitioned {
+                selected,
+                completion_groups,
+                conflict_key_splits,
+                exact_access_splits,
+            } => {
+                saturating_add(&self.compatibility_selected_total, u64::from(selected));
+                saturating_add(
+                    &self.compatibility_group_total,
+                    u64::from(completion_groups),
+                );
+                saturating_add(
+                    &self.compatibility_conflict_key_split_total,
+                    u64::from(conflict_key_splits),
+                );
+                saturating_add(
+                    &self.compatibility_exact_access_split_total,
+                    u64::from(exact_access_splits),
                 );
             }
             CommitTelemetryEvent::StorageQueueCompleted { elapsed, .. } => {

@@ -705,6 +705,13 @@ impl RunningProductionGraph {
         self.observability.command_stage_snapshot()
     }
 
+    /// Complete fixed-cardinality writer evidence for benchmark and shutdown diagnosis.
+    pub(crate) fn writer_evidence_snapshot(
+        &self,
+    ) -> riffdb_observability::WriterEvidenceSnapshotV1 {
+        self.observability.writer_evidence_snapshot()
+    }
+
     /// History incarnation retained from the successful open that built this graph.
     ///
     /// Available after activation even once ordinary admission is closed for

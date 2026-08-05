@@ -51,7 +51,8 @@ const WRITE_GROUP_PREFIX: &str = "riffdb-write-completion-groups-v1\t";
 const DISPATCH_REASON_PREFIX: &str = "riffdb-dispatch-reasons-v1\t";
 const READ_STAGE_PREFIX: &str = "riffdb-read-stages-v1\t";
 const COMMAND_STAGE_PREFIX: &str = "riffdb-command-stages-v1\t";
-const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(30);
+const WRITER_EVIDENCE_PREFIX: &str = "riffdb-writer-evidence-v1\t";
+const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(90);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(15);
 /// Keep the last N stderr lines for crash diagnosis (panic / OOM messages).
 const STDERR_RING_LINES: usize = 200;
@@ -170,6 +171,8 @@ pub struct ServerStartOptions {
 pub struct RiffDbServerSession {
     _temporary: riffdb_bench_root::BenchDir,
     process: ServerProcess,
+    riffdbd_bin: PathBuf,
+    coordinator_workload_capacity: Option<u16>,
     /// Resolved real-disk root used for this session.
     pub bench_root: riffdb_bench_root::BenchRoot,
     /// Public application backend.
@@ -187,6 +190,39 @@ pub struct RiffDbShutdownEvidence {
     pub read_stages: Vec<RiffDbReadStageEvidence>,
     /// Per-stage coordinator command pipeline summaries.
     pub command_stages: Vec<RiffDbReadStageEvidence>,
+    /// Commit, queue, grouping, and writer-utilization evidence.
+    pub writer: RiffDbWriterEvidence,
+}
+
+/// Closed process-generation writer evidence emitted by `riffdbd`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RiffDbWriterEvidence {
+    /// Cumulative writer busy microseconds.
+    pub busy_us: u64,
+    /// Cumulative writer idle microseconds.
+    pub idle_us: u64,
+    /// Commands selected into intake groups.
+    pub dispatch_selected: u64,
+    /// Messages deferred at intake group edges.
+    pub dispatch_deferred: u64,
+    /// Commands passed through exact compatibility partitioning.
+    pub compatibility_selected: u64,
+    /// Compatible durable groups produced by partitioning.
+    pub compatibility_groups: u64,
+    /// Boundaries caused by declared conflict-key overlap.
+    pub compatibility_conflict_key_splits: u64,
+    /// Boundaries caused by exact entity read/write overlap.
+    pub compatibility_exact_access_splits: u64,
+    /// Latest queue-delay EWMA after a writer unit.
+    pub queue_delay_estimate_us: Option<u64>,
+    /// Commit-call duration histogram.
+    pub commit_duration: RiffDbReadStageEvidence,
+    /// Durable-flush duration histogram.
+    pub flush_duration: RiffDbReadStageEvidence,
+    /// Commands per commit histogram.
+    pub batch_size: RiffDbReadStageEvidence,
+    /// Accepted command queue-duration histogram.
+    pub storage_queue_duration: RiffDbReadStageEvidence,
 }
 
 /// One fixed read-pipeline stage summary.
@@ -320,9 +356,56 @@ impl RiffDbServerSession {
         Ok(Self {
             _temporary: temporary,
             process,
+            riffdbd_bin: riffdbd_bin.to_path_buf(),
+            coordinator_workload_capacity: options.coordinator_workload_capacity,
             bench_root,
             backend,
         })
+    }
+
+    /// Restarts the daemon after setup so measured telemetry starts at zero.
+    ///
+    /// The database, contract, query module, capability, and seed remain durable;
+    /// only process-generation counters and channels are replaced. This is the
+    /// benchmark boundary that prevents setup and warmup work from contaminating
+    /// per-point server evidence.
+    pub async fn restart_for_measurement(
+        mut self,
+    ) -> Result<(Self, RiffDbShutdownEvidence), RiffDbError> {
+        let setup_evidence = self
+            .process
+            .shutdown_cleanly()
+            .map_err(|error| RiffDbError::Server {
+                detail: error.to_string(),
+            })?;
+        let database_path = self._temporary.path().join("riffdb.redb");
+        let backup_root = self._temporary.path().join("backups");
+        let projections_root = self._temporary.path().join("projections");
+        let projections_config_path = self._temporary.path().join("projections.toml");
+        let capability_keys_path = self._temporary.path().join("capability.keys");
+        let idempotency_keys_path = self._temporary.path().join("idempotency.keys");
+        let process = ServerProcess::spawn(
+            &self.riffdbd_bin,
+            &database_path,
+            &backup_root,
+            &capability_keys_path,
+            &idempotency_keys_path,
+            self.coordinator_workload_capacity,
+            Some(projections_root.as_path()),
+            Some(projections_config_path.as_path()),
+        )
+        .map_err(|error| RiffDbError::Server {
+            detail: error.to_string(),
+        })?;
+        let address = process.wait_for_ready_address().map_err(|error| {
+            let detail = process.diagnostic_detail(&error.to_string());
+            RiffDbError::Server { detail }
+        })?;
+        let endpoint = format!("http://{address}");
+        let backend = self.backend.reconnect_endpoint(&endpoint).await?;
+        self.process = process;
+        self.backend = backend;
+        Ok((self, setup_evidence))
     }
 
     /// Stops the server cleanly.
@@ -1148,6 +1231,7 @@ fn read_server_stdout(
     let mut dispatch_reasons = None;
     let mut read_stages = None;
     let mut command_stages = None;
+    let mut writer = None;
     loop {
         line.clear();
         let Ok(read) = reader.read_line(&mut line) else {
@@ -1166,6 +1250,8 @@ fn read_server_stdout(
             read_stages = Some(parse_read_stages(encoded));
         } else if let Some(encoded) = line.trim_end().strip_prefix(COMMAND_STAGE_PREFIX) {
             command_stages = Some(parse_read_stages(encoded));
+        } else if let Some(encoded) = line.trim_end().strip_prefix(WRITER_EVIDENCE_PREFIX) {
+            writer = Some(parse_writer_evidence(encoded));
         }
     }
     let evidence = match (
@@ -1173,24 +1259,28 @@ fn read_server_stdout(
         dispatch_reasons,
         read_stages,
         command_stages,
+        writer,
     ) {
         (
             Some(Ok(write_completion_groups)),
             Some(Ok(dispatch_reasons)),
             Some(Ok(read_stages)),
             Some(Ok(command_stages)),
+            Some(Ok(writer)),
         ) => {
             Ok(RiffDbShutdownEvidence {
                 write_completion_groups,
                 dispatch_reasons,
                 read_stages,
                 command_stages,
+                writer,
             })
         }
-        (Some(Err(error)), _, _, _)
-        | (_, Some(Err(error)), _, _)
-        | (_, _, Some(Err(error)), _)
-        | (_, _, _, Some(Err(error))) => Err(error),
+        (Some(Err(error)), _, _, _, _)
+        | (_, Some(Err(error)), _, _, _)
+        | (_, _, Some(Err(error)), _, _)
+        | (_, _, _, Some(Err(error)), _)
+        | (_, _, _, _, Some(Err(error))) => Err(error),
         _ => Err(io::Error::other("incomplete riffdb shutdown telemetry")),
     };
     let _ = shutdown_sender.send(evidence);
@@ -1257,6 +1347,63 @@ fn parse_read_stages(encoded: &str) -> io::Result<Vec<RiffDbReadStageEvidence>> 
         return Err(io::Error::other("empty read-stage evidence"));
     }
     Ok(stages)
+}
+
+fn parse_writer_evidence(encoded: &str) -> io::Result<RiffDbWriterEvidence> {
+    let (scalars, histograms) = encoded
+        .split_once('\t')
+        .ok_or_else(|| io::Error::other("missing writer evidence histograms"))?;
+    let mut values = std::collections::BTreeMap::new();
+    for pair in scalars.split(';') {
+        let (name, value) = pair
+            .split_once('=')
+            .ok_or_else(|| io::Error::other("invalid writer evidence scalar"))?;
+        if values.insert(name, value).is_some() {
+            return Err(io::Error::other("duplicate writer evidence scalar"));
+        }
+    }
+    let required = |name: &str| -> io::Result<u64> {
+        values
+            .get(name)
+            .ok_or_else(|| io::Error::other("missing writer evidence scalar"))?
+            .parse::<u64>()
+            .map_err(|_| io::Error::other("invalid writer evidence scalar"))
+    };
+    let queue_delay_estimate_us = match values.get("queue_delay_estimate_us").copied() {
+        Some("none") => None,
+        Some(value) => Some(
+            value
+                .parse::<u64>()
+                .map_err(|_| io::Error::other("invalid writer queue estimate"))?,
+        ),
+        None => return Err(io::Error::other("missing writer queue estimate")),
+    };
+    let parsed = parse_read_stages(histograms)?;
+    if parsed.len() != 4 {
+        return Err(io::Error::other("invalid writer histogram cardinality"));
+    }
+    let find = |name: &str| -> io::Result<RiffDbReadStageEvidence> {
+        parsed
+            .iter()
+            .find(|entry| entry.name == name)
+            .cloned()
+            .ok_or_else(|| io::Error::other("missing writer histogram"))
+    };
+    Ok(RiffDbWriterEvidence {
+        busy_us: required("busy_us")?,
+        idle_us: required("idle_us")?,
+        dispatch_selected: required("dispatch_selected")?,
+        dispatch_deferred: required("dispatch_deferred")?,
+        compatibility_selected: required("compatibility_selected")?,
+        compatibility_groups: required("compatibility_groups")?,
+        compatibility_conflict_key_splits: required("compatibility_conflict_key_splits")?,
+        compatibility_exact_access_splits: required("compatibility_exact_access_splits")?,
+        queue_delay_estimate_us,
+        commit_duration: find("commit_us")?,
+        flush_duration: find("flush_us")?,
+        batch_size: find("batch_size")?,
+        storage_queue_duration: find("storage_queue_us")?,
+    })
 }
 
 fn drain_server_stderr(stream: impl Read, ring: Arc<Mutex<VecDeque<String>>>) -> usize {
@@ -1424,5 +1571,27 @@ mod tests {
         assert_eq!(stages[0].count, 2);
         assert_eq!(stages[0].buckets.len(), 16);
         assert!(parse_read_stages("authorize:2:9:1,2").is_err());
+
+        let writer_histograms = ["commit_us", "flush_us", "batch_size", "storage_queue_us"]
+            .map(|name| format!("{name}:2:9:{buckets}"))
+            .join(";");
+        let writer = parse_writer_evidence(&format!(
+            "busy_us=11;idle_us=12;dispatch_selected=13;dispatch_deferred=14;compatibility_selected=15;compatibility_groups=16;compatibility_conflict_key_splits=17;compatibility_exact_access_splits=18;queue_delay_estimate_us=19\t{writer_histograms}"
+        ))
+        .expect("writer evidence");
+        assert_eq!(writer.busy_us, 11);
+        assert_eq!(writer.idle_us, 12);
+        assert_eq!(writer.dispatch_selected, 13);
+        assert_eq!(writer.dispatch_deferred, 14);
+        assert_eq!(writer.compatibility_selected, 15);
+        assert_eq!(writer.compatibility_groups, 16);
+        assert_eq!(writer.compatibility_conflict_key_splits, 17);
+        assert_eq!(writer.compatibility_exact_access_splits, 18);
+        assert_eq!(writer.queue_delay_estimate_us, Some(19));
+        assert_eq!(writer.commit_duration.name, "commit_us");
+        assert_eq!(writer.flush_duration.name, "flush_us");
+        assert_eq!(writer.batch_size.name, "batch_size");
+        assert_eq!(writer.storage_queue_duration.name, "storage_queue_us");
+        assert!(parse_writer_evidence("busy_us=1\tcommit_us:1:1:1,2").is_err());
     }
 }

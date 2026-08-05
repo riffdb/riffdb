@@ -26,7 +26,8 @@ use riffdb_observability::{
     MetricSemantics, Observability, PrincipalIdTelemetryHash, READ_PIPELINE_STAGE_COUNT,
     REQUIRED_COMMAND_SPAN_FIELDS, REQUIRED_METRIC_INVENTORY, RequiredCounter, RequiredGauge,
     RequiredHistogram, SafeTraceLayer, TraceKind, format_read_stages_v1_line,
-    parse_read_stages_v1_payload, read_pipeline_stage_index, request_span,
+    format_writer_evidence_v1_line, parse_read_stages_v1_payload, read_pipeline_stage_index,
+    request_span,
 };
 use riffdb_policy::{AuthorizationTelemetry, AuthorizationTelemetryEvent, PolicyCode};
 use riffdb_service::{
@@ -902,6 +903,31 @@ fn command_group_dispatch_reasons_are_labeled_in_registry() {
             .required_counter(RequiredCounter::CommandGroupDeferred),
         1
     );
+
+    CommitTelemetry::record(
+        &observability,
+        CommitTelemetryEvent::CommandGroupPartitioned {
+            selected: 4,
+            completion_groups: 2,
+            conflict_key_splits: 1,
+            exact_access_splits: 0,
+        },
+    );
+    let writer = observability.writer_evidence_snapshot();
+    assert_eq!(writer.dispatch_selected, 4);
+    assert_eq!(writer.dispatch_deferred, 1);
+    assert_eq!(writer.compatibility_selected, 4);
+    assert_eq!(writer.compatibility_groups, 2);
+    assert_eq!(writer.compatibility_conflict_key_splits, 1);
+    assert_eq!(writer.compatibility_exact_access_splits, 0);
+    let line = format_writer_evidence_v1_line(&writer);
+    assert!(line.starts_with(
+        "riffdb-writer-evidence-v1\tbusy_us=0;idle_us=0;dispatch_selected=4;dispatch_deferred=1;compatibility_selected=4;compatibility_groups=2;compatibility_conflict_key_splits=1;compatibility_exact_access_splits=0;queue_delay_estimate_us=none\t"
+    ));
+    assert!(line.contains("commit_us:0:0:"));
+    assert!(line.contains("flush_us:0:0:"));
+    assert!(line.contains("batch_size:0:0:"));
+    assert!(line.contains("storage_queue_us:0:0:"));
 }
 
 #[test]

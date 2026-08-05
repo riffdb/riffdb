@@ -530,20 +530,31 @@ struct ProcessResourceSnapshot {
 }
 
 impl ProcessResourceSnapshot {
-    fn delta_json(self, before: Self) -> serde_json::Value {
+    fn delta_json(self, before: Self, successful_mutations: u64) -> serde_json::Value {
+        let process_write_bytes = self.write_bytes.saturating_sub(before.write_bytes);
+        let durable_bytes_growth = self.durable_bytes.saturating_sub(before.durable_bytes);
         json!({
             "cpu_ticks": self.cpu_ticks.saturating_sub(before.cpu_ticks),
             "rss_bytes_before": before.rss_bytes,
             "rss_bytes_after": self.rss_bytes,
             "rss_bytes_peak_sampled": before.rss_bytes.max(self.rss_bytes),
             "process_read_bytes": self.read_bytes.saturating_sub(before.read_bytes),
-            "process_write_bytes": self.write_bytes.saturating_sub(before.write_bytes),
+            "process_write_bytes": process_write_bytes,
             "durable_bytes_before": before.durable_bytes,
             "durable_bytes_after": self.durable_bytes,
-            "durable_bytes_growth": self.durable_bytes.saturating_sub(before.durable_bytes),
+            "durable_bytes_growth": durable_bytes_growth,
+            "successful_mutations": successful_mutations,
+            "process_write_bytes_per_successful_mutation": checked_per_operation(process_write_bytes, successful_mutations),
+            "durable_bytes_growth_per_successful_mutation": checked_per_operation(durable_bytes_growth, successful_mutations),
             "scope": "before_after_point",
         })
     }
+}
+
+fn checked_per_operation(bytes: u64, operations: u64) -> serde_json::Value {
+    bytes
+        .checked_div(operations)
+        .map_or(serde_json::Value::Null, |value| json!(value))
 }
 
 fn process_resource_snapshot(
@@ -621,7 +632,10 @@ fn directory_bytes_bounded(root: &Path, max_entries: usize) -> Result<u64, Strin
 fn postgres_resource_delta_json(
     before: &PostgresResourceSnapshot,
     after: &PostgresResourceSnapshot,
+    successful_mutations: u64,
 ) -> serde_json::Value {
+    let database_growth = after.database_bytes.saturating_sub(before.database_bytes);
+    let wal_bytes = after.wal_bytes.saturating_sub(before.wal_bytes);
     json!({
         "committed_transactions": after.committed_transactions.saturating_sub(before.committed_transactions),
         "blocks_read": after.blocks_read.saturating_sub(before.blocks_read),
@@ -629,13 +643,23 @@ fn postgres_resource_delta_json(
         "temporary_bytes": after.temporary_bytes.saturating_sub(before.temporary_bytes),
         "database_bytes_before": before.database_bytes,
         "database_bytes_after": after.database_bytes,
-        "database_bytes_growth": after.database_bytes.saturating_sub(before.database_bytes),
-        "wal_bytes": after.wal_bytes.saturating_sub(before.wal_bytes),
+        "database_bytes_growth": database_growth,
+        "wal_bytes": wal_bytes,
+        "successful_mutations": successful_mutations,
+        "database_bytes_growth_per_successful_mutation": checked_per_operation(database_growth, successful_mutations),
+        "wal_bytes_per_successful_mutation": checked_per_operation(wal_bytes, successful_mutations),
         "scope": "before_after_point",
     })
 }
 
 fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_json::Value {
+    let histogram = |stage: &riffdb_app_baseline_riffdb::RiffDbReadStageEvidence| json!({
+        "count": stage.count,
+        "sum": stage.sum_us,
+        "cumulative_buckets": stage.buckets,
+    });
+    let physical_commits = evidence.writer.commit_duration.count;
+    let logical_commands_committed = evidence.writer.batch_size.sum_us;
     json!({
         "write_completion_groups_by_size": evidence.write_completion_groups.to_vec(),
         "dispatch_reasons": {
@@ -656,6 +680,28 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
             "sum_us": stage.sum_us,
             "cumulative_buckets": stage.buckets,
         })).collect::<Vec<_>>(),
+        "writer": {
+            "busy_us": evidence.writer.busy_us,
+            "idle_us": evidence.writer.idle_us,
+            "dispatch_selected": evidence.writer.dispatch_selected,
+            "dispatch_deferred": evidence.writer.dispatch_deferred,
+            "compatibility_selected": evidence.writer.compatibility_selected,
+            "compatibility_groups": evidence.writer.compatibility_groups,
+            "compatibility_conflict_key_splits": evidence.writer.compatibility_conflict_key_splits,
+            "compatibility_exact_access_splits": evidence.writer.compatibility_exact_access_splits,
+            "queue_delay_estimate_us": evidence.writer.queue_delay_estimate_us,
+            "commit_duration_us": histogram(&evidence.writer.commit_duration),
+            "durable_flush_duration_us": histogram(&evidence.writer.flush_duration),
+            "commit_batch_size": histogram(&evidence.writer.batch_size),
+            "storage_queue_duration_us": histogram(&evidence.writer.storage_queue_duration),
+            "physical_commits": physical_commits,
+            "logical_commands_committed": logical_commands_committed,
+            "mean_commands_per_physical_commit": if physical_commits == 0 {
+                serde_json::Value::Null
+            } else {
+                json!(logical_commands_committed as f64 / physical_commits as f64)
+            },
+        },
         "labels": "closed_fixed_cardinality",
     })
 }
@@ -1137,19 +1183,28 @@ fn run_load(args: Args) -> Result<(), String> {
                     .resource_snapshot()
                     .map_err(|error| error.to_string())?;
                 print_load_summary(&report);
+                let successful_mutations = report.successful_mutations();
                 let mut point = concurrency_curve_point(&report);
                 point["rep"] = json!(rep);
                 point["postgres_quiesced"] = json!(true);
                 point["sweep_isolation"] = json!(sweep_isolation);
                 point["resource_delta"] =
-                    postgres_resource_delta_json(&resources_before, &resources_after);
+                    postgres_resource_delta_json(
+                        &resources_before,
+                        &resources_after,
+                        successful_mutations,
+                    );
                 curve.push(point);
                 let mut json_report = report.to_json();
                 json_report["rep"] = json!(rep);
                 json_report["postgres_quiesced"] = json!(true);
                 json_report["sweep_isolation"] = json!(sweep_isolation);
                 json_report["resource_delta"] =
-                    postgres_resource_delta_json(&resources_before, &resources_after);
+                    postgres_resource_delta_json(
+                        &resources_before,
+                        &resources_after,
+                        successful_mutations,
+                    );
                 reports.push(json_report);
             }
         }
@@ -1205,41 +1260,37 @@ fn run_load(args: Args) -> Result<(), String> {
 
             if args.load_sweep_per_level_daemon {
                 for (point_index, &clients) in client_points.iter().enumerate() {
-                    let session = runtime
+                    let mut session = runtime
                         .block_on(RiffDbServerSession::start_with_options(
                             &riffdbd,
                             start_options.clone(),
                         ))
                         .map_err(|error| error.to_string())?;
-                    let session = Arc::new(std::sync::Mutex::new(session));
-                    let seed_ns;
-                    {
-                        let mut guard = session.lock().map_err(|_| "session lock".to_owned())?;
-                        guard.backend.reset().map_err(|error| error.to_string())?;
-                        let seed_started = Instant::now();
-                        if let Err(error) = guard.backend.seed(&dataset) {
-                            drop(guard);
-                            if let Ok(owned) = Arc::try_unwrap(session) {
-                                let _ = owned.into_inner().map(|s| s.shutdown());
-                            }
-                            return Err(error.to_string());
-                        }
-                        seed_ns =
-                            u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-                        if args.load_journeys {
-                            let mut journey = run_stateful_journeys(
-                                &mut guard.backend,
-                                &dataset,
-                                (rep as u64)
-                                    .saturating_mul(1_000_000)
-                                    .saturating_add((point_index as u64).saturating_mul(1_000)),
-                            )?;
-                            journey["backend_id"] = json!("riffdb_public_grpc");
-                            journey["rep"] = json!(rep);
-                            journey["clients"] = json!(clients);
-                            journey_reports.push(journey);
-                        }
+                    session.backend.reset().map_err(|error| error.to_string())?;
+                    let seed_started = Instant::now();
+                    if let Err(error) = session.backend.seed(&dataset) {
+                        let _ = session.shutdown();
+                        return Err(error.to_string());
                     }
+                    let seed_ns =
+                        u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                    if args.load_journeys {
+                        let mut journey = run_stateful_journeys(
+                            &mut session.backend,
+                            &dataset,
+                            (rep as u64)
+                                .saturating_mul(1_000_000)
+                                .saturating_add((point_index as u64).saturating_mul(1_000)),
+                        )?;
+                        journey["backend_id"] = json!("riffdb_public_grpc");
+                        journey["rep"] = json!(rep);
+                        journey["clients"] = json!(clients);
+                        journey_reports.push(journey);
+                    }
+                    let (session, _setup_evidence) = runtime
+                        .block_on(session.restart_for_measurement())
+                        .map_err(|error| error.to_string())?;
+                    let session = Arc::new(std::sync::Mutex::new(session));
                     let mut config = base_config.clone().with_client_cap(if args.load_saturate {
                         RIFFDB_SATURATE_LOAD_CLIENTS
                     } else {
@@ -1347,26 +1398,30 @@ fn run_load(args: Args) -> Result<(), String> {
                         Ok(report) => {
                             let resources_after = resources_after?;
                             print_load_summary(&report);
+                            let successful_mutations = report.successful_mutations();
                             let mut point = concurrency_curve_point(&report);
                             point["rep"] = json!(rep);
                             point["sweep_isolation"] = json!(sweep_isolation);
-                            point["resource_delta"] = resources_after.delta_json(resources_before);
+                            point["resource_delta"] = resources_after
+                                .delta_json(resources_before, successful_mutations);
                             let mut json_report = report.to_json();
                             json_report["rep"] = json!(rep);
                             json_report["sweep_isolation"] = json!(sweep_isolation);
                             json_report["resource_delta"] =
-                                resources_after.delta_json(resources_before);
+                                resources_after.delta_json(resources_before, successful_mutations);
                             match owned.shutdown_with_evidence() {
                                 Ok(evidence) => {
                                     let groups = evidence.write_completion_groups;
                                     point["write_completion_groups_by_size"] =
                                         json!(groups.to_vec());
-                                    point["histogram_scope"] = json!("per_level");
+                                    point["histogram_scope"] =
+                                        json!("per_level_process_after_setup_including_warmup");
                                     point["server_stage_evidence"] =
                                         riffdb_shutdown_evidence_json(&evidence);
                                     json_report["write_completion_groups_by_size"] =
                                         json!(groups.to_vec());
-                                    json_report["histogram_scope"] = json!("per_level");
+                                    json_report["histogram_scope"] =
+                                        json!("per_level_process_after_setup_including_warmup");
                                     json_report["server_stage_evidence"] =
                                         riffdb_shutdown_evidence_json(&evidence);
                                 }
@@ -1517,16 +1572,18 @@ fn run_load(args: Args) -> Result<(), String> {
                         Ok(report) => {
                             let resources_after = resources_after?;
                             print_load_summary(&report);
+                            let successful_mutations = report.successful_mutations();
                             let mut point = concurrency_curve_point(&report);
                             point["rep"] = json!(rep);
                             point["sweep_isolation"] = json!(sweep_isolation);
-                            point["resource_delta"] = resources_after.delta_json(resources_before);
+                            point["resource_delta"] = resources_after
+                                .delta_json(resources_before, successful_mutations);
                             curve.push(point);
                             let mut json_report = report.to_json();
                             json_report["rep"] = json!(rep);
                             json_report["sweep_isolation"] = json!(sweep_isolation);
                             json_report["resource_delta"] =
-                                resources_after.delta_json(resources_before);
+                                resources_after.delta_json(resources_before, successful_mutations);
                             reports.push(json_report);
                         }
                         Err(error) => {
@@ -2496,7 +2553,7 @@ impl Args {
                     let name = args.next().ok_or("--load needs a profile name")?;
                     load_profile = Some(WorkloadProfile::parse(&name).ok_or_else(|| {
                         format!(
-                            "unknown load profile '{name}' (interactive|agent|membership_contention)"
+                            "unknown load profile '{name}' (read_only|write_only|interactive|agent|membership_contention)"
                         )
                     })?);
                 }
@@ -2661,7 +2718,7 @@ impl Args {
                          [--postgres-comparator minimal|safe-app] \
                          [--output PATH] [--assert-write-parity|--assert-all-parity] \
                          [--concurrent-clients N] [--concurrent-operations N] \
-                         [--load interactive|agent|membership_contention] [--load-clients N] \
+                         [--load read_only|write_only|interactive|agent|membership_contention] [--load-clients N] \
                          [--load-duration-secs N] [--load-warmup-secs N] [--load-zipf-s F] \
                          [--load-open-loop-rate OPS] [--load-open-loop-queue-depth N] \
                          [--load-tenants N] [--load-hot-tenant-percent PERCENT] \
@@ -2987,11 +3044,13 @@ mod tests {
             write_bytes: 90,
             durable_bytes: 900,
         };
-        let delta = after.delta_json(before);
+        let delta = after.delta_json(before, 5);
         assert_eq!(delta["cpu_ticks"], 15);
         assert_eq!(delta["rss_bytes_peak_sampled"], 100);
         assert_eq!(delta["process_write_bytes"], 50);
+        assert_eq!(delta["process_write_bytes_per_successful_mutation"], 10);
         assert_eq!(delta["durable_bytes_growth"], 0);
+        assert_eq!(delta["durable_bytes_growth_per_successful_mutation"], 0);
         assert!(delta.get("path").is_none());
         assert!(delta.get("pid").is_none());
     }

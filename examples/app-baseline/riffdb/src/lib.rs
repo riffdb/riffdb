@@ -44,8 +44,8 @@ pub use projected::{
 pub use server::{
     DATABASE_ROOT_ENV, DEFAULT_DATABASE_ROOT, MIN_FREE_BYTES, MIN_FREE_BYTES_FULL,
     MIN_FREE_BYTES_SMOKE, RiffDbReadStageEvidence, RiffDbServerSession, RiffDbShutdownEvidence,
-    ServerStartOptions, min_free_bytes_for_full, resolve_bench_root, resolve_database_root,
-    sweep_stale_session_dirs,
+    RiffDbWriterEvidence, ServerStartOptions, min_free_bytes_for_full, resolve_bench_root,
+    resolve_database_root, sweep_stale_session_dirs,
 };
 
 /// Default in-flight seed commands (bounded client concurrency, not a bulk RPC).
@@ -155,6 +155,22 @@ impl RiffDbPublicBackend {
             history_incarnation: self.history_incarnation,
             projected_gates_ready: self.projected_gates_ready,
         })
+    }
+
+    /// Reconnects this logical application session to a restarted local daemon.
+    async fn reconnect_endpoint(&self, endpoint: &str) -> Result<Self, RiffDbError> {
+        let mut reconnected = Self::connect(
+            endpoint,
+            &self.bearer_token,
+            self.status_ids,
+            self.query_module_hash,
+            self.history_incarnation,
+        )
+        .await?;
+        reconnected.command_attempts = self.command_attempts;
+        reconnected.last_seed_commit_sequence = self.last_seed_commit_sequence;
+        reconnected.projected_gates_ready = self.projected_gates_ready;
+        Ok(reconnected)
     }
 
     async fn execute_named(
