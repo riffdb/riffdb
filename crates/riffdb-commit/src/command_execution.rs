@@ -29,9 +29,10 @@ use crate::{
     command_attempt::{
         AcquiredCommandAttempt, CommandAttemptError, CommandAttemptResolution,
         EvaluatedCommandAttempt, ExecutionFaultAttempt, PendingCommandAttempts,
-        RolledBackCandidateDisposition, acquire_command_attempt, acquire_commutative_command_group,
-        acquire_transaction_local_serial_group, evaluate_acquired_command_attempt,
-        evaluate_next_command_attempt, evaluate_transaction_local_acquired_command_attempt,
+        ProvenanceBoundCommandAttempt, RolledBackCandidateDisposition, acquire_command_attempt,
+        acquire_commutative_command_group, acquire_transaction_local_serial_group,
+        evaluate_acquired_command_attempt, evaluate_next_command_attempt,
+        evaluate_transaction_local_acquired_command_attempt,
     },
     command_execution_failure::{
         ExecutionFailureCurrentDecision, ExecutionFailureTerminalizeResult,
@@ -51,8 +52,8 @@ use crate::{
     },
     command_validation::{
         CheckedCandidateDecision, CommandCandidateChainStart, TransactionCurrentAttemptDecision,
-        begin_bound_command_candidate, begin_bound_command_candidate_on_prior,
-        validate_checked_transaction_current,
+        begin_bound_command_candidate, begin_bound_command_candidate_on_empty,
+        begin_bound_command_candidate_on_prior, validate_checked_transaction_current,
     },
     read_only_execution::{ReadOnlyExecutionCoreError, ReadOnlyExecutionCoreErrorKind},
 };
@@ -1323,10 +1324,10 @@ where
                 return completed;
             }
         };
-    empty.rollback();
     let first = match evaluate_transaction_local_acquired_command_attempt(first, first_snapshot) {
         Ok(CommandAttemptResolution::Evaluated(attempt)) => attempt,
         Ok(CommandAttemptResolution::ExecutionFault(fault)) => {
+            empty.rollback();
             let mut fallback = vec![(first_index, fault.recover_pending_after_proven_rollback())];
             fallback.extend(
                 acquired
@@ -1349,6 +1350,7 @@ where
             CommandAttemptResolution::OutcomeReplay(_)
             | CommandAttemptResolution::ExecutionFailureReplay(_),
         ) => {
+            empty.rollback();
             lifecycle.stop();
             return std::iter::once((
                 first_index,
@@ -1368,6 +1370,7 @@ where
             .collect();
         }
         Err(error) => {
+            empty.rollback();
             let mut completed = vec![(first_index, Err(command_attempt_failure(error, lifecycle)))];
             let fallback = acquired
                 .into_iter()
@@ -1390,8 +1393,9 @@ where
         }
     };
 
-    let mut staged = match stage_first_evaluated_command(
+    let mut staged = match stage_first_evaluated_command_on_empty(
         port,
+        empty,
         provenance,
         Some(administration_clock),
         durability,
@@ -2808,6 +2812,55 @@ where
         + ExecutionFailureTransitionPort
         + riffdb_storage_api::AdmissionRepository,
 {
+    let attempt = bind_evaluated_command_provenance(provenance, lifecycle, attempt)?;
+    finish_first_bound_command_candidate(
+        port,
+        administration_clock,
+        durability,
+        lifecycle,
+        telemetry,
+        begin_bound_command_candidate(port, attempt),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_first_evaluated_command_on_empty<P>(
+    port: &P,
+    empty: <P as ApplicationCommandTransactionPort>::EmptyBatch,
+    provenance: &dyn ProvenanceIdSource,
+    administration_clock: Option<&dyn crate::AdministrationClock>,
+    durability: CoordinatorDurability,
+    lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
+    attempt: EvaluatedCommandAttempt,
+) -> Result<CheckedStagedCommand<FirstStagedBatch<P>>, CommandDriverContinuation>
+where
+    P: ApplicationCommandTransactionPort
+        + ExecutionFailureTransitionPort
+        + riffdb_storage_api::AdmissionRepository,
+{
+    let attempt = match bind_evaluated_command_provenance(provenance, lifecycle, attempt) {
+        Ok(attempt) => attempt,
+        Err(error) => {
+            empty.rollback();
+            return Err(error);
+        }
+    };
+    finish_first_bound_command_candidate(
+        port,
+        administration_clock,
+        durability,
+        lifecycle,
+        telemetry,
+        begin_bound_command_candidate_on_empty(empty, attempt),
+    )
+}
+
+fn bind_evaluated_command_provenance(
+    provenance: &dyn ProvenanceIdSource,
+    lifecycle: &dyn CommandExecutionLifecycle,
+    attempt: EvaluatedCommandAttempt,
+) -> Result<ProvenanceBoundCommandAttempt, CommandDriverContinuation> {
     let attempt = attempt
         .authorize_after_evaluation()
         .map_err(|error| post_evaluation_authorization_failure(error, lifecycle))?;
@@ -2822,7 +2875,24 @@ where
     let attempt = attempt
         .bind_provenance(provenance_id)
         .map_err(|_| internal_defect(lifecycle))?;
-    let bound = match begin_bound_command_candidate(port, attempt) {
+    Ok(attempt)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_first_bound_command_candidate<P>(
+    port: &P,
+    administration_clock: Option<&dyn crate::AdministrationClock>,
+    durability: CoordinatorDurability,
+    lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
+    start: CommandCandidateChainStart<EmptyStateRead<P>>,
+) -> Result<CheckedStagedCommand<FirstStagedBatch<P>>, CommandDriverContinuation>
+where
+    P: ApplicationCommandTransactionPort
+        + ExecutionFailureTransitionPort
+        + riffdb_storage_api::AdmissionRepository,
+{
+    let bound = match start {
         CommandCandidateChainStart::Ready(bound) => bound,
         CommandCandidateChainStart::OutcomeReplay(outcome) => {
             return Err(committed_replay(outcome));

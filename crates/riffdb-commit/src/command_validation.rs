@@ -100,6 +100,21 @@ where
         Ok(empty) => empty,
         Err(error) => return CommandCandidateChainStart::StorageFailure(error),
     };
+    begin_bound_command_candidate_on_empty(empty, attempt)
+}
+
+/// Binds the exact first candidate to an already-open empty transaction.
+///
+/// The transaction-local serial path uses this closed transition so its first
+/// compiler-declared snapshot and first staged command share one private writer
+/// transaction. No storage handle or additional read authority escapes.
+pub(super) fn begin_bound_command_candidate_on_empty<B>(
+    empty: B,
+    attempt: ProvenanceBoundCommandAttempt,
+) -> CommandCandidateChainStart<<B::Candidate as CommandCandidateAdmission>::StateRead>
+where
+    B: EmptyCommandBatch,
+{
     let candidate = match empty.begin_candidate(attempt.storage_intent()) {
         Ok(candidate) => candidate,
         Err(error) => return CommandCandidateChainStart::StorageFailure(error),

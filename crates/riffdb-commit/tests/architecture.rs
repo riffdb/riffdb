@@ -166,6 +166,17 @@ fn braced_item_body<'a>(source: &'a str, declaration: &str) -> &'a str {
     panic!("unterminated declaration {declaration}");
 }
 
+fn function_body<'a>(source: &'a str, signature: &str) -> &'a str {
+    let remainder = source
+        .split_once(signature)
+        .unwrap_or_else(|| panic!("missing signature {signature}"))
+        .1;
+    let opening = remainder
+        .find('{')
+        .unwrap_or_else(|| panic!("missing body for {signature}"));
+    braced_item_body(&remainder[opening..], "{")
+}
+
 fn top_level_enum_variant_names(source: &str, declaration: &str) -> Vec<String> {
     let body = braced_item_body(source, declaration);
     let mut variants = Vec::new();
@@ -608,6 +619,9 @@ fn production_group_collection_never_parks_on_a_submillisecond_tokio_timer() {
     for required in [
         "receiver.blocking_recv()",
         "receiver.try_recv()",
+        "OLDEST_GROUPABLE_TRANSITION_MAX_AGE",
+        "collect_until_group_deadline(",
+        "std::hint::spin_loop()",
         "CommitGroupDispatchReason::QueueDrained",
     ] {
         assert!(
@@ -615,6 +629,35 @@ fn production_group_collection_never_parks_on_a_submillisecond_tokio_timer() {
             "timer-free grouping is missing reviewed mechanism {required}"
         );
     }
+}
+
+#[test]
+fn transaction_local_serial_group_reuses_one_writer_transaction_from_snapshot_to_commit() {
+    let body = function_body(
+        production_source(COMMAND_EXECUTION_SOURCE),
+        "async fn drive_transaction_local_serial_pending_group<P>(",
+    );
+
+    assert_eq!(
+        body.matches("port.begin_empty_batch()").count(),
+        1,
+        "a serial group must open exactly one private writer transaction"
+    );
+    assert!(
+        body.contains("stage_first_evaluated_command_on_empty("),
+        "the first command must stage on the transaction that supplied its snapshot"
+    );
+    let snapshot = body
+        .find("empty.read_transaction_local_snapshot(")
+        .expect("first transaction-local snapshot");
+    let first_stage = body
+        .find("stage_first_evaluated_command_on_empty(")
+        .expect("first staging on retained empty transaction");
+    assert!(snapshot < first_stage);
+    assert!(
+        !body.contains("    empty.rollback();\n    let first = match"),
+        "the successful initial snapshot must not discard its writer transaction"
+    );
 }
 
 #[test]
