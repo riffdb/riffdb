@@ -308,7 +308,7 @@ human summary with p50 latencies and RiffDB/Postgres ratios.
   category, recovery, operation), not kernel error payloads.
 - RiffDB seed uses the public **bounded command-batch transport** over one
   HTTP/2 channel. Each exchange contains at most 16 ordinary commands and
-  total in-flight work is bounded by `RIFFDB_SEED_CONCURRENCY` (default/max
+  total in-flight work is bounded by `RIFFDB_SEED_CONCURRENCY` (default/maximum
   128). Every item retains independent authorization, idempotency, outcome,
   provenance, audit, and recovery semantics.
 - Per-level resource evidence normalizes process writes and durable growth by

@@ -19,7 +19,8 @@ use crate::{
 };
 
 const MAX_GENERATED_TRANSPORT_BATCH_ITEMS: usize = 16;
-const MAX_GENERATED_BATCH_CONCURRENCY: usize = 128;
+/// Maximum independently in-flight items in one generated command batch.
+pub const MAX_GENERATED_BATCH_CONCURRENCY: usize = 128;
 
 /// A local shape failure for one bounded transport batch of ordinary commands.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

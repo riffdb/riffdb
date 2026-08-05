@@ -13,6 +13,7 @@ from riffdb_application import (
     AttemptBudget,
     BearerCredential,
     CallMetadata,
+    CommandBatchOptions,
     DatabaseAlias,
     InvalidInput,
     Money,
@@ -21,6 +22,7 @@ from riffdb_application import (
     SyncApplicationTransport,
     Timestamp,
 )
+from riffdb_application import _validate_batch
 from riffdb_application import _native
 from riffdb_application._binding import (
     decode_record,
@@ -160,3 +162,8 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(_native.NativeError) as raised:
             _native.validate_bridge_value('{"kind":"unknown","value":"do-not-echo"}')
         self.assertNotIn("do-not-echo", str(raised.exception))
+
+    def test_generated_batch_concurrency_accepts_128_and_rejects_129(self) -> None:
+        _validate_batch([object()], CommandBatchOptions(128))
+        with self.assertRaises(InvalidInput):
+            _validate_batch([object()], CommandBatchOptions(129))

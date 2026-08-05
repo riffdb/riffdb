@@ -26,13 +26,19 @@ if [[ "${1:-}" == "--check" ]]; then
         "$generated/fixtures/application-locks/ticketdesk-migration-v4.json"
     diff -u clients/typescript/ticketdesk/client.ts "$generated/clients/typescript/ticketdesk/client.ts"
     diff -u clients/python/ticketdesk/generated.py "$generated/clients/python/ticketdesk/generated.py"
-    # agent-alpha Rust clients (non-workspace packages; previously invisible to battery)
+    # agent-alpha clients (non-workspace packages; previously invisible to battery)
     diff -u examples/agent-alpha/generated/rust/client.rs \
         "$generated/examples/agent-alpha/generated/rust/client.rs"
+    diff -u examples/agent-alpha/web/src/generated/client.ts \
+        "$generated/examples/agent-alpha/web/src/generated/client.ts"
     diff -u examples/agent-alpha/domains/agent-blog/generated/rust/client.rs \
         "$generated/examples/agent-alpha/domains/agent-blog/generated/rust/client.rs"
+    diff -u examples/agent-alpha/domains/agent-blog/generated/typescript/client.ts \
+        "$generated/examples/agent-alpha/domains/agent-blog/generated/typescript/client.ts"
     diff -u examples/agent-alpha/domains/agent-orders/generated/rust/client.rs \
         "$generated/examples/agent-alpha/domains/agent-orders/generated/rust/client.rs"
+    diff -u examples/agent-alpha/domains/agent-orders/generated/typescript/client.ts \
+        "$generated/examples/agent-alpha/domains/agent-orders/generated/typescript/client.ts"
     python3 -c 'compile(open("clients/python/ticketdesk/generated.py", encoding="utf-8").read(), "clients/python/ticketdesk/generated.py", "exec")'
     if command -v mypy >/dev/null 2>&1; then
         MYPYPATH=clients/python/runtime/src \

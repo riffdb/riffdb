@@ -47,6 +47,11 @@ acknowledge and negative-acknowledge methods. Live updates use a closed union;
 persist each applied cursor and clear retained results on `Terminal`. See
 [Reactive Application Clients](../reactive/CLIENTS.md).
 
+Generated command batch methods accept `GeneratedBatchOptions` concurrency
+from 1 through 128 and at most 4,096 inputs. The setting bounds independent
+in-flight items; each public `ExecuteBatch` request still carries at most 16
+ordinary commands, with separate identities, outcomes, and recovery.
+
 ## Retry rule
 
 Use one caller-owned idempotency key for one logical command and retain it until

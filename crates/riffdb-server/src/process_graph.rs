@@ -88,7 +88,7 @@ use crate::server_generation::{ProductionServerGenerationSource, ServerGeneratio
 use crate::startup::CheckedRedbStartup;
 use crate::storage::SharedRedbOperationalPorts;
 
-/// Fixed P1 coordinator admission bound, independent of the 64-command
+/// Fixed P1 coordinator admission bound, independent of the 256-command
 /// transaction ceiling and the reserved shutdown slot.
 ///
 /// Two complete maximum groups may queue while the actor owns one physical
@@ -98,7 +98,7 @@ use crate::storage::SharedRedbOperationalPorts;
 /// Override with `RIFFDB_P1_COORDINATOR_WORKLOAD_CAPACITY` (1..=4096) for
 /// saturation evidence harnesses only; production deployments leave the env
 /// unset so the compiled default applies.
-const P1_COORDINATOR_WORKLOAD_CAPACITY: u16 = 128;
+const P1_COORDINATOR_WORKLOAD_CAPACITY: u16 = 512;
 
 fn p1_coordinator_workload_capacity() -> u16 {
     const ENV: &str = "RIFFDB_P1_COORDINATOR_WORKLOAD_CAPACITY";
@@ -1110,6 +1110,9 @@ impl Error for ProductionGraphShutdownError {}
 
 #[cfg(test)]
 mod tests {
+    use super::P1_COORDINATOR_WORKLOAD_CAPACITY;
+    use riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
+
     const SOURCE: &str = include_str!("process_graph.rs");
 
     fn production_source() -> &'static str {
@@ -1125,6 +1128,14 @@ mod tests {
         assert!(source.contains("CoordinatorDurability::Group"));
         assert!(!source.contains("CoordinatorDurability::Sync"));
         assert!(!source.contains("DurabilityMode::Memory"));
+    }
+
+    #[test]
+    fn production_coordinator_can_queue_two_maximum_physical_groups() {
+        assert_eq!(
+            usize::from(P1_COORDINATOR_WORKLOAD_CAPACITY),
+            MAX_GROUPED_WRITE_TRANSITIONS * 2
+        );
     }
 
     #[test]

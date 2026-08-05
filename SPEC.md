@@ -96,6 +96,7 @@
 | 0.57 | 2026-07-31 | Applied accepted ADR-0080 and planned P8 through WP-414 to WP-421: partition-proved domain-event streams, bounded durable consumers, race-free live named RiffQL, generated reactive clients, and freshly authorized contextual agent work extend the existing atomic event/commit model without raw CDC, global ordering, exactly-once claims, persisted hydrated context, direct browser authority, or in-transaction agents. |
 | 0.58 | 2026-08-05 | Applied accepted ADR-0094 and ADR-0095: compiler-proved commutative child appends retain same-snapshot parallel grouping, while otherwise conflicting fresh synchronous commands may use one bounded FIFO transaction-local serial micro-batch. Later commands observe only declared state staged by earlier commands; every command retains independent identity, authorization, outcome, sequence, audit, provenance, acknowledgement, and uncertainty recovery; one complete Immediate commit exposes all-or-absent state; public transactions and visible non-durable commit chains remain prohibited. |
 | 0.59 | 2026-08-05 | Applied accepted ADR-0096: the internal authoritative transaction has a static 256-command safety ceiling while actual physical groups remain dynamically selected from the eligible FIFO prefix available within the unchanged oldest-command deadline, 16 MiB byte ceiling, compatibility, cancellation, and hard barriers. The public batch remains 16; one writer, Immediate acknowledgement, independent command semantics, and fail-closed recovery are unchanged. |
+| 0.60 | 2026-08-05 | Applied accepted ADR-0097: generated Rust, TypeScript, and Python command-batch schedulers share an exact 1-through-128 concurrency bound while each public transport request remains capped at 16 ordinary commands. Production coordinator admission defaults to 512 independently byte-bounded messages so two maximum physical groups may wait while one commits; a measured 192/256 feeding experiment was rejected because fewer flushes did not offset serialized staging cost and unary latency regressed. |
 
 ### Normative language
 
@@ -6579,8 +6580,10 @@ ADR-0055.
   authoritative admission MUST recheck every identity and canonical input
   inside the write transaction. Replay audit transitions MUST participate in
   bounded groups. Coordinator admission MUST have independent count and byte
-  ceilings above one maximum command group, while the public batch remains
-  capped at 16.
+  ceilings above one maximum command group. The POC production coordinator
+  MUST admit exactly 512 independently byte-bounded messages by default so two
+  maximum groups may wait while one commits, while each public transport batch
+  remains capped at 16.
 - `PERF-007`: One completed production activation MUST release exactly one
   authoritative writer and MAY release cloneable least-authority MVCC reader
   handles. Admission and completion commits MUST NOT hold a process-wide
@@ -6707,7 +6710,12 @@ contract.
 - `AAA-007`: Command batches MUST enforce bounded concurrency, streaming
   backpressure, input/output limits, cancellation, progress, and resumable
   same-key checkpoints. Every item MUST correlate with one bounded import/seed
-  session, and retry MUST NOT duplicate a committed command.
+  session, and retry MUST NOT duplicate a committed command. Generated Rust,
+  TypeScript, and Python application batches MUST accept explicit concurrency
+  from 1 through 128 and reject zero or 129 before submitting any item; this
+  client-side bound MUST NOT increase the 16-item public transport request or
+  imply collection-wide atomicity. CLI command batches retain their separately
+  documented operator-facing concurrency bound.
 - `AAA-008`: `riffdb new <application>` MUST create the canonical application
   manifest, contract/query/role/seed layout and generated-output roots.
   `riffdb dev` MUST start local RiffDB, compile/deploy, bind the selected role,

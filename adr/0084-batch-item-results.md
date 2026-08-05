@@ -7,6 +7,7 @@
 - **Related work packages:** Package B (format acceptances)
 - **Amends:** ADR-0059 (bounded command batching), ADR-0071 (extends the
   certain-not-executed scope to batch items)
+- **Amended by:** ADR-0097
 
 ## Context
 
