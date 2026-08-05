@@ -504,6 +504,7 @@ fn structural_item_count(state: &MemoryState) -> Result<u64, StorageError> {
         state.catalog_bundle_activations.len(),
         state.query_modules.len(),
         state.active_query_modules.len(),
+        state.reactive_modules.len(),
         state.administration_audit.len(),
         state.service_audit_invocations.len(),
         state.admissions.len(),
@@ -599,6 +600,10 @@ fn inspect_structural_item(
     locate!(
         active_query_modules,
         crate::integrity_administration::inspect_active_query_module(state, position)
+    );
+    locate!(
+        reactive_modules,
+        crate::integrity_administration::inspect_reactive_module(state, position)
     );
     locate!(
         administration_audit,

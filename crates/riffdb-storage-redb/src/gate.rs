@@ -55,6 +55,20 @@ impl ExclusiveGate {
             .held
     }
 
+    /// Total leases ever handed out, granted or still queued.
+    ///
+    /// Every write transaction and every indexed read lease takes exactly one
+    /// ticket, so an unchanged count across an operation proves the operation
+    /// never contended the exclusive gate.
+    #[cfg(test)]
+    pub(crate) fn tickets_issued(&self) -> u128 {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .next_ticket
+    }
+
     #[cfg(test)]
     fn wait_for_queued(&self, expected: u128) {
         let mut state = self

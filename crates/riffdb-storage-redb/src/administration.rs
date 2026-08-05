@@ -159,14 +159,29 @@ where
 fn validate_administration_tail(
     transaction: &redb::WriteTransaction,
 ) -> Result<AdministrationSequenceAllocator, StorageError> {
-    // Startup and every public read validate the complete contiguous stream.
-    // Once that proof holds, typed writes preserve it inductively: the only
-    // audit mutation appends exactly the allocator-owned next sequence and
-    // atomically advances the allocator. Checking count plus the exact decoded
-    // tail therefore rejects a lost, duplicated, reordered, or allocator-skewed
-    // transition without rescanning all retained history for every append.
     let allocator = read_administration_allocator(transaction)?;
     let table = transaction.open_table(AUDIT).map_err(table_error)?;
+    validate_administration_tail_from_table(&table, allocator)
+}
+
+/// Proves the audit tail agrees with the allocator in O(1) table probes.
+///
+/// Startup and every public read validate the complete contiguous stream. Once
+/// that proof holds, typed writes preserve it inductively: the only audit
+/// mutation appends exactly the allocator-owned next sequence and atomically
+/// advances the allocator. Checking count plus the exact decoded tail therefore
+/// rejects a lost, duplicated, reordered, or allocator-skewed transition
+/// without rescanning all retained history for every append.
+///
+/// Shared verbatim by the write path and by the read-transaction republish
+/// probe so the two can never disagree about which streams are admissible.
+fn validate_administration_tail_from_table<T>(
+    table: &T,
+    allocator: AdministrationSequenceAllocator,
+) -> Result<AdministrationSequenceAllocator, StorageError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
     let (expected_count, expected_last) = match allocator {
         AdministrationSequenceAllocator::Next(next) => {
             let count = next.get().checked_sub(1).ok_or_else(corrupt)?;
@@ -1038,7 +1053,59 @@ where
     Ok(Some(module))
 }
 
+/// True when the exact contract artifact a reactive module compiled against is
+/// still retained. Shared by the write path and the read-transaction probe.
+fn reactive_contract_is_retained<T>(
+    bundles: &T,
+    candidate: &StoredReactiveModuleV1,
+) -> Result<bool, StorageError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    Ok(read_contract_bundle_from_table(
+        bundles,
+        candidate.contract_lineage(),
+        candidate.contract_version(),
+    )?
+    .is_some_and(|bundle| bundle.bundle_hash() == candidate.contract_bundle_hash()))
+}
+
+/// True when one exact query-module dependency is retained against the same
+/// contract artifact. Shared by the write path and the read-transaction probe.
+fn reactive_dependency_is_retained<T>(
+    query_modules: &T,
+    candidate: &StoredReactiveModuleV1,
+    dependency: QueryModuleHash,
+) -> Result<bool, StorageError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    Ok(
+        query_module_from_table(query_modules, dependency)?.is_some_and(|module| {
+            module.contract_lineage() == candidate.contract_lineage()
+                && module.contract_version() == candidate.contract_version()
+                && module.contract_bundle_hash() == candidate.contract_bundle_hash()
+        }),
+    )
+}
+
 impl ReactiveModuleRepository for RedbOperationalPorts {
+    /// Returns the retained row without re-checking that the stream still holds
+    /// its publication record, unlike the memory backend's equivalent. Ruled
+    /// asymmetry, not an oversight.
+    ///
+    /// `inspect_reactive_module_row` proves row-presence implies
+    /// publication-record for EVERY retained row at open, unconditionally: the
+    /// reactive-module count is an additive structural count, which the
+    /// validated-prefix checkpoint guard does not exempt from inspection. The
+    /// sole writer then commits the row, its audit record, and the allocator
+    /// advance in one transaction, and nothing anywhere removes either
+    /// (`retention.rs` never touches `AUDIT`), so the property is preserved
+    /// inductively. A per-read check is therefore entailed by its own
+    /// precondition — zero detection power in any reachable state — while
+    /// costing an unbounded `AUDIT` decode scan on the hottest consumer path
+    /// (every consume, acknowledge, negative-acknowledge, seek, retire, and
+    /// status RPC, with no cache), over a stream those same RPCs lengthen.
     fn read_reactive_module(
         &self,
         module_hash: ReactiveModuleHash,
@@ -1052,8 +1119,82 @@ impl ReactiveModuleRepository for RedbOperationalPorts {
     }
 }
 
-impl ReactiveModuleAdministrationRepository for RedbOperationalPorts {
-    fn publish_reactive_module(
+impl RedbOperationalPorts {
+    /// Answers an idempotent reactive-module republish without the write lock.
+    ///
+    /// The republish outcome writes nothing durable, so the entire answer is a
+    /// pure read: the allocator/tail proof, the preconditions the write path
+    /// evaluates ahead of the presence probe, the presence probe itself, and
+    /// the original publication's sequence. Running it under `begin_read` keeps
+    /// the unbounded `AUDIT` walk off the redb write lock, which one writer
+    /// holds against every other writer — commands included — for its duration.
+    ///
+    /// `Ok(None)` means "not answerable here", never "publish is admissible":
+    /// the module is absent, a precondition the write path reports as its own
+    /// outcome is unmet, or the retained row disagrees with the candidate.
+    /// Every such case falls through to the write path, which re-evaluates the
+    /// identical checks in the identical order under the write transaction and
+    /// owns the whole result taxonomy. Answering only the one no-write outcome
+    /// is what makes this probe observably invisible.
+    fn republished_reactive_module_sequence(
+        &self,
+        candidate: &StoredReactiveModuleV1,
+    ) -> Result<Option<AdministrationSequence>, StorageError> {
+        let transaction = self.begin_read()?;
+        let allocator = read_administration_allocator_readonly(&transaction)?;
+        let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+        validate_administration_tail_from_table(&audit, allocator)?;
+
+        let bundles = transaction
+            .open_table(CONTRACT_BUNDLES)
+            .map_err(table_error)?;
+        let contract_retained = reactive_contract_is_retained(&bundles, candidate)?;
+        drop(bundles);
+        if !contract_retained {
+            return Ok(None);
+        }
+
+        let query_modules = transaction.open_table(QUERY_MODULES).map_err(table_error)?;
+        for dependency in candidate.query_module_hashes() {
+            if !reactive_dependency_is_retained(&query_modules, candidate, *dependency)? {
+                drop(query_modules);
+                return Ok(None);
+            }
+        }
+        drop(query_modules);
+
+        let modules = transaction
+            .open_table(REACTIVE_MODULES)
+            .map_err(table_error)?;
+        if modules.len().map_err(precommit_storage_error)?
+            > u64::try_from(MAX_RETAINED_REACTIVE_MODULES).map_err(|_| invariant())?
+        {
+            return Ok(None);
+        }
+        let existing = reactive_module_from_table(&modules, candidate.module_hash())?;
+        drop(modules);
+        if existing.as_ref() != Some(candidate) {
+            return Ok(None);
+        }
+
+        // Fail closed exactly as the write path does: a retained module with no
+        // publication record in the stream is corruption, not a republish.
+        Ok(Some(
+            published_reactive_module_sequence(&audit, candidate.module_hash())?
+                .ok_or_else(corrupt)?,
+        ))
+    }
+
+    /// Publishes under the exclusive mutation gate.
+    ///
+    /// Reached only when the read-transaction probe declined to answer. It
+    /// re-probes presence under the write transaction because a racing publish
+    /// can land between that read and `begin_write`; on a lost race it serves
+    /// the republish answer from here rather than retaking the read path, so
+    /// the caller sees one consistent outcome. That rare branch does walk
+    /// `AUDIT` under the lock — the bounded-probability exception the fast path
+    /// exists to avoid on the common republish.
+    fn publish_reactive_module_locked(
         &mut self,
         intent: &ReactiveModulePublicationIntentV1,
     ) -> Result<ReactiveModulePublicationResult, StorageError> {
@@ -1065,26 +1206,16 @@ impl ReactiveModuleAdministrationRepository for RedbOperationalPorts {
         let bundles = transaction
             .open_table(CONTRACT_BUNDLES)
             .map_err(table_error)?;
-        let contract = read_contract_bundle_from_table(
-            &bundles,
-            candidate.contract_lineage(),
-            candidate.contract_version(),
-        )?;
+        let contract_retained = reactive_contract_is_retained(&bundles, candidate)?;
         drop(bundles);
-        if !contract.is_some_and(|bundle| bundle.bundle_hash() == candidate.contract_bundle_hash())
-        {
+        if !contract_retained {
             access.abort()?;
             return Ok(ReactiveModulePublicationResult::ContractUnavailable);
         }
 
         let query_modules = transaction.open_table(QUERY_MODULES).map_err(table_error)?;
         for dependency in candidate.query_module_hashes() {
-            let module = query_module_from_table(&query_modules, *dependency)?;
-            if !module.is_some_and(|module| {
-                module.contract_lineage() == candidate.contract_lineage()
-                    && module.contract_version() == candidate.contract_version()
-                    && module.contract_bundle_hash() == candidate.contract_bundle_hash()
-            }) {
+            if !reactive_dependency_is_retained(&query_modules, candidate, *dependency)? {
                 drop(query_modules);
                 access.abort()?;
                 return Ok(ReactiveModulePublicationResult::QueryModuleUnavailable {
@@ -1177,6 +1308,24 @@ impl ReactiveModuleAdministrationRepository for RedbOperationalPorts {
             module_hash: candidate.module_hash(),
             administration_sequence: sequence,
         })
+    }
+}
+
+impl ReactiveModuleAdministrationRepository for RedbOperationalPorts {
+    fn publish_reactive_module(
+        &mut self,
+        intent: &ReactiveModulePublicationIntentV1,
+    ) -> Result<ReactiveModulePublicationResult, StorageError> {
+        let candidate = intent.module();
+        if let Some(administration_sequence) =
+            self.republished_reactive_module_sequence(candidate)?
+        {
+            return Ok(ReactiveModulePublicationResult::AlreadyPublished {
+                module_hash: candidate.module_hash(),
+                administration_sequence,
+            });
+        }
+        self.publish_reactive_module_locked(intent)
     }
 }
 
@@ -2470,7 +2619,7 @@ mod tests {
     use riffdb_types::{
         ActorId, ActorKind, Audience, ContractBundleHash, DatabaseId, DigestKeyId, Environment,
         QueryModuleHash, QueryModuleName, QueryModuleVersion, ServiceAuditTargetsV1,
-        ServiceIngressKindV1, TenantScope, Timestamp,
+        ServiceIngressKindV1, TenantScope, Timestamp, hash_reactive_module, hash_reactive_source,
     };
 
     use super::*;
@@ -2633,6 +2782,71 @@ mod tests {
             Timestamp::new(i64::from(request), 0).expect("timestamp"),
             None,
         )
+    }
+
+    fn reactive_module(
+        contract: &StoredContractBundleV1,
+        source: &[u8],
+        artifact: &[u8],
+    ) -> StoredReactiveModuleV1 {
+        StoredReactiveModuleV1::new(
+            "streamdesk".to_owned(),
+            1,
+            hash_reactive_module(artifact),
+            contract.lineage().clone(),
+            contract.contract_version(),
+            contract.bundle_hash(),
+            hash_reactive_source(source),
+            Vec::new(),
+            source.to_vec(),
+            artifact.to_vec(),
+        )
+        .expect("stored reactive module")
+    }
+
+    fn reactive_intent(
+        module: StoredReactiveModuleV1,
+        request: u8,
+    ) -> ReactiveModulePublicationIntentV1 {
+        ReactiveModulePublicationIntentV1::new(
+            module,
+            request_id(request),
+            principal(capability_id(2)),
+            Timestamp::new(i64::from(request), 0).expect("timestamp"),
+            None,
+        )
+    }
+
+    /// Publishes one reactive module against a freshly activated contract and
+    /// returns the ports, the module, and the publication's own sequence.
+    fn published_reactive_module(
+        label: &str,
+    ) -> (
+        TestPath,
+        RedbOperationalPorts,
+        StoredReactiveModuleV1,
+        AdministrationSequence,
+    ) {
+        let (path, mut ports) = initialized_ports(label);
+        let contract = bundle("reactive-hygiene", 1, 0x51);
+        assert!(matches!(
+            ports
+                .activate_catalog(&catalog_intent(None, contract.clone(), 70))
+                .expect("activate the contract the module compiles against"),
+            CatalogActivationResult::Activated { .. }
+        ));
+        let module = reactive_module(&contract, b"republish source", b"republish artifact");
+        let publication = ports
+            .publish_reactive_module(&reactive_intent(module.clone(), 71))
+            .expect("publish the immutable module");
+        let ReactiveModulePublicationResult::Published {
+            administration_sequence,
+            ..
+        } = publication
+        else {
+            panic!("a first publication must publish, got {publication:?}");
+        };
+        (path, ports, module, administration_sequence)
     }
 
     fn bootstrap_intent(
@@ -3406,5 +3620,148 @@ mod tests {
             .append_service_audit(&started)
             .expect("reuse attempt returns phase conflict, not success");
         assert!(matches!(reuse, ServiceAuditAppendResult::PhaseConflict));
+    }
+    #[test]
+    fn redb_reactive_republish_answers_without_taking_the_write_lock() {
+        let (_path, mut ports, module, administration_sequence) =
+            published_reactive_module("reactive-republish-read");
+        let records_before = audit_count(&ports);
+
+        // The exclusive mutation gate is the operationally significant cost:
+        // redb admits one writer at a time, so an unbounded AUDIT walk held
+        // under it stalls every other writer, commands included. `begin_write`
+        // and `acquire_indexed_read_lease` each take exactly one ticket; an
+        // unchanged ticket count proves this republish took neither.
+        let tickets_before = ports.mutation_gate_tickets();
+        let republished = ports
+            .publish_reactive_module(&reactive_intent(module.clone(), 72))
+            .expect("republish the identical module");
+        let tickets_after = ports.mutation_gate_tickets();
+
+        assert_eq!(
+            republished,
+            ReactiveModulePublicationResult::AlreadyPublished {
+                module_hash: module.module_hash(),
+                administration_sequence,
+            },
+            "a republish must name the original publication's transition"
+        );
+        assert_eq!(
+            tickets_after, tickets_before,
+            "an idempotent republish must answer from a read transaction, never under the write lock"
+        );
+        assert_eq!(
+            audit_count(&ports),
+            records_before,
+            "a republish writes nothing durable"
+        );
+    }
+
+    #[test]
+    fn redb_reactive_republish_under_the_write_lock_serves_the_original_sequence() {
+        let (_path, mut ports, module, administration_sequence) =
+            published_reactive_module("reactive-republish-locked");
+        let records_before = audit_count(&ports);
+
+        // Simulates the lost race at the API level: a racing publish landed
+        // between the read probe's "absent" answer and `begin_write`, so the
+        // locked path is entered for an already-present module. Driving that
+        // path directly is the deterministic construction of the interleave —
+        // the write path must re-probe presence and serve the same republish
+        // answer rather than publishing a duplicate.
+        let republished = ports
+            .publish_reactive_module_locked(&reactive_intent(module.clone(), 73))
+            .expect("serve the republish answer from under the write transaction");
+
+        assert_eq!(
+            republished,
+            ReactiveModulePublicationResult::AlreadyPublished {
+                module_hash: module.module_hash(),
+                administration_sequence,
+            },
+            "the write-path re-check must serve the original publication's transition"
+        );
+        assert_eq!(
+            audit_count(&ports),
+            records_before,
+            "losing the race still writes nothing durable"
+        );
+    }
+
+    #[test]
+    fn redb_reactive_republish_fails_closed_on_an_allocator_skewed_stream() {
+        let (_path, mut ports, module, _sequence) =
+            published_reactive_module("reactive-republish-skew");
+
+        // Skew the allocator one ahead of the stream it owns. The write path has
+        // always refused this through `validate_administration_tail` before
+        // reaching the presence probe, so the read-transaction fast path must
+        // refuse it too — otherwise moving the republish answer off the write
+        // lock would have quietly weakened fail-closed behaviour instead of
+        // merely relocating a scan.
+        let access = ports.begin_write().expect("write access");
+        {
+            let transaction = access.transaction().expect("transaction");
+            let AdministrationSequenceAllocator::Next(next) =
+                read_administration_allocator(transaction).expect("read the allocator")
+            else {
+                panic!("a small test stream is never exhausted");
+            };
+            let skewed = AdministrationSequenceAllocator::next(
+                next.checked_next().expect("skewed successor"),
+            );
+            let encoded =
+                encode_administration_sequence_allocator_v1(skewed).expect("encode the allocator");
+            let mut meta = transaction.open_table(META).expect("meta table");
+            meta.insert(META_ADMINISTRATION_SEQUENCE, encoded.as_bytes())
+                .expect("skew the administration allocator");
+        }
+        access
+            .commit_for(RedbTestOperation::QueryModuleAdministration)
+            .expect("commit the skewed allocator");
+
+        let refused = ports
+            .publish_reactive_module(&reactive_intent(module, 76))
+            .expect_err("an allocator-skewed stream must be refused, not republished");
+        assert_eq!(refused.kind(), StorageErrorKind::CorruptData);
+    }
+
+    #[test]
+    fn redb_reactive_republish_fails_closed_without_a_publication_record() {
+        let (_path, mut ports) = initialized_ports("reactive-republish-orphan");
+        let contract = bundle("reactive-hygiene", 1, 0x52);
+        assert!(matches!(
+            ports
+                .activate_catalog(&catalog_intent(None, contract.clone(), 74))
+                .expect("activate the contract"),
+            CatalogActivationResult::Activated { .. }
+        ));
+        let module = reactive_module(&contract, b"orphan source", b"orphan artifact");
+
+        // Install the retained row with NO publication record in the stream.
+        let access = ports.begin_write().expect("write access");
+        {
+            let transaction = access.transaction().expect("transaction");
+            let mut modules = transaction
+                .open_table(REACTIVE_MODULES)
+                .expect("reactive module table");
+            let encoded = encode_reactive_module_v1(&module).expect("encode module");
+            modules
+                .insert(
+                    encode_reactive_module_key(module.module_hash()).as_slice(),
+                    encoded.as_bytes(),
+                )
+                .expect("install orphan module row");
+        }
+        access
+            .commit_for(RedbTestOperation::QueryModuleAdministration)
+            .expect("commit orphan module row");
+
+        // The read-transaction fast path must fail closed exactly as the write
+        // path did: a retained module with no publication record is corruption.
+        let refused = ports
+            .publish_reactive_module(&reactive_intent(module, 75))
+            .expect_err("a module with no publication record must be refused");
+        assert_eq!(refused.kind(), StorageErrorKind::CorruptData);
     }
 }
