@@ -9,8 +9,8 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{
     AdministrationSequence, CapabilityId, RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1,
-    ServiceAuditTargetV1, ServiceOperationV1, hash_query_module, hash_reactive_module,
-    hash_reactive_source,
+    ServiceAuditTargetV1, ServiceOperationV1, event_consumer_identity_hash, hash_query_module,
+    hash_reactive_module, hash_reactive_source,
 };
 
 use crate::state::{
@@ -215,6 +215,93 @@ pub(crate) fn inspect_reactive_module(
         )
     }) {
         return missing();
+    }
+    None
+}
+
+/// Validates one retained event-consumer row against everything it names.
+///
+/// Mirrors redb's `inspect_event_consumer_row` check for check. redb reads the
+/// row's key and compares it with the decoded identity and with the session's
+/// database id; memory holds one typed identity, so the equivalent checks are
+/// that the identity hash still derives from its own tuple, that the database it
+/// names is the retained one, and the ordering invariant that stands in for
+/// redb's key agreement (`CrossLinkMismatch`). Then the reactive module the
+/// identity names must still be retained (`MissingCrossLink`), and the row's
+/// delivery set must still reconstruct one valid snapshot
+/// (`CrossLinkMismatch`) — memory's equivalent of redb's
+/// `read_snapshot_from_tables` round trip.
+pub(crate) fn inspect_event_consumer(
+    state: &MemoryState,
+    index: usize,
+) -> Option<StructuralFinding> {
+    let consumer = &state.event_consumers[index];
+    let identity = consumer.identity();
+    if identity.identity_hash()
+        != event_consumer_identity_hash(
+            identity.database_id(),
+            identity.reactive_module_hash(),
+            identity.operation_name(),
+            identity.parameter_hash(),
+            identity.consumer_name(),
+        )
+        || Some(identity.database_id()) != crate::startup::retained_database_id(state)
+        || (index > 0
+            && state.event_consumers[index - 1].identity().identity_hash()
+                >= identity.identity_hash())
+    {
+        return mismatch();
+    }
+    if state
+        .reactive_modules
+        .binary_search_by_key(&identity.reactive_module_hash(), |module| {
+            module.module_hash()
+        })
+        .is_err()
+    {
+        return missing();
+    }
+    // redb re-reads the row and its delivery range and requires the snapshot to
+    // equal the row; memory retains one typed copy, so the load-bearing half is
+    // the reconstruction: identity agreement, restore-fence agreement, canonical
+    // event order, the delivery bound, and the in-flight cap.
+    if crate::consumer::snapshot(state, index).is_err() {
+        return mismatch();
+    }
+    None
+}
+
+/// Validates one retained delivery row against the consumer that owns it.
+///
+/// Mirrors redb's `inspect_event_consumer_delivery_row`: the key/value agreement
+/// redb checks becomes memory's canonical ordering invariant over
+/// `(consumer_identity_hash, event_id)` (`CrossLinkMismatch`), the owning
+/// consumer row must exist (`MissingCrossLink`), and the two restore fences must
+/// agree (`CrossLinkMismatch`).
+pub(crate) fn inspect_event_consumer_delivery(
+    state: &MemoryState,
+    index: usize,
+) -> Option<StructuralFinding> {
+    let delivery = &state.event_consumer_deliveries[index];
+    if index > 0 {
+        let previous = &state.event_consumer_deliveries[index - 1];
+        if (previous.consumer_identity_hash(), previous.event_id())
+            >= (delivery.consumer_identity_hash(), delivery.event_id())
+        {
+            return mismatch();
+        }
+    }
+    let Ok(consumer_index) = state
+        .event_consumers
+        .binary_search_by_key(&delivery.consumer_identity_hash(), |row| {
+            row.identity().identity_hash()
+        })
+    else {
+        return missing();
+    };
+    if state.event_consumers[consumer_index].history_incarnation() != delivery.history_incarnation()
+    {
+        return mismatch();
     }
     None
 }

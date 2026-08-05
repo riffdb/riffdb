@@ -520,6 +520,8 @@ fn structural_item_count(state: &MemoryState) -> Result<u64, StorageError> {
         state.provenance.len(),
         state.events.len(),
         state.event_routes.len(),
+        state.event_consumers.len(),
+        state.event_consumer_deliveries.len(),
         state.outbox_intents.len(),
         state.outbox_statuses.len(),
         state.capabilities.len(),
@@ -662,6 +664,14 @@ fn inspect_structural_item(
     locate!(
         event_routes,
         crate::integrity_command::inspect_event_route_graph(state, position)
+    );
+    locate!(
+        event_consumers,
+        crate::integrity_administration::inspect_event_consumer(state, position)
+    );
+    locate!(
+        event_consumer_deliveries,
+        crate::integrity_administration::inspect_event_consumer_delivery(state, position)
     );
     locate!(
         outbox_intents,
@@ -1012,7 +1022,7 @@ fn inspect_capability_lookup(state: &MemoryState, index: usize) -> Option<Struct
     None
 }
 
-fn retained_database_id(state: &MemoryState) -> Option<DatabaseId> {
+pub(crate) fn retained_database_id(state: &MemoryState) -> Option<DatabaseId> {
     match &state.metadata {
         MemoryMetadataSlot::Retained(metadata) => Some(metadata.database_id()),
         MemoryMetadataSlot::Absent => None,
