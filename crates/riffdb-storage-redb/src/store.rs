@@ -2020,6 +2020,16 @@ fn activate_operational_ports(
 }
 
 impl RedbOperationalPorts {
+    /// Exclusive-gate tickets ever issued on this database.
+    ///
+    /// Lets a test prove an operation answered without taking the mutation
+    /// gate: `begin_write` and `acquire_indexed_read_lease` each take one
+    /// ticket, `begin_read` takes none.
+    #[cfg(test)]
+    pub(crate) fn mutation_gate_tickets(&self) -> u128 {
+        self.shared.mutation_gate.tickets_issued()
+    }
+
     /// Writes one proof-carrying validated-prefix startup checkpoint (ADR-0085 A1).
     ///
     /// Gated exactly like the startup write: returns `Ok(false)` without

@@ -7446,3 +7446,63 @@ work_packages:
   exit_gate: A new operator can reproduce and correctly interpret every alpha benchmark cell from public documentation,
     and checked evidence contains no unsupported safety or performance claim.
   human_review_triggers: *id001
+- id: WP-446
+  name: Reactive-module storage hygiene — republish off the write lock, memory structural
+    inspection, and the read-path cost ruling (FZ)
+  depends_on: [WP-436]
+  objective: Close the three storage-hygiene items the WP-436 review confirmed — the redb
+    republish path walked the unbounded, never-pruned AUDIT table while holding the redb
+    write lock, stalling every other writer including commands; the memory structural pass
+    never inspected state.reactive_modules at all, so a retained reactive-module row that no
+    publication record names, or whose identity disagreed with its own artifact bytes,
+    produced no finding while redb reported both; and redb read_reactive_module did not fail
+    closed on a module with no publication record, where the cost of the only correct check
+    had to be established before shipping it rather than after.
+  requirements: []
+  required_adrs: [ADR-0021]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-api/src/audit.rs, crates/riffdb-storage-redb/src/administration.rs,
+    crates/riffdb-storage-redb/src/gate.rs, crates/riffdb-storage-redb/src/store.rs, crates/riffdb-storage-memory/src/administration.rs,
+    crates/riffdb-storage-memory/src/integrity_administration.rs, crates/riffdb-storage-memory/src/startup.rs]
+  deliverables:
+  - The redb idempotent-republish answer — allocator/tail proof, contract and query-module
+    preconditions, presence probe, and the original publication's sequence — computed in a
+    read transaction, so the unbounded AUDIT walk no longer runs under the exclusive
+    mutation gate; a restructure only, with no durable encoding, schema hash, registry pin,
+    or reverse index touched
+  - The write path retained unchanged behind that probe and re-probing presence under its own
+    write transaction, so a publish that lands between the read answer and begin_write is
+    served the same republish outcome instead of writing a duplicate, with the rare
+    under-lock scan documented as the bounded-probability exception
+  - Shared table-generic tail validation and precondition predicates so the read probe and
+    the write path cannot drift about which streams and dependencies are admissible
+  - Memory structural inspection of every retained reactive-module row, mirroring redb's
+    inspect_reactive_module_row arm for arm and code for code — artifact and source hash
+    agreement plus ordering (CrossLinkMismatch), the exact contract artifact, every exact
+    query-module dependency, and the row's own publication record (MissingCrossLink)
+  - A recorded cost ruling for redb read_reactive_module's fail-closed check rather than the
+    check itself — its callers are every consumer consume, acknowledge, negative-acknowledge,
+    seek, retire, and status RPC plus WatchNamedQuery setup with no cache, and the frozen
+    durable layout offers no bounded witness for "a publication record exists for this
+    module_hash", so the check would turn an O(1) read into an O(|AUDIT|) decode scan over a
+    stream that those same RPCs grow — deliberately not shipped, and reported for a
+    maintainer decision
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-redb --lib --all-features -- administration::tests
+  - cargo +1.97.0 test -p riffdb-storage-memory --lib --all-features -- administration::tests
+  - cargo +1.97.0 test -p riffdb-storage-api --lib --all-features -- audit::tests
+  - cargo +1.97.0 test -p riffdb-server --test p1_riffdbd_restart --all-features
+  - cargo +1.97.0 test --workspace --all-features
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  exit_gate: An idempotent redb republish returns the original publication's sequence while
+    the exclusive mutation gate issues zero new tickets, and routing that answer through the
+    write transaction unconditionally turns that pin red; driving the locked path directly
+    still serves the same republish answer and writes nothing; a retained redb module with no
+    publication record is still refused with CorruptData; a retained memory reactive-module
+    row that no publication record names, and one whose identity disagrees with its artifact,
+    each yield exactly one typed authoritative finding, while a published module validates
+    clean, and removing the new inspection arm returns all of them to zero findings; the full
+    workspace battery reports zero failures.
+  human_review_triggers: *id001

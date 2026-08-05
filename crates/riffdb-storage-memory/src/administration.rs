@@ -1862,7 +1862,8 @@ mod tests {
         ReadableDigestKey, ReadableIdempotencyDigestInventory, RevocationReasonCodeV1,
         StartupValidationInputs, StorageFormatVersion, StorageScanLimit, StorageValueError,
         StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
-        StructuralEvidenceSession, StructuralFinding,
+        StructuralEvidenceSession, StructuralFinding, StructuralFindingCode,
+        StructuralFindingScope,
     };
     use riffdb_types::{
         ActorId, ActorKind, Audience, CommitSequence, ContractBundleHash, DatabaseId, DigestKeyId,
@@ -3091,6 +3092,126 @@ mod tests {
             Vec::new(),
             "a historical linkless reactive-publication success must never be \
              refused at open"
+        );
+    }
+    /// Builds a clean memory database holding one published reactive module and
+    /// returns the writable handle plus an observer for the structural pass.
+    fn published_reactive_module_store() -> (MemoryStore, MemoryStore, StoredReactiveModuleV1) {
+        let mut store = MemoryStore::new();
+        store
+            .initialize_database(database_id())
+            .expect("initialize database");
+        let observer = store.reopen();
+        let mut ports = MemoryDormantPorts {
+            store: store.reopen(),
+        }
+        .into_operational();
+
+        let contract = bundle("reactive-structural", 1, 0x27);
+        assert!(matches!(
+            CatalogAdministrationRepository::activate_catalog(
+                &mut ports,
+                &catalog_intent(None, contract.clone(), 120)
+            )
+            .expect("activate the contract the module compiles against"),
+            CatalogActivationResult::Activated { .. }
+        ));
+        let module =
+            conformance_reactive_module(&contract, b"structural source", b"structural art");
+        assert!(matches!(
+            ReactiveModuleAdministrationRepository::publish_reactive_module(
+                &mut ports,
+                &reactive_intent(module.clone(), 121),
+            )
+            .expect("publish the immutable module"),
+            ReactiveModulePublicationResult::Published { .. }
+        ));
+        drop(ports);
+        (store, observer, module)
+    }
+
+    #[test]
+    fn memory_structural_pass_accepts_a_published_reactive_module() {
+        let (store, observer, _module) = published_reactive_module_store();
+        drop(store);
+        assert_eq!(
+            structural_findings(observer),
+            Vec::new(),
+            "a published reactive module and its publication record must validate clean"
+        );
+    }
+
+    #[test]
+    fn memory_structural_pass_reports_a_reactive_module_with_no_publication_record() {
+        let (store, observer, module) = published_reactive_module_store();
+        let contract = bundle("reactive-structural", 1, 0x27);
+        let orphan = conformance_reactive_module(&contract, b"orphan source", b"orphan artifact");
+        assert_ne!(orphan.module_hash(), module.module_hash());
+        store
+            .acquire()
+            .expect("write access")
+            .write(|state| {
+                // Retain a second, self-consistent module row that no publication
+                // record names — exactly the orphan redb reports through
+                // `inspect_reactive_module_row` and the memory pass could not see
+                // at all. The audit stream itself stays untouched and contiguous,
+                // so this is the one invariant under test and nothing else.
+                let position = state
+                    .reactive_modules
+                    .partition_point(|row| row.module_hash() < orphan.module_hash());
+                state.reactive_modules.insert(position, orphan.clone());
+                Ok(())
+            })
+            .expect("retain an orphaned reactive module");
+        drop(store);
+
+        assert_eq!(
+            structural_findings(observer),
+            vec![StructuralFinding::new(
+                StructuralFindingScope::Authoritative,
+                StructuralFindingCode::MissingCrossLink,
+            )],
+            "a retained reactive module with no publication record must be reported"
+        );
+    }
+
+    #[test]
+    fn memory_structural_pass_reports_a_reactive_module_with_a_wrong_hash_cross_link() {
+        let (store, observer, module) = published_reactive_module_store();
+        store
+            .acquire()
+            .expect("write access")
+            .write(|state| {
+                // Keep the identity the publication record names, but break the
+                // artifact the identity is derived from. redb rejects the same
+                // disagreement between its row hash and its canonical bytes.
+                let row = &mut state.reactive_modules[0];
+                assert_eq!(row.module_hash(), module.module_hash());
+                *row = StoredReactiveModuleV1::new(
+                    row.module_name().to_owned(),
+                    row.module_version(),
+                    row.module_hash(),
+                    row.contract_lineage().clone(),
+                    row.contract_version(),
+                    row.contract_bundle_hash(),
+                    row.source_hash(),
+                    row.query_module_hashes().to_vec(),
+                    row.canonical_source().to_vec(),
+                    b"tampered artifact".to_vec(),
+                )
+                .expect("rebuild the tampered row");
+                Ok(())
+            })
+            .expect("tamper with the retained reactive module");
+        drop(store);
+
+        assert_eq!(
+            structural_findings(observer),
+            vec![StructuralFinding::new(
+                StructuralFindingScope::Authoritative,
+                StructuralFindingCode::CrossLinkMismatch,
+            )],
+            "a reactive module whose identity disagrees with its artifact must be reported"
         );
     }
 }
