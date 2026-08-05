@@ -1511,6 +1511,47 @@ fn supersession_beyond_fence_resolves_on_next_pull() {
 }
 
 #[test]
+fn catch_up_holdback_publishes_the_maximal_complete_prefix() {
+    let bundle = compile_bundle();
+    let mut engine = open_engine(register_ticket_board(&bundle), "batched-safe-prefix");
+    let mut source = HistorySource::default();
+    let mut oracle = Oracle::default();
+    let org = uuid(0xd5);
+
+    push_ticket_create(&mut source, &mut oracle, &bundle, 1, org, 1, 1, "safe", 1);
+    let race = push_open_race_v1(&mut source, &mut oracle, &bundle, 2, org, 2);
+
+    let progress = engine.apply_available(&source).expect("catch up");
+
+    assert_eq!(progress.deferred_set_size, 1);
+    assert_eq!(
+        progress.processed,
+        FrontierPosition::AppliedThrough(CommitSequence::new(2).expect("two"))
+    );
+    assert_eq!(
+        progress.published_frontier,
+        FrontierPosition::AppliedThrough(CommitSequence::new(1).expect("one")),
+        "the fully applied prefix before the raced commit remains visible"
+    );
+    let rows = rows_of(
+        engine
+            .query(&board_query(CanonicalValue::Uuid(org)))
+            .expect("safe prefix query"),
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][1], CanonicalValue::string("safe").expect("title"));
+
+    resolve_open_race(&mut source, &mut oracle, race, 3);
+    let progress = engine.apply_available(&source).expect("resolve");
+    assert_eq!(progress.deferred_set_size, 0);
+    assert_eq!(
+        progress.published_frontier,
+        FrontierPosition::AppliedThrough(CommitSequence::new(3).expect("three"))
+    );
+    assert_corpus_equivalence(&engine, &oracle, &bundle, &[org], "resolved safe prefix");
+}
+
+#[test]
 fn checkpoint_bounds_segment_growth_and_sweeps_superseded_files() {
     let bundle = compile_bundle();
     let definition = register_ticket_board(&bundle);

@@ -51,6 +51,14 @@ pub(crate) struct EntityTargetKey {
     key: Vec<u8>,
 }
 
+enum ObservedEntityReference {
+    Matched(StoredEntityRecordV1),
+    ForwardRace {
+        key: EntityTargetKey,
+        live_version: EntityVersion,
+    },
+}
+
 impl EntityTargetKey {
     fn from_target(target: &EntityTarget) -> Self {
         Self {
@@ -102,7 +110,7 @@ impl ApplyState {
                 if !is_exact_successor(self.working.processed, sequence) {
                     return Err(ColumnarError::Integrity("commit sequence gap"));
                 }
-                self.apply_commit(reader, commit.entity_references(), sequence)?;
+                self.apply_commit_unpublished(reader, commit.entity_references(), sequence)?;
             }
             match page {
                 CommitScanPageV1::Page {
@@ -138,6 +146,9 @@ impl ApplyState {
                 }
             }
         }
+        if self.deferred.is_empty() && self.published.visible_frontier != self.working.processed {
+            self.publish(self.working.processed);
+        }
         Ok(ApplyProgress {
             processed: self.working.processed,
             published_frontier: self.published.visible_frontier,
@@ -146,31 +157,70 @@ impl ApplyState {
         })
     }
 
+    #[cfg(test)]
     fn apply_commit(
         &mut self,
         reader: &impl AuthoritativePointReader,
         references: &[CommittedEntityReferenceV2],
         sequence: CommitSequence,
     ) -> Result<(), ColumnarError> {
+        self.apply_commit_inner(reader, references, sequence, true)
+    }
+
+    fn apply_commit_unpublished(
+        &mut self,
+        reader: &impl AuthoritativePointReader,
+        references: &[CommittedEntityReferenceV2],
+        sequence: CommitSequence,
+    ) -> Result<(), ColumnarError> {
+        self.apply_commit_inner(reader, references, sequence, false)
+    }
+
+    fn apply_commit_inner(
+        &mut self,
+        reader: &impl AuthoritativePointReader,
+        references: &[CommittedEntityReferenceV2],
+        sequence: CommitSequence,
+        publish_after_commit: bool,
+    ) -> Result<(), ColumnarError> {
         let projected_type = self.definition.entity_type_id();
+        let mut observed = Vec::new();
         for reference in references {
             if reference.target().entity_type_id() != projected_type {
                 continue;
             }
-            self.apply_entity_reference(reader, reference)?;
+            observed.push(self.observe_entity_reference(reader, reference)?);
+        }
+
+        // If this commit opens a supersession holdback, publish the complete
+        // safe prefix accumulated by this catch-up pass before mutating working
+        // state with any part of the held commit. This is the only possible
+        // intermediate publication while the engine lock is held.
+        if self.deferred.is_empty()
+            && observed
+                .iter()
+                .any(|value| matches!(value, ObservedEntityReference::ForwardRace { .. }))
+            && self.published.visible_frontier != self.working.processed
+        {
+            self.publish(self.working.processed);
+        }
+
+        for observation in observed {
+            self.apply_observed_entity_reference(observation)?;
         }
         self.working.processed = FrontierPosition::AppliedThrough(sequence);
-        // Publication only at the commit boundary, after ALL of the commit's
-        // effects are in the working state (D4 all-or-none visibility).
-        self.maybe_publish(FrontierPosition::AppliedThrough(sequence));
+        if publish_after_commit {
+            // Direct single-commit callers retain commit-boundary publication.
+            self.maybe_publish(FrontierPosition::AppliedThrough(sequence));
+        }
         Ok(())
     }
 
-    fn apply_entity_reference(
-        &mut self,
+    fn observe_entity_reference(
+        &self,
         reader: &impl AuthoritativePointReader,
         reference: &CommittedEntityReferenceV2,
-    ) -> Result<(), ColumnarError> {
+    ) -> Result<ObservedEntityReference, ColumnarError> {
         let record = reader
             .read_entity(reference.target())
             .map_err(ColumnarError::from)?
@@ -179,31 +229,44 @@ impl ApplyState {
             ))?;
 
         if reference.matches(&record) {
-            self.apply_matched_record(&record)?;
-            let key = EntityTargetKey::from_target(reference.target());
-            if let Some(deferred_version) = self.deferred.get(&key).copied()
-                && record.entity_version().get() >= deferred_version.get()
-            {
-                self.deferred.remove(&key);
-            }
-            return Ok(());
+            return Ok(ObservedEntityReference::Matched(record));
         }
 
         let live_version = record.entity_version();
         if live_version.get() > reference.entity_version().get() {
             // Raced ahead: never apply the newer record at this commit. The
             // commit that produced `live_version` will apply it when reached.
-            self.deferred.insert(
-                EntityTargetKey::from_target(reference.target()),
+            return Ok(ObservedEntityReference::ForwardRace {
+                key: EntityTargetKey::from_target(reference.target()),
                 live_version,
-            );
-            return Ok(());
+            });
         }
 
         // Same version but hash mismatch, or live version behind the reference.
         Err(ColumnarError::Integrity(
             "entity reference does not match live record and is not a forward race",
         ))
+    }
+
+    fn apply_observed_entity_reference(
+        &mut self,
+        observation: ObservedEntityReference,
+    ) -> Result<(), ColumnarError> {
+        match observation {
+            ObservedEntityReference::Matched(record) => {
+                self.apply_matched_record(&record)?;
+                let key = EntityTargetKey::from_target(record.target());
+                if let Some(deferred_version) = self.deferred.get(&key).copied()
+                    && record.entity_version().get() >= deferred_version.get()
+                {
+                    self.deferred.remove(&key);
+                }
+            }
+            ObservedEntityReference::ForwardRace { key, live_version } => {
+                self.deferred.insert(key, live_version);
+            }
+        }
+        Ok(())
     }
 
     fn apply_matched_record(&mut self, record: &StoredEntityRecordV1) -> Result<(), ColumnarError> {
@@ -295,12 +358,18 @@ mod publish_observer_tests {
     use riffdb_contract_compiler::compile_contract_source;
     use riffdb_contract_ir::ContractBundle;
     use riffdb_storage_api::{
-        DurableKeySchemaBindingV1, ExecutablePlanRef, IdempotencyIdentity, StorageError,
-        StoredCommitRecordV1, StoredDurableEventV1, StoredOutcomeV1, StoredProvenanceRecordV1,
+        AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativeScanReader,
+        CommitScanPageV1, CommitScanRequest, DeclaredOutcome, DurabilityMode,
+        DurableKeySchemaBindingV1, EncodedContentCharge, EncodedPageItem, ExecutablePlanRef,
+        ExpectedEntityState, IdempotencyIdentity, ReadDependencies, ReadDependency, StorageError,
+        StorageErrorKind, StoredCommitRecordV1, StoredDurableEventV1, StoredOutcomeV1,
+        StoredProvenanceRecordV1, StoredReadDependenciesV1,
     };
     use riffdb_types::{
-        CanonicalRecord, CanonicalValue, CommandId, CommitSequence, ContractBundleHash,
-        ContractLineage, ContractVersion, EntityKeyBuilder, EventId, PlanHash, ProvenanceId,
+        ActorId, ActorKind, AdmittedActorContext, CanonicalInputHash, CanonicalRecord,
+        CanonicalValue, CommandId, CommitSequence, ContractBundleHash, ContractLineage,
+        ContractVersion, EntityKeyBuilder, EventId, FrontierPosition, LogicalTime, OutcomeId,
+        PartitionKeyHash, PlanHash, ProvenanceId, RequestId, TenantId, TenantScope, Timestamp,
     };
 
     use super::*;
@@ -345,6 +414,7 @@ contract ColumnarPublish version 1 {
 
     struct PointState {
         entities: BTreeMap<Vec<u8>, StoredEntityRecordV1>,
+        commits: Vec<StoredCommitRecordV1>,
     }
 
     impl AuthoritativePointReader for PointState {
@@ -381,6 +451,45 @@ contract ColumnarPublish version 1 {
             _event_id: EventId,
         ) -> Result<Option<StoredDurableEventV1>, StorageError> {
             Ok(None)
+        }
+    }
+
+    impl AuthoritativeScanReader for PointState {
+        fn scan_index(
+            &self,
+            _request: AuthoritativeIndexScanRequest,
+        ) -> Result<AuthoritativeIndexScanPage, StorageError> {
+            Err(StorageError::new(StorageErrorKind::Unavailable, None))
+        }
+
+        fn scan_commits(
+            &self,
+            request: CommitScanRequest,
+        ) -> Result<CommitScanPageV1, StorageError> {
+            let upper = self
+                .commits
+                .last()
+                .map_or(FrontierPosition::BeforeFirst, |commit| {
+                    FrontierPosition::AppliedThrough(commit.commit_sequence())
+                });
+            let rows = self
+                .commits
+                .iter()
+                .filter(|commit| {
+                    request
+                        .after()
+                        .is_none_or(|after| commit.commit_sequence() > after)
+                })
+                .cloned()
+                .map(|commit| {
+                    EncodedPageItem::new(
+                        commit,
+                        EncodedContentCharge::new(64).expect("test charge"),
+                    )
+                })
+                .collect();
+            CommitScanPageV1::exact_end(request, upper, rows)
+                .map_err(|_| StorageError::new(StorageErrorKind::InvariantViolation, None))
         }
     }
 
@@ -436,6 +545,57 @@ contract ColumnarPublish version 1 {
         .expect("entity record")
     }
 
+    fn stored_commit(
+        sequence: u64,
+        references: Vec<riffdb_storage_api::CommittedEntityReferenceV2>,
+    ) -> StoredCommitRecordV1 {
+        let sequence = CommitSequence::new(sequence).expect("sequence");
+        let plan = plan_ref();
+        let mut request_bytes = [sequence.get() as u8; 16];
+        request_bytes[6] = 0x70 | (request_bytes[6] & 0x0f);
+        request_bytes[8] = 0x80 | (request_bytes[8] & 0x3f);
+        let request_id = RequestId::from_bytes(request_bytes).expect("request");
+        let mut provenance_bytes = [sequence.get() as u8 + 20; 16];
+        provenance_bytes[6] = 0x70 | (provenance_bytes[6] & 0x0f);
+        provenance_bytes[8] = 0x80 | (provenance_bytes[8] & 0x3f);
+        let provenance_id = ProvenanceId::from_bytes(provenance_bytes).expect("provenance");
+        let actor = AdmittedActorContext::new(
+            ActorId::new("columnar-publication-test").expect("actor"),
+            ActorKind::Service,
+            TenantScope::Tenant(TenantId::new("tenant-a").expect("tenant")),
+            None,
+        );
+        let dependencies = ReadDependencies::new(references.iter().map(|reference| {
+            ReadDependency::EntityObservation {
+                target: reference.target().clone(),
+                expected: ExpectedEntityState::Absent,
+            }
+        }))
+        .expect("dependencies");
+        StoredCommitRecordV1::new(
+            sequence,
+            request_id,
+            plan,
+            CanonicalInputHash::from_bytes([0x31; 32]),
+            actor,
+            LogicalTime::new(Timestamp::new(1_700_000_000, 0).expect("timestamp")),
+            PartitionKeyHash::from_bytes([0x41; 32]),
+            Vec::new(),
+            StoredReadDependenciesV1::from_live(&dependencies).expect("stored dependencies"),
+            references,
+            Vec::new(),
+            DeclaredOutcome::new(
+                OutcomeId::new(1).expect("outcome"),
+                CanonicalRecord::new(Vec::new()).expect("empty outcome"),
+            )
+            .expect("declared outcome"),
+            provenance_id,
+            Vec::new(),
+            DurabilityMode::Memory,
+        )
+        .expect("stored commit")
+    }
+
     #[test]
     fn publish_is_all_or_nothing_for_multi_entity_commits() {
         let bundle = compile_contract_source(CONTRACT).expect("compile");
@@ -488,6 +648,7 @@ contract ColumnarPublish version 1 {
                 (first.target().key().as_bytes().to_vec(), first.clone()),
                 (second.target().key().as_bytes().to_vec(), second.clone()),
             ]),
+            commits: Vec::new(),
         };
 
         let mut state = ApplyState::new(definition);
@@ -527,6 +688,80 @@ contract ColumnarPublish version 1 {
             observed.last(),
             Some(&(true, true)),
             "final publication must contain the complete commit"
+        );
+    }
+
+    #[test]
+    fn catch_up_materializes_only_the_latest_observable_snapshot() {
+        let bundle = compile_contract_source(CONTRACT).expect("compile");
+        let entity = bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Ticket")
+            .expect("entity");
+        let field = |name: &str| {
+            entity
+                .record()
+                .fields()
+                .iter()
+                .find(|field| field.name() == name)
+                .map(riffdb_contract_ir::FieldSchema::id)
+                .expect("field")
+        };
+        let definition = RegisteredDefinition::register(
+            ColumnarProjectionDefinition {
+                name: "catch-up-publication".into(),
+                entity_name: "Ticket".into(),
+                projected_fields: vec![field("status")],
+                org_scope_field: field("organization_id"),
+            },
+            &bundle,
+        )
+        .expect("register");
+        let org = [0x55; 16];
+        let entities: Vec<_> = (1..=3)
+            .map(|ticket_id| ticket_entity(&bundle, org, ticket_id, ticket_id * 10))
+            .collect();
+        let commits = entities
+            .iter()
+            .enumerate()
+            .map(|(index, entity)| {
+                stored_commit(
+                    u64::try_from(index + 1).expect("sequence"),
+                    vec![
+                        riffdb_storage_api::CommittedEntityReferenceV2::from_post_image(entity)
+                            .expect("reference"),
+                    ],
+                )
+            })
+            .collect();
+        let reader = PointState {
+            entities: entities
+                .iter()
+                .map(|entity| (entity.target().key().as_bytes().to_vec(), entity.clone()))
+                .collect(),
+            commits,
+        };
+        let mut state = ApplyState::new(definition);
+        let publications = Rc::new(RefCell::new(Vec::new()));
+        state.publish_observer = Some(Box::new({
+            let publications = Rc::clone(&publications);
+            move |snapshot| publications.borrow_mut().push(snapshot.visible_frontier)
+        }));
+
+        let progress = state.apply_available(&reader).expect("catch up");
+
+        assert_eq!(
+            publications.borrow().as_slice(),
+            &[FrontierPosition::AppliedThrough(
+                CommitSequence::new(3).expect("three")
+            )],
+            "the engine lock makes intermediate catch-up snapshots unobservable"
+        );
+        assert_eq!(
+            progress.published_frontier,
+            FrontierPosition::AppliedThrough(CommitSequence::new(3).expect("three"))
         );
     }
 }
