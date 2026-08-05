@@ -11,6 +11,7 @@
   ADR-0052, ADR-0053, and ADR-0055
 - **Amends if accepted:** SPEC Sections 20 and 24
 - **Decision gate:** Satisfied by the acceptance reference above
+- **Amended by:** ADR-0097
 
 ## Context
 

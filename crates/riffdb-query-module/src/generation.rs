@@ -1884,6 +1884,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
          readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; }}\n\
          export interface QueryOptions {{ readonly cursor?: string; readonly readAfterCommit?: bigint; }}\n\
          export interface CommandBatchProgress {{ readonly completed: number; readonly total: number; readonly checkpoint: number; }}\n\
+         export const MAX_COMMAND_BATCH_CONCURRENCY = 128;\n\
          export interface CommandBatchOptions {{ readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }}\n\
          export interface CommandBatchItem<T> {{ readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }}\n\
          export interface CommandBatchResult<T> {{ readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }}\n\
@@ -2593,7 +2594,7 @@ fn emit_typescript_client_facade(
         writeln!(
             output,
             "  public async {function}Batch(inputs: ReadonlyArray<{name}Input>, options: CommandBatchOptions): Promise<CommandBatchResult<{name}Outcome>> {{\n    \
-             if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 \
+             if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY \
              || inputs.length < 1 || inputs.length > 4096) throw new Error(\"invalid command batch bounds\");\n    \
              const start = options.checkpoint ?? 0;\n    if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error(\"invalid command batch checkpoint\");\n    \
              const items: CommandBatchItem<{name}Outcome>[] = [];\n    let next = start;\n    let completed = start;\n    let checkpoint = start;\n    const completedAfterCheckpoint = new Set<number>();\n    \
@@ -2607,7 +2608,7 @@ fn emit_typescript_client_facade(
         )
         .expect("string");
     }
-    writeln!(output, "}}\n").expect("string");
+    writeln!(output, "}}").expect("string");
 }
 
 fn emit_rust_identity(output: &mut String, module: &QueryModule) {
@@ -3127,10 +3128,16 @@ mod tests {
         let module = QueryModule::compile(candidate, &contract).expect("module");
 
         let generated = generate_rust_client(&module, &contract);
+        let generated_typescript = generate_typescript_client(&module, &contract);
 
         assert!(generated.contains("pub use riffdb_client_rust::QueryOptions;"));
         assert!(generated.contains("pub async fn item_page_after_commit("));
         assert!(generated.contains("QueryOptions::new().read_after_commit(commit_sequence)"));
+        assert!(generated_typescript.contains("MAX_COMMAND_BATCH_CONCURRENCY = 128"));
+        assert!(
+            generated_typescript.contains("options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY")
+        );
+        assert!(!generated_typescript.contains("options.concurrency > 32"));
     }
 
     #[test]

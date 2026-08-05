@@ -150,6 +150,9 @@ class QueryOptions:
     read_after_commit: int | None = None
 
 
+MAX_COMMAND_BATCH_CONCURRENCY = 128
+
+
 @dataclass(frozen=True, slots=True)
 class CommandBatchOptions:
     concurrency: int
@@ -783,7 +786,7 @@ def _validate_batch(inputs: Sequence[object], options: CommandBatchOptions) -> N
     if (
         not 1 <= len(inputs) <= 4096
         or type(options.concurrency) is not int
-        or not 1 <= options.concurrency <= 128
+        or not 1 <= options.concurrency <= MAX_COMMAND_BATCH_CONCURRENCY
     ):
         raise InvalidInput("command batch bounds are invalid")
     if type(options.checkpoint) is not int or not 0 <= options.checkpoint <= len(inputs):
@@ -846,6 +849,7 @@ __all__ = [
     "CallMetadata",
     "CommandBatchItem",
     "CommandBatchOptions",
+    "MAX_COMMAND_BATCH_CONCURRENCY",
     "CommandBatchProgress",
     "CommandBatchResult",
     "ConnectionFailure",

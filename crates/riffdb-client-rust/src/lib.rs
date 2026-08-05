@@ -33,9 +33,9 @@ pub use application::{
     ApplicationCardinality, ApplicationClientError, ApplicationCommand, ApplicationCommandResult,
     ApplicationContract, ApplicationRecord, ApplicationResultField, ApplicationUuid,
     ApplicationValue, GeneratedBatchError, GeneratedBatchItem, GeneratedBatchOptions,
-    GeneratedBatchProgress, GeneratedBatchResult, IdempotentTransportBatchError, NamedQuery,
-    NamedQueryResult, QueryOptions, QueryResponseIdentity, StableApplicationClient,
-    TypedCommandResult, TypedQueryResult,
+    GeneratedBatchProgress, GeneratedBatchResult, IdempotentTransportBatchError,
+    MAX_GENERATED_BATCH_CONCURRENCY, NamedQuery, NamedQueryResult, QueryOptions,
+    QueryResponseIdentity, StableApplicationClient, TypedCommandResult, TypedQueryResult,
 };
 pub use capability::{
     BootstrapCapabilityCreateTemplate, CapabilityCreateTemplateError,

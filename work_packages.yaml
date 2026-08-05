@@ -7907,3 +7907,57 @@ work_packages:
     barriers, and the oldest deadline; exact-bound recovery is all-or-absent; unary latency does not
     regress; and same-run seed evidence determines whether the enlarged ceiling reaches 3 seconds.
   human_review_triggers: *id001
+- id: WP-457
+  name: Bounded generated-batch writer feeding
+  depends_on: [WP-320, WP-398, WP-456]
+  objective: Evaluate 192- and 256-item generated-batch concurrency candidates, retain the fastest
+    safe public ceiling, and size the coordinator queue for two maximum physical groups without
+    changing the 16-item transport request, unary scheduling, durability, or independent command
+    semantics.
+  requirements: [AAA-006, AAA-007, AAA-010, PYD-005, PYD-012, PERF-004, PERF-005, PERF-006,
+    PERF-008, PERF-009, PERF-010]
+  required_adrs: [ADR-0056, ADR-0058, ADR-0059, ADR-0060, ADR-0061, ADR-0071, ADR-0084,
+    ADR-0095, ADR-0096, ADR-0097]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/**, crates/riffdb-client-rust/**,
+    crates/riffdb-query-module/**, crates/riffdb-server/src/process_graph.rs,
+    clients/python/runtime/**, clients/python/ticketdesk/**, clients/typescript/ticketdesk/**,
+    examples/ticketdesk/generated/**, examples/ticketdesk/web/src/generated/**,
+    examples/ticketdesk/riffdb.application.lock.json,
+    examples/agent-alpha/**/generated/typescript/client.ts,
+    examples/agent-alpha/web/src/generated/client.ts,
+    scripts/generate-query-clients,
+    examples/app-baseline/**, benchmarks/run-app-baseline, fixtures/application-parity/**,
+    docs/getting-started/COMMAND-BATCHES.md, docs/sdks/RUST.md, docs/python-driver.md,
+    docs/getting-started/TYPESCRIPT-APPLICATIONS.md, docs/SUMMARY.md, docs/performance/**]
+  deliverables:
+  - Exact shared Rust, TypeScript, and Python generated-batch concurrency range selected by the
+    measured retain-or-revert gate, with zero and one above the maximum rejected before submission
+    and no change to the 4,096-item collection bound
+  - Unchanged maximum 16 ordinary commands per ExecuteBatch request; the retained 128 concurrency
+    maps to at most eight simultaneous transport requests and every item retains independent
+    identity, result, retry, progress, checkpoint, cancellation, and uncertainty semantics
+  - Production coordinator admission default of 512 messages, independently byte-bounded, so two
+    maximum physical groups may wait while one commits without making the physical group or queue
+    bound runtime-configurable for application callers
+  - Existing fixed-cardinality dispatch reason and group-size evidence used to distinguish queue
+    starvation, count saturation, barriers, and compatibility splits without new identifiers
+  - Full-seed sweep at 128, 192, and 256 requested concurrency recording overloads, group
+    distribution, physical commits, flush/staging cost, seed duration, and unary mutation p50
+  - Retain-or-revert decision recording why 128 remains public after the 192/256 candidates reduced
+    commit count but regressed total seed or unary time; never weaken durability to meet the target
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-client-rust --all-features
+  - cargo +1.97.0 test -p riffdb-query-module --all-features
+  - cargo +1.97.0 test -p riffdb-server --all-features
+  - TMPDIR=/home/user/tmp PYTHON=python3 ./scripts/check-python-runtime
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Generated clients reject one above the shared retained bound before submission, transport
+    requests remain at most 16 items, the coordinator remains independently count/byte bounded,
+    the 128/192/256 sweep has no overload or semantic failure, unary p50 has no material regression,
+    and the evidence records whether the full seed reaches 3 seconds.
+  human_review_triggers: *id001

@@ -92,13 +92,16 @@ another version fails with
 both versions; resume it against its original version or archive it after
 reviewing the prior outcomes.
 
-Generated Rust and TypeScript clients expose the same bounded policy for every
-symbolic command. Rust emits `create_ticket_batch(inputs, options)` and returns
-input-ordered independent item results plus a checkpoint. TypeScript emits
-`createTicketBatch(inputs, { concurrency, checkpoint })`; it uses a bounded
-worker pool and records either the typed result or the public error for each
-item. Both reject zero items, more than 4,096 items, and concurrency outside
-`1..=32` before submitting work.
+Generated Rust, TypeScript, and Python clients expose the same bounded policy
+for every symbolic command. Rust emits
+`create_ticket_batch(inputs, options)` and returns input-ordered independent
+item results plus a checkpoint. TypeScript emits
+`createTicketBatch(inputs, { concurrency, checkpoint })`; Python emits paired
+sync and async `create_ticket_batch` methods. Each uses a bounded worker or
+transport pool and records either the typed result or the public error for each
+item. All three reject zero items, more than 4,096 items, and concurrency
+outside `1..=128` before submitting work. This SDK ceiling is distinct from
+the CLI's operator-facing `1..=32` bound documented above.
 
 Both bindings report a monotonically increasing completed count and the largest
 contiguous input checkpoint. Completion may arrive out of order, but a reported
@@ -114,6 +117,9 @@ key, typed outcome, and uncertainty classification. A whole-RPC failure or a
 retryable per-item error re-enters only the affected ordinary commands through
 the same-key recovery path. The server may also physically group compatible
 durable transitions; callers still receive independent per-item results.
+At SDK concurrency 128, Rust opens at most eight simultaneous transport
+exchanges of at most 16 items each; the setting never creates a 128-item RPC or an
+application-visible transaction.
 
 ## Per-item results and recovery
 

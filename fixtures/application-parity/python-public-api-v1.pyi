@@ -58,6 +58,8 @@ class QueryOptions:
     cursor: str | None = ...
     read_after_commit: int | None = ...
 
+MAX_COMMAND_BATCH_CONCURRENCY: int
+
 @dataclass(frozen=True, slots=True)
 class CommandBatchOptions:
     concurrency: int

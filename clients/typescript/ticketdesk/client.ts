@@ -128,6 +128,7 @@ export interface TypedQueryResult<T> { readonly identity: QueryResponseIdentity;
 export interface TypedCommandResult<T> { readonly outcome: T; readonly commitSequence?: bigint; readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; }
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; }
 export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
+export const MAX_COMMAND_BATCH_CONCURRENCY = 128;
 export interface CommandBatchOptions { readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }
 export interface CommandBatchItem<T> { readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }
 export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }
@@ -626,7 +627,7 @@ export class TicketDeskClient {
   }
 
   public async addProjectMemberBatch(inputs: ReadonlyArray<AddProjectMemberInput>, options: CommandBatchOptions): Promise<CommandBatchResult<AddProjectMemberOutcome>> {
-    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     const items: CommandBatchItem<AddProjectMemberOutcome>[] = [];
@@ -647,7 +648,7 @@ export class TicketDeskClient {
   }
 
   public async attachLabelBatch(inputs: ReadonlyArray<AttachLabelInput>, options: CommandBatchOptions): Promise<CommandBatchResult<AttachLabelOutcome>> {
-    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     const items: CommandBatchItem<AttachLabelOutcome>[] = [];
@@ -668,7 +669,7 @@ export class TicketDeskClient {
   }
 
   public async closeTicketWithCommentBatch(inputs: ReadonlyArray<CloseTicketWithCommentInput>, options: CommandBatchOptions): Promise<CommandBatchResult<CloseTicketWithCommentOutcome>> {
-    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     const items: CommandBatchItem<CloseTicketWithCommentOutcome>[] = [];
@@ -689,7 +690,7 @@ export class TicketDeskClient {
   }
 
   public async createCommentBatch(inputs: ReadonlyArray<CreateCommentInput>, options: CommandBatchOptions): Promise<CommandBatchResult<CreateCommentOutcome>> {
-    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     const items: CommandBatchItem<CreateCommentOutcome>[] = [];
@@ -710,7 +711,7 @@ export class TicketDeskClient {
   }
 
   public async createLabelBatch(inputs: ReadonlyArray<CreateLabelInput>, options: CommandBatchOptions): Promise<CommandBatchResult<CreateLabelOutcome>> {
-    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     const items: CommandBatchItem<CreateLabelOutcome>[] = [];
@@ -731,7 +732,7 @@ export class TicketDeskClient {
   }
 
   public async createOrganizationBatch(inputs: ReadonlyArray<CreateOrganizationInput>, options: CommandBatchOptions): Promise<CommandBatchResult<CreateOrganizationOutcome>> {
-    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     const items: CommandBatchItem<CreateOrganizationOutcome>[] = [];
@@ -752,7 +753,7 @@ export class TicketDeskClient {
   }
 
   public async createProjectBatch(inputs: ReadonlyArray<CreateProjectInput>, options: CommandBatchOptions): Promise<CommandBatchResult<CreateProjectOutcome>> {
-    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     const items: CommandBatchItem<CreateProjectOutcome>[] = [];
@@ -773,7 +774,7 @@ export class TicketDeskClient {
   }
 
   public async createTicketBatch(inputs: ReadonlyArray<CreateTicketInput>, options: CommandBatchOptions): Promise<CommandBatchResult<CreateTicketOutcome>> {
-    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     const items: CommandBatchItem<CreateTicketOutcome>[] = [];
@@ -794,7 +795,7 @@ export class TicketDeskClient {
   }
 
   public async createUserBatch(inputs: ReadonlyArray<CreateUserInput>, options: CommandBatchOptions): Promise<CommandBatchResult<CreateUserOutcome>> {
-    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     const items: CommandBatchItem<CreateUserOutcome>[] = [];
@@ -815,7 +816,7 @@ export class TicketDeskClient {
   }
 
   public async openTicketWithLabelsBatch(inputs: ReadonlyArray<OpenTicketWithLabelsInput>, options: CommandBatchOptions): Promise<CommandBatchResult<OpenTicketWithLabelsOutcome>> {
-    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     const items: CommandBatchItem<OpenTicketWithLabelsOutcome>[] = [];
@@ -836,7 +837,7 @@ export class TicketDeskClient {
   }
 
   public async swapMemberRolesBatch(inputs: ReadonlyArray<SwapMemberRolesInput>, options: CommandBatchOptions): Promise<CommandBatchResult<SwapMemberRolesOutcome>> {
-    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > 32 || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
+    if (!Number.isInteger(options.concurrency) || options.concurrency < 1 || options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY || inputs.length < 1 || inputs.length > 4096) throw new Error("invalid command batch bounds");
     const start = options.checkpoint ?? 0;
     if (!Number.isInteger(start) || start < 0 || start > inputs.length) throw new Error("invalid command batch checkpoint");
     const items: CommandBatchItem<SwapMemberRolesOutcome>[] = [];
@@ -851,4 +852,3 @@ export class TicketDeskClient {
   }
 
 }
-

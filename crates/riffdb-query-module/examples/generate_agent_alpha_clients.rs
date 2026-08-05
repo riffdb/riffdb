@@ -1,12 +1,15 @@
-//! Regenerates agent-alpha application Rust clients checked into examples/.
+//! Regenerates agent-alpha application clients checked into examples/.
 //!
 //! Owned outputs (do not hand-edit):
 //! - `examples/agent-alpha/generated/rust/client.rs`
+//! - `examples/agent-alpha/web/src/generated/client.ts`
 //! - `examples/agent-alpha/domains/agent-blog/generated/rust/client.rs`
+//! - `examples/agent-alpha/domains/agent-blog/generated/typescript/client.ts`
 //! - `examples/agent-alpha/domains/agent-orders/generated/rust/client.rs`
+//! - `examples/agent-alpha/domains/agent-orders/generated/typescript/client.ts`
 //!
 //! Drift protection: `./scripts/generate-query-clients --check` diffs these
-//! three paths against a fresh generator run.
+//! six paths against a fresh generator run.
 
 #![forbid(unsafe_code)]
 
@@ -18,11 +21,12 @@ use riffdb_contract_compiler::compile_contract_source;
 use riffdb_contract_ir::ContractBundle;
 use riffdb_query_module::{
     NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
-    generate_rust_client,
+    generate_rust_client, generate_typescript_client,
 };
 
 struct App<'a> {
-    relative_client: &'a str,
+    relative_rust_client: &'a str,
+    relative_typescript_client: &'a str,
     module_name: &'a str,
     contract: &'a str,
     queries: &'a [(&'a str, &'a str)],
@@ -35,7 +39,8 @@ fn main() {
 
     let apps = [
         App {
-            relative_client: "examples/agent-alpha/generated/rust/client.rs",
+            relative_rust_client: "examples/agent-alpha/generated/rust/client.rs",
+            relative_typescript_client: "examples/agent-alpha/web/src/generated/client.ts",
             module_name: "agent_alpha",
             contract: include_str!("../../../examples/agent-alpha/riffdb/contract.riff"),
             queries: &[(
@@ -44,7 +49,8 @@ fn main() {
             )],
         },
         App {
-            relative_client: "examples/agent-alpha/domains/agent-blog/generated/rust/client.rs",
+            relative_rust_client: "examples/agent-alpha/domains/agent-blog/generated/rust/client.rs",
+            relative_typescript_client: "examples/agent-alpha/domains/agent-blog/generated/typescript/client.ts",
             module_name: "agent_blog",
             contract: include_str!("../../../contracts/agent-alpha/blog.riff"),
             queries: &[
@@ -67,7 +73,8 @@ fn main() {
             ],
         },
         App {
-            relative_client: "examples/agent-alpha/domains/agent-orders/generated/rust/client.rs",
+            relative_rust_client: "examples/agent-alpha/domains/agent-orders/generated/rust/client.rs",
+            relative_typescript_client: "examples/agent-alpha/domains/agent-orders/generated/typescript/client.ts",
             module_name: "agent_orders",
             contract: include_str!("../../../contracts/agent-alpha/orders.riff"),
             queries: &[
@@ -92,18 +99,27 @@ fn main() {
     ];
 
     for app in apps {
-        write_rust_client(&output, app);
+        write_clients(&output, app);
     }
 }
 
-fn write_rust_client(root: &Path, app: App<'_>) {
+fn write_clients(root: &Path, app: App<'_>) {
     let contract = compile_contract_source(app.contract).expect("compile agent-alpha contract");
     let module = compile_module(app.module_name, app.queries, &contract);
-    let path = root.join(app.relative_client);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("generated parent");
+    let rust_path = root.join(app.relative_rust_client);
+    if let Some(parent) = rust_path.parent() {
+        fs::create_dir_all(parent).expect("generated Rust parent");
     }
-    fs::write(path, generate_rust_client(&module, &contract)).expect("write rust client");
+    fs::write(rust_path, generate_rust_client(&module, &contract)).expect("write Rust client");
+    let typescript_path = root.join(app.relative_typescript_client);
+    if let Some(parent) = typescript_path.parent() {
+        fs::create_dir_all(parent).expect("generated TypeScript parent");
+    }
+    fs::write(
+        typescript_path,
+        generate_typescript_client(&module, &contract),
+    )
+    .expect("write TypeScript client");
 }
 
 fn compile_module(name: &str, queries: &[(&str, &str)], contract: &ContractBundle) -> QueryModule {

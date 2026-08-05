@@ -50,7 +50,7 @@ pub use server::{
 
 /// Default in-flight seed commands (bounded client concurrency, not a bulk RPC).
 const DEFAULT_SEED_CONCURRENCY: usize = 128;
-const MAX_SEED_CONCURRENCY: usize = 128;
+const MAX_SEED_CONCURRENCY: usize = riffdb_client_rust::MAX_GENERATED_BATCH_CONCURRENCY;
 
 /// Public symbolic application backend.
 #[derive(Clone)]
