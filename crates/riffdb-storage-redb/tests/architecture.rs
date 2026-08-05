@@ -306,3 +306,58 @@ fn administration_writes_preserve_a_startup_proof_without_history_rescans() {
     assert!(append.contains("validate_administration_tail(transaction)?"));
     assert!(!append.contains("validate_administration_table"));
 }
+
+#[test]
+fn the_shutdown_checkpoint_reads_row_counts_and_counts_every_terminal_failure_once() {
+    let source_dir = crate_root().join("src");
+    let checkpoint = without_whitespace(&production_source(source_dir.join("validated_prefix.rs")));
+    // The write path selects the metadata-derived counts; nothing in it selects
+    // the reference walk, whose only production role is the guarded fallback.
+    let write = checkpoint
+        .split_once("fnwrite_validated_prefix_checkpoint(")
+        .expect("checkpoint write")
+        .1
+        .split_once("fnbuild_checkpoint_from_snapshot(")
+        .expect("checkpoint write end")
+        .0;
+    assert!(write.contains("CheckpointCountSource::DurableLengths{"));
+    assert!(!write.contains("CheckpointCountSource::Walked"));
+    // Every count class must be derivable without a pass: the derivation reads
+    // table row counts and the census only.
+    let derived = checkpoint
+        .split_once("fncounts_from_durable_lengths(")
+        .expect("count derivation")
+        .1
+        .split_once("fnevent_keyed_table_ends_at_or_below(")
+        .expect("count derivation end")
+        .0;
+    assert!(!derived.contains(".iter()"));
+    assert_eq!(derived.matches("table_row_count(transaction,").count(), 8);
+    assert!(derived.contains("checked_sub(execution_failed_rows)"));
+
+    // One writer of a terminal ExecutionFailed row, and it commits through the
+    // one path that censuses it. A second uncounted writer would drift the
+    // derived idempotency count and make the NEXT open refuse.
+    let application = without_whitespace(&production_source(source_dir.join("application.rs")));
+    assert_eq!(
+        application
+            .matches("encode_execution_failed_v1(&terminal)")
+            .count(),
+        1
+    );
+    assert_eq!(application.matches("commit_execution_failure()").count(), 1);
+    let store = without_whitespace(&production_source(source_dir.join("store.rs")));
+    assert_eq!(
+        store
+            .matches("note_terminal_execution_failure_row()")
+            .count(),
+        1
+    );
+    // The census is seeded exactly where the checkpoint write gate opens, so a
+    // checkpoint can never be built from an unseeded census.
+    let startup = without_whitespace(&production_source(source_dir.join("startup.rs")));
+    assert!(startup.contains(
+        "seed_terminal_execution_failure_rows(self.terminal_execution_failure_rows);\
+         self.shared.set_startup_validation_clean(true);"
+    ));
+}

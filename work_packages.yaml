@@ -7576,3 +7576,72 @@ work_packages:
     authoritative MissingCrossLink, and removing either new inspection arm returns its case to
     zero findings; the full workspace battery reports zero failures.
   human_review_triggers: *id001
+- id: WP-448
+  name: Graceful-shutdown checkpoint in O(1) — validated-prefix row counts read from table
+    metadata instead of walking all history (GB)
+  depends_on: [WP-447]
+  objective: Close the measured graceful-shutdown defect the app-baseline sweep exposed —
+    write_validated_prefix_checkpoint rebuilt every checkpoint field by WALKING, so a ~550k-op
+    database spent 20,705ms in shutdown against 143ms with the write disabled (99.3% of
+    shutdown), overrunning the harness PROCESS_STOP_TIMEOUT of 15s into SIGKILL, and the
+    production mirror spends minutes at 10M commits. The eight recorded below-S row counts are
+    the whole cost, and they are recoverable without touching a row — S and the audit bound are
+    the LAST keys of COMMITS and AUDIT in the same snapshot, so "rows with sequence <= S" is
+    "every row in the table" for every count class, and redb already maintains each table's row
+    count in its table header. The single exception is idempotency_count, which admits only
+    StoredOutcome rows, so the terminal ExecutionFailed census — the one quantity a row count
+    cannot express — is maintained in process memory, seeded exactly by the startup walk that
+    opens the checkpoint write gate and advanced by the single lane that writes such a row.
+  requirements: []
+  required_adrs: [ADR-0019, ADR-0085]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/src/validated_prefix.rs,
+    crates/riffdb-storage-redb/src/store.rs, crates/riffdb-storage-redb/src/startup.rs,
+    crates/riffdb-storage-redb/src/application.rs, crates/riffdb-storage-redb/tests/architecture.rs]
+  deliverables:
+  - The checkpoint build given a closed CheckpointCountSource — Walked (the unchanged reference
+    walk, retained as the definition of each count) and DurableLengths (eight redb table row
+    counts plus the terminal census) — with the production write selecting DurableLengths and
+    the record's format, semantics, hashing, and bindings untouched — this changes how the eight
+    numbers are obtained, never what is written
+  - The derivation's preconditions stated where it lives and CHECKED where checking is cheap —
+    the three event-keyed tables have "no row above S" verified from their last key by one
+    B-tree descent, an impossible census or a checked table that fails the probe falls back to
+    the reference walk rather than writing counts the next open would refuse, and the S == 0 /
+    audit-bound == 0 cases return the same zeros the walks return without classifying a row
+  - The terminal ExecutionFailed census seeded in the same statement pair that opens the
+    checkpoint write gate — so no checkpoint can ever be built from an unseeded census — from a
+    single terminal-class decode the IDEMPOTENCY phase already performs on the full walk and on
+    the checkpoint fast path alike, with the phase-8 prefix skip answered from that same decode
+    rather than a second protobuf pass
+  - That census advanced inside the mutation lease that made the row durable, through one
+    commit path used by the one lane that writes a terminal ExecutionFailed row, so a checkpoint
+    write acquiring the lease afterwards can never see the row without its census entry, plus a
+    source guard that a second uncounted writer cannot be added silently
+  - The byte-identity property test as the acceptance centrepiece — on randomized history shapes
+    covering execution failures, empty history, a retention-pruned prefix, and a fully populated
+    database, the two count sources encode the SAME checkpoint bytes and the O(1) source
+    iterates zero rows; plus a zero-walk pin on the real graceful-shutdown write, a
+    fail-closed test proving a drifted census is refused at the next open rather than trusted,
+    and an ignored scale demonstration timing walked against derived
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-redb --lib --all-features -- startup::tests
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test --workspace --all-features
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  exit_gate: On randomized history shapes the metadata-derived counts encode byte-identical
+    checkpoints to the reference walk while iterating zero rows, and dropping the ExecutionFailed
+    subtraction turns those bytes unequal; the graceful-shutdown write on a real clean open
+    iterates zero history rows and the checkpoint it writes is accepted by a reopen that
+    verifies every recorded count against redb's own row counts, while re-pointing that write at
+    CheckpointCountSource::Walked turns the row tally nonzero; one committed terminal execution
+    failure advances the census and keeps the derived bytes equal to the walk's, while neutering
+    that lane's counting turns them unequal; a census drifted by one is refused at the next open
+    rather than silently trusted, and an impossible census falls back to the reference walk
+    before the write; at 550k rows per counted table the build drops from 3,060ms over 4,400,000
+    iterated rows to 432ms over zero, and to 63us with no live entities, leaving the
+    entity-chain fingerprint's current-state ENTITIES pass as the sole remaining
+    history-independent residual; the full workspace battery reports zero failures.
+  human_review_triggers: *id001
