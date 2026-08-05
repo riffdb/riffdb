@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.58
+**Version:** 0.61
 **Status:** Contract-migration and reactive-application implementation
 **Date:** 5 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -36,6 +36,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.61 | 2026-08-05 | Planned WP-458 under PERF-008: immutable checked pre-evaluation contexts and commit intents use shared ownership through the command typestate pipeline, eliminating repeated deep clones without changing authorization, transaction-current validation, record-graph checks, durable bytes, writer ordering, or acknowledgement durability. |
 | 0.58 | 2026-08-05 | Applied accepted ADR-0094: the FIFO writer may share one aggregate conflict lease only among compiler-proved, exact-key-disjoint child appends with no root/existing-row mutation, uniqueness domain, requirement, range/root validation, or commit invariant. Unproved commands retain strict serialization and every item retains independent command semantics. |
 | 0.1 | 2026-07-12 | Initial RiffDB implementation handoff specification for a standalone Rust POC and gated path to MVP. |
 | 0.2 | 2026-07-12 | Reconciled the canonical contract grammar and gRPC surface; fixed commit, idempotency, control-plane, capability, MCP, gate, evidence, and work-package ownership decisions approved after the initial planning review. Associated ADRs remain Proposed until separately reviewed and accepted. |

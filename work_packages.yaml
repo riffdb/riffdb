@@ -1,4 +1,4 @@
-spec_version: '0.58'
+spec_version: '0.61'
 product: RiffDB
 repository: riffdb
 status: contract-migration-and-reactive-application-implementation
@@ -7960,4 +7960,42 @@ work_packages:
     requests remain at most 16 items, the coordinator remains independently count/byte bounded,
     the 128/192/256 sweep has no overload or semantic failure, unary p50 has no material regression,
     and the evidence records whether the full seed reaches 3 seconds.
+  human_review_triggers: *id001
+- id: WP-458
+  name: Shared immutable command intent graph
+  depends_on: [WP-378, WP-457]
+  objective: Remove residual deep clones of the exact pre-evaluation context and commit intent
+    across the command typestate pipeline by sharing their immutable checked graphs, without
+    changing validation, ordering, authorization, durable bytes, storage staging, or durability.
+  requirements: [PERF-008]
+  required_adrs: [ADR-0059, ADR-0060, ADR-0097]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**, crates/riffdb-commit/**,
+    tests/command_semantics/**, tests/recovery/**, benchmarks/run-app-baseline,
+    docs/SUMMARY.md, docs/performance/**]
+  deliverables:
+  - Arc-backed immutable ownership for PreEvaluationCommitContext and CommitIntent, with clones
+    proven to share one checked allocation rather than duplicate pending identity, conflict hashes,
+    evaluated graph, or admission expectation
+  - Unchanged semantic equality and accessor behavior at every admission, validation, reservation,
+    sequence assignment, record construction, memory staging, and redb staging boundary
+  - Existing exact candidate/write-plan/record-graph validation retained, with no trusted bypass,
+    no durable-format change, and byte-identical generated records
+  - Before/after full public seed evidence at retained concurrency 128; retain only if total seed,
+    validation/encoding/staging, and representative unary latency do not materially regress
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-commit --test command_concurrency --test lost_response_replay
+      --all-features
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Command-context and intent clones share immutable checked allocations; every existing
+    semantic, recovery, byte-compatibility, and backend test passes; and the full public seed shows
+    no material total, staging, or unary regression against the WP-457 retained point.
   human_review_triggers: *id001
