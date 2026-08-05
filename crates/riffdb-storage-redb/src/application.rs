@@ -20,26 +20,28 @@ use riffdb_storage_api::{
     ExecutionFailureAwaitingDecision, ExecutionFailureTransitionPort,
     ExecutionFailureTransitionRequestV1, ExpectedEntityState, IdempotencyIdentity,
     IdempotencyIdentityKey, IdempotencyLookupCandidatesV1, IndexEntryMutationV1,
-    IndexEpochPosition, NonEmptyCommandBatch, PartitionIndexTarget, ProvenanceIdCollision,
-    ReadDependencies, ReadDependency, StagedBatchMetrics, StorageError, StorageErrorKind,
-    StorageValueError, StoredAdmissionStateV1, StoredExecutionFailedV1, StoredPendingAdmissionV1,
-    TransactionCurrentState, TransactionCurrentStateBuilder, UniqueIndexOccupancy,
-    UniqueOccupancyKind, ValidationReadRequest, encode_atomic_command_record_set_v1,
+    IndexEpochPosition, IndexRangeEntry, NonEmptyCommandBatch, PartitionIndexTarget,
+    ProvenanceIdCollision, ReadDependencies, ReadDependency, ReadSnapshot, ReadSnapshotBuilder,
+    SnapshotRequest, StagedBatchMetrics, StorageError, StorageErrorKind, StorageValueError,
+    StoredAdmissionStateV1, StoredExecutionFailedV1, StoredPendingAdmissionV1,
+    TransactionCurrentState, TransactionCurrentStateBuilder, TransactionLocalCommandBatch,
+    UniqueIndexOccupancy, UniqueOccupancyKind, ValidationReadRequest,
+    encode_atomic_command_record_set_v1,
 };
 use riffdb_types::ProvenanceId;
 
 use crate::administration::stage_service_audit_group_in_write;
 use crate::codec::{
     IdempotencyRecordV1, decode_application_sequence_allocator_v1, decode_entity_record_v1,
-    decode_idempotency_record_v1, decode_index_epoch_v1, decode_pending_admission_v1,
-    encode_execution_failed_v1, encode_pending_admission_v1,
+    decode_idempotency_record_v1, decode_index_entry_v2, decode_index_epoch_v1,
+    decode_pending_admission_v1, encode_execution_failed_v1, encode_pending_admission_v1,
 };
 use crate::error::{codec_error, precommit_storage_error, table_error};
 use crate::hooks::RedbTestOperation;
 use crate::keys::{
-    encode_application_sequence_key, encode_contract_bundle_key, encode_entity_key,
-    encode_event_key, encode_event_route_key, encode_idempotency_key, encode_index_entry_key,
-    encode_partition_index_key, encode_provenance_key,
+    decode_index_entry_key, encode_application_sequence_key, encode_contract_bundle_key,
+    encode_entity_key, encode_event_key, encode_event_route_key, encode_idempotency_key,
+    encode_index_entry_key, encode_partition_index_key, encode_provenance_key,
 };
 use crate::layout::{
     COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING,
@@ -162,6 +164,15 @@ impl EmptyCommandBatch for RedbEmptyBatch {
     fn rollback(self) {}
 }
 
+impl TransactionLocalCommandBatch for RedbEmptyBatch {
+    fn read_transaction_local_snapshot(
+        &self,
+        request: SnapshotRequest,
+    ) -> Result<ReadSnapshot, StorageError> {
+        read_transaction_local_snapshot(&self.core, request)
+    }
+}
+
 impl NonEmptyCommandBatch for RedbNonEmptyBatch {
     type Candidate = RedbCandidateAdmission<Self>;
 
@@ -279,6 +290,92 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
     }
 
     fn rollback(self) {}
+}
+
+impl TransactionLocalCommandBatch for RedbNonEmptyBatch {
+    fn read_transaction_local_snapshot(
+        &self,
+        request: SnapshotRequest,
+    ) -> Result<ReadSnapshot, StorageError> {
+        read_transaction_local_snapshot(&self.core, request)
+    }
+}
+
+fn read_transaction_local_snapshot(
+    core: &BatchCore,
+    request: SnapshotRequest,
+) -> Result<ReadSnapshot, StorageError> {
+    let transaction = core.access.transaction()?;
+    let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
+    let index_entries = transaction
+        .open_table(SECONDARY_INDEXES)
+        .map_err(table_error)?;
+    let index_epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
+    let observed_through = core
+        .staged
+        .last()
+        .map(|records| records.commit().commit_sequence())
+        .or_else(|| match core.allocator {
+            ApplicationSequenceAllocator::Next(next)
+                if next == riffdb_types::CommitSequence::first() =>
+            {
+                None
+            }
+            ApplicationSequenceAllocator::Next(next) => {
+                riffdb_types::CommitSequence::new(next.get().saturating_sub(1))
+            }
+            ApplicationSequenceAllocator::Exhausted => riffdb_types::CommitSequence::new(u64::MAX),
+        });
+    let mut snapshot =
+        ReadSnapshotBuilder::new(&request, observed_through).map_err(materialization_value)?;
+
+    for target in request.binding_targets() {
+        snapshot
+            .push_binding(entity_observation_from_table(&entities, target)?)
+            .map_err(materialization_value)?;
+    }
+    for target in request.root_validation_targets() {
+        snapshot
+            .push_root_validation(entity_observation_from_table(&entities, target)?)
+            .map_err(materialization_value)?;
+    }
+    for target in request.range_targets() {
+        let epoch = epoch_position_from_table(&index_epochs, target.generation_target())?;
+        let mut range = snapshot
+            .begin_range(target.clone(), epoch)
+            .map_err(materialization_value)?;
+        let prefix = target.prefix().as_bytes();
+        let mut entries = index_entries
+            .range(prefix..)
+            .map_err(precommit_storage_error)?;
+        for entry in &mut entries {
+            let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
+            if !physical_key.value().starts_with(prefix) {
+                break;
+            }
+            let key = decode_index_entry_key(physical_key.value())
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            let decoded = decode_index_entry_v2(encoded.value())?;
+            if decoded.value().key() != &key {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            if decoded.value().partition_key() != target.generation_target().partition_key() {
+                continue;
+            }
+            range
+                .push_entry(
+                    IndexRangeEntry::new(
+                        key.index_id(),
+                        key,
+                        decoded.value().covered_values().clone(),
+                    )
+                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?,
+                )
+                .map_err(materialization_value)?;
+        }
+        range.finish().map_err(materialization_value)?;
+    }
+    snapshot.finish().map_err(materialization_value)
 }
 
 impl AdmissionRepository for RedbOperationalPorts {

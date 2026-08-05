@@ -108,6 +108,12 @@ direction, merged draft, or implementation choice.
 | [0087](0087-projected-ad-hoc-query-surface.md) | Projected Ad-Hoc Query Surface and Resource Governance | Accepted |
 | [0088](0088-contract-migration-check-receipt.md) | Contract Migration Check Receipt | Accepted |
 | [0089](0089-additive-migration-capability-record.md) | Additive Migration Capability Record | Accepted |
+| [0090](0090-stable-id-rename-aliases.md) | Stable-ID Rename Aliases | Accepted |
+| [0091](0091-native-vector-search-projections.md) | Native Vector Search as a Projection | Accepted |
+| [0092](0092-native-full-text-search-projections.md) | Native Full-Text Search as a Projection | Accepted |
+| [0093](0093-replicated-availability-changelog-shipping.md) | Replicated Availability via Authoritative Changelog Shipping | Accepted |
+| [0094](0094-compiler-proved-commutative-child-append-groups.md) | Compiler-Proved Commutative Child-Append Groups | Accepted |
+| [0095](0095-transaction-local-serial-command-micro-batches.md) | Transaction-Local Serial Command Micro-Batches | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

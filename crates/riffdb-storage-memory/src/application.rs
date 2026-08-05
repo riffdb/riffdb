@@ -31,8 +31,8 @@ use riffdb_storage_api::{
     StoredAdmissionStateV1, StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1,
     StoredEventRouteV1, StoredExecutionFailedV1, StoredIndexEpochV1, StoredOutcomeV1,
     StoredPendingAdmissionV1, StoredProvenanceRecordV1, TransactionCurrentState,
-    TransactionCurrentStateBuilder, UniqueIndexOccupancy, UniqueOccupancyKind,
-    ValidationReadRequest, derive_event_hash_v1,
+    TransactionCurrentStateBuilder, TransactionLocalCommandBatch, UniqueIndexOccupancy,
+    UniqueOccupancyKind, ValidationReadRequest, derive_event_hash_v1,
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
@@ -233,6 +233,21 @@ impl EmptyCommandBatch for MemoryEmptyBatch {
     fn rollback(self) {}
 }
 
+impl TransactionLocalCommandBatch for MemoryEmptyBatch {
+    fn read_transaction_local_snapshot(
+        &self,
+        request: SnapshotRequest,
+    ) -> Result<ReadSnapshot, StorageError> {
+        read_snapshot_from_parts(
+            request,
+            &self.core.overlay.commits,
+            &self.core.overlay.entities,
+            &self.core.overlay.index_entries,
+            &self.core.overlay.index_epochs,
+        )
+    }
+}
+
 impl NonEmptyCommandBatch for MemoryNonEmptyBatch {
     type Candidate = MemoryCandidateAdmission<Self>;
 
@@ -333,6 +348,21 @@ impl NonEmptyCommandBatch for MemoryNonEmptyBatch {
     }
 
     fn rollback(self) {}
+}
+
+impl TransactionLocalCommandBatch for MemoryNonEmptyBatch {
+    fn read_transaction_local_snapshot(
+        &self,
+        request: SnapshotRequest,
+    ) -> Result<ReadSnapshot, StorageError> {
+        read_snapshot_from_parts(
+            request,
+            &self.core.overlay.commits,
+            &self.core.overlay.entities,
+            &self.core.overlay.index_entries,
+            &self.core.overlay.index_epochs,
+        )
+    }
 }
 
 fn invariant_value(_: StorageValueError) -> StorageError {
@@ -488,60 +518,71 @@ fn affected_current_state(
 impl SnapshotReader for MemoryOperationalPorts {
     fn read_snapshot(&self, request: SnapshotRequest) -> Result<ReadSnapshot, StorageError> {
         self.read(|state| {
-            let mut builder = ReadSnapshotBuilder::new(
-                &request,
-                state
-                    .commits
-                    .last()
-                    .map(StoredCommitRecordV1::commit_sequence),
+            read_snapshot_from_parts(
+                request,
+                &state.commits,
+                &state.entities,
+                &state.index_entries,
+                &state.index_epochs,
             )
-            .map_err(materialization_value)?;
-            for target in request.binding_targets() {
-                builder
-                    .push_binding(entity_observation(&state.entities, target)?)
-                    .map_err(materialization_value)?;
-            }
-            for target in request.root_validation_targets() {
-                builder
-                    .push_root_validation(entity_observation(&state.entities, target)?)
-                    .map_err(materialization_value)?;
-            }
-            for target in request.range_targets() {
-                let prefix = target.prefix().as_bytes();
-                let start = state
-                    .index_entries
-                    .partition_point(|row| row.key().as_bytes() < prefix);
-                let mut range = builder
-                    .begin_range(
-                        target.clone(),
-                        epoch_position(&state.index_epochs, target.generation_target())?,
-                    )
-                    .map_err(materialization_value)?;
-                for row in state.index_entries[start..]
-                    .iter()
-                    .take_while(|row| row.key().as_bytes().starts_with(prefix))
-                    .filter(|row| {
-                        row.current_record().is_some_and(|current| {
-                            current.partition_key() == target.generation_target().partition_key()
-                        })
-                    })
-                {
-                    range
-                        .push_entry(
-                            IndexRangeEntry::new(
-                                row.key().index_id(),
-                                row.key().clone(),
-                                row.covered_values().clone(),
-                            )
-                            .map_err(corrupt_value)?,
-                        )
-                        .map_err(materialization_value)?;
-                }
-                range.finish().map_err(materialization_value)?;
-            }
-            builder.finish().map_err(materialization_value)
         })
     }
+}
+
+fn read_snapshot_from_parts(
+    request: SnapshotRequest,
+    commits: &[StoredCommitRecordV1],
+    entities: &[StoredEntityRecordV1],
+    index_entries: &[MemoryIndexEntry],
+    index_epochs: &[StoredIndexEpochV1],
+) -> Result<ReadSnapshot, StorageError> {
+    let mut builder = ReadSnapshotBuilder::new(
+        &request,
+        commits.last().map(StoredCommitRecordV1::commit_sequence),
+    )
+    .map_err(materialization_value)?;
+    for target in request.binding_targets() {
+        builder
+            .push_binding(entity_observation(entities, target)?)
+            .map_err(materialization_value)?;
+    }
+    for target in request.root_validation_targets() {
+        builder
+            .push_root_validation(entity_observation(entities, target)?)
+            .map_err(materialization_value)?;
+    }
+    for target in request.range_targets() {
+        let prefix = target.prefix().as_bytes();
+        let start = index_entries.partition_point(|row| row.key().as_bytes() < prefix);
+        let mut range = builder
+            .begin_range(
+                target.clone(),
+                epoch_position(index_epochs, target.generation_target())?,
+            )
+            .map_err(materialization_value)?;
+        for row in index_entries[start..]
+            .iter()
+            .take_while(|row| row.key().as_bytes().starts_with(prefix))
+            .filter(|row| {
+                row.current_record().is_some_and(|current| {
+                    current.partition_key() == target.generation_target().partition_key()
+                })
+            })
+        {
+            range
+                .push_entry(
+                    IndexRangeEntry::new(
+                        row.key().index_id(),
+                        row.key().clone(),
+                        row.covered_values().clone(),
+                    )
+                    .map_err(corrupt_value)?,
+                )
+                .map_err(materialization_value)?;
+        }
+        range.finish().map_err(materialization_value)?;
+    }
+    builder.finish().map_err(materialization_value)
 }
 
 fn matching_admissions<'a>(
@@ -2887,6 +2928,26 @@ mod tests {
                 .read_entity(&first.target)
                 .expect("ordinary read")
                 .is_none()
+        );
+        let serial_snapshot = batch
+            .read_transaction_local_snapshot(
+                SnapshotRequest::new(plan(), vec![second.target.clone()], Vec::new(), Vec::new())
+                    .expect("serial snapshot request"),
+            )
+            .expect("transaction-local snapshot");
+        assert_eq!(
+            serial_snapshot.bindings(),
+            &[EntityObservation::Present(
+                first.records.entities()[0].post_image().clone()
+            )],
+            "later serial work observes the private staged post-image"
+        );
+        assert!(
+            ports
+                .read_entity(&first.target)
+                .expect("ordinary read remains isolated")
+                .is_none(),
+            "transaction-local state never escapes before commit"
         );
 
         let CandidateStartResult::Started(candidate) = batch

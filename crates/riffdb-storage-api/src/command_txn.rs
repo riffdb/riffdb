@@ -7,8 +7,9 @@ use riffdb_types::CommitSequence;
 use crate::{
     AffectedEpochCurrentState, AffectedIndexEpochTargets, ApplicationSequenceAllocator,
     AtomicCommandRecordSet, CommandWriteSetChargeV1, CommandWriteSetPlanV1, CommitIntent,
-    DurabilityMode, MAX_STAGED_COMMANDS, MAX_STAGED_WRITE_BYTES, StorageError, StorageValueError,
-    StoredExecutionFailedV1, StoredOutcomeV1, TransactionCurrentState,
+    DurabilityMode, MAX_STAGED_COMMANDS, MAX_STAGED_WRITE_BYTES, ReadSnapshot, SnapshotRequest,
+    StorageError, StorageValueError, StoredExecutionFailedV1, StoredOutcomeV1,
+    TransactionCurrentState,
 };
 
 /// Checked runtime accounting for a nonempty uncommitted command batch.
@@ -79,6 +80,20 @@ pub trait ApplicationCommandTransactionPort {
 
     /// Opens one synchronous empty batch without staging a write.
     fn begin_empty_batch(&self) -> Result<Self::EmptyBatch, StorageError>;
+}
+
+/// Empty batch state; the trait deliberately exposes no `commit` method.
+pub trait TransactionLocalCommandBatch {
+    /// Reads one compiler-declared bounded snapshot from this batch's private
+    /// transaction state, including every command already staged in FIFO order.
+    ///
+    /// This is deliberately not a general transaction reader. Implementations
+    /// accept only the existing closed [`SnapshotRequest`] shape and return the
+    /// same bounded [`ReadSnapshot`] used by ordinary command evaluation.
+    fn read_transaction_local_snapshot(
+        &self,
+        request: SnapshotRequest,
+    ) -> Result<ReadSnapshot, StorageError>;
 }
 
 /// Empty batch state; the trait deliberately exposes no `commit` method.

@@ -1424,8 +1424,8 @@ fn command_driver_fences_every_late_unknown_and_owns_one_bounded_retry_loop() {
         production
             .matches("::StatusUnknown(uncertain) => {")
             .count(),
-        3,
-        "single and grouped completion plus execution-failure transitions may become status-unknown"
+        4,
+        "single, compatible-group, serial-group, and execution-failure transitions may become status-unknown"
     );
 
     let attempt_driver = production

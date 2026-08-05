@@ -127,6 +127,16 @@ impl PendingCommandAttempts {
             .plan()
             .commutative_child_append_proof(self.resolved_plan.bundle().bundle().schema())
     }
+
+    /// Returns whether this is a fresh synchronous terminal-admission attempt,
+    /// the initial closed eligibility class for serial micro-batching.
+    pub(crate) const fn serial_micro_batch_eligible(&self) -> bool {
+        self.terminal_admission
+    }
+
+    pub(crate) fn idempotency_identity(&self) -> &riffdb_storage_api::IdempotencyIdentity {
+        self.commit_context.pending().identity()
+    }
 }
 
 impl fmt::Debug for PendingCommandAttempts {
@@ -814,9 +824,17 @@ pub(crate) enum CommandMutationAuthority {
     ProvenCommutativeGroup {
         _lease: Arc<ProvenCommutativeGroupLease>,
     },
+    TransactionLocalSerialGroup {
+        _lease: Arc<TransactionLocalSerialGroupLease>,
+    },
 }
 
 pub(crate) struct ProvenCommutativeGroupLease {
+    _lease: MutationLease,
+}
+
+/// Sealed union lease for FIFO transaction-local serial evaluation.
+pub(crate) struct TransactionLocalSerialGroupLease {
     _lease: MutationLease,
 }
 
@@ -825,6 +843,12 @@ impl AcquiredCommandAttempt {
         let Self { state, lease } = self;
         drop(lease);
         state
+    }
+
+    /// Returns the exact compiler-derived snapshot request that may be read
+    /// through the closed transaction-local batch protocol.
+    pub(crate) fn transaction_local_snapshot_request(&self) -> SnapshotRequest {
+        self.state.snapshot_request.clone()
     }
 }
 
@@ -863,7 +887,7 @@ pub(crate) fn evaluate_acquired_command_attempt(
     admission: &dyn AdmissionRepository,
     snapshots: &dyn SnapshotReader,
 ) -> Result<CommandAttemptResolution, CommandAttemptError> {
-    let AcquiredCommandAttempt { mut state, lease } = acquired;
+    let AcquiredCommandAttempt { state, lease } = acquired;
     let durable = admission
         .lookup_admission(state.lookup_candidates.clone())
         .map_err(CommandAttemptError::PendingRecheck)?;
@@ -893,6 +917,27 @@ pub(crate) fn evaluate_acquired_command_attempt(
     let raw_snapshot = snapshots
         .read_snapshot(state.snapshot_request.clone())
         .map_err(CommandAttemptError::SnapshotRead)?;
+    finish_acquired_evaluation(state, lease, raw_snapshot)
+}
+
+/// Deterministically evaluates a fresh synchronous attempt from the exact
+/// snapshot read through its private serial-batch transaction.
+pub(crate) fn evaluate_transaction_local_acquired_command_attempt(
+    acquired: AcquiredCommandAttempt,
+    raw_snapshot: ReadSnapshot,
+) -> Result<CommandAttemptResolution, CommandAttemptError> {
+    let AcquiredCommandAttempt { state, lease } = acquired;
+    if !state.terminal_admission {
+        return Err(CommandAttemptError::Integrity);
+    }
+    finish_acquired_evaluation(state, lease, raw_snapshot)
+}
+
+fn finish_acquired_evaluation(
+    mut state: PendingCommandAttempts,
+    lease: CommandMutationAuthority,
+    raw_snapshot: ReadSnapshot,
+) -> Result<CommandAttemptResolution, CommandAttemptError> {
     check_request_control(state.deadline, &state.cancellation)?;
     if !snapshot_matches_request(&state.snapshot_request, &raw_snapshot) {
         return Err(CommandAttemptError::Integrity);
@@ -1025,6 +1070,70 @@ pub(crate) async fn acquire_commutative_command_group(
         .map(|state| AcquiredCommandAttempt {
             state,
             lease: CommandMutationAuthority::ProvenCommutativeGroup {
+                _lease: Arc::clone(&authority),
+            },
+        })
+        .collect())
+}
+
+/// Acquires one canonical union capability for FIFO serial micro-batching.
+///
+/// Unlike the commutative path, overlapping keys are allowed because every
+/// item is evaluated against the transaction state staged by its predecessors.
+pub(crate) async fn acquire_transaction_local_serial_group(
+    states: Vec<PendingCommandAttempts>,
+    conflicts: &dyn ConflictManager,
+) -> Result<Vec<AcquiredCommandAttempt>, (Vec<PendingCommandAttempts>, CommandAttemptError)> {
+    if states.len() < 2
+        || states
+            .iter()
+            .any(|state| !state.serial_micro_batch_eligible())
+    {
+        return Err((states, CommandAttemptError::Integrity));
+    }
+    if let Some(error) = states.iter().find_map(|state| {
+        if state.completed_attempts >= MAX_COMMAND_EVALUATION_ATTEMPTS_V1 {
+            Some(CommandAttemptError::RetryBudgetExhausted)
+        } else {
+            check_request_control(state.deadline, &state.cancellation).err()
+        }
+    }) {
+        return Err((states, error));
+    }
+
+    let mut keys = states
+        .iter()
+        .flat_map(|state| state.raw_conflict_keys.iter().cloned())
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    keys.dedup();
+    let Some(first) = states.first() else {
+        return Err((states, CommandAttemptError::Integrity));
+    };
+    let deadline = states
+        .iter()
+        .map(|state| state.deadline)
+        .min()
+        .unwrap_or(first.deadline);
+    let cancellation = first.cancellation.clone();
+    let lease = match conflicts.acquire_mut(keys, deadline, cancellation).await {
+        Ok(lease) => lease,
+        Err(error) => return Err((states, map_conflict_error(error))),
+    };
+    if let Some(error) = states
+        .iter()
+        .find_map(|state| check_request_control(state.deadline, &state.cancellation).err())
+    {
+        drop(lease);
+        return Err((states, error));
+    }
+
+    let authority = Arc::new(TransactionLocalSerialGroupLease { _lease: lease });
+    Ok(states
+        .into_iter()
+        .map(|state| AcquiredCommandAttempt {
+            state,
+            lease: CommandMutationAuthority::TransactionLocalSerialGroup {
                 _lease: Arc::clone(&authority),
             },
         })

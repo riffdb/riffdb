@@ -20,9 +20,9 @@ use riffdb_storage_api::{
     AffectedIndexEpochTargets, ApplicationCommandTransactionPort, AssignedCommandSequence,
     AtomicCommandRecordSet, AuditPrincipalV1, AuthoritativeIndexScanPage,
     AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader,
-    CandidateAdmissionResult, CandidateCapacityResult, CatalogActivationIntentV1,
-    CatalogActivationResult, CatalogAdministrationRepository, CommandCandidateAdmission,
-    CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
+    CandidateAdmissionResult, CandidateCapacityResult, CandidateStartResult,
+    CatalogActivationIntentV1, CatalogActivationResult, CatalogAdministrationRepository,
+    CommandCandidateAdmission, CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
     CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
     CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
     CurrentIndexGenerationObservation, DatabaseIdentityProbe, DatabaseIdentityProbePort,
@@ -706,6 +706,81 @@ fn commit_command_fixture(ports: &RedbOperationalPorts, fixture: &CommandFixture
         .expect("commit complete command graph and audit lifecycle");
 }
 
+fn commit_two_command_group(
+    ports: &RedbOperationalPorts,
+    first: &CommandFixture,
+    second: &CommandFixture,
+) {
+    let candidate = ports
+        .begin_empty_batch()
+        .expect("begin serial recovery batch")
+        .begin_candidate(Box::new(first.intent.clone()))
+        .expect("begin first candidate");
+    let CandidateAdmissionResult::Proceed(candidate) = candidate
+        .recheck_admission()
+        .expect("recheck first admission")
+    else {
+        panic!("first fresh admission proceeds");
+    };
+    let (candidate, _) = candidate
+        .read_transaction_current()
+        .expect("read first current state");
+    let candidate = candidate
+        .plan_validated(first.affected_targets.clone())
+        .read_affected_epoch_current()
+        .expect("read first affected state");
+    let CandidateCapacityResult::Reserved(candidate) = candidate
+        .reserve_capacity(first.write_plan.clone())
+        .expect("reserve first graph")
+    else {
+        panic!("first graph fits");
+    };
+    let batch = candidate
+        .assign_sequence()
+        .expect("assign first sequence")
+        .stage(first.records.clone())
+        .expect("stage first graph");
+
+    let CandidateStartResult::Started(candidate) = batch
+        .begin_candidate(Box::new(second.intent.clone()))
+        .expect("begin second candidate")
+    else {
+        panic!("two-command recovery group fits");
+    };
+    let CandidateAdmissionResult::Proceed(candidate) = candidate
+        .recheck_admission()
+        .expect("recheck second admission")
+    else {
+        panic!("second fresh admission proceeds");
+    };
+    let (candidate, _) = candidate
+        .read_transaction_current()
+        .expect("read second transaction-local state");
+    let candidate = candidate
+        .plan_validated(second.affected_targets.clone())
+        .read_affected_epoch_current()
+        .expect("read second affected state");
+    let CandidateCapacityResult::Reserved(candidate) = candidate
+        .reserve_capacity(second.write_plan.clone())
+        .expect("reserve second graph")
+    else {
+        panic!("second graph fits");
+    };
+    candidate
+        .assign_sequence()
+        .expect("assign second sequence")
+        .stage(second.records.clone())
+        .expect("stage second graph")
+        .commit_with_service_audit_transitions(
+            DurabilityMode::Sync,
+            vec![
+                command_audit_transition(first),
+                command_audit_transition(second),
+            ],
+        )
+        .expect("commit complete two-command graph and audit lifecycles");
+}
+
 fn command_audit_transition(
     fixture: &CommandFixture,
 ) -> riffdb_storage_api::CommandServiceAuditTransitionV1 {
@@ -1209,6 +1284,12 @@ fn process_recovery_child() {
         "after-command-batch-commit" => {
             RedbTestController::abort_after_commit(RedbTestOperation::CommandBatch)
         }
+        "before-command-group-commit" => {
+            RedbTestController::abort_before_commit(RedbTestOperation::CommandBatch)
+        }
+        "after-command-group-commit" => {
+            RedbTestController::abort_after_commit(RedbTestOperation::CommandBatch)
+        }
         "before-index-migration-batch-commit" => {
             RedbTestController::abort_before_commit(RedbTestOperation::IndexMigrationBatch)
         }
@@ -1267,6 +1348,10 @@ fn process_recovery_child() {
         "before-command-batch-commit" | "after-command-batch-commit" => {
             let ports = open_operational(store);
             commit_command_fixture(&ports, &command_fixture());
+        }
+        "before-command-group-commit" | "after-command-group-commit" => {
+            let ports = open_operational(store);
+            commit_two_command_group(&ports, &command_fixture_at(1), &command_fixture_at(2));
         }
         "before-index-migration-batch-commit" | "after-index-migration-batch-commit" => {
             let (_, catalog_outcome, outcome) = complete_startup_pass(store);
@@ -1804,6 +1889,77 @@ fn crash_after_command_commit_preserves_the_complete_reciprocal_graph() {
 
         let ports = open_operational(RedbStore::open(&path.0).expect("repeat postcommit recovery"));
         assert_postcommit_command_state(&ports, &command_fixture());
+    }
+}
+
+#[test]
+fn serial_group_crash_before_commit_leaves_every_command_absent() {
+    let path = TestDatabasePath::new("before-command-group");
+    prepare_command_database(&path.0);
+    run_crashing_child_with_profile(
+        "before-command-group-commit",
+        &path.0,
+        RedbCommitProfile::Standard,
+    );
+
+    let ports = open_operational(RedbStore::open(&path.0).expect("recover group precommit crash"));
+    for fixture in [command_fixture_at(1), command_fixture_at(2)] {
+        assert_eq!(
+            ports
+                .lookup_admission(fixture.candidates.clone())
+                .expect("lookup absent grouped identity"),
+            AdmissionLookupResultV1::NotFound
+        );
+        assert_eq!(
+            ports.read_entity(&fixture.target).expect("read entity"),
+            None
+        );
+        assert_eq!(
+            ports
+                .read_commit(fixture.records.commit().commit_sequence())
+                .expect("read absent grouped commit"),
+            None
+        );
+    }
+    assert!(command_audit_phases(&ports).is_empty());
+}
+
+#[test]
+fn serial_group_crash_after_commit_preserves_every_complete_command() {
+    let path = TestDatabasePath::new("after-command-group");
+    prepare_command_database(&path.0);
+    run_crashing_child_with_profile(
+        "after-command-group-commit",
+        &path.0,
+        RedbCommitProfile::Standard,
+    );
+
+    let ports = open_operational(RedbStore::open(&path.0).expect("recover group postcommit crash"));
+    for fixture in [command_fixture_at(1), command_fixture_at(2)] {
+        let AdmissionLookupResultV1::Found(admission) = ports
+            .lookup_admission(fixture.candidates.clone())
+            .expect("lookup grouped identity")
+        else {
+            panic!("each grouped identity is terminal");
+        };
+        assert_eq!(
+            *admission,
+            riffdb_storage_api::StoredAdmissionStateV1::StoredOutcome(
+                fixture.records.stored_outcome().clone()
+            )
+        );
+        assert_eq!(
+            ports
+                .read_entity(&fixture.target)
+                .expect("read grouped entity"),
+            Some(fixture.records.entities()[0].post_image().clone())
+        );
+        assert_eq!(
+            ports
+                .read_commit(fixture.records.commit().commit_sequence())
+                .expect("read grouped commit"),
+            Some(fixture.records.commit().clone())
+        );
     }
 }
 
