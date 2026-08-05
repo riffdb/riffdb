@@ -1,6 +1,6 @@
 //! Consuming synchronous type-state protocol for authoritative command batches.
 
-use std::num::NonZeroU8;
+use std::num::NonZeroU16;
 
 use riffdb_types::CommitSequence;
 
@@ -15,7 +15,7 @@ use crate::{
 /// Checked runtime accounting for a nonempty uncommitted command batch.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct StagedBatchMetrics {
-    command_count: NonZeroU8,
+    command_count: NonZeroU16,
     semantic_bytes: usize,
     reserved_encoded_bytes: usize,
 }
@@ -23,7 +23,7 @@ pub struct StagedBatchMetrics {
 impl StagedBatchMetrics {
     /// Validates the accepted command-count and aggregate write-set ceilings.
     pub fn new(
-        command_count: NonZeroU8,
+        command_count: NonZeroU16,
         semantic_bytes: usize,
         reserved_encoded_bytes: usize,
     ) -> Result<Self, StorageValueError> {
@@ -42,7 +42,7 @@ impl StagedBatchMetrics {
 
     /// Returns the nonzero number of completely staged commands.
     #[must_use]
-    pub const fn command_count(self) -> NonZeroU8 {
+    pub const fn command_count(self) -> NonZeroU16 {
         self.command_count
     }
 

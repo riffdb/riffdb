@@ -487,7 +487,9 @@ fn shutdown_drains_a_full_workload_queue_without_sleeping() {
 }
 
 #[test]
-fn actor_drains_the_exact_64_item_internal_group_boundary_without_waiting() {
+fn actor_drains_the_exact_internal_group_boundary_without_waiting() {
+    let group_bound = riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
+    let group_capacity = u16::try_from(group_bound).expect("bounded group capacity");
     let (entered_sender, entered_receiver) = std_mpsc::sync_channel(1);
     let (release_sender, release_receiver) = std_mpsc::sync_channel(0);
     let group_sizes = Arc::new(Mutex::new(Vec::new()));
@@ -498,7 +500,7 @@ fn actor_drains_the_exact_64_item_internal_group_boundary_without_waiting() {
         group_sizes: Arc::clone(&group_sizes),
     };
     let running = RunningCommandCoordinator::start_audit_only(
-        capacity(64),
+        capacity(group_capacity),
         repository,
         TestClock::fixed(fixed_timestamp()),
     )
@@ -511,11 +513,12 @@ fn actor_drains_the_exact_64_item_internal_group_boundary_without_waiting() {
         .expect("first accepted append");
     entered_receiver.recv().expect("actor entered first append");
 
-    let queued = (0_u8..64)
+    let queued = (0..group_bound)
         .map(|index| {
+            let seed = u8::try_from(index).expect("bounded request seed");
             block_on(executor.reserve_capacity())
                 .expect("queued slot")
-                .submit(input(index.wrapping_add(0x20)))
+                .submit(input(seed.wrapping_add(0x20)))
                 .expect("queued accepted append")
         })
         .collect::<Vec<_>>();
@@ -532,7 +535,7 @@ fn actor_drains_the_exact_64_item_internal_group_boundary_without_waiting() {
 
     assert_eq!(
         group_sizes.lock().expect("group-size probe").as_slice(),
-        [64]
+        [group_bound]
     );
 }
 

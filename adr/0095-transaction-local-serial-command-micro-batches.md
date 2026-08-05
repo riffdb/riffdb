@@ -8,6 +8,7 @@
 - **Related work packages:** `WP-453`, `WP-454`
 - **Amends:** ADR-0004, ADR-0058, ADR-0059, ADR-0060, ADR-0061,
   ADR-0094
+- **Amended by:** ADR-0096
 
 ## Context
 

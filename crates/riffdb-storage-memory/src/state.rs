@@ -635,7 +635,7 @@ impl MemoryState {
     #[allow(dead_code)]
     pub(crate) fn prepare_administration_allocation(
         &self,
-        count: u8,
+        count: u16,
     ) -> Result<PreparedAdministrationAllocation, StorageError> {
         let MemoryMetadataSlot::Retained(metadata) = &self.metadata else {
             return Err(storage_error(StorageErrorKind::CorruptData));

@@ -62,7 +62,7 @@ impl ApplicationSequenceAllocator {
     /// Preflights an entire bounded consecutive range before assigning any value.
     pub fn allocate_consecutive(
         &self,
-        count: u8,
+        count: u16,
     ) -> Result<ApplicationSequenceRange, SequenceAllocationError> {
         validate_application_count(count)?;
         let Self::Next(mut current) = *self else {
@@ -160,7 +160,7 @@ impl AdministrationSequenceAllocator {
     /// Preflights an entire bounded consecutive range before assigning any value.
     pub fn allocate_consecutive(
         &self,
-        count: u8,
+        count: u16,
     ) -> Result<AdministrationSequenceRange, SequenceAllocationError> {
         validate_administration_count(count)?;
         let Self::Next(mut current) = *self else {
@@ -222,22 +222,24 @@ impl AdministrationSequenceRange {
     }
 }
 
-fn validate_application_count(count: u8) -> Result<(), SequenceAllocationError> {
-    match count {
-        0 => Err(SequenceAllocationError::ZeroCount),
-        1..=64 => Ok(()),
-        _ => Err(SequenceAllocationError::TooMany),
+fn validate_application_count(count: u16) -> Result<(), SequenceAllocationError> {
+    if count == 0 {
+        Err(SequenceAllocationError::ZeroCount)
+    } else if usize::from(count) <= crate::MAX_STAGED_COMMANDS {
+        Ok(())
+    } else {
+        Err(SequenceAllocationError::TooMany)
     }
 }
 
-fn validate_administration_count(count: u8) -> Result<(), SequenceAllocationError> {
-    match count {
-        0 => Err(SequenceAllocationError::ZeroCount),
+fn validate_administration_count(count: u16) -> Result<(), SequenceAllocationError> {
+    if count == 0 {
+        Err(SequenceAllocationError::ZeroCount)
+    } else if usize::from(count) <= crate::MAX_GROUPED_WRITE_TRANSITIONS.saturating_mul(2) {
         // One fused command transition contains Started plus one terminal row.
-        // A maximum 64-command group therefore allocates at most 128 audit
-        // sequences in the same authoritative transaction.
-        1..=128 => Ok(()),
-        _ => Err(SequenceAllocationError::TooMany),
+        Ok(())
+    } else {
+        Err(SequenceAllocationError::TooMany)
     }
 }
 
@@ -248,9 +250,13 @@ mod tests {
     };
 
     #[test]
-    fn application_allocation_remains_bounded_to_sixty_four() {
+    fn application_allocation_accepts_256_and_rejects_257() {
+        let allocation = ApplicationSequenceAllocator::initial()
+            .allocate_consecutive(256)
+            .expect("256 application sequences are bounded");
+        assert_eq!(allocation.assigned().len(), 256);
         assert_eq!(
-            ApplicationSequenceAllocator::initial().allocate_consecutive(65),
+            ApplicationSequenceAllocator::initial().allocate_consecutive(257),
             Err(SequenceAllocationError::TooMany)
         );
     }
@@ -258,11 +264,11 @@ mod tests {
     #[test]
     fn administration_allocation_covers_two_rows_per_maximum_command_group() {
         let allocation = AdministrationSequenceAllocator::initial()
-            .allocate_consecutive(128)
-            .expect("128 fused service-audit rows are bounded");
-        assert_eq!(allocation.assigned().len(), 128);
+            .allocate_consecutive(512)
+            .expect("512 fused service-audit rows are bounded");
+        assert_eq!(allocation.assigned().len(), 512);
         assert_eq!(
-            AdministrationSequenceAllocator::initial().allocate_consecutive(129),
+            AdministrationSequenceAllocator::initial().allocate_consecutive(513),
             Err(SequenceAllocationError::TooMany)
         );
     }

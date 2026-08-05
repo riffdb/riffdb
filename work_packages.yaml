@@ -7781,7 +7781,7 @@ work_packages:
     partial state, acknowledgement, or authority.
   requirements: [PERF-004, PERF-005, PERF-008, PERF-009, PERF-010]
   required_adrs: [ADR-0004, ADR-0005, ADR-0058, ADR-0059, ADR-0060, ADR-0061, ADR-0094,
-    ADR-0095]
+    ADR-0095, ADR-0096]
   allowed_paths: [SPEC.md, work_packages.yaml, adr/**, crates/riffdb-conflict/**,
     crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
     crates/riffdb-commit/**, crates/riffdb-runtime/**, crates/riffdb-observability/**,
@@ -7864,4 +7864,46 @@ work_packages:
   exit_gate: Catch-up publishes the same latest race-free result and frontier with no reader-visible
     partial commit, holdback never overclaims state, checkpoint/reopen remains equivalent, and the
     full-seed run shows no regression.
+  human_review_triggers: *id001
+- id: WP-456
+  name: Dynamic physical groups under a larger static safety ceiling
+  depends_on: [WP-453, WP-455]
+  objective: Raise the internal authoritative transaction count ceiling from 64 to 256 while
+    retaining dynamic FIFO prefix selection, the unchanged 16 MiB byte ceiling, the existing
+    oldest-command deadline, independent command semantics, and every fail-closed recovery bound.
+  requirements: [PERF-004, PERF-005, PERF-006, PERF-008, PERF-009, PERF-010]
+  required_adrs: [ADR-0004, ADR-0005, ADR-0058, ADR-0059, ADR-0060, ADR-0061, ADR-0094,
+    ADR-0095, ADR-0096]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**, crates/riffdb-commit/**,
+    crates/riffdb-observability/**, crates/riffdb-server/**, tests/command_semantics/**,
+    tests/recovery/**, benchmarks/command-growth/**, examples/app-baseline/**,
+    benchmarks/run-app-baseline, docs/performance/**]
+  deliverables:
+  - Accepted amendments defining 256 as a static safety ceiling and dynamic actual cardinality from
+    1 through 256 without extending the 200-microsecond oldest-command deadline
+  - Count, 16 MiB byte, FIFO, hard-barrier, cancellation, shutdown, and queue-capacity tests at the
+    exact new boundary and one above it
+  - Memory and redb all-or-absent recovery plus independent unknown-commit classification for the
+    enlarged bounded group
+  - Fixed-cardinality 1-through-256 completion telemetry and benchmark parsing with no
+    high-cardinality labels
+  - Full-seed concurrency sweep recording effective group distributions, physical commits,
+    staging, flush, latency, and the sub-3-second decision
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-observability --all-features
+  - cargo +1.97.0 test -p riffdb-server --all-features
+  - cargo +1.97.0 test --test command_concurrency --all-features
+  - ./benchmarks/run-app-baseline --self-test
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Actual groups remain dynamically bounded by ready FIFO work, bytes, eligibility,
+    barriers, and the oldest deadline; exact-bound recovery is all-or-absent; unary latency does not
+    regress; and same-run seed evidence determines whether the enlarged ceiling reaches 3 seconds.
   human_review_triggers: *id001

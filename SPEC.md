@@ -95,6 +95,7 @@
 | 0.56 | 2026-07-31 | Applied accepted ADR-0076 through ADR-0079 and completed the WP-405 architecture gate. P7 implementation may proceed in dependency order through WP-406 to WP-413 under the frozen migration compatibility, source/IR/lock, staged recovery, coordinator, permission, public API, immutable-history, predecessor-write, and automatic-rollback boundaries. |
 | 0.57 | 2026-07-31 | Applied accepted ADR-0080 and planned P8 through WP-414 to WP-421: partition-proved domain-event streams, bounded durable consumers, race-free live named RiffQL, generated reactive clients, and freshly authorized contextual agent work extend the existing atomic event/commit model without raw CDC, global ordering, exactly-once claims, persisted hydrated context, direct browser authority, or in-transaction agents. |
 | 0.58 | 2026-08-05 | Applied accepted ADR-0094 and ADR-0095: compiler-proved commutative child appends retain same-snapshot parallel grouping, while otherwise conflicting fresh synchronous commands may use one bounded FIFO transaction-local serial micro-batch. Later commands observe only declared state staged by earlier commands; every command retains independent identity, authorization, outcome, sequence, audit, provenance, acknowledgement, and uncertainty recovery; one complete Immediate commit exposes all-or-absent state; public transactions and visible non-durable commit chains remain prohibited. |
+| 0.59 | 2026-08-05 | Applied accepted ADR-0096: the internal authoritative transaction has a static 256-command safety ceiling while actual physical groups remain dynamically selected from the eligible FIFO prefix available within the unchanged oldest-command deadline, 16 MiB byte ceiling, compatibility, cancellation, and hard barriers. The public batch remains 16; one writer, Immediate acknowledgement, independent command semantics, and fail-closed recovery are unchanged. |
 
 ### Normative language
 
@@ -1983,7 +1984,7 @@ A mutating command follows this sequence:
     idempotency identity before any reevaluation or source call.
 14. For a commit-required result, the coordinator opens a short synchronous
     write transaction and starts a count-only candidate. Starting the candidate
-    checks only the 64-command count ceiling; it does not assign a sequence or
+    checks only the 256-command count ceiling; it does not assign a sequence or
     guess an encoded write-set charge.
 15. The transaction rechecks the exact pending identity, input, admission, and
     plan reference, then reads all influential validation targets from
@@ -2668,7 +2669,7 @@ The v1 semantic storage hard ceilings are 4,096 binding observations, read
 dependencies, validation targets, mutations, index deltas, event intents, or
 outbox intents per command; 1 MiB per canonical entity/event/outcome value;
 16 MiB per owned snapshot; 15 MiB per pre-commit intent or commit-record semantic
-payload; 64 commands and 16 MiB aggregate staged write set per write transaction;
+payload; 256 commands and 16 MiB aggregate staged write set per write transaction;
 500 rows and 4 MiB per generic scan page; independently, 500 complete index rows
 and 4 MiB for each startup migration evidence page and each conservative
 instruction/write batch; 500 records and 16 MiB encoded content
@@ -6523,9 +6524,12 @@ ADR-0055.
   reviewed crash defense, weakening atomic records, or acknowledging before
   the configured durable boundary.
 - `PERF-004`: Production online writes MUST pass through one bounded typed FIFO
-  scheduler. It MAY group at most 64 compatible transitions for at most 200
-  microseconds and MUST retain the existing 64-command and 16 MiB transaction
-  ceilings. The public command transport batch MUST remain capped at 16
+  scheduler. It MAY group at most 256 compatible or transaction-locally serial
+  transitions for at most 200 microseconds and MUST retain the 256-command and
+  16 MiB transaction ceilings. Actual group cardinality MUST remain dynamically
+  selected from the available eligible FIFO prefix and MUST NOT extend or
+  restart the oldest-command deadline to approach the count ceiling. The public
+  command transport batch MUST remain capped at 16
   ordinary commands. A newly executed, successfully returned application
   command MUST reach one atomic durable terminal boundary containing its
   mutation graph, outcome, provenance, event intent, commit identity, and
@@ -6567,7 +6571,7 @@ ADR-0055.
 - `PERF-006`: After receiving the oldest groupable transition, the production
   scheduler MAY wait for compatible work until that transition's existing
   200-microsecond deadline even when an intermediate queue poll is empty. It
-  MUST drain into a bounded ordered buffer, select at most 64 compatible
+  MUST drain into a bounded ordered buffer, select at most 256 eligible
   commands, preserve every deferred message's relative order, and treat
   capability, catalog, administrative-write, shutdown, fencing, and readiness
   transitions as non-bypassable barriers. Historical idempotency selection MAY
@@ -6600,7 +6604,7 @@ ADR-0055.
   sole writer transaction, and no worker may perform an untracked effect.
   A bounded FIFO serial micro-batch MAY instead read each command's exact
   compiler-declared snapshot from one private writer transaction after staging
-  its predecessors. It MUST retain the 64-command and 16 MiB ceilings, expose no
+  its predecessors. It MUST retain the 256-command and 16 MiB ceilings, expose no
   partial state or public transaction, commit all staged graphs through one
   complete Immediate boundary, and resolve uncertainty independently by exact
   command identity. On

@@ -219,7 +219,7 @@ fn validate_administration_stream_readonly(
 
 fn allocate_sequences(
     allocator: AdministrationSequenceAllocator,
-    count: u8,
+    count: u16,
 ) -> Result<(Vec<AdministrationSequence>, AdministrationSequenceAllocator), StorageError> {
     let allocation = allocator
         .allocate_consecutive(count)
@@ -1765,7 +1765,7 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
             allowed.push(phase_allowed && service_link_is_valid(transaction, intent)?);
         }
 
-        let append_count = u8::try_from(allowed.iter().filter(|allowed| **allowed).count())
+        let append_count = u16::try_from(allowed.iter().filter(|allowed| **allowed).count())
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         if append_count == 0 {
             access.abort()?;
@@ -1834,7 +1834,7 @@ impl AuditedAdmissionRepository for RedbOperationalPorts {
             }
         }
 
-        let count = u8::try_from(requests.len())
+        let count = u16::try_from(requests.len())
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let (assigned, next) = allocate_sequences(allocator, count)?;
         let mut outputs = Vec::with_capacity(requests.len());
@@ -1946,7 +1946,7 @@ pub(crate) fn stage_service_audit_group_in_write(
     }
 
     let count =
-        u8::try_from(intents.len()).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+        u16::try_from(intents.len()).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
     let (assigned, next) = allocate_sequences(allocator, count)?;
     let mut records = Vec::with_capacity(intents.len());
     for (intent, sequence) in intents.iter().zip(assigned) {
@@ -2911,12 +2911,15 @@ mod tests {
     }
 
     fn command_audit(
-        request: u8,
+        request: u16,
         phase: ServiceAuditPhaseV1,
         seconds: i64,
     ) -> ServiceAuditAppendIntentV1 {
+        let seed = u8::try_from(request % 256).expect("bounded request seed");
+        let mut request_bytes = uuid_bytes(seed);
+        request_bytes[..2].copy_from_slice(&request.to_be_bytes());
         ServiceAuditAppendIntentV1::new(
-            request_id(request),
+            RequestId::from_bytes(request_bytes).expect("request ID"),
             Timestamp::new(seconds, 0).expect("timestamp"),
             ServiceOperationV1::ExecuteCommand,
             phase,
@@ -3053,7 +3056,7 @@ mod tests {
         let (_path, ports) = initialized_ports("fused-audit-maximum");
         let group_bound = riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
         let mut intents = Vec::with_capacity(group_bound * 2);
-        for request in 1..=u8::try_from(group_bound).expect("group bound") {
+        for request in 1..=u16::try_from(group_bound).expect("group bound") {
             intents.push(command_audit(
                 request,
                 ServiceAuditPhaseV1::Started,
@@ -3087,7 +3090,7 @@ mod tests {
                 .expect("last record")
                 .administration_sequence()
                 .get(),
-            128
+            u64::try_from(group_bound * 2).expect("bounded audit sequence")
         );
         access.abort().expect("abort uncommitted test transaction");
     }

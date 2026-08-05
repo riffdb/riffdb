@@ -2484,7 +2484,7 @@ mod tests {
 
     #[test]
     fn write_group_summary_reports_modal_and_grouped_fraction() {
-        let mut groups = [0_u64; 64];
+        let mut groups = vec![0_u64; 8];
         groups[0] = 10; // size 1
         groups[3] = 30; // size 4 modal
         groups[7] = 10; // size 8

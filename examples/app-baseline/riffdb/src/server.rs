@@ -48,6 +48,7 @@ const AUDIENCE: &str = "riffdb-grpc-loopback";
 const ENVIRONMENT: &str = "app-baseline";
 const READY_PREFIX: &str = "riffdbd-ready-v1\t";
 const WRITE_GROUP_PREFIX: &str = "riffdb-write-completion-groups-v1\t";
+const WRITE_GROUP_BUCKETS: usize = riffdb_storage_redb::benchmark_support::MAX_GROUP_COMMANDS;
 const DISPATCH_REASON_PREFIX: &str = "riffdb-dispatch-reasons-v1\t";
 const READ_STAGE_PREFIX: &str = "riffdb-read-stages-v1\t";
 const COMMAND_STAGE_PREFIX: &str = "riffdb-command-stages-v1\t";
@@ -185,7 +186,7 @@ pub struct RiffDbServerSession {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RiffDbShutdownEvidence {
     /// Successful completion groups indexed by group size minus one.
-    pub write_completion_groups: [u64; 64],
+    pub write_completion_groups: [u64; WRITE_GROUP_BUCKETS],
     /// Dispatch counts in full, barrier, queue-drained, receiver-closed order.
     pub dispatch_reasons: [u64; 4],
     /// Per-stage public read pipeline summaries.
@@ -428,7 +429,7 @@ impl RiffDbServerSession {
     }
 
     /// Stops the server cleanly.
-    pub fn shutdown(mut self) -> Result<[u64; 64], RiffDbError> {
+    pub fn shutdown(mut self) -> Result<[u64; WRITE_GROUP_BUCKETS], RiffDbError> {
         self.process
             .shutdown_cleanly()
             .map(|evidence| evidence.write_completion_groups)
@@ -1274,7 +1275,11 @@ fn read_server_stdout(
         eprint!("{line}");
         total = total.saturating_add(read);
         if let Some(encoded) = line.trim_end().strip_prefix(WRITE_GROUP_PREFIX) {
-            write_completion_groups = Some(parse_fixed_counts(encoded, "write-group", 64));
+            write_completion_groups = Some(parse_fixed_counts(
+                encoded,
+                "write-group",
+                WRITE_GROUP_BUCKETS,
+            ));
         } else if let Some(encoded) = line.trim_end().strip_prefix(DISPATCH_REASON_PREFIX) {
             dispatch_reasons = Some(parse_fixed_counts(encoded, "dispatch-reason", 4));
         } else if let Some(encoded) = line.trim_end().strip_prefix(READ_STAGE_PREFIX) {
@@ -1589,12 +1594,17 @@ mod tests {
 
     #[test]
     fn shutdown_evidence_parsers_reject_shape_drift() {
-        let groups = (0_u64..64)
+        let groups = (0_u64..u64::try_from(WRITE_GROUP_BUCKETS).expect("bucket count"))
             .map(|value| value.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        let parsed = parse_fixed_counts::<64>(&groups, "write-group", 64).expect("groups");
-        assert_eq!(parsed[63], 63);
+        let parsed = parse_fixed_counts::<WRITE_GROUP_BUCKETS>(
+            &groups,
+            "write-group",
+            WRITE_GROUP_BUCKETS,
+        )
+        .expect("groups");
+        assert_eq!(parsed[WRITE_GROUP_BUCKETS - 1], 255);
         assert!(parse_fixed_counts::<4>("1,2,3", "dispatch", 4).is_err());
 
         let buckets = (0_u64..16)
