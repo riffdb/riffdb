@@ -378,7 +378,10 @@ impl StoredPendingAdmissionV1 {
 /// Construction freezes every variable-size non-runtime field. The provenance
 /// identifier is sourced later, but its fixed 16-byte width is charged here.
 #[derive(Clone, Eq, PartialEq)]
-pub struct PreEvaluationCommitContext {
+pub struct PreEvaluationCommitContext(Arc<PreEvaluationCommitContextInner>);
+
+#[derive(Eq, PartialEq)]
+struct PreEvaluationCommitContextInner {
     pending: StoredPendingAdmissionV1,
     partition_hash: PartitionKeyHash,
     conflict_hashes: Vec<ConflictKeyHash>,
@@ -409,30 +412,30 @@ impl PreEvaluationCommitContext {
         if non_runtime_semantic_bytes > riffdb_types::COMMIT_INTENT_NON_RUNTIME_RESERVE_BYTES {
             return Err(StorageValueError::LimitExceeded);
         }
-        Ok(Self {
+        Ok(Self(Arc::new(PreEvaluationCommitContextInner {
             pending,
             partition_hash,
             conflict_hashes,
             non_runtime_semantic_bytes,
-        })
+        })))
     }
 
     /// Borrows the exact durable pending admission.
     #[must_use]
-    pub const fn pending(&self) -> &StoredPendingAdmissionV1 {
-        &self.pending
+    pub fn pending(&self) -> &StoredPendingAdmissionV1 {
+        &self.0.pending
     }
 
     /// Returns the checked partition hash.
     #[must_use]
-    pub const fn partition_hash(&self) -> PartitionKeyHash {
-        self.partition_hash
+    pub fn partition_hash(&self) -> PartitionKeyHash {
+        self.0.partition_hash
     }
 
     /// Borrows conflict hashes in strict canonical order.
     #[must_use]
     pub fn conflict_hashes(&self) -> &[ConflictKeyHash] {
-        &self.conflict_hashes
+        &self.0.conflict_hashes
     }
 
     /// Returns the immutable v1 runtime budget.
@@ -443,8 +446,8 @@ impl PreEvaluationCommitContext {
 
     /// Returns the exact reserved non-runtime semantic charge.
     #[must_use]
-    pub const fn non_runtime_semantic_bytes(&self) -> usize {
-        self.non_runtime_semantic_bytes
+    pub fn non_runtime_semantic_bytes(&self) -> usize {
+        self.0.non_runtime_semantic_bytes
     }
 }
 
@@ -925,13 +928,14 @@ impl fmt::Debug for CommandAdmissionExpectationV1 {
 
 /// A complete pre-sequence command candidate assembled only after evaluation.
 #[derive(Clone, Eq, PartialEq)]
-pub struct CommitIntent {
-    pending: StoredPendingAdmissionV1,
+pub struct CommitIntent(Arc<CommitIntentInner>);
+
+#[derive(Eq, PartialEq)]
+struct CommitIntentInner {
+    context: PreEvaluationCommitContext,
     admission_expectation: CommandAdmissionExpectationV1,
     evaluated: Arc<EvaluatedCommand>,
     provenance_id: ProvenanceId,
-    partition_hash: PartitionKeyHash,
-    conflict_hashes: Vec<ConflictKeyHash>,
     semantic_bytes: usize,
 }
 
@@ -942,26 +946,37 @@ impl CommitIntent {
         evaluated: impl Into<Arc<EvaluatedCommand>>,
         provenance_id: ProvenanceId,
     ) -> Result<Self, StorageValueError> {
-        let evaluated = evaluated.into();
-        if context.pending.plan() != evaluated.plan() {
+        Self::from_parts(
+            context,
+            CommandAdmissionExpectationV1::ExistingPending,
+            evaluated.into(),
+            provenance_id,
+        )
+    }
+
+    fn from_parts(
+        context: PreEvaluationCommitContext,
+        admission_expectation: CommandAdmissionExpectationV1,
+        evaluated: Arc<EvaluatedCommand>,
+        provenance_id: ProvenanceId,
+    ) -> Result<Self, StorageValueError> {
+        if context.pending().plan() != evaluated.plan() {
             return Err(StorageValueError::IdentityMismatch);
         }
         let semantic_bytes = context
-            .non_runtime_semantic_bytes
+            .non_runtime_semantic_bytes()
             .checked_add(evaluated.semantic_bytes())
             .ok_or(StorageValueError::SizeOverflow)?;
         if semantic_bytes > MAX_COMMIT_INTENT_SEMANTIC_BYTES {
             return Err(StorageValueError::LimitExceeded);
         }
-        Ok(Self {
-            pending: context.pending,
-            admission_expectation: CommandAdmissionExpectationV1::ExistingPending,
+        Ok(Self(Arc::new(CommitIntentInner {
+            context,
+            admission_expectation,
             evaluated,
             provenance_id,
-            partition_hash: context.partition_hash,
-            conflict_hashes: context.conflict_hashes,
             semantic_bytes,
-        })
+        })))
     }
 
     /// Combines a speculative synchronous evaluation with the complete set of
@@ -972,54 +987,57 @@ impl CommitIntent {
         evaluated: impl Into<Arc<EvaluatedCommand>>,
         provenance_id: ProvenanceId,
     ) -> Result<Self, StorageValueError> {
-        if lookup_candidates.as_slice().first() != Some(context.pending.identity()) {
+        if lookup_candidates.as_slice().first() != Some(context.pending().identity()) {
             return Err(StorageValueError::IdentityMismatch);
         }
-        let mut intent = Self::new(context, evaluated, provenance_id)?;
-        intent.admission_expectation = CommandAdmissionExpectationV1::Vacant(lookup_candidates);
-        Ok(intent)
+        Self::from_parts(
+            context,
+            CommandAdmissionExpectationV1::Vacant(lookup_candidates),
+            evaluated.into(),
+            provenance_id,
+        )
     }
 
     /// Borrows the exact stored pending admission.
     #[must_use]
-    pub const fn pending(&self) -> &StoredPendingAdmissionV1 {
-        &self.pending
+    pub fn pending(&self) -> &StoredPendingAdmissionV1 {
+        self.0.context.pending()
     }
 
     /// Borrows the exact transaction-current idempotency expectation.
     #[must_use]
-    pub const fn admission_expectation(&self) -> &CommandAdmissionExpectationV1 {
-        &self.admission_expectation
+    pub fn admission_expectation(&self) -> &CommandAdmissionExpectationV1 {
+        &self.0.admission_expectation
     }
 
     /// Borrows the unchanged deterministic runtime result.
     #[must_use]
     pub fn evaluated(&self) -> &EvaluatedCommand {
-        &self.evaluated
+        &self.0.evaluated
     }
 
     /// Returns the newly sourced checked provenance identity.
     #[must_use]
-    pub const fn provenance_id(&self) -> ProvenanceId {
-        self.provenance_id
+    pub fn provenance_id(&self) -> ProvenanceId {
+        self.0.provenance_id
     }
 
     /// Returns the canonical partition-key hash.
     #[must_use]
-    pub const fn partition_hash(&self) -> PartitionKeyHash {
-        self.partition_hash
+    pub fn partition_hash(&self) -> PartitionKeyHash {
+        self.0.context.partition_hash()
     }
 
     /// Borrows conflict-key hashes in canonical byte order.
     #[must_use]
     pub fn conflict_hashes(&self) -> &[ConflictKeyHash] {
-        &self.conflict_hashes
+        self.0.context.conflict_hashes()
     }
 
     /// Returns checked complete pre-commit semantic byte accounting.
     #[must_use]
-    pub const fn semantic_bytes(&self) -> usize {
-        self.semantic_bytes
+    pub fn semantic_bytes(&self) -> usize {
+        self.0.semantic_bytes
     }
 }
 
@@ -1293,6 +1311,7 @@ mod tests {
         EntityKeyBuilder, EntityTypeId, FieldId, IndexEntryKeyBuilder, IndexId,
         PartitionKeyBuilder, PlanHash,
     };
+    use std::mem::size_of;
 
     fn plan() -> ExecutablePlanRef {
         ExecutablePlanRef::new(
@@ -1302,6 +1321,15 @@ mod tests {
             CommandId::new(1).expect("command"),
             PlanHash::from_bytes([0x22; 32]),
         )
+    }
+
+    #[test]
+    fn immutable_command_context_and_intent_are_single_shared_handles() {
+        assert_eq!(
+            size_of::<PreEvaluationCommitContext>(),
+            size_of::<Arc<()>>()
+        );
+        assert_eq!(size_of::<CommitIntent>(), size_of::<Arc<()>>());
     }
 
     fn target(value: u64) -> EntityTarget {

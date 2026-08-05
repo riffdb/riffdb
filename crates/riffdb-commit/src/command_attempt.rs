@@ -589,7 +589,7 @@ impl ExecutionFaultAttempt {
     }
 
     /// Borrows the exact Pending admission retained by the attempt.
-    pub(super) const fn pending(&self) -> &riffdb_storage_api::StoredPendingAdmissionV1 {
+    pub(super) fn pending(&self) -> &riffdb_storage_api::StoredPendingAdmissionV1 {
         self.state().commit_context.pending()
     }
 
