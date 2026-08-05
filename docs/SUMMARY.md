@@ -80,6 +80,7 @@
 - [Benchmark Integrity](performance/benchmark-integrity.md)
 - [App-baseline Alpha Evidence](performance/app-baseline-alpha.md)
 - [WP-449 Writer Evidence](performance/wp-449-writer-evidence.md)
+- [WP-451 Commutative Child Appends](performance/wp-451-commutative-child-appends.md)
 - [WP-413 Migration Evolution Evidence](performance/wp-413-migration-evolution.md)
 
 # Reference

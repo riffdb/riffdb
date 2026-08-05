@@ -12,7 +12,7 @@ usage() {
         '         [--organizations N] [--tickets-per-project N] [--comments-per-ticket N]' \
         '         [--labels-per-ticket N] [--payload-bytes N]' \
         '         [--concurrent-clients N] [--concurrent-operations N]' \
-        '         [--load interactive|agent|membership_contention] [--load-clients N] [--load-duration-secs N]' \
+        '         [--load read_only|write_only|append_only|interactive|agent|membership_contention] [--load-clients N] [--load-duration-secs N]' \
         '         [--load-warmup-secs N] [--load-zipf-s F] [--load-contended]' \
         '         [--load-open-loop-rate OPS] [--load-open-loop-queue-depth N]' \
         '         [--load-tenants N] [--load-hot-tenant-percent PERCENT]' \

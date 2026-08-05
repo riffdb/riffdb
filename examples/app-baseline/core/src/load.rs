@@ -26,6 +26,8 @@ pub enum WorkloadProfile {
     ReadOnly,
     /// Write-only diagnostic mix used to expose the physical durable-command ceiling.
     WriteOnly,
+    /// Isolated compiler-proved child appends without root-mutation compatibility cuts.
+    AppendOnly,
     /// Mostly reads with a small write mix (~85/12/3).
     ///
     /// Omits `SwapMemberRoles` so the default mix does not serialize all clients
@@ -48,6 +50,7 @@ impl WorkloadProfile {
         match self {
             Self::ReadOnly => "read_only",
             Self::WriteOnly => "write_only",
+            Self::AppendOnly => "append_only",
             Self::Interactive => "interactive",
             Self::Agent => "agent",
             Self::MembershipContention => "membership_contention",
@@ -59,6 +62,7 @@ impl WorkloadProfile {
         match text {
             "read_only" => Some(Self::ReadOnly),
             "write_only" => Some(Self::WriteOnly),
+            "append_only" => Some(Self::AppendOnly),
             "interactive" => Some(Self::Interactive),
             "agent" => Some(Self::Agent),
             "membership_contention" => Some(Self::MembershipContention),
@@ -80,6 +84,7 @@ impl WorkloadProfile {
                 (LoadOp::TicketDetailPage, 15),
             ],
             Self::WriteOnly => Self::saturating_weights(),
+            Self::AppendOnly => &[(LoadOp::CreateComment, 1)],
             // Default mixes intentionally omit SwapMemberRoles: that op serializes
             // on a shared membership pair and is not "isolated" under concurrency.
             // Use WorkloadProfile::MembershipContention for that stress path.
@@ -129,7 +134,11 @@ impl WorkloadProfile {
     #[must_use]
     pub const fn burst_ops(self) -> u32 {
         match self {
-            Self::ReadOnly | Self::WriteOnly | Self::Interactive | Self::MembershipContention => 1,
+            Self::ReadOnly
+            | Self::WriteOnly
+            | Self::AppendOnly
+            | Self::Interactive
+            | Self::MembershipContention => 1,
             Self::Agent => 8,
         }
     }
@@ -138,9 +147,11 @@ impl WorkloadProfile {
     #[must_use]
     pub const fn think_time(self) -> Duration {
         match self {
-            Self::ReadOnly | Self::WriteOnly | Self::Interactive | Self::MembershipContention => {
-                Duration::ZERO
-            }
+            Self::ReadOnly
+            | Self::WriteOnly
+            | Self::AppendOnly
+            | Self::Interactive
+            | Self::MembershipContention => Duration::ZERO,
             Self::Agent => Duration::from_millis(8),
         }
     }
@@ -150,7 +161,11 @@ impl WorkloadProfile {
     #[must_use]
     pub const fn replay_basis_points(self) -> u32 {
         match self {
-            Self::ReadOnly | Self::WriteOnly | Self::Interactive | Self::MembershipContention => 0,
+            Self::ReadOnly
+            | Self::WriteOnly
+            | Self::AppendOnly
+            | Self::Interactive
+            | Self::MembershipContention => 0,
             Self::Agent => 500, // 5%
         }
     }
@@ -2091,6 +2106,14 @@ mod tests {
         assert_eq!(
             WorkloadProfile::parse("write_only"),
             Some(WorkloadProfile::WriteOnly)
+        );
+        assert_eq!(
+            WorkloadProfile::AppendOnly.weights(),
+            &[(LoadOp::CreateComment, 1)]
+        );
+        assert_eq!(
+            WorkloadProfile::parse("append_only"),
+            Some(WorkloadProfile::AppendOnly)
         );
     }
 

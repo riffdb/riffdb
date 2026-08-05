@@ -213,6 +213,8 @@ pub struct RiffDbWriterEvidence {
     pub compatibility_conflict_key_splits: u64,
     /// Boundaries caused by exact entity read/write overlap.
     pub compatibility_exact_access_splits: u64,
+    /// Compatibility groups selected for compiler-proved shared conflict ownership.
+    pub compatibility_commutative_shared_groups: u64,
     /// Latest queue-delay EWMA after a writer unit.
     pub queue_delay_estimate_us: Option<u64>,
     /// Commit-call duration histogram.
@@ -1398,6 +1400,9 @@ fn parse_writer_evidence(encoded: &str) -> io::Result<RiffDbWriterEvidence> {
         compatibility_groups: required("compatibility_groups")?,
         compatibility_conflict_key_splits: required("compatibility_conflict_key_splits")?,
         compatibility_exact_access_splits: required("compatibility_exact_access_splits")?,
+        compatibility_commutative_shared_groups: required(
+            "compatibility_commutative_shared_groups",
+        )?,
         queue_delay_estimate_us,
         commit_duration: find("commit_us")?,
         flush_duration: find("flush_us")?,
@@ -1576,7 +1581,7 @@ mod tests {
             .map(|name| format!("{name}:2:9:{buckets}"))
             .join(";");
         let writer = parse_writer_evidence(&format!(
-            "busy_us=11;idle_us=12;dispatch_selected=13;dispatch_deferred=14;compatibility_selected=15;compatibility_groups=16;compatibility_conflict_key_splits=17;compatibility_exact_access_splits=18;queue_delay_estimate_us=19\t{writer_histograms}"
+            "busy_us=11;idle_us=12;dispatch_selected=13;dispatch_deferred=14;compatibility_selected=15;compatibility_groups=16;compatibility_conflict_key_splits=17;compatibility_exact_access_splits=18;compatibility_commutative_shared_groups=19;queue_delay_estimate_us=20\t{writer_histograms}"
         ))
         .expect("writer evidence");
         assert_eq!(writer.busy_us, 11);
@@ -1587,7 +1592,8 @@ mod tests {
         assert_eq!(writer.compatibility_groups, 16);
         assert_eq!(writer.compatibility_conflict_key_splits, 17);
         assert_eq!(writer.compatibility_exact_access_splits, 18);
-        assert_eq!(writer.queue_delay_estimate_us, Some(19));
+        assert_eq!(writer.compatibility_commutative_shared_groups, 19);
+        assert_eq!(writer.queue_delay_estimate_us, Some(20));
         assert_eq!(writer.commit_duration.name, "commit_us");
         assert_eq!(writer.flush_duration.name, "flush_us");
         assert_eq!(writer.batch_size.name, "batch_size");
