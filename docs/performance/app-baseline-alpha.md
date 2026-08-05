@@ -106,12 +106,23 @@ them to distinguish read/application-port saturation, mixed-command grouping,
 and the sole durable writer ceiling before interpreting a mixed curve.
 
 Each RiffDB point reports successful mutation and command-attempt rates,
-process and durable byte growth per successful mutation, and a closed writer
-evidence block. The writer block includes intake selection/defer counts,
+process and durable byte growth per command committed by the complete measured
+daemon generation (including warmup), a closed authoritative-table inventory,
+and a closed writer evidence block. The table inventory compares the
+post-seed/pre-warmup database with clean shutdown and reports row, stored-byte,
+tree, page, metadata, and fragmentation values. Those page values attribute
+retained footprint; the process counter remains the physical-I/O total. The
+writer block includes intake selection/defer counts,
 compatibility splits, compiler-proved shared-conflict group count, queue delay,
 writer busy/idle time, physical commit and durable-flush histograms, and logical
 commands per physical commit. Labels are fixed and contain no contract, tenant,
 key, principal, or submitted value.
+
+Use the explicitly named
+`process_write_bytes_per_process_scope_committed_command` and
+`durable_bytes_growth_per_process_scope_committed_command` fields for resource
+comparison. The legacy v1 `*_per_successful_mutation` fields are retained for
+schema compatibility but combine different measurement scopes.
 
 The resilience report combines a real killed `riffdbd` under application load
 with focused deterministic tests for exact replay, durable-consumer crashes,

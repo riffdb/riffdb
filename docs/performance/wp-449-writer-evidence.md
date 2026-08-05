@@ -45,6 +45,12 @@ commands per physical commit and delivered 2,101 commands/s, but each physical
 commit still averaged about 4.79 ms. It wrote approximately 53,794 kernel bytes
 and grew durable files by approximately 13,602 bytes per successful mutation.
 
+Those per-mutation byte figures used measured-window successes as the
+denominator while the daemon counters also included warmup. WP-452 corrects
+the report to normalize process-scope bytes by every command committed by that
+daemon generation. Keep the WP-449 values only as historical evidence; do not
+compare them directly with corrected WP-452 output.
+
 The evidence rejects two earlier guesses:
 
 - the writer was not under-fed; it was busy for effectively the complete
