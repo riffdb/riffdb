@@ -7780,7 +7780,8 @@ work_packages:
     PERF-008; if not, prototype a bounded transaction-local serial command batch without releasing
     partial state, acknowledgement, or authority.
   requirements: [PERF-004, PERF-005, PERF-008, PERF-009, PERF-010]
-  required_adrs: [ADR-0004, ADR-0005, ADR-0058, ADR-0059, ADR-0060, ADR-0061]
+  required_adrs: [ADR-0004, ADR-0005, ADR-0058, ADR-0059, ADR-0060, ADR-0061, ADR-0094,
+    ADR-0095]
   allowed_paths: [SPEC.md, work_packages.yaml, adr/**, crates/riffdb-conflict/**,
     crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
     crates/riffdb-commit/**, crates/riffdb-runtime/**, crates/riffdb-observability/**,

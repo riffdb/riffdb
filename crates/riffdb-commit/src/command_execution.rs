@@ -10,9 +10,9 @@ use riffdb_storage_api::{
     AdmissionRepository, ApplicationCommandTransactionPort, AuditedAdmissionRepository,
     CommandCandidateAdmission, CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
     CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
-    CommandCandidateSequenceAssigned, CommandCandidateStateRead, DurabilityMode, EntityTarget,
-    ExecutionFailureTransitionPort, NonEmptyCommandBatch, SnapshotReader, StorageError,
-    StorageErrorKind,
+    CommandCandidateSequenceAssigned, CommandCandidateStateRead, DurabilityMode, EmptyCommandBatch,
+    EntityTarget, ExecutionFailureTransitionPort, NonEmptyCommandBatch, SnapshotReader,
+    StorageError, StorageErrorKind, TransactionLocalCommandBatch,
 };
 use riffdb_types::ExecutionFailureCode;
 
@@ -30,7 +30,8 @@ use crate::{
         AcquiredCommandAttempt, CommandAttemptError, CommandAttemptResolution,
         EvaluatedCommandAttempt, ExecutionFaultAttempt, PendingCommandAttempts,
         RolledBackCandidateDisposition, acquire_command_attempt, acquire_commutative_command_group,
-        evaluate_acquired_command_attempt, evaluate_next_command_attempt,
+        acquire_transaction_local_serial_group, evaluate_acquired_command_attempt,
+        evaluate_next_command_attempt, evaluate_transaction_local_acquired_command_attempt,
     },
     command_execution_failure::{
         ExecutionFailureCurrentDecision, ExecutionFailureTerminalizeResult,
@@ -238,7 +239,8 @@ where
         + SnapshotReader
         + ApplicationCommandTransactionPort
         + ExecutionFailureTransitionPort,
-    FirstStagedBatch<P>: NonEmptyCommandBatch,
+    <P as ApplicationCommandTransactionPort>::EmptyBatch: TransactionLocalCommandBatch,
+    FirstStagedBatch<P>: NonEmptyCommandBatch + TransactionLocalCommandBatch,
     BatchCandidate<FirstStagedBatch<P>>: CommandCandidateAdmission<Prior = FirstStagedBatch<P>>,
     BatchStateRead<FirstStagedBatch<P>>: CommandCandidateStateRead<Prior = FirstStagedBatch<P>>,
     BatchAwaitingValidation<FirstStagedBatch<P>>:
@@ -626,7 +628,8 @@ where
         + SnapshotReader
         + ApplicationCommandTransactionPort
         + ExecutionFailureTransitionPort,
-    FirstStagedBatch<P>: NonEmptyCommandBatch,
+    <P as ApplicationCommandTransactionPort>::EmptyBatch: TransactionLocalCommandBatch,
+    FirstStagedBatch<P>: NonEmptyCommandBatch + TransactionLocalCommandBatch,
     BatchCandidate<FirstStagedBatch<P>>: CommandCandidateAdmission<Prior = FirstStagedBatch<P>>,
     BatchStateRead<FirstStagedBatch<P>>: CommandCandidateStateRead<Prior = FirstStagedBatch<P>>,
     BatchAwaitingValidation<FirstStagedBatch<P>>:
@@ -665,13 +668,33 @@ where
     let compatibility_started = Instant::now();
     let (groups, conflict_key_splits, exact_access_splits, commutative_shared_groups) =
         partition_pending_fifo_by_compatibility(pending);
+    let mut serial_identities = Vec::new();
+    let serial_eligible = groups.len() > 1
+        && groups.iter().all(|group| {
+            group.items.iter().all(|(_, state)| {
+                let identity = state.idempotency_identity();
+                let unique = !serial_identities.iter().any(|prior| prior == identity);
+                if unique {
+                    serial_identities.push(identity.clone());
+                }
+                state.serial_micro_batch_eligible() && unique
+            })
+        });
     telemetry.record(CommitTelemetryEvent::CommandGroupPartitioned {
         selected: u16::try_from(groups.iter().map(|group| group.items.len()).sum::<usize>())
             .unwrap_or(u16::MAX),
-        completion_groups: u16::try_from(groups.len()).unwrap_or(u16::MAX),
+        completion_groups: if serial_eligible {
+            1
+        } else {
+            u16::try_from(groups.len()).unwrap_or(u16::MAX)
+        },
         conflict_key_splits,
         exact_access_splits,
-        commutative_shared_groups,
+        commutative_shared_groups: if serial_eligible {
+            0
+        } else {
+            commutative_shared_groups
+        },
     });
     telemetry.record(CommitTelemetryEvent::CommandPipelineStageCompleted {
         stage: CommandPipelineStage::Compatibility,
@@ -679,6 +702,33 @@ where
             .unwrap_or(u16::MAX),
         elapsed: compatibility_started.elapsed(),
     });
+    if serial_eligible {
+        let serial = groups
+            .into_iter()
+            .flat_map(|group| group.items)
+            .collect::<Vec<_>>();
+        let grouped = drive_transaction_local_serial_pending_group(
+            port,
+            conflicts,
+            administration_clock,
+            provenance,
+            durability,
+            lifecycle,
+            telemetry,
+            serial,
+        )
+        .await;
+        for (index, result) in grouped {
+            results[index] = Some(result);
+        }
+        return results
+            .into_iter()
+            .map(|result| {
+                result
+                    .unwrap_or_else(|| terminal_continuation(internal_defect(lifecycle), lifecycle))
+            })
+            .collect();
+    }
     for group in groups {
         if group.items.len() > 1 {
             let grouped = drive_compatible_pending_group(
@@ -1167,6 +1217,668 @@ where
         );
     }
     ParallelEvaluationPreparation::Complete(completed)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn drive_transaction_local_serial_pending_group<P>(
+    port: &P,
+    conflicts: &dyn ConflictManager,
+    administration_clock: &dyn crate::AdministrationClock,
+    provenance: &dyn ProvenanceIdSource,
+    durability: CoordinatorDurability,
+    lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
+    pending: Vec<(usize, PendingCommandAttempts)>,
+) -> Vec<(usize, Result<CommandExecutionResult, CommandExecutionError>)>
+where
+    P: AdmissionRepository
+        + SnapshotReader
+        + ApplicationCommandTransactionPort
+        + ExecutionFailureTransitionPort,
+    <P as ApplicationCommandTransactionPort>::EmptyBatch: TransactionLocalCommandBatch,
+    FirstStagedBatch<P>: NonEmptyCommandBatch + TransactionLocalCommandBatch,
+    BatchCandidate<FirstStagedBatch<P>>: CommandCandidateAdmission<Prior = FirstStagedBatch<P>>,
+    BatchStateRead<FirstStagedBatch<P>>: CommandCandidateStateRead<Prior = FirstStagedBatch<P>>,
+    BatchAwaitingValidation<FirstStagedBatch<P>>:
+        CommandCandidateAwaitingValidation<Prior = FirstStagedBatch<P>>,
+    BatchAffectedRead<FirstStagedBatch<P>>:
+        CommandCandidateAffectedEpochRead<Prior = FirstStagedBatch<P>>,
+    BatchAwaitingCapacity<FirstStagedBatch<P>>:
+        CommandCandidateAwaitingCapacity<Prior = FirstStagedBatch<P>>,
+    BatchCapacityReserved<FirstStagedBatch<P>>:
+        CommandCandidateCapacityReserved<Prior = FirstStagedBatch<P>>,
+    BatchSequenceAssigned<FirstStagedBatch<P>>:
+        CommandCandidateSequenceAssigned<Prior = FirstStagedBatch<P>, Staged = FirstStagedBatch<P>>,
+{
+    let (indices, states): (Vec<_>, Vec<_>) = pending.into_iter().unzip();
+    let acquired = match acquire_transaction_local_serial_group(states, conflicts).await {
+        Ok(acquired) => acquired,
+        Err((states, _)) => {
+            return drive_pending_items(
+                port,
+                conflicts,
+                administration_clock,
+                provenance,
+                durability,
+                lifecycle,
+                telemetry,
+                indices.into_iter().zip(states).collect(),
+            )
+            .await;
+        }
+    };
+    let mut acquired =
+        std::collections::VecDeque::from(indices.into_iter().zip(acquired).collect::<Vec<_>>());
+    let Some((first_index, first)) = acquired.pop_front() else {
+        return Vec::new();
+    };
+
+    let empty = match port.begin_empty_batch() {
+        Ok(empty) => empty,
+        Err(error) => {
+            let mut completed = vec![(first_index, Err(storage_error(error, lifecycle)))];
+            let fallback = acquired
+                .into_iter()
+                .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation()))
+                .collect();
+            completed.extend(
+                drive_pending_items(
+                    port,
+                    conflicts,
+                    administration_clock,
+                    provenance,
+                    durability,
+                    lifecycle,
+                    telemetry,
+                    fallback,
+                )
+                .await,
+            );
+            return completed;
+        }
+    };
+    let first_snapshot =
+        match empty.read_transaction_local_snapshot(first.transaction_local_snapshot_request()) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                empty.rollback();
+                let mut completed = vec![(first_index, Err(storage_error(error, lifecycle)))];
+                let fallback = acquired
+                    .into_iter()
+                    .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation()))
+                    .collect();
+                completed.extend(
+                    drive_pending_items(
+                        port,
+                        conflicts,
+                        administration_clock,
+                        provenance,
+                        durability,
+                        lifecycle,
+                        telemetry,
+                        fallback,
+                    )
+                    .await,
+                );
+                return completed;
+            }
+        };
+    empty.rollback();
+    let first = match evaluate_transaction_local_acquired_command_attempt(first, first_snapshot) {
+        Ok(CommandAttemptResolution::Evaluated(attempt)) => attempt,
+        Ok(CommandAttemptResolution::ExecutionFault(fault)) => {
+            let mut fallback = vec![(first_index, fault.recover_pending_after_proven_rollback())];
+            fallback.extend(
+                acquired
+                    .into_iter()
+                    .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation())),
+            );
+            return drive_pending_items(
+                port,
+                conflicts,
+                administration_clock,
+                provenance,
+                durability,
+                lifecycle,
+                telemetry,
+                fallback,
+            )
+            .await;
+        }
+        Ok(
+            CommandAttemptResolution::OutcomeReplay(_)
+            | CommandAttemptResolution::ExecutionFailureReplay(_),
+        ) => {
+            lifecycle.stop();
+            return std::iter::once((
+                first_index,
+                Err(CommandExecutionError::without_detail(
+                    CommandExecutionErrorKind::InternalDefect,
+                )),
+            ))
+            .chain(acquired.into_iter().map(|(index, attempt)| {
+                drop(attempt);
+                (
+                    index,
+                    Err(CommandExecutionError::without_detail(
+                        CommandExecutionErrorKind::CoordinatorStopped,
+                    )),
+                )
+            }))
+            .collect();
+        }
+        Err(error) => {
+            let mut completed = vec![(first_index, Err(command_attempt_failure(error, lifecycle)))];
+            let fallback = acquired
+                .into_iter()
+                .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation()))
+                .collect();
+            completed.extend(
+                drive_pending_items(
+                    port,
+                    conflicts,
+                    administration_clock,
+                    provenance,
+                    durability,
+                    lifecycle,
+                    telemetry,
+                    fallback,
+                )
+                .await,
+            );
+            return completed;
+        }
+    };
+
+    let mut staged = match stage_first_evaluated_command(
+        port,
+        provenance,
+        Some(administration_clock),
+        durability,
+        lifecycle,
+        telemetry,
+        first,
+    ) {
+        Ok(staged) => staged,
+        Err(continuation) => {
+            let mut completed = vec![(first_index, terminal_continuation(continuation, lifecycle))];
+            let fallback = acquired
+                .into_iter()
+                .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation()))
+                .collect();
+            completed.extend(
+                drive_pending_items(
+                    port,
+                    conflicts,
+                    administration_clock,
+                    provenance,
+                    durability,
+                    lifecycle,
+                    telemetry,
+                    fallback,
+                )
+                .await,
+            );
+            return completed;
+        }
+    };
+    let mut staged_indices = vec![first_index];
+
+    while let Some((index, attempt)) = acquired.pop_front() {
+        let snapshot =
+            match staged
+                .read_transaction_local_snapshot(attempt.transaction_local_snapshot_request())
+            {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    let previous = match staged.rollback_into_retries() {
+                        Ok(previous) => previous,
+                        Err(()) => {
+                            lifecycle.stop();
+                            let _ = error;
+                            drop(attempt);
+                            return staged_indices
+                                .into_iter()
+                                .chain(std::iter::once(index))
+                                .chain(acquired.into_iter().map(|(index, attempt)| {
+                                    drop(attempt);
+                                    index
+                                }))
+                                .map(|index| {
+                                    (
+                                        index,
+                                        Err(CommandExecutionError::without_detail(
+                                            CommandExecutionErrorKind::InternalDefect,
+                                        )),
+                                    )
+                                })
+                                .collect();
+                        }
+                    };
+                    let mut fallback = previous
+                        .into_iter()
+                        .zip(staged_indices)
+                        .map(|(attempt, index)| (index, attempt))
+                        .collect::<Vec<_>>();
+                    drop(attempt);
+                    fallback.extend(acquired.into_iter().map(|(index, attempt)| {
+                        (index, attempt.into_pending_without_evaluation())
+                    }));
+                    let mut completed = vec![(index, Err(storage_error(error, lifecycle)))];
+                    completed.extend(
+                        drive_pending_items(
+                            port,
+                            conflicts,
+                            administration_clock,
+                            provenance,
+                            durability,
+                            lifecycle,
+                            telemetry,
+                            fallback,
+                        )
+                        .await,
+                    );
+                    return completed;
+                }
+            };
+        let evaluated =
+            match evaluate_transaction_local_acquired_command_attempt(attempt, snapshot) {
+                Ok(CommandAttemptResolution::Evaluated(attempt)) => attempt,
+                Ok(CommandAttemptResolution::ExecutionFault(fault)) => {
+                    let previous = match staged.rollback_into_retries() {
+                        Ok(previous) => previous,
+                        Err(()) => {
+                            lifecycle.stop();
+                            drop(fault);
+                            return staged_indices
+                                .into_iter()
+                                .chain(std::iter::once(index))
+                                .chain(acquired.into_iter().map(|(index, attempt)| {
+                                    drop(attempt);
+                                    index
+                                }))
+                                .map(|index| {
+                                    (
+                                        index,
+                                        Err(CommandExecutionError::without_detail(
+                                            CommandExecutionErrorKind::InternalDefect,
+                                        )),
+                                    )
+                                })
+                                .collect();
+                        }
+                    };
+                    let mut fallback = staged_indices.into_iter().zip(previous).collect::<Vec<_>>();
+                    fallback.push((index, fault.recover_pending_after_proven_rollback()));
+                    fallback.extend(acquired.into_iter().map(|(index, attempt)| {
+                        (index, attempt.into_pending_without_evaluation())
+                    }));
+                    return drive_pending_items(
+                        port,
+                        conflicts,
+                        administration_clock,
+                        provenance,
+                        durability,
+                        lifecycle,
+                        telemetry,
+                        fallback,
+                    )
+                    .await;
+                }
+                Ok(
+                    CommandAttemptResolution::OutcomeReplay(_)
+                    | CommandAttemptResolution::ExecutionFailureReplay(_),
+                ) => {
+                    drop(staged.rollback_into_retries());
+                    lifecycle.stop();
+                    return staged_indices
+                        .into_iter()
+                        .chain(std::iter::once(index))
+                        .chain(acquired.into_iter().map(|(index, attempt)| {
+                            drop(attempt);
+                            index
+                        }))
+                        .map(|index| {
+                            (
+                                index,
+                                Err(CommandExecutionError::without_detail(
+                                    CommandExecutionErrorKind::InternalDefect,
+                                )),
+                            )
+                        })
+                        .collect();
+                }
+                Err(error) => {
+                    let previous = match staged.rollback_into_retries() {
+                        Ok(previous) => previous,
+                        Err(()) => {
+                            lifecycle.stop();
+                            let _ = error;
+                            return staged_indices
+                                .into_iter()
+                                .chain(std::iter::once(index))
+                                .chain(acquired.into_iter().map(|(index, attempt)| {
+                                    drop(attempt);
+                                    index
+                                }))
+                                .map(|index| {
+                                    (
+                                        index,
+                                        Err(CommandExecutionError::without_detail(
+                                            CommandExecutionErrorKind::InternalDefect,
+                                        )),
+                                    )
+                                })
+                                .collect();
+                        }
+                    };
+                    let fallback = staged_indices
+                        .into_iter()
+                        .zip(previous)
+                        .chain(acquired.into_iter().map(|(index, attempt)| {
+                            (index, attempt.into_pending_without_evaluation())
+                        }))
+                        .collect();
+                    let mut completed = drive_pending_items(
+                        port,
+                        conflicts,
+                        administration_clock,
+                        provenance,
+                        durability,
+                        lifecycle,
+                        telemetry,
+                        fallback,
+                    )
+                    .await;
+                    completed.push((index, Err(command_attempt_failure(error, lifecycle))));
+                    return completed;
+                }
+            };
+
+        let (prior, entries, durability_mode) = staged.into_storage_and_entries();
+        match append_evaluated_command(
+            port,
+            prior,
+            provenance,
+            Some(administration_clock),
+            durability,
+            lifecycle,
+            telemetry,
+            evaluated,
+        ) {
+            Ok((storage, entry)) => {
+                staged =
+                    CheckedStagedCommand::from_appended(storage, entries, entry, durability_mode);
+                staged_indices.push(index);
+            }
+            Err(continuation) => {
+                let previous = entries
+                    .into_iter()
+                    .zip(staged_indices.iter().copied())
+                    .map(|(entry, index)| entry.into_retry().map(|state| (index, state)))
+                    .collect::<Result<Vec<_>, _>>();
+                let mut previous = match previous {
+                    Ok(previous) => previous,
+                    Err(()) => {
+                        lifecycle.stop();
+                        drop(continuation);
+                        return staged_indices
+                            .into_iter()
+                            .chain(std::iter::once(index))
+                            .chain(acquired.into_iter().map(|(index, attempt)| {
+                                drop(attempt);
+                                index
+                            }))
+                            .map(|index| {
+                                (
+                                    index,
+                                    Err(CommandExecutionError::without_detail(
+                                        CommandExecutionErrorKind::InternalDefect,
+                                    )),
+                                )
+                            })
+                            .collect();
+                    }
+                };
+                previous.extend(
+                    acquired
+                        .into_iter()
+                        .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation())),
+                );
+                let mut completed = drive_pending_items(
+                    port,
+                    conflicts,
+                    administration_clock,
+                    provenance,
+                    durability,
+                    lifecycle,
+                    telemetry,
+                    previous,
+                )
+                .await;
+                completed.push((index, terminal_continuation(continuation, lifecycle)));
+                return completed;
+            }
+        }
+    }
+
+    commit_transaction_local_serial_group(
+        port,
+        administration_clock,
+        lifecycle,
+        telemetry,
+        staged,
+        staged_indices,
+    )
+}
+
+fn commit_transaction_local_serial_group<P, B>(
+    port: &P,
+    administration_clock: &dyn crate::AdministrationClock,
+    lifecycle: &dyn CommandExecutionLifecycle,
+    telemetry: &dyn CommitTelemetry,
+    staged: CheckedStagedCommand<B>,
+    staged_indices: Vec<usize>,
+) -> Vec<(usize, Result<CommandExecutionResult, CommandExecutionError>)>
+where
+    P: AdmissionRepository,
+    B: NonEmptyCommandBatch,
+{
+    let audits = {
+        let audited_count = staged.audited_starts().filter(Option::is_some).count();
+        if audited_count == 0 {
+            Ok(None)
+        } else if audited_count != staged.len() {
+            Err(())
+        } else {
+            let mut audits = Vec::with_capacity(staged.len());
+            let prepared = staged
+                .audited_starts()
+                .zip(staged.terminal_links())
+                .zip(staged.requires_fused_starts())
+                .try_for_each(|((started, link), fused)| {
+                    let started = started.ok_or(())?;
+                    let fused_start = if fused {
+                        Some(
+                            crate::audit_executor::prepare_administration_audit(
+                                administration_clock,
+                                started,
+                            )
+                            .map_err(|_| ())?,
+                        )
+                    } else {
+                        None
+                    };
+                    let terminal = crate::audit_executor::prepare_command_terminal_audit(
+                        administration_clock,
+                        started,
+                        link,
+                    )
+                    .map_err(|_| ())?;
+                    let transition = if let Some(started) = fused_start {
+                        riffdb_storage_api::CommandServiceAuditTransitionV1::started_and_terminal(
+                            started, terminal,
+                        )
+                    } else {
+                        riffdb_storage_api::CommandServiceAuditTransitionV1::terminal_only(terminal)
+                    }
+                    .map_err(|_| ())?;
+                    audits.push(transition);
+                    Ok::<(), ()>(())
+                });
+            prepared.map(|()| Some(audits))
+        }
+    };
+    let audits = match audits {
+        Ok(audits) => audits,
+        Err(()) => {
+            drop(staged.rollback_into_retries());
+            lifecycle.stop();
+            return staged_indices
+                .into_iter()
+                .map(|index| {
+                    (
+                        index,
+                        Err(CommandExecutionError::without_detail(
+                            CommandExecutionErrorKind::InternalDefect,
+                        )),
+                    )
+                })
+                .collect();
+        }
+    };
+
+    let batch_size = staged.len();
+    let commit_started_at = Instant::now();
+    let commit_result = staged.commit_group(audits);
+    telemetry.record(CommitTelemetryEvent::CommitCallCompleted {
+        terminal: group_commit_call_terminal(&commit_result),
+        elapsed: commit_started_at.elapsed(),
+        batch_size: u16::try_from(batch_size).expect("group cap fits u16"),
+    });
+    match commit_result {
+        CheckedCommandGroupCommitResult::Committed(outcomes) => staged_indices
+            .into_iter()
+            .zip(outcomes)
+            .map(|(index, outcome)| (index, Ok(CommandExecutionResult::Committed(outcome))))
+            .collect(),
+        CheckedCommandGroupCommitResult::ProvenAbort { cause, retries } => {
+            drop(retries);
+            staged_indices
+                .into_iter()
+                .map(|index| {
+                    (
+                        index,
+                        Err(CommandExecutionError::with_storage(
+                            CommandExecutionErrorKind::StorageUnavailable,
+                            cause.clone(),
+                        )),
+                    )
+                })
+                .collect()
+        }
+        CheckedCommandGroupCommitResult::StatusUnknown(uncertain) => {
+            lifecycle.fence();
+            #[derive(Clone, Copy, Eq, PartialEq)]
+            enum SerialResolutionClass {
+                Committed,
+                ProvenAbsent,
+                Unknown,
+                Integrity,
+            }
+            let resolved = staged_indices
+                .into_iter()
+                .zip(uncertain)
+                .map(|(index, uncertain)| {
+                    let write = uncertain.cause().clone();
+                    let resolution = resolve_uncertain_command_commit(port, Box::new(uncertain));
+                    telemetry.record(CommitTelemetryEvent::UncertaintyResolved {
+                        stage: CommitUncertaintyStage::CommandCommit,
+                        resolution: command_uncertainty_resolution(&resolution),
+                    });
+                    let (class, result) = match resolution {
+                        UncertainCommandCommitResolution::Committed(outcome) => (
+                            SerialResolutionClass::Committed,
+                            Ok(CommandExecutionResult::Committed(outcome)),
+                        ),
+                        UncertainCommandCommitResolution::ExecutionFailureReplay(failure) => {
+                            drop(failure);
+                            (
+                                SerialResolutionClass::Integrity,
+                                Err(CommandExecutionError::without_detail(
+                                    CommandExecutionErrorKind::InternalDefect,
+                                )),
+                            )
+                        }
+                        UncertainCommandCommitResolution::ProvenNotCommitted(proven) => {
+                            drop(proven.into_retry_state());
+                            (
+                                SerialResolutionClass::ProvenAbsent,
+                                Err(CommandExecutionError::with_storage(
+                                    CommandExecutionErrorKind::StorageUnavailable,
+                                    write,
+                                )),
+                            )
+                        }
+                        UncertainCommandCommitResolution::OutcomeUnknown {
+                            uncertain,
+                            lookup_error,
+                        } => {
+                            drop(uncertain);
+                            (
+                                SerialResolutionClass::Unknown,
+                                Err(CommandExecutionError::uncertain(write, Some(lookup_error))),
+                            )
+                        }
+                        UncertainCommandCommitResolution::Integrity => (
+                            SerialResolutionClass::Integrity,
+                            Err(CommandExecutionError::without_detail(
+                                CommandExecutionErrorKind::InternalDefect,
+                            )),
+                        ),
+                    };
+                    (index, class, result)
+                })
+                .collect::<Vec<_>>();
+            let class = resolved.first().map(|(_, class, _)| *class);
+            let contradictory = class == Some(SerialResolutionClass::Integrity)
+                || resolved
+                    .iter()
+                    .any(|(_, candidate, _)| Some(*candidate) != class);
+            if contradictory {
+                lifecycle.stop();
+                return resolved
+                    .into_iter()
+                    .map(|(index, _, _)| {
+                        (
+                            index,
+                            Err(CommandExecutionError::without_detail(
+                                CommandExecutionErrorKind::InternalDefect,
+                            )),
+                        )
+                    })
+                    .collect();
+            }
+            resolved
+                .into_iter()
+                .map(|(index, _, result)| (index, result))
+                .collect()
+        }
+        CheckedCommandGroupCommitResult::Integrity => {
+            lifecycle.stop();
+            staged_indices
+                .into_iter()
+                .map(|index| {
+                    (
+                        index,
+                        Err(CommandExecutionError::without_detail(
+                            CommandExecutionErrorKind::InternalDefect,
+                        )),
+                    )
+                })
+                .collect()
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -94,6 +94,7 @@
 | 0.55 | 2026-07-31 | Planned P7 robust offline contract migration through WP-405 to WP-413: exact parent-specific `.riffm` artifacts, a migration-required compatibility class, database-scoped staged copy and automatic rollback, immutable committed history, predecessor-write retirement, a dedicated migration capability, and gRPC/Rust SDK/CLI administration with no MCP or application-driver path. ADR-0076 through ADR-0079 remain Proposed and block production, grammar, IR, durable, permission, and protocol implementation until exact human acceptance. |
 | 0.56 | 2026-07-31 | Applied accepted ADR-0076 through ADR-0079 and completed the WP-405 architecture gate. P7 implementation may proceed in dependency order through WP-406 to WP-413 under the frozen migration compatibility, source/IR/lock, staged recovery, coordinator, permission, public API, immutable-history, predecessor-write, and automatic-rollback boundaries. |
 | 0.57 | 2026-07-31 | Applied accepted ADR-0080 and planned P8 through WP-414 to WP-421: partition-proved domain-event streams, bounded durable consumers, race-free live named RiffQL, generated reactive clients, and freshly authorized contextual agent work extend the existing atomic event/commit model without raw CDC, global ordering, exactly-once claims, persisted hydrated context, direct browser authority, or in-transaction agents. |
+| 0.58 | 2026-08-05 | Applied accepted ADR-0094 and ADR-0095: compiler-proved commutative child appends retain same-snapshot parallel grouping, while otherwise conflicting fresh synchronous commands may use one bounded FIFO transaction-local serial micro-batch. Later commands observe only declared state staged by earlier commands; every command retains independent identity, authorization, outcome, sequence, audit, provenance, acknowledgement, and uncertainty recovery; one complete Immediate commit exposes all-or-absent state; public transactions and visible non-durable commit chains remain prohibited. |
 
 ### Normative language
 
@@ -6544,13 +6545,18 @@ ADR-0055.
   observations MUST remain explicit and MUST be revalidated exactly inside the
   authoritative commit transaction; cross-partition reads and multi-aggregate
   writes MUST be rejected. Commands sharing one aggregate conflict key MAY
-  share a physical completion group only under the ADR-0094 compiler-derived
-  commutative child-append proof and complete exact-access compatibility check.
+  share a same-snapshot physical completion group only under the ADR-0094
+  compiler-derived commutative child-append proof and complete exact-access
+  compatibility check. Otherwise, fresh synchronous commands MAY share an
+  ADR-0095 transaction-local serial micro-batch only when they are evaluated and
+  staged in FIFO order against the private transaction state produced by every
+  earlier command in that batch.
   Contract annotations and scheduler inference from disjoint entity keys are
   not proofs. Root or existing-row mutation, uniqueness, requirements,
   root/range validation, commit invariants, and unclassified dependency forms
-  MUST make the command ineligible; unproved overlap remains strictly
-  serialized. Server evidence MUST report the bounded effective
+  MUST make the command ineligible for same-snapshot grouping; unproved overlap
+  remains strictly serialized, either through separate commits or the closed
+  transaction-local protocol. Server evidence MUST report the bounded effective
   completion-group-size distribution without high-cardinality labels. On the
   checked profile, the full public-command TicketDesk seed and representative
   unary mutation p50 MUST each complete within twice the same-run PostgreSQL
@@ -6591,7 +6597,13 @@ ADR-0055.
   compiler-declared snapshot reads and deterministic preparation in a bounded
   worker pool, but conflict ownership and final commit sequencing MUST remain
   admission ordered, transaction-current revalidation MUST remain inside the
-  sole writer transaction, and no worker may perform an untracked effect. On
+  sole writer transaction, and no worker may perform an untracked effect.
+  A bounded FIFO serial micro-batch MAY instead read each command's exact
+  compiler-declared snapshot from one private writer transaction after staging
+  its predecessors. It MUST retain the 64-command and 16 MiB ceilings, expose no
+  partial state or public transaction, commit all staged graphs through one
+  complete Immediate boundary, and resolve uncertainty independently by exact
+  command identity. On
   the checked profile, the full public TicketDesk seed and every representative
   unary scenario MUST be within 1.10 times same-run PostgreSQL; at 32 clients,
   public mixed-workload throughput MUST be at least 0.90 times PostgreSQL and

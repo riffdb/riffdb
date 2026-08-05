@@ -1,0 +1,59 @@
+{
+  "schema": "riffdb.wp453.serial-micro-batch-decision/v1",
+  "work_package": "WP-453",
+  "recorded_at": "2026-08-05",
+  "decision": "proceed",
+  "production_activation": "activated_after_memory_redb_and_recovery_gates",
+  "gate": {
+    "requirement": "PERF-008",
+    "minimum_riffdb_to_postgres_throughput_at_32_clients": 0.90
+  },
+  "evidence": {
+    "report": "target/app-baseline/sweep-runs-disk/post-wp452-minimal.json",
+    "report_sha256": "cd1f55fc8d544709cbd992cd388179fbf20404ac25649e25496b6b98d6d48ecf",
+    "profile": "interactive",
+    "history_mode": "shared_daemon_accumulated_history",
+    "repetitions": 3,
+    "duration_seconds_per_point": 90,
+    "warmup_seconds_per_point": 15,
+    "median_throughput_ops_s": {
+      "clients_1": {
+        "riffdb": 1037,
+        "postgres_minimal": 2523,
+        "ratio": 0.4110
+      },
+      "clients_8": {
+        "riffdb": 3720,
+        "postgres_minimal": 11080,
+        "ratio": 0.3357
+      },
+      "clients_32": {
+        "riffdb": 7495,
+        "postgres_minimal": 42843,
+        "ratio": 0.1749
+      },
+      "clients_128": {
+        "riffdb": 8622,
+        "postgres_minimal": 32046,
+        "ratio": 0.2690
+      }
+    },
+    "writer_observation": {
+      "saturated": true,
+      "modal_compatibility_group": "singleton",
+      "dominant_limit": "physical_commit_amortization_after_conflict_key_splits"
+    }
+  },
+  "reason": "Compatible same-snapshot groups remain far below the unchanged throughput gate while the sole writer is saturated. A bounded transaction-local FIFO serial micro-batch is the next architectural lever.",
+  "constraints": [
+    "one sole authoritative writer",
+    "one typed semantic transaction protocol",
+    "transaction-local visibility only in FIFO order",
+    "independent identity outcome sequence audit provenance and acknowledgement",
+    "no visible non-durable commit chain",
+    "no acknowledgement before complete durable commit",
+    "all-complete-or-all-absent physical recovery",
+    "memory semantic prototype before redb production activation"
+  ],
+  "adr": "ADR-0095"
+}
