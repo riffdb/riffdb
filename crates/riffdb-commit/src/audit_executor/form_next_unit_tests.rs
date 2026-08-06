@@ -792,3 +792,66 @@ fn pending_holding_only_deferrable_observations_forms_a_single_unit() {
         ]
     );
 }
+
+#[test]
+fn post_commit_window_requires_two_commands_and_allows_deferrable_observations() {
+    let mut pending = VecDeque::new();
+    pending.push_back(command_msg_with_id(1));
+    assert!(!post_commit_command_window_eligible(&pending));
+
+    pending.push_back(observation_msg(2));
+    pending.push_back(command_msg_with_id(3));
+    assert!(post_commit_command_window_eligible(&pending));
+}
+
+#[test]
+fn post_commit_window_never_delays_a_barrier_or_full_prefix() {
+    let mut barrier = VecDeque::new();
+    barrier.push_back(command_msg_with_id(1));
+    barrier.push_back(command_msg_with_id(2));
+    barrier.push_back(shutdown_msg());
+    assert!(!post_commit_command_window_eligible(&barrier));
+
+    let full = (0..riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS)
+        .map(|index| command_msg_with_id(u8::try_from(index % 255).expect("bounded") + 1))
+        .collect::<VecDeque<_>>();
+    assert!(!post_commit_command_window_eligible(&full));
+
+    let already_amortized = (0..=POST_COMMIT_COALESCE_MAX_STARTING_COMMANDS)
+        .map(|index| command_msg_with_id(u8::try_from(index).expect("bounded") + 1))
+        .collect::<VecDeque<_>>();
+    assert!(!post_commit_command_window_eligible(&already_amortized));
+}
+
+#[test]
+fn post_commit_collector_drains_ready_arrivals_without_reordering() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("test runtime");
+    runtime.block_on(async {
+        let (sender, mut receiver) = mpsc::channel(4);
+        sender
+            .send(command_msg_with_id(3))
+            .await
+            .expect("ready arrival");
+        drop(sender);
+
+        let mut pending = VecDeque::from([command_msg_with_id(1), command_msg_with_id(2)]);
+        let mut shutting_down = false;
+        collect_until_coalesce_deadline(
+            &mut receiver,
+            &mut pending,
+            4,
+            Instant::now() + POST_COMMIT_COALESCE_BUDGET,
+            &mut shutting_down,
+        )
+        .await;
+
+        assert_eq!(pending.len(), 3);
+        assert!(shutting_down, "closed intake is observed after ready work");
+        let (unit, reason) = form_next_unit(&mut pending).expect("command group");
+        assert_eq!(reason, CommitGroupDispatchReason::QueueDrained);
+        assert!(matches!(unit, WorkUnit::CommandGroup(group) if group.len() == 3));
+    });
+}

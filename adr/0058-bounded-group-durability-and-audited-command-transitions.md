@@ -7,7 +7,7 @@
   `REC-002`, `TXN-004`, `TXN-005`
 - **Related work packages:** `WP-362`, `WP-364`
 - **Amends:** ADR-0005, ADR-0007, ADR-0023, ADR-0057
-- **Amended by:** ADR-0059, ADR-0060, ADR-0096, ADR-0097
+- **Amended by:** ADR-0059, ADR-0060, ADR-0096, ADR-0097, ADR-0098
 
 ## Context
 

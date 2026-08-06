@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.68
+**Version:** 0.69
 **Status:** Contract-migration and reactive-application implementation
-**Date:** 5 August 2026
+**Date:** 6 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -36,6 +36,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.69 | 2026-08-06 | Accepted ADR-0098 and planned WP-466: after a busy completion edge with at least two queued commands, the coordinator first uses a bounded contention-only window to coalesce one larger Immediate transaction; only unavoidable multiple physical subgroups may use unpublished redb commits behind one Immediate durability fence and last-durable visibility boundary. |
 | 0.68 | 2026-08-05 | Planned WP-465 under PERF-008: canonical capability permission, field-visibility, and approval collections use immutable shared ownership after their existing bounded sort, duplicate rejection, and semantic-byte validation, so internal authentication and authorization handoffs no longer deep-clone the same checked grant while public construction, equality, canonical bytes, durable encoding, and fail-closed policy semantics remain unchanged. |
 | 0.67 | 2026-08-05 | Planned WP-464 under PERF-001/PERF-008 and AAA-006/AAA-007: one bounded public `ExecuteBatch` envelope performs lifecycle admission and credential authentication once, then constructs independent request controls and invokes every item through the ordinary API-neutral command service without an outer Tokio task per item; current-policy authorization, coordinator admission, idempotency, commit, audit, result, cancellation, and recovery remain per command. |
 | 0.66 | 2026-08-05 | Planned WP-463 under PERF-008: complete command-record reciprocity compares the commit-owned durable read dependencies directly with the already canonical live dependency set, removing one clone/sort/key-allocation conversion while preserving exact target, expected-state, ordering, storage, and recovery semantics. |
@@ -6624,7 +6625,9 @@ ADR-0055.
   public mixed-workload throughput MUST be at least 0.90 times PostgreSQL and
   p95 latency MUST be at most 1.25 times PostgreSQL. A miss blocks WP-370.
 - `PERF-009`: The standard application durability profile MUST acknowledge only
-  after a redb Immediate one-phase checksummed commit is known successful. A
+  after a redb Immediate one-phase checksummed durability fence is known
+  successful. It MAY use bounded unpublished redb commits before that fence
+  only under `PERF-015`. A
   hardened two-phase profile and recovery oracle MUST remain available. Both
   profiles expose identical atomic command, idempotency, audit, provenance,
   event, outbox, and uncertainty semantics. Configuration MUST state the
@@ -6669,6 +6672,25 @@ ADR-0055.
   recorded with every evidence refresh. A hard ratio bound is NOT asserted
   until the measurement is demonstrated stable on CI hardware; relabelled
   clean drains or simulated kills MUST NOT be presented as PERF-014 evidence.
+- `PERF-015`: A standard-profile durability epoch MAY contain multiple ordinary
+  FIFO command subgroups committed through redb `Durability::None` only when
+  the complete epoch contains at most 256 commands, reserves at most 16 MiB,
+  begins its Immediate tail fence within 2 milliseconds of the oldest selected
+  command, and crosses no control-plane or lifecycle barrier. A singleton with
+  no accepted command backlog MUST use the direct Immediate path. Every
+  operational and derived read MUST use an atomically published last-durable
+  redb snapshot; deferred subgroup state MUST remain invisible. Responses,
+  notifications, transient indexes, projection work, outbox work, and
+  subscribers MUST remain withheld until the Immediate fence succeeds. Tail
+  uncertainty fences writes and resolves every command independently. Before
+  using deferred commits, a busy completion edge with 2--32 queued commands MAY
+  spend the same fixed 2-millisecond budget collecting one larger FIFO prefix
+  for a single Immediate transaction. The dedicated coordinator MAY park on an
+  intake-or-deadline wait for that real two-millisecond window; the fresh
+  200-microsecond formation path remains timer-free. An idle singleton or a
+  prefix above 32 commands MUST use the direct Immediate path. Recovery
+  MUST observe the epoch as complete or absent, never partially durable. The
+  hardened profile MUST retain independently Immediate two-phase groups.
 
 The milestone is complete only when WP-205 through WP-300 pass their package
 acceptance commands and an independent fresh-agent TicketDesk run satisfies

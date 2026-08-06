@@ -597,23 +597,21 @@ fn command_index_derivation_preserves_the_sealed_storage_progression_chain() {
 }
 
 #[test]
-fn production_group_collection_never_parks_on_a_submillisecond_tokio_timer() {
+fn production_group_collection_uses_no_submillisecond_tokio_timer() {
     let production = production_source(AUDIT_EXECUTOR_SOURCE);
 
     for forbidden in [
         "COMMAND_GROUP_WINDOW",
         "IDEMPOTENCY_INSPECTION_GROUP_WINDOW",
         "tokio::time::timeout_at",
-        ".enable_time()",
         ".enable_all()",
         "MAX_GROUP_WAIT_MICROSECONDS",
-        "tokio::time::sleep",
         "tokio::time::timeout",
         "tokio::time::interval",
     ] {
         assert!(
             !production.contains(forbidden),
-            "production grouping retained timer-wheel mechanism {forbidden}"
+            "production grouping retained forbidden timer-wheel mechanism {forbidden}"
         );
     }
     for required in [
@@ -621,12 +619,15 @@ fn production_group_collection_never_parks_on_a_submillisecond_tokio_timer() {
         "receiver.try_recv()",
         "OLDEST_GROUPABLE_TRANSITION_MAX_AGE",
         "collect_until_group_deadline(",
+        "collect_until_coalesce_deadline(",
         "std::hint::spin_loop()",
+        "tokio::time::sleep_until",
+        ".enable_time()",
         "CommitGroupDispatchReason::QueueDrained",
     ] {
         assert!(
             production.contains(required),
-            "timer-free grouping is missing reviewed mechanism {required}"
+            "bounded grouping is missing reviewed mechanism {required}"
         );
     }
 }
@@ -1715,7 +1716,7 @@ fn coordinator_actor_uses_only_the_reviewed_current_thread_channel_surface() {
         "rand::",
         "redb::",
         // select! over the intake receiver + writer feedback is required by the
-        // pipelined writer (event-driven formation window; no timer driver).
+        // pipelined writer and the accepted completion-edge deadline.
         "join!",
         "spawn!",
         "std::sync::Mutex",

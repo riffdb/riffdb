@@ -116,6 +116,7 @@ direction, merged draft, or implementation choice.
 | [0095](0095-transaction-local-serial-command-micro-batches.md) | Transaction-Local Serial Command Micro-Batches | Accepted |
 | [0096](0096-dynamic-groups-under-static-safety-ceiling.md) | Dynamic Physical Groups Under a Static Safety Ceiling | Accepted |
 | [0097](0097-bounded-generated-batch-writer-feeding.md) | Bounded Generated-Batch Writer Feeding | Accepted |
+| [0098](0098-bounded-redb-durability-epochs.md) | Bounded Redb Durability Epochs | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

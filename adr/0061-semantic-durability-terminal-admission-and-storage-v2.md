@@ -8,6 +8,7 @@
 - **Related work packages:** `WP-371`, `WP-372`, `WP-373`, `WP-374`, `WP-375`
 - **Amends:** ADR-0004, ADR-0005, ADR-0006, ADR-0007, ADR-0012, ADR-0022,
   ADR-0023, ADR-0058, ADR-0059, ADR-0060
+- **Amended by:** ADR-0098
 
 ## Context
 
