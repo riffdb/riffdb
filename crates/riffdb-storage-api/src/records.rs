@@ -2101,9 +2101,10 @@ impl AtomicCommandRecordSet {
         )?;
         validate_events(sequence, events)?;
         validate_intent_event_derivation(evaluated, sequence, events)?;
-        let expected_dependencies =
-            StoredReadDependenciesV1::from_live(evaluated.read_dependencies())?;
-        if commit.read_dependencies() != &expected_dependencies {
+        if !commit
+            .read_dependencies()
+            .matches_live(evaluated.read_dependencies())
+        {
             return Err(StorageValueError::IdentityMismatch);
         }
         if !commit
